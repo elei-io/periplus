@@ -59,6 +59,8 @@ def extract(
         )
         console.print(f"[dim]{output.source.html_path}[/dim]")
         console.print(f"[dim]{output.source.schema_path}[/dim]")
+        if output.source.warnings_path:
+            console.print(f"[dim]{output.source.warnings_path}[/dim]")
     else:
         console.print(f"[bold]Extract[/bold] {output.url}")
 
@@ -67,3 +69,7 @@ def extract(
         raise typer.Exit(1)
 
     console.print(JSON.from_data(output.results))
+    if output.warnings:
+        console.print("[yellow]Quality warnings[/yellow]")
+        for warning in output.warnings:
+            console.print(f"[yellow]- {warning.code}:[/yellow] {warning.name}")

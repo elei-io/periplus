@@ -1,9 +1,0 @@
-  scrape https://the-internet.herokuapp.com/tables ✓ 3.82s
-                                Scrape artifacts                                
-┏━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ URL                   ┃ Success ┃ Artifacts ┃ Bytes ┃ Cache Dir              ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ https://the-internet… │ yes     │ 2         │ 8420  │ /Users/ekku/Code/atla… │
-└───────────────────────┴─────────┴───────────┴───────┴────────────────────────┘
-Wrote 2 artifacts (0 cache hits, 0 images, 8420 bytes) to 
-/Users/ekku/Code/atlas/.cache

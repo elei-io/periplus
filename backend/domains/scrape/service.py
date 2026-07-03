@@ -18,6 +18,7 @@ from domains.crawl import (
     run_config_for_mode,
 )
 from domains.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
+from domains.quality.service import run_quality_checks, warnings_path, write_quality_warnings
 
 from .models import ArtifactFormat, ScrapeArtifact, ScrapeOutput, ScrapePage, ScrapeStats
 
@@ -120,10 +121,23 @@ def _cached_page(url: str, cache_dir: Path, mode: CrawlMode, wait: CrawlWait) ->
 
     html_path = cache_dir / _HTML_FILE
     crawl_path = cache_dir / _CRAWL_FILE
+    warning_path = warnings_path(cache_dir)
     html_artifact = _artifact_from_file(html_path, "html")
     crawl_artifact = _artifact_from_file(crawl_path, "crawl")
     if html_artifact is None or crawl_artifact is None:
         return None
+
+    warnings = _cached_warnings(cache_dir)
+    if not warning_path.is_file():
+        try:
+            html = html_path.read_text(encoding="utf-8")
+            crawl = json.loads(crawl_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            html = ""
+            crawl = None
+
+        warnings = run_quality_checks(url=manifest.get("url", url), html=html, crawl=crawl)
+        warning_path = write_quality_warnings(cache_dir, warnings)
 
     return ScrapePage(
         url=manifest.get("url", url),
@@ -134,8 +148,23 @@ def _cached_page(url: str, cache_dir: Path, mode: CrawlMode, wait: CrawlWait) ->
         cache_dir=str(cache_dir),
         html_path=str(html_path),
         crawl_path=str(crawl_path),
+        warnings_path=str(warning_path),
+        warnings=warnings,
         artifacts=[html_artifact, crawl_artifact],
     )
+
+
+def _cached_warnings(cache_dir: Path):
+    path = warnings_path(cache_dir)
+    if not path.is_file():
+        return []
+
+    try:
+        from domains.quality.models import QualityWarning
+
+        return [QualityWarning.model_validate(item) for item in json.loads(path.read_text(encoding="utf-8"))]
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
 
 
 def _write_manifest(cache_dir: Path, url: str, mode: CrawlMode, wait: CrawlWait, page: ScrapePage) -> None:
@@ -179,7 +208,10 @@ async def _scrape_url(
         html_path = cache_dir / _HTML_FILE
         crawl_path = cache_dir / _CRAWL_FILE
         html_artifact = _write_text_artifact(html_path, result.html or "", "html")
-        crawl_artifact = _write_json_artifact(crawl_path, _crawl_payload(result, html_path), "crawl")
+        crawl_payload = _crawl_payload(result, html_path)
+        crawl_artifact = _write_json_artifact(crawl_path, crawl_payload, "crawl")
+        warnings = run_quality_checks(url=result.url, html=result.html or "", crawl=crawl_payload)
+        warning_path = write_quality_warnings(cache_dir, warnings)
         artifacts = [html_artifact, crawl_artifact]
     except Exception as exc:
         duration = time.perf_counter() - start_time
@@ -217,6 +249,8 @@ async def _scrape_url(
         cache_dir=str(cache_dir),
         html_path=str(html_path),
         crawl_path=str(crawl_path),
+        warnings_path=str(warning_path),
+        warnings=warnings,
         artifacts=artifacts,
         error=result.error_message,
     )

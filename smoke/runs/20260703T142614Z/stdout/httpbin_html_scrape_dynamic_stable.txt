@@ -1,9 +1,0 @@
-  scrape https://httpbin.org/html ✓ 9.28s
-                                Scrape artifacts                                
-┏━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ URL                    ┃ Success ┃ Artifacts ┃ Bytes ┃ Cache Dir             ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━┩
-│ https://httpbin.org/h… │ yes     │ 2         │ 7337  │ /Users/ekku/Code/atl… │
-└────────────────────────┴─────────┴───────────┴───────┴───────────────────────┘
-Wrote 2 artifacts (0 cache hits, 0 images, 7337 bytes) to 
-/Users/ekku/Code/atlas/.cache

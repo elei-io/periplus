@@ -1,5 +1,0 @@
-  extract https://httpbin.org/html ✗ 10.36s
-  scrape  https://httpbin.org/html ✗ 9.77s 
-Extract https://httpbin.org/html
-Blocked by anti-bot protection: Structural: minimal_text on small page (161 
-bytes, 35 chars visible)

@@ -3,6 +3,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from domains.crawl import CrawlMode, CrawlWait
+from domains.quality.models import QualityWarning
 from domains.schema.models import SchemaType
 
 
@@ -28,6 +29,7 @@ class Input(BaseModel):
 class ExtractSource(BaseModel):
     scrape_cache_dir: str
     html_path: str
+    warnings_path: str | None = None
     scrape_cached: bool
     schema_id: str
     schema_path: str
@@ -39,4 +41,5 @@ class ExtractOutput(BaseModel):
     success: bool
     source: ExtractSource | None = None
     results: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[QualityWarning] = Field(default_factory=list)
     error: str | None = None

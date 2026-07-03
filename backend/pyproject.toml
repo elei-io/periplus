@@ -28,6 +28,7 @@ packages = [
     "domains",
     "domains.extract",
     "domains.index",
+    "domains.quality",
     "domains.schema",
     "domains.scrape",
     "domains.search",

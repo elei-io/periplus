@@ -1,9 +1,0 @@
-  cache https://www.scrapethissite.com/pages/simple/ ✓ 0.00s
-                                Scrape artifacts                                
-┏━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ URL                   ┃ Success ┃ Artifacts ┃ Bytes  ┃ Cache Dir             ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━┩
-│ https://www.scrapeth… │ yes     │ 2         │ 230240 │ /Users/ekku/Code/atl… │
-└───────────────────────┴─────────┴───────────┴────────┴───────────────────────┘
-Wrote 2 artifacts (1 cache hits, 0 images, 230240 bytes) to 
-/Users/ekku/Code/atlas/.cache

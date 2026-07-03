@@ -3,6 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from domains.crawl import CrawlMode, CrawlWait
+from domains.quality.models import QualityWarning
 
 ArtifactFormat = Literal["html", "crawl"]
 
@@ -42,6 +43,8 @@ class ScrapePage(BaseModel):
     cache_dir: str
     html_path: str | None = None
     crawl_path: str | None = None
+    warnings_path: str | None = None
+    warnings: list[QualityWarning] = Field(default_factory=list)
     artifacts: list[ScrapeArtifact]
     error: str | None = None
 

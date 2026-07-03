@@ -40,6 +40,7 @@ def scrape(
     table.add_column("Cached")
     table.add_column("Artifacts")
     table.add_column("Bytes")
+    table.add_column("Warnings")
     table.add_column("Cache Dir")
 
     for page in output.pages:
@@ -49,6 +50,7 @@ def scrape(
             "yes" if page.cached else "no",
             str(len(page.artifacts)),
             str(sum(artifact.bytes for artifact in page.artifacts)),
+            str(len(page.warnings)),
             page.cache_dir,
         )
 

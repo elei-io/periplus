@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from pathlib import Path
 
@@ -6,6 +7,7 @@ from crawl4ai import JsonCssExtractionStrategy, JsonXPathExtractionStrategy
 
 from domains.crawl import CrawlMode, CrawlWait
 from domains.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
+from domains.quality.service import run_quality_checks, write_quality_warnings
 from domains.schema.models import SchemaType
 from domains.schema.service import schema as schema_service
 from domains.scrape.service import scrape as scrape_service
@@ -123,6 +125,7 @@ async def extract(
     source = ExtractSource(
         scrape_cache_dir=page.cache_dir,
         html_path=html_path,
+        warnings_path=page.warnings_path,
         scrape_cached=page.cached,
         schema_id=schema_output.schema_id,
         schema_path=schema_output.path,
@@ -158,7 +161,26 @@ async def extract(
                 error=str(exc),
             ),
         )
-        return ExtractOutput(url=page.url, success=False, source=source, error=str(exc))
+        warnings = run_quality_checks(url=page.url, html=html, extraction_results=[])
+        warning_path = write_quality_warnings(page.cache_dir, warnings)
+        source.warnings_path = str(warning_path)
+        return ExtractOutput(url=page.url, success=False, source=source, warnings=warnings, error=str(exc))
+
+    crawl = None
+    if page.crawl_path:
+        try:
+            crawl = json.loads(Path(page.crawl_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            crawl = None
+
+    warnings = run_quality_checks(
+        url=page.url,
+        html=html,
+        crawl=crawl,
+        extraction_results=results,
+    )
+    warning_path = write_quality_warnings(page.cache_dir, warnings)
+    source.warnings_path = str(warning_path)
 
     await emit_crawl_progress(
         progress_callback,
@@ -178,7 +200,7 @@ async def extract(
             duration=time.perf_counter() - total_start_time,
         ),
     )
-    return ExtractOutput(url=page.url, success=True, source=source, results=results)
+    return ExtractOutput(url=page.url, success=True, source=source, results=results, warnings=warnings)
 
 
 def extract_sync(
