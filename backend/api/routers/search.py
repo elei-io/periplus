@@ -9,8 +9,8 @@ router = APIRouter(prefix="/search", tags=["search"])
 
 
 @router.get("/", response_model=list[SearchResult])
-def search(
+async def search(
     query: str,
     max_results: Annotated[int, Query(ge=1)] = 10,
 ) -> list[SearchResult]:
-    return search_service(query=query, max_results=max_results)
+    return await search_service(query=query, max_results=max_results)

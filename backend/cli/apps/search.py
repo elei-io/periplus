@@ -4,7 +4,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from domains.search.service import search as search_service
+from domains.search.service import search_sync as search_service
 
 console = Console()
 
