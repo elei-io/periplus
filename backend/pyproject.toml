@@ -23,5 +23,5 @@ packages = [
     "cli",
     "cli.apps",
     "domains",
-    "domains.domain_1",
+    "domains.search",
 ]
