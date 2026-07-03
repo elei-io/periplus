@@ -17,7 +17,7 @@ backend/api/          FastAPI app and routers
 backend/cli/          Typer CLI commands
 backend/domains/      Shared crawl, index, search, and job logic
 docker/atlas/         Backend container image
-docker-compose.yml    Local API, worker, and NATS stack
+docker-compose.yml    Local API, worker, Postgres, and NATS stack
 ```
 
 ## Requirements
@@ -62,19 +62,41 @@ Run a lightweight syntax check:
 make check
 ```
 
+Run database migrations:
+
+```sh
+make db-upgrade
+cd backend && uv run alembic current
+cd backend && uv run alembic check
+```
+
 ## Docker Compose
 
-Start the API, worker, and NATS:
+Start the API, worker, Postgres, and NATS:
 
 ```sh
 docker compose up --build
 ```
 
-The API is published at `http://127.0.0.1:8000`.
+The API is published at `http://127.0.0.1:8000`. Postgres is published at
+`127.0.0.1:5432` by default and persists data in the `atlas-postgres-data`
+Compose volume.
 
 ## Configuration
 
 Copy `.env.example` to `.env` when local secrets are needed.
+
+`DATABASE_URL` points Atlas at Postgres. Compose injects an internal URL for
+the API and worker containers using `atlas-postgres`; local tools can use the
+localhost URL from `.env.example`.
+
+SQLAlchemy models should inherit from `domains.database.Base`. Alembic reads
+that metadata from `backend/alembic/env.py`, so create schema changes with:
+
+```sh
+make db-revision m="describe change"
+make db-upgrade
+```
 
 `OPENROUTER_API_KEY` is only needed when Atlas must generate an extraction schema or infer a target JSON example. Generated artifacts live under `.cache/<domain>/<service>/`, so schemas are cached beside other runtime artifacts without mixing them into source folders. Page-load-sensitive commands support `--mode` and `--wait`; use `--mode app --wait stable` for pages that need frontend hydration before their data appears.
 

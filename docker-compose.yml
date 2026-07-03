@@ -15,8 +15,12 @@ services:
     environment:
       NATS_URL: nats://atlas-nats:4222
       CACHE_ROOT: /app/.cache
+      DATABASE_URL: postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}
     depends_on:
-      - atlas-nats
+      atlas-nats:
+        condition: service_started
+      atlas-postgres:
+        condition: service_healthy
 
   atlas-worker:
     build:
@@ -34,8 +38,30 @@ services:
       CACHE_ROOT: /app/.cache
       CACHE_CLEANUP_INTERVAL: ${CACHE_CLEANUP_INTERVAL:-3600}
       CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-86400}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}
     depends_on:
-      - atlas-nats
+      atlas-nats:
+        condition: service_started
+      atlas-postgres:
+        condition: service_healthy
+
+  atlas-postgres:
+    image: postgres:18
+    container_name: atlas-postgres
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-atlas}
+      POSTGRES_USER: ${POSTGRES_USER:-atlas}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-atlas}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - atlas-postgres-data:/var/lib/postgresql
+    restart: unless-stopped
 
   atlas-nats:
     image: nats:2.11-alpine
@@ -49,4 +75,5 @@ services:
     restart: unless-stopped
 
 volumes:
+  atlas-postgres-data:
   atlas-nats-data:

@@ -1,4 +1,4 @@
-.PHONY: sync check api worker cli compose-up compose-down
+.PHONY: sync check api worker cli db-upgrade db-revision compose-up compose-down
 
 sync:
 	cd backend && uv sync
@@ -14,6 +14,12 @@ worker:
 
 cli:
 	cd backend && uv run atlas --help
+
+db-upgrade:
+	cd backend && uv run alembic upgrade head
+
+db-revision:
+	cd backend && uv run alembic revision --autogenerate -m "$(m)"
 
 compose-up:
 	docker compose up --build -d

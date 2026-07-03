@@ -18,7 +18,7 @@ This file is the first stop for Codex agents working in Atlas.
 
 - Use `uv` from the `backend/` directory for Python commands.
 - The project targets Python 3.14.
-- Docker Compose is the easiest way to run the full API, worker, and NATS stack.
+- Docker Compose is the easiest way to run the full API, worker, Postgres, and NATS stack.
 - Runtime cache and generated schema data live under ignored paths: `.cache/` and `.env`.
 
 ## Common Commands
@@ -41,6 +41,8 @@ Equivalent direct commands:
 ```sh
 cd backend && uv sync
 cd backend && uv run python -m compileall api cli domains
+cd backend && uv run alembic upgrade head
+cd backend && uv run alembic check
 cd backend && uv run fastapi dev api/app.py
 cd backend && uv run python -m domains.index.worker
 docker compose up --build
@@ -56,6 +58,7 @@ docker compose up --build
 
 - Preserve the current split: routers and CLI commands validate/input/output; domain modules own behavior.
 - Prefer typed Pydantic models for request/response boundaries.
+- Use SQLAlchemy 2 models from `domains.database.Base` for database tables and manage schema changes with Alembic.
 - Keep shared Crawl4AI browser/run configuration in `domains.crawl`.
 - Use `domains.schema` for generated Crawl4AI extraction schemas instead of embedding schema generation in another primitive. Its default cache id is derived from URL domain, prompt hash, schema type, mode, and wait strategy.
 - Use `domains.extract` to compose cached HTML from `domains.scrape` with generated schemas from `domains.schema`.
@@ -66,5 +69,7 @@ docker compose up --build
 ## Environment
 
 - `NATS_URL` controls queue access for async index jobs.
+- `DATABASE_URL` controls Postgres access.
+- `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_PORT` configure the local Compose Postgres service.
 - `CACHE_ROOT`, `CACHE_CLEANUP_INTERVAL`, and `CACHE_TTL_SECONDS` control generated artifact cache storage and cleanup. Cache entries are organized as `.cache/<domain>/<service_name>/...`.
 - `OPENROUTER_API_KEY`, `OPENROUTER_SCHEMA_MODEL`, and `OPENROUTER_SEARCH_EXTRACTOR_MODEL` are optional schema generation settings.
