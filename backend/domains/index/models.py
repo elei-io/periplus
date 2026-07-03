@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 Mode = Literal["static", "dynamic", "app"]
 Wait = Literal["none", "stable", "network", "fixed"]
+JobStatus = Literal["queued", "running", "succeeded", "failed"]
 
 
 class Input(BaseModel):
@@ -61,3 +62,17 @@ class IndexLink(BaseModel):
     depth: int
     link_index: int
     internal: bool
+
+
+class IndexJobSummary(BaseModel):
+    id: str
+    status: JobStatus
+    url: str
+    created_at: str
+    updated_at: str
+
+
+class IndexJob(IndexJobSummary):
+    request: Input
+    result: list[IndexLink] | None = None
+    error: str | None = None
