@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query
 
@@ -14,6 +14,9 @@ async def index(
     max_depth: Annotated[int, Query(ge=0)] = 3,
     dedupe: bool = False,
     concurrency: Annotated[int, Query(ge=1)] = 10,
+    mode: Literal["static", "dynamic", "app"] = "static",
+    live: bool = False,
+    wait: Literal["none", "stable", "network", "fixed"] = "none",
     include_crawl: Annotated[list[str] | None, Query()] = None,
     exclude_crawl: Annotated[list[str] | None, Query()] = None,
     include_result: Annotated[list[str] | None, Query()] = None,
@@ -24,6 +27,9 @@ async def index(
         max_depth=max_depth,
         dedupe=dedupe,
         concurrency=concurrency,
+        mode=mode,
+        live=live,
+        wait=wait,
         include_crawl=include_crawl,
         exclude_crawl=exclude_crawl,
         include_result=include_result,

@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 from rich.console import Console
@@ -17,6 +17,18 @@ def index(
         int,
         typer.Option("--concurrency", "-c", min=1, help="Number of pages to crawl in parallel."),
     ] = 10,
+    mode: Annotated[
+        Literal["static", "dynamic", "app"],
+        typer.Option("--mode", help="Crawl preset for static pages, dynamic pages, or heavy SPAs."),
+    ] = "static",
+    live: Annotated[
+        bool,
+        typer.Option("--live", help="Show the browser while crawling."),
+    ] = False,
+    wait: Annotated[
+        Literal["none", "stable", "network", "fixed"],
+        typer.Option("--wait", help="Wait strategy before collecting links."),
+    ] = "none",
     include_crawl: Annotated[
         list[str] | None,
         typer.Option("--include-crawl", help="Only crawl child pages matching this glob. Repeatable."),
@@ -39,6 +51,9 @@ def index(
         max_depth=max_depth,
         dedupe=dedupe,
         concurrency=concurrency,
+        mode=mode,
+        live=live,
+        wait=wait,
         include_crawl=include_crawl,
         exclude_crawl=exclude_crawl,
         include_result=include_result,
