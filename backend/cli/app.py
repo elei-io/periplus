@@ -1,9 +1,10 @@
 import typer
 
-from cli.apps import index, search
+from cli.apps import index, scrape, search
 
 app = typer.Typer(help="Atlas backend CLI.", invoke_without_command=True)
 app.command(name="index")(index.index)
+app.command(name="scrape")(scrape.scrape)
 app.command(name="search")(search.search)
 
 

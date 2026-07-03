@@ -11,8 +11,10 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - .:/app
+      - ./.cache:/app/.cache
     environment:
       NATS_URL: nats://atlas-nats:4222
+      CACHE_ROOT: /app/.cache/scrape
     depends_on:
       - atlas-nats
 
@@ -26,8 +28,12 @@ services:
     command: python -m domains.index.worker
     volumes:
       - .:/app
+      - ./.cache:/app/.cache
     environment:
       NATS_URL: nats://atlas-nats:4222
+      CACHE_ROOT: /app/.cache/scrape
+      CACHE_CLEANUP_INTERVAL: ${CACHE_CLEANUP_INTERVAL:-3600}
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-86400}
     depends_on:
       - atlas-nats
 

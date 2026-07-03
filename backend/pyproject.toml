@@ -27,5 +27,6 @@ packages = [
     "cli.apps",
     "domains",
     "domains.index",
+    "domains.scrape",
     "domains.search",
 ]
