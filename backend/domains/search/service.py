@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qs, quote_plus, urlencode, unquote, urljoin, urlparse
@@ -15,6 +16,8 @@ from crawl4ai import (
     LLMConfig,
 )
 from dotenv import load_dotenv
+
+from domains.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
 
 from .models import SearchResult
 
@@ -196,7 +199,11 @@ def _parse_search_results(extracted_content: str | None) -> list[SearchResult]:
     return results
 
 
-async def search(query: str, max_results: int = 10) -> list[SearchResult]:
+async def search(
+    query: str,
+    max_results: int = 10,
+    progress_callback: CrawlProgressCallback | None = None,
+) -> list[SearchResult]:
     search_url = _SEARCH_URL.format(query=quote_plus(query))
     schema = await _load_or_generate_schema(search_url)
     strategy_class = JsonXPathExtractionStrategy if _is_xpath_schema(schema) else JsonCssExtractionStrategy
@@ -205,19 +212,40 @@ async def search(query: str, max_results: int = 10) -> list[SearchResult]:
     seen_urls: set[str] = set()
 
     async with AsyncWebCrawler(
-        config=BrowserConfig(headless=True, enable_stealth=True),
+        config=BrowserConfig(headless=True, enable_stealth=True, verbose=False),
     ) as crawler:
         page_url: str | None = search_url
-        for _ in range(_MAX_PAGES):
+        for page_number in range(1, _MAX_PAGES + 1):
             if not page_url or len(results) >= max_results:
                 break
 
+            await emit_crawl_progress(
+                progress_callback,
+                CrawlProgressEvent(
+                    url=page_url,
+                    label=f"search page {page_number}",
+                    status="started",
+                ),
+            )
+            start_time = time.perf_counter()
             result = await crawler.arun(
                 url=page_url,
                 config=CrawlerRunConfig(
                     cache_mode=CacheMode.BYPASS,
                     extraction_strategy=extraction_strategy,
                     magic=True,
+                    verbose=False,
+                ),
+            )
+            duration = time.perf_counter() - start_time
+            await emit_crawl_progress(
+                progress_callback,
+                CrawlProgressEvent(
+                    url=page_url,
+                    label=f"search page {page_number}",
+                    status="succeeded" if result.success else "failed",
+                    duration=duration,
+                    error=result.error_message,
                 ),
             )
 
@@ -242,5 +270,15 @@ async def search(query: str, max_results: int = 10) -> list[SearchResult]:
     return results
 
 
-def search_sync(query: str, max_results: int = 10) -> list[SearchResult]:
-    return asyncio.run(search(query=query, max_results=max_results))
+def search_sync(
+    query: str,
+    max_results: int = 10,
+    progress_callback: CrawlProgressCallback | None = None,
+) -> list[SearchResult]:
+    return asyncio.run(
+        search(
+            query=query,
+            max_results=max_results,
+            progress_callback=progress_callback,
+        )
+    )

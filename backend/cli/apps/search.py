@@ -4,6 +4,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from cli.progress import CrawlProgressRenderer
 from domains.search.service import search_sync as search_service
 
 console = Console()
@@ -13,7 +14,13 @@ def search(
     query: str,
     max_results: Annotated[int, typer.Option("--max-results", "-n", min=1)] = 10,
 ) -> None:
-    results = search_service(query=query, max_results=max_results)
+    with CrawlProgressRenderer(console) as progress:
+        results = search_service(
+            query=query,
+            max_results=max_results,
+            progress_callback=progress.callback,
+        )
+
     table = Table(title=f"Search results for {query!r}")
     table.add_column("Title")
     table.add_column("URL")

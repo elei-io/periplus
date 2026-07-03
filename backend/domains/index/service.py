@@ -1,4 +1,5 @@
 import asyncio
+import time
 from fnmatch import fnmatch
 from hashlib import sha1
 from typing import Literal
@@ -9,10 +10,11 @@ from crawl4ai import (
     BrowserConfig,
     CacheMode,
     CrawlerRunConfig,
-    SemaphoreDispatcher,
 )
+from crawl4ai.models import CrawlResult
 
 from .models import IndexLink
+from ..progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
 
 _DEFAULT_CONCURRENCY = 10
 IndexMode = Literal["static", "dynamic", "app"]
@@ -151,6 +153,7 @@ def _run_config_for_mode(mode: IndexMode, wait: IndexWait) -> CrawlerRunConfig:
         return CrawlerRunConfig(
             cache_mode=CacheMode.BYPASS,
             magic=True,
+            verbose=False,
             wait_until=_wait_until_for_wait(wait),
             **fixed_delay_config,
             **wait_config,
@@ -160,6 +163,7 @@ def _run_config_for_mode(mode: IndexMode, wait: IndexWait) -> CrawlerRunConfig:
         return CrawlerRunConfig(
             cache_mode=CacheMode.BYPASS,
             magic=True,
+            verbose=False,
             wait_until=_wait_until_for_wait(wait),
             scan_full_page=True,
             scroll_delay=0.5,
@@ -170,6 +174,7 @@ def _run_config_for_mode(mode: IndexMode, wait: IndexWait) -> CrawlerRunConfig:
     return CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,
         magic=True,
+        verbose=False,
         wait_until=_wait_until_for_wait(wait),
         scan_full_page=True,
         scroll_delay=0.75,
@@ -184,6 +189,7 @@ def _browser_config_for_mode(mode: IndexMode, live: bool) -> BrowserConfig:
         enable_stealth=True,
         text_mode=mode == "static",
         light_mode=mode == "static",
+        verbose=False,
     )
 
 
@@ -196,6 +202,7 @@ def _app_pre_scan_wait_config(url: str, wait: IndexWait) -> CrawlerRunConfig:
     return CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,
         magic=True,
+        verbose=False,
         wait_until=_wait_until_for_wait(wait),
         delay_before_return_html=_FIXED_WAIT_SECONDS if wait == "fixed" else 0.1,
         session_id=_session_id(url),
@@ -207,6 +214,7 @@ def _app_scan_config(url: str) -> CrawlerRunConfig:
     return CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,
         magic=True,
+        verbose=False,
         js_only=True,
         session_id=_session_id(url),
         scan_full_page=True,
@@ -215,31 +223,117 @@ def _app_scan_config(url: str) -> CrawlerRunConfig:
     )
 
 
+async def _crawl_single_url(
+    crawler: AsyncWebCrawler,
+    page_url: str,
+    run_config: CrawlerRunConfig,
+    mode: IndexMode,
+    wait: IndexWait,
+) -> CrawlResult:
+    if mode == "app" and wait != "none":
+        await crawler.arun(
+            url=page_url,
+            config=_app_pre_scan_wait_config(page_url, wait=wait),
+        )
+        return await crawler.arun(url=page_url, config=_app_scan_config(page_url))
+
+    return await crawler.arun(url=page_url, config=run_config)
+
+
+async def _crawl_url_with_progress(
+    crawler: AsyncWebCrawler,
+    page_url: str,
+    depth: int,
+    run_config: CrawlerRunConfig,
+    mode: IndexMode,
+    wait: IndexWait,
+    semaphore: asyncio.Semaphore,
+    progress_callback: CrawlProgressCallback | None,
+) -> tuple[str, CrawlResult]:
+    async with semaphore:
+        await emit_crawl_progress(
+            progress_callback,
+            CrawlProgressEvent(url=page_url, label=f"depth {depth}", status="started"),
+        )
+        start_time = time.perf_counter()
+
+        try:
+            result = await _crawl_single_url(
+                crawler=crawler,
+                page_url=page_url,
+                run_config=run_config,
+                mode=mode,
+                wait=wait,
+            )
+        except Exception as exc:
+            duration = time.perf_counter() - start_time
+            result = CrawlResult(
+                url=page_url,
+                html="",
+                metadata={},
+                success=False,
+                error_message=str(exc),
+            )
+            await emit_crawl_progress(
+                progress_callback,
+                CrawlProgressEvent(
+                    url=page_url,
+                    label=f"depth {depth}",
+                    status="failed",
+                    duration=duration,
+                    error=str(exc),
+                ),
+            )
+            return page_url, result
+
+        duration = time.perf_counter() - start_time
+        status = "succeeded" if result.success else "failed"
+        await emit_crawl_progress(
+            progress_callback,
+            CrawlProgressEvent(
+                url=page_url,
+                label=f"depth {depth}",
+                status=status,
+                duration=duration,
+                error=result.error_message,
+            ),
+        )
+        return page_url, result
+
+
 async def _crawl_urls(
     crawler: AsyncWebCrawler,
     page_urls: list[str],
     run_config: CrawlerRunConfig,
-    dispatcher: SemaphoreDispatcher,
+    concurrency: int,
     mode: IndexMode,
     wait: IndexWait,
-):
-    if mode != "app" or wait == "none":
-        return await crawler.arun_many(
-            urls=page_urls,
-            config=run_config,
-            dispatcher=dispatcher,
+    depth: int,
+    progress_callback: CrawlProgressCallback | None,
+) -> list[CrawlResult]:
+    semaphore = asyncio.Semaphore(concurrency)
+    tasks = [
+        asyncio.create_task(
+            _crawl_url_with_progress(
+                crawler=crawler,
+                page_url=page_url,
+                depth=depth,
+                run_config=run_config,
+                mode=mode,
+                wait=wait,
+                semaphore=semaphore,
+                progress_callback=progress_callback,
+            )
         )
+        for page_url in page_urls
+    ]
+    results_by_url: dict[str, CrawlResult] = {}
 
-    await crawler.arun_many(
-        urls=page_urls,
-        config=[_app_pre_scan_wait_config(url, wait=wait) for url in page_urls],
-        dispatcher=dispatcher,
-    )
-    return await crawler.arun_many(
-        urls=page_urls,
-        config=[_app_scan_config(url) for url in page_urls],
-        dispatcher=dispatcher,
-    )
+    for task in asyncio.as_completed(tasks):
+        page_url, result = await task
+        results_by_url[page_url] = result
+
+    return [results_by_url[page_url] for page_url in page_urls]
 
 
 async def index(
@@ -254,6 +348,7 @@ async def index(
     exclude_crawl: list[str] | None = None,
     include_result: list[str] | None = None,
     exclude_result: list[str] | None = None,
+    progress_callback: CrawlProgressCallback | None = None,
 ) -> list[IndexLink]:
     start_url = _normalize_url(url, url)
     if max_depth < 0 or concurrency < 1 or not _is_crawlable_url(start_url):
@@ -269,7 +364,6 @@ async def index(
     scheduled_pages: set[str] = {start_url}
     frontier = [start_url]
     run_config = _run_config_for_mode(mode, wait=wait)
-    dispatcher = SemaphoreDispatcher(semaphore_count=concurrency)
 
     async with AsyncWebCrawler(config=_browser_config_for_mode(mode, live=live)) as crawler:
         for depth in range(max_depth + 1):
@@ -281,9 +375,11 @@ async def index(
                 crawler=crawler,
                 page_urls=page_urls,
                 run_config=run_config,
-                dispatcher=dispatcher,
+                concurrency=concurrency,
                 mode=mode,
                 wait=wait,
+                depth=depth,
+                progress_callback=progress_callback,
             )
             next_frontier: list[str] = []
 
@@ -348,6 +444,7 @@ def index_sync(
     exclude_crawl: list[str] | None = None,
     include_result: list[str] | None = None,
     exclude_result: list[str] | None = None,
+    progress_callback: CrawlProgressCallback | None = None,
 ) -> list[IndexLink]:
     return asyncio.run(
         index(
@@ -362,5 +459,6 @@ def index_sync(
             exclude_crawl=exclude_crawl,
             include_result=include_result,
             exclude_result=exclude_result,
+            progress_callback=progress_callback,
         )
     )

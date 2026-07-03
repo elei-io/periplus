@@ -4,6 +4,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from cli.progress import CrawlProgressRenderer
 from domains.index.service import index_sync as index_service
 
 console = Console()
@@ -46,19 +47,22 @@ def index(
         typer.Option("--exclude-result", help="Do not return links matching this glob. Repeatable."),
     ] = None,
 ) -> None:
-    links = index_service(
-        url=url,
-        max_depth=max_depth,
-        dedupe=dedupe,
-        concurrency=concurrency,
-        mode=mode,
-        live=live,
-        wait=wait,
-        include_crawl=include_crawl,
-        exclude_crawl=exclude_crawl,
-        include_result=include_result,
-        exclude_result=exclude_result,
-    )
+    with CrawlProgressRenderer(console) as progress:
+        links = index_service(
+            url=url,
+            max_depth=max_depth,
+            dedupe=dedupe,
+            concurrency=concurrency,
+            mode=mode,
+            live=live,
+            wait=wait,
+            include_crawl=include_crawl,
+            exclude_crawl=exclude_crawl,
+            include_result=include_result,
+            exclude_result=exclude_result,
+            progress_callback=progress.callback,
+        )
+
     table = Table(title=f"Index links from {url!r}")
     table.add_column("Depth")
     table.add_column("Index")
