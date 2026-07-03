@@ -1,9 +1,7 @@
 import asyncio
 import json
-import os
 import time
 from html.parser import HTMLParser
-from pathlib import Path
 from urllib.parse import parse_qs, quote_plus, urlencode, unquote, urljoin, urlparse
 
 from crawl4ai import (
@@ -13,17 +11,15 @@ from crawl4ai import (
     CrawlerRunConfig,
     JsonCssExtractionStrategy,
     JsonXPathExtractionStrategy,
-    LLMConfig,
 )
-from dotenv import load_dotenv
 
 from domains.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
+from domains.schema.service import schema as schema_service
 
 from .models import SearchResult
 
 _SEARCH_URL = "https://html.duckduckgo.com/html/?q={query}"
-_SCHEMA_PATH = Path(__file__).resolve().parents[2] / ".schemas" / "search.duckduckgo.json"
-_ENV_PATH = Path(__file__).resolve().parents[3] / ".env"
+_SCHEMA_CACHE_KEY = "search.duckduckgo"
 _SCHEMA_PROMPT = (
     "Extract DuckDuckGo HTML search results. Return one object per result with: "
     "title as visible result title text, url as the result link href, and description "
@@ -88,34 +84,15 @@ class _DuckDuckGoNextFormParser(HTMLParser):
             self._current_is_next_form = False
 
 
-def _schema_llm_config() -> LLMConfig:
-    load_dotenv(_ENV_PATH)
-    provider = os.getenv("OPENROUTER_SEARCH_EXTRACTOR_MODEL", "openai/gpt-4o")
-    if not provider.startswith("openrouter/"):
-        provider = f"openrouter/{provider}"
-
-    return LLMConfig(
-        provider=provider,
-        api_token=os.getenv("OPENROUTER_API_KEY"),
-    )
-
-
 async def _load_or_generate_schema(search_url: str) -> dict:
-    if _SCHEMA_PATH.exists():
-        return json.loads(_SCHEMA_PATH.read_text())
-
-    schema = await JsonCssExtractionStrategy.agenerate_schema(
+    output = await schema_service(
         url=search_url,
-        schema_type="css",
-        query=_SCHEMA_PROMPT,
+        prompt=_SCHEMA_PROMPT,
         target_json_example=_SCHEMA_TARGET_JSON_EXAMPLE,
-        llm_config=_schema_llm_config(),
-        validate=True,
+        schema_type="css",
+        cache_key=_SCHEMA_CACHE_KEY,
     )
-
-    _SCHEMA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _SCHEMA_PATH.write_text(f"{json.dumps(schema, indent=2)}\n")
-    return schema
+    return output.extraction_schema
 
 
 def _normalize_url(href: str) -> str:

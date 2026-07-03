@@ -6,6 +6,8 @@ Atlas is a Python web crawling and search backend. It exposes the same domain lo
 - a Typer CLI,
 - an async NATS JetStream worker for index jobs.
 
+Its current web primitives are `search`, `index`, `scrape`, and `schema`.
+
 The current architecture is documented in [ARCHITECHTURE.md](ARCHITECHTURE.md).
 
 ## Repository Layout
@@ -46,6 +48,7 @@ Run the CLI:
 cd backend
 uv run atlas --help
 uv run atlas index https://example.com --max-depth 1
+uv run atlas schema https://example.com --prompt "Extract article cards with title and URL."
 ```
 
 Run a lightweight syntax check:
@@ -68,4 +71,4 @@ The API is published at `http://127.0.0.1:8000`.
 
 Copy `.env.example` to `.env` when local secrets are needed.
 
-`OPENROUTER_API_KEY` is only needed when Atlas must generate a DuckDuckGo extraction schema for search. Once `backend/.schemas/search.duckduckgo.json` exists, search can reuse that cached schema.
+`OPENROUTER_API_KEY` is only needed when Atlas must generate an extraction schema or infer a target JSON example. Once a schema exists in `backend/.schemas/`, Atlas can reuse it from cache.

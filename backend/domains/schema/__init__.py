@@ -1,0 +1,1 @@
+"""Extraction schema generation primitive."""

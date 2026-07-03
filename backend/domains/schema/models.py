@@ -1,0 +1,30 @@
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+SchemaType = Literal["css", "xpath"]
+
+
+class Input(BaseModel):
+    url: str = Field(description="Sample URL used to generate and validate the extraction schema.")
+    prompt: str = Field(description="Natural-language extraction instructions.")
+    target_json_example: str | None = Field(
+        default=None,
+        description="Optional JSON example showing the desired extracted object shape. Generated when omitted.",
+    )
+    schema_type: SchemaType = Field(default="css", description="Crawl4AI schema selector type.")
+    cache_key: str | None = Field(
+        default=None,
+        description="Optional stable cache key for a known reusable schema.",
+    )
+    refresh: bool = Field(default=False, description="Regenerate the schema even if it is cached.")
+
+
+class SchemaOutput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_id: str
+    schema_type: SchemaType
+    path: str
+    cached: bool
+    extraction_schema: dict = Field(serialization_alias="schema")

@@ -8,6 +8,7 @@ This file is the first stop for Codex agents working in Atlas.
   - `backend/api/` for FastAPI routes.
   - `backend/cli/` for Typer commands.
   - `backend/domains/` for crawl, index, search, and queue behavior.
+- Current primitives are `search`, `index`, `scrape`, and `schema`.
 - Keep business behavior in `backend/domains/`; API and CLI layers should stay thin.
 - The architecture rationale lives in `ARCHITECHTURE.md`. Read it before changing the API/worker/browser execution model.
 
@@ -27,6 +28,7 @@ make sync
 make check
 make api
 make worker
+cd backend && uv run atlas schema https://example.com --prompt "Extract article cards."
 make compose-up
 ```
 
@@ -51,6 +53,7 @@ docker compose up --build
 - Preserve the current split: routers and CLI commands validate/input/output; domain modules own behavior.
 - Prefer typed Pydantic models for request/response boundaries.
 - Keep Crawl4AI configuration close to the domain service that uses it.
+- Use `domains.schema` for generated Crawl4AI extraction schemas instead of embedding schema generation in another primitive. Its default cache id is derived from URL domain, prompt hash, and schema type.
 - Avoid introducing a separate browser service unless the architecture document is deliberately updated too.
 - Do not commit generated caches, schemas, virtualenvs, or secrets.
 
@@ -58,4 +61,4 @@ docker compose up --build
 
 - `NATS_URL` controls queue access for async index jobs.
 - `CACHE_ROOT`, `CACHE_CLEANUP_INTERVAL`, and `CACHE_TTL_SECONDS` control scrape cache storage and cleanup.
-- `OPENROUTER_API_KEY` and `OPENROUTER_SEARCH_EXTRACTOR_MODEL` are optional search-schema generation settings.
+- `OPENROUTER_API_KEY`, `OPENROUTER_SCHEMA_MODEL`, and `OPENROUTER_SEARCH_EXTRACTOR_MODEL` are optional schema generation settings.
