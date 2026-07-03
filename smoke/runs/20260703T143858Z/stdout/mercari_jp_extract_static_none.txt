@@ -1,0 +1,34 @@
+  extract      https://jp.mercari.com/ ✓ 0.01s
+  cache        https://jp.mercari.com/ ✓ 0.00s
+  schema cache https://jp.mercari.com/ ✓ 0.00s
+  apply schema https://jp.mercari.com/ ✓ 0.01s
+Extract https://jp.mercari.com/ (cached scrape, cached schema: 
+jp.mercari.com-21d888c344a0e75e)
+/Users/ekku/Code/atlas/.cache/jp.mercari.com/scrape/page-7ff5d7fee1b5809a/page.h
+tml
+/Users/ekku/Code/atlas/.cache/jp.mercari.com/schema/jp.mercari.com-21d888c344a0e
+75e.json
+[
+  {
+    "main_navigation_links": [
+      {
+        "text": "ホーム"
+      },
+      {
+        "text": "お知らせ"
+      },
+      {
+        "text": "出品"
+      },
+      {
+        "text": "マイページ"
+      }
+    ],
+    "search_affordance": {
+      "action_url": "."
+    },
+    "marketplace_content": {
+      "title": "おすすめ"
+    }
+  }
+]

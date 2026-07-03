@@ -1,0 +1,37 @@
+  schema cache https://books.toscrape.com/ ✓ 0.00s
+Schema books.toscrape.com-c1e6c60765bd3fa6 (css, cached)
+/Users/ekku/Code/atlas/.cache/books.toscrape.com/schema/books.toscrape.com-c1e6c
+60765bd3fa6.json
+{
+  "name": "Book Listings",
+  "baseSelector": "article.product_pod",
+  "fields": [
+    {
+      "name": "title",
+      "selector": "h3 a",
+      "type": "text"
+    },
+    {
+      "name": "price",
+      "selector": ".price_color",
+      "type": "text"
+    },
+    {
+      "name": "rating",
+      "selector": "p.star-rating",
+      "type": "attribute",
+      "attribute": "class"
+    },
+    {
+      "name": "availability",
+      "selector": ".instock.availability",
+      "type": "text"
+    },
+    {
+      "name": "detail_url",
+      "selector": "h3 a",
+      "type": "attribute",
+      "attribute": "href"
+    }
+  ]
+}

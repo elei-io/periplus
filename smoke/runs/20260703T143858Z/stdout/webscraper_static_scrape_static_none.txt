@@ -1,0 +1,9 @@
+  scrape https://webscraper.io/test-sites/e-commerce/static ✓ 2.02s
+                                Scrape artifacts                                
+┏━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ URL                    ┃ Success ┃ Artifacts ┃ Bytes ┃ Cache Dir             ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━┩
+│ https://webscraper.io… │ yes     │ 2         │ 46489 │ /Users/ekku/Code/atl… │
+└────────────────────────┴─────────┴───────────┴───────┴───────────────────────┘
+Wrote 2 artifacts (0 cache hits, 0 images, 46489 bytes) to 
+/Users/ekku/Code/atlas/.cache

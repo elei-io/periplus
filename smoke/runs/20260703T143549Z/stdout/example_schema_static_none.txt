@@ -1,0 +1,38 @@
+  schema cache https://example.com ✓ 0.00s
+Schema example.com-1871a3b647989adf (css, cached)
+/Users/ekku/Code/atlas/.cache/example.com/schema/example.com-1871a3b647989adf.js
+on
+{
+  "name": "Example Domain Page",
+  "baseSelector": "html",
+  "fields": [
+    {
+      "name": "pageTitle",
+      "selector": "title",
+      "type": "text"
+    },
+    {
+      "name": "mainHeading",
+      "selector": "h1",
+      "type": "text"
+    },
+    {
+      "name": "visibleLinks",
+      "type": "list",
+      "selector": "a",
+      "fields": [
+        {
+          "name": "text",
+          "selector": ".",
+          "type": "text"
+        },
+        {
+          "name": "url",
+          "selector": ".",
+          "type": "attribute",
+          "attribute": "href"
+        }
+      ]
+    }
+  ]
+}

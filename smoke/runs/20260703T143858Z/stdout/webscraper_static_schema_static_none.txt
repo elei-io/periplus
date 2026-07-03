@@ -1,0 +1,49 @@
+  schema https://webscraper.io/test-sites/e-commerce/static ✓ 13.87s
+  scrape https://webscraper.io/test-sites/e-commerce/static ✓ 1.35s 
+Schema webscraper.io-4df98f9ce08e5ddb (css, generated)
+/Users/ekku/Code/atlas/.cache/webscraper.io/schema/webscraper.io-4df98f9ce08e5dd
+b.json
+{
+  "name": "Product Listings with Category",
+  "baseSelector": ".row > .col-lg-9",
+  "fields": [
+    {
+      "name": "category",
+      "selector": "h3",
+      "type": "text"
+    },
+    {
+      "name": "products",
+      "type": "list",
+      "selector": ".card.thumbnail",
+      "fields": [
+        {
+          "name": "price",
+          "selector": ".price span",
+          "type": "text"
+        },
+        {
+          "name": "name",
+          "selector": ".title",
+          "type": "text"
+        },
+        {
+          "name": "description",
+          "selector": ".description",
+          "type": "text"
+        },
+        {
+          "name": "review_count",
+          "selector": ".review-count span",
+          "type": "text"
+        },
+        {
+          "name": "rating",
+          "selector": ".ratings p[data-rating]",
+          "type": "attribute",
+          "attribute": "data-rating"
+        }
+      ]
+    }
+  ]
+}

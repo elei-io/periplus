@@ -1,0 +1,4 @@
+  extract https://httpbin.org/html ✗ 7.87s
+  scrape  https://httpbin.org/html ✗ 7.27s
+Extract https://httpbin.org/html
+Blocked by anti-bot protection: HTTP 503 with HTML content (161 bytes)

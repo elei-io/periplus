@@ -1,50 +1,64 @@
 from typing import Annotated, Literal
 
 import typer
+from domains.index.service import index_sync as index_service
 from rich.console import Console
 from rich.table import Table
 
 from cli.progress import CrawlProgressRenderer
-from domains.index.service import index_sync as index_service
 
 console = Console()
 
 
 def index(
     url: str,
-    max_depth: Annotated[int, typer.Option("--max-depth", "-d", min=0)] = 3,
-    dedupe: Annotated[bool, typer.Option("--dedupe", help="Return each URL once at its lowest depth.")] = False,
+    max_depth: Annotated[int, typer.Option("--max-depth", "-d", min=0)] = 0,
+    dedupe: Annotated[
+        bool, typer.Option("--dedupe", help="Return each URL once at its lowest depth.")
+    ] = False,
     concurrency: Annotated[
         int,
-        typer.Option("--concurrency", "-c", min=1, help="Number of pages to crawl in parallel."),
+        typer.Option(
+            "--concurrency", "-c", min=1, help="Number of pages to crawl in parallel."
+        ),
     ] = 10,
     mode: Annotated[
         Literal["static", "dynamic", "app"],
-        typer.Option("--mode", help="Crawl preset for static pages, dynamic pages, or heavy SPAs."),
+        typer.Option(
+            "--mode",
+            help="Crawl preset for static pages, dynamic pages, or heavy SPAs.",
+        ),
     ] = "static",
-    live: Annotated[
-        bool,
-        typer.Option("--live", help="Show the browser while crawling."),
-    ] = False,
     wait: Annotated[
         Literal["none", "stable", "network", "fixed"],
         typer.Option("--wait", help="Wait strategy before collecting links."),
     ] = "none",
     include_crawl: Annotated[
         list[str] | None,
-        typer.Option("--include-crawl", help="Only crawl child pages matching this glob. Repeatable."),
+        typer.Option(
+            "--include-crawl",
+            help="Only crawl child pages matching this glob. Repeatable.",
+        ),
     ] = None,
     exclude_crawl: Annotated[
         list[str] | None,
-        typer.Option("--exclude-crawl", help="Do not crawl child pages matching this glob. Repeatable."),
+        typer.Option(
+            "--exclude-crawl",
+            help="Do not crawl child pages matching this glob. Repeatable.",
+        ),
     ] = None,
     include_result: Annotated[
         list[str] | None,
-        typer.Option("--include-result", help="Only return links matching this glob. Repeatable."),
+        typer.Option(
+            "--include-result", help="Only return links matching this glob. Repeatable."
+        ),
     ] = None,
     exclude_result: Annotated[
         list[str] | None,
-        typer.Option("--exclude-result", help="Do not return links matching this glob. Repeatable."),
+        typer.Option(
+            "--exclude-result",
+            help="Do not return links matching this glob. Repeatable.",
+        ),
     ] = None,
 ) -> None:
     with CrawlProgressRenderer(console) as progress:
@@ -54,7 +68,6 @@ def index(
             dedupe=dedupe,
             concurrency=concurrency,
             mode=mode,
-            live=live,
             wait=wait,
             include_crawl=include_crawl,
             exclude_crawl=exclude_crawl,

@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from domains.crawl import CrawlMode, CrawlWait
+
 SchemaType = Literal["css", "xpath"]
 
 
@@ -18,6 +20,14 @@ class Input(BaseModel):
         description="Optional stable cache key for a known reusable schema.",
     )
     refresh: bool = Field(default=False, description="Regenerate the schema even if it is cached.")
+    mode: CrawlMode = Field(
+        default="static",
+        description="The crawl preset to use when schema generation needs to fetch the page.",
+    )
+    wait: CrawlWait = Field(
+        default="none",
+        description="The wait strategy to use when schema generation needs to fetch the page.",
+    )
 
 
 class SchemaOutput(BaseModel):

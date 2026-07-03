@@ -1,0 +1,9 @@
+  scrape https://books.toscrape.com/ ✓ 2.93s
+                                Scrape artifacts                                
+┏━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ URL                   ┃ Success ┃ Artifacts ┃ Bytes ┃ Cache Dir              ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ https://books.toscra… │ yes     │ 2         │ 64520 │ /Users/ekku/Code/atla… │
+└───────────────────────┴─────────┴───────────┴───────┴────────────────────────┘
+Wrote 2 artifacts (0 cache hits, 0 images, 64520 bytes) to 
+/Users/ekku/Code/atlas/.cache

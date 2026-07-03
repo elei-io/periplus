@@ -1,0 +1,82 @@
+  depth 0 https://books.toscrape.com ✓ 2.34s
+                 Index links from 'https://books.toscrape.com/'                 
+┏━━━━━━━┳━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
+┃ Depth ┃ Index ┃ Internal ┃ Source         ┃ URL            ┃ Text            ┃
+┡━━━━━━━╇━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
+│ 0     │ 0     │ yes      │ https://books… │ https://books… │ Books to Scrape │
+│ 0     │ 1     │ yes      │ https://books… │ https://books… │ Books           │
+│ 0     │ 2     │ yes      │ https://books… │ https://books… │ Travel          │
+│ 0     │ 3     │ yes      │ https://books… │ https://books… │ Mystery         │
+│ 0     │ 4     │ yes      │ https://books… │ https://books… │ Historical      │
+│       │       │          │                │                │ Fiction         │
+│ 0     │ 5     │ yes      │ https://books… │ https://books… │ Sequential Art  │
+│ 0     │ 6     │ yes      │ https://books… │ https://books… │ Classics        │
+│ 0     │ 7     │ yes      │ https://books… │ https://books… │ Philosophy      │
+│ 0     │ 8     │ yes      │ https://books… │ https://books… │ Romance         │
+│ 0     │ 9     │ yes      │ https://books… │ https://books… │ Womens Fiction  │
+│ 0     │ 10    │ yes      │ https://books… │ https://books… │ Fiction         │
+│ 0     │ 11    │ yes      │ https://books… │ https://books… │ Childrens       │
+│ 0     │ 12    │ yes      │ https://books… │ https://books… │ Religion        │
+│ 0     │ 13    │ yes      │ https://books… │ https://books… │ Nonfiction      │
+│ 0     │ 14    │ yes      │ https://books… │ https://books… │ Music           │
+│ 0     │ 15    │ yes      │ https://books… │ https://books… │ Default         │
+│ 0     │ 16    │ yes      │ https://books… │ https://books… │ Science Fiction │
+│ 0     │ 17    │ yes      │ https://books… │ https://books… │ Sports and      │
+│       │       │          │                │                │ Games           │
+│ 0     │ 18    │ yes      │ https://books… │ https://books… │ Add a comment   │
+│ 0     │ 19    │ yes      │ https://books… │ https://books… │ Fantasy         │
+│ 0     │ 20    │ yes      │ https://books… │ https://books… │ New Adult       │
+│ 0     │ 21    │ yes      │ https://books… │ https://books… │ Young Adult     │
+│ 0     │ 22    │ yes      │ https://books… │ https://books… │ Science         │
+│ 0     │ 23    │ yes      │ https://books… │ https://books… │ Poetry          │
+│ 0     │ 24    │ yes      │ https://books… │ https://books… │ Paranormal      │
+│ 0     │ 25    │ yes      │ https://books… │ https://books… │ Art             │
+│ 0     │ 26    │ yes      │ https://books… │ https://books… │ Psychology      │
+│ 0     │ 27    │ yes      │ https://books… │ https://books… │ Autobiography   │
+│ 0     │ 28    │ yes      │ https://books… │ https://books… │ Parenting       │
+│ 0     │ 29    │ yes      │ https://books… │ https://books… │ Adult Fiction   │
+│ 0     │ 30    │ yes      │ https://books… │ https://books… │ Humor           │
+│ 0     │ 31    │ yes      │ https://books… │ https://books… │ Horror          │
+│ 0     │ 32    │ yes      │ https://books… │ https://books… │ History         │
+│ 0     │ 33    │ yes      │ https://books… │ https://books… │ Food and Drink  │
+│ 0     │ 34    │ yes      │ https://books… │ https://books… │ Christian       │
+│       │       │          │                │                │ Fiction         │
+│ 0     │ 35    │ yes      │ https://books… │ https://books… │ Business        │
+│ 0     │ 36    │ yes      │ https://books… │ https://books… │ Biography       │
+│ 0     │ 37    │ yes      │ https://books… │ https://books… │ Thriller        │
+│ 0     │ 38    │ yes      │ https://books… │ https://books… │ Contemporary    │
+│ 0     │ 39    │ yes      │ https://books… │ https://books… │ Spirituality    │
+│ 0     │ 40    │ yes      │ https://books… │ https://books… │ Academic        │
+│ 0     │ 41    │ yes      │ https://books… │ https://books… │ Self Help       │
+│ 0     │ 42    │ yes      │ https://books… │ https://books… │ Historical      │
+│ 0     │ 43    │ yes      │ https://books… │ https://books… │ Christian       │
+│ 0     │ 44    │ yes      │ https://books… │ https://books… │ Suspense        │
+│ 0     │ 45    │ yes      │ https://books… │ https://books… │ Short Stories   │
+│ 0     │ 46    │ yes      │ https://books… │ https://books… │ Novels          │
+│ 0     │ 47    │ yes      │ https://books… │ https://books… │ Health          │
+│ 0     │ 48    │ yes      │ https://books… │ https://books… │ Politics        │
+│ 0     │ 49    │ yes      │ https://books… │ https://books… │ Cultural        │
+│ 0     │ 50    │ yes      │ https://books… │ https://books… │ Erotica         │
+│ 0     │ 51    │ yes      │ https://books… │ https://books… │ Crime           │
+│ 0     │ 52    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 53    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 54    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 55    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 56    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 57    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 58    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 59    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 60    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 61    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 62    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 63    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 64    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 65    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 66    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 67    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 68    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 69    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 70    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 71    │ yes      │ https://books… │ https://books… │                 │
+│ 0     │ 72    │ yes      │ https://books… │ https://books… │ next            │
+└───────┴───────┴──────────┴────────────────┴────────────────┴─────────────────┘

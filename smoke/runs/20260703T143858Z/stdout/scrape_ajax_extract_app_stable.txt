@@ -1,0 +1,11 @@
+  extract      https://www.scrapethissite.com/pages/ajax-javascript/ ✓ 17.26s
+  scrape       https://www.scrapethissite.com/pages/ajax-javascript/ ✓ 9.20s 
+  schema       https://www.scrapethissite.com/pages/ajax-javascript/ ✓ 7.45s 
+  apply schema https://www.scrapethissite.com/pages/ajax-javascript/ ✓ 0.00s 
+Extract https://www.scrapethissite.com/pages/ajax-javascript/ (fresh scrape, 
+generated schema: www.scrapethissite.com-4b151291af618c85)
+/Users/ekku/Code/atlas/.cache/www.scrapethissite.com/scrape/pages-ajax-javascrip
+t-c35269facbf56d92/page.html
+/Users/ekku/Code/atlas/.cache/www.scrapethissite.com/schema/www.scrapethissite.c
+om-4b151291af618c85.json
+[]

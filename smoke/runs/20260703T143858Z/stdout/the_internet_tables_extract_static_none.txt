@@ -1,0 +1,40 @@
+  extract      https://the-internet.herokuapp.com/tables ✓ 0.01s
+  cache        https://the-internet.herokuapp.com/tables ✓ 0.00s
+  schema cache https://the-internet.herokuapp.com/tables ✓ 0.00s
+  apply schema https://the-internet.herokuapp.com/tables ✓ 0.00s
+Extract https://the-internet.herokuapp.com/tables (cached scrape, cached schema:
+the-internet.herokuapp.com-bb5bdf0418aea65a)
+/Users/ekku/Code/atlas/.cache/the-internet.herokuapp.com/scrape/tables-088dd7fae
+1956964/page.html
+/Users/ekku/Code/atlas/.cache/the-internet.herokuapp.com/schema/the-internet.her
+okuapp.com-bb5bdf0418aea65a.json
+[
+  {
+    "last_name": "Smith",
+    "first_name": "John",
+    "email": "jsmith@gmail.com",
+    "due": "$50.00",
+    "website": "http://www.jsmith.com"
+  },
+  {
+    "last_name": "Bach",
+    "first_name": "Frank",
+    "email": "fbach@yahoo.com",
+    "due": "$51.00",
+    "website": "http://www.frank.com"
+  },
+  {
+    "last_name": "Doe",
+    "first_name": "Jason",
+    "email": "jdoe@hotmail.com",
+    "due": "$100.00",
+    "website": "http://www.jdoe.com"
+  },
+  {
+    "last_name": "Conway",
+    "first_name": "Tim",
+    "email": "tconway@earthlink.net",
+    "due": "$50.00",
+    "website": "http://www.timconway.com"
+  }
+]

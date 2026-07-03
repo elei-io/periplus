@@ -1,8 +1,9 @@
 from fastapi import FastAPI
 
-from api.routers import index, schema, scrape, search
+from api.routers import extract, index, schema, scrape, search
 
 app = FastAPI(title="Atlas API")
+app.include_router(extract.router)
 app.include_router(index.router)
 app.include_router(schema.router)
 app.include_router(scrape.router)

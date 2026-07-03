@@ -6,7 +6,7 @@ import signal
 
 from nats.js.errors import NotFoundError
 
-from domains.scrape.cache import cache_root, cleanup_cache
+from domains.cache import cache_root, cleanup_cache
 
 from .jobs import _JOBS_SUBJECT, _jobs_kv, connect_nats, get_index_job, update_index_job
 from .service import index

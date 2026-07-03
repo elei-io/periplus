@@ -8,7 +8,7 @@ from domains.progress import CrawlProgressEvent
 
 class CrawlProgressRenderer:
     def __init__(self, console: Console) -> None:
-        self._tasks_by_url: dict[str, int] = {}
+        self._tasks_by_phase: dict[tuple[str, str], int] = {}
         self._progress = Progress(
             SpinnerColumn(),
             TextColumn("[cyan]{task.fields[label]}[/]"),
@@ -30,7 +30,8 @@ class CrawlProgressRenderer:
         self._progress.__exit__(exc_type, exc_value, traceback)
 
     def callback(self, event: CrawlProgressEvent) -> None:
-        task_id = self._tasks_by_url.get(event.url)
+        task_key = (event.url, event.label)
+        task_id = self._tasks_by_phase.get(task_key)
         if task_id is None:
             task_id = self._progress.add_task(
                 "",
@@ -39,11 +40,10 @@ class CrawlProgressRenderer:
                 url=event.url,
                 status=self._status_text(event),
             )
-            self._tasks_by_url[event.url] = task_id
+            self._tasks_by_phase[task_key] = task_id
         else:
             self._progress.update(
                 task_id,
-                label=event.label,
                 status=self._status_text(event),
             )
 

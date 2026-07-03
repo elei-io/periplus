@@ -2,8 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-Mode = Literal["static", "dynamic", "app"]
-Wait = Literal["none", "stable", "network", "fixed"]
+from domains.crawl import CrawlMode, CrawlWait
+
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
 
 
@@ -13,7 +13,7 @@ class Input(BaseModel):
     )
     max_depth: int = Field(
         ge=0,
-        default=3,
+        default=0,
         description="The maximum depth to crawl the website.",
     )
     dedupe: bool = Field(
@@ -25,14 +25,10 @@ class Input(BaseModel):
         default=10,
         description="The number of concurrent requests to make",
     )
-    mode: Mode = Field(
+    mode: CrawlMode = Field(
         default="static", description="The crawl preset to use for indexing."
     )
-    live: bool = Field(
-        default=False,
-        description="Whether to live crawl the website.",
-    )
-    wait: Wait = Field(
+    wait: CrawlWait = Field(
         default="none",
         description="The wait strategy to use for indexing.",
     )

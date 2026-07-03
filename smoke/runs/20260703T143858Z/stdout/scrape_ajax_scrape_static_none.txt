@@ -1,0 +1,9 @@
+  scrape https://www.scrapethissite.com/pages/ajax-javascript/ ✓ 2.94s
+                                Scrape artifacts                                
+┏━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ URL                   ┃ Success ┃ Artifacts ┃ Bytes ┃ Cache Dir              ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ https://www.scrapeth… │ yes     │ 2         │ 18504 │ /Users/ekku/Code/atla… │
+└───────────────────────┴─────────┴───────────┴───────┴────────────────────────┘
+Wrote 2 artifacts (0 cache hits, 0 images, 18504 bytes) to 
+/Users/ekku/Code/atlas/.cache

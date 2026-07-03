@@ -1,0 +1,13 @@
+  depth 0 https://www.scrapethissite.com/pages/simple ✓ 2.25s
+        Index links from 'https://www.scrapethissite.com/pages/simple/'         
+┏━━━━━━━┳━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
+┃ Depth ┃ Index ┃ Internal ┃ Source         ┃ URL            ┃ Text            ┃
+┡━━━━━━━╇━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
+│ 0     │ 0     │ yes      │ https://www.s… │ https://www.s… │ Scrape This     │
+│       │       │          │                │                │ Site            │
+│ 0     │ 1     │ yes      │ https://www.s… │ https://www.s… │ Sandbox         │
+│ 0     │ 2     │ yes      │ https://www.s… │ https://www.s… │ Lessons         │
+│ 0     │ 3     │ yes      │ https://www.s… │ https://www.s… │ FAQ             │
+│ 0     │ 4     │ yes      │ https://www.s… │ https://www.s… │ Login           │
+│ 0     │ 5     │ no       │ https://www.s… │ http://peric.… │ http://peric.g… │
+└───────┴───────┴──────────┴────────────────┴────────────────┴─────────────────┘

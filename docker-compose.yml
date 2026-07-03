@@ -14,7 +14,7 @@ services:
       - ./.cache:/app/.cache
     environment:
       NATS_URL: nats://atlas-nats:4222
-      CACHE_ROOT: /app/.cache/scrape
+      CACHE_ROOT: /app/.cache
     depends_on:
       - atlas-nats
 
@@ -31,7 +31,7 @@ services:
       - ./.cache:/app/.cache
     environment:
       NATS_URL: nats://atlas-nats:4222
-      CACHE_ROOT: /app/.cache/scrape
+      CACHE_ROOT: /app/.cache
       CACHE_CLEANUP_INTERVAL: ${CACHE_CLEANUP_INTERVAL:-3600}
       CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-86400}
     depends_on:

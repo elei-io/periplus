@@ -1,0 +1,36 @@
+  schema https://the-internet.herokuapp.com/tables ✓ 19.19s
+  scrape https://the-internet.herokuapp.com/tables ✓ 3.92s 
+Schema the-internet.herokuapp.com-bb5bdf0418aea65a (css, generated)
+/Users/ekku/Code/atlas/.cache/the-internet.herokuapp.com/schema/the-internet.her
+okuapp.com-bb5bdf0418aea65a.json
+{
+  "name": "Data Table Rows",
+  "baseSelector": "#table1 tbody tr",
+  "fields": [
+    {
+      "name": "last_name",
+      "selector": "td:nth-child(1)",
+      "type": "text"
+    },
+    {
+      "name": "first_name",
+      "selector": "td:nth-child(2)",
+      "type": "text"
+    },
+    {
+      "name": "email",
+      "selector": "td:nth-child(3)",
+      "type": "text"
+    },
+    {
+      "name": "due",
+      "selector": "td:nth-child(4)",
+      "type": "text"
+    },
+    {
+      "name": "website",
+      "selector": "td:nth-child(5)",
+      "type": "text"
+    }
+  ]
+}

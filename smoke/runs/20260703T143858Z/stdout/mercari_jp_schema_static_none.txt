@@ -1,0 +1,48 @@
+  schema https://jp.mercari.com/ ✓ 6.57s
+  scrape https://jp.mercari.com/ ✓ 1.85s
+Schema jp.mercari.com-21d888c344a0e75e (css, generated)
+/Users/ekku/Code/atlas/.cache/jp.mercari.com/schema/jp.mercari.com-21d888c344a0e
+75e.json
+{
+  "name": "Mercari Page Data",
+  "baseSelector": "body",
+  "fields": [
+    {
+      "name": "main_navigation_links",
+      "type": "list",
+      "selector": "nav.merNavigationBottom button.merNavigationBottomItem",
+      "fields": [
+        {
+          "name": "text",
+          "selector": "span.merText",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "name": "search_affordance",
+      "type": "nested",
+      "selector": "div.merAutocomplete",
+      "fields": [
+        {
+          "name": "action_url",
+          "selector": "form[data-testid='chip-search-input']",
+          "type": "attribute",
+          "attribute": "action"
+        }
+      ]
+    },
+    {
+      "name": "marketplace_content",
+      "type": "nested",
+      "selector": "main#main div.merTabPanel",
+      "fields": [
+        {
+          "name": "title",
+          "selector": "h1.heading__a7d91561",
+          "type": "text"
+        }
+      ]
+    }
+  ]
+}

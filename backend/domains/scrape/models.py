@@ -2,8 +2,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-OutputFormat = Literal["html", "markdown", "pdf"]
-ArtifactFormat = Literal["html", "markdown", "pdf", "image"]
+from domains.crawl import CrawlMode, CrawlWait
+
+ArtifactFormat = Literal["html", "crawl"]
 
 
 class Input(BaseModel):
@@ -11,21 +12,24 @@ class Input(BaseModel):
         min_length=1,
         description="The URLs to scrape.",
     )
-    download_images: bool = Field(
-        default=False,
-        description="Whether to download every image discovered on each scraped page.",
+    mode: CrawlMode = Field(
+        default="static",
+        description="The crawl preset to use before writing artifacts.",
     )
-    output_formats: list[OutputFormat] = Field(
-        default_factory=lambda: ["html"],
-        min_length=1,
-        description="Page artifact formats to write.",
+    wait: CrawlWait = Field(
+        default="none",
+        description="The wait strategy to use before writing artifacts.",
+    )
+    concurrency: int = Field(
+        ge=1,
+        default=10,
+        description="The number of pages to scrape in parallel.",
     )
 
 
 class ScrapeArtifact(BaseModel):
     format: ArtifactFormat
     path: str
-    source_url: str | None = None
     bytes: int
 
 
@@ -36,6 +40,8 @@ class ScrapePage(BaseModel):
     status_code: int | None = None
     duration_seconds: float
     cache_dir: str
+    html_path: str | None = None
+    crawl_path: str | None = None
     artifacts: list[ScrapeArtifact]
     error: str | None = None
 
@@ -46,7 +52,6 @@ class ScrapeStats(BaseModel):
     failed: int
     cache_hits: int
     artifacts: int
-    images_downloaded: int
     bytes_written: int
     duration_seconds: float
 

@@ -1,0 +1,7 @@
+  depth 0 https://httpbin.org/html ✗ 1.57s
+   Index links from 'https://httpbin.org/html'    
+┏━━━━━━━┳━━━━━━━┳━━━━━━━━━━┳━━━━━━━━┳━━━━━┳━━━━━━┓
+┃ Depth ┃ Index ┃ Internal ┃ Source ┃ URL ┃ Text ┃
+┡━━━━━━━╇━━━━━━━╇━━━━━━━━━━╇━━━━━━━━╇━━━━━╇━━━━━━┩
+└───────┴───────┴──────────┴────────┴─────┴──────┘
+                 No links found.                  

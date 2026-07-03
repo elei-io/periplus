@@ -1,0 +1,111 @@
+  extract      https://quotes.toscrape.com/ ✓ 0.01s
+  cache        https://quotes.toscrape.com/ ✓ 0.00s
+  schema cache https://quotes.toscrape.com/ ✓ 0.00s
+  apply schema https://quotes.toscrape.com/ ✓ 0.00s
+Extract https://quotes.toscrape.com/ (cached scrape, cached schema: 
+quotes.toscrape.com-d5ac279fa1e93e66)
+/Users/ekku/Code/atlas/.cache/quotes.toscrape.com/scrape/page-361d0efeea7fea53/p
+age.html
+/Users/ekku/Code/atlas/.cache/quotes.toscrape.com/schema/quotes.toscrape.com-d5a
+c279fa1e93e66.json
+[
+  {
+    "quote": "“The world as we have created it is a process of our thinking. It 
+cannot be changed without changing our thinking.”",
+    "author": "Albert Einstein",
+    "tags": [
+      {},
+      {},
+      {},
+      {}
+    ]
+  },
+  {
+    "quote": "“It is our choices, Harry, that show what we truly are, far more 
+than our abilities.”",
+    "author": "J.K. Rowling",
+    "tags": [
+      {},
+      {}
+    ]
+  },
+  {
+    "quote": "“There are only two ways to live your life. One is as though 
+nothing is a miracle. The other is as though everything is a miracle.”",
+    "author": "Albert Einstein",
+    "tags": [
+      {},
+      {},
+      {},
+      {},
+      {}
+    ]
+  },
+  {
+    "quote": "“The person, be it gentleman or lady, who has not pleasure in a 
+good novel, must be intolerably stupid.”",
+    "author": "Jane Austen",
+    "tags": [
+      {},
+      {},
+      {},
+      {}
+    ]
+  },
+  {
+    "quote": "“Imperfection is beauty, madness is genius and it's better to be 
+absolutely ridiculous than absolutely boring.”",
+    "author": "Marilyn Monroe",
+    "tags": [
+      {},
+      {}
+    ]
+  },
+  {
+    "quote": "“Try not to become a man of success. Rather become a man of 
+value.”",
+    "author": "Albert Einstein",
+    "tags": [
+      {},
+      {},
+      {}
+    ]
+  },
+  {
+    "quote": "“It is better to be hated for what you are than to be loved for 
+what you are not.”",
+    "author": "André Gide",
+    "tags": [
+      {},
+      {}
+    ]
+  },
+  {
+    "quote": "“I have not failed. I've just found 10,000 ways that won't 
+work.”",
+    "author": "Thomas A. Edison",
+    "tags": [
+      {},
+      {},
+      {},
+      {}
+    ]
+  },
+  {
+    "quote": "“A woman is like a tea bag; you never know how strong it is until 
+it's in hot water.”",
+    "author": "Eleanor Roosevelt",
+    "tags": [
+      {}
+    ]
+  },
+  {
+    "quote": "“A day without sunshine is like, you know, night.”",
+    "author": "Steve Martin",
+    "tags": [
+      {},
+      {},
+      {}
+    ]
+  }
+]

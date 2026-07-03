@@ -1,0 +1,20 @@
+  schema cache https://httpbin.org/html ✓ 0.00s
+Schema httpbin.org-2f75eaa96612a52a (css, cached)
+/Users/ekku/Code/atlas/.cache/httpbin.org/schema/httpbin.org-2f75eaa96612a52a.js
+on
+{
+  "name": "Moby-Dick Page Content",
+  "baseSelector": "body",
+  "fields": [
+    {
+      "name": "page_heading",
+      "selector": "h1",
+      "type": "text"
+    },
+    {
+      "name": "first_paragraph",
+      "selector": "div > p",
+      "type": "text"
+    }
+  ]
+}

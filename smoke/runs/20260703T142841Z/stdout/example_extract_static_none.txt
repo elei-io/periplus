@@ -1,0 +1,15 @@
+  extract      https://example.com ✓ 0.00s
+  cache        https://example.com ✓ 0.00s
+  schema cache https://example.com ✓ 0.00s
+  apply schema https://example.com ✓ 0.00s
+Extract https://example.com (cached scrape, cached schema: 
+example.com-1871a3b647989adf)
+/Users/ekku/Code/atlas/.cache/example.com/scrape/page-fef07378576e6e6a/page.html
+/Users/ekku/Code/atlas/.cache/example.com/schema/example.com-1871a3b647989adf.js
+on
+[
+  {
+    "pageTitle": "Example Domain",
+    "mainHeading": "Example Domain"
+  }
+]

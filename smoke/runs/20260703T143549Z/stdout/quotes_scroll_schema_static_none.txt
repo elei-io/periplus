@@ -1,0 +1,33 @@
+  schema https://quotes.toscrape.com/scroll ✓ 10.73s
+  scrape https://quotes.toscrape.com/scroll ✓ 2.30s 
+Schema quotes.toscrape.com-d172833a29295d6a (css, generated)
+/Users/ekku/Code/atlas/.cache/quotes.toscrape.com/schema/quotes.toscrape.com-d17
+2833a29295d6a.json
+{
+  "name": "Quotes",
+  "baseSelector": ".quote",
+  "fields": [
+    {
+      "name": "quoteText",
+      "selector": ".text",
+      "type": "text"
+    },
+    {
+      "name": "author",
+      "selector": ".author",
+      "type": "text"
+    },
+    {
+      "name": "tags",
+      "type": "list",
+      "selector": ".tags .tag",
+      "fields": [
+        {
+          "name": "tag",
+          "selector": ".tag",
+          "type": "text"
+        }
+      ]
+    }
+  ]
+}

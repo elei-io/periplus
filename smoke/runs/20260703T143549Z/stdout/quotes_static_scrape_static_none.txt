@@ -1,0 +1,9 @@
+  cache https://quotes.toscrape.com/ ✓ 0.00s
+                                Scrape artifacts                                
+┏━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ URL                    ┃ Success ┃ Artifacts ┃ Bytes ┃ Cache Dir             ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━┩
+│ https://quotes.toscra… │ yes     │ 2         │ 15433 │ /Users/ekku/Code/atl… │
+└────────────────────────┴─────────┴───────────┴───────┴───────────────────────┘
+Wrote 2 artifacts (1 cache hits, 0 images, 15433 bytes) to 
+/Users/ekku/Code/atlas/.cache
