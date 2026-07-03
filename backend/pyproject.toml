@@ -1,0 +1,27 @@
+[project]
+name = "atlas"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi[standard]>=0.139.0",
+    "typer>=0.26.8",
+]
+
+[project.scripts]
+atlas = "cli.app:app"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = [
+    "api",
+    "api.routers",
+    "cli",
+    "cli.apps",
+    "domains",
+    "domains.domain_1",
+]
