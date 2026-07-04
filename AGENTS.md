@@ -71,6 +71,18 @@ docker compose up --build
 - Avoid introducing a separate browser service or per-action job worker unless the architecture document is deliberately updated too.
 - Do not commit generated artifacts, schemas, virtualenvs, or secrets.
 
+## Frontend Notes
+
+- Use shadcn UI components for frontend UI; do not build custom UI when a shadcn component is available.
+- Add missing shadcn components from `web/` with `npx shadcn@latest add <component>`. If that command fails, stop and ask the user to install the component.
+- Use React Query (`@tanstack/react-query`) for backend fetching. Do not use `useEffect` for backend data fetching.
+- Move repeated data fetching, mutation, and view logic into reusable hooks so component files stay small.
+- Keep components small and composed from reusable, well-designed pieces. Avoid duplicate component or hook logic.
+- Every `useMutation` call must define an `onError` handler that shows `toast.error()` with an extracted API error message.
+- Use `extractApiError` from `web/src/lib/api.ts` for mutation error messages.
+- Put shared types and interfaces in `web/src/types/<domain>.ts`. Component-local `Props` types are fine, but API response shapes must not be defined inline.
+- Use named exports only: `export function` or `export const`. Do not use `export default` except in `web/src/App.tsx`.
+
 ## Environment
 
 - `DATABASE_URL` controls Postgres access.

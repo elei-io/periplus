@@ -42,10 +42,6 @@ TaskInputJson = Annotated[
 ]
 
 
-class ManualSchedule(StrictBaseModel):
-    kind: Literal["manual"] = "manual"
-
-
 class OnceSchedule(StrictBaseModel):
     kind: Literal["once"] = "once"
     run_at: datetime
@@ -56,18 +52,40 @@ class CronSchedule(StrictBaseModel):
     kind: Literal["cron"] = "cron"
     expr: str
     timezone: str = "UTC"
+    start_at: datetime | None = None
+    end_at: datetime | None = None
 
 
 class IntervalSchedule(StrictBaseModel):
     kind: Literal["interval"] = "interval"
     every_seconds: int = Field(gt=0)
     timezone: str = "UTC"
+    start_at: datetime | None = None
+    end_at: datetime | None = None
 
 
 TaskScheduleJson = Annotated[
-    ManualSchedule | OnceSchedule | CronSchedule | IntervalSchedule,
+    OnceSchedule | CronSchedule | IntervalSchedule,
     Field(discriminator="kind"),
 ]
+
+
+class TaskCreate(StrictBaseModel):
+    name: str
+    primitive: TaskPrimitive
+    input: dict[str, Any]
+    schedule: TaskScheduleJson | None = None
+    dedupe_key: str | None = None
+    enabled: bool = True
+
+
+class TaskUpdate(StrictBaseModel):
+    name: str | None = None
+    primitive: TaskPrimitive | None = None
+    input: dict[str, Any] | None = None
+    schedule: TaskScheduleJson | None = None
+    dedupe_key: str | None = None
+    enabled: bool | None = None
 
 
 class TaskTemplate(StrictBaseModel):

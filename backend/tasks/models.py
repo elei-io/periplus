@@ -62,6 +62,7 @@ class Task(Base):
     runs: Mapped[list[TaskRun]] = relationship(
         back_populates="task",
         foreign_keys="TaskRun.task_id",
+        cascade="all, delete-orphan",
     )
 
 
@@ -89,6 +90,7 @@ class TaskEffect(Base):
     runs: Mapped[list[EffectRun]] = relationship(
         back_populates="effect",
         foreign_keys="EffectRun.effect_id",
+        cascade="all, delete-orphan",
     )
 
 
@@ -102,7 +104,7 @@ class TaskRun(Base):
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    task_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("tasks.id"))
+    task_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="CASCADE"))
     status: Mapped[str] = mapped_column(Text)
     trigger_kind: Mapped[str] = mapped_column(Text)
     triggered_by_effect_run_id: Mapped[UUID | None] = mapped_column(
@@ -150,8 +152,8 @@ class EffectRun(Base):
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    effect_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("task_effects.id"))
-    source_run_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("task_runs.id"))
+    effect_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("task_effects.id", ondelete="CASCADE"))
+    source_run_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("task_runs.id", ondelete="CASCADE"))
 
     status: Mapped[str] = mapped_column(Text)
     operation: Mapped[str] = mapped_column(Text)
