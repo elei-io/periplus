@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,7 +19,7 @@ def utc_now() -> datetime:
 class Task(Base):
     __tablename__ = "tasks"
     __table_args__ = (
-        Index("ix_tasks_enabled", "enabled"),
+        Index("ix_tasks_archived_at", "archived_at"),
         Index("ix_tasks_next_run_at", "next_run_at"),
         Index("ix_tasks_primitive", "primitive"),
     )
@@ -29,8 +29,7 @@ class Task(Base):
     primitive: Mapped[str] = mapped_column(Text)
     input_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
     schedule_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    dedupe_key: Mapped[str | None] = mapped_column(Text, unique=True, nullable=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    identity_key: Mapped[str | None] = mapped_column(Text, unique=True, nullable=True)
 
     created_by_effect_run_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
@@ -42,12 +41,13 @@ class Task(Base):
         ForeignKey("effect_runs.id", use_alter=True, ondelete="SET NULL"),
         nullable=True,
     )
-    disabled_by_effect_run_id: Mapped[UUID | None] = mapped_column(
+    archived_by_effect_run_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("effect_runs.id", use_alter=True, ondelete="SET NULL"),
         nullable=True,
     )
-    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -101,6 +101,13 @@ class TaskRun(Base):
         Index("ix_task_runs_status", "status"),
         Index("ix_task_runs_queued_at", "queued_at"),
         Index("ix_task_runs_trigger_kind", "trigger_kind"),
+        Index("ix_task_runs_lease", "leased_until"),
+        Index(
+            "uq_task_runs_one_active_per_task",
+            "task_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -114,6 +121,9 @@ class TaskRun(Base):
     )
 
     queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    leased_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    leased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

@@ -22,6 +22,29 @@ services:
       atlas-postgres:
         condition: service_healthy
 
+  atlas-worker:
+    build:
+      context: .
+      dockerfile: docker/atlas/Dockerfile
+    image: atlas-backend:local
+    container_name: atlas-worker
+    working_dir: /app/backend
+    command: python -m worker.app
+    volumes:
+      - .:/app
+      - ./.artifacts:/app/.artifacts
+    environment:
+      ARTIFACTS_ROOT: /app/.artifacts
+      ATLAS_WORKER_POLL_SECONDS: ${ATLAS_WORKER_POLL_SECONDS:-5}
+      ATLAS_SCHEDULER_BATCH_SIZE: ${ATLAS_SCHEDULER_BATCH_SIZE:-20}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_SCHEMA_MODEL: ${OPENROUTER_SCHEMA_MODEL:-openai/gpt-4o}
+      OPENROUTER_SEARCH_EXTRACTOR_MODEL: ${OPENROUTER_SEARCH_EXTRACTOR_MODEL:-openai/gpt-4o}
+    depends_on:
+      atlas-postgres:
+        condition: service_healthy
+
   atlas-postgres:
     image: postgres:18
     container_name: atlas-postgres

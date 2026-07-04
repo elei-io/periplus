@@ -25,17 +25,17 @@ def upgrade() -> None:
         sa.Column("primitive", sa.Text(), nullable=False),
         sa.Column("input_json", postgresql.JSONB(), nullable=False),
         sa.Column("schedule_json", postgresql.JSONB(), nullable=True),
-        sa.Column("dedupe_key", sa.Text(), nullable=True),
-        sa.Column("enabled", sa.Boolean(), nullable=False),
+        sa.Column("identity_key", sa.Text(), nullable=True),
         sa.Column("created_by_effect_run_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("updated_by_effect_run_id", postgresql.UUID(as_uuid=True), nullable=True),
+        sa.Column("enabled", sa.Boolean(), nullable=False),
         sa.Column("disabled_by_effect_run_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("disabled_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_run_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("next_run_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.UniqueConstraint("dedupe_key", name="uq_tasks_dedupe_key"),
+        sa.UniqueConstraint("identity_key", name="uq_tasks_identity_key"),
     )
     op.create_index("ix_tasks_enabled", "tasks", ["enabled"])
     op.create_index("ix_tasks_next_run_at", "tasks", ["next_run_at"])

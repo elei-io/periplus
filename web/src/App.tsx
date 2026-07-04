@@ -5,6 +5,7 @@ import { ExtractPage } from "@/pages/playground/extract-page"
 import { IndexPage } from "@/pages/playground/index-page"
 import { ScrapePage } from "@/pages/playground/scrape-page"
 import { SearchPage } from "@/pages/playground/search-page"
+import { TasksPage } from "@/pages/admin/tasks-page"
 import {
   defaultNavigationItem,
   findNavigationItem,
@@ -69,6 +70,10 @@ export function App() {
 
     if (activeItem.href === "/playground/scrape") {
       return <ScrapePage />
+    }
+
+    if (activeItem.href === "/scheduled-work/tasks") {
+      return <TasksPage />
     }
 
     return (

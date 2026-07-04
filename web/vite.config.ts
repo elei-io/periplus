@@ -20,6 +20,7 @@ export default defineConfig({
       "/index": apiProxyTarget,
       "/scrape": apiProxyTarget,
       "/search": apiProxyTarget,
+      "/tasks": apiProxyTarget,
     },
   },
 })

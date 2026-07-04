@@ -20,12 +20,12 @@ TaskPrimitive = Literal["search", "index", "scrape", "schema", "extract"]
 TaskRunStatus = Literal["queued", "running", "succeeded", "failed", "cancelled", "skipped"]
 TaskRunTriggerKind = Literal["scheduled", "manual", "effect", "retry", "backfill"]
 EffectRunStatus = Literal["running", "applied", "skipped", "failed"]
+TaskOrigin = Literal["human", "effect"]
 TaskEffectType = Literal[
     "create_task",
     "upsert_task",
     "update_task",
-    "disable_task",
-    "delete_task",
+    "archive_task",
     "enqueue_run",
 ]
 EffectRunOperation = TaskEffectType | Literal["noop"]
@@ -75,8 +75,7 @@ class TaskCreate(StrictBaseModel):
     primitive: TaskPrimitive
     input: dict[str, Any]
     schedule: TaskScheduleJson | None = None
-    dedupe_key: str | None = None
-    enabled: bool = True
+    identity_key: str | None = None
 
 
 class TaskUpdate(StrictBaseModel):
@@ -84,8 +83,9 @@ class TaskUpdate(StrictBaseModel):
     primitive: TaskPrimitive | None = None
     input: dict[str, Any] | None = None
     schedule: TaskScheduleJson | None = None
-    dedupe_key: str | None = None
-    enabled: bool | None = None
+    identity_key: str | None = None
+    archived_at: datetime | None = None
+    archived_reason: str | None = None
 
 
 class TaskTemplate(StrictBaseModel):
@@ -93,14 +93,13 @@ class TaskTemplate(StrictBaseModel):
     primitive: TaskPrimitive
     input: dict[str, Any]
     schedule: TaskScheduleJson | None = None
-    dedupe_key: str | None = None
-    enabled: bool = True
+    identity_key: str | None = None
 
 
 class TaskWhere(StrictBaseModel):
     id: UUID | None = None
-    dedupe_key: str | None = None
-    dedupe_key_template: str | None = None
+    identity_key: str | None = None
+    identity_key_template: str | None = None
 
 
 class EffectCondition(StrictBaseModel):
@@ -128,14 +127,8 @@ class UpdateTaskEffect(StrictBaseModel):
     when: EffectCondition | None = None
 
 
-class DisableTaskEffect(StrictBaseModel):
-    type: Literal["disable_task"] = "disable_task"
-    where: TaskWhere
-    when: EffectCondition | None = None
-
-
-class DeleteTaskEffect(StrictBaseModel):
-    type: Literal["delete_task"] = "delete_task"
+class ArchiveTaskEffect(StrictBaseModel):
+    type: Literal["archive_task"] = "archive_task"
     where: TaskWhere
     when: EffectCondition | None = None
 
@@ -143,9 +136,9 @@ class DeleteTaskEffect(StrictBaseModel):
 class EnqueueTarget(StrictBaseModel):
     kind: Literal["task", "tasks_from_source_path", "upserted_task"] = "task"
     task_id: UUID | None = None
-    dedupe_key: str | None = None
+    identity_key: str | None = None
     source_path: str | None = None
-    dedupe_key_template: str | None = None
+    identity_key_template: str | None = None
 
 
 class EnqueueDedupe(StrictBaseModel):
@@ -170,8 +163,7 @@ TaskEffectJson = Annotated[
     CreateTaskEffect
     | UpsertTaskEffect
     | UpdateTaskEffect
-    | DisableTaskEffect
-    | DeleteTaskEffect
+    | ArchiveTaskEffect
     | EnqueueRunEffect,
     Field(discriminator="type"),
 ]
@@ -227,7 +219,7 @@ class EffectRunOutputJson(StrictBaseModel):
     operation: EffectRunOperation
     target_task_id: UUID | None = None
     target_run_id: UUID | None = None
-    dedupe_key: str | None = None
+    identity_key: str | None = None
     reason: str | None = None
 
 
@@ -239,12 +231,12 @@ class TaskRecord(BaseModel):
     primitive: TaskPrimitive
     input_json: dict[str, Any]
     schedule_json: dict[str, Any] | None = None
-    dedupe_key: str | None = None
-    enabled: bool
+    identity_key: str | None = None
     created_by_effect_run_id: UUID | None = None
     updated_by_effect_run_id: UUID | None = None
-    disabled_by_effect_run_id: UUID | None = None
-    disabled_at: datetime | None = None
+    archived_by_effect_run_id: UUID | None = None
+    archived_at: datetime | None = None
+    archived_reason: str | None = None
     last_run_at: datetime | None = None
     next_run_at: datetime | None = None
     created_at: datetime
@@ -273,6 +265,9 @@ class TaskRunRecord(BaseModel):
     trigger_kind: TaskRunTriggerKind
     triggered_by_effect_run_id: UUID | None = None
     queued_at: datetime
+    leased_by: str | None = None
+    leased_at: datetime | None = None
+    leased_until: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
     input_json: dict[str, Any]

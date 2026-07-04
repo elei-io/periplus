@@ -14,6 +14,7 @@ wheels/
 .env
 
 .cache
+.artifacts
 
 
 # Logs

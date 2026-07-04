@@ -58,6 +58,9 @@ export const navigationGroups: NavigationGroup[] = [
         name: "Tasks",
         href: "/scheduled-work/tasks",
         icon: ClipboardListIcon,
+        title: "Task Admin",
+        description:
+          "Create, schedule, filter, and archive task definitions.",
       },
       {
         name: "Effects",

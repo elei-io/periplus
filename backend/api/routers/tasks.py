@@ -5,14 +5,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from db.session import get_session
-from tasks.schemas import TaskCreate, TaskPrimitive, TaskRecord, TaskUpdate
+from tasks.schemas import TaskCreate, TaskOrigin, TaskPrimitive, TaskRecord, TaskRunRecord, TaskUpdate
 from tasks.service import (
     TaskConflictError,
     TaskNotFoundError,
     TaskValidationError,
+    copy_task,
     create_task,
-    delete_task,
+    archive_task,
     get_task,
+    list_task_runs,
     list_tasks,
     update_task,
 )
@@ -34,14 +36,16 @@ def create(request: TaskCreate, session: Annotated[Session, Depends(get_session)
 def list_(
     session: Annotated[Session, Depends(get_session)],
     primitive: Annotated[TaskPrimitive | None, Query()] = None,
-    enabled: Annotated[bool | None, Query()] = None,
+    archived: Annotated[bool | None, Query()] = None,
+    origin: Annotated[TaskOrigin | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[TaskRecord]:
     return list_tasks(
         session=session,
         primitive=primitive,
-        enabled=enabled,
+        archived=archived,
+        origin=origin,
         limit=limit,
         offset=offset,
     )
@@ -51,6 +55,27 @@ def list_(
 def get(task_id: UUID, session: Annotated[Session, Depends(get_session)]) -> TaskRecord:
     try:
         return get_task(session, task_id)
+    except TaskNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{task_id}/runs", response_model=list[TaskRunRecord])
+def list_runs(
+    task_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[TaskRunRecord]:
+    try:
+        return list_task_runs(session=session, task_id=task_id, limit=limit, offset=offset)
+    except TaskNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{task_id}/copy", response_model=TaskRecord, status_code=201)
+def copy(task_id: UUID, session: Annotated[Session, Depends(get_session)]) -> TaskRecord:
+    try:
+        return copy_task(session, task_id)
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -71,10 +96,10 @@ def update(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.delete("/{task_id}", status_code=204)
-def delete(task_id: UUID, session: Annotated[Session, Depends(get_session)]) -> Response:
+@router.post("/{task_id}/archive", status_code=204)
+def archive(task_id: UUID, session: Annotated[Session, Depends(get_session)]) -> Response:
     try:
-        delete_task(session, task_id)
+        archive_task(session, task_id)
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
