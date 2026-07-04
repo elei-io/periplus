@@ -10,6 +10,9 @@ Atlas currently keeps action execution direct and in-process:
 
 There is intentionally no queue, action-specific job API, worker, or separate browser service right now.
 
+The proposed durable crawl, URL, artifact, and extraction-schema data model is tracked in
+`CRAWL_DATA_MODEL.md`.
+
 ## Crawl Execution
 
 Browser execution runs in-process where the action is invoked:
