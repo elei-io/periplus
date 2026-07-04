@@ -2,9 +2,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from domains.crawl import CrawlMode, CrawlWait
-from domains.quality.models import QualityWarning
-from domains.schema.models import SchemaType
+from shared.crawl import CrawlMode, CrawlWait
+from shared.quality.schemas import QualityWarning
+from shared.extract_schema.schemas import SchemaType
 
 
 class Input(BaseModel):

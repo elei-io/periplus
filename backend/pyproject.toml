@@ -8,7 +8,6 @@ dependencies = [
     "alembic>=1.18",
     "crawl4ai>=0.9.0",
     "fastapi[standard]>=0.139.0",
-    "nats-py>=2.15.0",
     "psycopg[binary]>=3.2",
     "sqlalchemy>=2.0",
     "typer>=0.26.8",
@@ -16,7 +15,6 @@ dependencies = [
 
 [project.scripts]
 atlas = "cli.app:app"
-atlas-index-worker = "domains.index.worker:main"
 
 [build-system]
 requires = ["setuptools"]
@@ -24,16 +22,18 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = [
+    "actions",
+    "actions.extract",
+    "actions.index",
+    "actions.scrape",
+    "actions.search",
     "api",
     "api.routers",
     "cli",
     "cli.apps",
-    "domains",
-    "domains.database",
-    "domains.extract",
-    "domains.index",
-    "domains.quality",
-    "domains.schema",
-    "domains.scrape",
-    "domains.search",
+    "db",
+    "shared",
+    "shared.extract_schema",
+    "shared.quality",
+    "tasks",
 ]

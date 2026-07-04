@@ -1,7 +1,7 @@
 from typing import Annotated, Literal
 
 import typer
-from domains.index.service import index_sync as index_service
+from actions.index.service import index_sync as index_service
 from rich.console import Console
 from rich.table import Table
 

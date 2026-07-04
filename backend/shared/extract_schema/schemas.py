@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from domains.crawl import CrawlMode, CrawlWait
+from shared.crawl import CrawlMode, CrawlWait
 
 SchemaType = Literal["css", "xpath"]
 

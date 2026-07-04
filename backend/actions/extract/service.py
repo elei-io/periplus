@@ -5,14 +5,14 @@ from pathlib import Path
 
 from crawl4ai import JsonCssExtractionStrategy, JsonXPathExtractionStrategy
 
-from domains.crawl import CrawlMode, CrawlWait
-from domains.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
-from domains.quality.service import run_quality_checks, write_quality_warnings
-from domains.schema.models import SchemaType
-from domains.schema.service import schema as schema_service
-from domains.scrape.service import scrape as scrape_service
+from shared.crawl import CrawlMode, CrawlWait
+from shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
+from shared.quality.service import run_quality_checks, write_quality_warnings
+from shared.extract_schema.schemas import SchemaType
+from shared.extract_schema.service import schema as schema_service
+from actions.scrape.service import scrape as scrape_service
 
-from .models import ExtractOutput, ExtractSource
+from .schemas import ExtractOutput, ExtractSource
 
 
 def _html_path(output) -> str | None:

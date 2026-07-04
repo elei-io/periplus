@@ -13,10 +13,10 @@ from crawl4ai import (
     JsonXPathExtractionStrategy,
 )
 
-from domains.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
-from domains.schema.service import schema as schema_service
+from shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
+from shared.extract_schema.service import schema as schema_service
 
-from .models import SearchResult
+from .schemas import SearchResult
 
 _SEARCH_URL = "https://html.duckduckgo.com/html/?q={query}"
 _SCHEMA_CACHE_KEY = "search.duckduckgo"

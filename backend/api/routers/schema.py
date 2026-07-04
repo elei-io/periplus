@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
-from domains.schema.models import Input, SchemaOutput
-from domains.schema.service import schema as schema_service
+from shared.extract_schema.schemas import Input, SchemaOutput
+from shared.extract_schema.service import schema as schema_service
 
 router = APIRouter(prefix="/schema", tags=["schema"])
 

@@ -2,8 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from domains.crawl import CrawlMode, CrawlWait
-from domains.quality.models import QualityWarning
+from shared.crawl import CrawlMode, CrawlWait
+from shared.quality.schemas import QualityWarning
 
 ArtifactFormat = Literal["html", "crawl"]
 

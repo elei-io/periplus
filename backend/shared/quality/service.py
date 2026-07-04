@@ -7,7 +7,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
-from .models import QualityWarning, QualityWarningSignal
+from .schemas import QualityWarning, QualityWarningSignal
 
 _WARNINGS_FILE = "warnings.json"
 

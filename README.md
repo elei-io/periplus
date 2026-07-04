@@ -1,12 +1,12 @@
 # Atlas
 
-Atlas is a Python web crawling and search backend. It exposes the same domain logic through:
+Atlas is a Python web crawling and search backend. It exposes the same action logic through:
 
 - a FastAPI HTTP API,
-- a Typer CLI,
-- an async NATS JetStream worker for index jobs.
+- a Typer CLI.
 
-Its current web primitives are `search`, `index`, `scrape`, `schema`, and `extract`.
+Its current user-facing web actions are `search`, `index`, `scrape`, and `extract`.
+Extraction schema generation is shared support used by `search` and `extract`.
 
 The current architecture is documented in [ARCHITECHTURE.md](ARCHITECHTURE.md).
 
@@ -15,9 +15,12 @@ The current architecture is documented in [ARCHITECHTURE.md](ARCHITECHTURE.md).
 ```text
 backend/api/          FastAPI app and routers
 backend/cli/          Typer CLI commands
-backend/domains/      Shared crawl, index, search, and job logic
+backend/actions/      Primitive actions that take inputs and produce outputs
+backend/tasks/        Persisted schedulable work, effects, and task runs
+backend/shared/       Artifact, crawler, quality, and extraction-schema support
+backend/db/           Postgres setup, SQLAlchemy base/session, and Alembic
 docker/atlas/         Backend container image
-docker-compose.yml    Local API, worker, Postgres, and NATS stack
+docker-compose.yml    Local API and Postgres stack
 ```
 
 ## Requirements
@@ -66,13 +69,12 @@ Run database migrations:
 
 ```sh
 make db-upgrade
-cd backend && uv run alembic current
-cd backend && uv run alembic check
+cd backend && uv run alembic -c db/alembic.ini current
 ```
 
 ## Docker Compose
 
-Start the API, worker, Postgres, and NATS:
+Start the API and Postgres:
 
 ```sh
 docker compose up --build
@@ -87,15 +89,18 @@ Compose volume.
 Copy `.env.example` to `.env` when local secrets are needed.
 
 `DATABASE_URL` points Atlas at Postgres. Compose injects an internal URL for
-the API and worker containers using `atlas-postgres`; local tools can use the
-localhost URL from `.env.example`.
+the API container using `atlas-postgres`; local tools can use the localhost URL
+from `.env.example`.
 
-SQLAlchemy models should inherit from `domains.database.Base`. Alembic reads
-that metadata from `backend/alembic/env.py`, so create schema changes with:
+SQLAlchemy models should inherit from `db.Base`. Task-owned tables live in
+`tasks/models.py`, while Pydantic contracts live in `tasks/schemas.py`.
+Action inputs/outputs live in `actions/<name>/schemas.py`. Alembic reads model metadata from
+`backend/db/alembic/env.py`, so create schema changes with:
 
 ```sh
 make db-revision m="describe change"
 make db-upgrade
+cd backend && uv run alembic -c db/alembic.ini check
 ```
 
 `OPENROUTER_API_KEY` is only needed when Atlas must generate an extraction schema or infer a target JSON example. Generated artifacts live under `.cache/<domain>/<service>/`, so schemas are cached beside other runtime artifacts without mixing them into source folders. Page-load-sensitive commands support `--mode` and `--wait`; use `--mode app --wait stable` for pages that need frontend hydration before their data appears.

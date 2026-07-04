@@ -5,8 +5,8 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-import domains.database.models  # noqa: F401
-from domains.database import Base, get_database_url
+import db.models  # noqa: F401
+from db import Base, get_database_url
 
 config = context.config
 

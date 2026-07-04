@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
-from domains.scrape.models import Input, ScrapeOutput
-from domains.scrape.service import scrape as scrape_service
+from actions.scrape.schemas import Input, ScrapeOutput
+from actions.scrape.service import scrape as scrape_service
 
 router = APIRouter(prefix="/scrape", tags=["scrape"])
 

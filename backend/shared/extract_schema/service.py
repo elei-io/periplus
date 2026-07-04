@@ -10,12 +10,12 @@ from crawl4ai import JsonCssExtractionStrategy, LLMConfig
 from dotenv import load_dotenv
 from litellm import acompletion
 
-from domains.cache import cache_domain, service_cache_root
-from domains.crawl import CrawlMode, CrawlWait
-from domains.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
-from domains.scrape.service import scrape as scrape_service
+from shared.cache import cache_domain, service_cache_root
+from shared.crawl import CrawlMode, CrawlWait
+from shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
+from actions.scrape.service import scrape as scrape_service
 
-from .models import SchemaOutput, SchemaType
+from .schemas import SchemaOutput, SchemaType
 
 _ENV_PATH = Path(__file__).resolve().parents[3] / ".env"
 

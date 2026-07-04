@@ -4,12 +4,12 @@ from fnmatch import fnmatch
 from pathlib import Path
 from urllib.parse import urldefrag, urljoin, urlparse
 
-from domains.crawl import CrawlMode, CrawlWait
-from domains.scrape.models import ScrapePage
-from domains.scrape.service import scrape as scrape_service
+from shared.crawl import CrawlMode, CrawlWait
+from actions.scrape.schemas import ScrapePage
+from actions.scrape.service import scrape as scrape_service
 
-from ..progress import CrawlProgressCallback
-from .models import IndexLink
+from shared.progress import CrawlProgressCallback
+from .schemas import IndexLink
 
 _DEFAULT_CONCURRENCY = 10
 

@@ -5,7 +5,7 @@ from rich.console import Console
 from rich.table import Table
 
 from cli.progress import CrawlProgressRenderer
-from domains.scrape.service import scrape_sync as scrape_service
+from actions.scrape.service import scrape_sync as scrape_service
 
 console = Console()
 

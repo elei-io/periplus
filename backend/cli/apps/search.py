@@ -5,7 +5,7 @@ from rich.console import Console
 from rich.table import Table
 
 from cli.progress import CrawlProgressRenderer
-from domains.search.service import search_sync as search_service
+from actions.search.service import search_sync as search_service
 
 console = Console()
 

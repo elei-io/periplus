@@ -13,35 +13,9 @@ services:
       - .:/app
       - ./.cache:/app/.cache
     environment:
-      NATS_URL: nats://atlas-nats:4222
       CACHE_ROOT: /app/.cache
       DATABASE_URL: postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}
     depends_on:
-      atlas-nats:
-        condition: service_started
-      atlas-postgres:
-        condition: service_healthy
-
-  atlas-worker:
-    build:
-      context: .
-      dockerfile: docker/atlas/Dockerfile
-    image: atlas-backend:local
-    container_name: atlas-worker
-    working_dir: /app/backend
-    command: python -m domains.index.worker
-    volumes:
-      - .:/app
-      - ./.cache:/app/.cache
-    environment:
-      NATS_URL: nats://atlas-nats:4222
-      CACHE_ROOT: /app/.cache
-      CACHE_CLEANUP_INTERVAL: ${CACHE_CLEANUP_INTERVAL:-3600}
-      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-86400}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}
-    depends_on:
-      atlas-nats:
-        condition: service_started
       atlas-postgres:
         condition: service_healthy
 
@@ -63,17 +37,5 @@ services:
       - atlas-postgres-data:/var/lib/postgresql
     restart: unless-stopped
 
-  atlas-nats:
-    image: nats:2.11-alpine
-    container_name: atlas-nats
-    command: ["-js", "-sd", "/data", "-m", "8222"]
-    expose:
-      - "4222"
-      - "8222"
-    volumes:
-      - atlas-nats-data:/data
-    restart: unless-stopped
-
 volumes:
   atlas-postgres-data:
-  atlas-nats-data:

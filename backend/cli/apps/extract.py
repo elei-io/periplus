@@ -5,7 +5,7 @@ from rich.console import Console
 from rich.json import JSON
 
 from cli.progress import CrawlProgressRenderer
-from domains.extract.service import extract_sync as extract_service
+from actions.extract.service import extract_sync as extract_service
 
 console = Console()
 

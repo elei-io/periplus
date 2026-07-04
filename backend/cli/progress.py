@@ -3,7 +3,7 @@ from types import TracebackType
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from domains.progress import CrawlProgressEvent
+from shared.progress import CrawlProgressEvent
 
 
 class CrawlProgressRenderer:

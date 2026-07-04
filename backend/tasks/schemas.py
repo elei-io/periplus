@@ -1,0 +1,294 @@
+from datetime import datetime
+from typing import Annotated, Any, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from actions.extract.schemas import Input as ExtractInput
+from actions.index.schemas import IndexLink
+from actions.index.schemas import Input as IndexInput
+from shared.quality.schemas import QualityWarning
+from shared.extract_schema.schemas import Input as SchemaInput
+from actions.scrape.schemas import Input as ScrapeInput
+
+
+class StrictBaseModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+TaskPrimitive = Literal["search", "index", "scrape", "schema", "extract"]
+TaskRunStatus = Literal["queued", "running", "succeeded", "failed", "cancelled", "skipped"]
+TaskRunTriggerKind = Literal["scheduled", "manual", "effect", "retry", "backfill"]
+EffectRunStatus = Literal["running", "applied", "skipped", "failed"]
+TaskEffectType = Literal[
+    "create_task",
+    "upsert_task",
+    "update_task",
+    "disable_task",
+    "delete_task",
+    "enqueue_run",
+]
+EffectRunOperation = TaskEffectType | Literal["noop"]
+
+
+class SearchInput(StrictBaseModel):
+    query: str
+    max_results: int = Field(default=10, ge=1)
+
+
+TaskInputJson = Annotated[
+    SearchInput | IndexInput | ScrapeInput | SchemaInput | ExtractInput,
+    Field(union_mode="left_to_right"),
+]
+
+
+class ManualSchedule(StrictBaseModel):
+    kind: Literal["manual"] = "manual"
+
+
+class OnceSchedule(StrictBaseModel):
+    kind: Literal["once"] = "once"
+    run_at: datetime
+    timezone: str = "UTC"
+
+
+class CronSchedule(StrictBaseModel):
+    kind: Literal["cron"] = "cron"
+    expr: str
+    timezone: str = "UTC"
+
+
+class IntervalSchedule(StrictBaseModel):
+    kind: Literal["interval"] = "interval"
+    every_seconds: int = Field(gt=0)
+    timezone: str = "UTC"
+
+
+TaskScheduleJson = Annotated[
+    ManualSchedule | OnceSchedule | CronSchedule | IntervalSchedule,
+    Field(discriminator="kind"),
+]
+
+
+class TaskTemplate(StrictBaseModel):
+    name: str | None = None
+    primitive: TaskPrimitive
+    input: dict[str, Any]
+    schedule: TaskScheduleJson | None = None
+    dedupe_key: str | None = None
+    enabled: bool = True
+
+
+class TaskWhere(StrictBaseModel):
+    id: UUID | None = None
+    dedupe_key: str | None = None
+    dedupe_key_template: str | None = None
+
+
+class EffectCondition(StrictBaseModel):
+    warnings_include: list[str] = Field(default_factory=list)
+    warnings_exclude: list[str] = Field(default_factory=list)
+    output_path_exists: str | None = None
+
+
+class CreateTaskEffect(StrictBaseModel):
+    type: Literal["create_task"] = "create_task"
+    task_template: TaskTemplate
+
+
+class UpsertTaskEffect(StrictBaseModel):
+    type: Literal["upsert_task"] = "upsert_task"
+    source_path: str | None = None
+    task_template: TaskTemplate
+    on_existing: Literal["keep", "update", "replace", "enable"] = "keep"
+
+
+class UpdateTaskEffect(StrictBaseModel):
+    type: Literal["update_task"] = "update_task"
+    where: TaskWhere
+    patch: dict[str, Any]
+    when: EffectCondition | None = None
+
+
+class DisableTaskEffect(StrictBaseModel):
+    type: Literal["disable_task"] = "disable_task"
+    where: TaskWhere
+    when: EffectCondition | None = None
+
+
+class DeleteTaskEffect(StrictBaseModel):
+    type: Literal["delete_task"] = "delete_task"
+    where: TaskWhere
+    when: EffectCondition | None = None
+
+
+class EnqueueTarget(StrictBaseModel):
+    kind: Literal["task", "tasks_from_source_path", "upserted_task"] = "task"
+    task_id: UUID | None = None
+    dedupe_key: str | None = None
+    source_path: str | None = None
+    dedupe_key_template: str | None = None
+
+
+class EnqueueDedupe(StrictBaseModel):
+    policy: Literal[
+        "always",
+        "if_not_queued",
+        "if_not_queued_or_running",
+        "if_not_succeeded_since",
+    ] = "if_not_queued_or_running"
+    since: datetime | None = None
+
+
+class EnqueueRunEffect(StrictBaseModel):
+    type: Literal["enqueue_run"] = "enqueue_run"
+    target: EnqueueTarget
+    dedupe: EnqueueDedupe = Field(default_factory=EnqueueDedupe)
+    trigger_kind: TaskRunTriggerKind = "effect"
+    when: EffectCondition | None = None
+
+
+TaskEffectJson = Annotated[
+    CreateTaskEffect
+    | UpsertTaskEffect
+    | UpdateTaskEffect
+    | DisableTaskEffect
+    | DeleteTaskEffect
+    | EnqueueRunEffect,
+    Field(discriminator="type"),
+]
+
+
+class PageArtifactSummary(StrictBaseModel):
+    html: str | None = None
+    crawl: str | None = None
+    warnings: str | None = None
+    schema_path: str | None = None
+    extracted: str | None = None
+
+
+class ScrapePageOutput(StrictBaseModel):
+    url: str
+    success: bool
+    artifacts: PageArtifactSummary = Field(default_factory=PageArtifactSummary)
+
+
+class SearchOutputJson(StrictBaseModel):
+    results: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class IndexOutputJson(StrictBaseModel):
+    links: list[IndexLink] = Field(default_factory=list)
+
+
+class ScrapeOutputJson(StrictBaseModel):
+    pages: list[ScrapePageOutput] = Field(default_factory=list)
+
+
+class SchemaOutputJson(StrictBaseModel):
+    schema_id: str
+    schema_path: str | None = None
+
+
+class ExtractOutputJson(StrictBaseModel):
+    records: list[dict[str, Any]] = Field(default_factory=list)
+
+
+TaskOutputJson = Annotated[
+    SearchOutputJson | IndexOutputJson | ScrapeOutputJson | SchemaOutputJson | ExtractOutputJson,
+    Field(union_mode="left_to_right"),
+]
+
+
+class TaskWarningsJson(StrictBaseModel):
+    codes: list[str] = Field(default_factory=list)
+    count: int = 0
+    path: str | None = None
+    warnings: list[QualityWarning] = Field(default_factory=list)
+
+
+class EffectRunInputJson(StrictBaseModel):
+    item: dict[str, Any] | None = None
+    source_path: str | None = None
+    rendered_template: dict[str, Any] = Field(default_factory=dict)
+
+
+class EffectRunOutputJson(StrictBaseModel):
+    status: EffectRunStatus
+    operation: EffectRunOperation
+    target_task_id: UUID | None = None
+    target_run_id: UUID | None = None
+    dedupe_key: str | None = None
+    reason: str | None = None
+
+
+class TaskRecord(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    primitive: TaskPrimitive
+    input_json: dict[str, Any]
+    schedule_json: dict[str, Any] | None = None
+    dedupe_key: str | None = None
+    enabled: bool
+    created_by_effect_run_id: UUID | None = None
+    updated_by_effect_run_id: UUID | None = None
+    disabled_by_effect_run_id: UUID | None = None
+    disabled_at: datetime | None = None
+    last_run_at: datetime | None = None
+    next_run_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskEffectRecord(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    task_id: UUID
+    effect_type: TaskEffectType
+    config_json: dict[str, Any]
+    enabled: bool
+    position: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskRunRecord(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    task_id: UUID
+    status: TaskRunStatus
+    trigger_kind: TaskRunTriggerKind
+    triggered_by_effect_run_id: UUID | None = None
+    queued_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    input_json: dict[str, Any]
+    output_json: dict[str, Any] | None = None
+    warnings_json: dict[str, Any]
+    artifacts_dir: str | None = None
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class EffectRunRecord(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    effect_id: UUID
+    source_run_id: UUID
+    status: EffectRunStatus
+    operation: EffectRunOperation
+    target_task_id: UUID | None = None
+    target_run_id: UUID | None = None
+    input_json: dict[str, Any]
+    output_json: dict[str, Any] | None = None
+    error: str | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime

@@ -9,18 +9,18 @@ from urllib.parse import urlparse
 from crawl4ai import AsyncWebCrawler
 from crawl4ai.models import CrawlResult
 
-from domains.cache import cache_domain, cache_root, service_cache_root
-from domains.crawl import (
+from shared.cache import cache_domain, cache_root, service_cache_root
+from shared.crawl import (
     CrawlMode,
     CrawlWait,
     browser_config_for_mode,
     crawl_single_url,
     run_config_for_mode,
 )
-from domains.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
-from domains.quality.service import run_quality_checks, warnings_path, write_quality_warnings
+from shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
+from shared.quality.service import run_quality_checks, warnings_path, write_quality_warnings
 
-from .models import ArtifactFormat, ScrapeArtifact, ScrapeOutput, ScrapePage, ScrapeStats
+from .schemas import ArtifactFormat, ScrapeArtifact, ScrapeOutput, ScrapePage, ScrapeStats
 
 _MANIFEST_FILE = "manifest.json"
 _HTML_FILE = "page.html"
@@ -160,7 +160,7 @@ def _cached_warnings(cache_dir: Path):
         return []
 
     try:
-        from domains.quality.models import QualityWarning
+        from shared.quality.schemas import QualityWarning
 
         return [QualityWarning.model_validate(item) for item in json.loads(path.read_text(encoding="utf-8"))]
     except (OSError, json.JSONDecodeError, ValueError):

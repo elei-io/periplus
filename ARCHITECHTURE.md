@@ -2,23 +2,29 @@
 
 ## Current Shape
 
-Atlas uses a simple split between API, workers, and queue:
+Atlas currently keeps action execution direct and in-process:
 
 - `atlas-api` serves the public HTTP API.
-- `atlas-worker` consumes async jobs.
-- `atlas-nats` provides NATS JetStream for queueing and temporary job state.
+- `atlas` provides the local/operator CLI.
+- `atlas-postgres` stores persisted task metadata and future scheduler state.
 
-There is intentionally no separate shared browser service right now.
+There is intentionally no queue, action-specific job API, worker, or separate browser service right now.
 
 ## Crawl Execution
 
-Browser execution runs in-process where the crawl is executed:
+Browser execution runs in-process where the action is invoked:
 
-- Sync requests such as `POST /index` run inside `atlas-api`.
-- Async requests such as `POST /index/jobs/` are enqueued by `atlas-api` and executed inside `atlas-worker`.
-- CLI commands call the same domain services in-process.
+- API requests such as `POST /index` execute immediately inside `atlas-api`.
+- CLI commands call the same action services in-process.
+- Durable async orchestration will enter through `tasks` later, not through action-specific job endpoints.
 
-The API, worker, and CLI share domain logic written once per domain. This preserves the typed Python Crawl4AI experience across local CLI usage and server execution, while still letting production scale sync and async workloads separately.
+The API and CLI share action logic written once and supported by shared crawler, artifact, quality, and extraction-schema utilities. This preserves the typed Python Crawl4AI experience across local CLI usage and server execution while keeping the current operational shape small.
+
+## Why No Per-Action Queue?
+
+The old index-specific job path made `index` special in a way that does not match the product direction. Actions are primitives: they take inputs and return outputs. Scheduling, retries, provenance, and side effects belong to tasks.
+
+When async execution returns, it should be modeled around task creation and task runs, so every action can be orchestrated the same way.
 
 ## Why Not A Separate Browser Service?
 
@@ -38,33 +44,16 @@ But it cost us:
 - More Compose and production wiring.
 - Harder local debugging.
 
-For our expected shape, most production load is async. That means we can scale `atlas-worker` horizontally for scrape volume, while keeping `atlas-api` available for normal API traffic and occasional ad hoc sync crawls.
-
-## Scaling Model
-
-Scale these independently:
-
-- `atlas-api`: request handling, sync/ad hoc crawls, job creation, job reads.
-- `atlas-worker`: async crawl throughput and browser capacity.
-- `atlas-nats`: queue durability and delivery.
-
-The CLI is not part of the production scaling model. It is a local/operator entrypoint that imports domain services directly.
-
-If async crawl demand grows, add more `atlas-worker` replicas. Each worker owns its own in-process browser capacity.
-
-If sync crawl demand becomes operationally painful, revisit whether sync should become "enqueue and wait with timeout" instead of running directly inside `atlas-api`.
+For now, action execution stays close to the caller. If browser execution becomes the dominant operational problem, we can revisit the service boundary with evidence.
 
 ## API Contract
 
-Index exposes both sync and async paths:
+User-facing actions expose synchronous execution paths only. For index:
 
 - `POST /index`: execute now and return results.
-- `POST /index/jobs/`: enqueue async job.
-- `GET /index/jobs/{job_id}`: return status and results if available.
-- `GET /index/jobs/`: list jobs with high-level status info.
+
+Future queued work should be introduced through task APIs and task runs, not through `/index/jobs` or any other action-specific job route.
 
 ## Guiding Principle
 
-Keep Atlas simple until browser execution becomes the dominant operational problem.
-
-The queue/worker split gives us the main scaling lever we need without forcing every crawl through a separate browser service.
+Keep primitives boring. Put orchestration in tasks.

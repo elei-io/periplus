@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
-from domains.extract.models import ExtractOutput, Input
-from domains.extract.service import extract as extract_service
+from actions.extract.schemas import ExtractOutput, Input
+from actions.extract.service import extract as extract_service
 
 router = APIRouter(prefix="/extract", tags=["extract"])
 

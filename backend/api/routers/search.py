@@ -2,8 +2,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from domains.search.models import SearchResult
-from domains.search.service import search as search_service
+from actions.search.schemas import SearchResult
+from actions.search.service import search as search_service
 
 router = APIRouter(prefix="/search", tags=["search"])
 

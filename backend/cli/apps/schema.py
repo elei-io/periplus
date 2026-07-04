@@ -5,7 +5,7 @@ from rich.console import Console
 from rich.json import JSON
 
 from cli.progress import CrawlProgressRenderer
-from domains.schema.service import schema_sync as schema_service
+from shared.extract_schema.service import schema_sync as schema_service
 
 console = Console()
 
