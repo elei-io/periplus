@@ -15,6 +15,9 @@ services:
     environment:
       ARTIFACTS_ROOT: /app/.artifacts
       DATABASE_URL: postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_SCHEMA_MODEL: ${OPENROUTER_SCHEMA_MODEL:-openai/gpt-4o}
+      OPENROUTER_SEARCH_EXTRACTOR_MODEL: ${OPENROUTER_SEARCH_EXTRACTOR_MODEL:-openai/gpt-4o}
     depends_on:
       atlas-postgres:
         condition: service_healthy

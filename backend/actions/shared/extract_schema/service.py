@@ -161,6 +161,11 @@ async def schema(
         wait=wait,
         progress_callback=progress_callback,
     )
+    await emit_crawl_progress(
+        progress_callback,
+        CrawlProgressEvent(url=url, label="generate schema", status="started"),
+    )
+    generation_start_time = time.perf_counter()
     try:
         generated_schema = await JsonCssExtractionStrategy.agenerate_schema(
             html=html,
@@ -175,14 +180,23 @@ async def schema(
             progress_callback,
             CrawlProgressEvent(
                 url=url,
-                label="schema",
+                label="generate schema",
                 status="failed",
-                duration=time.perf_counter() - start_time,
+                duration=time.perf_counter() - generation_start_time,
                 error=str(exc),
             ),
         )
         raise
 
+    await emit_crawl_progress(
+        progress_callback,
+        CrawlProgressEvent(
+            url=url,
+            label="generate schema",
+            status="succeeded",
+            duration=time.perf_counter() - generation_start_time,
+        ),
+    )
     await emit_crawl_progress(
         progress_callback,
         CrawlProgressEvent(

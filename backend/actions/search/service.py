@@ -84,13 +84,17 @@ class _DuckDuckGoNextFormParser(HTMLParser):
             self._current_is_next_form = False
 
 
-async def _load_or_generate_schema(search_url: str) -> dict:
+async def _load_or_generate_schema(
+    search_url: str,
+    progress_callback: CrawlProgressCallback | None,
+) -> dict:
     output = await schema_service(
         url=search_url,
         prompt=_SCHEMA_PROMPT,
         target_json_example=_SCHEMA_TARGET_JSON_EXAMPLE,
         schema_type="css",
         schema_id=_SCHEMA_ID,
+        progress_callback=progress_callback,
     )
     return output.extraction_schema
 
@@ -182,7 +186,10 @@ async def search(
     progress_callback: CrawlProgressCallback | None = None,
 ) -> list[SearchResult]:
     search_url = _SEARCH_URL.format(query=quote_plus(query))
-    schema = await _load_or_generate_schema(search_url)
+    schema = await _load_or_generate_schema(
+        search_url=search_url,
+        progress_callback=progress_callback,
+    )
     strategy_class = JsonXPathExtractionStrategy if _is_xpath_schema(schema) else JsonCssExtractionStrategy
     extraction_strategy = strategy_class(schema)
     results: list[SearchResult] = []
