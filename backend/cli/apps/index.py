@@ -12,7 +12,7 @@ console = Console()
 
 def index(
     url: str,
-    max_depth: Annotated[int, typer.Option("--max-depth", "-d", min=0)] = 0,
+    max_depth: Annotated[int, typer.Option("--max-depth", "-d", min=1)] = 1,
     dedupe: Annotated[
         bool, typer.Option("--dedupe", help="Return each URL once at its lowest depth.")
     ] = False,

@@ -2,11 +2,11 @@ import asyncio
 from fnmatch import fnmatch
 from urllib.parse import urldefrag, urljoin, urlparse
 
-from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.scrape.schemas import ScrapePage
 from actions.scrape.service import scrape as scrape_service
-
+from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.shared.progress import CrawlProgressCallback
+
 from .schemas import IndexLink
 
 _DEFAULT_CONCURRENCY = 10
@@ -100,7 +100,7 @@ def _links_from_page(page: ScrapePage) -> list[dict]:
 
 async def index(
     url: str,
-    max_depth: int = 0,
+    max_depth: int = 1,
     dedupe: bool = False,
     concurrency: int = _DEFAULT_CONCURRENCY,
     mode: CrawlMode = "static",
@@ -126,9 +126,7 @@ async def index(
     frontier = [start_url]
 
     for depth in range(max_depth + 1):
-        page_urls = [
-            page_url for page_url in frontier if page_url not in visited_pages
-        ]
+        page_urls = [page_url for page_url in frontier if page_url not in visited_pages]
         if not page_urls:
             break
 
@@ -191,7 +189,7 @@ async def index(
 
 def index_sync(
     url: str,
-    max_depth: int = 0,
+    max_depth: int = 1,
     dedupe: bool = False,
     concurrency: int = _DEFAULT_CONCURRENCY,
     mode: CrawlMode = "static",
