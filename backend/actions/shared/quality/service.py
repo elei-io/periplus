@@ -335,12 +335,12 @@ def run_quality_checks(
     return warnings
 
 
-def warnings_path(cache_dir: str | Path) -> Path:
-    return Path(cache_dir) / _WARNINGS_FILE
+def warnings_path(artifact_dir: str | Path) -> Path:
+    return Path(artifact_dir) / _WARNINGS_FILE
 
 
-def write_quality_warnings(cache_dir: str | Path, warnings: Sequence[QualityWarning]) -> Path:
-    path = warnings_path(cache_dir)
+def write_quality_warnings(artifact_dir: str | Path, warnings: Sequence[QualityWarning]) -> Path:
+    path = warnings_path(artifact_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps([warning.model_dump() for warning in warnings], indent=2, ensure_ascii=False),

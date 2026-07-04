@@ -11,9 +11,9 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - .:/app
-      - ./.cache:/app/.cache
+      - ./.artifacts:/app/.artifacts
     environment:
-      CACHE_ROOT: /app/.cache
+      ARTIFACTS_ROOT: /app/.artifacts
       DATABASE_URL: postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}
     depends_on:
       atlas-postgres:

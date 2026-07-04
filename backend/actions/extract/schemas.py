@@ -2,9 +2,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from shared.crawl import CrawlMode, CrawlWait
-from shared.quality.schemas import QualityWarning
-from shared.extract_schema.schemas import SchemaType
+from actions.shared.crawl import CrawlMode, CrawlWait
+from actions.shared.quality.schemas import QualityWarning
+from actions.shared.extract_schema.schemas import SchemaType
 
 
 class Input(BaseModel):
@@ -23,17 +23,10 @@ class Input(BaseModel):
         default="none",
         description="The wait strategy to use before extraction.",
     )
-    refresh_schema: bool = Field(default=False, description="Regenerate the extraction schema.")
-
 
 class ExtractSource(BaseModel):
-    scrape_cache_dir: str
-    html_path: str
-    warnings_path: str | None = None
-    scrape_cached: bool
     schema_id: str
-    schema_path: str
-    schema_cached: bool
+    schema_type: SchemaType
 
 
 class ExtractOutput(BaseModel):

@@ -8,6 +8,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from artifacts.models import Artifact
 from db import Base
 
 
@@ -117,7 +118,6 @@ class TaskRun(Base):
     input_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
     output_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     warnings_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
-    artifacts_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -130,6 +130,11 @@ class TaskRun(Base):
     effect_runs: Mapped[list[EffectRun]] = relationship(
         back_populates="source_run",
         foreign_keys="EffectRun.source_run_id",
+    )
+    artifacts: Mapped[list[Artifact]] = relationship(
+        back_populates="task_run",
+        foreign_keys="Artifact.task_run_id",
+        cascade="all, delete-orphan",
     )
 
 

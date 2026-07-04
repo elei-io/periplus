@@ -33,10 +33,6 @@ def extract(
         Literal["none", "stable", "network", "fixed"],
         typer.Option("--wait", help="Wait strategy before extraction."),
     ] = "none",
-    refresh_schema: Annotated[
-        bool,
-        typer.Option("--refresh-schema", help="Regenerate the extraction schema."),
-    ] = False,
 ) -> None:
     with CrawlProgressRenderer(console) as progress:
         output = extract_service(
@@ -46,21 +42,14 @@ def extract(
             schema_type=schema_type,
             mode=mode,
             wait=wait,
-            refresh_schema=refresh_schema,
             progress_callback=progress.callback,
         )
 
     if output.source:
-        scrape_state = "cached scrape" if output.source.scrape_cached else "fresh scrape"
-        schema_state = "cached schema" if output.source.schema_cached else "generated schema"
         console.print(
             f"[bold]Extract[/bold] {output.url} "
-            f"({scrape_state}, {schema_state}: {output.source.schema_id})"
+            f"(schema: {output.source.schema_id}, {output.source.schema_type})"
         )
-        console.print(f"[dim]{output.source.html_path}[/dim]")
-        console.print(f"[dim]{output.source.schema_path}[/dim]")
-        if output.source.warnings_path:
-            console.print(f"[dim]{output.source.warnings_path}[/dim]")
     else:
         console.print(f"[bold]Extract[/bold] {output.url}")
 

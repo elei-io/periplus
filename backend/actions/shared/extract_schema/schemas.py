@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from shared.crawl import CrawlMode, CrawlWait
+from actions.shared.crawl import CrawlMode, CrawlWait
 
 SchemaType = Literal["css", "xpath"]
 
@@ -15,11 +15,10 @@ class Input(BaseModel):
         description="Optional JSON example showing the desired extracted object shape. Generated when omitted.",
     )
     schema_type: SchemaType = Field(default="css", description="Crawl4AI schema selector type.")
-    cache_key: str | None = Field(
+    schema_id: str | None = Field(
         default=None,
-        description="Optional stable cache key for a known reusable schema.",
+        description="Optional stable identifier for the generated schema.",
     )
-    refresh: bool = Field(default=False, description="Regenerate the schema even if it is cached.")
     mode: CrawlMode = Field(
         default="static",
         description="The crawl preset to use when schema generation needs to fetch the page.",
@@ -35,6 +34,5 @@ class SchemaOutput(BaseModel):
 
     schema_id: str
     schema_type: SchemaType
-    path: str
-    cached: bool
+    path: str | None = None
     extraction_schema: dict = Field(serialization_alias="schema")

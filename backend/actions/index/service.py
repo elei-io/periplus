@@ -1,14 +1,12 @@
 import asyncio
-import json
 from fnmatch import fnmatch
-from pathlib import Path
 from urllib.parse import urldefrag, urljoin, urlparse
 
-from shared.crawl import CrawlMode, CrawlWait
+from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.scrape.schemas import ScrapePage
 from actions.scrape.service import scrape as scrape_service
 
-from shared.progress import CrawlProgressCallback
+from actions.shared.progress import CrawlProgressCallback
 from .schemas import IndexLink
 
 _DEFAULT_CONCURRENCY = 10
@@ -93,15 +91,10 @@ def _filter_results(
 
 
 def _links_from_page(page: ScrapePage) -> list[dict]:
-    if not page.crawl_path:
+    if not page.crawl:
         return []
 
-    try:
-        crawl = json.loads(Path(page.crawl_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-
-    links = crawl.get("links", {})
+    links = page.crawl.get("links", {})
     return links.get("internal", []) + links.get("external", [])
 
 

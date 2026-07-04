@@ -4,7 +4,7 @@ sync:
 	cd backend && uv sync
 
 check:
-	cd backend && uv run python -m compileall actions api cli db shared tasks
+	cd backend && uv run python -m compileall actions artifacts api cli db tasks
 
 api:
 	cd backend && uv run fastapi dev api/app.py

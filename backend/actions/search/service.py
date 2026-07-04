@@ -13,13 +13,13 @@ from crawl4ai import (
     JsonXPathExtractionStrategy,
 )
 
-from shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
-from shared.extract_schema.service import schema as schema_service
+from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
+from actions.shared.extract_schema.service import schema as schema_service
 
 from .schemas import SearchResult
 
 _SEARCH_URL = "https://html.duckduckgo.com/html/?q={query}"
-_SCHEMA_CACHE_KEY = "search.duckduckgo"
+_SCHEMA_ID = "search.duckduckgo"
 _SCHEMA_PROMPT = (
     "Extract DuckDuckGo HTML search results. Return one object per result with: "
     "title as visible result title text, url as the result link href, and description "
@@ -90,7 +90,7 @@ async def _load_or_generate_schema(search_url: str) -> dict:
         prompt=_SCHEMA_PROMPT,
         target_json_example=_SCHEMA_TARGET_JSON_EXAMPLE,
         schema_type="css",
-        cache_key=_SCHEMA_CACHE_KEY,
+        schema_id=_SCHEMA_ID,
     )
     return output.extraction_schema
 

@@ -18,7 +18,7 @@ def scrape(
     ] = "static",
     wait: Annotated[
         Literal["none", "stable", "network", "fixed"],
-        typer.Option("--wait", help="Wait strategy before writing artifacts."),
+        typer.Option("--wait", help="Wait strategy before returning scrape data."),
     ] = "none",
     concurrency: Annotated[
         int,
@@ -34,24 +34,24 @@ def scrape(
             progress_callback=progress.callback,
         )
 
-    table = Table(title="Scrape artifacts")
+    table = Table(title="Scrape results")
     table.add_column("URL")
     table.add_column("Success")
-    table.add_column("Cached")
-    table.add_column("Artifacts")
-    table.add_column("Bytes")
+    table.add_column("Status")
+    table.add_column("HTML Bytes")
+    table.add_column("Links")
     table.add_column("Warnings")
-    table.add_column("Cache Dir")
 
     for page in output.pages:
+        links = (page.crawl or {}).get("links", {})
+        link_count = len(links.get("internal", [])) + len(links.get("external", []))
         table.add_row(
             page.url,
             "yes" if page.success else "no",
-            "yes" if page.cached else "no",
-            str(len(page.artifacts)),
-            str(sum(artifact.bytes for artifact in page.artifacts)),
+            str(page.status_code or ""),
+            str(len(page.html or "")),
+            str(link_count),
             str(len(page.warnings)),
-            page.cache_dir,
         )
 
     if not output.pages:
@@ -59,7 +59,6 @@ def scrape(
 
     console.print(table)
     console.print(
-        f"Wrote {output.stats.artifacts} artifacts "
-        f"({output.stats.cache_hits} cache hits, {output.stats.bytes_written} bytes) "
-        f"to {output.cache_root}"
+        f"Scraped {output.stats.succeeded}/{output.stats.requested_urls} pages "
+        f"in {output.stats.duration_seconds:.2f}s"
     )

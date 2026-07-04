@@ -7,8 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from actions.extract.schemas import Input as ExtractInput
 from actions.index.schemas import IndexLink
 from actions.index.schemas import Input as IndexInput
-from shared.quality.schemas import QualityWarning
-from shared.extract_schema.schemas import Input as SchemaInput
+from actions.shared.quality.schemas import QualityWarning
+from actions.shared.extract_schema.schemas import Input as SchemaInput
 from actions.scrape.schemas import Input as ScrapeInput
 
 
@@ -159,18 +159,10 @@ TaskEffectJson = Annotated[
 ]
 
 
-class PageArtifactSummary(StrictBaseModel):
-    html: str | None = None
-    crawl: str | None = None
-    warnings: str | None = None
-    schema_path: str | None = None
-    extracted: str | None = None
-
-
 class ScrapePageOutput(StrictBaseModel):
     url: str
     success: bool
-    artifacts: PageArtifactSummary = Field(default_factory=PageArtifactSummary)
+    artifact_ids: list[UUID] = Field(default_factory=list)
 
 
 class SearchOutputJson(StrictBaseModel):
@@ -187,7 +179,6 @@ class ScrapeOutputJson(StrictBaseModel):
 
 class SchemaOutputJson(StrictBaseModel):
     schema_id: str
-    schema_path: str | None = None
 
 
 class ExtractOutputJson(StrictBaseModel):
@@ -269,7 +260,6 @@ class TaskRunRecord(BaseModel):
     input_json: dict[str, Any]
     output_json: dict[str, Any] | None = None
     warnings_json: dict[str, Any]
-    artifacts_dir: str | None = None
     error: str | None = None
     created_at: datetime
     updated_at: datetime

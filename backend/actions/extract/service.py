@@ -1,25 +1,16 @@
 import asyncio
-import json
 import time
-from pathlib import Path
 
 from crawl4ai import JsonCssExtractionStrategy, JsonXPathExtractionStrategy
 
-from shared.crawl import CrawlMode, CrawlWait
-from shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
-from shared.quality.service import run_quality_checks, write_quality_warnings
-from shared.extract_schema.schemas import SchemaType
-from shared.extract_schema.service import schema as schema_service
+from actions.shared.crawl import CrawlMode, CrawlWait
+from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
+from actions.shared.quality.service import run_quality_checks
+from actions.shared.extract_schema.schemas import SchemaType
+from actions.shared.extract_schema.service import schema as schema_service
 from actions.scrape.service import scrape as scrape_service
 
 from .schemas import ExtractOutput, ExtractSource
-
-
-def _html_path(output) -> str | None:
-    if not output.pages:
-        return None
-
-    return output.pages[0].html_path
 
 
 def _strategy_for_schema(schema_type: SchemaType, extraction_schema: dict):
@@ -36,7 +27,6 @@ async def extract(
     schema_type: SchemaType = "css",
     mode: CrawlMode = "static",
     wait: CrawlWait = "none",
-    refresh_schema: bool = False,
     progress_callback: CrawlProgressCallback | None = None,
 ) -> ExtractOutput:
     await emit_crawl_progress(
@@ -82,8 +72,8 @@ async def extract(
             error=page.error if page else "Scrape failed before producing a page.",
         )
 
-    html_path = _html_path(scrape_output)
-    if html_path is None:
+    html = page.html
+    if html is None:
         await emit_crawl_progress(
             progress_callback,
             CrawlProgressEvent(
@@ -91,45 +81,24 @@ async def extract(
                 label="extract",
                 status="failed",
                 duration=time.perf_counter() - total_start_time,
-                error="Scrape did not produce an HTML artifact.",
+                error="Scrape did not produce HTML.",
             ),
         )
-        return ExtractOutput(url=page.url, success=False, error="Scrape did not produce an HTML artifact.")
-
-    try:
-        html = Path(html_path).read_text(encoding="utf-8")
-    except Exception as exc:
-        await emit_crawl_progress(
-            progress_callback,
-            CrawlProgressEvent(
-                url=page.url,
-                label="extract",
-                status="failed",
-                duration=time.perf_counter() - total_start_time,
-                error=str(exc),
-            ),
-        )
-        return ExtractOutput(url=page.url, success=False, error=str(exc))
+        return ExtractOutput(url=page.url, success=False, error="Scrape did not produce HTML.")
 
     schema_output = await schema_service(
         url=page.url,
         prompt=prompt,
         target_json_example=target_json_example,
         schema_type=schema_type,
-        refresh=refresh_schema,
         html=html,
         mode=mode,
         wait=wait,
         progress_callback=progress_callback,
     )
     source = ExtractSource(
-        scrape_cache_dir=page.cache_dir,
-        html_path=html_path,
-        warnings_path=page.warnings_path,
-        scrape_cached=page.cached,
         schema_id=schema_output.schema_id,
-        schema_path=schema_output.path,
-        schema_cached=schema_output.cached,
+        schema_type=schema_output.schema_type,
     )
 
     await emit_crawl_progress(
@@ -162,25 +131,14 @@ async def extract(
             ),
         )
         warnings = run_quality_checks(url=page.url, html=html, extraction_results=[])
-        warning_path = write_quality_warnings(page.cache_dir, warnings)
-        source.warnings_path = str(warning_path)
         return ExtractOutput(url=page.url, success=False, source=source, warnings=warnings, error=str(exc))
-
-    crawl = None
-    if page.crawl_path:
-        try:
-            crawl = json.loads(Path(page.crawl_path).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            crawl = None
 
     warnings = run_quality_checks(
         url=page.url,
         html=html,
-        crawl=crawl,
+        crawl=page.crawl,
         extraction_results=results,
     )
-    warning_path = write_quality_warnings(page.cache_dir, warnings)
-    source.warnings_path = str(warning_path)
 
     await emit_crawl_progress(
         progress_callback,
@@ -210,7 +168,6 @@ def extract_sync(
     schema_type: SchemaType = "css",
     mode: CrawlMode = "static",
     wait: CrawlWait = "none",
-    refresh_schema: bool = False,
     progress_callback: CrawlProgressCallback | None = None,
 ) -> ExtractOutput:
     return asyncio.run(
@@ -221,7 +178,6 @@ def extract_sync(
             schema_type=schema_type,
             mode=mode,
             wait=wait,
-            refresh_schema=refresh_schema,
             progress_callback=progress_callback,
         )
     )

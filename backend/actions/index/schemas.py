@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from shared.crawl import CrawlMode, CrawlWait
+from actions.shared.crawl import CrawlMode, CrawlWait
 
 
 class Input(BaseModel):

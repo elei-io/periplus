@@ -16,8 +16,10 @@ The current architecture is documented in [ARCHITECHTURE.md](ARCHITECHTURE.md).
 backend/api/          FastAPI app and routers
 backend/cli/          Typer CLI commands
 backend/actions/      Primitive actions that take inputs and produce outputs
+backend/actions/shared/
+                      Crawler, quality, progress, and extraction-schema support
+backend/artifacts/    Ephemeral task-run artifact metadata and disk helpers
 backend/tasks/        Persisted schedulable work, effects, and task runs
-backend/shared/       Artifact, crawler, quality, and extraction-schema support
 backend/db/           Postgres setup, SQLAlchemy base/session, and Alembic
 docker/atlas/         Backend container image
 docker-compose.yml    Local API and Postgres stack
@@ -103,14 +105,14 @@ make db-upgrade
 cd backend && uv run alembic -c db/alembic.ini check
 ```
 
-`OPENROUTER_API_KEY` is only needed when Atlas must generate an extraction schema or infer a target JSON example. Generated artifacts live under `.cache/<domain>/<service>/`, so schemas are cached beside other runtime artifacts without mixing them into source folders. Page-load-sensitive commands support `--mode` and `--wait`; use `--mode app --wait stable` for pages that need frontend hydration before their data appears.
+`OPENROUTER_API_KEY` is only needed when Atlas must generate an extraction schema or infer a target JSON example. Page-load-sensitive commands support `--mode` and `--wait`; use `--mode app --wait stable` for pages that need frontend hydration before their data appears.
 
-`scrape` always writes a fixed evidence bundle:
+Sync CLI/API actions return their data directly and do not write local artifacts. Managed task runs will write ephemeral byte artifacts under `.artifacts/`:
 
 ```text
-.cache/<domain>/scrape/<request-id>/page.html
-.cache/<domain>/scrape/<request-id>/crawl.json
-.cache/<domain>/scrape/<request-id>/manifest.json
+.artifacts/task-runs/<task-run-id>/result.html
+.artifacts/task-runs/<task-run-id>/result.json
+.artifacts/task-runs/<task-run-id>/atlas.json
 ```
 
-`crawl.json` stores reusable Crawl4AI evidence such as links, media, metadata, response headers, network logs, and console messages. `index` reads those cached links instead of rendering pages itself.
+Artifact metadata lives in Postgres through lightweight `artifacts` rows. The bytes on disk are ephemeral and may later be uploaded to S3 as the durable result layer.

@@ -10,10 +10,9 @@ from crawl4ai import JsonCssExtractionStrategy, LLMConfig
 from dotenv import load_dotenv
 from litellm import acompletion
 
-from shared.cache import cache_domain, service_cache_root
-from shared.crawl import CrawlMode, CrawlWait
-from shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
 from actions.scrape.service import scrape as scrape_service
+from actions.shared.crawl import CrawlMode, CrawlWait
+from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
 
 from .schemas import SchemaOutput, SchemaType
 
@@ -35,23 +34,23 @@ def _schema_llm_config() -> LLMConfig:
     )
 
 
-def _safe_cache_key(cache_key: str) -> str:
-    return "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in cache_key)
+def _safe_id(value: str) -> str:
+    return "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in value)
 
 
 def _schema_id(
     url: str,
     prompt: str,
     schema_type: SchemaType,
-    cache_key: str | None,
+    schema_id: str | None,
     mode: CrawlMode,
     wait: CrawlWait,
 ) -> str:
-    if cache_key:
-        return _safe_cache_key(cache_key)
+    if schema_id:
+        return _safe_id(schema_id)
 
     parsed_url = urlparse(url)
-    domain = _safe_cache_key(parsed_url.netloc or "schema")
+    domain = _safe_id(parsed_url.netloc or "schema")
     payload = {
         "domain": domain,
         "prompt": prompt,
@@ -61,21 +60,6 @@ def _schema_id(
     }
     digest = sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
     return f"{domain}-{digest}"
-
-
-def _schema_path(url: str, schema_id: str) -> Path:
-    return service_cache_root(cache_domain(url), "schema") / f"{schema_id}.json"
-
-
-def _html_path(output) -> str | None:
-    if not output.pages:
-        return None
-
-    for artifact in output.pages[0].artifacts:
-        if artifact.format == "html":
-            return artifact.path
-
-    return None
 
 
 async def _scrape_html(
@@ -91,30 +75,11 @@ async def _scrape_html(
         progress_callback=progress_callback,
     )
     page = output.pages[0] if output.pages else None
-    html_path = page.html_path if page else None
-    if page is None or not page.success or html_path is None:
+    if page is None or not page.success or page.html is None:
         error = page.error if page else "Scrape failed before producing a page."
-        raise RuntimeError(error or "Scrape did not produce an HTML artifact.")
+        raise RuntimeError(error or "Scrape did not produce HTML.")
 
-    return Path(html_path).read_text(encoding="utf-8")
-
-
-def _read_cached_schema(path: Path, schema_type: SchemaType) -> tuple[dict, SchemaType]:
-    cached = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(cached, dict) and isinstance(cached.get("schema"), dict):
-        cached_schema_type = cached.get("schema_type", schema_type)
-        return cached["schema"], cached_schema_type
-
-    return cached, schema_type
-
-
-def _write_cached_schema(path: Path, extraction_schema: dict, schema_type: SchemaType) -> None:
-    payload = {
-        "schema_type": schema_type,
-        "schema": extraction_schema,
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"{json.dumps(payload, indent=2)}\n", encoding="utf-8")
+    return page.html
 
 
 def _extract_json(value: str) -> str:
@@ -170,8 +135,7 @@ async def schema(
     prompt: str,
     target_json_example: str | None = None,
     schema_type: SchemaType = "css",
-    cache_key: str | None = None,
-    refresh: bool = False,
+    schema_id: str | None = None,
     html: str | None = None,
     mode: CrawlMode = "static",
     wait: CrawlWait = "none",
@@ -181,25 +145,10 @@ async def schema(
         url=url,
         prompt=prompt,
         schema_type=schema_type,
-        cache_key=cache_key,
+        schema_id=schema_id,
         mode=mode,
         wait=wait,
     )
-    path = _schema_path(url, schema_id)
-    if path.is_file() and not refresh:
-        await emit_crawl_progress(
-            progress_callback,
-            CrawlProgressEvent(url=url, label="schema cache", status="succeeded", duration=0.0),
-        )
-        extraction_schema, cached_schema_type = _read_cached_schema(path, schema_type)
-        return SchemaOutput(
-            schema_id=schema_id,
-            schema_type=cached_schema_type,
-            path=str(path),
-            cached=True,
-            extraction_schema=extraction_schema,
-        )
-
     await emit_crawl_progress(
         progress_callback,
         CrawlProgressEvent(url=url, label="schema", status="started"),
@@ -234,7 +183,6 @@ async def schema(
         )
         raise
 
-    _write_cached_schema(path, generated_schema, schema_type)
     await emit_crawl_progress(
         progress_callback,
         CrawlProgressEvent(
@@ -247,8 +195,6 @@ async def schema(
     return SchemaOutput(
         schema_id=schema_id,
         schema_type=schema_type,
-        path=str(path),
-        cached=False,
         extraction_schema=generated_schema,
     )
 
@@ -258,8 +204,7 @@ def schema_sync(
     prompt: str,
     target_json_example: str | None = None,
     schema_type: SchemaType = "css",
-    cache_key: str | None = None,
-    refresh: bool = False,
+    schema_id: str | None = None,
     html: str | None = None,
     mode: CrawlMode = "static",
     wait: CrawlWait = "none",
@@ -271,8 +216,7 @@ def schema_sync(
             prompt=prompt,
             target_json_example=target_json_example,
             schema_type=schema_type,
-            cache_key=cache_key,
-            refresh=refresh,
+            schema_id=schema_id,
             html=html,
             mode=mode,
             wait=wait,
