@@ -9,7 +9,9 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from artifacts.models import Artifact
+from crawls.models import Crawl
 from db import Base
+from extract_schemas.models import ExtractSchema
 
 
 def utc_now() -> datetime:
@@ -119,6 +121,11 @@ class TaskRun(Base):
         ForeignKey("effect_runs.id", use_alter=True, ondelete="SET NULL"),
         nullable=True,
     )
+    extract_schema_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("extract_schemas.id", use_alter=True, ondelete="SET NULL"),
+        nullable=True,
+    )
 
     queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     leased_by: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -146,7 +153,86 @@ class TaskRun(Base):
     artifacts: Mapped[list[Artifact]] = relationship(
         back_populates="task_run",
         foreign_keys="Artifact.task_run_id",
+    )
+    crawls: Mapped[list[Crawl]] = relationship(
+        back_populates="task_run",
+        foreign_keys="Crawl.task_run_id",
+    )
+    crawl_usages: Mapped[list[TaskRunCrawl]] = relationship(
+        back_populates="task_run",
+        foreign_keys="TaskRunCrawl.task_run_id",
         cascade="all, delete-orphan",
+    )
+    artifact_usages: Mapped[list[TaskRunArtifact]] = relationship(
+        back_populates="task_run",
+        foreign_keys="TaskRunArtifact.task_run_id",
+        cascade="all, delete-orphan",
+    )
+    extract_schema: Mapped[ExtractSchema | None] = relationship(
+        back_populates="task_runs",
+        foreign_keys=[extract_schema_id],
+    )
+
+
+class TaskRunCrawl(Base):
+    __tablename__ = "task_run_crawls"
+    __table_args__ = (
+        Index("ix_task_run_crawls_task_run_id", "task_run_id"),
+        Index("ix_task_run_crawls_crawl_id", "crawl_id"),
+        Index("ix_task_run_crawls_role", "role"),
+    )
+
+    task_run_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("task_runs.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    crawl_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("crawls.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    role: Mapped[str] = mapped_column(Text, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    task_run: Mapped[TaskRun] = relationship(
+        back_populates="crawl_usages",
+        foreign_keys=[task_run_id],
+    )
+    crawl: Mapped[Crawl] = relationship(
+        back_populates="task_run_usages",
+        foreign_keys=[crawl_id],
+    )
+
+
+class TaskRunArtifact(Base):
+    __tablename__ = "task_run_artifacts"
+    __table_args__ = (
+        Index("ix_task_run_artifacts_task_run_id", "task_run_id"),
+        Index("ix_task_run_artifacts_artifact_id", "artifact_id"),
+        Index("ix_task_run_artifacts_role", "role"),
+    )
+
+    task_run_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("task_runs.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    artifact_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("artifacts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    role: Mapped[str] = mapped_column(Text, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    task_run: Mapped[TaskRun] = relationship(
+        back_populates="artifact_usages",
+        foreign_keys=[task_run_id],
+    )
+    artifact: Mapped[Artifact] = relationship(
+        back_populates="task_run_usages",
+        foreign_keys=[artifact_id],
     )
 
 

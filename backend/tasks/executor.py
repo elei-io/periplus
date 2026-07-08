@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 from datetime import UTC, datetime, timedelta
@@ -18,9 +19,9 @@ from actions.search.service import search
 from actions.shared.extract_schema.service import schema
 from actions.shared.progress import CrawlProgressCallback
 from artifacts.models import Artifact
-from artifacts.service import artifact_cache_key, task_run_artifacts_dir
+from artifacts.service import task_run_artifacts_dir
 
-from .models import Task, TaskRun
+from .models import Task, TaskRun, TaskRunArtifact
 
 _LEASE_SECONDS = 30 * 60
 
@@ -51,19 +52,36 @@ def _create_artifact(
     kind: str,
     path: Path,
     meta: dict,
-    cache_suffix: str,
 ) -> Artifact:
-    task = run.task
+    content = path.read_bytes()
     artifact = Artifact(
         task_run_id=run.id,
         kind=kind,
         path=str(path),
-        cache_key=f"{artifact_cache_key(task.primitive, task.input_json)}:{cache_suffix}",
+        content_type=_content_type_for_kind(kind),
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        extracted={},
         meta=meta,
+        warnings_json={},
     )
     session.add(artifact)
     session.flush()
+    session.add(TaskRunArtifact(task_run_id=run.id, artifact_id=artifact.id, role="produced"))
+    session.flush()
     return artifact
+
+
+def _content_type_for_kind(kind: str) -> str:
+    if kind == "html":
+        return "text/html"
+    if kind.endswith(".json"):
+        return "application/json"
+    if kind == "pdf":
+        return "application/pdf"
+    if kind == "mhtml":
+        return "multipart/related"
+    return "application/octet-stream"
 
 
 @dataclass
@@ -111,9 +129,9 @@ async def _execute_primitive(
             warnings.extend(page_warnings)
             page_dir = f"pages/{index_:04d}"
             if page.html is not None:
-                page_artifacts.append(("result.html", f"{page_dir}/result.html", page.html))
+                page_artifacts.append(("html", f"{page_dir}/result.html", page.html))
             if page.crawl is not None:
-                page_artifacts.append(("result.json", f"{page_dir}/result.json", page.crawl))
+                page_artifacts.append(("crawl.json", f"{page_dir}/result.json", page.crawl))
             pages.append(
                 {
                     "url": page.url,
@@ -209,7 +227,7 @@ async def execute_run(
 
         for kind, relative_path, content in extra_artifacts:
             artifact_path = run_dir / relative_path
-            if kind == "result.html":
+            if kind == "html":
                 _write_text(artifact_path, str(content))
             else:
                 _write_json(artifact_path, content)
@@ -219,7 +237,6 @@ async def execute_run(
                 kind=kind,
                 path=artifact_path,
                 meta={"primitive": task.primitive, "task_id": str(task.id)},
-                cache_suffix=relative_path,
             )
 
         warnings_json = {
@@ -235,7 +252,6 @@ async def execute_run(
             kind="result.json",
             path=result_path,
             meta={"primitive": task.primitive, "task_id": str(task.id)},
-            cache_suffix="result.json",
         )
         _create_artifact(
             session=session,
@@ -243,7 +259,6 @@ async def execute_run(
             kind="atlas.json",
             path=atlas_path,
             meta={"primitive": task.primitive, "task_id": str(task.id)},
-            cache_suffix="atlas.json",
         )
 
         run.status = "succeeded"
@@ -266,7 +281,6 @@ async def execute_run(
             kind="atlas.json",
             path=atlas_path,
             meta={"primitive": task.primitive, "task_id": str(task.id)},
-            cache_suffix="atlas.json",
         )
         run.status = "failed"
         run.error = str(exc)

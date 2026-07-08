@@ -1,5 +1,3 @@
-import hashlib
-import json
 import os
 import shutil
 import time
@@ -15,14 +13,6 @@ def artifacts_root() -> Path:
 
 def task_run_artifacts_dir(task_run_id: UUID | str, root: Path | None = None) -> Path:
     return (root or artifacts_root()) / "task-runs" / str(task_run_id)
-
-
-def artifact_cache_key(
-    action: str,
-    payload: dict,
-) -> str:
-    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
-    return f"{action}:{digest}"
 
 
 def cleanup_artifacts(ttl_seconds: int, root: Path | None = None) -> int:

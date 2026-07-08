@@ -264,6 +264,7 @@ class TaskRunRecord(BaseModel):
     status: TaskRunStatus
     trigger_kind: TaskRunTriggerKind
     triggered_by_effect_run_id: UUID | None = None
+    extract_schema_id: UUID | None = None
     queued_at: datetime
     leased_by: str | None = None
     leased_at: datetime | None = None
@@ -276,6 +277,24 @@ class TaskRunRecord(BaseModel):
     error: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class TaskRunCrawlRecord(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    task_run_id: UUID
+    crawl_id: UUID
+    role: str
+    created_at: datetime
+
+
+class TaskRunArtifactRecord(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    task_run_id: UUID
+    artifact_id: UUID
+    role: str
+    created_at: datetime
 
 
 class EffectRunRecord(BaseModel):
