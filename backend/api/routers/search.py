@@ -4,15 +4,19 @@ from collections.abc import AsyncIterator
 from dataclasses import asdict
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import TypeAdapter
+from sqlalchemy.orm import Session
 
+from api.routers.action_runs import run_action
 from actions.shared.progress import CrawlProgressEvent
 from actions.search.schemas import SearchResult
-from actions.search.service import search as search_service
+from db.session import get_session
 
 router = APIRouter(prefix="/search", tags=["search"])
 _DONE = object()
+_SEARCH_ADAPTER = TypeAdapter(list[SearchResult])
 
 
 def _sse_event(event: str, data: object) -> str:
@@ -20,6 +24,7 @@ def _sse_event(event: str, data: object) -> str:
 
 
 async def _search_stream(
+    session: Session,
     query: str,
     max_results: int,
 ) -> AsyncIterator[str]:
@@ -30,9 +35,11 @@ async def _search_stream(
 
     async def run_search() -> None:
         try:
-            result = await search_service(
-                query=query,
-                max_results=max_results,
+            result = await run_action(
+                session=session,
+                primitive="search",
+                input_value={"query": query, "max_results": max_results},
+                response_adapter=_SEARCH_ADAPTER,
                 progress_callback=progress_callback,
             )
             await queue.put(result)
@@ -72,13 +79,19 @@ async def _search_stream(
 @router.get("/", response_model=list[SearchResult])
 async def search(
     request: Request,
+    session: Annotated[Session, Depends(get_session)],
     query: str,
     max_results: Annotated[int, Query(ge=1)] = 10,
 ) -> list[SearchResult] | StreamingResponse:
     if "text/event-stream" in request.headers.get("accept", ""):
         return StreamingResponse(
-            _search_stream(query=query, max_results=max_results),
+            _search_stream(session=session, query=query, max_results=max_results),
             media_type="text/event-stream",
         )
 
-    return await search_service(query=query, max_results=max_results)
+    return await run_action(
+        session=session,
+        primitive="search",
+        input_value={"query": query, "max_results": max_results},
+        response_adapter=_SEARCH_ADAPTER,
+    )

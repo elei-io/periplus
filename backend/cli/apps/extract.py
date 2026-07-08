@@ -1,13 +1,16 @@
 from typing import Annotated, Literal
 
 import typer
+from pydantic import TypeAdapter
 from rich.console import Console
 from rich.json import JSON
 
+from actions.extract.schemas import ExtractOutput
+from cli.action_runs import run_action
 from cli.progress import CrawlProgressRenderer
-from actions.extract.service import extract_sync as extract_service
 
 console = Console()
+_EXTRACT_ADAPTER = TypeAdapter(ExtractOutput)
 
 
 def extract(
@@ -35,13 +38,17 @@ def extract(
     ] = "none",
 ) -> None:
     with CrawlProgressRenderer(console) as progress:
-        output = extract_service(
-            url=url,
-            prompt=prompt,
-            target_json_example=target_json_example,
-            schema_type=schema_type,
-            mode=mode,
-            wait=wait,
+        output = run_action(
+            primitive="extract",
+            input_value={
+                "url": url,
+                "prompt": prompt,
+                "target_json_example": target_json_example,
+                "schema_type": schema_type,
+                "mode": mode,
+                "wait": wait,
+            },
+            response_adapter=_EXTRACT_ADAPTER,
             progress_callback=progress.callback,
         )
 

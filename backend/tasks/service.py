@@ -1,4 +1,6 @@
+import json
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from uuid import UUID
 
 from croniter import croniter
@@ -11,6 +13,7 @@ from actions.extract.schemas import Input as ExtractInput
 from actions.index.schemas import Input as IndexInput
 from actions.scrape.schemas import Input as ScrapeInput
 from actions.shared.extract_schema.schemas import Input as SchemaInput
+from actions.shared.progress import CrawlProgressCallback
 
 from .models import Task, TaskRun
 from .schemas import (
@@ -35,6 +38,10 @@ class TaskConflictError(Exception):
 
 
 class TaskValidationError(Exception):
+    pass
+
+
+class TaskRunConflictError(Exception):
     pass
 
 
@@ -69,6 +76,27 @@ def _record(task: Task) -> TaskRecord:
 
 def _run_record(run: TaskRun) -> TaskRunRecord:
     return TaskRunRecord.model_validate(run)
+
+
+def _json_hash(value: object) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return sha256(payload.encode()).hexdigest()
+
+
+def _ad_hoc_identity_key(primitive: TaskPrimitive, input_json: dict) -> str:
+    return f"adhoc:{primitive}:{_json_hash(input_json)}"
+
+
+def _ad_hoc_task_name(primitive: TaskPrimitive, input_json: dict) -> str:
+    if primitive in {"index", "schema", "extract"} and isinstance(input_json.get("url"), str):
+        return f"Ad hoc {primitive}: {input_json['url']}"
+    if primitive == "scrape" and isinstance(input_json.get("urls"), list) and input_json["urls"]:
+        first_url = input_json["urls"][0]
+        suffix = "" if len(input_json["urls"]) == 1 else f" +{len(input_json['urls']) - 1}"
+        return f"Ad hoc scrape: {first_url}{suffix}"
+    if primitive == "search" and isinstance(input_json.get("query"), str):
+        return f"Ad hoc search: {input_json['query']}"
+    return f"Ad hoc {primitive}"
 
 
 def _parse_datetime(value: str | datetime | None) -> datetime | None:
@@ -330,3 +358,80 @@ def enqueue_due_task_runs(session: Session, limit: int = 20) -> int:
 
     session.flush()
     return enqueued
+
+
+async def execute_ad_hoc_task_run(
+    session: Session,
+    primitive: TaskPrimitive,
+    input_value: dict,
+    progress_callback: CrawlProgressCallback | None = None,
+) -> object | None:
+    from .executor import execute_run
+
+    input_json = _validate_input(primitive, input_value)
+    identity_key = _ad_hoc_identity_key(primitive, input_json)
+    task = session.scalar(select(Task).where(Task.identity_key == identity_key))
+
+    if task is None:
+        task = Task(
+            name=_ad_hoc_task_name(primitive, input_json),
+            primitive=primitive,
+            input_json=input_json,
+            schedule_json=None,
+            identity_key=identity_key,
+            next_run_at=None,
+        )
+        session.add(task)
+        try:
+            session.flush()
+        except IntegrityError:
+            session.rollback()
+            task = session.scalar(select(Task).where(Task.identity_key == identity_key))
+            if task is None:
+                raise
+
+    active_statement = select(
+        exists().where(
+            TaskRun.task_id == task.id,
+            TaskRun.status.in_(_ACTIVE_RUN_STATUSES),
+        )
+    )
+    if session.scalar(active_statement):
+        raise TaskRunConflictError("Task already has an active run.")
+
+    now = datetime.now(UTC)
+    run = TaskRun(
+        task_id=task.id,
+        status="running",
+        trigger_kind="manual",
+        queued_at=now,
+        started_at=now,
+        input_json=task.input_json,
+        warnings_json={},
+    )
+    session.add(run)
+    session.flush()
+    response = await execute_run(session=session, run_id=run.id, progress_callback=progress_callback)
+    if run.status == "failed":
+        session.commit()
+        raise RuntimeError(run.error or "Task run failed.")
+
+    return response
+
+
+def execute_ad_hoc_task_run_sync(
+    session: Session,
+    primitive: TaskPrimitive,
+    input_value: dict,
+    progress_callback: CrawlProgressCallback | None = None,
+) -> object | None:
+    import asyncio
+
+    return asyncio.run(
+        execute_ad_hoc_task_run(
+            session=session,
+            primitive=primitive,
+            input_value=input_value,
+            progress_callback=progress_callback,
+        )
+    )

@@ -1,13 +1,16 @@
 from typing import Annotated, Literal
 
 import typer
+from pydantic import TypeAdapter
 from rich.console import Console
 from rich.table import Table
 
+from actions.scrape.schemas import ScrapeOutput
+from cli.action_runs import run_action
 from cli.progress import CrawlProgressRenderer
-from actions.scrape.service import scrape_sync as scrape_service
 
 console = Console()
+_SCRAPE_ADAPTER = TypeAdapter(ScrapeOutput)
 
 
 def scrape(
@@ -26,11 +29,15 @@ def scrape(
     ] = 10,
 ) -> None:
     with CrawlProgressRenderer(console) as progress:
-        output = scrape_service(
-            urls=urls,
-            mode=mode,
-            wait=wait,
-            concurrency=concurrency,
+        output = run_action(
+            primitive="scrape",
+            input_value={
+                "urls": urls,
+                "mode": mode,
+                "wait": wait,
+                "concurrency": concurrency,
+            },
+            response_adapter=_SCRAPE_ADAPTER,
             progress_callback=progress.callback,
         )
 

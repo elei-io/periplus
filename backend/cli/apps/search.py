@@ -1,13 +1,16 @@
 from typing import Annotated
 
 import typer
+from pydantic import TypeAdapter
 from rich.console import Console
 from rich.table import Table
 
+from actions.search.schemas import SearchResult
+from cli.action_runs import run_action
 from cli.progress import CrawlProgressRenderer
-from actions.search.service import search_sync as search_service
 
 console = Console()
+_SEARCH_ADAPTER = TypeAdapter(list[SearchResult])
 
 
 def search(
@@ -15,9 +18,10 @@ def search(
     max_results: Annotated[int, typer.Option("--max-results", "-n", min=1)] = 10,
 ) -> None:
     with CrawlProgressRenderer(console) as progress:
-        results = search_service(
-            query=query,
-            max_results=max_results,
+        results = run_action(
+            primitive="search",
+            input_value={"query": query, "max_results": max_results},
+            response_adapter=_SEARCH_ADAPTER,
             progress_callback=progress.callback,
         )
 

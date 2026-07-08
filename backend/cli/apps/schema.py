@@ -1,13 +1,16 @@
 from typing import Annotated, Literal
 
 import typer
+from pydantic import TypeAdapter
 from rich.console import Console
 from rich.json import JSON
 
+from actions.shared.extract_schema.schemas import SchemaOutput
+from cli.action_runs import run_action
 from cli.progress import CrawlProgressRenderer
-from actions.shared.extract_schema.service import schema_sync as schema_service
 
 console = Console()
+_SCHEMA_ADAPTER = TypeAdapter(SchemaOutput)
 
 
 def schema(
@@ -39,14 +42,18 @@ def schema(
     ] = None,
 ) -> None:
     with CrawlProgressRenderer(console) as progress:
-        output = schema_service(
-            url=url,
-            prompt=prompt,
-            target_json_example=target_json_example,
-            schema_type=schema_type,
-            schema_id=schema_id,
-            mode=mode,
-            wait=wait,
+        output = run_action(
+            primitive="schema",
+            input_value={
+                "url": url,
+                "prompt": prompt,
+                "target_json_example": target_json_example,
+                "schema_type": schema_type,
+                "schema_id": schema_id,
+                "mode": mode,
+                "wait": wait,
+            },
+            response_adapter=_SCHEMA_ADAPTER,
             progress_callback=progress.callback,
         )
 

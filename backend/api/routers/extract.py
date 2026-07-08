@@ -2,23 +2,28 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import asdict
+from typing import Annotated
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from pydantic import TypeAdapter
+from sqlalchemy.orm import Session
 
+from api.routers.action_runs import run_action
 from actions.shared.progress import CrawlProgressEvent
 from actions.extract.schemas import ExtractOutput, Input
-from actions.extract.service import extract as extract_service
+from db.session import get_session
 
 router = APIRouter(prefix="/extract", tags=["extract"])
 _DONE = object()
+_EXTRACT_ADAPTER = TypeAdapter(ExtractOutput)
 
 
 def _sse_event(event: str, data: object) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-async def _extract_stream(request: Input) -> AsyncIterator[str]:
+async def _extract_stream(session: Session, request: Input) -> AsyncIterator[str]:
     queue: asyncio.Queue[CrawlProgressEvent | ExtractOutput | Exception | object] = asyncio.Queue()
 
     async def progress_callback(event: CrawlProgressEvent) -> None:
@@ -26,8 +31,11 @@ async def _extract_stream(request: Input) -> AsyncIterator[str]:
 
     async def run_extract() -> None:
         try:
-            result = await extract_service(
-                **request.model_dump(),
+            result = await run_action(
+                session=session,
+                primitive="extract",
+                input_value=request.model_dump(),
+                response_adapter=_EXTRACT_ADAPTER,
                 progress_callback=progress_callback,
             )
             await queue.put(result)
@@ -65,11 +73,17 @@ async def _extract_stream(request: Input) -> AsyncIterator[str]:
 async def extract(
     request: Input,
     http_request: Request,
+    session: Annotated[Session, Depends(get_session)],
 ) -> ExtractOutput | StreamingResponse:
     if "text/event-stream" in http_request.headers.get("accept", ""):
         return StreamingResponse(
-            _extract_stream(request),
+            _extract_stream(session=session, request=request),
             media_type="text/event-stream",
         )
 
-    return await extract_service(**request.model_dump())
+    return await run_action(
+        session=session,
+        primitive="extract",
+        input_value=request.model_dump(),
+        response_adapter=_EXTRACT_ADAPTER,
+    )

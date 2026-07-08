@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from actions.index.service import index
 from actions.scrape.service import scrape
 from actions.search.service import search
 from actions.shared.extract_schema.service import schema
+from actions.shared.progress import CrawlProgressCallback
 from artifacts.models import Artifact
 from artifacts.service import artifact_cache_key, task_run_artifacts_dir
 
@@ -64,20 +66,43 @@ def _create_artifact(
     return artifact
 
 
-async def _execute_primitive(task: Task) -> tuple[dict, list[dict], list[tuple[str, str, object]]]:
+@dataclass
+class PrimitiveExecution:
+    output_json: dict
+    response_json: object
+    warnings: list[dict]
+    artifacts: list[tuple[str, str, object]]
+
+
+async def _execute_primitive(
+    task: Task,
+    progress_callback: CrawlProgressCallback | None = None,
+) -> PrimitiveExecution:
     primitive = task.primitive
     payload = task.input_json
 
     if primitive == "search":
-        results = await search(**payload)
-        return {"results": [_json_safe(result) for result in results]}, [], []
+        results = await search(**payload, progress_callback=progress_callback)
+        response_json = [_json_safe(result) for result in results]
+        return PrimitiveExecution(
+            output_json={"results": response_json},
+            response_json=response_json,
+            warnings=[],
+            artifacts=[],
+        )
 
     if primitive == "index":
-        links = await index(**payload)
-        return {"links": [_json_safe(link) for link in links]}, [], []
+        links = await index(**payload, progress_callback=progress_callback)
+        response_json = [_json_safe(link) for link in links]
+        return PrimitiveExecution(
+            output_json={"links": response_json},
+            response_json=response_json,
+            warnings=[],
+            artifacts=[],
+        )
 
     if primitive == "scrape":
-        output = await scrape(**payload)
+        output = await scrape(**payload, progress_callback=progress_callback)
         warnings: list[dict] = []
         page_artifacts: list[tuple[str, str, object]] = []
         pages = []
@@ -100,19 +125,36 @@ async def _execute_primitive(task: Task) -> tuple[dict, list[dict], list[tuple[s
                 }
             )
 
-        return {
-            "stats": _json_safe(output.stats),
-            "pages": pages,
-        }, warnings, page_artifacts
+        return PrimitiveExecution(
+            output_json={
+                "stats": _json_safe(output.stats),
+                "pages": pages,
+            },
+            response_json=_json_safe(output),
+            warnings=warnings,
+            artifacts=page_artifacts,
+        )
 
     if primitive == "schema":
-        output = await schema(**payload)
-        return _json_safe(output), [], []
+        output = await schema(**payload, progress_callback=progress_callback)
+        response_json = _json_safe(output)
+        return PrimitiveExecution(
+            output_json=response_json,
+            response_json=response_json,
+            warnings=[],
+            artifacts=[],
+        )
 
     if primitive == "extract":
-        output = await extract(**payload)
+        output = await extract(**payload, progress_callback=progress_callback)
         warnings = [_json_safe(warning) for warning in output.warnings]
-        return _json_safe(output), warnings, []
+        response_json = _json_safe(output)
+        return PrimitiveExecution(
+            output_json=response_json,
+            response_json=response_json,
+            warnings=warnings,
+            artifacts=[],
+        )
 
     raise ValueError(f"Unsupported task primitive: {primitive}")
 
@@ -139,18 +181,27 @@ def claim_next_run(session: Session, worker_id: str, lease_seconds: int = _LEASE
     return run
 
 
-async def execute_run(session: Session, run_id: UUID) -> None:
+async def execute_run(
+    session: Session,
+    run_id: UUID,
+    progress_callback: CrawlProgressCallback | None = None,
+) -> object | None:
     run = session.get(TaskRun, run_id)
     if run is None:
-        return
+        return None
 
     task = run.task
     output_json: dict | None = None
+    response_json: object | None = None
     warnings: list[dict] = []
     run_dir = task_run_artifacts_dir(run.id)
 
     try:
-        output_json, warnings, extra_artifacts = await _execute_primitive(task)
+        execution = await _execute_primitive(task, progress_callback=progress_callback)
+        output_json = execution.output_json
+        response_json = execution.response_json
+        warnings = execution.warnings
+        extra_artifacts = execution.artifacts
 
         result_path = run_dir / "result.json"
         atlas_path = run_dir / "atlas.json"
@@ -226,6 +277,8 @@ async def execute_run(session: Session, run_id: UUID) -> None:
         run.leased_until = None
         task.updated_at = now
         session.flush()
+
+    return response_json
 
 
 async def run_worker_once(session_factory, worker_id: str | None = None) -> bool:

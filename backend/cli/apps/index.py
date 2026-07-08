@@ -1,13 +1,16 @@
 from typing import Annotated, Literal
 
 import typer
-from actions.index.service import index_sync as index_service
+from pydantic import TypeAdapter
 from rich.console import Console
 from rich.table import Table
 
+from actions.index.schemas import IndexLink
+from cli.action_runs import run_action
 from cli.progress import CrawlProgressRenderer
 
 console = Console()
+_INDEX_ADAPTER = TypeAdapter(list[IndexLink])
 
 
 def index(
@@ -62,17 +65,21 @@ def index(
     ] = None,
 ) -> None:
     with CrawlProgressRenderer(console) as progress:
-        links = index_service(
-            url=url,
-            max_depth=max_depth,
-            dedupe=dedupe,
-            concurrency=concurrency,
-            mode=mode,
-            wait=wait,
-            include_crawl=include_crawl,
-            exclude_crawl=exclude_crawl,
-            include_result=include_result,
-            exclude_result=exclude_result,
+        links = run_action(
+            primitive="index",
+            input_value={
+                "url": url,
+                "max_depth": max_depth,
+                "dedupe": dedupe,
+                "concurrency": concurrency,
+                "mode": mode,
+                "wait": wait,
+                "include_crawl": include_crawl or [],
+                "exclude_crawl": exclude_crawl or [],
+                "include_result": include_result or [],
+                "exclude_result": exclude_result or [],
+            },
+            response_adapter=_INDEX_ADAPTER,
             progress_callback=progress.callback,
         )
 
