@@ -16,7 +16,7 @@ from actions.shared.crawl import (
 from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
 from actions.shared.quality.service import run_quality_checks
 
-from .schemas import ScrapeOutput, ScrapePage, ScrapeStats
+from .schemas import CrawlOutput, CrawlPage, CrawlStats
 
 
 def _json_safe(value: Any) -> Any:
@@ -51,16 +51,16 @@ def _crawl_payload(result: CrawlResult) -> dict[str, Any]:
     )
 
 
-async def _scrape_url(
+async def _crawl_url(
     crawler: AsyncWebCrawler,
     url: str,
     mode: CrawlMode,
     wait: CrawlWait,
     progress_callback: CrawlProgressCallback | None,
-) -> ScrapePage:
+) -> CrawlPage:
     await emit_crawl_progress(
         progress_callback,
-        CrawlProgressEvent(url=url, label="scrape", status="started"),
+        CrawlProgressEvent(url=url, label="crawl", status="started"),
     )
     start_time = time.perf_counter()
 
@@ -79,9 +79,9 @@ async def _scrape_url(
         duration = time.perf_counter() - start_time
         await emit_crawl_progress(
             progress_callback,
-            CrawlProgressEvent(url=url, label="scrape", status="failed", duration=duration, error=str(exc)),
+            CrawlProgressEvent(url=url, label="crawl", status="failed", duration=duration, error=str(exc)),
         )
-        return ScrapePage(
+        return CrawlPage(
             url=url,
             success=False,
             duration_seconds=duration,
@@ -93,14 +93,14 @@ async def _scrape_url(
         progress_callback,
         CrawlProgressEvent(
             url=url,
-            label="scrape",
+            label="crawl",
             status="succeeded" if result.success else "failed",
             duration=duration,
             error=result.error_message,
         ),
     )
 
-    return ScrapePage(
+    return CrawlPage(
         url=result.url,
         success=result.success,
         status_code=result.status_code,
@@ -112,7 +112,7 @@ async def _scrape_url(
     )
 
 
-async def _scrape_one(
+async def _crawl_one(
     crawler: AsyncWebCrawler,
     index: int,
     url: str,
@@ -120,9 +120,9 @@ async def _scrape_one(
     wait: CrawlWait,
     semaphore: asyncio.Semaphore,
     progress_callback: CrawlProgressCallback | None,
-) -> tuple[int, ScrapePage]:
+) -> tuple[int, CrawlPage]:
     async with semaphore:
-        page = await _scrape_url(
+        page = await _crawl_url(
             crawler=crawler,
             url=url,
             mode=mode,
@@ -132,21 +132,21 @@ async def _scrape_one(
         return index, page
 
 
-async def scrape(
+async def crawl(
     urls: list[str],
     mode: CrawlMode = "static",
     wait: CrawlWait = "none",
     concurrency: int = 10,
     progress_callback: CrawlProgressCallback | None = None,
-) -> ScrapeOutput:
+) -> CrawlOutput:
     start_time = time.perf_counter()
-    pages_by_index: dict[int, ScrapePage] = {}
+    pages_by_index: dict[int, CrawlPage] = {}
     semaphore = asyncio.Semaphore(max(1, concurrency))
 
     async with AsyncWebCrawler(config=browser_config_for_mode(mode)) as crawler:
         tasks = [
             asyncio.create_task(
-                _scrape_one(
+                _crawl_one(
                     crawler=crawler,
                     index=index,
                     url=url,
@@ -163,8 +163,8 @@ async def scrape(
             pages_by_index[index] = page
 
     pages = [pages_by_index[index] for index in range(len(urls))]
-    return ScrapeOutput(
-        stats=ScrapeStats(
+    return CrawlOutput(
+        stats=CrawlStats(
             requested_urls=len(urls),
             succeeded=sum(1 for page in pages if page.success),
             failed=sum(1 for page in pages if not page.success),
@@ -174,15 +174,15 @@ async def scrape(
     )
 
 
-def scrape_sync(
+def crawl_sync(
     urls: list[str],
     mode: CrawlMode = "static",
     wait: CrawlWait = "none",
     concurrency: int = 10,
     progress_callback: CrawlProgressCallback | None = None,
-) -> ScrapeOutput:
+) -> CrawlOutput:
     return asyncio.run(
-        scrape(
+        crawl(
             urls=urls,
             mode=mode,
             wait=wait,

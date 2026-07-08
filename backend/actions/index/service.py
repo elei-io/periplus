@@ -2,8 +2,8 @@ import asyncio
 from fnmatch import fnmatch
 from urllib.parse import urldefrag, urljoin, urlparse
 
-from actions.scrape.schemas import ScrapePage
-from actions.scrape.service import scrape as scrape_service
+from actions.crawl.schemas import CrawlPage
+from actions.crawl.service import crawl as crawl_service
 from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.shared.progress import CrawlProgressCallback
 
@@ -90,7 +90,7 @@ def _filter_results(
     ]
 
 
-def _links_from_page(page: ScrapePage) -> list[dict]:
+def _links_from_page(page: CrawlPage) -> list[dict]:
     if not page.crawl:
         return []
 
@@ -130,7 +130,7 @@ async def index(
         if not page_urls:
             break
 
-        scrape_output = await scrape_service(
+        crawl_output = await crawl_service(
             urls=page_urls,
             mode=mode,
             wait=wait,
@@ -139,7 +139,7 @@ async def index(
         )
         next_frontier: list[str] = []
 
-        for page_url, page in zip(page_urls, scrape_output.pages, strict=False):
+        for page_url, page in zip(page_urls, crawl_output.pages, strict=False):
             visited_pages.add(page_url)
             if not page.success:
                 continue

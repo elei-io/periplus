@@ -2,7 +2,7 @@ import type { FormEvent } from "react"
 import { useMemo, useState } from "react"
 import { CogIcon, FileSearchIcon, XIcon } from "lucide-react"
 
-import { ScrapeSettingsDialog } from "@/components/scrape-run/scrape-settings-dialog"
+import { CrawlSettingsDialog } from "@/components/crawl-run/crawl-settings-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -11,23 +11,23 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import type { CrawlMode, CrawlWait } from "@/types/index"
-import type { ScrapeInput } from "@/types/scrape"
+import type { CrawlInput } from "@/types/crawl"
 
-type ScrapeFormProps = {
+type CrawlFormProps = {
   idPrefix: string
   initialUrl?: string
   isRunning: boolean
   onCancel: () => void
-  onSubmit: (input: ScrapeInput) => void
+  onSubmit: (input: CrawlInput) => void
 }
 
-export function ScrapeForm({
+export function CrawlForm({
   idPrefix,
   initialUrl = "",
   isRunning,
   onCancel,
   onSubmit,
-}: ScrapeFormProps) {
+}: CrawlFormProps) {
   const [url, setUrl] = useState(initialUrl)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [mode, setMode] = useState<CrawlMode>("static")
@@ -47,7 +47,7 @@ export function ScrapeForm({
     setError("")
   }
 
-  const submitScrapeRequest = () => {
+  const submitCrawlRequest = () => {
     const normalizedUrl = url.trim()
 
     try {
@@ -74,7 +74,7 @@ export function ScrapeForm({
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    submitScrapeRequest()
+    submitCrawlRequest()
   }
 
   return (
@@ -88,7 +88,7 @@ export function ScrapeForm({
                 id={urlInputId}
                 className="h-10 rounded-none border-0 bg-transparent px-0 text-base shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
                 type="url"
-                placeholder="Scrape a URL"
+                placeholder="Crawl a URL"
                 value={url}
                 onChange={(event) => setUrl(event.target.value)}
                 disabled={isRunning}
@@ -111,24 +111,24 @@ export function ScrapeForm({
                   }
                 >
                   <CogIcon />
-                  <span className="sr-only">Scrape settings</span>
+                  <span className="sr-only">Crawl settings</span>
                   {activeSettingsCount > 0 ? (
                     <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-primary text-[10px] font-medium text-primary-foreground">
                       {activeSettingsCount}
                     </span>
                   ) : null}
                 </TooltipTrigger>
-                <TooltipContent>Scrape settings</TooltipContent>
+                <TooltipContent>Crawl settings</TooltipContent>
               </Tooltip>
 
               <Button
                 className="h-10 flex-1 rounded-full px-5 sm:flex-none"
                 type="button"
                 disabled={isRunning}
-                onClick={submitScrapeRequest}
+                onClick={submitCrawlRequest}
               >
                 <FileSearchIcon />
-                Scrape
+                Crawl
               </Button>
               {isRunning ? (
                 <Button
@@ -149,7 +149,7 @@ export function ScrapeForm({
         </div>
       </form>
 
-      <ScrapeSettingsDialog
+      <CrawlSettingsDialog
         disabled={isRunning}
         mode={mode}
         open={settingsOpen}

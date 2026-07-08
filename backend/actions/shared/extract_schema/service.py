@@ -10,7 +10,7 @@ from crawl4ai import JsonCssExtractionStrategy, LLMConfig
 from dotenv import load_dotenv
 from litellm import acompletion
 
-from actions.scrape.service import scrape as scrape_service
+from actions.crawl.service import crawl as crawl_service
 from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
 
@@ -62,13 +62,13 @@ def _schema_id(
     return f"{domain}-{digest}"
 
 
-async def _scrape_html(
+async def _crawl_html(
     url: str,
     mode: CrawlMode,
     wait: CrawlWait,
     progress_callback: CrawlProgressCallback | None,
 ) -> str:
-    output = await scrape_service(
+    output = await crawl_service(
         urls=[url],
         mode=mode,
         wait=wait,
@@ -76,8 +76,8 @@ async def _scrape_html(
     )
     page = output.pages[0] if output.pages else None
     if page is None or not page.success or page.html is None:
-        error = page.error if page else "Scrape failed before producing a page."
-        raise RuntimeError(error or "Scrape did not produce HTML.")
+        error = page.error if page else "Crawl failed before producing a page."
+        raise RuntimeError(error or "Crawl did not produce HTML.")
 
     return page.html
 
@@ -155,7 +155,7 @@ async def schema(
     )
     start_time = time.perf_counter()
     target_json_example = target_json_example or await _generate_target_json_example(prompt)
-    html = html or await _scrape_html(
+    html = html or await _crawl_html(
         url=url,
         mode=mode,
         wait=wait,

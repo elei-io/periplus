@@ -8,10 +8,10 @@ It is intentionally a living design note, not a finished migration spec.
 Atlas should be able to answer operational and product questions from Postgres without
 opening crawl artifact files:
 
-- What is the scrape volume for this domain during the last hour?
+- What is the crawl volume for this domain during the last hour?
 - How many tasks are in flight for this URL pattern?
 - How has the error profile for this URL path developed over time?
-- Are scrapes from this URL looking healthy, or showing warning signs that we are pushing too much?
+- Are crawls from this URL looking healthy, or showing warning signs that we are pushing too much?
 - Do we have recent artifacts for this URL that can be reused as cached responses?
 - Which extraction schema produced a task run's structured output?
 
@@ -627,7 +627,7 @@ Suggested order:
 3. Add Crawl models, schemas, and migration.
 4. Route API and CLI action triggers through task creation, task-run creation, and inline
    task-run execution.
-5. Introduce the single crawl service and route existing `scrape` through it.
+5. Introduce the durable crawl service and route the `crawl` action through it.
 6. Add task-run usage joins for crawls and artifacts.
 7. Add CrawlPolicy and ExtractSchema models and migrations.
 8. Route schema generation and extract execution through reusable, self-healing schema records.

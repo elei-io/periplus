@@ -2,20 +2,20 @@ import { useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
 
 import { IndexProgress } from "@/components/index-run/index-progress"
-import { ScrapeForm } from "@/components/scrape-run/scrape-form"
-import { ScrapeResults } from "@/components/scrape-run/scrape-results"
-import { useScrapeRun } from "@/hooks/use-scrape-run"
+import { CrawlForm } from "@/components/crawl-run/crawl-form"
+import { CrawlResults } from "@/components/crawl-run/crawl-results"
+import { useCrawlRun } from "@/hooks/use-crawl-run"
 import { cn } from "@/lib/utils"
 
-export function ScrapePage() {
-  const scrapeRun = useScrapeRun()
+export function CrawlPage() {
+  const crawlRun = useCrawlRun()
   const [runKey, setRunKey] = useState(0)
   const initialUrl = useMemo(() => {
     return new URLSearchParams(window.location.search).get("url") ?? ""
   }, [])
-  const hasProgress = scrapeRun.events.length > 0
+  const hasProgress = crawlRun.events.length > 0
   const showResults =
-    scrapeRun.isSuccess && !scrapeRun.isRunning && scrapeRun.result !== null
+    crawlRun.isSuccess && !crawlRun.isRunning && crawlRun.result !== null
 
   return (
     <div
@@ -34,14 +34,14 @@ export function ScrapePage() {
             one-off page load. Use settings to tune mode and wait strategy.
           </p>
         </div>
-        <ScrapeForm
-          idPrefix="scrape-playground"
+        <CrawlForm
+          idPrefix="crawl-playground"
           initialUrl={initialUrl}
-          isRunning={scrapeRun.isRunning}
-          onCancel={scrapeRun.cancel}
+          isRunning={crawlRun.isRunning}
+          onCancel={crawlRun.cancel}
           onSubmit={(input) => {
             setRunKey((currentRunKey) => currentRunKey + 1)
-            scrapeRun.run(input)
+            crawlRun.run(input)
           }}
         />
         <AnimatedSection
@@ -50,7 +50,7 @@ export function ScrapePage() {
           show={hasProgress && !showResults}
           transitionClassName="duration-300"
         >
-          <IndexProgress events={scrapeRun.events} />
+          <IndexProgress events={crawlRun.events} />
         </AnimatedSection>
       </section>
 
@@ -61,8 +61,8 @@ export function ScrapePage() {
         show={showResults}
         transitionClassName="duration-500"
       >
-        {scrapeRun.result ? (
-          <ScrapeResults events={scrapeRun.events} result={scrapeRun.result} />
+        {crawlRun.result ? (
+          <CrawlResults events={crawlRun.events} result={crawlRun.result} />
         ) : null}
       </AnimatedSection>
     </div>

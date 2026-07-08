@@ -8,7 +8,7 @@ from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, e
 from actions.shared.quality.service import run_quality_checks
 from actions.shared.extract_schema.schemas import SchemaType
 from actions.shared.extract_schema.service import schema as schema_service
-from actions.scrape.service import scrape as scrape_service
+from actions.crawl.service import crawl as crawl_service
 
 from .schemas import ExtractOutput, ExtractSource
 
@@ -35,7 +35,7 @@ async def extract(
     )
     total_start_time = time.perf_counter()
     try:
-        scrape_output = await scrape_service(
+        crawl_output = await crawl_service(
             urls=[url],
             mode=mode,
             wait=wait,
@@ -54,7 +54,7 @@ async def extract(
         )
         raise
 
-    page = scrape_output.pages[0] if scrape_output.pages else None
+    page = crawl_output.pages[0] if crawl_output.pages else None
     if page is None or not page.success:
         await emit_crawl_progress(
             progress_callback,
@@ -63,13 +63,13 @@ async def extract(
                 label="extract",
                 status="failed",
                 duration=time.perf_counter() - total_start_time,
-                error=page.error if page else "Scrape failed before producing a page.",
+                error=page.error if page else "Crawl failed before producing a page.",
             ),
         )
         return ExtractOutput(
             url=url,
             success=False,
-            error=page.error if page else "Scrape failed before producing a page.",
+            error=page.error if page else "Crawl failed before producing a page.",
         )
 
     html = page.html
@@ -81,10 +81,10 @@ async def extract(
                 label="extract",
                 status="failed",
                 duration=time.perf_counter() - total_start_time,
-                error="Scrape did not produce HTML.",
+                error="Crawl did not produce HTML.",
             ),
         )
-        return ExtractOutput(url=page.url, success=False, error="Scrape did not produce HTML.")
+        return ExtractOutput(url=page.url, success=False, error="Crawl did not produce HTML.")
 
     schema_output = await schema_service(
         url=page.url,

@@ -9,14 +9,14 @@ from actions.index.schemas import IndexLink
 from actions.index.schemas import Input as IndexInput
 from actions.shared.quality.schemas import QualityWarning
 from actions.shared.extract_schema.schemas import Input as SchemaInput
-from actions.scrape.schemas import Input as ScrapeInput
+from actions.crawl.schemas import Input as CrawlInput
 
 
 class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-TaskPrimitive = Literal["search", "index", "scrape", "schema", "extract"]
+TaskPrimitive = Literal["search", "index", "crawl", "schema", "extract"]
 TaskRunStatus = Literal["queued", "running", "succeeded", "failed", "cancelled", "skipped"]
 TaskRunTriggerKind = Literal["scheduled", "manual", "effect", "retry", "backfill"]
 EffectRunStatus = Literal["running", "applied", "skipped", "failed"]
@@ -37,7 +37,7 @@ class SearchInput(StrictBaseModel):
 
 
 TaskInputJson = Annotated[
-    SearchInput | IndexInput | ScrapeInput | SchemaInput | ExtractInput,
+    SearchInput | IndexInput | CrawlInput | SchemaInput | ExtractInput,
     Field(union_mode="left_to_right"),
 ]
 
@@ -169,7 +169,7 @@ TaskEffectJson = Annotated[
 ]
 
 
-class ScrapePageOutput(StrictBaseModel):
+class CrawlPageOutput(StrictBaseModel):
     url: str
     success: bool
     artifact_ids: list[UUID] = Field(default_factory=list)
@@ -183,8 +183,8 @@ class IndexOutputJson(StrictBaseModel):
     links: list[IndexLink] = Field(default_factory=list)
 
 
-class ScrapeOutputJson(StrictBaseModel):
-    pages: list[ScrapePageOutput] = Field(default_factory=list)
+class CrawlOutputJson(StrictBaseModel):
+    pages: list[CrawlPageOutput] = Field(default_factory=list)
 
 
 class SchemaOutputJson(StrictBaseModel):
@@ -196,7 +196,7 @@ class ExtractOutputJson(StrictBaseModel):
 
 
 TaskOutputJson = Annotated[
-    SearchOutputJson | IndexOutputJson | ScrapeOutputJson | SchemaOutputJson | ExtractOutputJson,
+    SearchOutputJson | IndexOutputJson | CrawlOutputJson | SchemaOutputJson | ExtractOutputJson,
     Field(union_mode="left_to_right"),
 ]
 

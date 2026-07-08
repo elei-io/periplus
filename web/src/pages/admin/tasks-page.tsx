@@ -80,7 +80,7 @@ import type {
 const primitives: TaskPrimitive[] = [
   "search",
   "index",
-  "scrape",
+  "crawl",
   "schema",
   "extract",
 ]
@@ -347,10 +347,10 @@ function buildTaskInput(primitive: TaskPrimitive, fields: TaskInputFields) {
     }
   }
 
-  if (primitive === "scrape") {
+  if (primitive === "crawl") {
     const urls = fields.urls.map((url) => url.trim()).filter(Boolean)
     if (urls.length === 0) {
-      throw new Error("Add at least one URL to scrape.")
+      throw new Error("Add at least one URL to crawl.")
     }
 
     return {
@@ -803,7 +803,7 @@ function TaskCreateForm({
   onCreate: (input: TaskCreate) => void
 }) {
   const [name, setName] = useState("")
-  const [primitive, setPrimitive] = useState<TaskPrimitive>("scrape")
+  const [primitive, setPrimitive] = useState<TaskPrimitive>("crawl")
   const [step, setStep] = useState<1 | 2>(1)
   const [knobsOpen, setKnobsOpen] = useState(false)
   const [inputFields, setInputFields] =
@@ -1013,7 +1013,7 @@ function PrimitiveTargetFields({
         </Field>
       )}
 
-      {primitive === "scrape" && (
+      {primitive === "crawl" && (
         <Field
           label="URLs"
           hint="One URL per row. Pasted comma-separated or newline-separated URLs become separate rows."
@@ -1041,7 +1041,7 @@ function PrimitiveTargetFields({
             hint={
               primitive === "schema"
                 ? "Sample page used to generate and validate the extraction schema."
-                : "Page Atlas scrapes before applying the extraction prompt."
+                : "Page Atlas crawls before applying the extraction prompt."
             }
           >
             <Input
@@ -1090,7 +1090,7 @@ function PrimitiveKnobFields({
         </Field>
       )}
 
-      {primitive === "scrape" && (
+      {primitive === "crawl" && (
         <CrawlFields fields={fields} onChange={onChange} includeConcurrency />
       )}
 

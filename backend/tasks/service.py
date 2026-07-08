@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from actions.extract.schemas import Input as ExtractInput
 from actions.index.schemas import Input as IndexInput
-from actions.scrape.schemas import Input as ScrapeInput
+from actions.crawl.schemas import Input as CrawlInput
 from actions.shared.extract_schema.schemas import Input as SchemaInput
 from actions.shared.progress import CrawlProgressCallback
 
@@ -48,7 +48,7 @@ class TaskRunConflictError(Exception):
 _INPUT_MODELS = {
     "search": SearchInput,
     "index": IndexInput,
-    "scrape": ScrapeInput,
+    "crawl": CrawlInput,
     "schema": SchemaInput,
     "extract": ExtractInput,
 }
@@ -90,10 +90,10 @@ def _ad_hoc_identity_key(primitive: TaskPrimitive, input_json: dict) -> str:
 def _ad_hoc_task_name(primitive: TaskPrimitive, input_json: dict) -> str:
     if primitive in {"index", "schema", "extract"} and isinstance(input_json.get("url"), str):
         return f"Ad hoc {primitive}: {input_json['url']}"
-    if primitive == "scrape" and isinstance(input_json.get("urls"), list) and input_json["urls"]:
+    if primitive == "crawl" and isinstance(input_json.get("urls"), list) and input_json["urls"]:
         first_url = input_json["urls"][0]
         suffix = "" if len(input_json["urls"]) == 1 else f" +{len(input_json['urls']) - 1}"
-        return f"Ad hoc scrape: {first_url}{suffix}"
+        return f"Ad hoc crawl: {first_url}{suffix}"
     if primitive == "search" and isinstance(input_json.get("query"), str):
         return f"Ad hoc search: {input_json['query']}"
     return f"Ad hoc {primitive}"

@@ -1,9 +1,9 @@
 import { readSseStream } from "@/lib/sse"
 import type { SseMessage } from "@/lib/sse"
 import type { CrawlProgressEvent } from "@/types/index"
-import type { ScrapeOutput, ScrapeStreamEvent } from "@/types/scrape"
+import type { CrawlOutput, CrawlStreamEvent } from "@/types/crawl"
 
-function parseScrapeStreamEvent(message: SseMessage): ScrapeStreamEvent {
+function parseCrawlStreamEvent(message: SseMessage): CrawlStreamEvent {
   const data = JSON.parse(message.data) as unknown
 
   if (message.event === "progress") {
@@ -16,7 +16,7 @@ function parseScrapeStreamEvent(message: SseMessage): ScrapeStreamEvent {
   if (message.event === "result") {
     return {
       type: "result",
-      data: data as ScrapeOutput,
+      data: data as CrawlOutput,
     }
   }
 
@@ -33,11 +33,11 @@ function parseScrapeStreamEvent(message: SseMessage): ScrapeStreamEvent {
   }
 }
 
-export async function readScrapeStream(
+export async function readCrawlStream(
   response: Response,
-  onEvent: (event: ScrapeStreamEvent) => void
+  onEvent: (event: CrawlStreamEvent) => void
 ) {
   await readSseStream(response, (message) => {
-    onEvent(parseScrapeStreamEvent(message))
+    onEvent(parseCrawlStreamEvent(message))
   })
 }

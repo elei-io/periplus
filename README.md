@@ -5,7 +5,7 @@ Atlas is a Python web crawling and search backend. It exposes the same action lo
 - a FastAPI HTTP API,
 - a Typer CLI.
 
-Its current user-facing web actions are `search`, `index`, `scrape`, and `extract`.
+Its current user-facing web actions are `search`, `index`, `crawl`, and `extract`.
 Extraction schema generation is shared support used by `search` and `extract`.
 
 The current architecture is documented in [ARCHITECHTURE.md](ARCHITECHTURE.md).
@@ -52,7 +52,7 @@ Run the CLI:
 ```sh
 cd backend
 uv run atlas --help
-uv run atlas scrape https://example.com
+uv run atlas crawl https://example.com
 uv run atlas index https://example.com --max-depth 1
 uv run atlas schema https://example.com --prompt "Extract article cards with title and URL."
 uv run atlas extract https://example.com --prompt "Extract the main heading and visible links."

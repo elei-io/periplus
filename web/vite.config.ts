@@ -18,7 +18,7 @@ export default defineConfig({
     proxy: {
       "/extract": apiProxyTarget,
       "/index": apiProxyTarget,
-      "/scrape": apiProxyTarget,
+      "/crawl": apiProxyTarget,
       "/search": apiProxyTarget,
       "/tasks": apiProxyTarget,
     },

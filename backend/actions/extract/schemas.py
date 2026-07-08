@@ -8,7 +8,7 @@ from actions.shared.extract_schema.schemas import SchemaType
 
 
 class Input(BaseModel):
-    url: str = Field(description="The URL to scrape and extract structured data from.")
+    url: str = Field(description="The URL to crawl and extract structured data from.")
     prompt: str = Field(description="Natural-language extraction instructions.")
     target_json_example: str | None = Field(
         default=None,

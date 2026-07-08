@@ -21,36 +21,36 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { resultActionHref } from "@/lib/result-actions"
 import type { CrawlProgressEvent } from "@/types/index"
-import type { ScrapeOutput, ScrapePage } from "@/types/scrape"
+import type { CrawlOutput, CrawlPage } from "@/types/crawl"
 
-type ScrapeResultsProps = {
+type CrawlResultsProps = {
   events: CrawlProgressEvent[]
-  result: ScrapeOutput
+  result: CrawlOutput
 }
 
-export function ScrapeResults({ events, result }: ScrapeResultsProps) {
+export function CrawlResults({ events, result }: CrawlResultsProps) {
   const page = result.pages[0]
 
   if (!page) {
     return (
       <Card size="sm">
         <CardContent className="p-8 text-center text-sm text-muted-foreground">
-          No scrape page was returned.
+          No crawl page was returned.
         </CardContent>
       </Card>
     )
   }
 
-  return <ScrapePageResults events={events} page={page} result={result} />
+  return <CrawlPageResults events={events} page={page} result={result} />
 }
 
-type ScrapePageResultsProps = {
+type CrawlPageResultsProps = {
   events: CrawlProgressEvent[]
-  page: ScrapePage
-  result: ScrapeOutput
+  page: CrawlPage
+  result: CrawlOutput
 }
 
-function ScrapePageResults({ events, page, result }: ScrapePageResultsProps) {
+function CrawlPageResults({ events, page, result }: CrawlPageResultsProps) {
   const crawlJson = useMemo(() => {
     return JSON.stringify(page.crawl ?? {}, null, 2)
   }, [page.crawl])

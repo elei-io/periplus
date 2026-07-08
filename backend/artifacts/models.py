@@ -8,7 +8,9 @@ from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from crawls.models import Crawl
 from db import Base
+from urls.models import Url
 
 
 def utc_now() -> datetime:

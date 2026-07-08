@@ -9,7 +9,7 @@ from actions.shared.quality.schemas import QualityWarning
 class Input(BaseModel):
     urls: list[str] = Field(
         min_length=1,
-        description="The URLs to scrape.",
+        description="The URLs to crawl.",
     )
     mode: CrawlMode = Field(
         default="static",
@@ -22,11 +22,11 @@ class Input(BaseModel):
     concurrency: int = Field(
         ge=1,
         default=10,
-        description="The number of pages to scrape in parallel.",
+        description="The number of pages to crawl in parallel.",
     )
 
 
-class ScrapePage(BaseModel):
+class CrawlPage(BaseModel):
     url: str
     success: bool
     status_code: int | None = None
@@ -37,13 +37,13 @@ class ScrapePage(BaseModel):
     error: str | None = None
 
 
-class ScrapeStats(BaseModel):
+class CrawlStats(BaseModel):
     requested_urls: int
     succeeded: int
     failed: int
     duration_seconds: float
 
 
-class ScrapeOutput(BaseModel):
-    stats: ScrapeStats
-    pages: list[ScrapePage]
+class CrawlOutput(BaseModel):
+    stats: CrawlStats
+    pages: list[CrawlPage]

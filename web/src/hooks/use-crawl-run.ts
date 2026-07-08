@@ -3,22 +3,22 @@ import { useCallback, useRef, useState } from "react"
 import { toast } from "sonner"
 
 import { apiErrorFromResponse, apiUrl, extractApiError } from "@/lib/api"
-import { readScrapeStream } from "@/lib/scrape-stream"
+import { readCrawlStream } from "@/lib/crawl-stream"
 import type { CrawlProgressEvent } from "@/types/index"
-import type { ScrapeInput, ScrapeOutput } from "@/types/scrape"
+import type { CrawlInput, CrawlOutput } from "@/types/crawl"
 
-export function useScrapeRun() {
+export function useCrawlRun() {
   const abortControllerRef = useRef<AbortController | null>(null)
   const [events, setEvents] = useState<CrawlProgressEvent[]>([])
-  const [result, setResult] = useState<ScrapeOutput | null>(null)
+  const [result, setResult] = useState<CrawlOutput | null>(null)
 
   const mutation = useMutation({
-    mutationFn: async (input: ScrapeInput) => {
+    mutationFn: async (input: CrawlInput) => {
       const abortController = new AbortController()
       abortControllerRef.current = abortController
-      let latestResult: ScrapeOutput | null = null
+      let latestResult: CrawlOutput | null = null
 
-      const response = await fetch(apiUrl("/scrape/"), {
+      const response = await fetch(apiUrl("/crawl/"), {
         method: "POST",
         headers: {
           Accept: "text/event-stream",
@@ -32,7 +32,7 @@ export function useScrapeRun() {
         throw await apiErrorFromResponse(response)
       }
 
-      await readScrapeStream(response, (event) => {
+      await readCrawlStream(response, (event) => {
         if (event.type === "progress") {
           setEvents((currentEvents) => [...currentEvents, event.data])
           return
@@ -57,7 +57,7 @@ export function useScrapeRun() {
     },
     onError: (error) => {
       if (error instanceof DOMException && error.name === "AbortError") {
-        toast.error("Scrape run cancelled.")
+        toast.error("Crawl run cancelled.")
         return
       }
 

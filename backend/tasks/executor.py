@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from actions.extract.service import extract
 from actions.index.service import index
-from actions.scrape.service import scrape
+from actions.crawl.service import crawl
 from actions.search.service import search
 from actions.shared.extract_schema.service import schema
 from actions.shared.progress import CrawlProgressCallback
@@ -119,8 +119,8 @@ async def _execute_primitive(
             artifacts=[],
         )
 
-    if primitive == "scrape":
-        output = await scrape(**payload, progress_callback=progress_callback)
+    if primitive == "crawl":
+        output = await crawl(**payload, progress_callback=progress_callback)
         warnings: list[dict] = []
         page_artifacts: list[tuple[str, str, object]] = []
         pages = []

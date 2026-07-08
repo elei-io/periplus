@@ -1,14 +1,14 @@
 import type { CrawlMode, CrawlProgressEvent, CrawlWait } from "@/types/index"
 import type { QualityWarning } from "@/types/extract"
 
-export type ScrapeInput = {
+export type CrawlInput = {
   urls: string[]
   mode: CrawlMode
   wait: CrawlWait
   concurrency: number
 }
 
-export type ScrapePage = {
+export type CrawlPage = {
   url: string
   success: boolean
   status_code: number | null
@@ -19,26 +19,26 @@ export type ScrapePage = {
   error: string | null
 }
 
-export type ScrapeStats = {
+export type CrawlStats = {
   requested_urls: number
   succeeded: number
   failed: number
   duration_seconds: number
 }
 
-export type ScrapeOutput = {
-  stats: ScrapeStats
-  pages: ScrapePage[]
+export type CrawlOutput = {
+  stats: CrawlStats
+  pages: CrawlPage[]
 }
 
-export type ScrapeStreamEvent =
+export type CrawlStreamEvent =
   | {
       type: "progress"
       data: CrawlProgressEvent
     }
   | {
       type: "result"
-      data: ScrapeOutput
+      data: CrawlOutput
     }
   | {
       type: "done"

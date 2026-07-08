@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/dialog"
 import type { CrawlMode, CrawlWait } from "@/types/index"
 
-type ScrapeSettingsDialogProps = {
+type CrawlSettingsDialogProps = {
   disabled: boolean
   mode: CrawlMode
   open: boolean
@@ -37,7 +37,7 @@ const settingHints = {
   wait: "Controls when Atlas decides the page is ready before returning HTML and Crawl4AI metadata.",
 }
 
-export function ScrapeSettingsDialog({
+export function CrawlSettingsDialog({
   disabled,
   mode,
   open,
@@ -45,12 +45,12 @@ export function ScrapeSettingsDialog({
   onModeChange,
   onOpenChange,
   onWaitChange,
-}: ScrapeSettingsDialogProps) {
+}: CrawlSettingsDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Scrape settings</DialogTitle>
+          <DialogTitle>Crawl settings</DialogTitle>
           <DialogDescription>
             Tune how Atlas loads the page before returning HTML and crawl
             metadata.

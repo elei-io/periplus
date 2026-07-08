@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { AppSidebar } from "@/components/app-sidebar"
 import { ExtractPage } from "@/pages/playground/extract-page"
 import { IndexPage } from "@/pages/playground/index-page"
-import { ScrapePage } from "@/pages/playground/scrape-page"
+import { CrawlPage } from "@/pages/playground/crawl-page"
 import { SearchPage } from "@/pages/playground/search-page"
 import { TasksPage } from "@/pages/admin/tasks-page"
 import {
@@ -68,8 +68,8 @@ export function App() {
       return <ExtractPage />
     }
 
-    if (activeItem.href === "/playground/scrape") {
-      return <ScrapePage />
+    if (activeItem.href === "/playground/crawl") {
+      return <CrawlPage />
     }
 
     if (activeItem.href === "/scheduled-work/tasks") {

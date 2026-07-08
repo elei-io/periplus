@@ -47,10 +47,10 @@ export function ResultLinkContextMenuContent({
           Extract from this page
         </ContextMenuItem>
         <ContextMenuItem
-          render={<a href={resultActionHref("/playground/scrape", url)} />}
+          render={<a href={resultActionHref("/playground/crawl", url)} />}
         >
           <FileSearchIcon />
-          Scrape this page
+          Crawl this page
         </ContextMenuItem>
       </ContextMenuGroup>
     </ContextMenuContent>

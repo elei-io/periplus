@@ -5,43 +5,43 @@ from pydantic import TypeAdapter
 from rich.console import Console
 from rich.table import Table
 
-from actions.scrape.schemas import ScrapeOutput
+from actions.crawl.schemas import CrawlOutput
 from cli.action_runs import run_action
 from cli.progress import CrawlProgressRenderer
 
 console = Console()
-_SCRAPE_ADAPTER = TypeAdapter(ScrapeOutput)
+_CRAWL_ADAPTER = TypeAdapter(CrawlOutput)
 
 
-def scrape(
-    urls: Annotated[list[str], typer.Argument(help="One or more URLs to scrape.")],
+def crawl(
+    urls: Annotated[list[str], typer.Argument(help="One or more URLs to crawl.")],
     mode: Annotated[
         Literal["static", "dynamic", "app"],
         typer.Option("--mode", help="Crawl preset for static pages, dynamic pages, or heavy SPAs."),
     ] = "static",
     wait: Annotated[
         Literal["none", "stable", "network", "fixed"],
-        typer.Option("--wait", help="Wait strategy before returning scrape data."),
+        typer.Option("--wait", help="Wait strategy before returning crawl data."),
     ] = "none",
     concurrency: Annotated[
         int,
-        typer.Option("--concurrency", "-c", min=1, help="Number of pages to scrape in parallel."),
+        typer.Option("--concurrency", "-c", min=1, help="Number of pages to crawl in parallel."),
     ] = 10,
 ) -> None:
     with CrawlProgressRenderer(console) as progress:
         output = run_action(
-            primitive="scrape",
+            primitive="crawl",
             input_value={
                 "urls": urls,
                 "mode": mode,
                 "wait": wait,
                 "concurrency": concurrency,
             },
-            response_adapter=_SCRAPE_ADAPTER,
+            response_adapter=_CRAWL_ADAPTER,
             progress_callback=progress.callback,
         )
 
-    table = Table(title="Scrape results")
+    table = Table(title="Crawl results")
     table.add_column("URL")
     table.add_column("Success")
     table.add_column("Status")
@@ -62,10 +62,10 @@ def scrape(
         )
 
     if not output.pages:
-        table.caption = "No pages scraped."
+        table.caption = "No pages crawled."
 
     console.print(table)
     console.print(
-        f"Scraped {output.stats.succeeded}/{output.stats.requested_urls} pages "
+        f"Crawled {output.stats.succeeded}/{output.stats.requested_urls} pages "
         f"in {output.stats.duration_seconds:.2f}s"
     )
