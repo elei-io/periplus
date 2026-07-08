@@ -5,8 +5,9 @@ import {
   ClipboardListIcon,
   DatabaseIcon,
   FileSearchIcon,
-  GaugeIcon,
+  LinkIcon,
   ListIcon,
+  RouteIcon,
   SearchIcon,
   Settings2Icon,
   SparklesIcon,
@@ -75,18 +76,29 @@ export const navigationGroups: NavigationGroup[] = [
     ],
   },
   {
-    name: "Artifacts",
-    slug: "artifacts",
+    name: "History",
+    slug: "history",
     items: [
       {
-        name: "Files",
-        href: "/artifacts/files",
-        icon: BoxesIcon,
+        name: "URLs",
+        href: "/history/urls",
+        icon: LinkIcon,
+        title: "Known URLs",
+        description: "Inspect URLs Atlas has seen across crawls and artifacts.",
       },
       {
-        name: "Metrics",
-        href: "/artifacts/metrics",
-        icon: GaugeIcon,
+        name: "Crawls",
+        href: "/history/crawls",
+        icon: RouteIcon,
+        title: "Crawl History",
+        description: "Inspect real remote visits, status codes, timings, and warnings.",
+      },
+      {
+        name: "Artifacts",
+        href: "/history/artifacts",
+        icon: BoxesIcon,
+        title: "Artifact History",
+        description: "Browse cached bytes and invalidate reusable artifacts.",
       },
     ],
   },
@@ -116,6 +128,22 @@ export const navigationGroups: NavigationGroup[] = [
 export const defaultNavigationItem = navigationGroups[0].items[0]
 
 export function findNavigationItem(pathname: string) {
+  if (pathname.startsWith("/history/artifacts/")) {
+    return navigationGroups
+      .flatMap((group) => group.items)
+      .find((item) => item.href === "/history/artifacts")
+  }
+  if (pathname.startsWith("/history/crawls/")) {
+    return navigationGroups
+      .flatMap((group) => group.items)
+      .find((item) => item.href === "/history/crawls")
+  }
+  if (pathname.startsWith("/history/urls/")) {
+    return navigationGroups
+      .flatMap((group) => group.items)
+      .find((item) => item.href === "/history/urls")
+  }
+
   return navigationGroups
     .flatMap((group) => group.items)
     .find((item) => item.href === pathname)

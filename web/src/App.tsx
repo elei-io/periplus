@@ -6,6 +6,12 @@ import { IndexPage } from "@/pages/playground/index-page"
 import { CrawlPage } from "@/pages/playground/crawl-page"
 import { SearchPage } from "@/pages/playground/search-page"
 import { TasksPage } from "@/pages/admin/tasks-page"
+import { ArtifactDetailPage } from "@/pages/history/artifact-detail-page"
+import { ArtifactsPage } from "@/pages/history/artifacts-page"
+import { CrawlDetailPage } from "@/pages/history/crawl-detail-page"
+import { CrawlsPage } from "@/pages/history/crawls-page"
+import { UrlDetailPage } from "@/pages/history/url-detail-page"
+import { UrlsPage } from "@/pages/history/urls-page"
 import {
   defaultNavigationItem,
   findNavigationItem,
@@ -74,6 +80,33 @@ export function App() {
 
     if (activeItem.href === "/scheduled-work/tasks") {
       return <TasksPage />
+    }
+
+    if (activeItem.href === "/history/artifacts") {
+      const artifactId = pathname.match(/^\/history\/artifacts\/([^/]+)$/)?.[1]
+      if (artifactId) {
+        return <ArtifactDetailPage artifactId={decodeURIComponent(artifactId)} />
+      }
+
+      return <ArtifactsPage />
+    }
+
+    if (activeItem.href === "/history/crawls") {
+      const crawlId = pathname.match(/^\/history\/crawls\/([^/]+)$/)?.[1]
+      if (crawlId) {
+        return <CrawlDetailPage crawlId={decodeURIComponent(crawlId)} />
+      }
+
+      return <CrawlsPage />
+    }
+
+    if (activeItem.href === "/history/urls") {
+      const urlId = pathname.match(/^\/history\/urls\/([^/]+)$/)?.[1]
+      if (urlId) {
+        return <UrlDetailPage urlId={decodeURIComponent(urlId)} />
+      }
+
+      return <UrlsPage />
     }
 
     return (

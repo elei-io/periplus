@@ -51,7 +51,6 @@ class Artifact(Base):
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(Text)
     input_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
-    extracted: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     warnings_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

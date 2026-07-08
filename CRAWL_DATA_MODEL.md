@@ -55,6 +55,12 @@ task-run context into crawl. That one path is responsible for resolving URL rows
 rows, writing crawl-produced artifacts, and linking task runs to the crawls/artifacts they used or
 produced.
 
+Before spending browser time, crawl should look for a reusable HTML artifact keyed by URL and
+input configuration hash. The first cache eligibility rule is intentionally simple: the HTML
+artifact must exist, be present on disk, be linked to a crawl row, not be invalidated, and have no
+artifact warnings. A cache hit links the prior crawl and HTML artifact to the current task run as
+`used`; it does not insert a new `crawls` row.
+
 Each row should capture visit facts:
 
 - `url_id`
@@ -88,7 +94,8 @@ stay in JSONB until repeated queries justify promotion.
 messages, network request summaries, and crawl stats.
 
 Do not store extracted content summaries such as links and media on crawls in the first pass.
-Those facts describe the bytes that came out of the crawl and fit better on artifacts.
+Those facts describe the bytes that came out of the crawl and should be recomputed from stored
+HTML when needed.
 
 ### Artifacts
 
@@ -108,7 +115,6 @@ Each row should capture storage facts:
 - `size_bytes`
 - `sha256`
 - `input_hash`
-- `extracted`
 - `meta`
 - `warnings_json`
 - `created_at`
@@ -118,15 +124,9 @@ Each row should capture storage facts:
 Warnings are non-fatal artifact-level signals, such as empty HTML shells, known loading
 elements, unexpectedly small files, or content hashes that indicate repeated blocked pages.
 
-For the first pass, `artifact.extracted` should only contain content-derived summaries returned
-by Crawl4AI:
-
-```json
-{
-  "links": [],
-  "media": []
-}
-```
+Crawl HTML artifacts should not store Crawl4AI-derived `links` or `media` in Postgres. Those are
+derived from the HTML bytes and should be recomputed on cache hit by passing the stored HTML back
+through Crawl4AI with `raw:`. Do not keep an `artifact.extracted` column for this.
 
 Artifacts do not have TTL semantics yet. Later cleanup can decide which artifact bytes to delete.
 For now, artifacts need quick invalidation so cache lookup can reject known-bad entries.
@@ -397,7 +397,6 @@ artifacts
 - size_bytes
 - sha256
 - input_hash, nullable
-- extracted
 - meta
 - warnings_json
 - invalidated_at, nullable
@@ -628,8 +627,7 @@ Suggested order:
 
 1. Add URL models, schemas, and Alembic migration.
 2. Expand artifacts to support `url_id`, `crawl_id`, `kind`, `size_bytes`, `sha256`,
-   `content_type`, `input_hash`, `extracted`, `invalidated_at`,
-   `invalidated_reason`, and `warnings_json`.
+   `content_type`, `input_hash`, `invalidated_at`, `invalidated_reason`, and `warnings_json`.
 3. Add Crawl models, schemas, and migration.
 4. Route API and CLI action triggers through task creation, task-run creation, and inline
    task-run execution.

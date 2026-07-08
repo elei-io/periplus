@@ -19,8 +19,11 @@ export default defineConfig({
       "/extract": apiProxyTarget,
       "/index": apiProxyTarget,
       "/crawl": apiProxyTarget,
+      "/crawls": apiProxyTarget,
       "/search": apiProxyTarget,
       "/tasks": apiProxyTarget,
+      "/artifacts": apiProxyTarget,
+      "/urls": apiProxyTarget,
     },
   },
 })

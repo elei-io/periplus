@@ -21,7 +21,7 @@ from actions.shared.crawl import (
 from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
 from actions.shared.quality.service import run_quality_checks
 from artifacts.models import Artifact
-from artifacts.service import task_run_artifacts_dir
+from artifacts.service import get_cached_html_artifact, task_run_artifacts_dir
 from crawls.models import Crawl
 from tasks.models import TaskRunArtifact, TaskRunCrawl
 from urls.service import resolve_url
@@ -40,11 +40,6 @@ def _utc_now() -> datetime:
 def _input_hash(url: str, mode: CrawlMode, wait: CrawlWait) -> str:
     payload = {"url": url, "mode": mode, "wait": wait}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-def _write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_json_safe(value), indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _write_text(path: Path, value: str) -> None:
@@ -152,7 +147,6 @@ def _crawl_meta(crawl: dict[str, Any] | None) -> dict[str, Any]:
         "session_id": crawl.get("session_id"),
         "network_requests": crawl.get("network_requests"),
         "console_messages": crawl.get("console_messages"),
-        "tables": crawl.get("tables"),
         "head_fingerprint": crawl.get("head_fingerprint"),
         "cached_at": crawl.get("cached_at"),
         "cache_status": crawl.get("cache_status"),
@@ -179,26 +173,42 @@ def _errors(page: CrawlPage, crawl: dict[str, Any] | None) -> dict[str, Any]:
     return {"message": error} if error else {}
 
 
-def _warnings_json(page: CrawlPage) -> dict[str, Any]:
-    warnings = [warning.model_dump(mode="json") for warning in page.warnings]
+def _warnings_json(warnings: list[Any]) -> dict[str, Any]:
+    dumped = [
+        warning.model_dump(mode="json") if hasattr(warning, "model_dump") else _json_safe(warning)
+        for warning in warnings
+    ]
     return {
-        "codes": [warning.get("code") for warning in warnings if warning.get("code")],
-        "count": len(warnings),
-        "warnings": warnings,
+        "codes": [warning.get("code") for warning in dumped if warning.get("code")],
+        "count": len(dumped),
+        "warnings": dumped,
     }
 
 
-def _summary_list(value: Any) -> list[Any]:
-    if isinstance(value, list):
-        return value
-    if not isinstance(value, dict):
-        return []
+def _empty_warnings_json() -> dict[str, Any]:
+    return {"codes": [], "count": 0, "warnings": []}
 
-    items: list[Any] = []
-    for child in value.values():
-        if isinstance(child, list):
-            items.extend(child)
-    return items
+
+def _add_task_run_artifact_usage(
+    session: Session,
+    *,
+    task_run_id: UUID,
+    artifact_id: UUID,
+    role: str,
+) -> None:
+    if session.get(TaskRunArtifact, (task_run_id, artifact_id, role)) is None:
+        session.add(TaskRunArtifact(task_run_id=task_run_id, artifact_id=artifact_id, role=role))
+
+
+def _add_task_run_crawl_usage(
+    session: Session,
+    *,
+    task_run_id: UUID,
+    crawl_id: UUID,
+    role: str,
+) -> None:
+    if session.get(TaskRunCrawl, (task_run_id, crawl_id, role)) is None:
+        session.add(TaskRunCrawl(task_run_id=task_run_id, crawl_id=crawl_id, role=role))
 
 
 def _artifact(
@@ -209,7 +219,6 @@ def _artifact(
     kind: str,
     path: Path,
     input_hash: str,
-    extracted: dict[str, Any] | None = None,
     meta: dict[str, Any] | None = None,
     warnings_json: dict[str, Any] | None = None,
 ) -> Artifact:
@@ -225,13 +234,17 @@ def _artifact(
         size_bytes=len(content),
         sha256=hashlib.sha256(content).hexdigest(),
         input_hash=input_hash,
-        extracted=extracted or {},
         meta=meta or {},
         warnings_json=warnings_json or {},
     )
     session.add(artifact)
     session.flush()
-    session.add(TaskRunArtifact(task_run_id=task_run_id, artifact_id=artifact.id, role="produced"))
+    _add_task_run_artifact_usage(
+        session,
+        task_run_id=task_run_id,
+        artifact_id=artifact.id,
+        role="produced",
+    )
     session.flush()
     return artifact
 
@@ -249,7 +262,7 @@ def _persist_page(
     url = resolve_url(session, page.url or requested_url)
     input_hash = _input_hash(url.normalized_url, mode, wait)
     crawl_payload = page.crawl or {}
-    warnings_json = _warnings_json(page)
+    artifact_warnings_json = _warnings_json(page.warnings)
     finished_at = _utc_now()
     duration_ms = int(page.duration_seconds * 1000)
     started_at = finished_at - timedelta(milliseconds=duration_ms)
@@ -267,12 +280,17 @@ def _persist_page(
         redirects_json=_redirects(crawl_payload),
         errors_json=_errors(page, crawl_payload),
         retry_count=0,
-        warnings_json=warnings_json,
+        warnings_json=_empty_warnings_json(),
         meta=_crawl_meta(crawl_payload),
     )
     session.add(crawl)
     session.flush()
-    session.add(TaskRunCrawl(task_run_id=task_run_id, crawl_id=crawl.id, role="produced"))
+    _add_task_run_crawl_usage(
+        session,
+        task_run_id=task_run_id,
+        crawl_id=crawl.id,
+        role="produced",
+    )
 
     artifact_ids: list[UUID] = []
     page_dir = task_run_artifacts_dir(task_run_id) / "pages" / f"{index:04d}"
@@ -286,31 +304,124 @@ def _persist_page(
             kind="html",
             path=html_path,
             input_hash=input_hash,
-            extracted={
-                "links": _summary_list(crawl_payload.get("links")),
-                "media": _summary_list(crawl_payload.get("media")),
-            },
-            warnings_json=warnings_json,
+            warnings_json=artifact_warnings_json,
         )
         artifact_ids.append(html_artifact.id)
 
-    if page.crawl is not None:
-        crawl_path = page_dir / "result.json"
-        _write_json(crawl_path, page.crawl)
-        crawl_artifact = _artifact(
-            session,
-            crawl=crawl,
-            task_run_id=task_run_id,
-            kind="crawl.json",
-            path=crawl_path,
-            input_hash=input_hash,
-            meta={"source": "crawl4ai"},
-            warnings_json=warnings_json,
-        )
-        artifact_ids.append(crawl_artifact.id)
-
     session.flush()
     return page.model_copy(update={"crawl_id": crawl.id, "artifact_ids": artifact_ids})
+
+
+async def _crawl_raw_html(
+    crawler: AsyncWebCrawler,
+    *,
+    html: str,
+    original_url: str,
+    artifact: Artifact,
+    mode: CrawlMode,
+    wait: CrawlWait,
+) -> CrawlPage:
+    result = await crawler.arun(
+        url=f"raw:{html}",
+        config=run_config_for_mode(mode=mode, wait=wait),
+    )
+    crawl_payload = _crawl_payload(result)
+    crawl = artifact.crawl
+    if crawl is not None:
+        redirects_json = crawl.redirects_json or {}
+        errors_json = crawl.errors_json or {}
+        meta = crawl.meta or {}
+        crawl_payload.update(
+            {
+                "url": original_url,
+                "success": crawl.success,
+                "status_code": crawl.status_code,
+                "redirected_url": redirects_json.get("redirected_url"),
+                "redirected_status_code": redirects_json.get("redirected_status_code"),
+                "metadata": meta.get("metadata", crawl_payload.get("metadata") or {}),
+                "response_headers": meta.get("response_headers", {}),
+                "downloaded_files": meta.get("downloaded_files"),
+                "js_execution_result": meta.get("js_execution_result"),
+                "error_message": errors_json.get("message"),
+                "session_id": meta.get("session_id"),
+                "network_requests": meta.get("network_requests"),
+                "console_messages": meta.get("console_messages"),
+                "head_fingerprint": meta.get("head_fingerprint"),
+                "cached_at": meta.get("cached_at"),
+                "cache_status": "artifact",
+                "crawl_stats": meta.get("crawl_stats"),
+            }
+        )
+    else:
+        crawl_payload["url"] = original_url
+        crawl_payload["cache_status"] = "artifact"
+
+    return CrawlPage(
+        url=original_url,
+        success=bool(crawl_payload.get("success", True)),
+        status_code=crawl_payload.get("status_code"),
+        duration_seconds=0.0,
+        crawl_id=artifact.crawl_id,
+        artifact_ids=[artifact.id],
+        html=result.html or html,
+        crawl=crawl_payload,
+        warnings=[],
+        error=crawl_payload.get("error_message"),
+    )
+
+
+async def _cached_page(
+    crawler: AsyncWebCrawler,
+    session: Session,
+    *,
+    task_run_id: UUID,
+    requested_url: str,
+    mode: CrawlMode,
+    wait: CrawlWait,
+    progress_callback: CrawlProgressCallback | None,
+) -> CrawlPage | None:
+    url = resolve_url(session, requested_url)
+    input_hash = _input_hash(url.normalized_url, mode, wait)
+    cached = get_cached_html_artifact(session, url_id=url.id, input_hash=input_hash)
+    if cached is None:
+        return None
+
+    await emit_crawl_progress(
+        progress_callback,
+        CrawlProgressEvent(url=url.normalized_url, label="cache", status="started"),
+    )
+
+    artifact_ids = [cached.html_artifact.id]
+    for artifact_id in artifact_ids:
+        _add_task_run_artifact_usage(
+            session,
+            task_run_id=task_run_id,
+            artifact_id=artifact_id,
+            role="used",
+        )
+
+    crawl_id = cached.html_artifact.crawl_id
+    if crawl_id is not None:
+        _add_task_run_crawl_usage(
+            session,
+            task_run_id=task_run_id,
+            crawl_id=crawl_id,
+            role="used",
+        )
+
+    session.flush()
+    await emit_crawl_progress(
+        progress_callback,
+        CrawlProgressEvent(url=url.normalized_url, label="cache", status="succeeded", duration=0.0),
+    )
+    return await _crawl_raw_html(
+        crawler,
+        html=cached.html,
+        original_url=url.normalized_url,
+        artifact=cached.html_artifact,
+        mode=mode,
+        wait=wait,
+    )
 
 
 async def _crawl_one(
@@ -345,35 +456,54 @@ async def crawl(
     start_time = time.perf_counter()
     pages_by_index: dict[int, CrawlPage] = {}
     semaphore = asyncio.Semaphore(max(1, concurrency))
+    pending_urls: list[tuple[int, str]] = []
 
     async with AsyncWebCrawler(config=browser_config_for_mode(mode)) as crawler:
-        tasks = [
-            asyncio.create_task(
-                _crawl_one(
-                    crawler=crawler,
-                    index=index,
-                    url=url,
-                    mode=mode,
-                    wait=wait,
-                    semaphore=semaphore,
-                    progress_callback=progress_callback,
-                )
-            )
-            for index, url in enumerate(urls)
-        ]
-        for task in asyncio.as_completed(tasks):
-            index, page = await task
+        for index, url in enumerate(urls):
+            page = None
             if session is not None and task_run_id is not None:
-                page = _persist_page(
+                page = await _cached_page(
+                    crawler,
                     session,
                     task_run_id=task_run_id,
-                    index=index,
-                    requested_url=urls[index],
-                    page=page,
+                    requested_url=url,
                     mode=mode,
                     wait=wait,
+                    progress_callback=progress_callback,
                 )
-            pages_by_index[index] = page
+            if page is None:
+                pending_urls.append((index, url))
+            else:
+                pages_by_index[index] = page
+
+        if pending_urls:
+            tasks = [
+                asyncio.create_task(
+                    _crawl_one(
+                        crawler=crawler,
+                        index=index,
+                        url=url,
+                        mode=mode,
+                        wait=wait,
+                        semaphore=semaphore,
+                        progress_callback=progress_callback,
+                    )
+                )
+                for index, url in pending_urls
+            ]
+            for task in asyncio.as_completed(tasks):
+                index, page = await task
+                if session is not None and task_run_id is not None:
+                    page = _persist_page(
+                        session,
+                        task_run_id=task_run_id,
+                        index=index,
+                        requested_url=urls[index],
+                        page=page,
+                        mode=mode,
+                        wait=wait,
+                    )
+                pages_by_index[index] = page
 
     pages = [pages_by_index[index] for index in range(len(urls))]
     return CrawlOutput(

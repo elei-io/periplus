@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from hashlib import sha256
 from urllib.parse import parse_qsl, urlencode, urldefrag, urlparse, urlunparse
+from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from artifacts.models import Artifact
+from artifacts.service import warning_count
+from crawls.models import Crawl
+
 from .models import Url
+from .schemas import UrlListRecord
 
 
 def normalize_url(value: str) -> str:
@@ -47,3 +53,70 @@ def resolve_url(session: Session, value: str) -> Url:
     session.add(url)
     session.flush()
     return url
+
+
+def _sql_like_from_glob(pattern: str) -> str:
+    return pattern.replace("%", r"\%").replace("_", r"\_").replace("*", "%")
+
+
+def list_urls(
+    session: Session,
+    *,
+    url_pattern: str | None = None,
+    domain: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[UrlListRecord]:
+    statement = select(Url)
+    if url_pattern:
+        statement = statement.where(Url.normalized_url.ilike(_sql_like_from_glob(url_pattern), escape="\\"))
+    if domain:
+        statement = statement.where(Url.domain.ilike(f"%{domain}%"))
+
+    statement = statement.order_by(Url.normalized_url.asc()).limit(limit).offset(offset)
+    rows: list[UrlListRecord] = []
+    for url in session.scalars(statement):
+        crawls = list(session.scalars(select(Crawl).where(Crawl.url_id == url.id).order_by(Crawl.started_at.desc())))
+        artifacts = list(session.scalars(select(Artifact).where(Artifact.url_id == url.id)))
+        latest_crawl = crawls[0] if crawls else None
+        rows.append(
+            UrlListRecord(
+                id=url.id,
+                url=url.url,
+                normalized_url=url.normalized_url,
+                scheme=url.scheme,
+                host=url.host,
+                domain=url.domain,
+                path=url.path,
+                query_fingerprint=url.query_fingerprint,
+                crawl_count=len(crawls),
+                artifact_count=len(artifacts),
+                latest_status_code=latest_crawl.status_code if latest_crawl else None,
+                latest_crawl_at=latest_crawl.started_at if latest_crawl else None,
+                warning_count=sum(
+                    int((crawl.warnings_json or {}).get("count") or 0) for crawl in crawls
+                )
+                + sum(warning_count(artifact) for artifact in artifacts),
+            )
+        )
+
+    return rows
+
+
+def count_urls(
+    session: Session,
+    *,
+    url_pattern: str | None = None,
+    domain: str | None = None,
+) -> int:
+    statement = select(func.count()).select_from(Url)
+    if url_pattern:
+        statement = statement.where(Url.normalized_url.ilike(_sql_like_from_glob(url_pattern), escape="\\"))
+    if domain:
+        statement = statement.where(Url.domain.ilike(f"%{domain}%"))
+
+    return int(session.scalar(statement) or 0)
+
+
+def get_url(session: Session, url_id: UUID) -> Url | None:
+    return session.get(Url, url_id)

@@ -14,7 +14,7 @@ This file is the first stop for Codex agents working in Atlas.
   - `backend/tasks/` for persisted schedulable work and task/effect runs.
 - Current user-facing actions are `search`, `index`, `crawl`, and `extract`. Extraction schema generation lives in `actions.shared.extract_schema`.
 - Page-loading options are shared through `actions.shared.crawl`. Do not duplicate `mode`/`wait` config in individual primitives.
-- `crawl` is the page acquisition chokepoint. Task-backed actions that load pages pass their task-run context into `actions.crawl`, which records URLs, crawls, reusable artifacts, and task-run usage in Postgres.
+- `crawl` is the page acquisition chokepoint. Task-backed actions that load pages pass their task-run context into `actions.crawl`, which reuses healthy artifacts when eligible and otherwise records URLs, crawls, reusable artifacts, and task-run usage in Postgres.
 - Keep business behavior in `backend/actions/`, `backend/artifacts/`, and `backend/tasks/`; API and CLI layers should stay thin.
 - The architecture rationale lives in `ARCHITECHTURE.md`. Read it before changing the API/task/browser execution model.
 
@@ -88,5 +88,5 @@ docker compose up --build
 
 - `DATABASE_URL` controls Postgres access.
 - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_PORT` configure the local Compose Postgres service.
-- `ARTIFACTS_ROOT`, `ARTIFACTS_CLEANUP_INTERVAL`, and `ARTIFACTS_TTL_SECONDS` control ephemeral local task-run artifact storage and cleanup.
+- `ARTIFACTS_ROOT`, `ARTIFACTS_CLEANUP_INTERVAL`, and `ARTIFACT_CACHE_AGE_SECONDS` control local artifact storage and cleanup.
 - `OPENROUTER_API_KEY`, `OPENROUTER_SCHEMA_MODEL`, and `OPENROUTER_SEARCH_EXTRACTOR_MODEL` are optional schema generation settings.
