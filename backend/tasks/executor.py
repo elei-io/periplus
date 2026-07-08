@@ -94,6 +94,8 @@ class PrimitiveExecution:
 
 async def _execute_primitive(
     task: Task,
+    session: Session,
+    run: TaskRun,
     progress_callback: CrawlProgressCallback | None = None,
 ) -> PrimitiveExecution:
     primitive = task.primitive
@@ -110,7 +112,12 @@ async def _execute_primitive(
         )
 
     if primitive == "index":
-        links = await index(**payload, progress_callback=progress_callback)
+        links = await index(
+            **payload,
+            progress_callback=progress_callback,
+            session=session,
+            task_run_id=run.id,
+        )
         response_json = [_json_safe(link) for link in links]
         return PrimitiveExecution(
             output_json={"links": response_json},
@@ -120,41 +127,14 @@ async def _execute_primitive(
         )
 
     if primitive == "crawl":
-        output = await crawl(**payload, progress_callback=progress_callback)
-        warnings: list[dict] = []
-        page_artifacts: list[tuple[str, str, object]] = []
-        pages = []
-        for index_, page in enumerate(output.pages):
-            page_warnings = [_json_safe(warning) for warning in page.warnings]
-            warnings.extend(page_warnings)
-            page_dir = f"pages/{index_:04d}"
-            if page.html is not None:
-                page_artifacts.append(("html", f"{page_dir}/result.html", page.html))
-            if page.crawl is not None:
-                page_artifacts.append(("crawl.json", f"{page_dir}/result.json", page.crawl))
-            pages.append(
-                {
-                    "url": page.url,
-                    "success": page.success,
-                    "status_code": page.status_code,
-                    "duration_seconds": page.duration_seconds,
-                    "error": page.error,
-                    "artifact_ids": [],
-                }
-            )
-
-        return PrimitiveExecution(
-            output_json={
-                "stats": _json_safe(output.stats),
-                "pages": pages,
-            },
-            response_json=_json_safe(output),
-            warnings=warnings,
-            artifacts=page_artifacts,
-        )
-
+        raise RuntimeError("crawl primitive requires task-run execution context")
     if primitive == "schema":
-        output = await schema(**payload, progress_callback=progress_callback)
+        output = await schema(
+            **payload,
+            progress_callback=progress_callback,
+            session=session,
+            task_run_id=run.id,
+        )
         response_json = _json_safe(output)
         return PrimitiveExecution(
             output_json=response_json,
@@ -164,7 +144,12 @@ async def _execute_primitive(
         )
 
     if primitive == "extract":
-        output = await extract(**payload, progress_callback=progress_callback)
+        output = await extract(
+            **payload,
+            progress_callback=progress_callback,
+            session=session,
+            task_run_id=run.id,
+        )
         warnings = [_json_safe(warning) for warning in output.warnings]
         response_json = _json_safe(output)
         return PrimitiveExecution(
@@ -175,6 +160,45 @@ async def _execute_primitive(
         )
 
     raise ValueError(f"Unsupported task primitive: {primitive}")
+
+
+async def _execute_crawl_primitive(
+    session: Session,
+    run: TaskRun,
+    progress_callback: CrawlProgressCallback | None = None,
+) -> PrimitiveExecution:
+    output = await crawl(
+        **run.task.input_json,
+        progress_callback=progress_callback,
+        session=session,
+        task_run_id=run.id,
+    )
+    warnings: list[dict] = []
+    pages = []
+    for page in output.pages:
+        page_warnings = [_json_safe(warning) for warning in page.warnings]
+        warnings.extend(page_warnings)
+        pages.append(
+            {
+                "url": page.url,
+                "success": page.success,
+                "status_code": page.status_code,
+                "duration_seconds": page.duration_seconds,
+                "error": page.error,
+                "crawl_id": str(page.crawl_id) if page.crawl_id else None,
+                "artifact_ids": [str(artifact_id) for artifact_id in page.artifact_ids],
+            }
+        )
+
+    return PrimitiveExecution(
+        output_json={
+            "stats": _json_safe(output.stats),
+            "pages": pages,
+        },
+        response_json=_json_safe(output),
+        warnings=warnings,
+        artifacts=[],
+    )
 
 
 def claim_next_run(session: Session, worker_id: str, lease_seconds: int = _LEASE_SECONDS) -> TaskRun | None:
@@ -215,7 +239,19 @@ async def execute_run(
     run_dir = task_run_artifacts_dir(run.id)
 
     try:
-        execution = await _execute_primitive(task, progress_callback=progress_callback)
+        if task.primitive == "crawl":
+            execution = await _execute_crawl_primitive(
+                session=session,
+                run=run,
+                progress_callback=progress_callback,
+            )
+        else:
+            execution = await _execute_primitive(
+                task,
+                session=session,
+                run=run,
+                progress_callback=progress_callback,
+            )
         output_json = execution.output_json
         response_json = execution.response_json
         warnings = execution.warnings

@@ -49,6 +49,12 @@ derived from crawls with joins. Avoid write-time ceremony until there is a concr
 A crawl spends browser/network budget. Reprocessing stored HTML with Crawl4AI `raw:` does not
 create a new crawl.
 
+`actions.crawl` is the acquisition chokepoint. CLI, API, scheduled runs, and higher-level
+task-backed actions that need page bytes should execute through the task-run path and pass their
+task-run context into crawl. That one path is responsible for resolving URL rows, inserting crawl
+rows, writing crawl-produced artifacts, and linking task runs to the crawls/artifacts they used or
+produced.
+
 Each row should capture visit facts:
 
 - `url_id`

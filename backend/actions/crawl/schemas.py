@@ -1,4 +1,5 @@
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -31,6 +32,8 @@ class CrawlPage(BaseModel):
     success: bool
     status_code: int | None = None
     duration_seconds: float
+    crawl_id: UUID | None = None
+    artifact_ids: list[UUID] = Field(default_factory=list)
     html: str | None = None
     crawl: dict[str, Any] | None = None
     warnings: list[QualityWarning] = Field(default_factory=list)

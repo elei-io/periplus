@@ -1,7 +1,9 @@
 import asyncio
 import time
+from uuid import UUID
 
 from crawl4ai import JsonCssExtractionStrategy, JsonXPathExtractionStrategy
+from sqlalchemy.orm import Session
 
 from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
@@ -28,6 +30,8 @@ async def extract(
     mode: CrawlMode = "static",
     wait: CrawlWait = "none",
     progress_callback: CrawlProgressCallback | None = None,
+    session: Session | None = None,
+    task_run_id: UUID | None = None,
 ) -> ExtractOutput:
     await emit_crawl_progress(
         progress_callback,
@@ -40,6 +44,8 @@ async def extract(
             mode=mode,
             wait=wait,
             progress_callback=progress_callback,
+            session=session,
+            task_run_id=task_run_id,
         )
     except Exception as exc:
         await emit_crawl_progress(
@@ -95,6 +101,8 @@ async def extract(
         mode=mode,
         wait=wait,
         progress_callback=progress_callback,
+        session=session,
+        task_run_id=task_run_id,
     )
     source = ExtractSource(
         schema_id=schema_output.schema_id,

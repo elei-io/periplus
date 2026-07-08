@@ -5,10 +5,12 @@ import time
 from hashlib import sha256
 from pathlib import Path
 from urllib.parse import urlparse
+from uuid import UUID
 
 from crawl4ai import JsonCssExtractionStrategy, LLMConfig
 from dotenv import load_dotenv
 from litellm import acompletion
+from sqlalchemy.orm import Session
 
 from actions.crawl.service import crawl as crawl_service
 from actions.shared.crawl import CrawlMode, CrawlWait
@@ -67,12 +69,16 @@ async def _crawl_html(
     mode: CrawlMode,
     wait: CrawlWait,
     progress_callback: CrawlProgressCallback | None,
+    session: Session | None,
+    task_run_id: UUID | None,
 ) -> str:
     output = await crawl_service(
         urls=[url],
         mode=mode,
         wait=wait,
         progress_callback=progress_callback,
+        session=session,
+        task_run_id=task_run_id,
     )
     page = output.pages[0] if output.pages else None
     if page is None or not page.success or page.html is None:
@@ -140,6 +146,8 @@ async def schema(
     mode: CrawlMode = "static",
     wait: CrawlWait = "none",
     progress_callback: CrawlProgressCallback | None = None,
+    session: Session | None = None,
+    task_run_id: UUID | None = None,
 ) -> SchemaOutput:
     schema_id = _schema_id(
         url=url,
@@ -160,6 +168,8 @@ async def schema(
         mode=mode,
         wait=wait,
         progress_callback=progress_callback,
+        session=session,
+        task_run_id=task_run_id,
     )
     await emit_crawl_progress(
         progress_callback,

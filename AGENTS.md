@@ -14,7 +14,7 @@ This file is the first stop for Codex agents working in Atlas.
   - `backend/tasks/` for persisted schedulable work and task/effect runs.
 - Current user-facing actions are `search`, `index`, `crawl`, and `extract`. Extraction schema generation lives in `actions.shared.extract_schema`.
 - Page-loading options are shared through `actions.shared.crawl`. Do not duplicate `mode`/`wait` config in individual primitives.
-- `crawl` is currently the page acquisition primitive. The durable target is a shared crawl acquisition chokepoint that records URLs, crawls, reusable artifacts, and task-run usage in Postgres.
+- `crawl` is the page acquisition chokepoint. Task-backed actions that load pages pass their task-run context into `actions.crawl`, which records URLs, crawls, reusable artifacts, and task-run usage in Postgres.
 - Keep business behavior in `backend/actions/`, `backend/artifacts/`, and `backend/tasks/`; API and CLI layers should stay thin.
 - The architecture rationale lives in `ARCHITECHTURE.md`. Read it before changing the API/task/browser execution model.
 

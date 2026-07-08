@@ -1,6 +1,9 @@
 import asyncio
 from fnmatch import fnmatch
 from urllib.parse import urldefrag, urljoin, urlparse
+from uuid import UUID
+
+from sqlalchemy.orm import Session
 
 from actions.crawl.schemas import CrawlPage
 from actions.crawl.service import crawl as crawl_service
@@ -110,6 +113,8 @@ async def index(
     include_result: list[str] | None = None,
     exclude_result: list[str] | None = None,
     progress_callback: CrawlProgressCallback | None = None,
+    session: Session | None = None,
+    task_run_id: UUID | None = None,
 ) -> list[IndexLink]:
     start_url = _normalize_url(url, url)
     if max_depth < 0 or concurrency < 1 or not _is_crawlable_url(start_url):
@@ -136,6 +141,8 @@ async def index(
             wait=wait,
             concurrency=concurrency,
             progress_callback=progress_callback,
+            session=session,
+            task_run_id=task_run_id,
         )
         next_frontier: list[str] = []
 
