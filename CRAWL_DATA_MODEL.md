@@ -1,70 +1,221 @@
-# Crawl Data Model Notes
+# Crawl Data Model Target
 
-This note captures the working design for making Atlas crawl knowledge durable and queryable.
-It is intentionally a living design note, not a finished migration spec.
+This document describes the target durable data model for Atlas crawl knowledge. It is the
+reference point for comparing current implementation progress against the product direction.
 
-## Goal
+Atlas has three user-facing execution surfaces: API, CLI, and scheduled tasks. All of them should
+share the same task-run and crawl behavior. API and CLI routes should stay thin; durable behavior
+belongs in actions, artifacts, tasks, and the domain services around them.
 
-Atlas should be able to answer operational and product questions from Postgres without
-opening crawl artifact files:
+## Product Goal
 
-- What is the crawl volume for this domain during the last hour?
-- How many tasks are in flight for this URL pattern?
-- How has the error profile for this URL path developed over time?
-- Are crawls from this URL looking healthy, or showing warning signs that we are pushing too much?
-- Do we have recent artifacts for this URL that can be reused as cached responses?
-- Which extraction schema produced a task run's structured output?
+Atlas should build reusable knowledge from crawled pages:
 
-The guiding split is:
+- which URLs and page shapes have been seen,
+- which browser visits happened and what they produced,
+- which artifacts can be reused,
+- which query parameters a page shape appears to support,
+- which extraction plans work for a page shape,
+- which tasks and effects created or mutated durable knowledge.
 
-- Postgres stores queryable facts, provenance, identities, timings, and warning metadata.
-- Artifact storage stores large bytes such as HTML, screenshots, PDFs, and MHTML.
+Postgres stores facts, identities, provenance, timings, statuses, and compact learned plans.
+Artifact storage stores large bytes such as HTML, screenshots, PDFs, and MHTML.
 
-## Core Entities
+The model should be inspectable and operator-editable. A human should be able to see why Atlas is
+reusing a schema, widen or narrow its URL match, invalidate artifacts, and understand which task
+run produced a piece of durable knowledge.
+
+## Target Groups
+
+The target model has four groups.
+
+Observed web identity and storage facts:
+
+- `domains`
+- `paths`
+- `query_params`
+- `urls`
+- `crawls`
+- `artifacts`
+
+Runtime execution facts:
+
+- `tasks`
+- `task_runs`
+- `effects`
+- `effect_runs`
+
+Learned reusable page-shape plans:
+
+- `query_schemas`
+- `extract_schemas`
+- possibly `pagination_schemas` later, only if pagination needs a specialized derived table
+
+Applicability controls:
+
+- `url_matches`
+- match patterns on policies and schemas while a shared match table is not yet justified
+- `crawl_policies`
+
+## Current Distance
+
+Implemented now:
+
+- `urls`
+- `crawls`
+- `artifacts`
+- `tasks`
+- `task_runs`
+- `task_effects`
+- `effect_runs`
+- `task_run_crawls`
+- `task_run_artifacts`
+- `extract_schemas`
+- `pagination_schemas`
+- `crawl_policies`
+
+Partial:
+
+- `urls` currently stores `domain`, `path`, and `query_fingerprint` as columns instead of using
+  separate `domains`, `paths`, and `query_params` tables.
+- Schemas and policies currently use their own `match` strings instead of a shared `url_matches`
+  table.
+- `task_effects` currently represents effects. The target language can still use `effects`, but
+  a rename is not required until the name becomes confusing in API or UI surfaces.
+- `pagination_schemas` exists, but it was premature. Treat it as a legacy/specialized query-param
+  plan until the general `query_schemas` primitive exists.
+
+Missing:
+
+- `query_schemas`
+- first-class schema mutation provenance such as `updated_by_task_run_id`
+- normalized `domains`, `paths`, `query_params`, and `url_matches`
+
+The next milestone is `query_schemas`.
+
+## Core Principles
+
+### Crawl Is The Acquisition Chokepoint
+
+`crawl` is the only primitive that should spend browser/network budget to acquire page bytes.
+Task-backed actions that need page contents should call through the shared crawl path with their
+task-run context.
+
+The crawl path is responsible for:
+
+1. resolving or creating URL identity records,
+2. checking cache eligibility,
+3. executing Crawl4AI when a fresh remote visit is needed,
+4. recording crawl facts,
+5. writing artifacts,
+6. linking task runs to produced or reused crawls and artifacts.
+
+Reprocessing stored HTML with Crawl4AI `raw:` is not a new crawl. It is artifact reuse by the
+current task run.
+
+### URL Shape Is Durable Knowledge
+
+URL identity is not just a string. Atlas should eventually know the domain, path, and query
+parameters as queryable dimensions. The first implementation can keep those as columns on `urls`;
+normalization should happen when analytics, UI grouping, or matching workflows need it.
+
+### Schemas Apply To Page Shapes
+
+Schemas should not directly belong to one exact URL. They apply to URL patterns that represent
+page shapes. The target matching control surface is explicit and inspectable: a pattern can be
+shown in the UI, edited, widened, narrowed, merged, or disabled.
+
+Until a shared `url_matches` table exists, schema and policy rows can carry their own `match`
+string.
+
+### Learned Plans Need Provenance
+
+Generated and mutated schemas should record where they came from:
+
+- the crawl that supplied the representative page,
+- the artifact whose bytes were analyzed,
+- the task run that generated the schema,
+- the task run that most recently updated or repaired it.
+
+Detailed historical versioning is not a first requirement. A compact mutation pointer is enough
+until a real audit workflow needs schema event history.
+
+## Entities
+
+### Domains
+
+Target-only for now.
+
+`domains` represents registrable or operational domains used for grouping, rate limits, analytics,
+and policy decisions.
+
+Potential fields:
+
+- `id`
+- `domain`
+- `created_at`
+
+Do not add this table just to reduce duplication. Add it when domain-level workflows need stable
+identity.
+
+### Paths
+
+Target-only for now.
+
+`paths` represents reusable URL path dimensions within a domain. It is useful for analytics,
+page-shape grouping, and admin workflows that merge schemas across similar paths.
+
+Potential fields:
+
+- `id`
+- `domain_id`
+- `path`
+- `created_at`
+
+### Query Params
+
+Target-only for now.
+
+`query_params` represents observed query keys and values on URLs. This is different from
+`query_schemas`: `query_params` stores observed URL facts, while `query_schemas` stores learned
+plans about what parameters a page shape appears to support.
+
+Potential fields:
+
+- `id`
+- `url_id`
+- `key`
+- `value`
+- `position`
+- `created_at`
 
 ### URLs
 
 `urls` is the set of unique URLs known to Atlas.
 
-Each row should contain the full URL plus derived query dimensions for analytics and lookup:
+Current fields are close to the near-term target:
 
+- `id`
 - `url`
 - `normalized_url`
 - `scheme`
 - `host`
-- `domain` or registrable domain
+- `domain`
 - `path`
-- `query_fingerprint`, nullable
+- `query_fingerprint`
 
-URLs are not task output. They are stable dimensions used by crawls, artifacts, task matching,
-cache lookup, and analytics.
-
-Do not add `first_seen_at` or `last_seen_at` yet. If that data becomes necessary, it can be
-derived from crawls with joins. Avoid write-time ceremony until there is a concrete caller.
+`urls` is a stable dimension used by crawls, artifacts, task matching, cache lookup, and analytics.
 
 ### Crawls
 
-`crawls` represents one point in time where Atlas actually visited a remote URL and loaded it.
+`crawls` represents one point in time where Atlas actually visited a remote URL.
 
-A crawl spends browser/network budget. Reprocessing stored HTML with Crawl4AI `raw:` does not
-create a new crawl.
+Target fields:
 
-`actions.crawl` is the acquisition chokepoint. CLI, API, scheduled runs, and higher-level
-task-backed actions that need page bytes should execute through the task-run path and pass their
-task-run context into crawl. That one path is responsible for resolving URL rows, inserting crawl
-rows, writing crawl-produced artifacts, and linking task runs to the crawls/artifacts they used or
-produced.
-
-Before spending browser time, crawl should look for a reusable HTML artifact keyed by URL and
-input configuration hash. The first cache eligibility rule is intentionally simple: the HTML
-artifact must exist, be present on disk, be linked to a crawl row, not be invalidated, and have no
-artifact warnings. A cache hit links the prior crawl and HTML artifact to the current task run as
-`used`; it does not insert a new `crawls` row.
-
-Each row should capture visit facts:
-
+- `id`
 - `url_id`
 - `task_run_id`
+- `crawl_policy_id`, nullable target
 - `started_at`
 - `finished_at`
 - `duration_ms`
@@ -77,132 +228,210 @@ Each row should capture visit facts:
 - `retry_count`
 - `warnings_json`
 - `meta`
+- `created_at`
 
-Warnings are non-fatal crawl-level signals, such as slow response time, transient retry success,
-rate-limit symptoms, or suspicious redirects.
-
-Crawls are transport records. Fields that describe how the remote visit happened belong here.
-Use `inputs_json` rather than early real columns for evolving crawl inputs such as mode, wait,
-headers, browser config, or Crawl4AI options. Use `errors_json` and `redirects_json` rather than
-prematurely modeling every error or redirect shape.
-
-Keep first-class Crawl4AI-derived columns minimal in the first pass. `success` and `status_code`
-are likely enough, plus timing and relationship columns owned by Atlas. Everything else should
-stay in JSONB until repeated queries justify promotion.
-
-`meta` can hold transport-adjacent metadata such as response headers, cache status, console
-messages, network request summaries, and crawl stats.
-
-Do not store extracted content summaries such as links and media on crawls in the first pass.
-Those facts describe the bytes that came out of the crawl and should be recomputed from stored
-HTML when needed.
+Crawls are transport records. Keep first-class columns minimal and put evolving Crawl4AI/browser
+details in JSONB until repeated queries justify promotion.
 
 ### Artifacts
 
 `artifacts` represents bytes stored on disk or object storage.
 
-Artifacts are mostly HTML and image-like outputs. JSON manifest artifacts should become less
-important as queryable metadata moves into Postgres.
+Target fields:
 
-Each row should capture storage facts:
-
+- `id`
 - `crawl_id`, nullable
 - `url_id`, nullable
 - `task_run_id`, nullable
-- `kind` such as `html`, `screenshot`, `pdf`, `mhtml`
-- `storage_uri` or local `path`
+- `kind`
+- `path` or `storage_uri`
 - `content_type`
 - `size_bytes`
 - `sha256`
 - `input_hash`
 - `meta`
 - `warnings_json`
-- `created_at`
 - `invalidated_at`
 - `invalidated_reason`
+- `created_at`
 
-Warnings are non-fatal artifact-level signals, such as empty HTML shells, known loading
-elements, unexpectedly small files, or content hashes that indicate repeated blocked pages.
+Artifacts can originate from a crawl and can be reused by later task runs. Cache invalidation
+belongs on artifacts, not on crawls.
 
-Crawl HTML artifacts should not store Crawl4AI-derived `links` or `media` in Postgres. Those are
-derived from the HTML bytes and should be recomputed on cache hit by passing the stored HTML back
-through Crawl4AI with `raw:`. Do not keep an `artifact.extracted` column for this.
+### Tasks
 
-Artifact invalidation is the only place cache-death decisions should happen. Manual admin actions,
-TTL invalidation via `ARTIFACT_CACHE_AGE_SECONDS`, and later policy-based invalidation all set
-`invalidated_at` and `invalidated_reason`.
+`tasks` is persisted schedulable work.
 
-Artifact cleanup is purely mechanical. It only walks already-invalidated artifact rows, deletes
-their bytes, and deletes the rows. It does not decide freshness, warning tolerance, TTL, or policy.
-Analytics that need longer-term aggregate history should be scraped separately, for example by
-Prometheus later.
+Target fields:
 
-The worker runs artifact cache maintenance automatically when
-`ARTIFACTS_CLEANUP_INTERVAL_SECONDS` is greater than zero. Each pass first invalidates byte
-artifacts older than `ARTIFACT_CACHE_AGE_SECONDS`, then deletes already-invalidated artifacts in
-bounded batches controlled by `ARTIFACTS_CLEANUP_BATCH_SIZE`.
+- `id`
+- `name`
+- `primitive`
+- `input_json`
+- `schedule_json`
+- `identity_key`
+- `created_by_effect_run_id`
+- `updated_by_effect_run_id`
+- `archived_by_effect_run_id`
+- `archived_at`
+- `archived_reason`
+- `last_run_at`
+- `next_run_at`
+- `created_at`
+- `updated_at`
 
-Invalidation is separate from cleanup. It should be possible to invalidate artifacts manually via
-API, especially from an admin UI where an operator can browse artifacts grouped by URL/domain,
-notice elevated warning counts, adjust crawl configuration, and invalidate cache entries for
-selected URLs or URL groups.
+### Task Runs
+
+`task_runs` is one execution attempt of a task.
+
+Target fields:
+
+- `id`
+- `task_id`
+- `status`
+- `trigger_kind`
+- `triggered_by_effect_run_id`
+- `extract_schema_id`, nullable
+- `query_schema_id`, nullable target
+- `queued_at`
+- `leased_by`
+- `leased_at`
+- `leased_until`
+- `started_at`
+- `finished_at`
+- `input_json`
+- `output_json`
+- `warnings_json`
+- `error`
+- `created_at`
+- `updated_at`
+
+Task runs should record which durable schemas they used when that relationship affects output.
+
+### Effects And Effect Runs
+
+Effects describe follow-on behavior attached to tasks. Effect runs record executions of those
+effects.
+
+The current table name is `task_effects`. That is acceptable unless product language settles on
+standalone reusable effects.
+
+Important relationships:
+
+- `Task -> many Effects`
+- `Effect -> many EffectRuns`
+- `TaskRun -> many EffectRuns`
+- `EffectRun -> target Task`, nullable
+- `EffectRun -> target TaskRun`, nullable
+
+### Query Schemas
+
+`query_schemas` is the next target milestone.
+
+A query schema is a reusable plan for the query-parameter surface available on a page shape. It is
+learned by looking at crawled page contents and page-adjacent evidence, including:
+
+- the current URL,
+- links,
+- forms,
+- filter controls,
+- sort controls,
+- pagination controls,
+- embedded app state,
+- canonical or alternate URLs,
+- network hints when available.
+
+It answers:
+
+- which query parameters appear to exist,
+- what values are observed or inferable,
+- what each parameter seems to do,
+- how confident Atlas is,
+- how to construct candidate URLs for future actions.
+
+Target fields:
+
+- `id`
+- `identity_key`
+- `match`
+- `enabled`
+- `priority`
+- `domain`, nullable
+- `path`, nullable
+- `params_json`
+- `schema_hash`
+- `generated_from_crawl_id`, nullable
+- `generated_from_artifact_id`, nullable
+- `generated_by_task_run_id`, nullable
+- `updated_by_task_run_id`, nullable
+- `inputs_json`
+- `validation_status`, nullable
+- `confidence`, nullable
+- `failure_count`
+- `last_failed_at`, nullable
+- `last_error`, nullable
+- `warnings_json`
+- `created_at`
+- `updated_at`
+
+Example `params_json`:
+
+```json
+{
+  "params": [
+    {
+      "key": "keyword",
+      "kind": "text",
+      "required": false,
+      "observed_values": ["16tb ironwolf"],
+      "purpose": "search term",
+      "source": "current_url",
+      "confidence": 0.95
+    },
+    {
+      "key": "sort",
+      "kind": "enum",
+      "required": false,
+      "observed_values": ["newest", "price_asc", "price_desc"],
+      "purpose": "sort order",
+      "source": "filter_links",
+      "confidence": 0.8
+    },
+    {
+      "key": "page",
+      "kind": "pagination",
+      "required": false,
+      "value_template": "{{value}}",
+      "start_value": 1,
+      "value_step": 1,
+      "source": "next_link",
+      "confidence": 0.9
+    }
+  ]
+}
+```
+
+The first implementation should keep `params_json` flexible JSONB but define Pydantic contracts
+at API and action boundaries.
+
+Validation should prove at least one of:
+
+1. the parameter and value were observed in page links or forms,
+2. constructing a URL with the parameter yields a successful crawl with meaningfully related
+   content,
+3. the parameter is inherited from the current URL and preserved by page navigation.
+
+Query schemas are discovered affordances with confidence and provenance, not guaranteed complete
+truth. A single page may expose only part of a site's query surface.
 
 ### Extract Schemas
 
-`extract_schemas` is a mutable cache of Crawl4AI extraction schemas for a page shape and
-extraction intent.
+`extract_schemas` stores reusable Crawl4AI extraction schemas for a page shape and extraction
+intent.
 
-An extract schema should not directly belong to one URL. The relationship between a schema and
-URLs is ambiguous because schemas apply to page shapes, not exact URLs. The practical relationship
-should be an explicit URL match pattern, using the same kind of glob-style patterns that already
-work well for index filters.
+Target fields:
 
-Proposed identity:
-
-```text
-identity_key = hash(prompt + schema_type + target_shape + match)
-```
-
-`match` is a human-editable URL pattern, such as:
-
-```text
-*example.com/item/*
-https://example.com/search*
-```
-
-This is the durable control surface. Automatic path normalization is too much of a hidden
-heuristic and will eventually be wrong in ways that are hard to inspect. A match pattern can be
-shown in the admin UI, edited, merged, widened, or narrowed by an operator.
-
-Initial schema creation should use the exact URL with query parameters stripped as the first
-`match` value. That is conservative and avoids accidental over-sharing. Later, an admin can merge
-schemas and choose a broader match.
-
-Example:
-
-```text
-https://example.com/item/00001
-https://example.com/item/10000
-```
-
-These may start as two exact schema matches. The admin UI can show created schemas grouped by
-domain/path similarity, allow selecting them for merge, and then ask for the replacement match,
-for example:
-
-```text
-*example.com/item/*
-```
-
-Later, Atlas can recommend merges when several similar schemas are created, but the first design
-should keep the final match pattern explicit.
-
-- prompt or prompt hash
-- schema type, such as CSS or XPath
-- target JSON shape hash when present
-- match pattern
-
-Each row should capture:
-
+- `id`
 - `identity_key`
 - `match`
 - `enabled`
@@ -211,90 +440,14 @@ Each row should capture:
 - `prompt_hash`
 - `schema_type`
 - `target_json_hash`
-- `domain`
-- `path`
-- `schema_json`
-- `schema_hash`
-- `generated_from_crawl_id`
-- `generated_from_artifact_id`
-- `generated_by_task_run_id`
-- `inputs_json`
-- model/provider settings used for generation
-- validation status
-- `failure_count`
-- `last_failed_at`
-- `last_error`
-- `warnings_json`
-- `created_at`
-- `updated_at`
-
-Atlas does not need extraction schema versioning in the first design. Extraction is a
-convenience feature for structured outputs and navigational effects, not a durable parsing
-workload where historical replay matters. Web pages are not stable enough for replay to be a
-trustworthy recovery strategy anyway.
-
-Instead, extraction schemas should be self-healing:
-
-1. Find enabled schemas whose `match` pattern matches the query-stripped URL and whose prompt,
-   schema type, and target shape match the extraction intent.
-2. If no matching schema exists, generate one with an exact query-stripped URL match and save it.
-3. If a schema exists, use it.
-4. If extraction fails, regenerate and replace the stored schema.
-5. Retry replacement up to `.env` `MAX_EXTRACT_ATTEMPTS`.
-6. If extraction still fails, mark the task run failed.
-
-When multiple schemas match, choose by explicit `priority`, then by most-specific match as a tie
-breaker. `identity_key` should enforce uniqueness for a specific
-`prompt + schema_type + target_shape + match` combination, but match resolution is the lookup
-mechanism.
-
-Schema replacement should overwrite the current `schema_json` and update generation metadata.
-If we later need an audit trail, that can be added separately as lightweight events, not as a
-core versioning model.
-
-### Web Search Providers
-
-Web search providers are code-owned options for classic web search engines such as DuckDuckGo,
-Brave, and Yahoo.
-
-They are not stored in Postgres. Atlas keeps a small known-working provider registry in code and
-the web search playground exposes that provider selection as a first-class control. Web search
-results use a stable normalized shape:
-
-```text
-title
-url
-description
-```
-
-Web search providers are for outbound result discovery. They should generally filter out provider
-self-links and same-provider navigation links.
-
-### Pagination Schemas
-
-`pagination_schemas` stores reusable pagination behavior learned from a representative page.
-The goal is the same as extraction schemas: an agent does the page-specific reasoning once, Atlas
-validates the plan, and future runs reuse the durable schema until it fails and needs repair.
-
-Each row captures:
-
-- `id`
-- `identity_key`
-- `match`
-- `enabled`
-- `priority`
-- `next_button_selector`, nullable
-- `item_selector`
-- `expected_max_item_count`, nullable
-- `query_param_key`
-- `query_param_value_template`
-- `start_value`
-- `value_step`
 - `domain`, nullable
 - `path`, nullable
+- `schema_json`
+- `schema_hash`
 - `generated_from_crawl_id`, nullable
 - `generated_from_artifact_id`, nullable
 - `generated_by_task_run_id`, nullable
+- `updated_by_task_run_id`, nullable target
 - `inputs_json`
 - `validation_status`, nullable
 - `failure_count`
@@ -304,357 +457,111 @@ Each row captures:
 - `created_at`
 - `updated_at`
 
-Pagination is query-param based for now. Click and scroll expansion are different, more browser-stateful
-problems and should not be part of the active primitive until query pagination has proven itself.
+Extraction schema reuse should match on URL pattern plus extraction intent. If a schema fails,
+Atlas can repair it in place and update mutation provenance.
 
-The query template stores raw, unencoded values. URL construction is responsible for encoding:
+### Pagination Schemas
 
-```json
-{"query_param_key":"page","query_param_value_template":"{{value}}","start_value":1,"value_step":1}
-```
+`pagination_schemas` exists today, but it should not lead the model.
 
-```json
-{"query_param_key":"page_token","query_param_value_template":"v1:{{value}}","start_value":0,"value_step":1}
-```
+Pagination is one kind of query-parameter behavior. After `query_schemas` exists, pagination
+should either:
 
-```json
-{"query_param_key":"offset","query_param_value_template":"{{value}}","start_value":0,"value_step":30}
-```
+- live as `kind: "pagination"` entries inside `query_schemas.params_json`, or
+- remain a small specialized table derived from and linked to `query_schemas` if dedicated
+  pagination validation needs justify it.
 
-Validation must prove that `item_selector` finds repeated items and that advancing produces new
-items rather than only a successful browser action. New schemas should be born as candidates in the
-primitive, not durable rows. The durable row is only created after Atlas has:
+Until then, avoid expanding `pagination_schemas` further.
 
-1. crawled the first page,
-2. used a pagination candidate agent to detect `next_button_selector`, `item_selector`,
-   `query_param_key`, `query_param_value_template`, `start_value`, and `value_step`,
-3. verified and counted page 1 items locally,
-4. constructed and crawled page 2 from the query template,
-5. verified and counted page 2 items locally, and
-6. confirmed page 2 contains new items.
+### URL Matches
 
-If candidate validation fails, Atlas should feed the concrete selector/count/advance error back into
-the pagination agent up to the configured attempt limit. The `paginate` primitive reports per-page
-item counts, new item counts, the strategy used, and the stop reason.
+Target-only for now.
 
-New schemas should start with a conservative query-stripped path prefix match, such as
-`https://example.com/search*`. Admin tooling can later widen that to a broader glob like
-`*example.com/item/*` once repeated pages prove they share the same pagination behavior.
+`url_matches` would represent reusable, operator-editable URL pattern scopes.
 
-## Relationships
+Potential fields:
 
-```text
-Url 1 -> many Crawls
-Url 1 -> many Artifacts, optional on Artifact
-Crawl 1 -> many Artifacts, optional on Artifact
-TaskRun 1 -> many Crawls
-TaskRun 1 -> many Artifacts, optional on Artifact
-TaskRun many -> one ExtractSchema, optional
-ExtractSchema many -> one generated-from Crawl, optional
-ExtractSchema many -> one generated-from Artifact, optional
-CrawlPolicy applies to URLs by runtime match pattern, not by foreign key
-ExtractSchema applies to URLs by runtime match pattern, not by foreign key
-PaginationSchema applies to URLs by runtime match pattern, not by foreign key
-```
+- `id`
+- `match`
+- `enabled`
+- `description`
+- `domain`
+- `path`
+- `created_by_task_run_id`
+- `updated_by_task_run_id`
+- `created_at`
+- `updated_at`
 
-Cached reuse should be represented separately from production. A task run can use crawls or
-artifacts produced by earlier task runs.
+Do not add this table just to make relationships look tidy. Add it when multiple schemas and
+policies need to share, merge, and audit the same match scopes.
 
-Usage join tables:
+### Crawl Policies
 
-```text
-task_run_crawls
-- task_run_id
-- crawl_id
-- role: produced, reused, input, cache_hit
-- created_at
+`crawl_policies` stores URL-pattern-scoped crawl behavior.
 
-task_run_artifacts
-- task_run_id
-- artifact_id
-- role: produced, reused, input, cache_hit
-- created_at
-```
+Current target fields:
 
-## Planned Schema Snapshot
-
-This is the current target table shape.
-
-```text
-urls
-- id
-- url, unique
-- normalized_url, unique
-- scheme
-- host
-- domain
-- path
-- query_fingerprint, nullable
-```
-
-```text
-tasks
-- id
-- name
-- primitive
-- input_json
-- schedule_json, nullable
-- identity_key, nullable unique
-- created_by_effect_run_id, nullable
-- updated_by_effect_run_id, nullable
-- archived_by_effect_run_id, nullable
-- archived_at, nullable
-- archived_reason, nullable
-- last_run_at, nullable
-- next_run_at, nullable
-- created_at
-- updated_at
-```
-
-```text
-task_runs
-- id
-- task_id
-- status
-- trigger_kind
-- triggered_by_effect_run_id, nullable
-- extract_schema_id, nullable
-- queued_at
-- leased_by, nullable
-- leased_at, nullable
-- leased_until, nullable
-- started_at, nullable
-- finished_at, nullable
-- input_json
-- output_json, nullable
-- warnings_json
-- error, nullable
-- created_at
-- updated_at
-```
-
-```text
-task_effects
-- id
-- task_id
-- effect_type
-- config_json
-- enabled
-- position
-- created_at
-- updated_at
-```
-
-```text
-effect_runs
-- id
-- effect_id
-- source_run_id
-- status
-- operation
-- target_task_id, nullable
-- target_run_id, nullable
-- input_json
-- output_json, nullable
-- error, nullable
-- started_at
-- finished_at, nullable
-- created_at
-- updated_at
-```
-
-```text
-crawls
-- id
-- url_id
-- task_run_id
-- started_at
-- finished_at, nullable
-- duration_ms, nullable
-- inputs_json
-- input_hash
-- success
-- status_code, nullable
-- redirects_json
-- errors_json
-- retry_count
-- warnings_json
-- meta
-- created_at
-```
-
-```text
-artifacts
-- id
-- crawl_id, nullable
-- url_id, nullable
-- task_run_id, nullable
-- kind
-- path or storage_uri
-- content_type
-- size_bytes
-- sha256
-- input_hash, nullable
-- meta
-- warnings_json
-- invalidated_at, nullable
-- invalidated_reason, nullable
-- created_at
-```
-
-```text
-task_run_crawls
-- task_run_id
-- crawl_id
-- role
-- created_at
-```
-
-```text
-task_run_artifacts
-- task_run_id
-- artifact_id
-- role
-- created_at
-```
-
-```text
-extract_schemas
-- id
-- identity_key, unique
-- match
-- enabled
-- priority
-- prompt
-- prompt_hash
-- schema_type
-- target_json_hash, nullable
-- domain, nullable
-- path, nullable
-- schema_json
-- schema_hash
-- generated_from_crawl_id, nullable
-- generated_from_artifact_id, nullable
-- generated_by_task_run_id, nullable
-- inputs_json
-- validation_status, nullable
-- failure_count
-- last_failed_at, nullable
-- last_error, nullable
-- warnings_json
-- created_at
-- updated_at
-```
-
-```text
-crawl_policies
-- id
-- match
-- enabled
-- config
-- created_at
-- updated_at
-```
-
-`extract_schemas.match` and `crawl_policies.match` are runtime glob matches against URLs, not
-foreign keys to `urls`.
-
-## Single Crawl Chokepoint
-
-Atlas should have one service boundary responsible for actual remote crawling.
-
-That boundary should:
-
-1. Resolve or create the `urls` row.
-2. Execute Crawl4AI against the remote URL.
-3. Measure timing and status data.
-4. Run crawl-level warning checks.
-5. Store the `crawls` row.
-6. Store produced artifacts and artifact-level warnings.
-7. Return enough in-memory data for the calling primitive.
-
-Other actions should avoid directly visiting remote pages. If recent reusable HTML exists, they
-can load the artifact bytes and run Crawl4AI with `raw:` to rebuild a `CrawlResult`-shaped object.
-That reprocessing should be recorded as artifact reuse by the current task run, not as a new crawl.
-
-Compute is cheap compared with browser time.
-
-## Policies
-
-Operational policies such as concurrency, crawl rate limits, and cache reuse should live behind
-the same task/crawl chokepoints as execution. API, CLI, scheduler, and worker paths should all
-consult the same policy service before spending browser/network budget.
-
-Like extract schemas, crawl policies should be URL-pattern scoped:
-
-```text
-CrawlPolicy.match = *example.com/item/*
-CrawlPolicy.config = {
-  "max_concurrency": 5,
-  "backoff_strategy": "exponential"
-}
-```
-
-That means all matching item detail pages on `example.com` get the same crawl behavior.
-
-Each crawl policy row should capture:
-
+- `id`
 - `match`
 - `enabled`
 - `config`
 - `created_at`
 - `updated_at`
 
-Policy matching should use the same glob-style URL matching semantics as index filters. Keep the
-table deliberately small until repeated policy behavior proves which fields deserve first-class
-columns.
+Policies should eventually answer:
 
-- global crawl concurrency
-- per-domain crawl concurrency
-- per-domain recent crawl volume limits
-- per-URL or input-hash dedupe while a matching run is queued or running
-- cache reuse rules
-- warning tolerance rules
+- can this task run start another crawl now,
+- should this URL/input hash use fresh crawl or cached artifact,
+- is there already in-flight work for this URL/input hash,
+- has this domain produced enough recent warnings to slow down or fail fast.
 
-Policies can start from environment defaults and later grow API/database overrides:
+Do not scatter concurrency, cache, and warning-tolerance checks across primitives.
+
+## Relationship Target
 
 ```text
-MAX_GLOBAL_CRAWL_CONCURRENCY
-MAX_DOMAIN_CRAWL_CONCURRENCY
-MAX_EXTRACT_ATTEMPTS
-ARTIFACT_CACHE_AGE_SECONDS
+Domain 1 -> many Paths target
+Domain 1 -> many URLs target
+Path 1 -> many URLs target
+URL 1 -> many QueryParams target
+URL 1 -> many Crawls
+URL 1 -> many Artifacts
+Crawl many -> one URL
+Crawl many -> one TaskRun
+Crawl many -> one CrawlPolicy target
+Crawl 1 -> many Artifacts
+Artifact many -> one URL, nullable
+Artifact many -> one Crawl, nullable
+Artifact many -> one TaskRun, nullable
+Task 1 -> many TaskRuns
+Task 1 -> many Effects
+TaskRun 1 -> many Crawls
+TaskRun 1 -> many Artifacts
+TaskRun many -> one QuerySchema, nullable target
+TaskRun many -> one ExtractSchema, nullable
+Effect 1 -> many EffectRuns
+EffectRun many -> one source TaskRun
+EffectRun may create or mutate Tasks
+QuerySchema applies to URLs by match pattern
+ExtractSchema applies to URLs by match pattern
+CrawlPolicy applies to URLs by match pattern
 ```
 
-Environment defaults act as fallback policies. Database `crawl_policies` are the operator-facing
-control surface.
+Reuse should be represented separately from production:
 
-The policy service should answer questions such as:
+```text
+task_run_crawls
+- task_run_id
+- crawl_id
+- role: produced, reused, input, cache_hit
+- created_at
 
-- Can this task run start another crawl now?
-- Should this URL/input hash use a fresh crawl or a cached artifact?
-- Is there already an in-flight task run for this URL/input hash?
-- Has this domain produced enough recent warnings that new crawls should slow down or fail fast?
-
-Do not scatter concurrency checks through primitives. Primitives request crawl or artifact
-material; the chokepoint decides whether that means fresh crawl, cache reuse, wait, skip, or fail.
-
-## Task-Backed Ad Hoc Execution
-
-User-facing API and CLI action triggers should use the same task-run path as scheduled work:
-
-1. Resolve or create the task for the action input.
-2. Create a task run.
-3. Execute the task run inline in the current API or CLI process.
-4. Let the task executor mark status, warnings, crawls, artifacts, and schema provenance.
-
-Ad hoc API and CLI runs should not enqueue work for the worker. Their task runs are created as
-manual inline runs and executed immediately. Because the created tasks are unscheduled, the
-scheduler should not pick them up later unless a user explicitly adds a schedule.
-
-Action routes and CLI commands should not directly call primitives in a way that bypasses task
-and run persistence. This keeps playground and ad hoc usage durable: if an operator tries
-something and likes it, the resulting task can later receive a schedule and become production
-work without changing shape.
+task_run_artifacts
+- task_run_id
+- artifact_id
+- role: produced, reused, input, cache_hit
+- created_at
+```
 
 ## Cache Semantics
 
@@ -671,72 +578,47 @@ TaskRun -> task_run_artifacts(role=cache_hit) -> Artifact(html) -> Crawl
 TaskRun reprocesses bytes through Crawl4AI raw:
 ```
 
-The first cache policy should be deliberately simple and live behind the single crawl/artifact
-lookup chokepoint:
+Initial cache eligibility:
 
-1. Match by `url_id` and `input_hash`.
-2. Require artifact exists.
+1. Match by `url_id` and crawl input hash.
+2. Require an HTML artifact exists and is present on disk.
 3. Require `invalidated_at is null`.
-4. Require no warnings, or only explicitly allowed warnings.
+4. Require no artifact warnings, or only explicitly allowed warnings.
 
-The cache key for an item is always:
-
-```text
-url + input config hash
-```
-
-More nuanced policy can later consider artifact age, URL/domain crawl volume, prior warning
-codes, content hash, task primitive, and extraction schema requirements.
-
-Manual invalidation should support URL-oriented workflows, such as invalidating artifacts for
-one URL, a set of URLs, a domain, or a path group after crawl configuration changes.
-
-## Extract Schema Reuse
-
-Extraction should reuse schemas by finding an enabled schema whose `match` pattern matches the
-query-stripped URL and whose prompt, schema type, and target shape match the current extraction
-intent.
-
-```text
-hash(prompt + schema_type + target_shape + match)
-```
-
-Pages covered by the same explicit match should share the same schema for the same extraction
-intent. This keeps search pages, listing pages, and detail pages from regenerating schemas once an
-operator has widened the schema match.
-
-Admin workflow:
-
-1. Atlas creates schemas conservatively with exact query-stripped URL matches.
-2. Admin reviews schemas grouped by domain/path similarity.
-3. Admin selects schemas to merge.
-4. Admin chooses the replacement match, such as `*example.com/item/*`.
-5. Atlas keeps or regenerates one schema for that match and invalidates or removes the narrower
-   duplicates.
-
-Later automation can recommend merges after several similar schemas are created, but should still
-present an explicit match pattern for approval.
-
-Task runs should record the `extract_schema_id` they used, but not a version id.
+Artifact invalidation is the cache-death mechanism. Cleanup should only delete artifacts that are
+already invalidated.
 
 ## Implementation Sequence
 
-Suggested order:
+Foundation already mostly exists:
 
-1. Add URL models, schemas, and Alembic migration.
-2. Expand artifacts to support `url_id`, `crawl_id`, `kind`, `size_bytes`, `sha256`,
-   `content_type`, `input_hash`, `invalidated_at`, `invalidated_reason`, and `warnings_json`.
-3. Add Crawl models, schemas, and migration.
-4. Route API and CLI action triggers through task creation, task-run creation, and inline
-   task-run execution.
-5. Introduce the durable crawl service and route the `crawl` action through it.
-6. Add task-run usage joins for crawls and artifacts.
-7. Add CrawlPolicy and ExtractSchema models and migrations.
-8. Route schema generation and extract execution through reusable, self-healing schema records.
-9. Replace manifest-style artifact knowledge with Postgres-backed lookups.
-10. Add analytics/query helpers for domain volume, in-flight URL patterns, warning trends,
-   and recent reusable artifacts.
+1. URL records.
+2. Crawl records.
+3. Artifact records and invalidation fields.
+4. Task and task-run execution records.
+5. Task-run usage joins for crawls and artifacts.
+6. Extract schemas.
+7. Crawl policies.
+
+Next:
+
+1. Add `query_schemas` model, Pydantic schemas, migration, service, and API/admin surfaces.
+2. Add a query-schema generation action or shared service that crawls a representative page,
+   inspects page contents, extracts candidate query parameters and values, validates them, and
+   records provenance.
+3. Record `query_schema_id` on task runs when a run uses a query schema.
+4. Rework `paginate` so it consumes query-schema pagination entries or deliberately remains a
+   derived specialized path.
+5. Add `updated_by_task_run_id` to learned schemas when repair/mutation behavior becomes active.
+6. Add normalized `domains`, `paths`, `query_params`, and `url_matches` only when workflows need
+   them.
 
 ## Open Questions
 
-No open modeling questions at this checkpoint.
+- Should pagination live only inside `query_schemas.params_json`, or remain a derived specialized
+  table?
+- What validation threshold is required before Atlas automatically reuses a discovered query
+  parameter?
+- Should schema mutation provenance stay as `updated_by_task_run_id`, or become a lightweight
+  schema event table?
+- When do URL dimensions need to become normalized tables instead of columns and derived views?
