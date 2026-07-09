@@ -19,7 +19,8 @@ export function useSearchRun() {
       let latestResult: SearchResult[] = []
       const params = new URLSearchParams({
         query: input.query,
-        max_results: String(input.max_results),
+        max_pages: String(input.max_pages),
+        provider: input.provider,
       })
 
       const response = await fetch(apiUrl(`/search/?${params.toString()}`), {

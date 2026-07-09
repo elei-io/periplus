@@ -128,11 +128,19 @@ Crawl HTML artifacts should not store Crawl4AI-derived `links` or `media` in Pos
 derived from the HTML bytes and should be recomputed on cache hit by passing the stored HTML back
 through Crawl4AI with `raw:`. Do not keep an `artifact.extracted` column for this.
 
-Artifacts do not have TTL semantics yet. Later cleanup can decide which artifact bytes to delete.
-For now, artifacts need quick invalidation so cache lookup can reject known-bad entries.
+Artifact invalidation is the only place cache-death decisions should happen. Manual admin actions,
+TTL invalidation via `ARTIFACT_CACHE_AGE_SECONDS`, and later policy-based invalidation all set
+`invalidated_at` and `invalidated_reason`.
 
-Artifact cleanup should physically remove cache entries older than
-`.env` `ARTIFACT_CACHE_AGE_SECONDS`.
+Artifact cleanup is purely mechanical. It only walks already-invalidated artifact rows, deletes
+their bytes, and deletes the rows. It does not decide freshness, warning tolerance, TTL, or policy.
+Analytics that need longer-term aggregate history should be scraped separately, for example by
+Prometheus later.
+
+The worker runs artifact cache maintenance automatically when
+`ARTIFACTS_CLEANUP_INTERVAL_SECONDS` is greater than zero. Each pass first invalidates byte
+artifacts older than `ARTIFACT_CACHE_AGE_SECONDS`, then deletes already-invalidated artifacts in
+bounded batches controlled by `ARTIFACTS_CLEANUP_BATCH_SIZE`.
 
 Invalidation is separate from cleanup. It should be possible to invalidate artifacts manually via
 API, especially from an admin UI where an operator can browse artifacts grouped by URL/domain,
@@ -244,6 +252,95 @@ Schema replacement should overwrite the current `schema_json` and update generat
 If we later need an audit trail, that can be added separately as lightweight events, not as a
 core versioning model.
 
+### Web Search Providers
+
+Web search providers are code-owned options for classic web search engines such as DuckDuckGo,
+Brave, and Yahoo.
+
+They are not stored in Postgres. Atlas keeps a small known-working provider registry in code and
+the web search playground exposes that provider selection as a first-class control. Web search
+results use a stable normalized shape:
+
+```text
+title
+url
+description
+```
+
+Web search providers are for outbound result discovery. They should generally filter out provider
+self-links and same-provider navigation links.
+
+### Pagination Schemas
+
+`pagination_schemas` stores reusable pagination behavior learned from a representative page.
+The goal is the same as extraction schemas: an agent does the page-specific reasoning once, Atlas
+validates the plan, and future runs reuse the durable schema until it fails and needs repair.
+
+Each row captures:
+
+- `id`
+- `identity_key`
+- `match`
+- `enabled`
+- `priority`
+- `next_button_selector`, nullable
+- `item_selector`
+- `expected_max_item_count`, nullable
+- `query_param_key`
+- `query_param_value_template`
+- `start_value`
+- `value_step`
+- `domain`, nullable
+- `path`, nullable
+- `generated_from_crawl_id`, nullable
+- `generated_from_artifact_id`, nullable
+- `generated_by_task_run_id`, nullable
+- `inputs_json`
+- `validation_status`, nullable
+- `failure_count`
+- `last_failed_at`, nullable
+- `last_error`, nullable
+- `warnings_json`
+- `created_at`
+- `updated_at`
+
+Pagination is query-param based for now. Click and scroll expansion are different, more browser-stateful
+problems and should not be part of the active primitive until query pagination has proven itself.
+
+The query template stores raw, unencoded values. URL construction is responsible for encoding:
+
+```json
+{"query_param_key":"page","query_param_value_template":"{{value}}","start_value":1,"value_step":1}
+```
+
+```json
+{"query_param_key":"page_token","query_param_value_template":"v1:{{value}}","start_value":0,"value_step":1}
+```
+
+```json
+{"query_param_key":"offset","query_param_value_template":"{{value}}","start_value":0,"value_step":30}
+```
+
+Validation must prove that `item_selector` finds repeated items and that advancing produces new
+items rather than only a successful browser action. New schemas should be born as candidates in the
+primitive, not durable rows. The durable row is only created after Atlas has:
+
+1. crawled the first page,
+2. used a pagination candidate agent to detect `next_button_selector`, `item_selector`,
+   `query_param_key`, `query_param_value_template`, `start_value`, and `value_step`,
+3. verified and counted page 1 items locally,
+4. constructed and crawled page 2 from the query template,
+5. verified and counted page 2 items locally, and
+6. confirmed page 2 contains new items.
+
+If candidate validation fails, Atlas should feed the concrete selector/count/advance error back into
+the pagination agent up to the configured attempt limit. The `paginate` primitive reports per-page
+item counts, new item counts, the strategy used, and the stop reason.
+
+New schemas should start with a conservative query-stripped path prefix match, such as
+`https://example.com/search*`. Admin tooling can later widen that to a broader glob like
+`*example.com/item/*` once repeated pages prove they share the same pagination behavior.
+
 ## Relationships
 
 ```text
@@ -257,6 +354,7 @@ ExtractSchema many -> one generated-from Crawl, optional
 ExtractSchema many -> one generated-from Artifact, optional
 CrawlPolicy applies to URLs by runtime match pattern, not by foreign key
 ExtractSchema applies to URLs by runtime match pattern, not by foreign key
+PaginationSchema applies to URLs by runtime match pattern, not by foreign key
 ```
 
 Cached reuse should be represented separately from production. A task run can use crawls or

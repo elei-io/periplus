@@ -23,6 +23,10 @@ class Input(BaseModel):
         default="none",
         description="The wait strategy to use before extraction.",
     )
+    match: str | None = Field(
+        default=None,
+        description="Optional extract schema match pattern for durable schema reuse.",
+    )
 
 class ExtractSource(BaseModel):
     schema_id: str

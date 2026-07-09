@@ -1,39 +1,30 @@
 import asyncio
 import json
-import os
 import time
 from hashlib import sha256
-from pathlib import Path
 from urllib.parse import urlparse
 from uuid import UUID
 
 from crawl4ai import JsonCssExtractionStrategy, LLMConfig
-from dotenv import load_dotenv
 from litellm import acompletion
 from sqlalchemy.orm import Session
 
 from actions.crawl.service import crawl as crawl_service
 from actions.shared.crawl import CrawlMode, CrawlWait
+from actions.shared.llm import openrouter_llm_config
 from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
+from extract_schemas.service import (
+    create_extract_schema,
+    default_match_for_url,
+    find_reusable_extract_schema,
+    record_extract_schema_use,
+    replace_extract_schema,
+)
 
 from .schemas import SchemaOutput, SchemaType
 
-_ENV_PATH = Path(__file__).resolve().parents[3] / ".env"
-
-
 def _schema_llm_config() -> LLMConfig:
-    load_dotenv(_ENV_PATH)
-    provider = os.getenv(
-        "OPENROUTER_SCHEMA_MODEL",
-        os.getenv("OPENROUTER_SEARCH_EXTRACTOR_MODEL", "openai/gpt-4o"),
-    )
-    if not provider.startswith("openrouter/"):
-        provider = f"openrouter/{provider}"
-
-    return LLMConfig(
-        provider=provider,
-        api_token=os.getenv("OPENROUTER_API_KEY"),
-    )
+    return openrouter_llm_config("OPENROUTER_SCHEMA_MODEL", "OPENROUTER_SEARCH_EXTRACTOR_MODEL")
 
 
 def _safe_id(value: str) -> str:
@@ -148,6 +139,9 @@ async def schema(
     progress_callback: CrawlProgressCallback | None = None,
     session: Session | None = None,
     task_run_id: UUID | None = None,
+    match: str | None = None,
+    reuse_existing: bool = True,
+    replace_schema_id: UUID | None = None,
 ) -> SchemaOutput:
     schema_id = _schema_id(
         url=url,
@@ -162,6 +156,32 @@ async def schema(
         CrawlProgressEvent(url=url, label="schema", status="started"),
     )
     start_time = time.perf_counter()
+    match_value = match or default_match_for_url(url)
+    if session is not None and reuse_existing and replace_schema_id is None:
+        existing = find_reusable_extract_schema(
+            session,
+            url=url,
+            prompt=prompt,
+            schema_type=schema_type,
+            target_json_example=target_json_example,
+        )
+        if existing is not None:
+            record_extract_schema_use(session, task_run_id=task_run_id, schema=existing)
+            await emit_crawl_progress(
+                progress_callback,
+                CrawlProgressEvent(
+                    url=url,
+                    label="schema",
+                    status="succeeded",
+                    duration=time.perf_counter() - start_time,
+                ),
+            )
+            return SchemaOutput(
+                schema_id=str(existing.id),
+                schema_type=schema_type,
+                extraction_schema=existing.schema_json,
+            )
+
     target_json_example = target_json_example or await _generate_target_json_example(prompt)
     html = html or await _crawl_html(
         url=url,
@@ -216,6 +236,45 @@ async def schema(
             duration=time.perf_counter() - start_time,
         ),
     )
+    if session is not None:
+        inputs_json = {
+            "url": url,
+            "mode": mode,
+            "wait": wait,
+            "schema_id": schema_id,
+            "match": match_value,
+        }
+        if replace_schema_id is not None:
+            durable_schema = replace_extract_schema(
+                session,
+                schema_id=replace_schema_id,
+                prompt=prompt,
+                schema_type=schema_type,
+                target_json_example=target_json_example,
+                match=match,
+                schema_json=generated_schema,
+                task_run_id=task_run_id,
+                inputs_json=inputs_json,
+            )
+        else:
+            durable_schema = create_extract_schema(
+                session,
+                url=url,
+                prompt=prompt,
+                schema_type=schema_type,
+                target_json_example=target_json_example,
+                match=match_value,
+                schema_json=generated_schema,
+                task_run_id=task_run_id,
+                inputs_json=inputs_json,
+            )
+        record_extract_schema_use(session, task_run_id=task_run_id, schema=durable_schema)
+        return SchemaOutput(
+            schema_id=str(durable_schema.id),
+            schema_type=schema_type,
+            extraction_schema=generated_schema,
+        )
+
     return SchemaOutput(
         schema_id=schema_id,
         schema_type=schema_type,

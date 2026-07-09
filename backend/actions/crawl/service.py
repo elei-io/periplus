@@ -81,6 +81,7 @@ async def _crawl_url(
     mode: CrawlMode,
     wait: CrawlWait,
     progress_callback: CrawlProgressCallback | None,
+    run_config_overrides: dict[str, Any] | None = None,
 ) -> CrawlPage:
     await emit_crawl_progress(
         progress_callback,
@@ -92,7 +93,7 @@ async def _crawl_url(
         result = await crawl_single_url(
             crawler=crawler,
             url=url,
-            run_config=run_config_for_mode(mode=mode, wait=wait),
+            run_config=run_config_for_mode(mode=mode, wait=wait, **(run_config_overrides or {})),
             mode=mode,
             wait=wait,
         )
@@ -432,6 +433,7 @@ async def _crawl_one(
     wait: CrawlWait,
     semaphore: asyncio.Semaphore,
     progress_callback: CrawlProgressCallback | None,
+    run_config_overrides: dict[str, Any] | None = None,
 ) -> tuple[int, CrawlPage]:
     async with semaphore:
         page = await _crawl_url(
@@ -440,8 +442,55 @@ async def _crawl_one(
             mode=mode,
             wait=wait,
             progress_callback=progress_callback,
+            run_config_overrides=run_config_overrides,
         )
         return index, page
+
+
+async def crawl_one_for_task(
+    *,
+    url: str,
+    mode: CrawlMode,
+    wait: CrawlWait,
+    index: int,
+    progress_callback: CrawlProgressCallback | None = None,
+    session: Session | None = None,
+    task_run_id: UUID | None = None,
+    run_config_overrides: dict[str, Any] | None = None,
+    crawler: AsyncWebCrawler | None = None,
+) -> CrawlPage:
+    if crawler is None:
+        async with AsyncWebCrawler(config=browser_config_for_mode(mode)) as owned_crawler:
+            page = await _crawl_url(
+                crawler=owned_crawler,
+                url=url,
+                mode=mode,
+                wait=wait,
+                progress_callback=progress_callback,
+                run_config_overrides=run_config_overrides,
+            )
+    else:
+        page = await _crawl_url(
+            crawler=crawler,
+            url=url,
+            mode=mode,
+            wait=wait,
+            progress_callback=progress_callback,
+            run_config_overrides=run_config_overrides,
+        )
+
+    if session is not None and task_run_id is not None:
+        page = _persist_page(
+            session,
+            task_run_id=task_run_id,
+            index=index,
+            requested_url=url,
+            page=page,
+            mode=mode,
+            wait=wait,
+        )
+
+    return page
 
 
 async def crawl(

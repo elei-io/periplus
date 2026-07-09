@@ -1,8 +1,17 @@
 import type { CrawlProgressEvent } from "@/types/index"
 
+export type SearchProvider = "duckduckgo" | "brave" | "yahoo"
+
+export const searchProviders: Array<{ value: SearchProvider; label: string }> = [
+  { value: "duckduckgo", label: "DuckDuckGo" },
+  { value: "brave", label: "Brave" },
+  { value: "yahoo", label: "Yahoo" },
+]
+
 export type SearchInput = {
   query: string
-  max_results: number
+  max_pages: number
+  provider: SearchProvider
 }
 
 export type SearchResult = {

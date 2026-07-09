@@ -69,6 +69,8 @@ import {
   updateTask,
 } from "@/lib/tasks-api"
 import { cn } from "@/lib/utils"
+import { searchProviders } from "@/types/search"
+import type { SearchProvider } from "@/types/search"
 import type {
   TaskCreate,
   TaskFilters,
@@ -79,6 +81,7 @@ import type {
 
 const primitives: TaskPrimitive[] = [
   "search",
+  "paginate",
   "index",
   "crawl",
   "schema",
@@ -101,7 +104,9 @@ type ScheduleFields = {
 
 type TaskInputFields = {
   query: string
-  maxResults: string
+  searchProvider: SearchProvider
+  maxPages: string
+  reuseExisting: boolean
   url: string
   urls: string[]
   prompt: string
@@ -119,7 +124,9 @@ type TaskInputFields = {
 
 const defaultInputFields: TaskInputFields = {
   query: "site:example.com atlas",
-  maxResults: "10",
+  searchProvider: "duckduckgo",
+  maxPages: "1",
+  reuseExisting: true,
   url: "https://example.com",
   urls: ["https://example.com"],
   prompt: "Extract the main heading.",
@@ -343,7 +350,8 @@ function buildTaskInput(primitive: TaskPrimitive, fields: TaskInputFields) {
 
     return {
       query: fields.query.trim(),
-      max_results: Math.max(1, numberOrDefault(fields.maxResults, 10)),
+      provider: fields.searchProvider,
+      max_pages: Math.max(1, numberOrDefault(fields.maxPages, 1)),
     }
   }
 
@@ -358,6 +366,20 @@ function buildTaskInput(primitive: TaskPrimitive, fields: TaskInputFields) {
       mode: fields.mode,
       wait: fields.wait,
       concurrency,
+    }
+  }
+
+  if (primitive === "paginate") {
+    if (!fields.url.trim()) {
+      throw new Error("Pagination URL is required.")
+    }
+
+    return {
+      url: fields.url.trim(),
+      max_pages: Math.max(1, numberOrDefault(fields.maxPages, 5)),
+      mode: fields.mode,
+      wait: fields.wait,
+      reuse_existing: fields.reuseExisting,
     }
   }
 
@@ -1005,12 +1027,22 @@ function PrimitiveTargetFields({
   return (
     <div className="grid gap-3">
       {primitive === "search" && (
-        <Field label="Query" hint="Search phrase sent to the search provider.">
-          <Input
-            value={fields.query}
-            onChange={(event) => patch({ query: event.target.value })}
-          />
-        </Field>
+        <div className="grid gap-3">
+          <Field label="Query" hint="Search phrase sent to the search provider.">
+            <Input
+              value={fields.query}
+              onChange={(event) => patch({ query: event.target.value })}
+            />
+          </Field>
+          <Field label="Provider" hint="Web search provider Atlas should crawl for this task.">
+            <TaskSelect
+              value={fields.searchProvider}
+              options={searchProviders}
+              onChange={(value) => patch({ searchProvider: value as SearchProvider })}
+              ariaLabel="Search provider"
+            />
+          </Field>
+        </div>
       )}
 
       {primitive === "crawl" && (
@@ -1027,6 +1059,15 @@ function PrimitiveTargetFields({
 
       {primitive === "index" && (
         <Field label="URL" hint="Starting page Atlas crawls to discover links.">
+          <Input
+            value={fields.url}
+            onChange={(event) => patch({ url: event.target.value })}
+          />
+        </Field>
+      )}
+
+      {primitive === "paginate" && (
+        <Field label="URL" hint="Starting page Atlas uses to learn or reuse pagination.">
           <Input
             value={fields.url}
             onChange={(event) => patch({ url: event.target.value })}
@@ -1076,18 +1117,36 @@ function PrimitiveKnobFields({
 }) {
   return (
     <>
-      {primitive === "search" && (
+      {(primitive === "search" || primitive === "paginate") && (
         <Field
-          label="Max results"
-          hint="Maximum number of organic result links Atlas should collect."
+          label="Max pages"
+          hint="Maximum number of pages Atlas should crawl."
         >
           <Input
             type="number"
             min={1}
-            value={fields.maxResults}
-            onChange={(event) => onChange({ maxResults: event.target.value })}
+            max={25}
+            value={fields.maxPages}
+            onChange={(event) => onChange({ maxPages: event.target.value })}
           />
         </Field>
+      )}
+
+      {primitive === "paginate" && (
+        <>
+          <CrawlFields fields={fields} onChange={onChange} />
+          <Field label="Reuse schema" hint="Use a matching enabled pagination schema when one exists.">
+            <div className="flex h-7 items-center gap-2">
+              <Switch
+                checked={fields.reuseExisting}
+                onCheckedChange={(reuseExisting) => onChange({ reuseExisting })}
+              />
+              <span className="text-xs text-muted-foreground">
+                {fields.reuseExisting ? "On" : "Off"}
+              </span>
+            </div>
+          </Field>
+        </>
       )}
 
       {primitive === "crawl" && (

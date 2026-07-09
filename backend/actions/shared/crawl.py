@@ -106,26 +106,32 @@ def session_id(url: str) -> str:
     return f"atlas-crawl-{sha1(url.encode()).hexdigest()}"
 
 
-def app_pre_scan_wait_config(url: str, wait: CrawlWait) -> CrawlerRunConfig:
+def app_pre_scan_wait_config(
+    url: str,
+    wait: CrawlWait,
+    session_id_override: str | None = None,
+) -> CrawlerRunConfig:
     return run_config_for_mode(
         mode="static",
         wait=wait,
         delay_before_return_html=_FIXED_WAIT_SECONDS if wait == "fixed" else 0.1,
-        session_id=session_id(url),
+        session_id=session_id_override or session_id(url),
     )
 
 
-def app_scan_config(url: str) -> CrawlerRunConfig:
-    return CrawlerRunConfig(
-        cache_mode=CacheMode.BYPASS,
-        magic=True,
-        verbose=False,
-        js_only=True,
-        session_id=session_id(url),
-        scan_full_page=True,
-        scroll_delay=0.75,
-        delay_before_return_html=4.0,
-    )
+def app_scan_config(url: str, **overrides) -> CrawlerRunConfig:
+    config = {
+        "cache_mode": CacheMode.BYPASS,
+        "magic": True,
+        "verbose": False,
+        "js_only": True,
+        "session_id": session_id(url),
+        "scan_full_page": True,
+        "scroll_delay": 0.75,
+        "delay_before_return_html": 4.0,
+    }
+    config.update(overrides)
+    return CrawlerRunConfig(**config)
 
 
 async def crawl_single_url(
@@ -136,7 +142,29 @@ async def crawl_single_url(
     wait: CrawlWait,
 ) -> CrawlResult:
     if mode == "app" and wait != "none":
-        await crawler.arun(url=url, config=app_pre_scan_wait_config(url, wait=wait))
-        return await crawler.arun(url=url, config=app_scan_config(url))
+        shared_session_id = getattr(run_config, "session_id", None)
+        await crawler.arun(
+            url=url,
+            config=app_pre_scan_wait_config(url, wait=wait, session_id_override=shared_session_id),
+        )
+        overrides = {
+            key: value
+            for key, value in run_config.__dict__.items()
+            if key
+            in {
+                "js_code",
+                "js_code_before_wait",
+                "js_only",
+                "session_id",
+                "wait_for",
+                "wait_for_timeout",
+                "delay_before_return_html",
+                "scan_full_page",
+                "scroll_delay",
+                "max_scroll_steps",
+            }
+            and value is not None
+        }
+        return await crawler.arun(url=url, config=app_scan_config(url, **overrides))
 
     return await crawler.arun(url=url, config=run_config)

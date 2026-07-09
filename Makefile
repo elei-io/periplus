@@ -4,7 +4,8 @@ sync:
 	cd backend && uv sync
 
 check:
-	cd backend && uv run python -m compileall actions artifacts api cli db tasks urls crawls extract_schemas crawl_policies
+	cd backend && uv run python -m compileall actions artifacts api cli db tasks urls crawls extract_schemas pagination_schemas crawl_policies metrics worker
+	cd backend && uv run python -m unittest discover -s tests
 
 api:
 	cd backend && uv run fastapi dev api/app.py

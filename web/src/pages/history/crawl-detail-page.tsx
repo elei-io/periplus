@@ -196,7 +196,7 @@ function ArtifactsTable({ artifacts }: { artifacts: ArtifactRecord[] }) {
         {artifacts.map((artifact) => (
           <TableRow key={artifact.id}>
             <TableCell>
-              <a className="text-primary hover:underline" href={`/history/artifacts/${artifact.id}`}>
+              <a className="text-link hover:underline" href={`/history/artifacts/${artifact.id}`}>
                 {artifact.kind}
               </a>
             </TableCell>

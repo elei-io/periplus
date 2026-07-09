@@ -1,8 +1,6 @@
 import os
-import shutil
-import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -19,6 +17,14 @@ BYTE_ARTIFACT_KINDS = {"html", "screenshot", "pdf", "mhtml"}
 class CachedCrawlArtifacts:
     html_artifact: Artifact
     html: str
+
+
+@dataclass(frozen=True)
+class ArtifactCleanupResult:
+    rows_deleted: int
+    files_deleted: int
+    missing_files: int
+    errors: int
 
 
 def artifacts_root() -> Path:
@@ -189,35 +195,105 @@ def invalidate_artifacts(
     return count
 
 
-def cleanup_artifacts(max_age_seconds: int, root: Path | None = None) -> int:
+def invalidate_expired_artifacts(
+    session: Session,
+    *,
+    max_age_seconds: int | None = None,
+    reason: str = "ttl",
+) -> int:
+    max_age_seconds = max_age_seconds if max_age_seconds is not None else artifact_cache_age_seconds()
     if max_age_seconds <= 0:
         return 0
 
-    root = root or artifacts_root()
-    if not root.is_dir():
+    cutoff = datetime.now(UTC) - timedelta(seconds=max_age_seconds)
+    statement = select(Artifact).where(
+        Artifact.invalidated_at.is_(None),
+        Artifact.kind.in_(BYTE_ARTIFACT_KINDS),
+        Artifact.created_at < cutoff,
+    )
+    now = datetime.now(UTC)
+    count = 0
+    for artifact in session.scalars(statement):
+        artifact.invalidated_at = now
+        artifact.invalidated_reason = reason
+        count += 1
+
+    session.flush()
+    return count
+
+
+def artifact_cache_age_seconds() -> int:
+    raw = os.getenv("ARTIFACT_CACHE_AGE_SECONDS", "0")
+    try:
+        return int(raw)
+    except ValueError:
         return 0
 
-    cutoff = time.time() - max_age_seconds
-    removed = 0
-    for path in root.glob("task-runs/*"):
-        if not path.is_dir():
+
+def cleanup_invalidated_artifacts(
+    session: Session,
+    *,
+    limit: int = 100,
+    root: Path | None = None,
+) -> ArtifactCleanupResult:
+    root = (root or artifacts_root()).resolve()
+    statement = (
+        select(Artifact)
+        .where(Artifact.invalidated_at.is_not(None), Artifact.kind.in_(BYTE_ARTIFACT_KINDS))
+        .order_by(Artifact.invalidated_at.asc(), Artifact.created_at.asc())
+        .limit(limit)
+    )
+
+    rows_deleted = 0
+    files_deleted = 0
+    missing_files = 0
+    errors = 0
+    for artifact in session.scalars(statement):
+        from tasks.models import TaskRunArtifact
+
+        path = Path(artifact.path)
+        try:
+            resolved_path = path.resolve()
+        except OSError:
+            resolved_path = path
+
+        if root not in resolved_path.parents and resolved_path != root:
+            errors += 1
             continue
 
         try:
-            if path.stat().st_mtime >= cutoff:
-                continue
-
-            shutil.rmtree(path)
+            if resolved_path.exists():
+                if not resolved_path.is_file():
+                    errors += 1
+                    continue
+                resolved_path.unlink()
+                files_deleted += 1
+                _remove_empty_parents(resolved_path.parent, stop_at=root)
+            else:
+                missing_files += 1
         except OSError:
+            errors += 1
             continue
 
-        removed += 1
+        for usage in session.scalars(select(TaskRunArtifact).where(TaskRunArtifact.artifact_id == artifact.id)):
+            session.delete(usage)
+        session.delete(artifact)
+        rows_deleted += 1
 
-    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-        if path.is_dir():
-            try:
-                path.rmdir()
-            except OSError:
-                pass
+    session.flush()
+    return ArtifactCleanupResult(
+        rows_deleted=rows_deleted,
+        files_deleted=files_deleted,
+        missing_files=missing_files,
+        errors=errors,
+    )
 
-    return removed
+
+def _remove_empty_parents(path: Path, *, stop_at: Path) -> None:
+    current = path
+    while current != stop_at and stop_at in current.parents:
+        try:
+            current.rmdir()
+        except OSError:
+            return
+        current = current.parent

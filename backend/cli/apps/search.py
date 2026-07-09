@@ -5,7 +5,7 @@ from pydantic import TypeAdapter
 from rich.console import Console
 from rich.table import Table
 
-from actions.search.schemas import SearchResult
+from actions.search.schemas import SearchProvider, SearchResult
 from cli.action_runs import run_action
 from cli.progress import CrawlProgressRenderer
 
@@ -15,12 +15,17 @@ _SEARCH_ADAPTER = TypeAdapter(list[SearchResult])
 
 def search(
     query: str,
-    max_results: Annotated[int, typer.Option("--max-results", "-n", min=1)] = 10,
+    max_pages: Annotated[int, typer.Option("--max-pages", "-p", min=1, max=25)] = 1,
+    provider: Annotated[SearchProvider, typer.Option("--provider")] = "duckduckgo",
 ) -> None:
     with CrawlProgressRenderer(console) as progress:
         results = run_action(
             primitive="search",
-            input_value={"query": query, "max_results": max_results},
+            input_value={
+                "query": query,
+                "max_pages": max_pages,
+                "provider": provider,
+            },
             response_adapter=_SEARCH_ADAPTER,
             progress_callback=progress.callback,
         )

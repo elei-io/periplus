@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from actions.extract.schemas import Input as ExtractInput
 from actions.index.schemas import IndexLink
 from actions.index.schemas import Input as IndexInput
+from actions.paginate.schemas import Input as PaginateInput
+from actions.search.schemas import SearchProvider
 from actions.shared.quality.schemas import QualityWarning
 from actions.shared.extract_schema.schemas import Input as SchemaInput
 from actions.crawl.schemas import Input as CrawlInput
@@ -16,7 +18,7 @@ class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-TaskPrimitive = Literal["search", "index", "crawl", "schema", "extract"]
+TaskPrimitive = Literal["search", "paginate", "index", "crawl", "schema", "extract"]
 TaskRunStatus = Literal["queued", "running", "succeeded", "failed", "cancelled", "skipped"]
 TaskRunTriggerKind = Literal["scheduled", "manual", "effect", "retry", "backfill"]
 EffectRunStatus = Literal["running", "applied", "skipped", "failed"]
@@ -33,11 +35,12 @@ EffectRunOperation = TaskEffectType | Literal["noop"]
 
 class SearchInput(StrictBaseModel):
     query: str
-    max_results: int = Field(default=10, ge=1)
+    max_pages: int = Field(default=1, ge=1, le=25)
+    provider: SearchProvider = "duckduckgo"
 
 
 TaskInputJson = Annotated[
-    SearchInput | IndexInput | CrawlInput | SchemaInput | ExtractInput,
+    SearchInput | PaginateInput | IndexInput | CrawlInput | SchemaInput | ExtractInput,
     Field(union_mode="left_to_right"),
 ]
 

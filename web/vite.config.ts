@@ -20,6 +20,8 @@ export default defineConfig({
       "/index": apiProxyTarget,
       "/crawl": apiProxyTarget,
       "/crawls": apiProxyTarget,
+      "/paginate": apiProxyTarget,
+      "/pagination-schemas": apiProxyTarget,
       "/search": apiProxyTarget,
       "/tasks": apiProxyTarget,
       "/artifacts": apiProxyTarget,

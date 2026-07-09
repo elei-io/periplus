@@ -8,15 +8,32 @@ from sqlalchemy.orm import Session
 
 from artifacts.models import Artifact
 from artifacts.schemas import ArtifactListRecord
-from artifacts.service import BYTE_ARTIFACT_KINDS, warning_count
+from artifacts.service import BYTE_ARTIFACT_KINDS, is_cache_eligible, warning_count
 from crawls.models import Crawl
 from crawls.service import _error_message, _warning_count
 from crawls.schemas import CrawlListRecord
 from db.session import get_session
+from metrics.history import DEFAULT_WINDOW_SECONDS, url_metrics
+from metrics.schemas import HistoryMetricsResponse
 from urls.schemas import UrlDetailRecord, UrlListResponse
 from urls.service import count_urls, get_url, list_urls
 
 router = APIRouter(prefix="/urls", tags=["urls"])
+
+
+@router.get("/metrics", response_model=HistoryMetricsResponse)
+def metrics(
+    session: Annotated[Session, Depends(get_session)],
+    url_pattern: Annotated[str | None, Query()] = None,
+    domain: Annotated[str | None, Query()] = None,
+    window_seconds: Annotated[int, Query(ge=60, le=7 * 24 * 60 * 60)] = DEFAULT_WINDOW_SECONDS,
+) -> HistoryMetricsResponse:
+    return url_metrics(
+        session=session,
+        url_pattern=url_pattern,
+        domain=domain,
+        window_seconds=window_seconds,
+    )
 
 
 @router.get("/", response_model=UrlListResponse)
@@ -67,7 +84,17 @@ def get(
             .limit(20)
         )
     )
+    all_artifacts = list(
+        session.scalars(
+            select(Artifact)
+            .where(Artifact.url_id == url.id)
+            .where(Artifact.kind.in_(BYTE_ARTIFACT_KINDS))
+        )
+    )
     latest_crawl = crawls[0] if crawls else None
+    latest_artifact = artifacts[0] if artifacts else None
+    crawl_warning_count = sum(_warning_count(crawl) for crawl in crawls)
+    artifact_warning_count = sum(warning_count(artifact) for artifact in artifacts)
 
     return UrlDetailRecord(
         id=url.id,
@@ -80,10 +107,15 @@ def get(
         query_fingerprint=url.query_fingerprint,
         crawl_count=count_urls_crawls(session, url.id),
         artifact_count=count_urls_artifacts(session, url.id),
+        active_artifact_count=count_urls_artifacts(session, url.id, invalidated=False),
+        invalidated_artifact_count=count_urls_artifacts(session, url.id, invalidated=True),
+        cache_eligible_count=sum(1 for artifact in all_artifacts if is_cache_eligible(artifact)),
         latest_status_code=latest_crawl.status_code if latest_crawl else None,
         latest_crawl_at=latest_crawl.started_at if latest_crawl else None,
-        warning_count=sum(_warning_count(crawl) for crawl in crawls)
-        + sum(warning_count(artifact) for artifact in artifacts),
+        latest_artifact_at=latest_artifact.created_at if latest_artifact else None,
+        warning_count=crawl_warning_count + artifact_warning_count,
+        crawl_warning_count=crawl_warning_count,
+        artifact_warning_count=artifact_warning_count,
         recent_crawls=[
             CrawlListRecord(
                 id=crawl.id,
@@ -138,10 +170,18 @@ def count_urls_crawls(session: Session, url_id: UUID) -> int:
     return int(session.scalar(select(func.count()).select_from(Crawl).where(Crawl.url_id == url_id)) or 0)
 
 
-def count_urls_artifacts(session: Session, url_id: UUID) -> int:
+def count_urls_artifacts(session: Session, url_id: UUID, invalidated: bool | None = None) -> int:
     from sqlalchemy import func
 
-    return int(session.scalar(select(func.count()).select_from(Artifact).where(Artifact.url_id == url_id)) or 0)
+    statement = select(func.count()).select_from(Artifact).where(
+        Artifact.url_id == url_id,
+        Artifact.kind.in_(BYTE_ARTIFACT_KINDS),
+    )
+    if invalidated is True:
+        statement = statement.where(Artifact.invalidated_at.is_not(None))
+    if invalidated is False:
+        statement = statement.where(Artifact.invalidated_at.is_(None))
+    return int(session.scalar(statement) or 0)
 
 
 def count_crawl_artifacts(session: Session, crawl_id: UUID) -> int:

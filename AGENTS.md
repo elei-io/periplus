@@ -10,9 +10,9 @@ This file is the first stop for Codex agents working in Atlas.
   - `backend/actions/` for primitive action behavior.
   - `backend/actions/shared/` for crawler, quality, progress, and extraction-schema support shared between actions.
   - `backend/artifacts/` for ephemeral task-run artifact metadata and disk helpers.
-  - `backend/urls/`, `backend/crawls/`, `backend/crawl_policies/`, and `backend/extract_schemas/` for durable crawl data model records.
+  - `backend/urls/`, `backend/crawls/`, `backend/crawl_policies/`, `backend/pagination_schemas/`, and `backend/extract_schemas/` for durable crawl data model records.
   - `backend/tasks/` for persisted schedulable work and task/effect runs.
-- Current user-facing actions are `search`, `index`, `crawl`, and `extract`. Extraction schema generation lives in `actions.shared.extract_schema`.
+- Current user-facing actions are `search`, `paginate`, `index`, `crawl`, and `extract`. Extraction schema generation lives in `actions.shared.extract_schema`.
 - Page-loading options are shared through `actions.shared.crawl`. Do not duplicate `mode`/`wait` config in individual primitives.
 - `crawl` is the page acquisition chokepoint. Task-backed actions that load pages pass their task-run context into `actions.crawl`, which reuses healthy artifacts when eligible and otherwise records URLs, crawls, reusable artifacts, and task-run usage in Postgres.
 - Keep business behavior in `backend/actions/`, `backend/artifacts/`, and `backend/tasks/`; API and CLI layers should stay thin.
@@ -43,7 +43,7 @@ Equivalent direct commands:
 
 ```sh
 cd backend && uv sync
-cd backend && uv run python -m compileall actions artifacts api cli db tasks urls crawls extract_schemas crawl_policies
+cd backend && uv run python -m compileall actions artifacts api cli db tasks urls crawls extract_schemas pagination_schemas crawl_policies
 cd backend && uv run alembic -c db/alembic.ini upgrade head
 cd backend && uv run alembic -c db/alembic.ini check
 cd backend && uv run fastapi dev api/app.py

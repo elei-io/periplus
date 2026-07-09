@@ -20,9 +20,15 @@ class UrlListRecord(BaseModel):
     query_fingerprint: str | None = None
     crawl_count: int = 0
     artifact_count: int = 0
+    active_artifact_count: int = 0
+    invalidated_artifact_count: int = 0
+    cache_eligible_count: int = 0
     latest_status_code: int | None = None
     latest_crawl_at: datetime | None = None
+    latest_artifact_at: datetime | None = None
     warning_count: int = 0
+    crawl_warning_count: int = 0
+    artifact_warning_count: int = 0
 
 
 class UrlListResponse(BaseModel):

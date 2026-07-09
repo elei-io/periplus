@@ -6,16 +6,48 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from artifacts.schemas import (
+    ArtifactCleanupRequest,
+    ArtifactCleanupResponse,
     ArtifactDetailRecord,
+    ArtifactInvalidateExpiredRequest,
     ArtifactInvalidateRequest,
     ArtifactInvalidateResponse,
     ArtifactListRecord,
     ArtifactListResponse,
 )
-from artifacts.service import count_artifacts, get_artifact, invalidate_artifacts, list_artifacts, warning_count
+from artifacts.service import (
+    cleanup_invalidated_artifacts,
+    count_artifacts,
+    get_artifact,
+    invalidate_artifacts,
+    invalidate_expired_artifacts,
+    list_artifacts,
+    warning_count,
+)
 from db.session import get_session
+from metrics.history import DEFAULT_WINDOW_SECONDS, artifact_metrics
+from metrics.schemas import HistoryMetricsResponse
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
+
+
+@router.get("/metrics", response_model=HistoryMetricsResponse)
+def metrics(
+    session: Annotated[Session, Depends(get_session)],
+    url_pattern: Annotated[str | None, Query()] = None,
+    kind: Annotated[str | None, Query()] = None,
+    invalidated: Annotated[bool | None, Query()] = None,
+    warnings: Annotated[bool | None, Query()] = None,
+    window_seconds: Annotated[int, Query(ge=60, le=7 * 24 * 60 * 60)] = DEFAULT_WINDOW_SECONDS,
+) -> HistoryMetricsResponse:
+    return artifact_metrics(
+        session=session,
+        url_pattern=url_pattern,
+        kind=kind,
+        invalidated=invalidated,
+        warnings=warnings,
+        window_seconds=window_seconds,
+    )
 
 
 @router.get("/", response_model=ArtifactListResponse)
@@ -122,3 +154,30 @@ def invalidate(
         reason=request.reason,
     )
     return ArtifactInvalidateResponse(invalidated=count)
+
+
+@router.post("/invalidate-expired", response_model=ArtifactInvalidateResponse)
+def invalidate_expired(
+    request: ArtifactInvalidateExpiredRequest,
+    session: Annotated[Session, Depends(get_session)],
+) -> ArtifactInvalidateResponse:
+    count = invalidate_expired_artifacts(
+        session,
+        max_age_seconds=request.max_age_seconds,
+        reason=request.reason,
+    )
+    return ArtifactInvalidateResponse(invalidated=count)
+
+
+@router.post("/cleanup", response_model=ArtifactCleanupResponse)
+def cleanup(
+    request: ArtifactCleanupRequest,
+    session: Annotated[Session, Depends(get_session)],
+) -> ArtifactCleanupResponse:
+    result = cleanup_invalidated_artifacts(session=session, limit=request.limit)
+    return ArtifactCleanupResponse(
+        rows_deleted=result.rows_deleted,
+        files_deleted=result.files_deleted,
+        missing_files=result.missing_files,
+        errors=result.errors,
+    )

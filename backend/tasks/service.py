@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from actions.extract.schemas import Input as ExtractInput
 from actions.index.schemas import Input as IndexInput
+from actions.paginate.schemas import Input as PaginateInput
 from actions.crawl.schemas import Input as CrawlInput
 from actions.shared.extract_schema.schemas import Input as SchemaInput
 from actions.shared.progress import CrawlProgressCallback
@@ -47,6 +48,7 @@ class TaskRunConflictError(Exception):
 
 _INPUT_MODELS = {
     "search": SearchInput,
+    "paginate": PaginateInput,
     "index": IndexInput,
     "crawl": CrawlInput,
     "schema": SchemaInput,
@@ -94,6 +96,8 @@ def _ad_hoc_task_name(primitive: TaskPrimitive, input_json: dict) -> str:
         first_url = input_json["urls"][0]
         suffix = "" if len(input_json["urls"]) == 1 else f" +{len(input_json['urls']) - 1}"
         return f"Ad hoc crawl: {first_url}{suffix}"
+    if primitive == "paginate" and isinstance(input_json.get("url"), str):
+        return f"Ad hoc paginate: {input_json['url']}"
     if primitive == "search" and isinstance(input_json.get("query"), str):
         return f"Ad hoc search: {input_json['query']}"
     return f"Ad hoc {primitive}"

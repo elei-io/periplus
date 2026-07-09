@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from actions.extract.service import extract
 from actions.index.service import index
 from actions.crawl.service import crawl
+from actions.paginate.service import paginate
 from actions.search.service import search
 from actions.shared.extract_schema.service import schema
 from actions.shared.progress import CrawlProgressCallback
@@ -49,7 +50,12 @@ async def _execute_primitive(
     payload = task.input_json
 
     if primitive == "search":
-        results = await search(**payload, progress_callback=progress_callback)
+        results = await search(
+            **payload,
+            progress_callback=progress_callback,
+            session=session,
+            task_run_id=run.id,
+        )
         response_json = [_json_safe(result) for result in results]
         return PrimitiveExecution(
             output_json={"results": response_json},
@@ -67,6 +73,20 @@ async def _execute_primitive(
         response_json = [_json_safe(link) for link in links]
         return PrimitiveExecution(
             output_json={"links": response_json},
+            response_json=response_json,
+            warnings=[],
+        )
+
+    if primitive == "paginate":
+        output = await paginate(
+            **payload,
+            progress_callback=progress_callback,
+            session=session,
+            task_run_id=run.id,
+        )
+        response_json = _json_safe(output)
+        return PrimitiveExecution(
+            output_json=response_json,
             response_json=response_json,
             warnings=[],
         )

@@ -80,3 +80,19 @@ class ArtifactInvalidateRequest(BaseModel):
 
 class ArtifactInvalidateResponse(BaseModel):
     invalidated: int
+
+
+class ArtifactInvalidateExpiredRequest(BaseModel):
+    max_age_seconds: int | None = Field(default=None, ge=1)
+    reason: str = "ttl"
+
+
+class ArtifactCleanupRequest(BaseModel):
+    limit: int = Field(default=100, ge=1, le=1000)
+
+
+class ArtifactCleanupResponse(BaseModel):
+    rows_deleted: int
+    files_deleted: int
+    missing_files: int
+    errors: int

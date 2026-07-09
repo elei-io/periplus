@@ -1,17 +1,15 @@
 import {
   BarChart3Icon,
   BoxesIcon,
+  BracesIcon,
   CalendarClockIcon,
   ClipboardListIcon,
   DatabaseIcon,
   FileSearchIcon,
   LinkIcon,
-  ListIcon,
   RouteIcon,
   SearchIcon,
-  Settings2Icon,
   SparklesIcon,
-  WrenchIcon,
 } from "lucide-react"
 
 import type { NavigationGroup } from "@/types/navigation"
@@ -34,6 +32,13 @@ export const navigationGroups: NavigationGroup[] = [
         icon: DatabaseIcon,
         title: "Index Playground",
         description: "Crawl a starting URL and discover linked pages.",
+      },
+      {
+        name: "Paginate",
+        href: "/playground/paginate",
+        icon: RouteIcon,
+        title: "Pagination Playground",
+        description: "Learn and test reusable pagination schemas.",
       },
       {
         name: "Extract",
@@ -100,26 +105,19 @@ export const navigationGroups: NavigationGroup[] = [
         title: "Artifact History",
         description: "Browse cached bytes and invalidate reusable artifacts.",
       },
-    ],
-  },
-  {
-    name: "Settings",
-    slug: "settings",
-    items: [
       {
-        name: "Item 1",
-        href: "/settings/item-1",
-        icon: Settings2Icon,
+        name: "Extract Schemas",
+        href: "/history/extract-schemas",
+        icon: BracesIcon,
+        title: "Extract Schema Registry",
+        description: "Inspect reusable extraction schemas, matches, failures, and provenance.",
       },
       {
-        name: "Item 2",
-        href: "/settings/item-2",
-        icon: WrenchIcon,
-      },
-      {
-        name: "Item 3",
-        href: "/settings/item-3",
-        icon: ListIcon,
+        name: "Pagination Schemas",
+        href: "/history/pagination-schemas",
+        icon: RouteIcon,
+        title: "Pagination Schema Registry",
+        description: "Inspect reusable pagination selectors, query templates, and failures.",
       },
     ],
   },
@@ -142,6 +140,16 @@ export function findNavigationItem(pathname: string) {
     return navigationGroups
       .flatMap((group) => group.items)
       .find((item) => item.href === "/history/urls")
+  }
+  if (pathname.startsWith("/history/extract-schemas/")) {
+    return navigationGroups
+      .flatMap((group) => group.items)
+      .find((item) => item.href === "/history/extract-schemas")
+  }
+  if (pathname.startsWith("/history/pagination-schemas/")) {
+    return navigationGroups
+      .flatMap((group) => group.items)
+      .find((item) => item.href === "/history/pagination-schemas")
   }
 
   return navigationGroups

@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from artifacts.models import Artifact
-from artifacts.service import warning_count
+from artifacts.service import BYTE_ARTIFACT_KINDS, is_cache_eligible, warning_count
 from crawls.models import Crawl
 
 from .models import Url
@@ -77,8 +77,17 @@ def list_urls(
     rows: list[UrlListRecord] = []
     for url in session.scalars(statement):
         crawls = list(session.scalars(select(Crawl).where(Crawl.url_id == url.id).order_by(Crawl.started_at.desc())))
-        artifacts = list(session.scalars(select(Artifact).where(Artifact.url_id == url.id)))
+        artifacts = list(
+            session.scalars(
+                select(Artifact)
+                .where(Artifact.url_id == url.id, Artifact.kind.in_(BYTE_ARTIFACT_KINDS))
+                .order_by(Artifact.created_at.desc())
+            )
+        )
         latest_crawl = crawls[0] if crawls else None
+        latest_artifact = artifacts[0] if artifacts else None
+        crawl_warning_count = sum(int((crawl.warnings_json or {}).get("count") or 0) for crawl in crawls)
+        artifact_warning_count = sum(warning_count(artifact) for artifact in artifacts)
         rows.append(
             UrlListRecord(
                 id=url.id,
@@ -91,12 +100,15 @@ def list_urls(
                 query_fingerprint=url.query_fingerprint,
                 crawl_count=len(crawls),
                 artifact_count=len(artifacts),
+                active_artifact_count=sum(1 for artifact in artifacts if artifact.invalidated_at is None),
+                invalidated_artifact_count=sum(1 for artifact in artifacts if artifact.invalidated_at is not None),
+                cache_eligible_count=sum(1 for artifact in artifacts if is_cache_eligible(artifact)),
                 latest_status_code=latest_crawl.status_code if latest_crawl else None,
                 latest_crawl_at=latest_crawl.started_at if latest_crawl else None,
-                warning_count=sum(
-                    int((crawl.warnings_json or {}).get("count") or 0) for crawl in crawls
-                )
-                + sum(warning_count(artifact) for artifact in artifacts),
+                latest_artifact_at=latest_artifact.created_at if latest_artifact else None,
+                warning_count=crawl_warning_count + artifact_warning_count,
+                crawl_warning_count=crawl_warning_count,
+                artifact_warning_count=artifact_warning_count,
             )
         )
 

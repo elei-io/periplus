@@ -12,8 +12,31 @@ from artifacts.service import BYTE_ARTIFACT_KINDS, warning_count
 from crawls.schemas import CrawlDetailRecord, CrawlListResponse
 from crawls.service import _error_message, _warning_count, count_crawls, get_crawl, list_crawls
 from db.session import get_session
+from metrics.history import DEFAULT_WINDOW_SECONDS, crawl_metrics
+from metrics.schemas import HistoryMetricsResponse
 
 router = APIRouter(prefix="/crawls", tags=["crawls"])
+
+
+@router.get("/metrics", response_model=HistoryMetricsResponse)
+def metrics(
+    session: Annotated[Session, Depends(get_session)],
+    url_pattern: Annotated[str | None, Query()] = None,
+    domain: Annotated[str | None, Query()] = None,
+    success: Annotated[bool | None, Query()] = None,
+    status_code: Annotated[int | None, Query(ge=100, le=599)] = None,
+    warnings: Annotated[bool | None, Query()] = None,
+    window_seconds: Annotated[int, Query(ge=60, le=7 * 24 * 60 * 60)] = DEFAULT_WINDOW_SECONDS,
+) -> HistoryMetricsResponse:
+    return crawl_metrics(
+        session=session,
+        url_pattern=url_pattern,
+        domain=domain,
+        success=success,
+        status_code=status_code,
+        warnings=warnings,
+        window_seconds=window_seconds,
+    )
 
 
 @router.get("/", response_model=CrawlListResponse)

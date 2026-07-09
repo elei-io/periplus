@@ -34,9 +34,11 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import {
+  useArtifactMetrics,
   useArtifacts,
   useInvalidateArtifacts,
 } from "@/hooks/use-history-data"
+import { HistoryMetricsBand } from "@/pages/history/history-metrics"
 import { HistoryPagination, HISTORY_PAGE_SIZE } from "@/pages/history/history-pagination"
 import type {
   ArtifactFilters,
@@ -71,6 +73,7 @@ export function ArtifactsPage() {
     limit: HISTORY_PAGE_SIZE,
     offset,
   })
+  const metricsQuery = useArtifactMetrics(filters)
   const invalidateMutation = useInvalidateArtifacts()
   const artifacts = artifactsQuery.data?.items ?? []
   const total = artifactsQuery.data?.total ?? 0
@@ -201,6 +204,8 @@ export function ArtifactsPage() {
         </div>
       </section>
 
+      <HistoryMetricsBand metrics={metricsQuery.data} isLoading={metricsQuery.isLoading} />
+
       <Table containerClassName="min-h-0 flex-1 rounded-md border bg-card/80">
         <TableHeader>
           <TableRow>
@@ -315,7 +320,7 @@ function ArtifactRow({
           href={detailHref}
           className="block min-w-0 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
         >
-          <span className="block truncate font-medium text-primary underline-offset-4 hover:underline">
+          <span className="block truncate font-medium text-link underline-offset-4 hover:underline">
             {artifact.normalized_url ?? "No URL"}
           </span>
           <span className="block truncate text-muted-foreground">

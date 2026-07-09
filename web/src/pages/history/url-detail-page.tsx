@@ -77,11 +77,22 @@ export function UrlDetailPage({ urlId }: { urlId: string }) {
           ]}
         />
         <DetailGroup
-          title="Health"
+          title="Cache Health"
+          items={[
+            ["Artifacts", String(url.artifact_count)],
+            ["Active Artifacts", String(url.active_artifact_count)],
+            ["Invalidated Artifacts", String(url.invalidated_artifact_count)],
+            ["Cache Eligible", String(url.cache_eligible_count)],
+            ["Artifact Warnings", String(url.artifact_warning_count)],
+            ["Latest Artifact", formatDate(url.latest_artifact_at)],
+          ]}
+        />
+        <DetailGroup
+          title="Crawl Health"
           items={[
             ["Crawls", String(url.crawl_count)],
-            ["Artifacts", String(url.artifact_count)],
-            ["Warnings", String(url.warning_count)],
+            ["Crawl Warnings", String(url.crawl_warning_count)],
+            ["Total Warnings", String(url.warning_count)],
             ["Latest Status", url.latest_status_code ? String(url.latest_status_code) : null],
             ["Latest Crawl", formatDate(url.latest_crawl_at)],
           ]}
@@ -143,7 +154,7 @@ function CrawlsTable({ crawls }: { crawls: CrawlRecord[] }) {
         {crawls.map((crawl) => (
           <TableRow key={crawl.id}>
             <TableCell>
-              <a className="text-primary hover:underline" href={`/history/crawls/${crawl.id}`}>
+              <a className="text-link hover:underline" href={`/history/crawls/${crawl.id}`}>
                 {formatDate(crawl.started_at)}
               </a>
             </TableCell>
@@ -184,7 +195,7 @@ function ArtifactsTable({ artifacts }: { artifacts: ArtifactRecord[] }) {
         {artifacts.map((artifact) => (
           <TableRow key={artifact.id}>
             <TableCell>
-              <a className="text-primary hover:underline" href={`/history/artifacts/${artifact.id}`}>
+              <a className="text-link hover:underline" href={`/history/artifacts/${artifact.id}`}>
                 {artifact.kind}
               </a>
             </TableCell>

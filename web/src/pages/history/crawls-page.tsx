@@ -26,7 +26,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { useCrawls } from "@/hooks/use-history-data"
+import { useCrawlMetrics, useCrawls } from "@/hooks/use-history-data"
+import { HistoryMetricsBand } from "@/pages/history/history-metrics"
 import { HistoryPagination, HISTORY_PAGE_SIZE } from "@/pages/history/history-pagination"
 import type { CrawlFilters, CrawlRecord } from "@/types/history"
 
@@ -45,6 +46,7 @@ export function CrawlsPage() {
     limit: HISTORY_PAGE_SIZE,
     offset,
   })
+  const metricsQuery = useCrawlMetrics(filters)
   const crawls = crawlsQuery.data?.items ?? []
   const total = crawlsQuery.data?.total ?? 0
 
@@ -116,6 +118,8 @@ export function CrawlsPage() {
         </div>
       </section>
 
+      <HistoryMetricsBand metrics={metricsQuery.data} isLoading={metricsQuery.isLoading} />
+
       <Table containerClassName="min-h-0 flex-1 rounded-md border bg-card/80">
         <TableHeader>
           <TableRow>
@@ -165,7 +169,7 @@ function CrawlRow({ crawl }: { crawl: CrawlRecord }) {
           href={detailHref}
           className="block min-w-0 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
         >
-          <span className="block truncate font-medium text-primary underline-offset-4 hover:underline">
+          <span className="block truncate font-medium text-link underline-offset-4 hover:underline">
             {crawl.normalized_url}
           </span>
           <span className="block truncate text-muted-foreground">{crawl.path_name}</span>
