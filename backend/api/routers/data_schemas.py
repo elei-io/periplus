@@ -4,29 +4,30 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from db.session import get_session
-from extract_schemas.schemas import (
-    ExtractSchemaDetailRecord,
-    ExtractSchemaListResponse,
-    ExtractSchemaUpdateRequest,
+from data_schemas.schemas import (
+    DataSchemaDetailRecord,
+    DataSchemaListResponse,
+    DataSchemaUpdateRequest,
 )
-from extract_schemas.service import (
-    count_extract_schemas,
-    extract_schema_summary,
-    get_extract_schema,
-    list_extract_schemas,
+from data_schemas.service import (
+    count_data_schemas,
+    data_schema_summary,
+    get_data_schema,
+    list_data_schemas,
     task_run_count,
-    update_extract_schema,
+    delete_data_schema,
+    update_data_schema,
     warning_count,
 )
-from metrics.history import DEFAULT_WINDOW_SECONDS, extract_schema_metrics
+from db.session import get_session
+from metrics.history import DEFAULT_WINDOW_SECONDS, data_schema_metrics
 from metrics.schemas import HistoryMetricsResponse
 
-router = APIRouter(prefix="/extract-schemas", tags=["extract-schemas"])
+router = APIRouter(prefix="/data-schemas", tags=["data-schemas"])
 
 
-def _detail_record(session: Session, schema) -> ExtractSchemaDetailRecord:
-    return ExtractSchemaDetailRecord(
+def _detail_record(session: Session, schema) -> DataSchemaDetailRecord:
+    return DataSchemaDetailRecord(
         id=schema.id,
         identity_key=schema.identity_key,
         match=schema.match,
@@ -66,7 +67,7 @@ def metrics(
     warnings: Annotated[bool | None, Query()] = None,
     window_seconds: Annotated[int, Query(ge=60, le=7 * 24 * 60 * 60)] = DEFAULT_WINDOW_SECONDS,
 ) -> HistoryMetricsResponse:
-    return extract_schema_metrics(
+    return data_schema_metrics(
         session=session,
         match_pattern=match_pattern,
         prompt=prompt,
@@ -77,7 +78,7 @@ def metrics(
     )
 
 
-@router.get("/", response_model=ExtractSchemaListResponse)
+@router.get("/", response_model=DataSchemaListResponse)
 def list_(
     session: Annotated[Session, Depends(get_session)],
     match_pattern: Annotated[str | None, Query()] = None,
@@ -87,9 +88,9 @@ def list_(
     warnings: Annotated[bool | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> ExtractSchemaListResponse:
-    return ExtractSchemaListResponse(
-        items=list_extract_schemas(
+) -> DataSchemaListResponse:
+    return DataSchemaListResponse(
+        items=list_data_schemas(
             session=session,
             match_pattern=match_pattern,
             prompt=prompt,
@@ -99,7 +100,7 @@ def list_(
             limit=limit,
             offset=offset,
         ),
-        total=count_extract_schemas(
+        total=count_data_schemas(
             session=session,
             match_pattern=match_pattern,
             prompt=prompt,
@@ -109,7 +110,7 @@ def list_(
         ),
         limit=limit,
         offset=offset,
-        summary=extract_schema_summary(
+        summary=data_schema_summary(
             session=session,
             match_pattern=match_pattern,
             prompt=prompt,
@@ -120,31 +121,43 @@ def list_(
     )
 
 
-@router.get("/{schema_id}", response_model=ExtractSchemaDetailRecord)
+@router.get("/{schema_id}", response_model=DataSchemaDetailRecord)
 def get(
     schema_id: UUID,
     session: Annotated[Session, Depends(get_session)],
-) -> ExtractSchemaDetailRecord:
-    schema = get_extract_schema(session=session, schema_id=schema_id)
+) -> DataSchemaDetailRecord:
+    schema = get_data_schema(session=session, schema_id=schema_id)
     if schema is None:
-        raise HTTPException(status_code=404, detail="Extract schema not found.")
+        raise HTTPException(status_code=404, detail="Data schema not found.")
 
     return _detail_record(session, schema)
 
 
-@router.patch("/{schema_id}", response_model=ExtractSchemaDetailRecord)
+@router.patch("/{schema_id}", response_model=DataSchemaDetailRecord)
 def update(
     schema_id: UUID,
-    request: ExtractSchemaUpdateRequest,
+    request: DataSchemaUpdateRequest,
     session: Annotated[Session, Depends(get_session)],
-) -> ExtractSchemaDetailRecord:
-    schema = get_extract_schema(session=session, schema_id=schema_id)
+) -> DataSchemaDetailRecord:
+    schema = get_data_schema(session=session, schema_id=schema_id)
     if schema is None:
-        raise HTTPException(status_code=404, detail="Extract schema not found.")
+        raise HTTPException(status_code=404, detail="Data schema not found.")
 
     try:
-        updated = update_extract_schema(session=session, schema=schema, request=request)
+        updated = update_data_schema(session=session, schema=schema, request=request)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return _detail_record(session, updated)
+
+
+@router.delete("/{schema_id}", status_code=204)
+def delete(
+    schema_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+) -> None:
+    schema = get_data_schema(session=session, schema_id=schema_id)
+    if schema is None:
+        raise HTTPException(status_code=404, detail="Data schema not found.")
+
+    delete_data_schema(session=session, schema=schema)

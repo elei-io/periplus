@@ -101,6 +101,7 @@ export type UrlRecord = {
   host: string
   domain: string
   path: string
+  query: string | null
   query_fingerprint: string | null
   crawl_count: number
   artifact_count: number
@@ -125,6 +126,49 @@ export type UrlDetailRecord = UrlRecord & {
 export type UrlFilters = {
   urlPattern: string
   domain: string
+}
+
+export type QuerySchemaRecord = {
+  id: string
+  url_match_id: string | null
+  match: string
+  enabled: boolean
+  priority: number
+  schema_type: string
+  domain: string | null
+  path: string | null
+  schema_hash: string
+  param_count: number
+  evidence_count: number
+  warning_count: number
+  generated_from_crawl_id: string | null
+  generated_by_task_run_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type QuerySchemaListResponse = PaginatedResponse<QuerySchemaRecord>
+
+export type QuerySchemaDetailRecord = QuerySchemaRecord & {
+  identity_key: string
+  extraction_schema: Record<string, unknown>
+  params_json: Array<Record<string, unknown>>
+  evidence_json: Array<Record<string, unknown>>
+  inputs_json: Record<string, unknown>
+  warnings_json: Record<string, unknown>
+}
+
+export type QuerySchemaUpdateRequest = {
+  enabled?: boolean
+  priority?: number
+}
+
+export type QuerySchemaFilters = {
+  matchPattern: string
+  domain: string
+  schemaType: "all" | "css" | "xpath"
+  enabled: "all" | "enabled" | "disabled"
+  warnings: "all" | "clean" | "warning"
 }
 
 export type CrawlRecord = {
@@ -167,7 +211,7 @@ export type CrawlFilters = {
   warnings: "all" | "clean" | "warning"
 }
 
-export type ExtractSchemaRecord = {
+export type DataSchemaRecord = {
   id: string
   match: string
   enabled: boolean
@@ -189,12 +233,12 @@ export type ExtractSchemaRecord = {
   updated_at: string
 }
 
-export type ExtractSchemaListResponse = PaginatedResponse<ExtractSchemaRecord>
+export type DataSchemaListResponse = PaginatedResponse<DataSchemaRecord>
   & {
-    summary: ExtractSchemaSummary
+    summary: DataSchemaSummary
   }
 
-export type ExtractSchemaSummary = {
+export type DataSchemaSummary = {
   total_schemas: number
   enabled_schemas: number
   used_schemas: number
@@ -205,7 +249,7 @@ export type ExtractSchemaSummary = {
   failing_schemas: number
 }
 
-export type ExtractSchemaDetailRecord = ExtractSchemaRecord & {
+export type DataSchemaDetailRecord = DataSchemaRecord & {
   identity_key: string
   schema_json: Record<string, unknown>
   generated_from_crawl_id: string | null
@@ -215,7 +259,7 @@ export type ExtractSchemaDetailRecord = ExtractSchemaRecord & {
   warnings_json: Record<string, unknown>
 }
 
-export type ExtractSchemaUpdateRequest = {
+export type DataSchemaUpdateRequest = {
   match?: string
   enabled?: boolean
   priority?: number
@@ -223,52 +267,10 @@ export type ExtractSchemaUpdateRequest = {
   validation_status?: string | null
 }
 
-export type ExtractSchemaFilters = {
+export type DataSchemaFilters = {
   matchPattern: string
   prompt: string
   schemaType: "all" | "css" | "xpath"
   enabled: "all" | "enabled" | "disabled"
   warnings: "all" | "clean" | "warning"
-}
-
-export type PaginationSchemaRecord = {
-  id: string
-  identity_key: string
-  match: string
-  enabled: boolean
-  priority: number
-  next_button_selector: string | null
-  item_selector: string
-  expected_max_item_count: number | null
-  query_param_key: string
-  query_param_value_template: string
-  start_value: number
-  value_step: number
-  domain: string | null
-  path: string | null
-  generated_from_crawl_id: string | null
-  generated_from_artifact_id: string | null
-  generated_by_task_run_id: string | null
-  inputs_json: Record<string, unknown>
-  validation_status: string | null
-  failure_count: number
-  last_failed_at: string | null
-  last_error: string | null
-  warnings_json: Record<string, unknown>
-  created_at: string
-  updated_at: string
-}
-
-export type PaginationSchemaUpdateRequest = {
-  match?: string
-  enabled?: boolean
-  priority?: number
-  next_button_selector?: string | null
-  item_selector?: string
-  expected_max_item_count?: number | null
-  query_param_key?: string
-  query_param_value_template?: string
-  start_value?: number
-  value_step?: number
-  validation_status?: string | null
 }

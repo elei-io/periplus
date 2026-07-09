@@ -73,6 +73,7 @@ export function UrlDetailPage({ urlId }: { urlId: string }) {
             ["Host", url.host],
             ["Domain", url.domain],
             ["Path", url.path],
+            ["Query", url.query],
             ["Query Fingerprint", url.query_fingerprint],
           ]}
         />

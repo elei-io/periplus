@@ -11,14 +11,16 @@ import type {
   CrawlDetailRecord,
   CrawlFilters,
   CrawlListResponse,
-  ExtractSchemaDetailRecord,
-  ExtractSchemaFilters,
-  ExtractSchemaListResponse,
-  ExtractSchemaUpdateRequest,
+  DataSchemaDetailRecord,
+  DataSchemaFilters,
+  DataSchemaListResponse,
+  DataSchemaUpdateRequest,
   HistoryMetricsResponse,
   PageParams,
-  PaginationSchemaRecord,
-  PaginationSchemaUpdateRequest,
+  QuerySchemaDetailRecord,
+  QuerySchemaFilters,
+  QuerySchemaListResponse,
+  QuerySchemaUpdateRequest,
   UrlDetailRecord,
   UrlFilters,
   UrlListResponse,
@@ -60,6 +62,22 @@ function urlParams(filters: UrlFilters, page?: PageParams) {
   return params
 }
 
+function querySchemaParams(filters: QuerySchemaFilters, page?: PageParams) {
+  const params = new URLSearchParams(page ? pageParams(page) : undefined)
+  appendParam(params, "match_pattern", filters.matchPattern)
+  appendParam(params, "domain", filters.domain)
+  if (filters.schemaType !== "all") {
+    params.set("schema_type", filters.schemaType)
+  }
+  if (filters.enabled !== "all") {
+    params.set("enabled", String(filters.enabled === "enabled"))
+  }
+  if (filters.warnings !== "all") {
+    params.set("warnings", String(filters.warnings === "warning"))
+  }
+  return params
+}
+
 function crawlParams(filters: CrawlFilters, page?: PageParams) {
   const params = new URLSearchParams(page ? pageParams(page) : undefined)
   appendParam(params, "url_pattern", filters.urlPattern)
@@ -74,7 +92,7 @@ function crawlParams(filters: CrawlFilters, page?: PageParams) {
   return params
 }
 
-function extractSchemaParams(filters: ExtractSchemaFilters, page?: PageParams) {
+function dataSchemaParams(filters: DataSchemaFilters, page?: PageParams) {
   const params = new URLSearchParams(page ? pageParams(page) : undefined)
   appendParam(params, "match_pattern", filters.matchPattern)
   appendParam(params, "prompt", filters.prompt)
@@ -172,6 +190,86 @@ export function useUrl(id: string | null) {
   })
 }
 
+export function useQuerySchemas(filters: QuerySchemaFilters, page: PageParams) {
+  return useQuery({
+    queryKey: ["query-schemas", filters, page],
+    queryFn: async () => {
+      const response = await fetch(
+        apiUrl(`/query-schemas/?${querySchemaParams(filters, page).toString()}`)
+      )
+      if (!response.ok) {
+        throw await apiErrorFromResponse(response)
+      }
+      return (await response.json()) as QuerySchemaListResponse
+    },
+  })
+}
+
+export function useQuerySchema(id: string | null) {
+  return useQuery({
+    enabled: Boolean(id),
+    queryKey: ["query-schema", id],
+    queryFn: async () => {
+      const response = await fetch(apiUrl(`/query-schemas/${id}`))
+      if (!response.ok) {
+        throw await apiErrorFromResponse(response)
+      }
+      return (await response.json()) as QuerySchemaDetailRecord
+    },
+  })
+}
+
+export function useUpdateQuerySchema(id: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (request: QuerySchemaUpdateRequest) => {
+      const response = await fetch(apiUrl(`/query-schemas/${id}`), {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(request),
+      })
+      if (!response.ok) {
+        throw await apiErrorFromResponse(response)
+      }
+      return (await response.json()) as QuerySchemaDetailRecord
+    },
+    onSuccess: () => {
+      toast.success("Updated query schema.")
+      void queryClient.invalidateQueries({ queryKey: ["query-schema", id] })
+      void queryClient.invalidateQueries({ queryKey: ["query-schemas"] })
+    },
+    onError: (error) => {
+      toast.error(extractApiError(error))
+    },
+  })
+}
+
+export function useDeleteQuerySchema(id: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async () => {
+      const response = await fetch(apiUrl(`/query-schemas/${id}`), {
+        method: "DELETE",
+      })
+      if (!response.ok) {
+        throw await apiErrorFromResponse(response)
+      }
+    },
+    onSuccess: () => {
+      toast.success("Deleted query schema.")
+      void queryClient.invalidateQueries({ queryKey: ["query-schema", id] })
+      void queryClient.invalidateQueries({ queryKey: ["query-schemas"] })
+    },
+    onError: (error) => {
+      toast.error(extractApiError(error))
+    },
+  })
+}
+
 export function useCrawls(filters: CrawlFilters, page: PageParams) {
   return useQuery({
     queryKey: ["crawls", filters, page],
@@ -212,27 +310,27 @@ export function useCrawl(id: string | null) {
   })
 }
 
-export function useExtractSchemas(filters: ExtractSchemaFilters, page: PageParams) {
+export function useDataSchemas(filters: DataSchemaFilters, page: PageParams) {
   return useQuery({
-    queryKey: ["extract-schemas", filters, page],
+    queryKey: ["data-schemas", filters, page],
     queryFn: async () => {
       const response = await fetch(
-        apiUrl(`/extract-schemas/?${extractSchemaParams(filters, page).toString()}`)
+        apiUrl(`/data-schemas/?${dataSchemaParams(filters, page).toString()}`)
       )
       if (!response.ok) {
         throw await apiErrorFromResponse(response)
       }
-      return (await response.json()) as ExtractSchemaListResponse
+      return (await response.json()) as DataSchemaListResponse
     },
   })
 }
 
-export function useExtractSchemaMetrics(filters: ExtractSchemaFilters) {
+export function useDataSchemaMetrics(filters: DataSchemaFilters) {
   return useQuery({
-    queryKey: ["extract-schema-metrics", filters],
+    queryKey: ["data-schema-metrics", filters],
     queryFn: async () => {
       const response = await fetch(
-        apiUrl(`/extract-schemas/metrics?${extractSchemaParams(filters).toString()}`)
+        apiUrl(`/data-schemas/metrics?${dataSchemaParams(filters).toString()}`)
       )
       if (!response.ok) {
         throw await apiErrorFromResponse(response)
@@ -242,26 +340,26 @@ export function useExtractSchemaMetrics(filters: ExtractSchemaFilters) {
   })
 }
 
-export function useExtractSchema(id: string | null) {
+export function useDataSchema(id: string | null) {
   return useQuery({
     enabled: Boolean(id),
-    queryKey: ["extract-schema", id],
+    queryKey: ["data-schema", id],
     queryFn: async () => {
-      const response = await fetch(apiUrl(`/extract-schemas/${id}`))
+      const response = await fetch(apiUrl(`/data-schemas/${id}`))
       if (!response.ok) {
         throw await apiErrorFromResponse(response)
       }
-      return (await response.json()) as ExtractSchemaDetailRecord
+      return (await response.json()) as DataSchemaDetailRecord
     },
   })
 }
 
-export function useUpdateExtractSchema(id: string) {
+export function useUpdateDataSchema(id: string) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (request: ExtractSchemaUpdateRequest) => {
-      const response = await fetch(apiUrl(`/extract-schemas/${id}`), {
+    mutationFn: async (request: DataSchemaUpdateRequest) => {
+      const response = await fetch(apiUrl(`/data-schemas/${id}`), {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
@@ -271,13 +369,13 @@ export function useUpdateExtractSchema(id: string) {
       if (!response.ok) {
         throw await apiErrorFromResponse(response)
       }
-      return (await response.json()) as ExtractSchemaDetailRecord
+      return (await response.json()) as DataSchemaDetailRecord
     },
     onSuccess: () => {
-      toast.success("Updated extract schema.")
-      void queryClient.invalidateQueries({ queryKey: ["extract-schema", id] })
-      void queryClient.invalidateQueries({ queryKey: ["extract-schemas"] })
-      void queryClient.invalidateQueries({ queryKey: ["extract-schema-metrics"] })
+      toast.success("Updated data schema.")
+      void queryClient.invalidateQueries({ queryKey: ["data-schema", id] })
+      void queryClient.invalidateQueries({ queryKey: ["data-schemas"] })
+      void queryClient.invalidateQueries({ queryKey: ["data-schema-metrics"] })
     },
     onError: (error) => {
       toast.error(extractApiError(error))
@@ -285,54 +383,23 @@ export function useUpdateExtractSchema(id: string) {
   })
 }
 
-export function usePaginationSchemas() {
-  return useQuery({
-    queryKey: ["pagination-schemas"],
-    queryFn: async () => {
-      const response = await fetch(apiUrl("/pagination-schemas/"))
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as PaginationSchemaRecord[]
-    },
-  })
-}
-
-export function usePaginationSchema(id: string | null) {
-  return useQuery({
-    enabled: Boolean(id),
-    queryKey: ["pagination-schema", id],
-    queryFn: async () => {
-      const response = await fetch(apiUrl(`/pagination-schemas/${id}`))
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as PaginationSchemaRecord
-    },
-  })
-}
-
-export function useUpdatePaginationSchema(id: string) {
+export function useDeleteDataSchema(id: string) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (request: PaginationSchemaUpdateRequest) => {
-      const response = await fetch(apiUrl(`/pagination-schemas/${id}`), {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(request),
+    mutationFn: async () => {
+      const response = await fetch(apiUrl(`/data-schemas/${id}`), {
+        method: "DELETE",
       })
       if (!response.ok) {
         throw await apiErrorFromResponse(response)
       }
-      return (await response.json()) as PaginationSchemaRecord
     },
     onSuccess: () => {
-      toast.success("Updated pagination schema.")
-      void queryClient.invalidateQueries({ queryKey: ["pagination-schema", id] })
-      void queryClient.invalidateQueries({ queryKey: ["pagination-schemas"] })
+      toast.success("Deleted data schema.")
+      void queryClient.invalidateQueries({ queryKey: ["data-schema", id] })
+      void queryClient.invalidateQueries({ queryKey: ["data-schemas"] })
+      void queryClient.invalidateQueries({ queryKey: ["data-schema-metrics"] })
     },
     onError: (error) => {
       toast.error(extractApiError(error))

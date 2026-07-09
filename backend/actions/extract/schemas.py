@@ -4,12 +4,15 @@ from pydantic import BaseModel, Field
 
 from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.shared.quality.schemas import QualityWarning
-from actions.shared.extract_schema.schemas import SchemaType
+from actions.shared.data_schema.schemas import SchemaType
+from actions.shared.query_schema.schemas import QueryParamOutput
 
 
 class Input(BaseModel):
     url: str = Field(description="The URL to crawl and extract structured data from.")
-    prompt: str = Field(description="Natural-language extraction instructions.")
+    extract_data: bool = Field(default=True, description="Extract structured data using a DataSchema.")
+    extract_query_params: bool = Field(default=True, description="Extract query parameters using a QuerySchema.")
+    prompt: str | None = Field(default=None, description="Natural-language data extraction instructions.")
     target_json_example: str | None = Field(
         default=None,
         description="Optional JSON example showing the desired extracted object shape.",
@@ -25,8 +28,9 @@ class Input(BaseModel):
     )
     match: str | None = Field(
         default=None,
-        description="Optional extract schema match pattern for durable schema reuse.",
+        description="Optional data schema match pattern for durable schema reuse.",
     )
+
 
 class ExtractSource(BaseModel):
     schema_id: str
@@ -38,5 +42,6 @@ class ExtractOutput(BaseModel):
     success: bool
     source: ExtractSource | None = None
     results: list[dict[str, Any]] = Field(default_factory=list)
+    query_params: QueryParamOutput | None = None
     warnings: list[QualityWarning] = Field(default_factory=list)
     error: str | None = None

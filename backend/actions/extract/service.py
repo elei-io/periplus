@@ -9,11 +9,17 @@ from sqlalchemy.orm import Session
 from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
 from actions.shared.quality.service import run_quality_checks
-from actions.shared.extract_schema.schemas import SchemaType
-from actions.shared.extract_schema.service import schema as schema_service
+from actions.shared.data_schema.schemas import SchemaType
+from actions.shared.data_schema.service import schema as schema_service
 from actions.crawl.schemas import CrawlPage
 from actions.crawl.service import crawl as crawl_service
-from extract_schemas.service import record_extract_schema_failure
+from actions.shared.query_schema.schemas import QueryParamOutput
+from actions.shared.query_schema.service import (
+    cached_query_output_from_page,
+    persist_query_param_output,
+    query_from_page,
+)
+from data_schemas.service import record_data_schema_failure
 
 from .schemas import ExtractOutput, ExtractSource
 
@@ -65,7 +71,9 @@ def _clean_empty_schema_error(page: CrawlPage, warnings: list) -> str | None:
 
 async def extract(
     url: str,
-    prompt: str,
+    prompt: str | None = None,
+    extract_data: bool = True,
+    extract_query_params: bool = True,
     target_json_example: str | None = None,
     schema_type: SchemaType = "css",
     mode: CrawlMode = "static",
@@ -75,6 +83,11 @@ async def extract(
     session: Session | None = None,
     task_run_id: UUID | None = None,
 ) -> ExtractOutput:
+    if not extract_data and not extract_query_params:
+        return ExtractOutput(url=url, success=False, error="Enable at least one extraction mode.")
+    if extract_data and not (prompt or "").strip():
+        return ExtractOutput(url=url, success=False, error="Data extraction requires a prompt.")
+
     await emit_crawl_progress(
         progress_callback,
         CrawlProgressEvent(url=url, label="extract", status="started"),
@@ -134,16 +147,125 @@ async def extract(
         )
         return ExtractOutput(url=page.url, success=False, error="Crawl did not produce HTML.")
 
-    max_replacements = _max_extract_attempts()
-    schema_output = None
+    query_params: QueryParamOutput | None = None
+    query_task: asyncio.Task[QueryParamOutput] | None = None
+    if extract_query_params and extract_data:
+        if session is not None:
+            query_params = cached_query_output_from_page(
+                session=session,
+                page_url=page.url,
+                html=html,
+                crawl_id=page.crawl_id,
+                artifact_ids=page.artifact_ids,
+            )
+        if query_params is None:
+            query_task = asyncio.create_task(
+                query_from_page(
+                    page_url=page.url,
+                    html=html,
+                    crawl_id=page.crawl_id,
+                    artifact_ids=page.artifact_ids,
+                    mode=mode,
+                    wait=wait,
+                    progress_callback=progress_callback,
+                )
+            )
+
+    async def cancel_query_task() -> None:
+        if query_task is None or query_task.done():
+            return
+        query_task.cancel()
+        await asyncio.gather(query_task, return_exceptions=True)
+
     source = None
-    last_error: str | None = None
+    results: list[dict] = []
     warnings = []
-    for attempt in range(max_replacements + 1):
-        if schema_output is None:
+    last_error: str | None = None
+    if extract_data:
+        max_replacements = _max_extract_attempts()
+        schema_output = None
+        for attempt in range(max_replacements + 1):
+            if schema_output is None:
+                schema_output = await schema_service(
+                    url=page.url,
+                    prompt=(prompt or "").strip(),
+                    target_json_example=target_json_example,
+                    schema_type=schema_type,
+                    html=html,
+                    mode=mode,
+                    wait=wait,
+                    match=match,
+                    progress_callback=progress_callback,
+                    session=session,
+                    task_run_id=task_run_id,
+                )
+
+            source = ExtractSource(
+                schema_id=schema_output.schema_id,
+                schema_type=schema_output.schema_type,
+            )
+            await emit_crawl_progress(
+                progress_callback,
+                CrawlProgressEvent(url=page.url, label="apply data schema", status="started"),
+            )
+            apply_start_time = time.perf_counter()
+            try:
+                results = _apply_schema(schema_output.schema_type, schema_output.extraction_schema, url=page.url, html=html)
+                warnings = run_quality_checks(
+                    url=page.url,
+                    html=html,
+                    crawl=page.crawl,
+                    extraction_results=results,
+                )
+                last_error = _clean_empty_schema_error(page, warnings)
+                if last_error is None:
+                    break
+            except Exception as exc:
+                last_error = str(exc)
+
+            exhausted = attempt >= max_replacements
+            schema_uuid = _schema_uuid(schema_output.schema_id)
+            if session is not None and schema_uuid is not None:
+                record_data_schema_failure(
+                    session,
+                    schema_id=schema_uuid,
+                    error=last_error,
+                    exhausted=exhausted,
+                )
+            await emit_crawl_progress(
+                progress_callback,
+                CrawlProgressEvent(
+                    url=page.url,
+                    label="apply data schema",
+                    status="failed",
+                    duration=time.perf_counter() - apply_start_time,
+                    error=last_error,
+                ),
+            )
+            if exhausted or session is None or schema_uuid is None:
+                await cancel_query_task()
+                await emit_crawl_progress(
+                    progress_callback,
+                    CrawlProgressEvent(
+                        url=page.url,
+                        label="extract",
+                        status="failed",
+                        duration=time.perf_counter() - total_start_time,
+                        error=last_error,
+                    ),
+                )
+                if not warnings:
+                    warnings = run_quality_checks(url=page.url, html=html, extraction_results=[])
+                return ExtractOutput(url=page.url, success=False, source=source, warnings=warnings, error=last_error)
+
+            await emit_crawl_progress(
+                progress_callback,
+                CrawlProgressEvent(url=page.url, label="regenerate data schema", status="started"),
+            )
+            regenerate_start_time = time.perf_counter()
             schema_output = await schema_service(
                 url=page.url,
-                prompt=prompt,
+                prompt=(prompt or "").strip(),
                 target_json_example=target_json_example,
                 schema_type=schema_type,
                 html=html,
@@ -153,108 +275,67 @@ async def extract(
                 progress_callback=progress_callback,
                 session=session,
                 task_run_id=task_run_id,
+                reuse_existing=False,
+                replace_schema_id=schema_uuid,
             )
-
-        source = ExtractSource(
-            schema_id=schema_output.schema_id,
-            schema_type=schema_output.schema_type,
-        )
-        await emit_crawl_progress(
-            progress_callback,
-            CrawlProgressEvent(url=page.url, label="apply schema", status="started"),
-        )
-        apply_start_time = time.perf_counter()
-        try:
-            results = _apply_schema(schema_output.schema_type, schema_output.extraction_schema, url=page.url, html=html)
-            warnings = run_quality_checks(
-                url=page.url,
-                html=html,
-                crawl=page.crawl,
-                extraction_results=results,
-            )
-            last_error = _clean_empty_schema_error(page, warnings)
-            if last_error is None:
-                break
-        except Exception as exc:
-            last_error = str(exc)
-
-        exhausted = attempt >= max_replacements
-        schema_uuid = _schema_uuid(schema_output.schema_id)
-        if session is not None and schema_uuid is not None:
-            record_extract_schema_failure(
-                session,
-                schema_id=schema_uuid,
-                error=last_error,
-                exhausted=exhausted,
-            )
-        await emit_crawl_progress(
-            progress_callback,
-            CrawlProgressEvent(
-                url=page.url,
-                label="apply schema",
-                status="failed",
-                duration=time.perf_counter() - apply_start_time,
-                error=last_error,
-            ),
-        )
-        if exhausted or session is None or schema_uuid is None:
+            warnings = []
             await emit_crawl_progress(
                 progress_callback,
                 CrawlProgressEvent(
                     url=page.url,
-                    label="extract",
-                    status="failed",
-                    duration=time.perf_counter() - total_start_time,
-                    error=last_error,
+                    label="regenerate data schema",
+                    status="succeeded",
+                    duration=time.perf_counter() - regenerate_start_time,
                 ),
             )
-            if not warnings:
-                warnings = run_quality_checks(url=page.url, html=html, extraction_results=[])
+        else:
+            await cancel_query_task()
+            warnings = run_quality_checks(url=page.url, html=html, extraction_results=[])
             return ExtractOutput(url=page.url, success=False, source=source, warnings=warnings, error=last_error)
 
         await emit_crawl_progress(
             progress_callback,
-            CrawlProgressEvent(url=page.url, label="regenerate schema", status="started"),
-        )
-        regenerate_start_time = time.perf_counter()
-        schema_output = await schema_service(
-            url=page.url,
-            prompt=prompt,
-            target_json_example=target_json_example,
-            schema_type=schema_type,
-            html=html,
-            mode=mode,
-            wait=wait,
-            match=match,
-            progress_callback=progress_callback,
-            session=session,
-            task_run_id=task_run_id,
-            reuse_existing=False,
-            replace_schema_id=schema_uuid,
-        )
-        warnings = []
-        await emit_crawl_progress(
-            progress_callback,
             CrawlProgressEvent(
                 url=page.url,
-                label="regenerate schema",
+                label="apply data schema",
                 status="succeeded",
-                duration=time.perf_counter() - regenerate_start_time,
+                duration=time.perf_counter() - apply_start_time,
             ),
         )
-    else:
-        warnings = run_quality_checks(url=page.url, html=html, extraction_results=[])
-        return ExtractOutput(url=page.url, success=False, source=source, warnings=warnings, error=last_error)
 
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(
-            url=page.url,
-            label="apply schema",
-            status="succeeded",
-            duration=time.perf_counter() - apply_start_time,
-        ),
-    )
+    if extract_query_params:
+        if query_task is not None:
+            try:
+                query_params = await query_task
+            except Exception:
+                query_params = QueryParamOutput(
+                    url=page.url,
+                    crawl_id=str(page.crawl_id) if page.crawl_id else None,
+                    artifact_ids=[str(artifact_id) for artifact_id in page.artifact_ids],
+                    warnings=["Query parameter extraction unavailable."],
+                )
+            if session is not None and query_params.query_schema is not None:
+                persist_query_param_output(
+                    session,
+                    output=query_params,
+                    task_run_id=task_run_id,
+                    crawl_id=page.crawl_id,
+                    mode=mode,
+                    wait=wait,
+                )
+        elif query_params is None:
+            query_params = await query_from_page(
+                page_url=page.url,
+                html=html,
+                crawl_id=page.crawl_id,
+                artifact_ids=page.artifact_ids,
+                mode=mode,
+                wait=wait,
+                progress_callback=progress_callback,
+                session=session,
+                task_run_id=task_run_id,
+            )
+
     await emit_crawl_progress(
         progress_callback,
         CrawlProgressEvent(
@@ -264,12 +345,21 @@ async def extract(
             duration=time.perf_counter() - total_start_time,
         ),
     )
-    return ExtractOutput(url=page.url, success=True, source=source, results=results, warnings=warnings)
+    return ExtractOutput(
+        url=page.url,
+        success=True,
+        source=source,
+        results=results,
+        query_params=query_params,
+        warnings=warnings,
+    )
 
 
 def extract_sync(
     url: str,
-    prompt: str,
+    prompt: str | None = None,
+    extract_data: bool = True,
+    extract_query_params: bool = True,
     target_json_example: str | None = None,
     schema_type: SchemaType = "css",
     mode: CrawlMode = "static",
@@ -281,6 +371,8 @@ def extract_sync(
         extract(
             url=url,
             prompt=prompt,
+            extract_data=extract_data,
+            extract_query_params=extract_query_params,
             target_json_example=target_json_example,
             schema_type=schema_type,
             mode=mode,

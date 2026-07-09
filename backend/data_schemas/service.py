@@ -5,13 +5,13 @@ from hashlib import sha256
 from urllib.parse import urlparse, urlunparse
 from uuid import UUID
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, update
 from sqlalchemy.orm import Session
 
 from tasks.models import TaskRun
 
-from .models import ExtractSchema
-from .schemas import ExtractSchemaListRecord, ExtractSchemaSummary, ExtractSchemaUpdateRequest
+from .models import DataSchema
+from .schemas import DataSchemaListRecord, DataSchemaSummary, DataSchemaUpdateRequest
 
 
 def _json_hash(value: object) -> str:
@@ -43,7 +43,7 @@ def match_targets_for_url(url: str) -> tuple[str, ...]:
     return (without_fragment, without_query)
 
 
-def extract_schema_matches_url(schema: ExtractSchema, url: str) -> bool:
+def data_schema_matches_url(schema: DataSchema, url: str) -> bool:
     return any(fnmatchcase(target, schema.match) for target in match_targets_for_url(url))
 
 
@@ -85,24 +85,24 @@ def identity_key_for_hash(
     )
 
 
-def find_reusable_extract_schema(
+def find_reusable_data_schema(
     session: Session,
     *,
     url: str,
     prompt: str,
     schema_type: str,
     target_json_example: str | None,
-) -> ExtractSchema | None:
-    statement = select(ExtractSchema).where(
-        ExtractSchema.enabled.is_(True),
-        ExtractSchema.prompt_hash == _text_hash(prompt),
-        ExtractSchema.schema_type == schema_type,
+) -> DataSchema | None:
+    statement = select(DataSchema).where(
+        DataSchema.enabled.is_(True),
+        DataSchema.prompt_hash == _text_hash(prompt),
+        DataSchema.schema_type == schema_type,
     )
     target_json_hash = _target_json_hash(target_json_example)
     if target_json_hash is not None:
-        statement = statement.where(ExtractSchema.target_json_hash == target_json_hash)
+        statement = statement.where(DataSchema.target_json_hash == target_json_hash)
 
-    candidates = [schema for schema in session.scalars(statement) if extract_schema_matches_url(schema, url)]
+    candidates = [schema for schema in session.scalars(statement) if data_schema_matches_url(schema, url)]
     if not candidates:
         return None
 
@@ -117,7 +117,7 @@ def find_reusable_extract_schema(
     )
 
 
-def create_extract_schema(
+def create_data_schema(
     session: Session,
     *,
     url: str,
@@ -128,9 +128,9 @@ def create_extract_schema(
     schema_json: dict,
     task_run_id: UUID | None = None,
     inputs_json: dict | None = None,
-) -> ExtractSchema:
+) -> DataSchema:
     parsed = urlparse(url)
-    schema = ExtractSchema(
+    schema = DataSchema(
         identity_key=identity_key_for(
             prompt=prompt,
             schema_type=schema_type,
@@ -158,7 +158,7 @@ def create_extract_schema(
     return schema
 
 
-def replace_extract_schema(
+def replace_data_schema(
     session: Session,
     *,
     schema_id: UUID,
@@ -169,10 +169,10 @@ def replace_extract_schema(
     task_run_id: UUID | None = None,
     inputs_json: dict | None = None,
     match: str | None = None,
-) -> ExtractSchema:
-    schema = session.get(ExtractSchema, schema_id)
+) -> DataSchema:
+    schema = session.get(DataSchema, schema_id)
     if schema is None:
-        raise ValueError(f"Extract schema not found: {schema_id}")
+        raise ValueError(f"Data schema not found: {schema_id}")
 
     match_value = match or schema.match
     now = datetime.now(UTC)
@@ -202,14 +202,14 @@ def replace_extract_schema(
     return schema
 
 
-def record_extract_schema_failure(
+def record_data_schema_failure(
     session: Session,
     *,
     schema_id: UUID,
     error: str,
     exhausted: bool = False,
-) -> ExtractSchema | None:
-    schema = session.get(ExtractSchema, schema_id)
+) -> DataSchema | None:
+    schema = session.get(DataSchema, schema_id)
     if schema is None:
         return None
 
@@ -223,7 +223,7 @@ def record_extract_schema_failure(
     return schema
 
 
-def record_extract_schema_use(session: Session, *, task_run_id: UUID | None, schema: ExtractSchema) -> None:
+def record_data_schema_use(session: Session, *, task_run_id: UUID | None, schema: DataSchema) -> None:
     if task_run_id is None:
         return
 
@@ -231,7 +231,7 @@ def record_extract_schema_use(session: Session, *, task_run_id: UUID | None, sch
     if run is None:
         return
 
-    run.extract_schema_id = schema.id
+    run.data_schema_id = schema.id
     schema.updated_at = datetime.now(UTC)
     session.flush()
 
@@ -240,7 +240,7 @@ def _sql_like_from_glob(pattern: str) -> str:
     return pattern.replace("%", r"\%").replace("_", r"\_").replace("*", "%")
 
 
-def warning_count(schema: ExtractSchema) -> int:
+def warning_count(schema: DataSchema) -> int:
     value = (schema.warnings_json or {}).get("count", 0)
     try:
         return int(value)
@@ -253,7 +253,7 @@ def task_run_count(session: Session, schema_id: UUID) -> int:
         session.scalar(
             select(func.count())
             .select_from(TaskRun)
-            .where(TaskRun.extract_schema_id == schema_id)
+            .where(TaskRun.data_schema_id == schema_id)
         )
         or 0
     )
@@ -266,24 +266,24 @@ def _filtered_statement(
     schema_type: str | None = None,
     enabled: bool | None = None,
     warnings: bool | None = None,
-) -> Select[tuple[ExtractSchema]]:
-    statement = select(ExtractSchema)
+) -> Select[tuple[DataSchema]]:
+    statement = select(DataSchema)
     if match_pattern:
-        statement = statement.where(ExtractSchema.match.ilike(_sql_like_from_glob(match_pattern), escape="\\"))
+        statement = statement.where(DataSchema.match.ilike(_sql_like_from_glob(match_pattern), escape="\\"))
     if prompt:
-        statement = statement.where(ExtractSchema.prompt.ilike(f"%{prompt}%"))
+        statement = statement.where(DataSchema.prompt.ilike(f"%{prompt}%"))
     if schema_type:
-        statement = statement.where(ExtractSchema.schema_type == schema_type)
+        statement = statement.where(DataSchema.schema_type == schema_type)
     if enabled is not None:
-        statement = statement.where(ExtractSchema.enabled == enabled)
+        statement = statement.where(DataSchema.enabled == enabled)
     if warnings is not None:
-        warning_value = func.coalesce(ExtractSchema.warnings_json["count"].as_integer(), 0)
+        warning_value = func.coalesce(DataSchema.warnings_json["count"].as_integer(), 0)
         statement = statement.where(warning_value > 0 if warnings else warning_value == 0)
 
     return statement
 
 
-def list_extract_schemas(
+def list_data_schemas(
     session: Session,
     *,
     match_pattern: str | None = None,
@@ -293,7 +293,7 @@ def list_extract_schemas(
     warnings: bool | None = None,
     limit: int = 100,
     offset: int = 0,
-) -> list[ExtractSchemaListRecord]:
+) -> list[DataSchemaListRecord]:
     statement = (
         _filtered_statement(
             match_pattern=match_pattern,
@@ -302,15 +302,15 @@ def list_extract_schemas(
             enabled=enabled,
             warnings=warnings,
         )
-        .order_by(ExtractSchema.updated_at.desc(), ExtractSchema.created_at.desc())
+        .order_by(DataSchema.updated_at.desc(), DataSchema.created_at.desc())
         .limit(limit)
         .offset(offset)
     )
 
-    rows: list[ExtractSchemaListRecord] = []
+    rows: list[DataSchemaListRecord] = []
     for schema in session.scalars(statement):
         rows.append(
-            ExtractSchemaListRecord(
+            DataSchemaListRecord(
                 id=schema.id,
                 match=schema.match,
                 enabled=schema.enabled,
@@ -336,7 +336,7 @@ def list_extract_schemas(
     return rows
 
 
-def count_extract_schemas(
+def count_data_schemas(
     session: Session,
     *,
     match_pattern: str | None = None,
@@ -355,7 +355,7 @@ def count_extract_schemas(
     return int(session.scalar(select(func.count()).select_from(subquery)) or 0)
 
 
-def extract_schema_summary(
+def data_schema_summary(
     session: Session,
     *,
     match_pattern: str | None = None,
@@ -363,7 +363,7 @@ def extract_schema_summary(
     schema_type: str | None = None,
     enabled: bool | None = None,
     warnings: bool | None = None,
-) -> ExtractSchemaSummary:
+) -> DataSchemaSummary:
     schemas = list(
         session.scalars(
             _filtered_statement(
@@ -385,7 +385,7 @@ def extract_schema_summary(
         if schema.failure_count > 0 or warning_count(schema) > 0
     )
 
-    return ExtractSchemaSummary(
+    return DataSchemaSummary(
         total_schemas=len(schemas),
         enabled_schemas=sum(1 for schema in schemas if schema.enabled),
         used_schemas=used_schemas,
@@ -397,20 +397,20 @@ def extract_schema_summary(
     )
 
 
-def get_extract_schema(session: Session, schema_id: UUID) -> ExtractSchema | None:
-    return session.get(ExtractSchema, schema_id)
+def get_data_schema(session: Session, schema_id: UUID) -> DataSchema | None:
+    return session.get(DataSchema, schema_id)
 
 
-def update_extract_schema(
+def update_data_schema(
     session: Session,
     *,
-    schema: ExtractSchema,
-    request: ExtractSchemaUpdateRequest,
-) -> ExtractSchema:
+    schema: DataSchema,
+    request: DataSchemaUpdateRequest,
+) -> DataSchema:
     if request.match is not None:
         match = request.match.strip()
         if not match:
-            raise ValueError("Extract schema match cannot be empty.")
+            raise ValueError("Data schema match cannot be empty.")
 
         identity_key = identity_key_for_hash(
             prompt=schema.prompt,
@@ -418,9 +418,9 @@ def update_extract_schema(
             target_json_hash=schema.target_json_hash,
             match=match,
         )
-        existing = session.scalar(select(ExtractSchema).where(ExtractSchema.identity_key == identity_key))
+        existing = session.scalar(select(DataSchema).where(DataSchema.identity_key == identity_key))
         if existing is not None and existing.id != schema.id:
-            raise ValueError("Another extract schema already uses this identity.")
+            raise ValueError("Another data schema already uses this identity.")
 
         schema.match = match
         schema.identity_key = identity_key
@@ -442,3 +442,13 @@ def update_extract_schema(
     schema.updated_at = datetime.now(UTC)
     session.flush()
     return schema
+
+
+def delete_data_schema(session: Session, *, schema: DataSchema) -> None:
+    session.execute(
+        update(TaskRun)
+        .where(TaskRun.data_schema_id == schema.id)
+        .values(data_schema_id=None)
+    )
+    session.delete(schema)
+    session.flush()

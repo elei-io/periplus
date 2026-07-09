@@ -180,11 +180,11 @@ function metricHelp(metric: string, label: string) {
     atlas_artifacts_warning_total: "Active artifacts with content-quality warnings.",
     atlas_artifacts_invalidated_total: "Artifacts that have been manually or automatically invalidated.",
     atlas_artifact_bytes_total: "Total stored bytes for matching artifacts.",
-    atlas_extract_schemas_total: "Extraction schemas matching the current filters.",
-    atlas_extract_schemas_enabled_total: "Matching schemas that are enabled for reuse.",
-    atlas_extract_schema_uses_total: "Task runs that used matching extraction schemas.",
-    atlas_extract_schema_reuse_ratio: "Share of schema uses beyond each schema's first use.",
-    atlas_extract_schema_failures_total: "Schemas with failures or warnings that may need attention.",
+    atlas_data_schemas_total: "Extraction schemas matching the current filters.",
+    atlas_data_schemas_enabled_total: "Matching schemas that are enabled for reuse.",
+    atlas_data_schema_uses_total: "Task runs that used matching data schemas.",
+    atlas_data_schema_reuse_ratio: "Share of schema uses beyond each schema's first use.",
+    atlas_data_schema_failures_total: "Schemas with failures or warnings that may need attention.",
   }
 
   return descriptions[metric] ?? label

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from artifacts.models import Artifact
 from crawls.models import Crawl
 from db import Base
-from extract_schemas.models import ExtractSchema
+from data_schemas.models import DataSchema
 
 
 def utc_now() -> datetime:
@@ -121,9 +121,9 @@ class TaskRun(Base):
         ForeignKey("effect_runs.id", use_alter=True, ondelete="SET NULL"),
         nullable=True,
     )
-    extract_schema_id: Mapped[UUID | None] = mapped_column(
+    data_schema_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("extract_schemas.id", use_alter=True, ondelete="SET NULL"),
+        ForeignKey("data_schemas.id", use_alter=True, ondelete="SET NULL"),
         nullable=True,
     )
 
@@ -168,9 +168,9 @@ class TaskRun(Base):
         foreign_keys="TaskRunArtifact.task_run_id",
         cascade="all, delete-orphan",
     )
-    extract_schema: Mapped[ExtractSchema | None] = relationship(
+    data_schema: Mapped[DataSchema | None] = relationship(
         back_populates="task_runs",
-        foreign_keys=[extract_schema_id],
+        foreign_keys=[data_schema_id],
     )
 
 

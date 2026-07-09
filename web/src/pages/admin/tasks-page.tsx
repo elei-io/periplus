@@ -81,7 +81,6 @@ import type {
 
 const primitives: TaskPrimitive[] = [
   "search",
-  "paginate",
   "index",
   "crawl",
   "schema",
@@ -110,6 +109,8 @@ type TaskInputFields = {
   url: string
   urls: string[]
   prompt: string
+  extractData: boolean
+  extractQueryParams: boolean
   schemaType: (typeof schemaTypes)[number]
   mode: (typeof crawlModes)[number]
   wait: (typeof crawlWaits)[number]
@@ -130,6 +131,8 @@ const defaultInputFields: TaskInputFields = {
   url: "https://example.com",
   urls: ["https://example.com"],
   prompt: "Extract the main heading.",
+  extractData: true,
+  extractQueryParams: true,
   schemaType: "css",
   mode: "static",
   wait: "none",
@@ -369,20 +372,6 @@ function buildTaskInput(primitive: TaskPrimitive, fields: TaskInputFields) {
     }
   }
 
-  if (primitive === "paginate") {
-    if (!fields.url.trim()) {
-      throw new Error("Pagination URL is required.")
-    }
-
-    return {
-      url: fields.url.trim(),
-      max_pages: Math.max(1, numberOrDefault(fields.maxPages, 5)),
-      mode: fields.mode,
-      wait: fields.wait,
-      reuse_existing: fields.reuseExisting,
-    }
-  }
-
   if (primitive === "index") {
     if (!fields.url.trim()) {
       throw new Error("Index URL is required.")
@@ -406,17 +395,31 @@ function buildTaskInput(primitive: TaskPrimitive, fields: TaskInputFields) {
     throw new Error("Page URL is required.")
   }
 
-  if (!fields.prompt.trim()) {
+  if (primitive === "extract" && !fields.extractData && !fields.extractQueryParams) {
+    throw new Error("Enable at least one extraction mode.")
+  }
+
+  if ((primitive === "schema" || fields.extractData) && !fields.prompt.trim()) {
     throw new Error("Extraction prompt is required.")
   }
 
-  return {
+  const input = {
     url: fields.url.trim(),
-    prompt: fields.prompt.trim(),
+    prompt: fields.prompt.trim() || null,
     schema_type: fields.schemaType,
     mode: fields.mode,
     wait: fields.wait,
   }
+
+  if (primitive === "extract") {
+    return {
+      ...input,
+      extract_data: fields.extractData,
+      extract_query_params: fields.extractQueryParams,
+    }
+  }
+
+  return input
 }
 
 export function TasksPage() {
@@ -1039,7 +1042,7 @@ function PrimitiveTargetFields({
               value={fields.searchProvider}
               options={searchProviders}
               onChange={(value) => patch({ searchProvider: value as SearchProvider })}
-              ariaLabel="Search provider"
+              aria-label="Search provider"
             />
           </Field>
         </div>
@@ -1066,15 +1069,6 @@ function PrimitiveTargetFields({
         </Field>
       )}
 
-      {primitive === "paginate" && (
-        <Field label="URL" hint="Starting page Atlas uses to learn or reuse pagination.">
-          <Input
-            value={fields.url}
-            onChange={(event) => patch({ url: event.target.value })}
-          />
-        </Field>
-      )}
-
       {(primitive === "schema" || primitive === "extract") && (
         <div className="grid gap-3">
           <Field
@@ -1092,7 +1086,11 @@ function PrimitiveTargetFields({
           </Field>
           <Field
             label="Prompt"
-            hint="Natural-language instructions describing the structured data Atlas should extract."
+            hint={
+              primitive === "extract" && !fields.extractData
+                ? "Only needed when data extraction is enabled."
+                : "Natural-language instructions describing the structured data Atlas should extract."
+            }
           >
             <Textarea
               value={fields.prompt}
@@ -1117,7 +1115,7 @@ function PrimitiveKnobFields({
 }) {
   return (
     <>
-      {(primitive === "search" || primitive === "paginate") && (
+      {primitive === "search" && (
         <Field
           label="Max pages"
           hint="Maximum number of pages Atlas should crawl."
@@ -1130,23 +1128,6 @@ function PrimitiveKnobFields({
             onChange={(event) => onChange({ maxPages: event.target.value })}
           />
         </Field>
-      )}
-
-      {primitive === "paginate" && (
-        <>
-          <CrawlFields fields={fields} onChange={onChange} />
-          <Field label="Reuse schema" hint="Use a matching enabled pagination schema when one exists.">
-            <div className="flex h-7 items-center gap-2">
-              <Switch
-                checked={fields.reuseExisting}
-                onCheckedChange={(reuseExisting) => onChange({ reuseExisting })}
-              />
-              <span className="text-xs text-muted-foreground">
-                {fields.reuseExisting ? "On" : "Off"}
-              </span>
-            </div>
-          </Field>
-        </>
       )}
 
       {primitive === "crawl" && (
@@ -1189,6 +1170,38 @@ function PrimitiveKnobFields({
 
       {(primitive === "schema" || primitive === "extract") && (
         <>
+          {primitive === "extract" && (
+            <div className="grid gap-3 md:grid-cols-2">
+              <Field
+                label="Data"
+                hint="Generate or reuse a DataSchema, then extract structured records."
+              >
+                <div className="flex h-7 items-center gap-2">
+                  <Switch
+                    checked={fields.extractData}
+                    onCheckedChange={(extractData) => onChange({ extractData })}
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    {fields.extractData ? "On" : "Off"}
+                  </span>
+                </div>
+              </Field>
+              <Field
+                label="Query params"
+                hint="Generate or reuse a QuerySchema from same-page navigation evidence."
+              >
+                <div className="flex h-7 items-center gap-2">
+                  <Switch
+                    checked={fields.extractQueryParams}
+                    onCheckedChange={(extractQueryParams) => onChange({ extractQueryParams })}
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    {fields.extractQueryParams ? "On" : "Off"}
+                  </span>
+                </div>
+              </Field>
+            </div>
+          )}
           <Field
             label="Schema type"
             hint="Selector strategy used by Crawl4AI for generated extraction schemas."

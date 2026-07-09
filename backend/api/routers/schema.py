@@ -5,7 +5,7 @@ from pydantic import TypeAdapter
 from sqlalchemy.orm import Session
 
 from api.routers.action_runs import run_action
-from actions.shared.extract_schema.schemas import Input, SchemaOutput
+from actions.shared.data_schema.schemas import Input, SchemaOutput
 from db.session import get_session
 
 router = APIRouter(prefix="/schema", tags=["schema"])

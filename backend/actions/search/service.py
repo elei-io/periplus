@@ -1,15 +1,15 @@
 import asyncio
 import json
 from dataclasses import dataclass
-from html.parser import HTMLParser
-from urllib.parse import parse_qs, urlencode, unquote, urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from actions.extract.schemas import ExtractOutput
 from actions.extract.service import extract as extract_service
-from actions.crawl.service import crawl as crawl_service
 from actions.shared.progress import CrawlProgressCallback
+from actions.shared.query_schema.schemas import QueryParamOutput
 from actions.shared.search_url import build_search_url, default_search_match
 
 from .schemas import SearchProvider, SearchResult
@@ -76,86 +76,6 @@ SEARCH_PROVIDERS: dict[SearchProvider, SearchProviderConfig] = {
 }
 
 
-class _DuckDuckGoNextFormParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self._in_form = False
-        self._current_form: dict[str, str] = {}
-        self._current_action = ""
-        self._current_is_next_form = False
-        self.next_action = ""
-        self.next_fields: dict[str, str] = {}
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attrs_dict = dict(attrs)
-
-        if tag == "form":
-            self._in_form = True
-            self._current_form = {}
-            self._current_action = attrs_dict.get("action") or ""
-            self._current_is_next_form = False
-            return
-
-        if tag != "input" or not self._in_form:
-            return
-
-        value = attrs_dict.get("value") or ""
-        name = attrs_dict.get("name")
-        if value == "Next":
-            self._current_is_next_form = True
-        elif name:
-            self._current_form[name] = value
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "form":
-            if self._current_is_next_form:
-                self.next_action = self._current_action
-                self.next_fields = dict(self._current_form)
-
-            self._in_form = False
-            self._current_form = {}
-            self._current_action = ""
-            self._current_is_next_form = False
-
-
-class _NextLinkParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self._current_href = ""
-        self._current_score = 0
-        self._current_text: list[str] = []
-        self.next_href = ""
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag != "a":
-            return
-
-        attrs_dict = dict(attrs)
-        self._current_href = attrs_dict.get("href") or ""
-        self._current_text = []
-        values = " ".join(
-            attrs_dict.get(name) or ""
-            for name in ("aria-label", "class", "id", "rel", "title")
-        ).lower()
-        self._current_score = 1 if "next" in values else 0
-
-    def handle_data(self, data: str) -> None:
-        if self._current_href:
-            self._current_text.append(data)
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag != "a" or not self._current_href:
-            return
-
-        text = " ".join(self._current_text).strip().lower()
-        if self._current_score or text in {"next", "next >"} or "next page" in text:
-            self.next_href = self._current_href
-
-        self._current_href = ""
-        self._current_score = 0
-        self._current_text = []
-
-
 def _normalize_url(href: str) -> str:
     if href.startswith("//"):
         href = f"https:{href}"
@@ -178,34 +98,6 @@ def _normalize_url(href: str) -> str:
     return href
 
 
-def _next_page_url(
-    html: str | None,
-    current_url: str,
-    provider: SearchProviderConfig,
-) -> str | None:
-    if not html:
-        return None
-
-    duckduckgo_parser = _DuckDuckGoNextFormParser()
-    duckduckgo_parser.feed(html)
-    if duckduckgo_parser.next_fields:
-        action = urljoin("https://html.duckduckgo.com", duckduckgo_parser.next_action or "/html/")
-        return f"{action}?{urlencode(duckduckgo_parser.next_fields)}"
-
-    link_parser = _NextLinkParser()
-    link_parser.feed(html)
-    if not link_parser.next_href:
-        return None
-
-    next_url = urljoin(current_url, link_parser.next_href)
-    provider_domain = urlparse(provider.base_url).netloc.lower()
-    next_domain = urlparse(next_url).netloc.lower()
-    if next_domain != provider_domain:
-        return None
-
-    return next_url
-
-
 def _is_result_link(href: str, provider: SearchProviderConfig) -> bool:
     if not href or href.startswith(("javascript:", "#")):
         return False
@@ -219,6 +111,12 @@ def _is_result_link(href: str, provider: SearchProviderConfig) -> bool:
         return False
 
     return True
+
+
+def _is_provider_page(url: str, provider: SearchProviderConfig) -> bool:
+    provider_domain = urlparse(provider.base_url).netloc.lower()
+    domain = urlparse(url).netloc.lower()
+    return domain == provider_domain
 
 
 def _parse_search_results(
@@ -262,6 +160,100 @@ def _crawl_config(provider: SearchProviderConfig) -> dict[str, object]:
     }
 
 
+def _candidate_url_for_param_value(
+    query_params: QueryParamOutput,
+    *,
+    key: str,
+    value: str,
+    provider: SearchProviderConfig,
+) -> str | None:
+    for candidate in query_params.candidates:
+        if not _is_provider_page(candidate.url, provider):
+            continue
+        query = parse_qs(urlparse(candidate.url).query, keep_blank_values=True)
+        if value in query.get(key, []):
+            return candidate.url
+    return None
+
+
+def _pagination_urls(
+    query_params: QueryParamOutput | None,
+    *,
+    provider: SearchProviderConfig,
+    remaining_pages: int,
+) -> list[str]:
+    if query_params is None or remaining_pages <= 0:
+        return []
+
+    urls: list[str] = []
+    seen: set[str] = set()
+    pagination_params = [param for param in query_params.params if param.kind == "pagination"]
+
+    indexed_values: list[tuple[int, str]] = []
+    for param in pagination_params:
+        if param.pagination_role != "index":
+            continue
+        for value in param.values:
+            if not value.value.isdigit():
+                continue
+            candidate_url = _candidate_url_for_param_value(
+                query_params,
+                key=param.key,
+                value=value.value,
+                provider=provider,
+            )
+            if candidate_url and candidate_url != query_params.url:
+                indexed_values.append((int(value.value), candidate_url))
+
+    for _page_index, candidate_url in sorted(indexed_values, key=lambda item: item[0]):
+        if candidate_url in seen:
+            continue
+        seen.add(candidate_url)
+        urls.append(candidate_url)
+        if len(urls) >= remaining_pages:
+            return urls
+
+    for param in pagination_params:
+        if param.pagination_role != "next":
+            continue
+        for value in param.values:
+            candidate_url = _candidate_url_for_param_value(
+                query_params,
+                key=param.key,
+                value=value.value,
+                provider=provider,
+            )
+            if candidate_url and candidate_url not in seen and candidate_url != query_params.url:
+                return [candidate_url]
+
+    return urls
+
+
+async def _extract_search_page(
+    *,
+    page_url: str,
+    provider_config: SearchProviderConfig,
+    crawl_config: dict[str, object],
+    progress_callback: CrawlProgressCallback | None,
+    session: Session | None,
+    task_run_id: UUID | None,
+) -> ExtractOutput:
+    return await extract_service(
+        url=page_url,
+        extract_data=True,
+        extract_query_params=True,
+        prompt=provider_config.prompt,
+        target_json_example=_SCHEMA_TARGET_JSON_EXAMPLE,
+        schema_type="css",
+        mode=crawl_config["mode"],  # type: ignore[arg-type]
+        wait=crawl_config["wait"],  # type: ignore[arg-type]
+        match=provider_config.match,
+        progress_callback=progress_callback,
+        session=session,
+        task_run_id=task_run_id,
+    )
+
+
 async def search(
     query: str,
     max_pages: int = 1,
@@ -281,52 +273,71 @@ async def search(
     seen_urls: set[str] = set()
     crawl_config = _crawl_config(provider_config)
 
-    page_url: str | None = search_url
-    for _page_number in range(1, min(max_pages, _MAX_PAGES) + 1):
-        if not page_url:
+    page_queue: list[str] = [search_url]
+    seen_page_urls: set[str] = set()
+    processed_pages = 0
+    page_limit = min(max_pages, _MAX_PAGES)
+    while page_queue and processed_pages < page_limit:
+        remaining_pages = page_limit - processed_pages
+        batch_size = min(len(page_queue), remaining_pages)
+        batch = [page_queue.pop(0) for _ in range(batch_size)]
+        batch = [page_url for page_url in batch if page_url not in seen_page_urls]
+        if not batch:
             break
+        seen_page_urls.update(batch)
 
-        extract_output = await extract_service(
-            url=page_url,
-            prompt=provider_config.prompt,
-            target_json_example=_SCHEMA_TARGET_JSON_EXAMPLE,
-            schema_type="css",
-            mode=crawl_config["mode"],  # type: ignore[arg-type]
-            wait=crawl_config["wait"],  # type: ignore[arg-type]
-            match=provider_config.match,
-            progress_callback=progress_callback,
-            session=session,
-            task_run_id=task_run_id,
-        )
-        if not extract_output.success:
-            break
+        if session is None and len(batch) > 1:
+            extract_outputs = await asyncio.gather(
+                *[
+                    _extract_search_page(
+                        page_url=page_url,
+                        provider_config=provider_config,
+                        crawl_config=crawl_config,
+                        progress_callback=progress_callback,
+                        session=None,
+                        task_run_id=None,
+                    )
+                    for page_url in batch
+                ]
+            )
+        else:
+            extract_outputs = []
+            for page_url in batch:
+                extract_outputs.append(
+                    await _extract_search_page(
+                        page_url=page_url,
+                        provider_config=provider_config,
+                        crawl_config=crawl_config,
+                        progress_callback=progress_callback,
+                        session=session,
+                        task_run_id=task_run_id,
+                    )
+                )
 
-        previous_count = len(results)
-        for item in _parse_search_results(extract_output.results, provider_config):
-            if item.url in seen_urls:
+        for extract_output in extract_outputs:
+            processed_pages += 1
+            if not extract_output.success:
                 continue
 
-            seen_urls.add(item.url)
-            results.append(item)
+            previous_count = len(results)
+            for item in _parse_search_results(extract_output.results, provider_config):
+                if item.url in seen_urls:
+                    continue
 
-        if len(results) == previous_count:
-            break
+                seen_urls.add(item.url)
+                results.append(item)
 
-        if not provider_config.paginates:
-            page_url = None
-            continue
+            if len(results) == previous_count or not provider_config.paginates:
+                continue
 
-        crawl_output = await crawl_service(
-            urls=[extract_output.url],
-            mode=crawl_config["mode"],  # type: ignore[arg-type]
-            wait=crawl_config["wait"],  # type: ignore[arg-type]
-            concurrency=crawl_config["concurrency"],  # type: ignore[arg-type]
-            progress_callback=progress_callback,
-            session=session,
-            task_run_id=task_run_id,
-        )
-        page = crawl_output.pages[0] if crawl_output.pages else None
-        page_url = _next_page_url(page.html, page.url, provider_config) if page and page.html else None
+            next_urls = _pagination_urls(
+                extract_output.query_params,
+                provider=provider_config,
+                remaining_pages=page_limit - processed_pages - len(page_queue),
+            )
+            for next_url in next_urls:
+                if next_url not in seen_page_urls and next_url not in page_queue:
+                    page_queue.append(next_url)
 
     return results
 

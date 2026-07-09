@@ -127,7 +127,7 @@ def upgrade() -> None:
     op.create_index("ix_task_run_artifacts_task_run_id", "task_run_artifacts", ["task_run_id"])
 
     op.create_table(
-        "extract_schemas",
+        "data_schemas",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("identity_key", sa.Text(), nullable=False),
         sa.Column("match", sa.Text(), nullable=False),
@@ -152,23 +152,23 @@ def upgrade() -> None:
         sa.Column("warnings_json", postgresql.JSONB(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(["generated_by_task_run_id"], ["task_runs.id"], name="fk_extract_schemas_generated_by_task_run_id_task_runs", ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["generated_from_artifact_id"], ["artifacts.id"], name="fk_extract_schemas_generated_from_artifact_id_artifacts", ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["generated_from_crawl_id"], ["crawls.id"], name="fk_extract_schemas_generated_from_crawl_id_crawls", ondelete="SET NULL"),
-        sa.UniqueConstraint("identity_key", name="uq_extract_schemas_identity_key"),
+        sa.ForeignKeyConstraint(["generated_by_task_run_id"], ["task_runs.id"], name="fk_data_schemas_generated_by_task_run_id_task_runs", ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["generated_from_artifact_id"], ["artifacts.id"], name="fk_data_schemas_generated_from_artifact_id_artifacts", ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["generated_from_crawl_id"], ["crawls.id"], name="fk_data_schemas_generated_from_crawl_id_crawls", ondelete="SET NULL"),
+        sa.UniqueConstraint("identity_key", name="uq_data_schemas_identity_key"),
     )
-    op.create_index("ix_extract_schemas_domain", "extract_schemas", ["domain"])
-    op.create_index("ix_extract_schemas_enabled", "extract_schemas", ["enabled"])
-    op.create_index("ix_extract_schemas_match", "extract_schemas", ["match"])
-    op.create_index("ix_extract_schemas_prompt_hash", "extract_schemas", ["prompt_hash"])
-    op.create_index("ix_extract_schemas_schema_type", "extract_schemas", ["schema_type"])
+    op.create_index("ix_data_schemas_domain", "data_schemas", ["domain"])
+    op.create_index("ix_data_schemas_enabled", "data_schemas", ["enabled"])
+    op.create_index("ix_data_schemas_match", "data_schemas", ["match"])
+    op.create_index("ix_data_schemas_prompt_hash", "data_schemas", ["prompt_hash"])
+    op.create_index("ix_data_schemas_schema_type", "data_schemas", ["schema_type"])
 
-    op.add_column("task_runs", sa.Column("extract_schema_id", postgresql.UUID(as_uuid=True), nullable=True))
+    op.add_column("task_runs", sa.Column("data_schema_id", postgresql.UUID(as_uuid=True), nullable=True))
     op.create_foreign_key(
-        "fk_task_runs_extract_schema_id_extract_schemas",
+        "fk_task_runs_data_schema_id_data_schemas",
         "task_runs",
-        "extract_schemas",
-        ["extract_schema_id"],
+        "data_schemas",
+        ["data_schema_id"],
         ["id"],
         ondelete="SET NULL",
     )
@@ -191,15 +191,15 @@ def downgrade() -> None:
     op.drop_index("ix_crawl_policies_enabled", table_name="crawl_policies")
     op.drop_table("crawl_policies")
 
-    op.drop_constraint("fk_task_runs_extract_schema_id_extract_schemas", "task_runs", type_="foreignkey")
-    op.drop_column("task_runs", "extract_schema_id")
+    op.drop_constraint("fk_task_runs_data_schema_id_data_schemas", "task_runs", type_="foreignkey")
+    op.drop_column("task_runs", "data_schema_id")
 
-    op.drop_index("ix_extract_schemas_schema_type", table_name="extract_schemas")
-    op.drop_index("ix_extract_schemas_prompt_hash", table_name="extract_schemas")
-    op.drop_index("ix_extract_schemas_match", table_name="extract_schemas")
-    op.drop_index("ix_extract_schemas_enabled", table_name="extract_schemas")
-    op.drop_index("ix_extract_schemas_domain", table_name="extract_schemas")
-    op.drop_table("extract_schemas")
+    op.drop_index("ix_data_schemas_schema_type", table_name="data_schemas")
+    op.drop_index("ix_data_schemas_prompt_hash", table_name="data_schemas")
+    op.drop_index("ix_data_schemas_match", table_name="data_schemas")
+    op.drop_index("ix_data_schemas_enabled", table_name="data_schemas")
+    op.drop_index("ix_data_schemas_domain", table_name="data_schemas")
+    op.drop_table("data_schemas")
 
     op.drop_index("ix_task_run_artifacts_task_run_id", table_name="task_run_artifacts")
     op.drop_index("ix_task_run_artifacts_role", table_name="task_run_artifacts")

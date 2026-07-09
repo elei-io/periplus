@@ -13,9 +13,8 @@ from sqlalchemy.orm import Session
 from actions.extract.service import extract
 from actions.index.service import index
 from actions.crawl.service import crawl
-from actions.paginate.service import paginate
 from actions.search.service import search
-from actions.shared.extract_schema.service import schema
+from actions.shared.data_schema.service import schema
 from actions.shared.progress import CrawlProgressCallback
 
 from .models import Task, TaskRun
@@ -73,20 +72,6 @@ async def _execute_primitive(
         response_json = [_json_safe(link) for link in links]
         return PrimitiveExecution(
             output_json={"links": response_json},
-            response_json=response_json,
-            warnings=[],
-        )
-
-    if primitive == "paginate":
-        output = await paginate(
-            **payload,
-            progress_callback=progress_callback,
-            session=session,
-            task_run_id=run.id,
-        )
-        response_json = _json_safe(output)
-        return PrimitiveExecution(
-            output_json=response_json,
             response_json=response_json,
             warnings=[],
         )
@@ -230,6 +215,12 @@ async def execute_run(
         run.error = None
         task.last_run_at = _utc_now()
     except Exception as exc:
+        error = str(exc)
+        session.rollback()
+        run = session.get(TaskRun, run_id)
+        if run is None:
+            raise
+        task = run.task
         warnings_json = {
             "codes": [],
             "count": 0,
@@ -237,7 +228,7 @@ async def execute_run(
             "warnings": [],
         }
         run.status = "failed"
-        run.error = str(exc)
+        run.error = error
         run.warnings_json = warnings_json
     finally:
         now = _utc_now()

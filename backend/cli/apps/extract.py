@@ -15,7 +15,15 @@ _EXTRACT_ADAPTER = TypeAdapter(ExtractOutput)
 
 def extract(
     url: str,
-    prompt: Annotated[str, typer.Option("--prompt", "-p", help="Extraction instructions.")],
+    prompt: Annotated[str | None, typer.Option("--prompt", "-p", help="Data extraction instructions.")] = None,
+    extract_data: Annotated[
+        bool,
+        typer.Option("--data/--no-data", help="Enable data extraction with a DataSchema."),
+    ] = True,
+    extract_query_params: Annotated[
+        bool,
+        typer.Option("--query-params/--no-query-params", help="Enable query parameter extraction with a QuerySchema."),
+    ] = True,
     target_json_example: Annotated[
         str | None,
         typer.Option(
@@ -43,6 +51,8 @@ def extract(
             input_value={
                 "url": url,
                 "prompt": prompt,
+                "extract_data": extract_data,
+                "extract_query_params": extract_query_params,
                 "target_json_example": target_json_example,
                 "schema_type": schema_type,
                 "mode": mode,
@@ -64,7 +74,11 @@ def extract(
         console.print(f"[red]{output.error or 'Extraction failed.'}[/red]")
         raise typer.Exit(1)
 
-    console.print(JSON.from_data(output.results))
+    if output.results:
+        console.print(JSON.from_data(output.results))
+    if output.query_params:
+        console.print("[bold]Query parameters[/bold]")
+        console.print(JSON.from_data(output.query_params.model_dump(mode="json")))
     if output.warnings:
         console.print("[yellow]Quality warnings[/yellow]")
         for warning in output.warnings:

@@ -104,6 +104,7 @@ def get(
         host=url.host,
         domain=url.domain,
         path=url.path,
+        query=url.query,
         query_fingerprint=url.query_fingerprint,
         crawl_count=count_urls_crawls(session, url.id),
         artifact_count=count_urls_artifacts(session, url.id),

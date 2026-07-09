@@ -5,13 +5,14 @@ import { CogIcon, SparklesIcon, XIcon } from "lucide-react"
 import { ExtractSettingsDialog } from "@/components/extract-run/extract-settings-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import type { ExtractInput, ExtractSchemaType } from "@/types/extract"
+import type { ExtractInput, DataSchemaType } from "@/types/extract"
 import type { CrawlMode, CrawlWait } from "@/types/index"
 
 type ExtractFormProps = {
@@ -31,8 +32,10 @@ export function ExtractForm({
 }: ExtractFormProps) {
   const [url, setUrl] = useState(initialUrl)
   const [prompt, setPrompt] = useState("")
+  const [extractData, setExtractData] = useState(true)
+  const [extractQueryParams, setExtractQueryParams] = useState(true)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [schemaType, setSchemaType] = useState<ExtractSchemaType>("css")
+  const [schemaType, setSchemaType] = useState<DataSchemaType>("css")
   const [mode, setMode] = useState<CrawlMode>("static")
   const [wait, setWait] = useState<CrawlWait>("none")
   const [targetJsonExample, setTargetJsonExample] = useState("")
@@ -46,9 +49,9 @@ export function ExtractForm({
       Number(schemaType !== "css") +
       Number(mode !== "static") +
       Number(wait !== "none") +
-      Number(Boolean(targetJsonExample.trim()))
+      Number(extractData && Boolean(targetJsonExample.trim()))
     )
-  }, [mode, schemaType, targetJsonExample, wait])
+  }, [extractData, mode, schemaType, targetJsonExample, wait])
 
   const reset = () => {
     setUrl("")
@@ -78,12 +81,17 @@ export function ExtractForm({
       return
     }
 
-    if (!normalizedPrompt) {
+    if (!extractData && !extractQueryParams) {
+      setError("Enable at least one extraction mode.")
+      return
+    }
+
+    if (extractData && !normalizedPrompt) {
       setError("Describe what Atlas should extract.")
       return
     }
 
-    if (normalizedTargetJsonExample) {
+    if (extractData && normalizedTargetJsonExample) {
       try {
         JSON.parse(normalizedTargetJsonExample)
       } catch {
@@ -95,8 +103,10 @@ export function ExtractForm({
     setError("")
     onSubmit({
       url: normalizedUrl,
-      prompt: normalizedPrompt,
-      target_json_example: normalizedTargetJsonExample || null,
+      extract_data: extractData,
+      extract_query_params: extractQueryParams,
+      prompt: normalizedPrompt || null,
+      target_json_example: extractData ? normalizedTargetJsonExample || null : null,
       schema_type: schemaType,
       mode,
       wait,
@@ -177,15 +187,32 @@ export function ExtractForm({
               </div>
             </div>
 
-            <Textarea
-              id={promptInputId}
-              className="min-h-24 resize-y rounded-2xl border-0 bg-muted/55 px-4 py-3 text-sm shadow-none focus-visible:border-0 focus-visible:ring-1 dark:bg-muted/35"
-              placeholder="Describe the structured data you want, e.g. Extract product cards with title, price, rating, and product URL."
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              disabled={isRunning}
-              required
-            />
+            <div className="flex flex-wrap items-center gap-2 px-3 pb-1">
+              <ExtractionModeToggle
+                label="Data"
+                checked={extractData}
+                disabled={isRunning}
+                onChange={setExtractData}
+              />
+              <ExtractionModeToggle
+                label="Query params"
+                checked={extractQueryParams}
+                disabled={isRunning}
+                onChange={setExtractQueryParams}
+              />
+            </div>
+
+            {extractData ? (
+              <Textarea
+                id={promptInputId}
+                className="min-h-24 resize-y rounded-2xl border-0 bg-muted/55 px-4 py-3 text-sm shadow-none focus-visible:border-0 focus-visible:ring-1 dark:bg-muted/35"
+                placeholder="Describe the structured data you want, e.g. Extract product cards with title, price, rating, and product URL."
+                value={prompt}
+                onChange={(event) => setPrompt(event.target.value)}
+                disabled={isRunning}
+                required
+              />
+            ) : null}
           </div>
           {error ? (
             <p className="px-4 text-xs text-destructive">{error}</p>
@@ -194,6 +221,7 @@ export function ExtractForm({
       </form>
 
       <ExtractSettingsDialog
+        dataEnabled={extractData}
         disabled={isRunning}
         mode={mode}
         open={settingsOpen}
@@ -208,5 +236,24 @@ export function ExtractForm({
         onWaitChange={setWait}
       />
     </>
+  )
+}
+
+function ExtractionModeToggle({
+  label,
+  checked,
+  disabled,
+  onChange,
+}: {
+  label: string
+  checked: boolean
+  disabled: boolean
+  onChange: (value: boolean) => void
+}) {
+  return (
+    <label className="flex h-8 items-center gap-2 rounded-full border bg-background/70 px-3 text-sm text-foreground shadow-sm">
+      <Switch checked={checked} disabled={disabled} onCheckedChange={onChange} />
+      <span>{label}</span>
+    </label>
   )
 }

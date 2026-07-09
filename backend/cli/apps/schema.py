@@ -5,7 +5,7 @@ from pydantic import TypeAdapter
 from rich.console import Console
 from rich.json import JSON
 
-from actions.shared.extract_schema.schemas import SchemaOutput
+from actions.shared.data_schema.schemas import SchemaOutput
 from cli.action_runs import run_action
 from cli.progress import CrawlProgressRenderer
 

@@ -8,11 +8,11 @@ This file is the first stop for Codex agents working in Atlas.
   - `backend/api/` for FastAPI routes.
   - `backend/cli/` for Typer commands.
   - `backend/actions/` for primitive action behavior.
-  - `backend/actions/shared/` for crawler, quality, progress, and extraction-schema support shared between actions.
+  - `backend/actions/shared/` for crawler, quality, progress, data-schema, and query-schema support shared between actions.
   - `backend/artifacts/` for ephemeral task-run artifact metadata and disk helpers.
-  - `backend/urls/`, `backend/crawls/`, `backend/crawl_policies/`, `backend/pagination_schemas/`, and `backend/extract_schemas/` for durable crawl data model records.
+  - `backend/urls/`, `backend/crawls/`, `backend/crawl_policies/`, `backend/data_schemas/`, and `backend/query_schemas/` for durable crawl data model records.
   - `backend/tasks/` for persisted schedulable work and task/effect runs.
-- Current user-facing actions are `search`, `paginate`, `index`, `crawl`, and `extract`. Extraction schema generation lives in `actions.shared.extract_schema`.
+- Current user-facing actions are `search`, `index`, `crawl`, and `extract`. Data schema generation lives in `actions.shared.data_schema`; query parameter schema generation lives in `actions.shared.query_schema` and is exposed through `extract`.
 - Page-loading options are shared through `actions.shared.crawl`. Do not duplicate `mode`/`wait` config in individual primitives.
 - `crawl` is the page acquisition chokepoint. Task-backed actions that load pages pass their task-run context into `actions.crawl`, which reuses healthy artifacts when eligible and otherwise records URLs, crawls, reusable artifacts, and task-run usage in Postgres.
 - Keep business behavior in `backend/actions/`, `backend/artifacts/`, and `backend/tasks/`; API and CLI layers should stay thin.
@@ -43,7 +43,7 @@ Equivalent direct commands:
 
 ```sh
 cd backend && uv sync
-cd backend && uv run python -m compileall actions artifacts api cli db tasks urls crawls extract_schemas pagination_schemas crawl_policies
+cd backend && uv run python -m compileall actions artifacts api cli db tasks urls crawls data_schemas query_schemas crawl_policies
 cd backend && uv run alembic -c db/alembic.ini upgrade head
 cd backend && uv run alembic -c db/alembic.ini check
 cd backend && uv run fastapi dev api/app.py
@@ -66,8 +66,8 @@ docker compose up --build
 - Keep action Pydantic contracts in `actions/<name>/schemas.py`.
 - Use SQLAlchemy 2 models from `db.Base` for database tables and manage schema changes with Alembic.
 - Keep shared Crawl4AI browser/run configuration in `actions.shared.crawl`.
-- Use durable `extract_schemas` records for generated Crawl4AI extraction schemas instead of embedding schema generation in another primitive. Schema reuse is controlled by explicit URL match patterns.
-- Use `actions.extract` to compose HTML from `actions.crawl` with generated schemas from `actions.shared.extract_schema`.
+- Use durable `data_schemas` records for generated Crawl4AI data schemas instead of embedding schema generation in another primitive. Schema reuse is controlled by explicit URL match patterns.
+- Use `actions.extract` to compose HTML from `actions.crawl` with generated schemas from `actions.shared.data_schema` and `actions.shared.query_schema`. The extract primitive can run data extraction, query-parameter extraction, or both.
 - Do not add optional crawl artifact formats until a real caller needs them.
 - Avoid introducing a separate browser service or per-action job worker unless the architecture document is deliberately updated too.
 - Do not commit generated artifacts, schemas, virtualenvs, or secrets.

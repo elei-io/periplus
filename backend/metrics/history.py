@@ -11,8 +11,8 @@ from artifacts.models import Artifact
 from artifacts.service import BYTE_ARTIFACT_KINDS, is_cache_eligible, warning_count as artifact_warning_count
 from crawls.models import Crawl
 from crawls.service import _warning_count as crawl_warning_count
-from extract_schemas.models import ExtractSchema
-from extract_schemas.service import task_run_count, warning_count as schema_warning_count
+from data_schemas.models import DataSchema
+from data_schemas.service import task_run_count, warning_count as schema_warning_count
 from tasks.models import TaskRunArtifact
 from urls.models import Url
 
@@ -278,7 +278,7 @@ def artifact_metrics(
     )
 
 
-def extract_schema_metrics(
+def data_schema_metrics(
     session: Session,
     *,
     match_pattern: str | None = None,
@@ -288,15 +288,15 @@ def extract_schema_metrics(
     warnings: bool | None = None,
     window_seconds: int = DEFAULT_WINDOW_SECONDS,
 ) -> HistoryMetricsResponse:
-    statement = select(ExtractSchema)
+    statement = select(DataSchema)
     if match_pattern:
-        statement = statement.where(ExtractSchema.match.ilike(_sql_like_from_glob(match_pattern), escape="\\"))
+        statement = statement.where(DataSchema.match.ilike(_sql_like_from_glob(match_pattern), escape="\\"))
     if prompt:
-        statement = statement.where(ExtractSchema.prompt.ilike(f"%{prompt}%"))
+        statement = statement.where(DataSchema.prompt.ilike(f"%{prompt}%"))
     if schema_type:
-        statement = statement.where(ExtractSchema.schema_type == schema_type)
+        statement = statement.where(DataSchema.schema_type == schema_type)
     if enabled is not None:
-        statement = statement.where(ExtractSchema.enabled == enabled)
+        statement = statement.where(DataSchema.enabled == enabled)
 
     schemas = list(session.scalars(statement))
     if warnings is not None:
@@ -312,17 +312,17 @@ def extract_schema_metrics(
     return HistoryMetricsResponse(
         window_seconds=window_seconds,
         cards=[
-            MetricCard(metric="atlas_extract_schemas_total", label="Schemas", value=len(schemas)),
-            MetricCard(metric="atlas_extract_schemas_enabled_total", label="Enabled", value=sum(1 for schema in schemas if schema.enabled)),
-            MetricCard(metric="atlas_extract_schema_uses_total", label="Uses", value=total_uses),
+            MetricCard(metric="atlas_data_schemas_total", label="Schemas", value=len(schemas)),
+            MetricCard(metric="atlas_data_schemas_enabled_total", label="Enabled", value=sum(1 for schema in schemas if schema.enabled)),
+            MetricCard(metric="atlas_data_schema_uses_total", label="Uses", value=total_uses),
             MetricCard(
-                metric="atlas_extract_schema_reuse_ratio",
+                metric="atlas_data_schema_reuse_ratio",
                 label="Reuse Rate",
                 value=_percent(reused_uses / total_uses) if total_uses else 0,
                 unit="%",
             ),
             MetricCard(
-                metric="atlas_extract_schema_failures_total",
+                metric="atlas_data_schema_failures_total",
                 label="Troubled",
                 value=len(failing),
                 tone="warning" if failing else None,
@@ -330,14 +330,14 @@ def extract_schema_metrics(
         ],
         breakdowns=[
             MetricBreakdown(
-                metric="atlas_extract_schema_uses_total",
+                metric="atlas_data_schema_uses_total",
                 label="Top Match Patterns",
-                items=_top(match_counts, metric="atlas_extract_schema_uses_total", label_name="match", limit=10),
+                items=_top(match_counts, metric="atlas_data_schema_uses_total", label_name="match", limit=10),
             ),
             MetricBreakdown(
-                metric="atlas_extract_schemas_total",
+                metric="atlas_data_schemas_total",
                 label="Schemas By Type",
-                items=_top(type_counts, metric="atlas_extract_schemas_total", label_name="schema_type", limit=6),
+                items=_top(type_counts, metric="atlas_data_schemas_total", label_name="schema_type", limit=6),
             ),
         ],
     )

@@ -17,6 +17,7 @@ class UrlListRecord(BaseModel):
     host: str
     domain: str
     path: str
+    query: str | None = None
     query_fingerprint: str | None = None
     crawl_count: int = 0
     artifact_count: int = 0

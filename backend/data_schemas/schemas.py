@@ -5,7 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class ExtractSchemaRecord(BaseModel):
+class DataSchemaRecord(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: UUID
@@ -34,7 +34,7 @@ class ExtractSchemaRecord(BaseModel):
     updated_at: datetime
 
 
-class ExtractSchemaListRecord(BaseModel):
+class DataSchemaListRecord(BaseModel):
     id: UUID
     match: str
     enabled: bool
@@ -56,15 +56,15 @@ class ExtractSchemaListRecord(BaseModel):
     updated_at: datetime
 
 
-class ExtractSchemaListResponse(BaseModel):
-    items: list[ExtractSchemaListRecord]
+class DataSchemaListResponse(BaseModel):
+    items: list[DataSchemaListRecord]
     total: int
     limit: int
     offset: int
-    summary: "ExtractSchemaSummary"
+    summary: "DataSchemaSummary"
 
 
-class ExtractSchemaSummary(BaseModel):
+class DataSchemaSummary(BaseModel):
     total_schemas: int = 0
     enabled_schemas: int = 0
     used_schemas: int = 0
@@ -75,12 +75,12 @@ class ExtractSchemaSummary(BaseModel):
     failing_schemas: int = 0
 
 
-class ExtractSchemaDetailRecord(ExtractSchemaRecord):
+class DataSchemaDetailRecord(DataSchemaRecord):
     task_run_count: int = 0
     warning_count: int = 0
 
 
-class ExtractSchemaUpdateRequest(BaseModel):
+class DataSchemaUpdateRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     match: str | None = None

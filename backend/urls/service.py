@@ -11,7 +11,7 @@ from artifacts.models import Artifact
 from artifacts.service import BYTE_ARTIFACT_KINDS, is_cache_eligible, warning_count
 from crawls.models import Crawl
 
-from .models import Url
+from .models import Url, UrlMatch
 from .schemas import UrlListRecord
 
 
@@ -48,11 +48,54 @@ def resolve_url(session: Session, value: str) -> Url:
         host=parsed.netloc,
         domain=parsed.netloc.removeprefix("www."),
         path=parsed.path or "/",
+        query=parsed.query or None,
         query_fingerprint=query_fingerprint(normalized),
     )
     session.add(url)
     session.flush()
     return url
+
+
+def resolve_url_match_for_url(
+    session: Session,
+    value: str,
+    *,
+    task_run_id: UUID | None = None,
+) -> UrlMatch:
+    normalized = normalize_url(value)
+    parsed = urlparse(normalized)
+    scheme = parsed.scheme.lower()
+    host = parsed.netloc.lower()
+    path_pattern = parsed.path or "/"
+    match_type = "exact"
+    query_policy = "ignore"
+    existing = session.scalar(
+        select(UrlMatch).where(
+            UrlMatch.scheme == scheme,
+            UrlMatch.host == host,
+            UrlMatch.path_pattern == path_pattern,
+            UrlMatch.match_type == match_type,
+            UrlMatch.query_policy == query_policy,
+        )
+    )
+    if existing is not None:
+        existing.updated_by_task_run_id = task_run_id
+        session.flush()
+        return existing
+
+    url_match = UrlMatch(
+        scheme=scheme,
+        host=host,
+        domain=host.removeprefix("www."),
+        path_pattern=path_pattern,
+        match_type=match_type,
+        query_policy=query_policy,
+        created_by_task_run_id=task_run_id,
+        updated_by_task_run_id=task_run_id,
+    )
+    session.add(url_match)
+    session.flush()
+    return url_match
 
 
 def _sql_like_from_glob(pattern: str) -> str:
@@ -97,6 +140,7 @@ def list_urls(
                 host=url.host,
                 domain=url.domain,
                 path=url.path,
+                query=url.query,
                 query_fingerprint=url.query_fingerprint,
                 crawl_count=len(crawls),
                 artifact_count=len(artifacts),

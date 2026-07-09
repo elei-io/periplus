@@ -7,10 +7,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from actions.extract.schemas import Input as ExtractInput
 from actions.index.schemas import IndexLink
 from actions.index.schemas import Input as IndexInput
-from actions.paginate.schemas import Input as PaginateInput
 from actions.search.schemas import SearchProvider
 from actions.shared.quality.schemas import QualityWarning
-from actions.shared.extract_schema.schemas import Input as SchemaInput
+from actions.shared.data_schema.schemas import Input as SchemaInput
 from actions.crawl.schemas import Input as CrawlInput
 
 
@@ -18,7 +17,7 @@ class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-TaskPrimitive = Literal["search", "paginate", "index", "crawl", "schema", "extract"]
+TaskPrimitive = Literal["search", "index", "crawl", "schema", "extract"]
 TaskRunStatus = Literal["queued", "running", "succeeded", "failed", "cancelled", "skipped"]
 TaskRunTriggerKind = Literal["scheduled", "manual", "effect", "retry", "backfill"]
 EffectRunStatus = Literal["running", "applied", "skipped", "failed"]
@@ -40,7 +39,7 @@ class SearchInput(StrictBaseModel):
 
 
 TaskInputJson = Annotated[
-    SearchInput | PaginateInput | IndexInput | CrawlInput | SchemaInput | ExtractInput,
+    SearchInput | IndexInput | CrawlInput | SchemaInput | ExtractInput,
     Field(union_mode="left_to_right"),
 ]
 
@@ -267,7 +266,7 @@ class TaskRunRecord(BaseModel):
     status: TaskRunStatus
     trigger_kind: TaskRunTriggerKind
     triggered_by_effect_run_id: UUID | None = None
-    extract_schema_id: UUID | None = None
+    data_schema_id: UUID | None = None
     queued_at: datetime
     leased_by: str | None = None
     leased_at: datetime | None = None

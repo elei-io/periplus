@@ -11,7 +11,15 @@ type IndexEventLogProps = {
 }
 
 export function IndexEventLog({ events }: IndexEventLogProps) {
-  const orderedEvents = useMemo(() => events.slice().reverse(), [events])
+  const orderedEvents = useMemo(() => {
+    const completed = new Set(
+      events
+        .filter((event) => event.status !== "started")
+        .map((event) => eventKey(event))
+    )
+    return events
+      .filter((event) => event.status !== "started" || !completed.has(eventKey(event)))
+  }, [events])
 
   if (orderedEvents.length === 0) {
     return (
@@ -31,6 +39,10 @@ export function IndexEventLog({ events }: IndexEventLogProps) {
       ))}
     </div>
   )
+}
+
+function eventKey(event: CrawlProgressEvent) {
+  return `${event.label}\n${event.url}`
 }
 
 type LogEventItemProps = {

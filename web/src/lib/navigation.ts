@@ -7,6 +7,7 @@ import {
   DatabaseIcon,
   FileSearchIcon,
   LinkIcon,
+  ListFilterIcon,
   RouteIcon,
   SearchIcon,
   SparklesIcon,
@@ -32,13 +33,6 @@ export const navigationGroups: NavigationGroup[] = [
         icon: DatabaseIcon,
         title: "Index Playground",
         description: "Crawl a starting URL and discover linked pages.",
-      },
-      {
-        name: "Paginate",
-        href: "/playground/paginate",
-        icon: RouteIcon,
-        title: "Pagination Playground",
-        description: "Learn and test reusable pagination schemas.",
       },
       {
         name: "Extract",
@@ -106,18 +100,18 @@ export const navigationGroups: NavigationGroup[] = [
         description: "Browse cached bytes and invalidate reusable artifacts.",
       },
       {
-        name: "Extract Schemas",
-        href: "/history/extract-schemas",
+        name: "Data Schemas",
+        href: "/history/data-schemas",
         icon: BracesIcon,
-        title: "Extract Schema Registry",
-        description: "Inspect reusable extraction schemas, matches, failures, and provenance.",
+        title: "Data Schema Registry",
+        description: "Inspect reusable data schemas, matches, failures, and provenance.",
       },
       {
-        name: "Pagination Schemas",
-        href: "/history/pagination-schemas",
-        icon: RouteIcon,
-        title: "Pagination Schema Registry",
-        description: "Inspect reusable pagination selectors, query templates, and failures.",
+        name: "Query Schemas",
+        href: "/history/query-schemas",
+        icon: ListFilterIcon,
+        title: "Query Schema Registry",
+        description: "Inspect reusable query parameter data schemas.",
       },
     ],
   },
@@ -141,17 +135,16 @@ export function findNavigationItem(pathname: string) {
       .flatMap((group) => group.items)
       .find((item) => item.href === "/history/urls")
   }
-  if (pathname.startsWith("/history/extract-schemas/")) {
+  if (pathname.startsWith("/history/data-schemas/")) {
     return navigationGroups
       .flatMap((group) => group.items)
-      .find((item) => item.href === "/history/extract-schemas")
+      .find((item) => item.href === "/history/data-schemas")
   }
-  if (pathname.startsWith("/history/pagination-schemas/")) {
+  if (pathname.startsWith("/history/query-schemas/")) {
     return navigationGroups
       .flatMap((group) => group.items)
-      .find((item) => item.href === "/history/pagination-schemas")
+      .find((item) => item.href === "/history/query-schemas")
   }
-
   return navigationGroups
     .flatMap((group) => group.items)
     .find((item) => item.href === pathname)

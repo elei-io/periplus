@@ -4,17 +4,16 @@ import { AppSidebar } from "@/components/app-sidebar"
 import { ExtractPage } from "@/pages/playground/extract-page"
 import { IndexPage } from "@/pages/playground/index-page"
 import { CrawlPage } from "@/pages/playground/crawl-page"
-import { PaginatePage } from "@/pages/playground/paginate-page"
 import { SearchPage } from "@/pages/playground/search-page"
 import { TasksPage } from "@/pages/admin/tasks-page"
 import { ArtifactDetailPage } from "@/pages/history/artifact-detail-page"
 import { ArtifactsPage } from "@/pages/history/artifacts-page"
 import { CrawlDetailPage } from "@/pages/history/crawl-detail-page"
 import { CrawlsPage } from "@/pages/history/crawls-page"
-import { ExtractSchemaDetailPage } from "@/pages/history/extract-schema-detail-page"
-import { ExtractSchemasPage } from "@/pages/history/extract-schemas-page"
-import { PaginationSchemaDetailPage } from "@/pages/history/pagination-schema-detail-page"
-import { PaginationSchemasPage } from "@/pages/history/pagination-schemas-page"
+import { DataSchemaDetailPage } from "@/pages/history/data-schema-detail-page"
+import { DataSchemasPage } from "@/pages/history/data-schemas-page"
+import { QuerySchemaDetailPage } from "@/pages/history/query-schema-detail-page"
+import { QuerySchemasPage } from "@/pages/history/query-schemas-page"
 import { UrlDetailPage } from "@/pages/history/url-detail-page"
 import { UrlsPage } from "@/pages/history/urls-page"
 import {
@@ -75,10 +74,6 @@ export function App() {
       return <SearchPage />
     }
 
-    if (activeItem.href === "/playground/paginate") {
-      return <PaginatePage />
-    }
-
     if (activeItem.href === "/playground/extract") {
       return <ExtractPage />
     }
@@ -118,22 +113,22 @@ export function App() {
       return <UrlsPage />
     }
 
-    if (activeItem.href === "/history/extract-schemas") {
-      const schemaId = pathname.match(/^\/history\/extract-schemas\/([^/]+)$/)?.[1]
+    if (activeItem.href === "/history/data-schemas") {
+      const schemaId = pathname.match(/^\/history\/data-schemas\/([^/]+)$/)?.[1]
       if (schemaId) {
-        return <ExtractSchemaDetailPage schemaId={decodeURIComponent(schemaId)} />
+        return <DataSchemaDetailPage schemaId={decodeURIComponent(schemaId)} />
       }
 
-      return <ExtractSchemasPage />
+      return <DataSchemasPage />
     }
 
-    if (activeItem.href === "/history/pagination-schemas") {
-      const schemaId = pathname.match(/^\/history\/pagination-schemas\/([^/]+)$/)?.[1]
+    if (activeItem.href === "/history/query-schemas") {
+      const schemaId = pathname.match(/^\/history\/query-schemas\/([^/]+)$/)?.[1]
       if (schemaId) {
-        return <PaginationSchemaDetailPage schemaId={decodeURIComponent(schemaId)} />
+        return <QuerySchemaDetailPage schemaId={decodeURIComponent(schemaId)} />
       }
 
-      return <PaginationSchemasPage />
+      return <QuerySchemasPage />
     }
 
     return (

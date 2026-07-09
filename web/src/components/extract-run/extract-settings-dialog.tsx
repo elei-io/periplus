@@ -11,25 +11,26 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Textarea } from "@/components/ui/textarea"
-import type { ExtractSchemaType } from "@/types/extract"
+import type { DataSchemaType } from "@/types/extract"
 import type { CrawlMode, CrawlWait } from "@/types/index"
 
 type ExtractSettingsDialogProps = {
+  dataEnabled: boolean
   disabled: boolean
   mode: CrawlMode
   open: boolean
-  schemaType: ExtractSchemaType
+  schemaType: DataSchemaType
   targetJsonExample: string
   targetJsonExampleId: string
   wait: CrawlWait
   onModeChange: (value: CrawlMode) => void
   onOpenChange: (open: boolean) => void
-  onSchemaTypeChange: (value: ExtractSchemaType) => void
+  onSchemaTypeChange: (value: DataSchemaType) => void
   onTargetJsonExampleChange: (value: string) => void
   onWaitChange: (value: CrawlWait) => void
 }
 
-const schemaTypes: Array<SelectOption<ExtractSchemaType>> = [
+const schemaTypes: Array<SelectOption<DataSchemaType>> = [
   { value: "css", label: "CSS" },
   { value: "xpath", label: "XPath" },
 ]
@@ -57,6 +58,7 @@ const settingHints = {
 }
 
 export function ExtractSettingsDialog({
+  dataEnabled,
   disabled,
   mode,
   open,
@@ -86,7 +88,7 @@ export function ExtractSettingsDialog({
               label="Schema"
               hint={settingHints.schemaType}
               value={schemaType}
-              disabled={disabled}
+              disabled={disabled || !dataEnabled}
               options={schemaTypes}
               onChange={onSchemaTypeChange}
             />
@@ -125,7 +127,7 @@ export function ExtractSettingsDialog({
               onChange={(event) =>
                 onTargetJsonExampleChange(event.target.value)
               }
-              disabled={disabled}
+              disabled={disabled || !dataEnabled}
             />
           </div>
         </div>

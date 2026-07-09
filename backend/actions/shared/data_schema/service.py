@@ -13,12 +13,12 @@ from actions.crawl.service import crawl as crawl_service
 from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.shared.llm import openrouter_llm_config
 from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
-from extract_schemas.service import (
-    create_extract_schema,
+from data_schemas.service import (
+    create_data_schema,
     default_match_for_url,
-    find_reusable_extract_schema,
-    record_extract_schema_use,
-    replace_extract_schema,
+    find_reusable_data_schema,
+    record_data_schema_use,
+    replace_data_schema,
 )
 
 from .schemas import SchemaOutput, SchemaType
@@ -158,7 +158,7 @@ async def schema(
     start_time = time.perf_counter()
     match_value = match or default_match_for_url(url)
     if session is not None and reuse_existing and replace_schema_id is None:
-        existing = find_reusable_extract_schema(
+        existing = find_reusable_data_schema(
             session,
             url=url,
             prompt=prompt,
@@ -166,7 +166,7 @@ async def schema(
             target_json_example=target_json_example,
         )
         if existing is not None:
-            record_extract_schema_use(session, task_run_id=task_run_id, schema=existing)
+            record_data_schema_use(session, task_run_id=task_run_id, schema=existing)
             await emit_crawl_progress(
                 progress_callback,
                 CrawlProgressEvent(
@@ -245,7 +245,7 @@ async def schema(
             "match": match_value,
         }
         if replace_schema_id is not None:
-            durable_schema = replace_extract_schema(
+            durable_schema = replace_data_schema(
                 session,
                 schema_id=replace_schema_id,
                 prompt=prompt,
@@ -257,7 +257,7 @@ async def schema(
                 inputs_json=inputs_json,
             )
         else:
-            durable_schema = create_extract_schema(
+            durable_schema = create_data_schema(
                 session,
                 url=url,
                 prompt=prompt,
@@ -268,7 +268,7 @@ async def schema(
                 task_run_id=task_run_id,
                 inputs_json=inputs_json,
             )
-        record_extract_schema_use(session, task_run_id=task_run_id, schema=durable_schema)
+        record_data_schema_use(session, task_run_id=task_run_id, schema=durable_schema)
         return SchemaOutput(
             schema_id=str(durable_schema.id),
             schema_type=schema_type,

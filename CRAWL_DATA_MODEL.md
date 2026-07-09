@@ -31,9 +31,6 @@ The target model has four groups.
 
 Observed web identity and storage facts:
 
-- `domains`
-- `paths`
-- `query_params`
 - `urls`
 - `crawls`
 - `artifacts`
@@ -48,7 +45,7 @@ Runtime execution facts:
 Learned reusable page-shape plans:
 
 - `query_schemas`
-- `extract_schemas`
+- `data_schemas`
 - possibly `pagination_schemas` later, only if pagination needs a specialized derived table
 
 Applicability controls:
@@ -70,28 +67,25 @@ Implemented now:
 - `effect_runs`
 - `task_run_crawls`
 - `task_run_artifacts`
-- `extract_schemas`
-- `pagination_schemas`
+- `data_schemas`
+- `query_schemas`
+- `url_matches`
 - `crawl_policies`
 
 Partial:
 
-- `urls` currently stores `domain`, `path`, and `query_fingerprint` as columns instead of using
-  separate `domains`, `paths`, and `query_params` tables.
-- Schemas and policies currently use their own `match` strings instead of a shared `url_matches`
-  table.
 - `task_effects` currently represents effects. The target language can still use `effects`, but
   a rename is not required until the name becomes confusing in API or UI surfaces.
-- `pagination_schemas` exists, but it was premature. Treat it as a legacy/specialized query-param
-  plan until the general `query_schemas` primitive exists.
+- `task_runs` currently records data schema usage directly; query schema run linkage can be added
+  when downstream flows need it.
 
 Missing:
 
-- `query_schemas`
 - first-class schema mutation provenance such as `updated_by_task_run_id`
-- normalized `domains`, `paths`, `query_params`, and `url_matches`
+- shared `url_matches` adoption by data schemas and crawl policies
 
-The next milestone is `query_schemas`.
+The current milestone is consolidating extraction around `extract`: a single crawl can produce
+data records, query parameter affordances, or both.
 
 ## Core Principles
 
@@ -115,9 +109,10 @@ current task run.
 
 ### URL Shape Is Durable Knowledge
 
-URL identity is not just a string. Atlas should eventually know the domain, path, and query
-parameters as queryable dimensions. The first implementation can keep those as columns on `urls`;
-normalization should happen when analytics, UI grouping, or matching workflows need it.
+URL identity is not just a string. Atlas should store the useful URL dimensions directly on
+`urls`: `scheme`, `host`, `domain`, `path`, `query`, and `query_fingerprint`. Separate tables for
+domains, paths, and observed query parameters are unnecessary until there is a concrete workflow
+that cannot be handled with SQL filtering, grouping, or aggregation over `urls`.
 
 ### Schemas Apply To Page Shapes
 
@@ -125,8 +120,8 @@ Schemas should not directly belong to one exact URL. They apply to URL patterns 
 page shapes. The target matching control surface is explicit and inspectable: a pattern can be
 shown in the UI, edited, widened, narrowed, merged, or disabled.
 
-Until a shared `url_matches` table exists, schema and policy rows can carry their own `match`
-string.
+`query_schemas` already use `url_matches`. Data schemas and policies can move to shared matches
+when their matching controls need the same operator-editable behavior.
 
 ### Learned Plans Need Provenance
 
@@ -142,58 +137,11 @@ until a real audit workflow needs schema event history.
 
 ## Entities
 
-### Domains
-
-Target-only for now.
-
-`domains` represents registrable or operational domains used for grouping, rate limits, analytics,
-and policy decisions.
-
-Potential fields:
-
-- `id`
-- `domain`
-- `created_at`
-
-Do not add this table just to reduce duplication. Add it when domain-level workflows need stable
-identity.
-
-### Paths
-
-Target-only for now.
-
-`paths` represents reusable URL path dimensions within a domain. It is useful for analytics,
-page-shape grouping, and admin workflows that merge schemas across similar paths.
-
-Potential fields:
-
-- `id`
-- `domain_id`
-- `path`
-- `created_at`
-
-### Query Params
-
-Target-only for now.
-
-`query_params` represents observed query keys and values on URLs. This is different from
-`query_schemas`: `query_params` stores observed URL facts, while `query_schemas` stores learned
-plans about what parameters a page shape appears to support.
-
-Potential fields:
-
-- `id`
-- `url_id`
-- `key`
-- `value`
-- `position`
-- `created_at`
-
 ### URLs
 
 `urls` is the set of unique URLs known to Atlas.
 
-Current fields are close to the near-term target:
+Target fields:
 
 - `id`
 - `url`
@@ -202,9 +150,11 @@ Current fields are close to the near-term target:
 - `host`
 - `domain`
 - `path`
+- `query`, nullable
 - `query_fingerprint`
 
 `urls` is a stable dimension used by crawls, artifacts, task matching, cache lookup, and analytics.
+Domain, path, and query analytics should start as grouping queries over this table.
 
 ### Crawls
 
@@ -291,7 +241,7 @@ Target fields:
 - `status`
 - `trigger_kind`
 - `triggered_by_effect_run_id`
-- `extract_schema_id`, nullable
+- `data_schema_id`, nullable
 - `query_schema_id`, nullable target
 - `queued_at`
 - `leased_by`
@@ -326,28 +276,23 @@ Important relationships:
 
 ### Query Schemas
 
-`query_schemas` is the next target milestone.
-
 A query schema is a reusable plan for the query-parameter surface available on a page shape. It is
-learned by looking at crawled page contents and page-adjacent evidence, including:
+learned by looking at crawled page contents and same-page navigation evidence, including:
 
-- the current URL,
 - links,
 - forms,
 - filter controls,
 - sort controls,
 - pagination controls,
-- embedded app state,
-- canonical or alternate URLs,
-- network hints when available.
 
 It answers:
 
 - which query parameters appear to exist,
 - what values are observed or inferable,
 - what each parameter seems to do,
+- whether pagination is next, previous, or indexed,
 - how confident Atlas is,
-- how to construct candidate URLs for future actions.
+- how to find those values again with a Crawl4AI-style selector schema.
 
 Target fields:
 
@@ -359,6 +304,8 @@ Target fields:
 - `domain`, nullable
 - `path`, nullable
 - `params_json`
+- `schema_json`
+- `evidence_json`
 - `schema_hash`
 - `generated_from_crawl_id`, nullable
 - `generated_from_artifact_id`, nullable
@@ -374,42 +321,48 @@ Target fields:
 - `created_at`
 - `updated_at`
 
-Example `params_json`:
+Example `params_json` shape:
 
 ```json
-{
-  "params": [
-    {
-      "key": "keyword",
-      "kind": "text",
-      "required": false,
-      "observed_values": ["16tb ironwolf"],
-      "purpose": "search term",
-      "source": "current_url",
-      "confidence": 0.95
-    },
-    {
-      "key": "sort",
-      "kind": "enum",
-      "required": false,
-      "observed_values": ["newest", "price_asc", "price_desc"],
-      "purpose": "sort order",
-      "source": "filter_links",
-      "confidence": 0.8
-    },
-    {
-      "key": "page",
-      "kind": "pagination",
-      "required": false,
-      "value_template": "{{value}}",
-      "start_value": 1,
-      "value_step": 1,
-      "source": "next_link",
-      "confidence": 0.9
-    }
-  ]
-}
+[
+  {
+    "key": "category",
+    "kind": "enum",
+    "pagination_role": null,
+    "best_effort_description": "category filter",
+    "confidence": 0.95,
+    "values": [
+      {
+        "value": "0.93",
+        "label": "Electronics",
+        "source": "a[href]",
+        "confidence": 0.95
+      }
+    ]
+  },
+  {
+    "key": "page_token",
+    "kind": "pagination",
+    "pagination_role": "next",
+    "best_effort_description": "next page token",
+    "confidence": 0.9,
+    "values": [
+      {
+        "value": "v1:1",
+        "label": "Next",
+        "source": "a[href]",
+        "confidence": 0.9
+      }
+    ]
+  }
+]
 ```
+
+Allowed `kind` values should stay concise: `text`, `enum`, `range`, `sort`, `pagination`,
+`state`, and `unknown`. Pagination movement belongs in `pagination_role`, currently `next`,
+`prev`, or `index`. If indexed page values such as 1 through 9 are observed, later consumers can
+fan out page requests concurrently; if only `next` is observed, consumers should advance
+sequentially.
 
 The first implementation should keep `params_json` flexible JSONB but define Pydantic contracts
 at API and action boundaries.
@@ -419,14 +372,14 @@ Validation should prove at least one of:
 1. the parameter and value were observed in page links or forms,
 2. constructing a URL with the parameter yields a successful crawl with meaningfully related
    content,
-3. the parameter is inherited from the current URL and preserved by page navigation.
+3. a cached QuerySchema was previously produced from page contents for the same UrlMatch.
 
 Query schemas are discovered affordances with confidence and provenance, not guaranteed complete
 truth. A single page may expose only part of a site's query surface.
 
-### Extract Schemas
+### Data Schemas
 
-`extract_schemas` stores reusable Crawl4AI extraction schemas for a page shape and extraction
+`data_schemas` stores reusable Crawl4AI data schemas for a page shape and extraction
 intent.
 
 Target fields:
@@ -457,8 +410,16 @@ Target fields:
 - `created_at`
 - `updated_at`
 
-Extraction schema reuse should match on URL pattern plus extraction intent. If a schema fails,
+Data schema reuse should match on URL pattern plus extraction intent. If a schema fails,
 Atlas can repair it in place and update mutation provenance.
+
+The `extract` action is the verb. A page extraction can return both:
+
+- `data`: records produced by a `DataSchema`
+- `query_params`: query affordances produced by a `QuerySchema`
+
+Those outputs are intentionally sibling capabilities. Query parameters describe navigation and
+page mutation, not the primary data payload.
 
 ### Pagination Schemas
 
@@ -520,10 +481,6 @@ Do not scatter concurrency, cache, and warning-tolerance checks across primitive
 ## Relationship Target
 
 ```text
-Domain 1 -> many Paths target
-Domain 1 -> many URLs target
-Path 1 -> many URLs target
-URL 1 -> many QueryParams target
 URL 1 -> many Crawls
 URL 1 -> many Artifacts
 Crawl many -> one URL
@@ -538,13 +495,13 @@ Task 1 -> many Effects
 TaskRun 1 -> many Crawls
 TaskRun 1 -> many Artifacts
 TaskRun many -> one QuerySchema, nullable target
-TaskRun many -> one ExtractSchema, nullable
+TaskRun many -> one DataSchema, nullable
 Effect 1 -> many EffectRuns
 EffectRun many -> one source TaskRun
 EffectRun may create or mutate Tasks
-QuerySchema applies to URLs by match pattern
-ExtractSchema applies to URLs by match pattern
-CrawlPolicy applies to URLs by match pattern
+QuerySchema applies to URLs through UrlMatch
+DataSchema applies to URLs through UrlMatch target
+CrawlPolicy applies to URLs through UrlMatch target
 ```
 
 Reuse should be represented separately from production:
@@ -597,21 +554,19 @@ Foundation already mostly exists:
 3. Artifact records and invalidation fields.
 4. Task and task-run execution records.
 5. Task-run usage joins for crawls and artifacts.
-6. Extract schemas.
+6. Data schemas.
 7. Crawl policies.
 
 Next:
 
-1. Add `query_schemas` model, Pydantic schemas, migration, service, and API/admin surfaces.
-2. Add a query-schema generation action or shared service that crawls a representative page,
-   inspects page contents, extracts candidate query parameters and values, validates them, and
-   records provenance.
-3. Record `query_schema_id` on task runs when a run uses a query schema.
-4. Rework `paginate` so it consumes query-schema pagination entries or deliberately remains a
+1. Record `query_schema_id` on task runs when a run uses a query schema.
+2. Point DataSchema and CrawlPolicy at UrlMatch so schema and policy scopes share one matcher.
+3. Rework `paginate` so it consumes query-schema pagination entries or deliberately remains a
    derived specialized path.
+4. Compose search-like flows as:
+   crawl current URL, extract data and query params, append current data, use query params to
+   generate page URLs, crawl those URLs, and apply the same DataSchema to append more data.
 5. Add `updated_by_task_run_id` to learned schemas when repair/mutation behavior becomes active.
-6. Add normalized `domains`, `paths`, `query_params`, and `url_matches` only when workflows need
-   them.
 
 ## Open Questions
 
@@ -621,4 +576,3 @@ Next:
   parameter?
 - Should schema mutation provenance stay as `updated_by_task_run_id`, or become a lightweight
   schema event table?
-- When do URL dimensions need to become normalized tables instead of columns and derived views?

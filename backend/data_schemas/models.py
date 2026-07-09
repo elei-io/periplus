@@ -15,12 +15,14 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-class PaginationSchema(Base):
-    __tablename__ = "pagination_schemas"
+class DataSchema(Base):
+    __tablename__ = "data_schemas"
     __table_args__ = (
-        Index("ix_pagination_schemas_enabled", "enabled"),
-        Index("ix_pagination_schemas_match", "match"),
-        Index("ix_pagination_schemas_domain", "domain"),
+        Index("ix_data_schemas_enabled", "enabled"),
+        Index("ix_data_schemas_match", "match"),
+        Index("ix_data_schemas_domain", "domain"),
+        Index("ix_data_schemas_prompt_hash", "prompt_hash"),
+        Index("ix_data_schemas_schema_type", "schema_type"),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -28,15 +30,14 @@ class PaginationSchema(Base):
     match: Mapped[str] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     priority: Mapped[int] = mapped_column(Integer, default=0)
-    next_button_selector: Mapped[str | None] = mapped_column(Text, nullable=True)
-    item_selector: Mapped[str] = mapped_column(Text)
-    expected_max_item_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    query_param_key: Mapped[str] = mapped_column(Text)
-    query_param_value_template: Mapped[str] = mapped_column(Text)
-    start_value: Mapped[int] = mapped_column(Integer, default=0)
-    value_step: Mapped[int] = mapped_column(Integer, default=1)
+    prompt: Mapped[str] = mapped_column(Text)
+    prompt_hash: Mapped[str] = mapped_column(Text)
+    schema_type: Mapped[str] = mapped_column(Text)
+    target_json_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     domain: Mapped[str | None] = mapped_column(Text, nullable=True)
     path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    schema_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    schema_hash: Mapped[str] = mapped_column(Text)
     generated_from_crawl_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("crawls.id", use_alter=True, ondelete="SET NULL"),
@@ -64,3 +65,4 @@ class PaginationSchema(Base):
     generated_from_crawl = relationship("Crawl", foreign_keys=[generated_from_crawl_id])
     generated_from_artifact = relationship("Artifact", foreign_keys=[generated_from_artifact_id])
     generated_by_task_run = relationship("TaskRun", foreign_keys=[generated_by_task_run_id])
+    task_runs = relationship("TaskRun", back_populates="data_schema", foreign_keys="TaskRun.data_schema_id")
