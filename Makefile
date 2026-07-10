@@ -37,7 +37,7 @@ db-revision:
 	cd backend && uv run alembic -c db/alembic.ini revision --autogenerate -m "$(m)"
 
 compose-up:
-	docker compose up --build -d
+	docker compose up --build -d --wait
 
 compose-down:
 	docker compose down

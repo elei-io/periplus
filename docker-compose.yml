@@ -14,9 +14,6 @@ services:
       - ./.atlas/repository:/app/.atlas/repository
     environment:
       ATLAS_BROWSER_CONCURRENCY: ${ATLAS_BROWSER_CONCURRENCY:-12}
-      ATLAS_INDEX_MAX_PAGES: ${ATLAS_INDEX_MAX_PAGES:-100000}
-      ATLAS_INDEX_MAX_LINKS: ${ATLAS_INDEX_MAX_LINKS:-5000000}
-      ATLAS_INDEX_MAX_TEMP_BYTES: ${ATLAS_INDEX_MAX_TEMP_BYTES:-10737418240}
       ATLAS_WORKER_HEARTBEAT_SECONDS: ${ATLAS_WORKER_HEARTBEAT_SECONDS:-10}
       ATLAS_WORKER_HEARTBEAT_RETENTION_SECONDS: ${ATLAS_WORKER_HEARTBEAT_RETENTION_SECONDS:-86400}
       ATLAS_PROMETHEUS_URL: ${ATLAS_PROMETHEUS_URL:-}
@@ -57,6 +54,8 @@ services:
     depends_on:
       atlas-postgres:
         condition: service_healthy
+      atlas-db-migrate:
+        condition: service_completed_successfully
       atlas-catalogue-bootstrap:
         condition: service_completed_successfully
       atlas-nats:
@@ -91,11 +90,6 @@ services:
       ATLAS_CRAWL_PERMIT_LEASE_SECONDS: ${ATLAS_CRAWL_PERMIT_LEASE_SECONDS:-60}
       ATLAS_CRAWL_PERMIT_TIMEOUT_SECONDS: ${ATLAS_CRAWL_PERMIT_TIMEOUT_SECONDS:-120}
       ATLAS_INDEX_PAGE_BATCH_SIZE: ${ATLAS_INDEX_PAGE_BATCH_SIZE:-32}
-      ATLAS_INDEX_TEMP_DIRECTORY: ${ATLAS_INDEX_TEMP_DIRECTORY:-}
-      ATLAS_INDEX_STALE_TEMP_AGE_SECONDS: ${ATLAS_INDEX_STALE_TEMP_AGE_SECONDS:-86400}
-      ATLAS_INDEX_MAX_PAGES: ${ATLAS_INDEX_MAX_PAGES:-100000}
-      ATLAS_INDEX_MAX_LINKS: ${ATLAS_INDEX_MAX_LINKS:-5000000}
-      ATLAS_INDEX_MAX_TEMP_BYTES: ${ATLAS_INDEX_MAX_TEMP_BYTES:-10737418240}
       ATLAS_CATALOGUE_CATALOG: postgres
       ATLAS_CATALOGUE_CATALOG_DSN: "host=atlas-postgres port=5432 dbname=${POSTGRES_CATALOGUE_DB:-atlas_catalogue} user=${POSTGRES_USER:-atlas} password=${POSTGRES_PASSWORD:-atlas}"
       ATLAS_CATALOGUE_ALIAS: ${ATLAS_CATALOGUE_ALIAS:-atlas}
@@ -147,6 +141,8 @@ services:
     depends_on:
       atlas-postgres:
         condition: service_healthy
+      atlas-db-migrate:
+        condition: service_completed_successfully
       atlas-catalogue-bootstrap:
         condition: service_completed_successfully
       atlas-nats:
@@ -267,8 +263,22 @@ services:
     depends_on:
       atlas-postgres-init:
         condition: service_completed_successfully
-      atlas-minio-init:
-        condition: service_completed_successfully
+    restart: "no"
+
+  atlas-db-migrate:
+    build:
+      context: .
+      dockerfile: docker/atlas/Dockerfile
+    image: atlas-backend:local
+    working_dir: /app/backend
+    command: alembic -c db/alembic.ini upgrade head
+    volumes:
+      - .:/app
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}
+    depends_on:
+      atlas-postgres:
+        condition: service_healthy
     restart: "no"
 
   atlas-nats:
@@ -325,6 +335,7 @@ services:
     restart: "no"
 
   atlas-minio:
+    profiles: ["s3"]
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     container_name: atlas-minio
     command: server /data --console-address ":9001"
@@ -344,6 +355,7 @@ services:
     restart: unless-stopped
 
   atlas-minio-init:
+    profiles: ["s3"]
     build:
       context: .
       dockerfile: docker/atlas/Dockerfile
