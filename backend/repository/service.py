@@ -11,7 +11,7 @@ from types import TracebackType
 from typing import Any
 from uuid import UUID, uuid4
 
-from catalogue import (
+from repository.ducklake import (
     Catalogue,
     CatalogueBatchEntry,
     CatalogueConflictError,
@@ -83,93 +83,10 @@ class RepositoryIngestor:
         self.staging_root = staging_root or staging_root_from_env()
         self.limits = limits or RepositoryLimits.from_env()
 
-    def bootstrap(self) -> None:
-        self.catalogue.bootstrap()
-
     def validate(self) -> None:
         """Attach to an initialized repository and validate its schema contract."""
 
         self.catalogue.validate_schema()
-
-    def ingest(self, *, captured_html: str, crawl: CrawlRecord) -> CatalogueWriteResult:
-        """Prepare and commit one page; batch callers should use ``RepositoryPipeline``."""
-
-        prepared = self.prepare(captured_html=captured_html, crawl=crawl)
-        return self.commit_prepared_batch([prepared])[0]
-
-    def prepare(
-        self,
-        *,
-        captured_html: str,
-        crawl: CrawlRecord,
-        identity: HtmlIdentity | None = None,
-        run_manifest: RunManifestRecord | None = None,
-        run_usage: RunCrawlUsageRecord | None = None,
-    ) -> PreparedIngestion:
-        """Hash first, skip duplicate projection work, and stage new DOM rows."""
-
-        identity = identity or self.html_repository.identify(captured_html)
-        self._validate_html_size(identity)
-        if crawl.document_id != identity.document_id:
-            raise ValueError("crawl.document_id must match the captured HTML content identity")
-
-        existing = self.catalogue_service.get_document(identity.document_id)
-        raw_exists = self.html_repository.store.exists(identity.object_key)
-        if existing is not None and raw_exists and self._projection_is_current(existing):
-            return PreparedIngestion(
-                document=existing,
-                crawl=crawl,
-                run_manifest=run_manifest,
-                run_usage=run_usage,
-            )
-
-        stored = self.html_repository.put(captured_html, identity=identity)
-        parquet_path = self.staging_root / f"{crawl.crawl_id}-{uuid4().hex}.dom.parquet"
-        projection = write_dom_parquet(
-            captured_html,
-            document_id=identity.document_id,
-            path=parquet_path,
-            max_rows=self.limits.max_document_elements,
-            max_bytes=self.limits.max_document_staged_bytes,
-        )
-        if existing is None:
-            document = DocumentRecord(
-                document_id=identity.document_id,
-                html_sha256=stored.sha256,
-                html_object_key=stored.object_key,
-                html_content_type=stored.content_type,
-                html_encoding=stored.encoding,
-                html_size_bytes=stored.size_bytes,
-                html_compressed_size_bytes=stored.compressed_size_bytes,
-                compression=stored.compression,
-                dom_schema_version=DOM_SCHEMA_VERSION,
-                parser_name=PARSER_NAME,
-                parser_version=PARSER_VERSION,
-                parser_options_hash=PARSER_OPTIONS_HASH,
-                element_count=projection.element_count,
-                created_at=crawl.captured_at,
-            )
-        else:
-            document = existing.model_copy(
-                update={
-                    "html_compressed_size_bytes": stored.compressed_size_bytes,
-                    "dom_schema_version": DOM_SCHEMA_VERSION,
-                    "parser_name": PARSER_NAME,
-                    "parser_version": PARSER_VERSION,
-                    "parser_options_hash": PARSER_OPTIONS_HASH,
-                    "element_count": projection.element_count,
-                }
-            )
-        return PreparedIngestion(
-            document=document,
-            crawl=crawl,
-            elements_path=projection.path,
-            element_count=projection.element_count,
-            staged_bytes=projection.size_bytes,
-            replace_projection=existing is not None,
-            run_manifest=run_manifest,
-            run_usage=run_usage,
-        )
 
     def prepare_from_raw(
         self,

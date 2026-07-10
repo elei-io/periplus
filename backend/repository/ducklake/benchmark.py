@@ -1,4 +1,4 @@
-"""Read-only repository hot-path benchmark against an existing corpus."""
+"""Read-only DuckLake hot-path benchmark against an existing repository."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from catalogue.client import Catalogue
-from catalogue.service import CatalogueService
+from repository.ducklake.client import Catalogue
+from repository.ducklake.service import CatalogueService
 
 
 def run_hot_path_benchmark(

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from types import TracebackType
 from uuid import UUID
 
-from catalogue import (
+from repository.ducklake import (
     CatalogueWriteResult,
     CrawlRecord,
     RunCrawlUsageRecord,

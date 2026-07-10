@@ -22,7 +22,7 @@ from actions.crawl.service import (
     crawl_one_for_task,
 )
 from actions.shared.cache import ResolvedCachePolicy
-from catalogue import CatalogueWriteResult, CrawlRecord
+from repository.ducklake import CatalogueWriteResult, CrawlRecord
 from repository import RepositoryCacheHit
 
 

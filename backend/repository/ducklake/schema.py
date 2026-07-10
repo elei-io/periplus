@@ -1,4 +1,4 @@
-"""Versioned Atlas catalogue schema contract."""
+"""Versioned DuckLake repository schema contract."""
 
 from __future__ import annotations
 

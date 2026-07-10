@@ -1,4 +1,4 @@
-"""Typed configuration for the Atlas DuckLake catalogue."""
+"""Typed DuckLake configuration for the Atlas repository."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from ducklake_client import (
     StorageConfig,
 )
 
-from catalogue.exceptions import CatalogueConfigError
+from repository.ducklake.exceptions import CatalogueConfigError
 
 _SAFE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DEFAULT_ROOT = Path(__file__).resolve().parents[2] / ".atlas" / "repository"

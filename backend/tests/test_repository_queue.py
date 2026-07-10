@@ -11,7 +11,7 @@ from uuid import UUID
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 from nats.js.api import RetentionPolicy, StorageType
 
-from catalogue import (
+from repository.ducklake import (
     CatalogueWriteResult,
     CrawlRecord,
     RunCrawlUsageRecord,

@@ -31,7 +31,7 @@ from nats.js.errors import (
 from pydantic import BaseModel, ConfigDict, model_validator
 import zstandard
 
-from catalogue import (
+from repository.ducklake import (
     CatalogueWriteResult,
     CrawlRecord,
     RunCrawlUsageRecord,

@@ -4,7 +4,7 @@ import unittest
 from datetime import UTC, datetime
 from uuid import UUID
 
-from catalogue import CatalogueWriteResult, CrawlRecord
+from repository.ducklake import CatalogueWriteResult, CrawlRecord
 from repository.pipeline import RepositoryPipeline
 from repository.service import ProjectionRebuildRequired
 

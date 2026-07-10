@@ -20,7 +20,7 @@ backend/cli/          Typer CLI commands
 backend/actions/      Primitive actions that take inputs and produce outputs
 backend/actions/shared/
                       Crawler, quality, progress, data-schema, and query-schema support
-backend/catalogue/    DuckLake client configuration, schema contract, and bootstrap
+backend/repository/   Raw objects, DuckLake catalogue, ingestion, reads, and maintenance
 backend/dom/          Versioned loss-minimized DOM schema and encoder
 backend/repository/   Raw object storage, cache resolution, and catalogue ingestion
 backend/tasks/        Schedulable task/effect definitions and current run implementation
@@ -146,8 +146,8 @@ once as a deployment operation, then validate it independently:
 
 ```sh
 cd backend
-uv run python -m catalogue bootstrap
-uv run python -m catalogue check
+uv run python -m repository.ducklake bootstrap
+uv run python -m repository.ducklake check
 ```
 
 Compose creates `atlas_catalogue` idempotently and runs the bootstrap service before workers.

@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import extract, func, select
 from sqlalchemy.orm import Session
 
-from catalogue import Catalogue, CatalogueService, catalogue_config_from_env
+from repository.ducklake import Catalogue, CatalogueService, catalogue_config_from_env
 from tasks.models import TaskRun
 
 from .cluster import collect_cluster_metrics

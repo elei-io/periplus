@@ -1,4 +1,4 @@
-"""Typed records crossing the Atlas catalogue boundary."""
+"""Typed records crossing the DuckLake repository boundary."""
 
 from __future__ import annotations
 

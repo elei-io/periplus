@@ -1,4 +1,4 @@
-"""Catalogue-specific errors."""
+"""DuckLake repository errors."""
 
 
 class CatalogueError(Exception):

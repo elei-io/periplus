@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, Mock, patch
 from types import SimpleNamespace
 
-from catalogue import CatalogueConflictError
+from repository.ducklake import CatalogueConflictError
 from repository.pipeline import IngestionWorkerConfig
 from repository.worker import (
     _batch_reached_limit,

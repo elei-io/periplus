@@ -15,13 +15,13 @@ must never be reintroduced into the Atlas control-plane Postgres database.
   - `backend/actions/shared/` for crawler, quality, progress, data-schema, and query-schema support shared between actions.
   - `backend/urls/`, `backend/crawl_policies/`, `backend/data_schemas/`, and `backend/query_schemas/` for user-editable matching, policy, and schema state.
   - `backend/tasks/` for persisted schedulable task/effect definitions and the current run implementation; target executions live in JetStream.
-  - `backend/catalogue/` owns the DuckLake client configuration, schema contract, and bootstrap boundary.
+  - `backend/repository/ducklake/` owns the DuckLake implementation, schema contract, and bootstrap boundary.
   - `backend/dom/` owns the versioned element schema, bounded Arrow encoder, page-local reader, and structural query helpers.
   - `backend/repository/` owns raw object storage, the JetStream ingestion queue/writer, and repository maintenance around the catalogue.
 - Current user-facing actions are `search`, `index`, `crawl`, and `extract`. Data schema generation lives in `actions.shared.data_schema`; query parameter schema generation lives in `actions.shared.query_schema` and is exposed through `extract`.
 - Page-loading options are shared through `actions.shared.crawl`. Do not duplicate `mode`/`wait` config in individual primitives.
 - `crawl` is the page acquisition chokepoint. The target stores canonical content-addressed HTML in the configured filesystem/S3 repository and durable crawl/document/element state in DuckLake.
-- Keep business behavior in `backend/actions/`, `backend/tasks/`, `backend/catalogue/`, `backend/dom/`, and `backend/repository/`; API and CLI layers should stay thin.
+- Keep business behavior in `backend/actions/`, `backend/tasks/`, `backend/dom/`, and `backend/repository/`; API and CLI layers should stay thin.
 - The architecture rationale lives in `ARCHITECHTURE.md`; storage detail lives in `STORAGE.md`. Read both before changing the API/task/browser/storage execution model.
 
 ## Setup

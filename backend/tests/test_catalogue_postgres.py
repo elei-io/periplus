@@ -14,7 +14,7 @@ from ducklake_client import DiskStorage, PostgresCatalog
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 
-from catalogue import Catalogue, CatalogueConfig, CrawlRecord
+from repository.ducklake import Catalogue, CatalogueConfig, CrawlRecord
 from repository import FileObjectStore, RawHtmlRepository, RepositoryIngestor
 
 
@@ -42,8 +42,8 @@ def _concurrent_ingest(
         )
         with ingestor:
             barrier.wait(timeout=15)
-            ingestor.ingest(
-                captured_html=html,
+            ingestor.store_raw(html)
+            prepared = ingestor.prepare_from_raw(
                 crawl=CrawlRecord(
                     crawl_id=UUID(int=value),
                     document_id=f"sha256:{digest}",
@@ -59,8 +59,9 @@ def _concurrent_ingest(
                     duration_ms=100,
                     input_json={"value": value},
                     input_hash=f"input:{value}",
-                ),
+                )
             )
+            ingestor.commit_prepared_batch([prepared])
     except BaseException as exc:
         errors.put(f"{type(exc).__name__}: {exc}")
         raise

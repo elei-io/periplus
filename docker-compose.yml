@@ -233,7 +233,7 @@ services:
       dockerfile: docker/atlas/Dockerfile
     image: atlas-backend:local
     working_dir: /app/backend
-    command: python -m catalogue bootstrap
+    command: python -m repository.ducklake bootstrap
     volumes:
       - .:/app
       - ./.atlas/repository:/app/.atlas/repository

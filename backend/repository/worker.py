@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 
 from nats.errors import TimeoutError as NatsTimeoutError
 
-from catalogue import CatalogueConflictError, CatalogueValidationError
+from repository.ducklake import CatalogueConflictError, CatalogueValidationError
 from observability import repository_metrics
 from observability.prometheus import WorkerMetricAggregator, start_worker_metrics_server
 from observability.recorder import CallbackRecorder, metric_recorder_scope

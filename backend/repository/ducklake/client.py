@@ -1,4 +1,4 @@
-"""Atlas catalogue bootstrap and connection lifecycle."""
+"""DuckLake bootstrap and connection lifecycle for the repository."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 
 from ducklake_client import DuckLake, DuckLakeError, SQLType
 
-from catalogue.config import CatalogueConfig
-from catalogue.exceptions import CatalogueSchemaError
-from catalogue.schema import (
+from repository.ducklake.config import CatalogueConfig
+from repository.ducklake.exceptions import CatalogueSchemaError
+from repository.ducklake.schema import (
     CATALOGUE_SCHEMA_VERSION,
     CRAWL_COLUMNS,
     DOCUMENT_COLUMNS,

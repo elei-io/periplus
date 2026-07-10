@@ -4,14 +4,14 @@ sync:
 	cd backend && uv sync
 
 check:
-	cd backend && uv run python -m compileall actions api catalogue cli db dom repository tasks urls data_schemas query_schemas crawl_policies metrics observability worker
+	cd backend && uv run python -m compileall actions api cli db dom repository tasks urls data_schemas query_schemas crawl_policies metrics observability worker
 	cd backend && uv run python -m unittest discover -s tests
 
 catalogue-bootstrap:
-	cd backend && uv run python -m catalogue bootstrap
+	cd backend && uv run python -m repository.ducklake bootstrap
 
 catalogue-check:
-	cd backend && uv run python -m catalogue check
+	cd backend && uv run python -m repository.ducklake check
 
 catalogue-test-postgres:
 	docker compose up -d --wait atlas-postgres

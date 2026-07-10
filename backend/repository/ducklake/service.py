@@ -1,4 +1,4 @@
-"""Typed durable write and page-local read operations for the catalogue."""
+"""Typed durable operations for the DuckLake repository."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterator
 from uuid import UUID
 
-from catalogue.client import Catalogue
-from catalogue.exceptions import CatalogueConflictError, CatalogueValidationError
-from catalogue.records import (
+from repository.ducklake.client import Catalogue
+from repository.ducklake.exceptions import CatalogueConflictError, CatalogueValidationError
+from repository.ducklake.records import (
     CatalogueWriteResult,
     CrawlRecord,
     DocumentRecord,
@@ -41,65 +41,6 @@ class CatalogueService:
 
     def __init__(self, catalogue: Catalogue) -> None:
         self.catalogue = catalogue
-
-    def record_crawl(
-        self,
-        *,
-        document: DocumentRecord,
-        crawl: CrawlRecord,
-        elements: Sequence[ElementRecord],
-    ) -> CatalogueWriteResult:
-        """Atomically record one crawl and its canonical document identity."""
-
-        with self._write_fence():
-            return self._record_crawl_unfenced(
-                document=document,
-                crawl=crawl,
-                elements=elements,
-            )
-
-    def _record_crawl_unfenced(
-        self,
-        *,
-        document: DocumentRecord,
-        crawl: CrawlRecord,
-        elements: Sequence[ElementRecord],
-    ) -> CatalogueWriteResult:
-        self._validate_batch(document, crawl, elements)
-        document_created = False
-        crawl_created = False
-        with self.catalogue.lake.transaction():
-            existing_document = self.get_document(document.document_id)
-            if existing_document is not None:
-                if existing_document != document:
-                    raise CatalogueConflictError(
-                        f"document_id {document.document_id!r} already has different metadata"
-                    )
-            else:
-                self._insert_document(document)
-                self._insert_elements(document.document_id, elements)
-                document_created = True
-
-            existing_crawl = self.get_crawl(crawl.crawl_id)
-            if existing_crawl is not None:
-                if existing_crawl != crawl:
-                    raise CatalogueConflictError(
-                        f"crawl_id {str(crawl.crawl_id)!r} already has different provenance"
-                    )
-            else:
-                self._insert_crawl(crawl)
-                crawl_created = True
-
-        snapshot = self.catalogue.latest_snapshot()
-        if snapshot is None:
-            raise CatalogueValidationError("DuckLake did not publish a repository snapshot")
-        return CatalogueWriteResult(
-            document_id=document.document_id,
-            crawl_id=crawl.crawl_id,
-            document_created=document_created,
-            crawl_created=crawl_created,
-            repository_snapshot=snapshot,
-        )
 
     def record_crawl_batch(
         self,
@@ -616,58 +557,6 @@ class CatalogueService:
             captured_after=captured_after,
         )
         return {"summary": summary, "domains": domains, "failures": failures}
-
-    def replace_projection(
-        self,
-        *,
-        document: DocumentRecord,
-        elements: Sequence[ElementRecord],
-    ) -> int:
-        """Rebuild one document's derived DOM projection from canonical HTML."""
-
-        self._validate_elements(document, elements)
-        with self.catalogue.lake.transaction():
-            existing = self.get_document(document.document_id)
-            if existing is None:
-                raise CatalogueValidationError(
-                    f"document does not exist: {document.document_id!r}"
-                )
-            if (
-                existing.html_sha256,
-                existing.html_object_key,
-                existing.html_size_bytes,
-                existing.html_compressed_size_bytes,
-            ) != (
-                document.html_sha256,
-                document.html_object_key,
-                document.html_size_bytes,
-                document.html_compressed_size_bytes,
-            ):
-                raise CatalogueConflictError(
-                    "projection rebuild cannot change canonical document identity"
-                )
-            self.catalogue.connection.execute(
-                f"DELETE FROM {self._table('elements')} WHERE document_id = ?",
-                [document.document_id],
-            )
-            self._insert_elements(document.document_id, elements)
-            self.catalogue.connection.execute(
-                f"UPDATE {self._table('documents')} SET "
-                "dom_schema_version = ?, parser_name = ?, parser_version = ?, "
-                "parser_options_hash = ?, element_count = ? WHERE document_id = ?",
-                [
-                    document.dom_schema_version,
-                    document.parser_name,
-                    document.parser_version,
-                    document.parser_options_hash,
-                    document.element_count,
-                    document.document_id,
-                ],
-            )
-        snapshot = self.catalogue.latest_snapshot()
-        if snapshot is None:
-            raise CatalogueValidationError("DuckLake did not publish a repository snapshot")
-        return snapshot
 
     def _lookup_batch_crawls(
         self,
