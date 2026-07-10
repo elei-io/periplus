@@ -1,7 +1,6 @@
 import {
   BarChart3Icon,
   BracesIcon,
-  CalendarClockIcon,
   ClipboardListIcon,
   DatabaseIcon,
   FileSearchIcon,
@@ -69,11 +68,6 @@ export const navigationGroups: NavigationGroup[] = [
         icon: ClipboardListIcon,
         title: "Task Admin",
         description: "Create, schedule, filter, and archive task definitions.",
-      },
-      {
-        name: "Effects",
-        href: "/scheduled-work/effects",
-        icon: CalendarClockIcon,
       },
       {
         name: "Metrics",

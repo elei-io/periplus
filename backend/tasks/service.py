@@ -20,7 +20,6 @@ from .models import Task, TaskRun, WorkerHeartbeat
 from .schemas import (
     SearchInput,
     TaskCreate,
-    TaskOrigin,
     TaskPrimitive,
     TaskRecord,
     TaskRunRecord,
@@ -200,7 +199,6 @@ def list_tasks(
     session: Session,
     primitive: TaskPrimitive | None = None,
     archived: bool | None = None,
-    origin: TaskOrigin | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> list[TaskRecord]:
@@ -211,11 +209,6 @@ def list_tasks(
         statement = statement.where(Task.archived_at.is_not(None))
     if archived is False:
         statement = statement.where(Task.archived_at.is_(None))
-    if origin == "human":
-        statement = statement.where(Task.created_by_effect_run_id.is_(None))
-    if origin == "effect":
-        statement = statement.where(Task.created_by_effect_run_id.is_not(None))
-
     return [_record(task) for task in session.scalars(statement)]
 
 

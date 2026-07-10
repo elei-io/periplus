@@ -19,17 +19,7 @@ class StrictBaseModel(BaseModel):
 
 TaskPrimitive = Literal["search", "index", "crawl", "schema", "extract", "calibrate"]
 TaskRunStatus = Literal["queued", "running", "succeeded", "failed", "cancelled", "skipped"]
-TaskRunTriggerKind = Literal["scheduled", "manual", "effect", "retry", "backfill"]
-EffectRunStatus = Literal["running", "applied", "skipped", "failed"]
-TaskOrigin = Literal["human", "effect"]
-TaskEffectType = Literal[
-    "create_task",
-    "upsert_task",
-    "update_task",
-    "archive_task",
-    "enqueue_run",
-]
-EffectRunOperation = TaskEffectType | Literal["noop"]
+TaskRunTriggerKind = Literal["scheduled", "manual", "retry", "backfill"]
 
 
 class SearchInput(StrictBaseModel):
@@ -91,106 +81,10 @@ class TaskUpdate(StrictBaseModel):
     archived_reason: str | None = None
 
 
-class TaskTemplate(StrictBaseModel):
-    name: str | None = None
-    primitive: TaskPrimitive
-    input: dict[str, Any]
-    schedule: TaskScheduleJson | None = None
-    identity_key: str | None = None
-
-
-class TaskWhere(StrictBaseModel):
-    id: UUID | None = None
-    identity_key: str | None = None
-    identity_key_template: str | None = None
-
-
-class EffectCondition(StrictBaseModel):
-    warnings_include: list[str] = Field(default_factory=list)
-    warnings_exclude: list[str] = Field(default_factory=list)
-    output_path_exists: str | None = None
-
-
-class CreateTaskEffect(StrictBaseModel):
-    type: Literal["create_task"] = "create_task"
-    task_template: TaskTemplate
-
-
-class UpsertTaskEffect(StrictBaseModel):
-    type: Literal["upsert_task"] = "upsert_task"
-    source_path: str | None = None
-    task_template: TaskTemplate
-    on_existing: Literal["keep", "update", "replace", "enable"] = "keep"
-
-
-class UpdateTaskEffect(StrictBaseModel):
-    type: Literal["update_task"] = "update_task"
-    where: TaskWhere
-    patch: dict[str, Any]
-    when: EffectCondition | None = None
-
-
-class ArchiveTaskEffect(StrictBaseModel):
-    type: Literal["archive_task"] = "archive_task"
-    where: TaskWhere
-    when: EffectCondition | None = None
-
-
-class EnqueueTarget(StrictBaseModel):
-    kind: Literal["task", "tasks_from_source_path", "upserted_task"] = "task"
-    task_id: UUID | None = None
-    identity_key: str | None = None
-    source_path: str | None = None
-    identity_key_template: str | None = None
-
-
-class EnqueueDedupe(StrictBaseModel):
-    policy: Literal[
-        "always",
-        "if_not_queued",
-        "if_not_queued_or_running",
-        "if_not_succeeded_since",
-    ] = "if_not_queued_or_running"
-    since: datetime | None = None
-
-
-class EnqueueRunEffect(StrictBaseModel):
-    type: Literal["enqueue_run"] = "enqueue_run"
-    target: EnqueueTarget
-    dedupe: EnqueueDedupe = Field(default_factory=EnqueueDedupe)
-    trigger_kind: TaskRunTriggerKind = "effect"
-    when: EffectCondition | None = None
-
-
-TaskEffectJson = Annotated[
-    CreateTaskEffect
-    | UpsertTaskEffect
-    | UpdateTaskEffect
-    | ArchiveTaskEffect
-    | EnqueueRunEffect,
-    Field(discriminator="type"),
-]
-
-
 class TaskWarningsJson(StrictBaseModel):
     codes: list[str] = Field(default_factory=list)
     count: int = 0
     path: str | None = None
-
-
-class EffectRunInputJson(StrictBaseModel):
-    item: dict[str, Any] | None = None
-    source_path: str | None = None
-    rendered_template: dict[str, Any] = Field(default_factory=dict)
-
-
-class EffectRunOutputJson(StrictBaseModel):
-    status: EffectRunStatus
-    operation: EffectRunOperation
-    target_task_id: UUID | None = None
-    target_run_id: UUID | None = None
-    identity_key: str | None = None
-    reason: str | None = None
 
 
 class TaskRecord(BaseModel):
@@ -203,26 +97,10 @@ class TaskRecord(BaseModel):
     revision: int
     schedule_json: dict[str, Any] | None = None
     identity_key: str | None = None
-    created_by_effect_run_id: UUID | None = None
-    updated_by_effect_run_id: UUID | None = None
-    archived_by_effect_run_id: UUID | None = None
     archived_at: datetime | None = None
     archived_reason: str | None = None
     last_run_at: datetime | None = None
     next_run_at: datetime | None = None
-    created_at: datetime
-    updated_at: datetime
-
-
-class TaskEffectRecord(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    task_id: UUID
-    effect_type: TaskEffectType
-    config_json: dict[str, Any]
-    enabled: bool
-    position: int
     created_at: datetime
     updated_at: datetime
 
@@ -236,7 +114,6 @@ class TaskRunRecord(BaseModel):
     primitive: TaskPrimitive
     status: TaskRunStatus
     trigger_kind: TaskRunTriggerKind
-    triggered_by_effect_run_id: UUID | None = None
     data_schema_id: UUID | None = None
     queued_at: datetime
     started_at: datetime | None = None
@@ -287,21 +164,3 @@ class TaskOperationsRecord(BaseModel):
 class WorkerHeartbeatPurgeRecord(BaseModel):
     deleted: int
 
-
-class EffectRunRecord(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    effect_id: UUID
-    source_run_id: UUID
-    status: EffectRunStatus
-    operation: EffectRunOperation
-    target_task_id: UUID | None = None
-    target_run_id: UUID | None = None
-    input_json: dict[str, Any]
-    output_json: dict[str, Any] | None = None
-    error: str | None = None
-    started_at: datetime
-    finished_at: datetime | None = None
-    created_at: datetime
-    updated_at: datetime

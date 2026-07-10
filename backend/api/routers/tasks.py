@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from db.session import get_session
-from tasks.schemas import TaskCreate, TaskOrigin, TaskPrimitive, TaskRecord, TaskRunRecord, TaskUpdate
+from tasks.schemas import TaskCreate, TaskPrimitive, TaskRecord, TaskRunRecord, TaskUpdate
 from tasks.service import (
     TaskConflictError,
     TaskNotFoundError,
@@ -37,7 +37,6 @@ def list_(
     session: Annotated[Session, Depends(get_session)],
     primitive: Annotated[TaskPrimitive | None, Query()] = None,
     archived: Annotated[bool | None, Query()] = None,
-    origin: Annotated[TaskOrigin | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[TaskRecord]:
@@ -45,7 +44,6 @@ def list_(
         session=session,
         primitive=primitive,
         archived=archived,
-        origin=origin,
         limit=limit,
         offset=offset,
     )

@@ -16,7 +16,7 @@ export type TaskRunRecord = {
   task_revision: number
   primitive: TaskPrimitive
   status: TaskRunStatus
-  trigger_kind: "scheduled" | "manual" | "effect" | "retry" | "backfill"
+  trigger_kind: "scheduled" | "manual" | "retry" | "backfill"
   queued_at: string
   started_at: string | null
   finished_at: string | null
@@ -75,9 +75,6 @@ export type TaskRecord = {
   revision: number
   schedule_json: TaskSchedule | null
   identity_key: string | null
-  created_by_effect_run_id: string | null
-  updated_by_effect_run_id: string | null
-  archived_by_effect_run_id: string | null
   archived_at: string | null
   archived_reason: string | null
   last_run_at: string | null
@@ -102,5 +99,4 @@ export type TaskUpdate = Partial<TaskCreate> & {
 export type TaskFilters = {
   primitive?: TaskPrimitive
   archived?: boolean
-  origin?: "human" | "effect"
 }

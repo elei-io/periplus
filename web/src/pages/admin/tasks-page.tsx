@@ -538,24 +538,6 @@ export function TasksPage() {
               }))
             }
           />
-          <TaskSelect
-            aria-label="Origin filter"
-            value={filters.origin ?? "all"}
-            options={[
-              { value: "all", label: "All origins" },
-              { value: "human", label: "Human seeded" },
-              { value: "effect", label: "Effect created" },
-            ]}
-            onChange={(value) =>
-              setFilters((current) => ({
-                ...current,
-                origin:
-                  value === "all"
-                    ? undefined
-                    : (value as NonNullable<TaskFilters["origin"]>),
-              }))
-            }
-          />
           <ToolbarIconButton
             label="Refresh tasks"
             onClick={() => void tasksQuery.refetch()}
@@ -587,7 +569,6 @@ export function TasksPage() {
             <TableHead>Schedule</TableHead>
             <TableHead>Next</TableHead>
             <TableHead>Last</TableHead>
-            <TableHead>Origin</TableHead>
             <TableHead className="w-28 text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
@@ -690,11 +671,6 @@ function TaskRow({
       </TableCell>
       <TableCell>{formatDateTime(task.next_run_at)}</TableCell>
       <TableCell>{formatDateTime(task.last_run_at)}</TableCell>
-      <TableCell>
-        <Badge variant="outline">
-          {task.created_by_effect_run_id ? "Effect" : "Human"}
-        </Badge>
-      </TableCell>
       <TableCell>
         <div className="flex justify-end gap-1">
           {isArchived ? (
