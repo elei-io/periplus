@@ -1,11 +1,6 @@
 import { useActionRun } from "@/hooks/use-action-run"
-import type { IndexInput } from "@/types/index"
-import type { TaskResultSummary } from "@/types/tasks"
+import type { IndexInput, IndexLink } from "@/types/index"
 
 export function useIndexRun() {
-  return useActionRun<IndexInput, TaskResultSummary | null>(
-    "/index/",
-    "Index",
-    null
-  )
+  return useActionRun<IndexInput, IndexLink[]>("/index/", "Index", [])
 }

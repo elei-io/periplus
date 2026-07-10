@@ -19,12 +19,9 @@ from actions.crawl.service import crawl
 from actions.calibrate.service import calibrate
 from actions.search.service import search
 from actions.shared.data_schema.service import schema
-from actions.shared.cache import CacheOptions, resolve_cache_policy
 from actions.shared.progress import ProgressEvent, ProgressReporter
 from observability import task_metrics
 from actions.shared.nats_progress import ProgressPublisher
-from catalogue import Catalogue, CatalogueService, catalogue_config_from_env
-from crawl_policies.service import find_crawl_policy_snapshot_for_url
 
 from .models import TaskRun, TaskRunLease, WorkerHeartbeat
 from .context import TaskExecutionContext, task_execution_scope
@@ -63,63 +60,20 @@ def _json_safe(value: object) -> object:
     return json.loads(json.dumps(value, default=str))
 
 
+def _validate_result_size(value: object) -> None:
+    limit = int(os.getenv("ATLAS_TASK_RESULT_MAX_BYTES", str(5 * 1024 * 1024)))
+    size = len(json.dumps(value, separators=(",", ":"), default=str).encode())
+    if size > limit:
+        raise ValueError(
+            f"Task result is {size} bytes, exceeding ATLAS_TASK_RESULT_MAX_BYTES={limit}."
+        )
+
+
 @dataclass
 class PrimitiveExecution:
     output_json: dict
     response_json: object
     warnings: list[dict]
-
-
-def _has_durable_run_usage(run_id: UUID) -> bool:
-    with Catalogue(catalogue_config_from_env()) as catalogue:
-        return CatalogueService(catalogue).has_run_usage(run_id)
-
-
-def _run_can_have_durable_usage(run: TaskRun) -> bool:
-    payload = getattr(run, "input_json", {})
-    cache = CacheOptions.model_validate(payload.get("cache") or {})
-    if cache.mode == "no_store":
-        return False
-    urls = payload.get("urls")
-    if not isinstance(urls, list):
-        url = payload.get("url")
-        urls = [url] if isinstance(url, str) else []
-    if not urls or run.primitive == "search":
-        return True
-    snapshots = getattr(run, "crawl_policy_snapshots_json", [])
-    return any(
-        resolve_cache_policy(
-            crawl_policy_config=(
-                policy.config
-                if (policy := find_crawl_policy_snapshot_for_url(snapshots, url=url))
-                else None
-            ),
-            request=cache,
-        ).mode
-        != "no_store"
-        for url in urls
-    )
-
-
-async def _bounded_result(
-    run: TaskRun,
-    *,
-    counts: dict[str, int],
-) -> dict[str, object]:
-    """Build the complete, deliberately small terminal run result."""
-
-    stores_result = (
-        False
-        if not _run_can_have_durable_usage(run)
-        else await asyncio.to_thread(_has_durable_run_usage, run.id)
-    )
-    return {
-        "version": 1,
-        "primitive": run.primitive,
-        "status": "succeeded",
-        "counts": counts,
-        "catalogue": {"run_id": str(run.id)} if stores_result else None,
-    }
 
 
 async def _execute_primitive(
@@ -137,9 +91,9 @@ async def _execute_primitive(
             session=session,
             task_run_id=run.id,
         )
-        response_json = await _bounded_result(run, counts={"results": len(results)})
+        response_json = [_json_safe(result) for result in results]
         return PrimitiveExecution(
-            output_json=response_json,
+            output_json={"results": response_json},
             response_json=response_json,
             warnings=[],
         )
@@ -151,17 +105,9 @@ async def _execute_primitive(
             session=session,
             task_run_id=run.id,
         )
-        response_json = await _bounded_result(
-            run,
-            counts={
-                "links": output.result_links,
-                "discovered_links": output.discovered_links,
-                "pages": output.pages,
-                "failed_pages": output.failed_pages,
-            },
-        )
+        response_json = [_json_safe(link) for link in output.links]
         return PrimitiveExecution(
-            output_json=response_json,
+            output_json={"links": response_json},
             response_json=response_json,
             warnings=[],
         )
@@ -175,12 +121,7 @@ async def _execute_primitive(
             session=session,
             task_run_id=run.id,
         )
-        response_json = await _bounded_result(
-            run,
-            counts={
-                "schemas": 1,
-            },
-        )
+        response_json = _json_safe(output)
         return PrimitiveExecution(
             output_json=response_json,
             response_json=response_json,
@@ -195,16 +136,7 @@ async def _execute_primitive(
             task_run_id=run.id,
         )
         warnings = [_json_safe(warning) for warning in output.warnings]
-        response_json = await _bounded_result(
-            run,
-            counts={
-                "records": len(output.results),
-                "query_parameters": (
-                    len(output.query_params.params) if output.query_params else 0
-                ),
-                "warnings": len(output.warnings),
-            },
-        )
+        response_json = _json_safe(output)
         return PrimitiveExecution(
             output_json=response_json,
             response_json=response_json,
@@ -218,15 +150,7 @@ async def _execute_primitive(
             session=session,
             task_run_id=run.id,
         )
-        response_json = await _bounded_result(
-            run,
-            counts={
-                "candidates": len(output.candidates),
-                "successful_candidates": sum(
-                    1 for candidate in output.candidates if candidate.success
-                ),
-            },
-        )
+        response_json = _json_safe(output)
         return PrimitiveExecution(
             output_json=response_json,
             response_json=response_json,
@@ -246,22 +170,15 @@ async def _execute_crawl_primitive(
         progress_reporter=progress_reporter,
         session=session,
         task_run_id=run.id,
-        retain_pages=False,
-        include_links=False,
+        retain_pages=True,
+        include_links=True,
     )
     warnings: list[dict] = []
     for page in output.pages:
         page_warnings = [_json_safe(warning) for warning in page.quality_warnings]
         warnings.extend(page_warnings)
 
-    response_json = await _bounded_result(
-        run,
-        counts={
-            "requested_urls": output.stats.requested_urls,
-            "succeeded": output.stats.succeeded,
-            "failed": output.stats.failed,
-        },
-    )
+    response_json = _json_safe(output)
     return PrimitiveExecution(
         output_json=response_json,
         response_json=response_json,
@@ -356,6 +273,7 @@ async def execute_run(
         output_json = execution.output_json
         response_json = execution.response_json
         warnings = execution.warnings
+        _validate_result_size(output_json)
 
         if progress_reporter is not None:
             await progress_reporter.emit(

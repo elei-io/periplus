@@ -7,7 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from actions.extract.schemas import Input as ExtractInput
 from actions.index.schemas import Input as IndexInput
 from actions.search.schemas import SearchProvider
-from actions.shared.quality.schemas import QualityWarning
 from actions.shared.data_schema.schemas import Input as SchemaInput
 from actions.crawl.schemas import Input as CrawlInput
 from actions.calibrate.schemas import Input as CalibrateInput
@@ -171,30 +170,6 @@ TaskEffectJson = Annotated[
     | EnqueueRunEffect,
     Field(discriminator="type"),
 ]
-
-
-class CrawlPageOutput(StrictBaseModel):
-    url: str
-    success: bool
-    crawl_id: UUID | None = None
-    document_id: str | None = None
-    repository_snapshot: int | None = None
-    quality_warnings: list[QualityWarning] = Field(default_factory=list)
-
-
-class CatalogueResultReference(StrictBaseModel):
-    run_id: UUID
-
-
-class BoundedTaskOutputJson(StrictBaseModel):
-    version: Literal[1] = 1
-    primitive: TaskPrimitive
-    status: Literal["succeeded"] = "succeeded"
-    counts: dict[str, int] = Field(default_factory=dict)
-    catalogue: CatalogueResultReference | None
-
-
-TaskOutputJson = BoundedTaskOutputJson
 
 
 class TaskWarningsJson(StrictBaseModel):

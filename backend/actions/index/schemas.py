@@ -55,8 +55,19 @@ class Input(BaseModel):
         return self
 
 
+class IndexLink(BaseModel):
+    source_url: str
+    url: str
+    text: str
+    title: str
+    depth: int
+    link_index: int
+    internal: bool
+
+
 class IndexOutput(BaseModel):
     pages: int
     failed_pages: int
     discovered_links: int
     result_links: int
+    links: list[IndexLink] = Field(default_factory=list)

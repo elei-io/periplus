@@ -3,7 +3,6 @@ from .schemas import (
     EffectRunOutputJson,
     TaskEffectJson,
     TaskInputJson,
-    TaskOutputJson,
     TaskScheduleJson,
     TaskWarningsJson,
 )
@@ -13,7 +12,6 @@ __all__ = [
     "EffectRunOutputJson",
     "TaskEffectJson",
     "TaskInputJson",
-    "TaskOutputJson",
     "TaskScheduleJson",
     "TaskWarningsJson",
 ]

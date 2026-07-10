@@ -3,14 +3,14 @@ from typing import Annotated, Literal
 import typer
 from pydantic import TypeAdapter
 from rich.console import Console
+from rich.json import JSON
 from cli.action_runs import run_action
 from cli.cache import cache_input
 from cli.progress import ProgressRenderer
-from cli.summary import print_task_summary
-from tasks.schemas import BoundedTaskOutputJson
+from actions.shared.data_schema.schemas import SchemaOutput
 
 console = Console()
-_SCHEMA_ADAPTER = TypeAdapter(BoundedTaskOutputJson)
+_SCHEMA_ADAPTER = TypeAdapter(SchemaOutput)
 
 
 def schema(
@@ -57,4 +57,5 @@ def schema(
             progress_consumer=progress.callback,
         )
 
-    print_task_summary(console, output)
+    console.print(f"[bold]Schema[/bold] {output.schema_id} ({output.schema_type}, generated)")
+    console.print(JSON.from_data(output.extraction_schema))

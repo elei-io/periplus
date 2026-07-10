@@ -33,16 +33,6 @@ export type TaskRunRecord = {
   updated_at: string
 }
 
-export type TaskResultSummary = {
-  version: 1
-  primitive: TaskPrimitive
-  status: "succeeded"
-  counts: Record<string, number>
-  catalogue: {
-    run_id: string
-  } | null
-}
-
 export type TaskProgressEnvelope<T = unknown> = {
   event_id: string
   run_id: string

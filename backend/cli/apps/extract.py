@@ -3,14 +3,14 @@ from typing import Annotated, Literal
 import typer
 from pydantic import TypeAdapter
 from rich.console import Console
+from rich.json import JSON
 from cli.action_runs import run_action
 from cli.cache import cache_input
 from cli.progress import ProgressRenderer
-from cli.summary import print_task_summary
-from tasks.schemas import BoundedTaskOutputJson
+from actions.extract.schemas import ExtractOutput
 
 console = Console()
-_EXTRACT_ADAPTER = TypeAdapter(BoundedTaskOutputJson)
+_EXTRACT_ADAPTER = TypeAdapter(ExtractOutput)
 
 
 def extract(
@@ -62,4 +62,22 @@ def extract(
             progress_consumer=progress.callback,
         )
 
-    print_task_summary(console, output)
+    if output.source:
+        console.print(
+            f"[bold]Extract[/bold] {output.url} "
+            f"(schema: {output.source.schema_id}, {output.source.schema_type})"
+        )
+    else:
+        console.print(f"[bold]Extract[/bold] {output.url}")
+    if not output.success:
+        console.print(f"[red]{output.error or 'Extraction failed.'}[/red]")
+        raise typer.Exit(1)
+    if output.results:
+        console.print(JSON.from_data(output.results))
+    if output.query_params:
+        console.print("[bold]Query parameters[/bold]")
+        console.print(JSON.from_data(output.query_params.model_dump(mode="json")))
+    if output.warnings:
+        console.print("[yellow]Quality warnings[/yellow]")
+        for warning in output.warnings:
+            console.print(f"[yellow]- {warning.code}:[/yellow] {warning.name}")

@@ -3,14 +3,14 @@ from typing import Annotated
 import typer
 from pydantic import TypeAdapter
 from rich.console import Console
+from rich.table import Table
 from cli.action_runs import run_action
 from cli.cache import cache_input
 from cli.progress import ProgressRenderer
-from cli.summary import print_task_summary
-from tasks.schemas import BoundedTaskOutputJson
+from actions.index.schemas import IndexLink
 
 console = Console()
-_INDEX_ADAPTER = TypeAdapter(BoundedTaskOutputJson)
+_INDEX_ADAPTER = TypeAdapter(list[IndexLink])
 
 
 def index(
@@ -79,11 +79,29 @@ def index(
         if value is not None:
             input_value[name] = value
     with ProgressRenderer(console) as progress:
-        output = run_action(
+        links = run_action(
             primitive="index",
             input_value=input_value,
             response_adapter=_INDEX_ADAPTER,
             progress_consumer=progress.callback,
         )
 
-    print_task_summary(console, output)
+    table = Table(title=f"Index links from {url!r}")
+    table.add_column("Depth")
+    table.add_column("Index")
+    table.add_column("Internal")
+    table.add_column("Source")
+    table.add_column("URL")
+    table.add_column("Text")
+    for link in links:
+        table.add_row(
+            str(link.depth),
+            str(link.link_index),
+            "yes" if link.internal else "no",
+            link.source_url,
+            link.url,
+            link.text or link.title,
+        )
+    if not links:
+        table.caption = "No links found."
+    console.print(table)

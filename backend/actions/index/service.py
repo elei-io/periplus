@@ -19,7 +19,7 @@ from dom import links_from_html
 from repository import RepositoryPipeline, repository_ingestor_from_env
 
 from .limits import validate_index_budgets
-from .schemas import IndexOutput
+from .schemas import IndexLink, IndexOutput
 from .workset import IndexWorkset
 
 
@@ -229,6 +229,12 @@ async def index(
                 workset.result_count(dedupe=dedupe),
             )
         )
+        result_limit = max(1, int(os.getenv("ATLAS_INDEX_RESULT_LIMIT", "10000")))
+        result_rows = await asyncio.to_thread(
+            workset.results,
+            dedupe=dedupe,
+            limit=result_limit,
+        )
         completed_normally = True
     finally:
         if repository_pipeline is not None:
@@ -242,6 +248,18 @@ async def index(
         failed_pages=counts[1],
         discovered_links=counts[2],
         result_links=counts[3],
+        links=[
+            IndexLink(
+                source_url=str(row[0]),
+                url=str(row[1]),
+                text=str(row[2]),
+                title=str(row[3]),
+                depth=int(row[4]),
+                link_index=int(row[5]),
+                internal=bool(row[6]),
+            )
+            for row in result_rows
+        ],
     )
 
 

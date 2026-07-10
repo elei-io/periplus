@@ -3,15 +3,15 @@ from typing import Annotated
 import typer
 from pydantic import TypeAdapter
 from rich.console import Console
+from rich.table import Table
 from actions.search.schemas import SearchProvider
 from cli.action_runs import run_action
 from cli.cache import cache_input
 from cli.progress import ProgressRenderer
-from cli.summary import print_task_summary
-from tasks.schemas import BoundedTaskOutputJson
+from actions.search.schemas import SearchResult
 
 console = Console()
-_SEARCH_ADAPTER = TypeAdapter(BoundedTaskOutputJson)
+_SEARCH_ADAPTER = TypeAdapter(list[SearchResult])
 
 
 def search(
@@ -24,7 +24,7 @@ def search(
     stale_if_error: Annotated[int | None, typer.Option("--stale-if-error", min=0)] = None,
 ) -> None:
     with ProgressRenderer(console) as progress:
-        output = run_action(
+        results = run_action(
             primitive="search",
             input_value={
                 "query": query,
@@ -41,4 +41,12 @@ def search(
             progress_consumer=progress.callback,
         )
 
-    print_task_summary(console, output)
+    table = Table(title=f"Search results for {query!r}")
+    table.add_column("Title")
+    table.add_column("URL")
+    table.add_column("Description")
+    for result in results:
+        table.add_row(result.title, result.url, result.description)
+    if not results:
+        table.caption = "No results found."
+    console.print(table)

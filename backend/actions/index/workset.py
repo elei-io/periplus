@@ -197,6 +197,25 @@ class IndexWorkset:
             ).fetchone()[0]
         )
 
+    def results(self, *, dedupe: bool, limit: int) -> list[tuple[object, ...]]:
+        if limit <= 0:
+            raise ValueError("result limit must be greater than zero")
+        columns = "source_url, target_url, text, title, depth, link_index, internal"
+        if dedupe:
+            return self.connection.execute(
+                f"SELECT {columns} FROM ("
+                f"SELECT {columns}, row_number() OVER ("
+                "PARTITION BY target_url ORDER BY depth, source_url, link_index"
+                ") AS occurrence FROM edges WHERE included"
+                ") WHERE occurrence = 1 ORDER BY depth, source_url, link_index LIMIT ?",
+                [limit],
+            ).fetchall()
+        return self.connection.execute(
+            f"SELECT {columns} FROM edges WHERE included "
+            "ORDER BY depth, source_url, link_index LIMIT ?",
+            [limit],
+        ).fetchall()
+
     def edge_count(self) -> int:
         return int(self.connection.execute("SELECT count(*) FROM edges").fetchone()[0])
 

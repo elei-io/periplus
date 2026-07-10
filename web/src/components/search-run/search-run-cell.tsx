@@ -7,7 +7,7 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 import { useEffect, useState } from "react"
 
-import { CatalogueRunSummary } from "@/components/catalogue-run-summary"
+import { SearchResults } from "@/components/search-run/search-results"
 import { PlaygroundRunStatusMark } from "@/components/playground-run-status-mark"
 import { Button } from "@/components/ui/button"
 import {
@@ -26,8 +26,8 @@ import { truncateMiddle } from "@/lib/truncate"
 import { cn } from "@/lib/utils"
 import type { ProgressEvent } from "@/types/progress"
 import { searchProviders } from "@/types/search"
-import type { SearchInput } from "@/types/search"
-import type { TaskResultSummary, TaskRunRecord } from "@/types/tasks"
+import type { SearchInput, SearchResult } from "@/types/search"
+import type { TaskRunRecord } from "@/types/tasks"
 
 const activeStatuses = new Set(["queued", "running"])
 
@@ -52,7 +52,7 @@ export function SearchRunCell({ run, density }: SearchRunCellProps) {
     return () => window.clearInterval(timer)
   }, [active])
 
-  const resultQuery = useTaskRunResult<TaskResultSummary>(
+  const resultQuery = useTaskRunResult<SearchResult[]>(
     run.id,
     expanded && run.status === "succeeded"
   )
@@ -74,7 +74,7 @@ export function SearchRunCell({ run, density }: SearchRunCellProps) {
       ? Math.min(100, (progressEvent.current / progressEvent.total) * 100)
       : null
   const liveResultCount = getMetadataNumber(progressEvent, "results")
-  const savedResultCount = resultQuery.data?.counts.results ?? null
+  const savedResultCount = resultQuery.data?.length ?? null
   const resultCount = liveResultCount ?? savedResultCount
   const elapsedFrom = run.started_at ?? run.queued_at
   const elapsedTo = run.finished_at ? new Date(run.finished_at).getTime() : now
@@ -209,9 +209,9 @@ export function SearchRunCell({ run, density }: SearchRunCellProps) {
             <p className="text-sm text-destructive">
               {resultQuery.error.message}
             </p>
-          ) : resultQuery.data ? (
-            <CatalogueRunSummary result={resultQuery.data} />
-          ) : null}
+          ) : (
+            <SearchResults results={resultQuery.data ?? []} />
+          )}
         </div>
       </CollapsibleContent>
     </Collapsible>
