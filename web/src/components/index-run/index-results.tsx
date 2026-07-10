@@ -1,126 +1,123 @@
-import { ExternalLinkIcon } from "lucide-react"
-import { useMemo } from "react"
+import { ExternalLinkIcon, LinkIcon } from "lucide-react"
+import { useMemo, useState } from "react"
 
-import { IndexEventLog } from "@/components/index-run/index-event-log"
-import { IndexResultsTable } from "@/components/index-run/index-results-table"
-import { Badge } from "@/components/ui/badge"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs"
+import { ResultLinkContextMenuContent } from "@/components/result-link-actions"
+import { Button } from "@/components/ui/button"
+import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu"
+import { Input } from "@/components/ui/input"
 import type { IndexLink } from "@/types/index"
-import type { ProgressEvent } from "@/types/progress"
 
 type IndexResultsProps = {
-  events: ProgressEvent[]
   links: IndexLink[]
 }
 
-export function IndexResults({ events, links }: IndexResultsProps) {
-  const summary = useMemo(() => {
-    const uniqueUrls = new Set(links.map((link) => link.url)).size
-    const sourcePages = new Set(links.map((link) => link.source_url)).size
-    const internal = links.filter((link) => link.internal).length
-    const external = links.length - internal
-    const maxDepth = links.reduce(
-      (currentMax, link) => Math.max(currentMax, link.depth),
-      0
-    )
+export function IndexResults({ links }: IndexResultsProps) {
+  const [query, setQuery] = useState("")
+  const filteredLinks = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase()
 
-    return {
-      external,
-      internal,
-      maxDepth,
-      sourcePages,
-      total: links.length,
-      uniqueUrls,
+    if (!normalizedQuery) {
+      return links
     }
-  }, [links])
+
+    return links.filter((link) =>
+      [link.url, link.source_url, link.text, link.title].some((value) =>
+        value.toLowerCase().includes(normalizedQuery)
+      )
+    )
+  }, [links, query])
 
   return (
-    <Card
-      size="sm"
-      className="flex h-[58svh] min-h-[420px] max-h-[720px] flex-col overflow-hidden"
-    >
-      <CardHeader className="pb-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="grid gap-1">
-            <div className="flex items-center gap-2">
-              <Badge variant="secondary">
-                <ExternalLinkIcon />
-                Results
-              </Badge>
-              <CardTitle>{summary.total} links</CardTitle>
-            </div>
-            <CardDescription>
-              {summary.uniqueUrls} unique, {summary.internal} internal,{" "}
-              {summary.external} external, {summary.sourcePages} sources
-            </CardDescription>
-          </div>
-          <div className="grid grid-cols-3 gap-2 text-xs sm:grid-cols-6">
-            <ResultStat label="Unique" value={summary.uniqueUrls} />
-            <ResultStat label="Internal" value={summary.internal} />
-            <ResultStat label="External" value={summary.external} />
-            <ResultStat label="Sources" value={summary.sourcePages} />
-            <ResultStat label="Depth" value={summary.maxDepth} />
-            <ResultStat label="Events" value={events.length} />
-          </div>
+    <div className="flex max-h-[58svh] min-h-48 flex-col gap-3 overflow-hidden">
+      <div className="flex items-center justify-between gap-3 px-1">
+        <div className="flex items-center gap-2">
+          <span className="flex size-7 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <LinkIcon className="size-3.5" />
+          </span>
+          <span className="text-sm font-medium">
+            {links.length} {links.length === 1 ? "link" : "links"}
+          </span>
         </div>
-      </CardHeader>
+        {query ? (
+          <span className="text-xs text-muted-foreground">
+            {filteredLinks.length} matching
+          </span>
+        ) : null}
+      </div>
 
-      <CardContent className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
-        <Tabs
-          defaultValue="data"
-          className="flex min-h-0 flex-1 flex-col overflow-hidden"
+      {links.length > 5 ? (
+        <Input
+          value={query}
+          placeholder="Filter links"
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      ) : null}
+
+      {links.length === 0 ? (
+        <div className="grid min-h-36 place-items-center rounded-xl border border-dashed bg-muted/15 px-6 text-center text-sm text-muted-foreground">
+          No links were discovered from this page.
+        </div>
+      ) : (
+        <div
+          className="min-h-0 flex-1 space-y-1 overflow-auto overscroll-contain rounded-xl border bg-background/30 p-1.5"
+          data-testid="index-links-scroll"
         >
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <TabsList>
-              <TabsTrigger value="data">Data</TabsTrigger>
-              <TabsTrigger value="log">Log</TabsTrigger>
-            </TabsList>
-            <div className="text-xs text-muted-foreground">
-              {links.length} links, {events.length} events
-            </div>
-          </div>
-
-          <TabsContent
-            value="data"
-            className="flex min-h-0 flex-1 flex-col overflow-hidden"
-          >
-            <IndexResultsTable links={links} />
-          </TabsContent>
-
-          <TabsContent
-            value="log"
-            className="flex min-h-0 flex-1 flex-col overflow-hidden"
-          >
-            <IndexEventLog events={events} />
-          </TabsContent>
-        </Tabs>
-      </CardContent>
-    </Card>
-  )
-}
-
-type ResultStatProps = {
-  label: string
-  value: number
-}
-
-function ResultStat({ label, value }: ResultStatProps) {
-  return (
-    <div className="rounded-md border px-2 py-1.5">
-      <div className="text-sm font-medium">{value}</div>
-      <div className="text-[11px] text-muted-foreground">{label}</div>
+          {filteredLinks.map((link) => (
+            <IndexLinkItem
+              key={`${link.source_url}-${link.link_index}`}
+              link={link}
+            />
+          ))}
+        </div>
+      )}
     </div>
   )
+}
+
+function IndexLinkItem({ link }: { link: IndexLink }) {
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger>
+        <article className="grid gap-1.5 rounded-lg p-2.5 transition-colors hover:bg-muted/40">
+          <div className="flex min-w-0 items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="truncate text-sm font-medium">
+                {link.text || link.title || link.url}
+              </h2>
+              <p className="truncate text-xs text-muted-foreground">
+                {link.url}
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              nativeButton={false}
+              render={<a href={link.url} target="_blank" rel="noreferrer" />}
+            >
+              <ExternalLinkIcon />
+              <span className="sr-only">Open link</span>
+            </Button>
+          </div>
+          <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+            <span>{link.internal ? "Internal" : "External"}</span>
+            <span className="text-border">/</span>
+            <span>Depth {link.depth}</span>
+            <span className="text-border">/</span>
+            <span className="min-w-0 truncate">
+              Found on {formatSource(link.source_url)}
+            </span>
+          </div>
+        </article>
+      </ContextMenuTrigger>
+      <ResultLinkContextMenuContent url={link.url} />
+    </ContextMenu>
+  )
+}
+
+function formatSource(value: string) {
+  try {
+    return new URL(value).hostname
+  } catch {
+    return value
+  }
 }

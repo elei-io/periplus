@@ -35,7 +35,8 @@ export const navigationGroups: NavigationGroup[] = [
         href: "/playground/index",
         icon: DatabaseIcon,
         title: "Index Playground",
-        description: "Crawl a starting URL and discover linked pages.",
+        description:
+          "Discover linked pages and watch Atlas move through a site.",
       },
       {
         name: "Extract",

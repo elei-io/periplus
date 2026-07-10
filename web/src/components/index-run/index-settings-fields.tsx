@@ -152,9 +152,21 @@ export function FilterEditor({
     filter.type
 
   return (
-    <div className="grid gap-2 rounded-lg border p-2 md:grid-cols-[190px_minmax(0,1fr)_auto]">
-      <div className="grid gap-1.5">
+    <div className="grid gap-2 rounded-lg border bg-muted/10 p-2.5">
+      <div className="flex items-center justify-between gap-2">
         <FieldLabel hint={filterHints.filterType}>Type</FieldLabel>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          onClick={onRemove}
+          disabled={disabled}
+        >
+          <Trash2Icon />
+          <span className="sr-only">Remove filter</span>
+        </Button>
+      </div>
+      <div>
         <Select
           value={filter.type}
           onValueChange={(value) => {
@@ -187,17 +199,6 @@ export function FilterEditor({
           disabled={disabled}
         />
       </div>
-      <Button
-        className="self-end"
-        type="button"
-        variant="ghost"
-        size="icon"
-        onClick={onRemove}
-        disabled={disabled}
-      >
-        <Trash2Icon />
-        <span className="sr-only">Remove filter</span>
-      </Button>
     </div>
   )
 }

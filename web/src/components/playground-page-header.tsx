@@ -27,7 +27,7 @@ export function PlaygroundPageHeader({
         className="group flex shrink-0 items-center gap-2 rounded-full border bg-card/60 px-3 py-1.5 text-[11px] text-muted-foreground shadow-sm transition-colors hover:border-primary/25 hover:text-foreground"
         href={taskHref}
       >
-        <BookmarkCheckIcon className="size-3.5 text-primary" />
+        <BookmarkCheckIcon className="size-3.5 text-link" />
         <span>{taskNote}</span>
         <ArrowRightIcon className="size-3 transition-transform group-hover:translate-x-0.5 motion-reduce:transition-none" />
       </a>

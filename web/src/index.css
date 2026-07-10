@@ -165,23 +165,23 @@
     opacity: 0.48;
   }
 
-  .search-run-live::before {
+  .playground-run-live::before {
     position: absolute;
     inset-block: 18%;
     inset-inline-start: 0;
     width: 2px;
     border-radius: 999px;
-    background: var(--primary);
-    box-shadow: 0 0 16px oklch(from var(--primary) l c h / 0.55);
+    background: var(--link);
+    box-shadow: 0 0 16px oklch(from var(--link) l c h / 0.5);
     content: "";
   }
 
-  .search-run-progress-indeterminate {
-    animation: search-run-progress 1.7s ease-in-out infinite;
+  .playground-run-progress-indeterminate {
+    animation: playground-run-progress 1.7s ease-in-out infinite;
   }
 }
 
-@keyframes search-run-progress {
+@keyframes playground-run-progress {
   from {
     transform: translateX(-110%);
   }
@@ -191,7 +191,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .search-run-progress-indeterminate {
+  .playground-run-progress-indeterminate {
     animation: none;
     opacity: 0.55;
     transform: none;

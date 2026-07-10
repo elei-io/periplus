@@ -706,6 +706,39 @@ async def _crawl_one_for_task_index(
     return index, page
 
 
+async def _emit_crawl_batch_checkpoint(
+    *,
+    progress_reporter: ProgressReporter | None,
+    operation_id: str,
+    pages_by_index: dict[int, CrawlPage],
+    total: int,
+    latest_page: CrawlPage,
+) -> None:
+    completed = len(pages_by_index)
+    if completed >= total:
+        return
+
+    step = 1 if total <= 20 else 5 if total <= 100 else 10
+    if completed > 3 and completed % step != 0:
+        return
+
+    succeeded = sum(1 for page in pages_by_index.values() if page.success)
+    failed = completed - succeeded
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            operation_id=operation_id,
+            phase="crawl_batch",
+            status="started",
+            resource=latest_page.url,
+            current=completed,
+            total=total,
+            message=f"Crawled {completed} of {total} pages.",
+            metadata={"succeeded": succeeded, "failed": failed},
+        ),
+    )
+
+
 async def crawl(
     urls: list[str],
     mode: CrawlMode | None = None,
@@ -752,6 +785,13 @@ async def crawl(
                     pending_urls.append((index, url, mode, wait, None, fallback_concurrency))
                 else:
                     pages_by_index[index] = page
+                    await _emit_crawl_batch_checkpoint(
+                        progress_reporter=progress_reporter,
+                        operation_id=batch_operation_id,
+                        pages_by_index=pages_by_index,
+                        total=len(urls),
+                        latest_page=page,
+                    )
 
             if pending_urls:
                 tasks = [
@@ -784,6 +824,13 @@ async def crawl(
                             run_config_overrides=None,
                         )
                     pages_by_index[index] = page
+                    await _emit_crawl_batch_checkpoint(
+                        progress_reporter=progress_reporter,
+                        operation_id=batch_operation_id,
+                        pages_by_index=pages_by_index,
+                        total=len(urls),
+                        latest_page=page,
+                    )
     else:
         for index, url in enumerate(urls):
             if session is None or task_run_id is None:
@@ -800,6 +847,13 @@ async def crawl(
                     task_run_id=task_run_id,
                 )
                 pages_by_index[index] = page
+                await _emit_crawl_batch_checkpoint(
+                    progress_reporter=progress_reporter,
+                    operation_id=batch_operation_id,
+                    pages_by_index=pages_by_index,
+                    total=len(urls),
+                    latest_page=page,
+                )
                 continue
             policy_mode, policy_wait, policy_overrides, max_concurrency, cache_block_rules = _transport_from_policy(policy)
             commit_task_checkpoint(session)
@@ -819,6 +873,13 @@ async def crawl(
                 pending_urls.append((index, url, policy_mode, policy_wait, policy_overrides, max_concurrency))
             else:
                 pages_by_index[index] = page
+                await _emit_crawl_batch_checkpoint(
+                    progress_reporter=progress_reporter,
+                    operation_id=batch_operation_id,
+                    pages_by_index=pages_by_index,
+                    total=len(urls),
+                    latest_page=page,
+                )
 
         if pending_urls:
             tasks = [
@@ -840,6 +901,13 @@ async def crawl(
             for task in asyncio.as_completed(tasks):
                 index, page = await task
                 pages_by_index[index] = page
+                await _emit_crawl_batch_checkpoint(
+                    progress_reporter=progress_reporter,
+                    operation_id=batch_operation_id,
+                    pages_by_index=pages_by_index,
+                    total=len(urls),
+                    latest_page=page,
+                )
 
     pages = [pages_by_index[index] for index in range(len(urls))]
     succeeded = sum(1 for page in pages if page.success)

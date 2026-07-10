@@ -1,6 +1,7 @@
 import { PlaygroundPageHeader } from "@/components/playground-page-header"
+import { PlaygroundRunStack } from "@/components/playground-run-stack"
 import { SearchForm } from "@/components/search-run/search-form"
-import { SearchRunStack } from "@/components/search-run/search-run-stack"
+import { SearchRunCell } from "@/components/search-run/search-run-cell"
 import { useSearchRuns, useSubmitSearch } from "@/hooks/use-search-runs"
 
 const activeStatuses = new Set(["queued", "running"])
@@ -29,7 +30,14 @@ export function SearchPage() {
             submitSearch.mutateAsync(input).then(() => undefined)
           }
         />
-        <SearchRunStack activeRuns={activeRuns} recentRuns={recentRuns} />
+        <PlaygroundRunStack
+          activeRuns={activeRuns}
+          ariaLabel="Search activity"
+          recentRuns={recentRuns}
+          renderRun={(run, density) => (
+            <SearchRunCell run={run} density={density} />
+          )}
+        />
         {runsQuery.isLoading ? (
           <p className="px-1 text-xs text-muted-foreground">
             Loading activity…

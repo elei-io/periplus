@@ -28,7 +28,7 @@ export function SearchResults({ results }: SearchResultsProps) {
   }, [query, results])
 
   return (
-    <div className="grid max-h-[58svh] min-h-48 gap-3 overflow-hidden">
+    <div className="flex max-h-[58svh] min-h-48 flex-col gap-3 overflow-hidden">
       <div className="flex items-center justify-between gap-3 px-1">
         <div className="flex items-center gap-2">
           <span className="flex size-7 items-center justify-center rounded-full bg-primary/10 text-primary">
@@ -58,7 +58,7 @@ export function SearchResults({ results }: SearchResultsProps) {
           Nothing came back for this search.
         </div>
       ) : (
-        <div className="min-h-0 flex-1 space-y-1 overflow-auto rounded-xl border bg-background/30 p-1.5">
+        <div className="min-h-0 flex-1 space-y-1 overflow-auto overscroll-contain rounded-xl border bg-background/30 p-1.5">
           {filteredResults.map((result) => (
             <SearchResultItem key={result.url} result={result} />
           ))}

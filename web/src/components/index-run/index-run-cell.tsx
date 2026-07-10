@@ -1,13 +1,13 @@
 import {
   ChevronDownIcon,
   ChevronRightIcon,
-  SearchIcon,
+  DatabaseIcon,
   XIcon,
 } from "lucide-react"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 import { useEffect, useState } from "react"
 
-import { SearchResults } from "@/components/search-run/search-results"
+import { IndexResults } from "@/components/index-run/index-results"
 import { PlaygroundRunStatusMark } from "@/components/playground-run-status-mark"
 import { Button } from "@/components/ui/button"
 import {
@@ -21,29 +21,28 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { useTaskRunProgress, useTaskRunResult } from "@/hooks/use-action-runs"
-import { useCancelSearchRun } from "@/hooks/use-search-runs"
+import { useCancelIndexRun } from "@/hooks/use-index-runs"
 import { truncateMiddle } from "@/lib/truncate"
 import { cn } from "@/lib/utils"
+import type { IndexInput, IndexLink } from "@/types/index"
 import type { ProgressEvent } from "@/types/progress"
-import { searchProviders } from "@/types/search"
-import type { SearchInput, SearchResult } from "@/types/search"
 import type { TaskRunRecord } from "@/types/tasks"
 
 const activeStatuses = new Set(["queued", "running"])
 
-type SearchRunCellProps = {
+type IndexRunCellProps = {
   run: TaskRunRecord
   density: "live" | "recent"
 }
 
-export function SearchRunCell({ run, density }: SearchRunCellProps) {
+export function IndexRunCell({ run, density }: IndexRunCellProps) {
   const [expanded, setExpanded] = useState(false)
   const [now, setNow] = useState(() => Date.now())
-  const cancelMutation = useCancelSearchRun()
+  const cancelMutation = useCancelIndexRun()
   const reduceMotion = useReducedMotion()
   const active = activeStatuses.has(run.status)
-  const events = useTaskRunProgress("search", run.id, active)
-  const input = run.input_json as SearchInput
+  const events = useTaskRunProgress("index", run.id, active)
+  const input = run.input_json as IndexInput
   const latest = events.at(-1)
 
   useEffect(() => {
@@ -52,7 +51,7 @@ export function SearchRunCell({ run, density }: SearchRunCellProps) {
     return () => window.clearInterval(timer)
   }, [active])
 
-  const resultQuery = useTaskRunResult<SearchResult[]>(
+  const resultQuery = useTaskRunResult<IndexLink[]>(
     run.id,
     expanded && run.status === "succeeded"
   )
@@ -66,39 +65,76 @@ export function SearchRunCell({ run, density }: SearchRunCellProps) {
       : active
         ? "Getting things moving…"
         : terminalMessage(run)
-  const progressEvent = events.findLast(
-    (event) => event.phase === "search_provider"
+  const depthProgressEvent = events.findLast(
+    (event) => event.phase === "index_depth"
   )
+  const latestBatchEventIndex = events.findLastIndex(
+    (event) => event.phase === "crawl_batch"
+  )
+  const latestBatchEvent =
+    latestBatchEventIndex >= 0 ? events[latestBatchEventIndex] : undefined
+  const batchProgressEvent =
+    latestBatchEvent?.status === "started" ? latestBatchEvent : undefined
+  const batchTotal = batchProgressEvent?.total ?? null
+  const pagesCompletedSinceCheckpoint = batchProgressEvent
+    ? new Set(
+        events
+          .slice(latestBatchEventIndex + 1)
+          .filter(
+            (event) =>
+              event.phase === "crawl" &&
+              (event.status === "succeeded" || event.status === "failed")
+          )
+          .map((event) => event.operation_id)
+      ).size
+    : 0
+  const batchCurrent = batchProgressEvent
+    ? Math.min(
+        batchTotal ?? Number.POSITIVE_INFINITY,
+        (batchProgressEvent.current ?? 0) + pagesCompletedSinceCheckpoint
+      )
+    : null
   const progressValue =
-    progressEvent?.current !== undefined && progressEvent.total
-      ? Math.min(100, (progressEvent.current / progressEvent.total) * 100)
-      : null
-  const liveResultCount = getMetadataNumber(progressEvent, "results")
-  const savedResultCount = getSavedResultCount(run)
-  const resultCount = liveResultCount ?? savedResultCount
+    batchCurrent !== null && batchCurrent > 0 && batchTotal
+      ? Math.min(100, (batchCurrent / batchTotal) * 100)
+      : depthProgressEvent?.current !== undefined && depthProgressEvent.total
+        ? Math.min(
+            100,
+            (depthProgressEvent.current / depthProgressEvent.total) * 100
+          )
+        : null
+  const liveLinkCount = getMetadataNumber(
+    depthProgressEvent,
+    "discovered_links"
+  )
+  const savedLinkCount = getSavedLinkCount(run)
+  const linkCount = liveLinkCount ?? savedLinkCount
   const elapsedFrom = run.started_at ?? run.queued_at
   const elapsedTo = run.finished_at ? new Date(run.finished_at).getTime() : now
   const elapsedSeconds = Math.max(
     0,
     Math.round((elapsedTo - new Date(elapsedFrom).getTime()) / 1000)
   )
-  const providerLabel =
-    searchProviders.find((provider) => provider.value === input.provider)
-      ?.label ?? input.provider
   const messageKey = `${latest?.operation_id ?? run.status}-${latest?.status ?? "idle"}-${latest?.message ?? ""}-${latest?.current ?? ""}`
 
   const rowContent = (
     <>
       <PlaygroundRunStatusMark
         status={run.status}
-        activeIcon={<SearchIcon className="relative size-3.5" />}
+        activeIcon={<DatabaseIcon className="relative size-3.5" />}
       />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-sm font-medium">{input.query}</span>
-          {active && resultCount !== null && resultCount > 0 ? (
+          <span className="truncate text-sm font-medium" title={input.url}>
+            {input.url}
+          </span>
+          {active && batchCurrent !== null && batchCurrent > 0 && batchTotal ? (
             <span className="shrink-0 rounded-full bg-link/10 px-1.5 py-0.5 text-[10px] font-medium text-link tabular-nums">
-              {resultCount} found
+              {batchCurrent}/{batchTotal} pages
+            </span>
+          ) : active && linkCount !== null && linkCount > 0 ? (
+            <span className="shrink-0 rounded-full bg-link/10 px-1.5 py-0.5 text-[10px] font-medium text-link tabular-nums">
+              {linkCount} found
             </span>
           ) : null}
         </div>
@@ -120,8 +156,8 @@ export function SearchRunCell({ run, density }: SearchRunCellProps) {
       </div>
       <div className="hidden shrink-0 items-center gap-2 text-xs text-muted-foreground sm:flex">
         <span>
-          {providerLabel} · {input.max_pages}{" "}
-          {input.max_pages === 1 ? "page" : "pages"}
+          Depth {input.max_depth}
+          {input.dedupe ? " · dedupe" : ""}
         </span>
         <span className="text-border">/</span>
         <span className="min-w-8 text-right tabular-nums">
@@ -135,7 +171,7 @@ export function SearchRunCell({ run, density }: SearchRunCellProps) {
               <Button
                 size="icon-sm"
                 variant="ghost"
-                aria-label={`Cancel search for ${input.query}`}
+                aria-label={`Cancel index for ${input.url}`}
                 disabled={cancelMutation.isPending}
                 onClick={() => cancelMutation.mutate(run.id)}
               />
@@ -147,9 +183,9 @@ export function SearchRunCell({ run, density }: SearchRunCellProps) {
         </Tooltip>
       ) : run.status === "succeeded" ? (
         <span className="ml-1 flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-          {resultCount !== null ? (
+          {linkCount !== null ? (
             <span className="hidden tabular-nums md:inline">
-              {resultCount} {resultCount === 1 ? "result" : "results"}
+              {linkCount} {linkCount === 1 ? "link" : "links"}
             </span>
           ) : null}
           {expanded ? (
@@ -204,13 +240,13 @@ export function SearchRunCell({ run, density }: SearchRunCellProps) {
       <CollapsibleContent className="flex h-[var(--collapsible-panel-height)] flex-col justify-end overflow-hidden transition-[height] duration-300 ease-out data-ending-style:h-0 data-starting-style:h-0 motion-reduce:transition-none [&[hidden]:not([hidden='until-found'])]:hidden">
         <div className="border-t bg-background/35 p-4">
           {resultQuery.isPending ? (
-            <p className="text-sm text-muted-foreground">Loading results…</p>
+            <p className="text-sm text-muted-foreground">Loading links…</p>
           ) : resultQuery.isError ? (
             <p className="text-sm text-destructive">
               {resultQuery.error.message}
             </p>
           ) : (
-            <SearchResults results={resultQuery.data ?? []} />
+            <IndexResults links={resultQuery.data ?? []} />
           )}
         </div>
       </CollapsibleContent>
@@ -226,16 +262,16 @@ function getMetadataNumber(
   return typeof value === "number" ? value : null
 }
 
-function getSavedResultCount(run: TaskRunRecord): number | null {
-  const results = run.output_json?.results
-  return Array.isArray(results) ? results.length : null
+function getSavedLinkCount(run: TaskRunRecord): number | null {
+  const links = run.output_json?.links
+  return Array.isArray(links) ? links.length : null
 }
 
 function terminalMessage(run: TaskRunRecord) {
   if (run.status === "succeeded") return "Ready to explore"
-  if (run.status === "cancelled") return "Search cancelled"
-  if (run.status === "skipped") return "Search skipped"
-  return run.error ?? "Search failed"
+  if (run.status === "cancelled") return "Index cancelled"
+  if (run.status === "skipped") return "Index skipped"
+  return run.error ?? "Index failed"
 }
 
 function formatElapsed(seconds: number) {
