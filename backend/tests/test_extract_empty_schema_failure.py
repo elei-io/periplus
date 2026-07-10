@@ -30,7 +30,7 @@ class ExtractEmptySchemaFailureTests(TestCase):
             duration_seconds=0.1,
             html="<html></html>",
             crawl={"success": True},
-            warnings=[_warning("app_shell")],
+            artifact_warnings=[_warning("app_shell")],
         )
 
         self.assertIsNone(_clean_empty_schema_error(page, [_warning("empty_extraction")]))

@@ -1,4 +1,4 @@
-import type { CrawlProgressEvent } from "@/types/index"
+import type { ProgressEvent } from "@/types/progress"
 import type { QualityWarning } from "@/types/extract"
 
 export type CrawlInput = {
@@ -31,7 +31,7 @@ export type CrawlOutput = {
 export type CrawlStreamEvent =
   | {
       type: "progress"
-      data: CrawlProgressEvent
+      data: ProgressEvent
     }
   | {
       type: "result"

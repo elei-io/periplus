@@ -7,7 +7,7 @@ from rich.table import Table
 
 from actions.search.schemas import SearchProvider, SearchResult
 from cli.action_runs import run_action
-from cli.progress import CrawlProgressRenderer
+from cli.progress import ProgressRenderer
 
 console = Console()
 _SEARCH_ADAPTER = TypeAdapter(list[SearchResult])
@@ -18,7 +18,7 @@ def search(
     max_pages: Annotated[int, typer.Option("--max-pages", "-p", min=1, max=25)] = 1,
     provider: Annotated[SearchProvider, typer.Option("--provider")] = "duckduckgo",
 ) -> None:
-    with CrawlProgressRenderer(console) as progress:
+    with ProgressRenderer(console) as progress:
         results = run_action(
             primitive="search",
             input_value={
@@ -27,7 +27,7 @@ def search(
                 "provider": provider,
             },
             response_adapter=_SEARCH_ADAPTER,
-            progress_callback=progress.callback,
+            progress_consumer=progress.callback,
         )
 
     table = Table(title=f"Search results for {query!r}")

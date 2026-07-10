@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from actions.crawl.schemas import CrawlPage
 from actions.crawl.service import crawl as crawl_service
-from actions.shared.progress import CrawlProgressCallback
+from actions.shared.progress import ProgressEvent, ProgressReporter, emit_progress
 
 from .schemas import IndexLink
 
@@ -106,7 +106,7 @@ async def index(
     exclude_crawl: list[str] | None = None,
     include_result: list[str] | None = None,
     exclude_result: list[str] | None = None,
-    progress_callback: CrawlProgressCallback | None = None,
+    progress_reporter: ProgressReporter | None = None,
     session: Session | None = None,
     task_run_id: UUID | None = None,
 ) -> list[IndexLink]:
@@ -129,9 +129,24 @@ async def index(
         if not page_urls:
             break
 
+        operation_id = f"{task_run_id or 'index'}:depth:{depth}"
+        await emit_progress(
+            progress_reporter,
+            ProgressEvent(
+                operation_id=operation_id,
+                phase="index_depth",
+                status="started",
+                resource=start_url,
+                current=depth + 1,
+                total=max_depth + 1,
+                message=f"Indexing depth {depth} with {len(page_urls)} pages.",
+                metadata={"depth": depth, "pages": len(page_urls)},
+            ),
+        )
+
         crawl_output = await crawl_service(
             urls=page_urls,
-            progress_callback=progress_callback,
+            progress_reporter=progress_reporter,
             session=session,
             task_run_id=task_run_id,
         )
@@ -172,6 +187,23 @@ async def index(
                     next_frontier.append(index_link.url)
 
         frontier = next_frontier
+        await emit_progress(
+            progress_reporter,
+            ProgressEvent(
+                operation_id=operation_id,
+                phase="index_depth",
+                status="succeeded",
+                resource=start_url,
+                current=depth + 1,
+                total=max_depth + 1,
+                message=f"Depth {depth} complete; {len(results)} links discovered.",
+                metadata={
+                    "depth": depth,
+                    "discovered_links": len(results),
+                    "next_pages": len(next_frontier),
+                },
+            ),
+        )
 
     filtered_results = _filter_results(
         links=results,
@@ -193,7 +225,7 @@ def index_sync(
     exclude_crawl: list[str] | None = None,
     include_result: list[str] | None = None,
     exclude_result: list[str] | None = None,
-    progress_callback: CrawlProgressCallback | None = None,
+    progress_reporter: ProgressReporter | None = None,
 ) -> list[IndexLink]:
     return asyncio.run(
         index(
@@ -204,6 +236,6 @@ def index_sync(
             exclude_crawl=exclude_crawl,
             include_result=include_result,
             exclude_result=exclude_result,
-            progress_callback=progress_callback,
+            progress_reporter=progress_reporter,
         )
     )

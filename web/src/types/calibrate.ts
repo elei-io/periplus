@@ -1,4 +1,5 @@
-import type { CrawlProgressEvent, CrawlMode, CrawlWait } from "@/types/index"
+import type { CrawlMode, CrawlWait } from "@/types/index"
+import type { ProgressEvent } from "@/types/progress"
 import type { CrawlPage } from "@/types/crawl"
 
 export type CalibrationTemplate =
@@ -61,7 +62,7 @@ export type CalibrationOutput = {
 export type CalibrateStreamEvent =
   | {
       type: "progress"
-      data: CrawlProgressEvent
+      data: ProgressEvent
     }
   | {
       type: "result"

@@ -17,10 +17,11 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs"
-import type { CrawlProgressEvent, IndexLink } from "@/types/index"
+import type { IndexLink } from "@/types/index"
+import type { ProgressEvent } from "@/types/progress"
 
 type IndexResultsProps = {
-  events: CrawlProgressEvent[]
+  events: ProgressEvent[]
   links: IndexLink[]
 }
 

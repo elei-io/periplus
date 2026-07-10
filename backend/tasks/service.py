@@ -4,7 +4,7 @@ from hashlib import sha256
 from uuid import UUID
 
 from croniter import croniter
-from sqlalchemy import exists, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
@@ -14,9 +14,8 @@ from actions.index.schemas import Input as IndexInput
 from actions.crawl.schemas import Input as CrawlInput
 from actions.calibrate.schemas import Input as CalibrateInput
 from actions.shared.data_schema.schemas import Input as SchemaInput
-from actions.shared.progress import CrawlProgressCallback
 
-from .models import Task, TaskRun
+from .models import Task, TaskRun, WorkerHeartbeat
 from .schemas import (
     SearchInput,
     TaskCreate,
@@ -24,7 +23,9 @@ from .schemas import (
     TaskPrimitive,
     TaskRecord,
     TaskRunRecord,
+    TaskRunSubmission,
     TaskRunTriggerKind,
+    TaskOperationsRecord,
     TaskScheduleJson,
     TaskUpdate,
 )
@@ -309,6 +310,31 @@ def list_task_runs(
     return [_run_record(run) for run in session.scalars(statement)]
 
 
+def list_recent_task_runs(
+    session: Session,
+    primitive: TaskPrimitive,
+    terminal_limit: int = 3,
+) -> list[TaskRunRecord]:
+    active = list(
+        session.scalars(
+            select(TaskRun)
+            .join(Task, Task.id == TaskRun.task_id)
+            .where(Task.primitive == primitive, TaskRun.status.in_(_ACTIVE_RUN_STATUSES))
+            .order_by(TaskRun.queued_at.desc())
+        )
+    )
+    terminal = list(
+        session.scalars(
+            select(TaskRun)
+            .join(Task, Task.id == TaskRun.task_id)
+            .where(Task.primitive == primitive, TaskRun.status.not_in(_ACTIVE_RUN_STATUSES))
+            .order_by(TaskRun.finished_at.desc().nullslast(), TaskRun.queued_at.desc())
+            .limit(terminal_limit)
+        )
+    )
+    return [_run_record(run) for run in (*active, *terminal)]
+
+
 def enqueue_task_run(
     session: Session,
     task: Task,
@@ -362,14 +388,11 @@ def enqueue_due_task_runs(session: Session, limit: int = 20) -> int:
     return enqueued
 
 
-async def execute_ad_hoc_task_run(
+def enqueue_ad_hoc_task_run(
     session: Session,
     primitive: TaskPrimitive,
     input_value: dict,
-    progress_callback: CrawlProgressCallback | None = None,
-) -> object | None:
-    from .executor import execute_run
-
+) -> TaskRunSubmission:
     input_json = _validate_input(primitive, input_value)
     identity_key = _ad_hoc_identity_key(primitive, input_json)
     task = session.scalar(select(Task).where(Task.identity_key == identity_key))
@@ -404,41 +427,98 @@ async def execute_ad_hoc_task_run(
     now = datetime.now(UTC)
     run = TaskRun(
         task_id=task.id,
-        status="running",
+        status="queued",
         trigger_kind="manual",
         queued_at=now,
-        started_at=now,
         input_json=task.input_json,
         warnings_json={},
     )
-    session.add(run)
-    session.flush()
-    run_id = run.id
-    session.commit()
-    response = await execute_run(session=session, run_id=run_id, progress_callback=progress_callback)
+    try:
+        with session.begin_nested():
+            session.add(run)
+            session.flush()
+    except IntegrityError as exc:
+        raise TaskRunConflictError("Task already has an active run.") from exc
+    return TaskRunSubmission(task_id=task.id, run_id=run.id)
+
+
+def get_task_run(session: Session, run_id: UUID) -> TaskRunRecord:
     run = session.get(TaskRun, run_id)
     if run is None:
-        raise RuntimeError("Task run disappeared during execution.")
-    if run.status == "failed":
-        session.commit()
-        raise RuntimeError(run.error or "Task run failed.")
-
-    return response
+        raise TaskNotFoundError(f"Task run {run_id} was not found.")
+    return _run_record(run)
 
 
-def execute_ad_hoc_task_run_sync(
-    session: Session,
-    primitive: TaskPrimitive,
-    input_value: dict,
-    progress_callback: CrawlProgressCallback | None = None,
-) -> object | None:
-    import asyncio
+def get_task_run_result(session: Session, run_id: UUID) -> object:
+    run = session.get(TaskRun, run_id)
+    if run is None:
+        raise TaskNotFoundError(f"Task run {run_id} was not found.")
+    if run.status in _ACTIVE_RUN_STATUSES:
+        raise TaskRunConflictError("Task run has not finished.")
+    if run.status != "succeeded":
+        raise RuntimeError(run.error or f"Task run {run.status}.")
 
-    return asyncio.run(
-        execute_ad_hoc_task_run(
-            session=session,
-            primitive=primitive,
-            input_value=input_value,
-            progress_callback=progress_callback,
+    output = run.output_json or {}
+    if run.task.primitive == "search":
+        return output.get("results", [])
+    if run.task.primitive == "index":
+        return output.get("links", [])
+    return output
+
+
+def request_task_run_cancellation(session: Session, run_id: UUID) -> TaskRunRecord:
+    run = session.get(TaskRun, run_id)
+    if run is None:
+        raise TaskNotFoundError(f"Task run {run_id} was not found.")
+    if run.status in {"succeeded", "failed", "cancelled", "skipped"}:
+        return _run_record(run)
+
+    now = datetime.now(UTC)
+    run.cancellation_requested_at = now
+    if run.status == "queued":
+        run.status = "cancelled"
+        run.cancelled_at = now
+        run.finished_at = now
+        run.error = "Task run cancelled before execution."
+    session.flush()
+    return _run_record(run)
+
+
+def task_operations(session: Session, stale_after_seconds: int = 30) -> TaskOperationsRecord:
+    now = datetime.now(UTC)
+    workers = list(session.scalars(select(WorkerHeartbeat).order_by(WorkerHeartbeat.worker_id)))
+    counts = dict(session.execute(select(TaskRun.status, func.count()).group_by(TaskRun.status)).all())
+    oldest = session.scalar(select(func.min(TaskRun.queued_at)).where(TaskRun.status == "queued"))
+    stale_before = now - timedelta(seconds=stale_after_seconds)
+    recent = list(
+        session.scalars(
+            select(TaskRun)
+            .where(TaskRun.started_at.is_not(None), TaskRun.finished_at.is_not(None))
+            .order_by(TaskRun.finished_at.desc())
+            .limit(100)
         )
+    )
+    queue_latencies = [
+        (run.started_at - run.queued_at).total_seconds()
+        for run in recent
+        if run.started_at is not None
+    ]
+    execution_times = [
+        (run.finished_at - run.started_at).total_seconds()
+        for run in recent
+        if run.started_at is not None and run.finished_at is not None
+    ]
+    return TaskOperationsRecord(
+        queued=counts.get("queued", 0),
+        running=counts.get("running", 0),
+        cancelling=session.scalar(
+            select(func.count()).select_from(TaskRun).where(
+                TaskRun.status == "running", TaskRun.cancellation_requested_at.is_not(None)
+            )
+        ) or 0,
+        stale_workers=sum(not worker.stopping and worker.last_seen_at < stale_before for worker in workers),
+        oldest_queued_at=oldest,
+        average_queue_latency_seconds=(sum(queue_latencies) / len(queue_latencies) if queue_latencies else None),
+        average_execution_seconds=(sum(execution_times) / len(execution_times) if execution_times else None),
+        workers=workers,
     )

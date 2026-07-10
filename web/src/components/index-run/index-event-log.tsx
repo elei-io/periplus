@@ -4,21 +4,19 @@ import { useMemo } from "react"
 import { Badge } from "@/components/ui/badge"
 import { truncateMiddle } from "@/lib/truncate"
 import { cn } from "@/lib/utils"
-import type { CrawlProgressEvent } from "@/types/index"
+import type { ProgressEvent } from "@/types/progress"
 
 type IndexEventLogProps = {
-  events: CrawlProgressEvent[]
+  events: ProgressEvent[]
 }
 
 export function IndexEventLog({ events }: IndexEventLogProps) {
   const orderedEvents = useMemo(() => {
-    const completed = new Set(
-      events
-        .filter((event) => event.status !== "started")
-        .map((event) => eventKey(event))
-    )
-    return events
-      .filter((event) => event.status !== "started" || !completed.has(eventKey(event)))
+    const latestByOperation = new Map<string, ProgressEvent>()
+    for (const event of events) {
+      latestByOperation.set(event.operation_id, event)
+    }
+    return [...latestByOperation.values()]
   }, [events])
 
   if (orderedEvents.length === 0) {
@@ -33,7 +31,7 @@ export function IndexEventLog({ events }: IndexEventLogProps) {
     <div className="h-full min-h-0 space-y-1.5 overflow-auto rounded-md border p-2">
       {orderedEvents.map((event, index) => (
         <LogEventItem
-          key={`${event.status}-${event.url}-${index}`}
+          key={`${event.operation_id}-${index}`}
           event={event}
         />
       ))}
@@ -41,17 +39,14 @@ export function IndexEventLog({ events }: IndexEventLogProps) {
   )
 }
 
-function eventKey(event: CrawlProgressEvent) {
-  return `${event.label}\n${event.url}`
-}
-
 type LogEventItemProps = {
-  event: CrawlProgressEvent
+  event: ProgressEvent
 }
 
 function LogEventItem({ event }: LogEventItemProps) {
+  const resource = event.resource ?? ""
   const Icon =
-    event.status === "started"
+    event.status === "waiting" || event.status === "started"
       ? Loader2Icon
       : event.status === "succeeded"
         ? CheckCircle2Icon
@@ -62,7 +57,7 @@ function LogEventItem({ event }: LogEventItemProps) {
       <Icon
         className={cn(
           "mt-0.5 size-3.5 shrink-0",
-          event.status === "started" && "text-muted-foreground",
+          (event.status === "waiting" || event.status === "started") && "text-muted-foreground",
           event.status === "succeeded" && "text-emerald-500",
           event.status === "failed" && "text-destructive"
         )}
@@ -70,7 +65,7 @@ function LogEventItem({ event }: LogEventItemProps) {
       <div className="grid min-w-0 gap-0.5">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <Badge className="h-5 px-1.5 text-[11px]" variant="outline">
-            {event.label}
+            {event.phase.replaceAll("_", " ")}
           </Badge>
           <span className="text-xs text-muted-foreground">{event.status}</span>
           {typeof event.duration === "number" ? (
@@ -78,13 +73,21 @@ function LogEventItem({ event }: LogEventItemProps) {
               {event.duration.toFixed(2)}s
             </span>
           ) : null}
+          {typeof event.current === "number" && typeof event.total === "number" ? (
+            <span className="text-xs text-muted-foreground">
+              {event.current}/{event.total}
+            </span>
+          ) : null}
           <span
             className="min-w-0 truncate text-xs font-medium"
-            title={event.url}
+            title={resource}
           >
-            {truncateMiddle(event.url)}
+            {truncateMiddle(resource)}
           </span>
         </div>
+        {event.message ? (
+          <div className="truncate text-xs text-muted-foreground">{event.message}</div>
+        ) : null}
         {event.error ? (
           <div className="truncate text-xs text-destructive">{event.error}</div>
         ) : null}

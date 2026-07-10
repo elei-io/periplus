@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from api.routers import (
     artifacts,
+    calibrate,
     crawl,
     crawl_policies,
     crawls,
@@ -12,11 +13,13 @@ from api.routers import (
     schema,
     search,
     tasks,
+    task_runs,
     urls,
 )
 
 app = FastAPI(title="Atlas API")
 app.include_router(artifacts.router)
+app.include_router(calibrate.router)
 app.include_router(data_schemas.router)
 app.include_router(extract.router)
 app.include_router(index.router)
@@ -27,4 +30,5 @@ app.include_router(crawl_policies.router)
 app.include_router(crawls.router)
 app.include_router(search.router)
 app.include_router(tasks.router)
+app.include_router(task_runs.router)
 app.include_router(urls.router)

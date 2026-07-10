@@ -3,38 +3,53 @@ import { useMemo } from "react"
 
 import { Progress } from "@/components/ui/progress"
 import { truncateMiddle } from "@/lib/truncate"
-import type { CrawlProgressEvent } from "@/types/index"
+import type { ProgressEvent } from "@/types/progress"
 
 type IndexProgressProps = {
-  events: CrawlProgressEvent[]
+  events: ProgressEvent[]
 }
 
 export function IndexProgress({ events }: IndexProgressProps) {
   const summary = useMemo(() => {
-    const started = events.filter((event) => event.status === "started").length
-    const succeeded = events.filter(
-      (event) => event.status === "succeeded"
-    ).length
-    const failed = events.filter((event) => event.status === "failed").length
+    const latestByOperation = new Map<string, ProgressEvent>()
+    for (const event of events) latestByOperation.set(event.operation_id, event)
+    const operations = [...latestByOperation.values()]
+    const started = operations.length
+    const succeeded = operations.filter((event) => event.status === "succeeded").length
+    const failed = operations.filter((event) => event.status === "failed").length
     const completed = succeeded + failed
-    const progress = started === 0 ? 0 : Math.round((completed / started) * 100)
 
     return {
       completed,
       failed,
-      progress: Math.min(progress, 100),
       started,
       succeeded,
     }
   }, [events])
 
   const latestEvent = events.at(-1)
+  const latestResource = latestEvent?.resource ?? ""
   const latestMessage = latestEvent
-    ? `${latestEvent.status} ${latestEvent.label} ${truncateMiddle(latestEvent.url)}`
+    ? [
+        latestEvent.message ??
+          `${latestEvent.status} ${latestEvent.phase.replaceAll("_", " ")}`,
+        latestResource ? truncateMiddle(latestResource) : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
     : "Waiting for crawl activity."
   const latestFullMessage = latestEvent
-    ? `${latestEvent.status} ${latestEvent.label} ${latestEvent.url}`
+    ? [latestEvent.message ?? `${latestEvent.status} ${latestEvent.phase}`, latestResource]
+        .filter(Boolean)
+        .join(" · ")
     : latestMessage
+  const determinateProgress =
+    latestEvent &&
+    typeof latestEvent.current === "number" &&
+    typeof latestEvent.total === "number" &&
+    latestEvent.total > 0
+      ? Math.min(100, Math.round((latestEvent.current / latestEvent.total) * 100))
+      : null
 
   return (
     <section className="w-full min-w-0 px-4 text-card-foreground">
@@ -55,7 +70,7 @@ export function IndexProgress({ events }: IndexProgressProps) {
           </div>
         </div>
 
-        <Progress className="h-1" value={summary.progress} />
+        <Progress className="h-1" value={determinateProgress} />
       </div>
     </section>
   )

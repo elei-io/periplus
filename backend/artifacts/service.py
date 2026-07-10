@@ -26,6 +26,7 @@ class ArtifactCleanupResult:
     files_deleted: int
     missing_files: int
     errors: int
+    anomalies: tuple[dict[str, str], ...] = ()
 
 
 def artifacts_root() -> Path:
@@ -273,6 +274,23 @@ def cleanup_invalidated_artifacts(
     files_deleted = 0
     missing_files = 0
     errors = 0
+    anomalies: list[dict[str, str]] = []
+
+    def record_anomaly(artifact: Artifact, reason: str, path: Path, error: object | None = None) -> None:
+        nonlocal errors
+        errors += 1
+        if len(anomalies) >= 10:
+            return
+        anomaly = {
+            "artifact_id": str(artifact.id),
+            "reason": reason,
+            "path": str(path),
+            "artifacts_root": str(root),
+        }
+        if error is not None:
+            anomaly["error"] = str(error)
+        anomalies.append(anomaly)
+
     for artifact in session.scalars(statement):
         from tasks.models import TaskRunArtifact
 
@@ -283,21 +301,21 @@ def cleanup_invalidated_artifacts(
             resolved_path = path
 
         if root not in resolved_path.parents and resolved_path != root:
-            errors += 1
+            record_anomaly(artifact, "outside_root", resolved_path)
             continue
 
         try:
             if resolved_path.exists():
                 if not resolved_path.is_file():
-                    errors += 1
+                    record_anomaly(artifact, "not_file", resolved_path)
                     continue
                 resolved_path.unlink()
                 files_deleted += 1
                 _remove_empty_parents(resolved_path.parent, stop_at=root)
             else:
                 missing_files += 1
-        except OSError:
-            errors += 1
+        except OSError as exc:
+            record_anomaly(artifact, "delete_failed", resolved_path, exc)
             continue
 
         for usage in session.scalars(select(TaskRunArtifact).where(TaskRunArtifact.artifact_id == artifact.id)):
@@ -311,6 +329,7 @@ def cleanup_invalidated_artifacts(
         files_deleted=files_deleted,
         missing_files=missing_files,
         errors=errors,
+        anomalies=tuple(anomalies),
     )
 
 

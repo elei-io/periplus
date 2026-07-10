@@ -270,17 +270,50 @@ class TaskRunRecord(BaseModel):
     triggered_by_effect_run_id: UUID | None = None
     data_schema_id: UUID | None = None
     queued_at: datetime
-    leased_by: str | None = None
-    leased_at: datetime | None = None
-    leased_until: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    cancellation_requested_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    retry_at: datetime | None = None
+    attempt: int
+    failed_attempts: int
+    max_attempts: int
     input_json: dict[str, Any]
     output_json: dict[str, Any] | None = None
     warnings_json: dict[str, Any]
     error: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class TaskRunSubmission(BaseModel):
+    task_id: UUID
+    run_id: UUID
+    status: Literal["queued"] = "queued"
+
+
+class WorkerHeartbeatRecord(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    worker_id: str
+    started_at: datetime
+    last_seen_at: datetime
+    capacity: int
+    active_run_count: int
+    stopping: bool
+    version: str | None = None
+
+
+class TaskOperationsRecord(BaseModel):
+    queued: int
+    running: int
+    cancelling: int
+    stale_workers: int
+    oldest_queued_at: datetime | None = None
+    average_queue_latency_seconds: float | None = None
+    average_execution_seconds: float | None = None
+    nats_available: bool | None = None
+    workers: list[WorkerHeartbeatRecord]
 
 
 class TaskRunCrawlRecord(BaseModel):

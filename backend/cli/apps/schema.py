@@ -7,7 +7,7 @@ from rich.json import JSON
 
 from actions.shared.data_schema.schemas import SchemaOutput
 from cli.action_runs import run_action
-from cli.progress import CrawlProgressRenderer
+from cli.progress import ProgressRenderer
 
 console = Console()
 _SCHEMA_ADAPTER = TypeAdapter(SchemaOutput)
@@ -33,7 +33,7 @@ def schema(
         typer.Option("--schema-id", help="Stable identifier for the generated schema.", hidden=True),
     ] = None,
 ) -> None:
-    with CrawlProgressRenderer(console) as progress:
+    with ProgressRenderer(console) as progress:
         output = run_action(
             primitive="schema",
             input_value={
@@ -44,7 +44,7 @@ def schema(
                 "schema_id": schema_id,
             },
             response_adapter=_SCHEMA_ADAPTER,
-            progress_callback=progress.callback,
+            progress_consumer=progress.callback,
         )
 
     console.print(f"[bold]Schema[/bold] {output.schema_id} ({output.schema_type}, generated)")

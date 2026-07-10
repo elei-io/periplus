@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from actions.crawl.service import crawl as crawl_service
 from actions.shared.llm import openrouter_llm_config
-from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
+from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
 from data_schemas.service import (
     create_data_schema,
     default_match_for_url,
@@ -19,6 +19,7 @@ from data_schemas.service import (
     record_data_schema_use,
     replace_data_schema,
 )
+from tasks.context import commit_task_checkpoint
 
 from .schemas import SchemaOutput, SchemaType
 
@@ -52,13 +53,13 @@ def _schema_id(
 
 async def _crawl_html(
     url: str,
-    progress_callback: CrawlProgressCallback | None,
+    progress_reporter: ProgressReporter | None,
     session: Session | None,
     task_run_id: UUID | None,
 ) -> str:
     output = await crawl_service(
         urls=[url],
-        progress_callback=progress_callback,
+        progress_reporter=progress_reporter,
         session=session,
         task_run_id=task_run_id,
     )
@@ -125,7 +126,7 @@ async def schema(
     schema_type: SchemaType = "css",
     schema_id: str | None = None,
     html: str | None = None,
-    progress_callback: CrawlProgressCallback | None = None,
+    progress_reporter: ProgressReporter | None = None,
     session: Session | None = None,
     task_run_id: UUID | None = None,
     match: str | None = None,
@@ -138,9 +139,9 @@ async def schema(
         schema_type=schema_type,
         schema_id=schema_id,
     )
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(url=url, label="schema", status="started"),
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(resource=url, phase="schema", status="started", message="Preparing an extraction schema."),
     )
     start_time = time.perf_counter()
     match_value = match or default_match_for_url(url)
@@ -154,12 +155,15 @@ async def schema(
         )
         if existing is not None:
             record_data_schema_use(session, task_run_id=task_run_id, schema=existing)
-            await emit_crawl_progress(
-                progress_callback,
-                CrawlProgressEvent(
-                    url=url,
-                    label="schema",
+            commit_task_checkpoint(session)
+            await emit_progress(
+                progress_reporter,
+                ProgressEvent(
+                    resource=url,
+                    phase="schema",
                     status="succeeded",
+                    message="Reused an existing extraction schema.",
+                    metadata={"reused": True, "schema_type": schema_type},
                     duration=time.perf_counter() - start_time,
                 ),
             )
@@ -168,17 +172,24 @@ async def schema(
                 schema_type=schema_type,
                 extraction_schema=existing.schema_json,
             )
+        commit_task_checkpoint(session)
 
     target_json_example = target_json_example or await _generate_target_json_example(prompt)
     html = html or await _crawl_html(
         url=url,
-        progress_callback=progress_callback,
+        progress_reporter=progress_reporter,
         session=session,
         task_run_id=task_run_id,
     )
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(url=url, label="generate schema", status="started"),
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            resource=url,
+            phase="generate_schema",
+            status="started",
+            message="Generating and validating the extraction schema.",
+            metadata={"schema_type": schema_type},
+        ),
     )
     generation_start_time = time.perf_counter()
     try:
@@ -191,33 +202,38 @@ async def schema(
             validate=True,
         )
     except Exception as exc:
-        await emit_crawl_progress(
-            progress_callback,
-            CrawlProgressEvent(
-                url=url,
-                label="generate schema",
+        await emit_progress(
+            progress_reporter,
+            ProgressEvent(
+                resource=url,
+                phase="generate_schema",
                 status="failed",
+                message="Schema generation failed.",
                 duration=time.perf_counter() - generation_start_time,
                 error=str(exc),
             ),
         )
         raise
 
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(
-            url=url,
-            label="generate schema",
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            resource=url,
+            phase="generate_schema",
             status="succeeded",
+            message="Extraction schema generated and validated.",
+            metadata={"schema_type": schema_type},
             duration=time.perf_counter() - generation_start_time,
         ),
     )
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(
-            url=url,
-            label="schema",
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            resource=url,
+            phase="schema",
             status="succeeded",
+            message="Extraction schema ready.",
+            metadata={"reused": False, "schema_type": schema_type},
             duration=time.perf_counter() - start_time,
         ),
     )
@@ -252,6 +268,7 @@ async def schema(
                 inputs_json=inputs_json,
             )
         record_data_schema_use(session, task_run_id=task_run_id, schema=durable_schema)
+        commit_task_checkpoint(session)
         return SchemaOutput(
             schema_id=str(durable_schema.id),
             schema_type=schema_type,
@@ -272,7 +289,7 @@ def schema_sync(
     schema_type: SchemaType = "css",
     schema_id: str | None = None,
     html: str | None = None,
-    progress_callback: CrawlProgressCallback | None = None,
+    progress_reporter: ProgressReporter | None = None,
 ) -> SchemaOutput:
     return asyncio.run(
         schema(
@@ -282,6 +299,6 @@ def schema_sync(
             schema_type=schema_type,
             schema_id=schema_id,
             html=html,
-            progress_callback=progress_callback,
+            progress_reporter=progress_reporter,
         )
     )

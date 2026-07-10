@@ -12,8 +12,9 @@ from lxml import html as lxml_html
 from sqlalchemy.orm import Session
 
 from actions.shared.llm import openrouter_llm_config
-from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
+from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
 from query_schemas.service import find_query_schema_for_url, upsert_query_schema
+from tasks.context import commit_task_checkpoint
 
 from .schemas import QueryParamCandidate, QueryParamGroup, QueryParamOutput, QueryParamResult, QuerySchema
 
@@ -452,11 +453,16 @@ async def _extract_params_with_llm(
     *,
     url: str,
     candidates: list[QueryParamCandidate],
-    progress_callback: CrawlProgressCallback | None,
+    progress_reporter: ProgressReporter | None,
 ) -> tuple[list[QueryParamGroup], QuerySchema]:
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(url=url, label="extract query params", status="started"),
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            resource=url,
+            phase="extract_query_params",
+            status="started",
+            message="Generating the query-parameter schema.",
+        ),
     )
     started = time.perf_counter()
     config = _llm_config()
@@ -527,12 +533,14 @@ async def _extract_params_with_llm(
         elif "schema_json" in raw_schema:
             raw_schema["extraction_schema"] = raw_schema["schema_json"]
     query_schema = QuerySchema.model_validate(raw_schema) if raw_schema else _fallback_query_schema(params, candidates)
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(
-            url=url,
-            label="extract query params",
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            resource=url,
+            phase="extract_query_params",
             status="succeeded",
+            message=f"Extracted {len(params)} query parameters.",
+            metadata={"parameters": len(params)},
             duration=time.perf_counter() - started,
         ),
     )
@@ -545,7 +553,7 @@ async def query_from_page(
     html: str,
     crawl_id: UUID | None = None,
     artifact_ids: list[UUID] | None = None,
-    progress_callback: CrawlProgressCallback | None = None,
+    progress_reporter: ProgressReporter | None = None,
     session: Session | None = None,
     task_run_id: UUID | None = None,
 ) -> QueryParamOutput:
@@ -558,20 +566,29 @@ async def query_from_page(
             artifact_ids=artifact_ids,
         )
         if cached_output is not None:
+            commit_task_checkpoint(session)
             return cached_output
+        commit_task_checkpoint(session)
 
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(url=page_url, label="collect query evidence", status="started"),
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            resource=page_url,
+            phase="collect_query_evidence",
+            status="started",
+            message="Collecting pagination and query evidence.",
+        ),
     )
     started = time.perf_counter()
     candidates = _collect_candidates(page_url, html)
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(
-            url=page_url,
-            label="collect query evidence",
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            resource=page_url,
+            phase="collect_query_evidence",
             status="succeeded",
+            message=f"Collected {len(candidates)} query candidates.",
+            metadata={"candidates": len(candidates)},
             duration=time.perf_counter() - started,
         ),
     )
@@ -589,7 +606,7 @@ async def query_from_page(
         params, query_schema = await _extract_params_with_llm(
             url=_query_stripped(page_url),
             candidates=candidates,
-            progress_callback=progress_callback,
+            progress_reporter=progress_reporter,
         )
     except Exception:
         warnings.append("Schema inference unavailable; showing observed query parameters.")
@@ -611,6 +628,7 @@ async def query_from_page(
             task_run_id=task_run_id,
             crawl_id=crawl_id,
         )
+        commit_task_checkpoint(session)
 
     return QueryParamOutput(
         url=page_url,

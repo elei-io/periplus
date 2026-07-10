@@ -14,14 +14,19 @@ services:
       - ./.artifacts:/app/.artifacts
     environment:
       ARTIFACTS_ROOT: /app/.artifacts
+      ARTIFACT_CACHE_AGE_SECONDS: ${ARTIFACT_CACHE_AGE_SECONDS:-120}
       DATABASE_URL: postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}
+      NATS_URL: nats://atlas-nats:4222
+      NATS_RETENTION: ${NATS_RETENTION:-5m}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-openai/gpt-5.5}
       OPENROUTER_SCHEMA_MODEL: ${OPENROUTER_SCHEMA_MODEL:-openai/gpt-5.5}
       OPENROUTER_SEARCH_EXTRACTOR_MODEL: ${OPENROUTER_SEARCH_EXTRACTOR_MODEL:-openai/gpt-5.5}
-      OPENROUTER_PAGINATION_MODEL: ${OPENROUTER_PAGINATION_MODEL:-openai/gpt-5.5}
+      OPENROUTER_QUERY_PARAM_MODEL: ${OPENROUTER_QUERY_PARAM_MODEL:-openai/gpt-5.5}
     depends_on:
       atlas-postgres:
+        condition: service_healthy
+      atlas-nats:
         condition: service_healthy
 
   atlas-worker:
@@ -29,7 +34,6 @@ services:
       context: .
       dockerfile: docker/atlas/Dockerfile
     image: atlas-backend:local
-    container_name: atlas-worker
     working_dir: /app/backend
     command: python -m worker.app
     volumes:
@@ -37,17 +41,50 @@ services:
       - ./.artifacts:/app/.artifacts
     environment:
       ARTIFACTS_ROOT: /app/.artifacts
+      ARTIFACTS_CLEANUP_INTERVAL_SECONDS: ${ARTIFACTS_CLEANUP_INTERVAL_SECONDS:-60}
+      ARTIFACTS_CLEANUP_BATCH_SIZE: ${ARTIFACTS_CLEANUP_BATCH_SIZE:-100}
+      ARTIFACT_CACHE_AGE_SECONDS: ${ARTIFACT_CACHE_AGE_SECONDS:-120}
       ATLAS_WORKER_POLL_SECONDS: ${ATLAS_WORKER_POLL_SECONDS:-5}
+      ATLAS_WORKER_HEARTBEAT_SECONDS: ${ATLAS_WORKER_HEARTBEAT_SECONDS:-10}
+      ATLAS_WORKER_LEASE_SECONDS: ${ATLAS_WORKER_LEASE_SECONDS:-45}
+      ATLAS_TASK_RUN_TIMEOUT_SECONDS: ${ATLAS_TASK_RUN_TIMEOUT_SECONDS:-1800}
       ATLAS_SCHEDULER_BATCH_SIZE: ${ATLAS_SCHEDULER_BATCH_SIZE:-20}
+      ATLAS_WORKER_ID: ${ATLAS_WORKER_ID:-}
+      ATLAS_WORKER_CONCURRENCY: ${ATLAS_WORKER_CONCURRENCY:-4}
+      ATLAS_WORKER_SHUTDOWN_GRACE_SECONDS: ${ATLAS_WORKER_SHUTDOWN_GRACE_SECONDS:-30}
+      ATLAS_BROWSER_CONCURRENCY: ${ATLAS_BROWSER_CONCURRENCY:-12}
+      ATLAS_CRAWL_PERMIT_LEASE_SECONDS: ${ATLAS_CRAWL_PERMIT_LEASE_SECONDS:-60}
+      ATLAS_CRAWL_PERMIT_TIMEOUT_SECONDS: ${ATLAS_CRAWL_PERMIT_TIMEOUT_SECONDS:-120}
+      ATLAS_LOG_FORMAT: ${ATLAS_LOG_FORMAT:-text}
+      ATLAS_LOG_LEVEL: ${ATLAS_LOG_LEVEL:-INFO}
+      MAX_EXTRACT_ATTEMPTS: ${MAX_EXTRACT_ATTEMPTS:-2}
       DATABASE_URL: postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}
+      NATS_URL: nats://atlas-nats:4222
+      NATS_RETENTION: ${NATS_RETENTION:-5m}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-openai/gpt-5.5}
       OPENROUTER_SCHEMA_MODEL: ${OPENROUTER_SCHEMA_MODEL:-openai/gpt-5.5}
       OPENROUTER_SEARCH_EXTRACTOR_MODEL: ${OPENROUTER_SEARCH_EXTRACTOR_MODEL:-openai/gpt-5.5}
-      OPENROUTER_PAGINATION_MODEL: ${OPENROUTER_PAGINATION_MODEL:-openai/gpt-5.5}
+      OPENROUTER_QUERY_PARAM_MODEL: ${OPENROUTER_QUERY_PARAM_MODEL:-openai/gpt-5.5}
     depends_on:
       atlas-postgres:
         condition: service_healthy
+      atlas-nats:
+        condition: service_healthy
+
+  atlas-nats:
+    image: nats:2.11-alpine
+    container_name: atlas-nats
+    ports:
+      - "127.0.0.1:4222:4222"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
+    volumes:
+      - atlas-nats-data:/data
 
   atlas-postgres:
     image: postgres:18
@@ -69,3 +106,4 @@ services:
 
 volumes:
   atlas-postgres-data:
+  atlas-nats-data:

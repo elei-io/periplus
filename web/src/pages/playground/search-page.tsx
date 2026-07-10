@@ -1,110 +1,46 @@
-import { useEffect, useState } from "react"
-import type { ReactNode } from "react"
-
-import { IndexProgress } from "@/components/index-run/index-progress"
+import { PlaygroundPageHeader } from "@/components/playground-page-header"
 import { SearchForm } from "@/components/search-run/search-form"
-import { SearchResults } from "@/components/search-run/search-results"
-import { useSearchRun } from "@/hooks/use-search-run"
-import { cn } from "@/lib/utils"
+import { SearchRunStack } from "@/components/search-run/search-run-stack"
+import { useSearchRuns, useSubmitSearch } from "@/hooks/use-search-runs"
+
+const activeStatuses = new Set(["queued", "running"])
+const recentStatuses = new Set(["succeeded", "failed"])
 
 export function SearchPage() {
-  const searchRun = useSearchRun()
-  const [runKey, setRunKey] = useState(0)
-  const hasProgress = searchRun.events.length > 0
-  const showResults = searchRun.isSuccess && !searchRun.isRunning
+  const runsQuery = useSearchRuns()
+  const submitSearch = useSubmitSearch()
+  const runs = runsQuery.data ?? []
+  const activeRuns = runs.filter((run) => activeStatuses.has(run.status))
+  const recentRuns = runs.filter((run) => recentStatuses.has(run.status))
 
   return (
-    <div
-      className={cn(
-        "grid min-h-[calc(100svh-7rem)] w-full items-start gap-8 transition-[padding] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
-        hasProgress ? "content-start py-8" : "content-start pt-[20svh]"
-      )}
-    >
-      <section className="mx-auto grid w-full max-w-4xl gap-5">
-        <div className="grid max-w-[38rem] gap-2 text-left">
-          <h1 className="text-2xl font-semibold tracking-normal">
-            Start with a query
-          </h1>
-          <p className="text-sm leading-6 text-muted-foreground md:text-[0.95rem]">
-            Collect organic search results from a one-off run and choose how
-            many result pages Atlas should scan.
-          </p>
-        </div>
+    <div className="grid min-h-[calc(100svh-7rem)] w-full content-start py-9 md:py-11">
+      <section className="mx-auto grid w-full max-w-4xl gap-6">
+        <PlaygroundPageHeader
+          title="Try a web search"
+          description="Choose a live search provider, run a query, and inspect what Atlas finds."
+          taskNote="Every run is saved as a task"
+          taskHref="/scheduled-work/tasks?primitive=search"
+        />
         <SearchForm
           idPrefix="search-playground"
-          isRunning={searchRun.isRunning}
-          onCancel={searchRun.cancel}
-          onSubmit={(input) => {
-            setRunKey((currentRunKey) => currentRunKey + 1)
-            searchRun.run(input)
-          }}
+          isSubmitting={submitSearch.isPending}
+          onSubmit={(input) =>
+            submitSearch.mutateAsync(input).then(() => undefined)
+          }
         />
-        <AnimatedSection
-          className="mx-auto w-full max-w-4xl"
-          hiddenClassName="-translate-y-1 opacity-0"
-          show={hasProgress && !showResults}
-          transitionClassName="duration-300"
-        >
-          <IndexProgress events={searchRun.events} />
-        </AnimatedSection>
+        <SearchRunStack activeRuns={activeRuns} recentRuns={recentRuns} />
+        {runsQuery.isLoading ? (
+          <p className="px-1 text-xs text-muted-foreground">
+            Loading activity…
+          </p>
+        ) : null}
+        {runsQuery.isError ? (
+          <p className="px-1 text-sm text-destructive">
+            {runsQuery.error.message}
+          </p>
+        ) : null}
       </section>
-
-      <AnimatedSection
-        key={`results-${runKey}`}
-        className="mx-auto w-full max-w-5xl"
-        hiddenClassName="translate-y-3 opacity-0"
-        show={showResults}
-        transitionClassName="duration-500"
-      >
-        <SearchResults events={searchRun.events} results={searchRun.result} />
-      </AnimatedSection>
-    </div>
-  )
-}
-
-type AnimatedSectionProps = {
-  children: ReactNode
-  className: string
-  hiddenClassName: string
-  show: boolean
-  transitionClassName: string
-}
-
-function AnimatedSection({
-  children,
-  className,
-  hiddenClassName,
-  show,
-  transitionClassName,
-}: AnimatedSectionProps) {
-  const [entered, setEntered] = useState(false)
-
-  useEffect(() => {
-    if (!show) {
-      return undefined
-    }
-
-    const frame = window.requestAnimationFrame(() => {
-      setEntered(true)
-    })
-
-    return () => window.cancelAnimationFrame(frame)
-  }, [show])
-
-  if (!show) {
-    return null
-  }
-
-  return (
-    <div
-      className={cn(
-        "transition-[opacity,transform] ease-[cubic-bezier(0.22,1,0.36,1)]",
-        className,
-        transitionClassName,
-        entered ? "translate-y-0 opacity-100" : hiddenClassName
-      )}
-    >
-      {children}
     </div>
   )
 }

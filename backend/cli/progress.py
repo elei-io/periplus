@@ -11,17 +11,17 @@ from rich.table import Column
 from rich.table import Table
 from rich.text import Text
 
-from actions.shared.progress import CrawlProgressEvent
+from actions.shared.progress import ProgressEvent
 
 
-class CrawlProgressRenderer:
+class ProgressRenderer:
     def __init__(self, console: Console, tail_count: int = 15) -> None:
         self._console = console
         self._tail_count = max(1, tail_count)
-        self._visible_task_keys: deque[tuple[str, str]] = deque()
-        self._events_by_phase: dict[tuple[str, str], CrawlProgressEvent] = {}
-        self._started_at_by_phase: dict[tuple[str, str], float] = {}
-        self._statuses_by_phase: dict[tuple[str, str], str] = {}
+        self._visible_task_keys: deque[str] = deque()
+        self._events_by_phase: dict[str, ProgressEvent] = {}
+        self._started_at_by_phase: dict[str, float] = {}
+        self._statuses_by_phase: dict[str, str] = {}
         self._started_count = 0
         self._succeeded_count = 0
         self._failed_count = 0
@@ -34,7 +34,7 @@ class CrawlProgressRenderer:
             vertical_overflow="visible",
         )
 
-    def __enter__(self) -> "CrawlProgressRenderer":
+    def __enter__(self) -> "ProgressRenderer":
         self._live.__enter__()
         return self
 
@@ -47,9 +47,9 @@ class CrawlProgressRenderer:
         self._live.__exit__(exc_type, exc_value, traceback)
         self._console.print()
 
-    def callback(self, event: CrawlProgressEvent) -> None:
+    def callback(self, event: ProgressEvent) -> None:
         self._record_event(event)
-        task_key = (event.url, event.label)
+        task_key = event.operation_id or f"{event.phase}:{event.resource or '-'}"
         try:
             self._visible_task_keys.remove(task_key)
         except ValueError:
@@ -59,8 +59,8 @@ class CrawlProgressRenderer:
         self._prune_tail()
         self._live.update(self._render())
 
-    def _record_event(self, event: CrawlProgressEvent) -> None:
-        task_key = (event.url, event.label)
+    def _record_event(self, event: ProgressEvent) -> None:
+        task_key = event.operation_id or f"{event.phase}:{event.resource or '-'}"
         self._events_by_phase[task_key] = event
         self._started_at_by_phase.setdefault(task_key, time.perf_counter())
 
@@ -135,7 +135,7 @@ class CrawlProgressRenderer:
     def _render_recent_pages(self) -> Table:
         table = Table(
             Column("", width=2, no_wrap=True),
-            Column("phase", width=10, no_wrap=True, style="cyan"),
+            Column("phase", width=22, no_wrap=True, style="cyan"),
             Column("age", width=7, no_wrap=True, justify="right"),
             Column("time", width=8, no_wrap=True, justify="right"),
             Column("page", ratio=1, no_wrap=True, overflow="ellipsis"),
@@ -151,16 +151,16 @@ class CrawlProgressRenderer:
             started_at = self._started_at_by_phase[task_key]
             table.add_row(
                 self._state_icon(event),
-                event.label,
+                event.phase.replace("_", " "),
                 self._format_seconds(now - started_at),
                 self._duration_text(event, now - started_at),
-                self._display_url(event.url),
+                event.message or self._display_url(event.resource or "-"),
             )
 
         return table
 
-    def _state_icon(self, event: CrawlProgressEvent) -> Text:
-        if event.status == "started":
+    def _state_icon(self, event: ProgressEvent) -> Text:
+        if event.status in {"waiting", "started"}:
             return Text("●", style="cyan")
 
         if event.status == "succeeded":
@@ -168,9 +168,9 @@ class CrawlProgressRenderer:
 
         return Text("×", style="red")
 
-    def _duration_text(self, event: CrawlProgressEvent, elapsed: float) -> Text:
-        if event.status == "started":
-            return Text("running", style="dim")
+    def _duration_text(self, event: ProgressEvent, elapsed: float) -> Text:
+        if event.status in {"waiting", "started"}:
+            return Text(event.status, style="dim")
 
         duration = event.duration if event.duration is not None else elapsed
         style = "green" if event.status == "succeeded" else "red"

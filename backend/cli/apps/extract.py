@@ -7,7 +7,7 @@ from rich.json import JSON
 
 from actions.extract.schemas import ExtractOutput
 from cli.action_runs import run_action
-from cli.progress import CrawlProgressRenderer
+from cli.progress import ProgressRenderer
 
 console = Console()
 _EXTRACT_ADAPTER = TypeAdapter(ExtractOutput)
@@ -37,7 +37,7 @@ def extract(
         typer.Option("--schema-type", help="Crawl4AI schema selector type."),
     ] = "css",
 ) -> None:
-    with CrawlProgressRenderer(console) as progress:
+    with ProgressRenderer(console) as progress:
         output = run_action(
             primitive="extract",
             input_value={
@@ -49,7 +49,7 @@ def extract(
                 "schema_type": schema_type,
             },
             response_adapter=_EXTRACT_ADAPTER,
-            progress_callback=progress.callback,
+            progress_consumer=progress.callback,
         )
 
     if output.source:

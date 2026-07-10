@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   ArchiveIcon,
   CalendarClockIcon,
@@ -87,6 +87,17 @@ const primitives: TaskPrimitive[] = [
   "extract",
   "calibrate",
 ]
+
+function taskFiltersFromLocation(): TaskFilters {
+  const primitive = new URLSearchParams(window.location.search).get(
+    "primitive"
+  )
+
+  return primitive && primitives.includes(primitive as TaskPrimitive)
+    ? { primitive: primitive as TaskPrimitive }
+    : {}
+}
+
 const scheduleKinds = ["once", "cron", "interval"] as const
 type ScheduleKind = (typeof scheduleKinds)[number]
 
@@ -417,7 +428,7 @@ function buildTaskInput(primitive: TaskPrimitive, fields: TaskInputFields) {
 
 export function TasksPage() {
   const queryClient = useQueryClient()
-  const [filters, setFilters] = useState<TaskFilters>({})
+  const [filters, setFilters] = useState<TaskFilters>(taskFiltersFromLocation)
   const [showArchived, setShowArchived] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [scheduleTask, setScheduleTask] = useState<TaskRecord | null>(null)
@@ -428,6 +439,16 @@ export function TasksPage() {
     }),
     [filters, showArchived]
   )
+
+  useEffect(() => {
+    const url = new URL(window.location.href)
+    if (filters.primitive) {
+      url.searchParams.set("primitive", filters.primitive)
+    } else {
+      url.searchParams.delete("primitive")
+    }
+    window.history.replaceState(null, "", url)
+  }, [filters.primitive])
 
   const tasksQuery = useQuery({
     queryKey: ["tasks", taskFilters],

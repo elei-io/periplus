@@ -20,6 +20,7 @@ class ArtifactCleanupRun:
     files_deleted: int
     missing_files: int
     errors: int
+    anomalies: tuple[dict[str, str], ...] = ()
 
     @property
     def changed(self) -> bool:
@@ -84,4 +85,5 @@ def run_artifact_cleanup_once(
         files_deleted=cleanup.files_deleted,
         missing_files=cleanup.missing_files,
         errors=cleanup.errors,
+        anomalies=cleanup.anomalies,
     )

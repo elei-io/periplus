@@ -1,4 +1,4 @@
-import type { CrawlProgressEvent } from "@/types/index"
+import type { ProgressEvent } from "@/types/progress"
 
 export type DataSchemaType = "css" | "xpath"
 
@@ -78,7 +78,7 @@ export type ExtractOutput = {
 export type ExtractStreamEvent =
   | {
       type: "progress"
-      data: CrawlProgressEvent
+      data: ProgressEvent
     }
   | {
       type: "result"

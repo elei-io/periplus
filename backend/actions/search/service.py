@@ -2,13 +2,13 @@ import asyncio
 import json
 from dataclasses import dataclass
 from urllib.parse import parse_qs, unquote, urlparse
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
 from actions.extract.schemas import ExtractOutput
 from actions.extract.service import extract as extract_service
-from actions.shared.progress import CrawlProgressCallback
+from actions.shared.progress import ProgressEvent, ProgressReporter, emit_progress
 from actions.shared.query_schema.schemas import QueryParamOutput
 from actions.shared.search_url import build_search_url, default_search_match
 
@@ -220,7 +220,7 @@ async def _extract_search_page(
     *,
     page_url: str,
     provider_config: SearchProviderConfig,
-    progress_callback: CrawlProgressCallback | None,
+    progress_reporter: ProgressReporter | None,
     session: Session | None,
     task_run_id: UUID | None,
 ) -> ExtractOutput:
@@ -232,7 +232,7 @@ async def _extract_search_page(
         target_json_example=_SCHEMA_TARGET_JSON_EXAMPLE,
         schema_type="css",
         match=provider_config.match,
-        progress_callback=progress_callback,
+        progress_reporter=progress_reporter,
         session=session,
         task_run_id=task_run_id,
     )
@@ -242,7 +242,7 @@ async def search(
     query: str,
     max_pages: int = 1,
     provider: SearchProvider = "duckduckgo",
-    progress_callback: CrawlProgressCallback | None = None,
+    progress_reporter: ProgressReporter | None = None,
     session: Session | None = None,
     task_run_id: UUID | None = None,
 ) -> list[SearchResult]:
@@ -260,6 +260,19 @@ async def search(
     seen_page_urls: set[str] = set()
     processed_pages = 0
     page_limit = min(max_pages, _MAX_PAGES)
+    operation_id = f"{task_run_id or uuid4()}:search_provider"
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            operation_id=operation_id,
+            phase="search_provider",
+            status="started",
+            current=0,
+            total=page_limit,
+            message=f"Searching {provider_config.label}.",
+            metadata={"provider": provider},
+        ),
+    )
     while page_queue and processed_pages < page_limit:
         remaining_pages = page_limit - processed_pages
         batch_size = min(len(page_queue), remaining_pages)
@@ -275,7 +288,7 @@ async def search(
                     _extract_search_page(
                         page_url=page_url,
                         provider_config=provider_config,
-                        progress_callback=progress_callback,
+                        progress_reporter=progress_reporter,
                         session=None,
                         task_run_id=None,
                     )
@@ -289,7 +302,7 @@ async def search(
                     await _extract_search_page(
                         page_url=page_url,
                         provider_config=provider_config,
-                        progress_callback=progress_callback,
+                        progress_reporter=progress_reporter,
                         session=session,
                         task_run_id=task_run_id,
                     )
@@ -320,6 +333,31 @@ async def search(
                 if next_url not in seen_page_urls and next_url not in page_queue:
                     page_queue.append(next_url)
 
+        await emit_progress(
+            progress_reporter,
+            ProgressEvent(
+                operation_id=operation_id,
+                phase="search_provider",
+                status="started",
+                current=processed_pages,
+                total=page_limit,
+                message=f"Searched {processed_pages} of up to {page_limit} result pages.",
+                metadata={"provider": provider, "results": len(results)},
+            ),
+        )
+
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            operation_id=operation_id,
+            phase="search_provider",
+            status="succeeded",
+            current=processed_pages,
+            total=page_limit,
+            message=f"Found {len(results)} search results.",
+            metadata={"provider": provider, "results": len(results)},
+        ),
+    )
     return results
 
 
@@ -327,13 +365,13 @@ def search_sync(
     query: str,
     max_pages: int = 1,
     provider: SearchProvider = "duckduckgo",
-    progress_callback: CrawlProgressCallback | None = None,
+    progress_reporter: ProgressReporter | None = None,
 ) -> list[SearchResult]:
     return asyncio.run(
         search(
             query=query,
             max_pages=max_pages,
             provider=provider,
-            progress_callback=progress_callback,
+            progress_reporter=progress_reporter,
         )
     )

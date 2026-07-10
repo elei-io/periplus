@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import shutil
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,14 +19,16 @@ from actions.shared.crawl import (
     crawl_single_url,
     run_config_for_mode,
 )
-from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
+from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
 from actions.shared.quality.service import run_quality_checks
 from artifacts.models import Artifact
 from artifacts.service import get_cached_html_artifact, task_run_artifacts_dir
 from crawl_policies.models import CrawlPolicy
+from crawl_policies.permits import capacity_lease
 from crawl_policies.service import find_crawl_policy_for_url
 from crawls.models import Crawl
 from tasks.models import TaskRunArtifact, TaskRunCrawl
+from tasks.context import commit_task_checkpoint, current_task_execution
 from urls.service import resolve_url
 
 from .schemas import CrawlOutput, CrawlPage, CrawlStats
@@ -87,31 +90,59 @@ async def _crawl_url(
     url: str,
     mode: CrawlMode,
     wait: CrawlWait,
-    progress_callback: CrawlProgressCallback | None,
+    progress_reporter: ProgressReporter | None,
     run_config_overrides: dict[str, Any] | None = None,
+    session: Session | None = None,
+    task_run_id: UUID | None = None,
+    policy: CrawlPolicy | None = None,
 ) -> CrawlPage:
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(url=url, label="crawl", status="started"),
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(resource=url, phase="crawl", status="started", message="Loading page."),
     )
     start_time = time.perf_counter()
 
     try:
-        result = await crawl_single_url(
-            crawler=crawler,
-            url=url,
-            run_config=run_config_for_mode(mode=mode, wait=wait, **(run_config_overrides or {})),
-            mode=mode,
-            wait=wait,
-        )
+        if session is not None and task_run_id is not None:
+            policy = policy or find_crawl_policy_for_url(session, url=url)
+            commit_task_checkpoint(session)
+            async with capacity_lease(
+                session,
+                task_run_id=task_run_id,
+                url=url,
+                policy=policy,
+                progress_reporter=progress_reporter,
+            ):
+                result = await crawl_single_url(
+                    crawler=crawler,
+                    url=url,
+                    run_config=run_config_for_mode(mode=mode, wait=wait, **(run_config_overrides or {})),
+                    mode=mode,
+                    wait=wait,
+                )
+        else:
+            result = await crawl_single_url(
+                crawler=crawler,
+                url=url,
+                run_config=run_config_for_mode(mode=mode, wait=wait, **(run_config_overrides or {})),
+                mode=mode,
+                wait=wait,
+            )
         html = result.html or ""
         crawl = _crawl_payload(result)
         artifact_warnings = run_quality_checks(url=result.url, html=html, crawl=crawl)
     except Exception as exc:
         duration = time.perf_counter() - start_time
-        await emit_crawl_progress(
-            progress_callback,
-            CrawlProgressEvent(url=url, label="crawl", status="failed", duration=duration, error=str(exc)),
+        await emit_progress(
+            progress_reporter,
+            ProgressEvent(
+                resource=url,
+                phase="crawl",
+                status="failed",
+                message="Page load failed.",
+                duration=duration,
+                error=str(exc),
+            ),
         )
         return CrawlPage(
             url=url,
@@ -121,12 +152,20 @@ async def _crawl_url(
         )
 
     duration = time.perf_counter() - start_time
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(
-            url=url,
-            label="crawl",
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            resource=url,
+            phase="crawl",
             status="succeeded" if result.success else "failed",
+            message=(
+                f"Page loaded with HTTP {result.status_code}."
+                if result.success and result.status_code
+                else "Page loaded."
+                if result.success
+                else "Page load failed."
+            ),
+            metadata={"status_code": result.status_code} if result.status_code else {},
             duration=duration,
             error=result.error_message,
         ),
@@ -308,22 +347,33 @@ def _persist_page(
     )
 
     artifact_ids: list[UUID] = []
-    page_dir = task_run_artifacts_dir(task_run_id) / "pages" / f"{index:04d}"
-    if page.html is not None:
-        html_path = page_dir / "result.html"
-        _write_text(html_path, page.html)
-        html_artifact = _artifact(
-            session,
-            crawl=crawl,
-            task_run_id=task_run_id,
-            kind="html",
-            path=html_path,
-            input_hash=input_hash,
-            warnings_json=artifact_warnings_json,
-        )
-        artifact_ids.append(html_artifact.id)
-
-    session.flush()
+    execution = current_task_execution()
+    attempt = execution.attempt if execution is not None and execution.run_id == task_run_id else 0
+    page_dir = (
+        task_run_artifacts_dir(task_run_id)
+        / "attempts"
+        / f"{attempt:04d}"
+        / "pages"
+        / f"{index:04d}"
+    )
+    try:
+        if page.html is not None:
+            html_path = page_dir / "result.html"
+            _write_text(html_path, page.html)
+            html_artifact = _artifact(
+                session,
+                crawl=crawl,
+                task_run_id=task_run_id,
+                kind="html",
+                path=html_path,
+                input_hash=input_hash,
+                warnings_json=artifact_warnings_json,
+            )
+            artifact_ids.append(html_artifact.id)
+        commit_task_checkpoint(session)
+    except Exception:
+        shutil.rmtree(page_dir, ignore_errors=True)
+        raise
     return page.model_copy(update={"crawl_id": crawl.id, "artifact_ids": artifact_ids})
 
 
@@ -396,7 +446,7 @@ async def _cached_page(
     wait: CrawlWait,
     run_config_overrides: dict[str, Any] | None,
     cache_block_rules: dict[str, Any] | None,
-    progress_callback: CrawlProgressCallback | None,
+    progress_reporter: ProgressReporter | None,
 ) -> CrawlPage | None:
     url = resolve_url(session, requested_url)
     input_hash = _input_hash(url.normalized_url, mode, wait, run_config_overrides)
@@ -409,9 +459,14 @@ async def _cached_page(
     if cached is None:
         return None
 
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(url=url.normalized_url, label="cache", status="started"),
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            resource=url.normalized_url,
+            phase="cache",
+            status="started",
+            message="Reusing cached page content.",
+        ),
     )
 
     artifact_ids = [cached.html_artifact.id]
@@ -432,10 +487,16 @@ async def _cached_page(
             role="used",
         )
 
-    session.flush()
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(url=url.normalized_url, label="cache", status="succeeded", duration=0.0),
+    commit_task_checkpoint(session)
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            resource=url.normalized_url,
+            phase="cache",
+            status="succeeded",
+            message="Cached page content ready.",
+            duration=0.0,
+        ),
     )
     return await _crawl_raw_html(
         crawler,
@@ -484,21 +545,24 @@ async def _policy_transport_or_calibrated_page(
     *,
     url: str,
     index: int,
-    progress_callback: CrawlProgressCallback | None,
+    progress_reporter: ProgressReporter | None,
     session: Session,
     task_run_id: UUID,
 ) -> tuple[CrawlMode, CrawlWait, dict[str, Any], int, dict[str, Any], CrawlPage | None]:
     policy = find_crawl_policy_for_url(session, url=url)
     if policy is not None:
         mode, wait, run_config_overrides, max_concurrency, cache_block_rules = _transport_from_policy(policy)
+        commit_task_checkpoint(session)
         return mode, wait, run_config_overrides, max_concurrency, cache_block_rules, None
+
+    commit_task_checkpoint(session)
 
     from actions.calibrate.service import calibrate
 
     output = await calibrate(
         url=url,
         force=False,
-        progress_callback=progress_callback,
+        progress_reporter=progress_reporter,
         session=session,
         task_run_id=task_run_id,
     )
@@ -520,8 +584,10 @@ async def _crawl_one(
     mode: CrawlMode,
     wait: CrawlWait,
     semaphore: asyncio.Semaphore,
-    progress_callback: CrawlProgressCallback | None,
+    progress_reporter: ProgressReporter | None,
     run_config_overrides: dict[str, Any] | None = None,
+    session: Session | None = None,
+    task_run_id: UUID | None = None,
 ) -> tuple[int, CrawlPage]:
     async with semaphore:
         page = await _crawl_url(
@@ -529,8 +595,10 @@ async def _crawl_one(
             url=url,
             mode=mode,
             wait=wait,
-            progress_callback=progress_callback,
+            progress_reporter=progress_reporter,
             run_config_overrides=run_config_overrides,
+            session=session,
+            task_run_id=task_run_id,
         )
         return index, page
 
@@ -541,7 +609,7 @@ async def crawl_one_for_task(
     mode: CrawlMode | None = None,
     wait: CrawlWait | None = None,
     index: int,
-    progress_callback: CrawlProgressCallback | None = None,
+    progress_reporter: ProgressReporter | None = None,
     session: Session | None = None,
     task_run_id: UUID | None = None,
     run_config_overrides: dict[str, Any] | None = None,
@@ -553,7 +621,7 @@ async def crawl_one_for_task(
         mode, wait, run_config_overrides, _, _, selected_page = await _policy_transport_or_calibrated_page(
             url=url,
             index=index,
-            progress_callback=progress_callback,
+            progress_reporter=progress_reporter,
             session=session,
             task_run_id=task_run_id,
         )
@@ -567,8 +635,10 @@ async def crawl_one_for_task(
                 url=url,
                 mode=mode,
                 wait=wait,
-                progress_callback=progress_callback,
+                progress_reporter=progress_reporter,
                 run_config_overrides=run_config_overrides,
+                session=session,
+                task_run_id=task_run_id,
             )
     else:
         page = await _crawl_url(
@@ -576,8 +646,10 @@ async def crawl_one_for_task(
             url=url,
             mode=mode,
             wait=wait,
-            progress_callback=progress_callback,
+            progress_reporter=progress_reporter,
             run_config_overrides=run_config_overrides,
+            session=session,
+            task_run_id=task_run_id,
         )
 
     if session is not None and task_run_id is not None:
@@ -601,7 +673,7 @@ async def _crawl_one_for_task_index(
     url: str,
     mode: CrawlMode | None,
     wait: CrawlWait | None,
-    progress_callback: CrawlProgressCallback | None,
+    progress_reporter: ProgressReporter | None,
     session: Session | None,
     task_run_id: UUID | None,
     run_config_overrides: dict[str, Any] | None,
@@ -614,7 +686,7 @@ async def _crawl_one_for_task_index(
                 mode=mode,
                 wait=wait,
                 index=index,
-                progress_callback=progress_callback,
+                progress_reporter=progress_reporter,
                 session=session,
                 task_run_id=task_run_id,
                 run_config_overrides=run_config_overrides,
@@ -626,7 +698,7 @@ async def _crawl_one_for_task_index(
         mode=mode,
         wait=wait,
         index=index,
-        progress_callback=progress_callback,
+        progress_reporter=progress_reporter,
         session=session,
         task_run_id=task_run_id,
         run_config_overrides=run_config_overrides,
@@ -638,11 +710,23 @@ async def crawl(
     urls: list[str],
     mode: CrawlMode | None = None,
     wait: CrawlWait | None = None,
-    progress_callback: CrawlProgressCallback | None = None,
+    progress_reporter: ProgressReporter | None = None,
     session: Session | None = None,
     task_run_id: UUID | None = None,
 ) -> CrawlOutput:
     start_time = time.perf_counter()
+    batch_operation_id = f"{task_run_id or 'crawl'}:batch"
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            operation_id=batch_operation_id,
+            phase="crawl_batch",
+            status="started",
+            current=0,
+            total=len(urls),
+            message=f"Crawling {len(urls)} page{'s' if len(urls) != 1 else ''}.",
+        ),
+    )
     pages_by_index: dict[int, CrawlPage] = {}
     fallback_concurrency = _default_max_concurrency_for_mode(mode or "static")
     semaphore = asyncio.Semaphore(fallback_concurrency)
@@ -662,7 +746,7 @@ async def crawl(
                         wait=wait,
                         run_config_overrides=None,
                         cache_block_rules=None,
-                        progress_callback=progress_callback,
+                        progress_reporter=progress_reporter,
                     )
                 if page is None:
                     pending_urls.append((index, url, mode, wait, None, fallback_concurrency))
@@ -679,7 +763,9 @@ async def crawl(
                             mode=pending_mode or "static",
                             wait=pending_wait or "none",
                             semaphore=semaphore,
-                            progress_callback=progress_callback,
+                            progress_reporter=progress_reporter,
+                            session=session,
+                            task_run_id=task_run_id,
                         )
                     )
                     for index, url, pending_mode, pending_wait, _, _ in pending_urls
@@ -705,16 +791,18 @@ async def crawl(
                 continue
             policy = find_crawl_policy_for_url(session, url=url)
             if policy is None:
+                commit_task_checkpoint(session)
                 page = await crawl_one_for_task(
                     url=url,
                     index=index,
-                    progress_callback=progress_callback,
+                    progress_reporter=progress_reporter,
                     session=session,
                     task_run_id=task_run_id,
                 )
                 pages_by_index[index] = page
                 continue
             policy_mode, policy_wait, policy_overrides, max_concurrency, cache_block_rules = _transport_from_policy(policy)
+            commit_task_checkpoint(session)
             async with AsyncWebCrawler(config=browser_config_for_mode(policy_mode)) as crawler:
                 page = await _cached_page(
                     crawler,
@@ -725,7 +813,7 @@ async def crawl(
                     wait=policy_wait,
                     run_config_overrides=policy_overrides,
                     cache_block_rules=cache_block_rules,
-                    progress_callback=progress_callback,
+                    progress_reporter=progress_reporter,
                 )
             if page is None:
                 pending_urls.append((index, url, policy_mode, policy_wait, policy_overrides, max_concurrency))
@@ -733,7 +821,6 @@ async def crawl(
                 pages_by_index[index] = page
 
         if pending_urls:
-            policy_semaphore = asyncio.Semaphore(max(1, min(max_concurrency for *_, max_concurrency in pending_urls)))
             tasks = [
                 asyncio.create_task(
                     _crawl_one_for_task_index(
@@ -741,11 +828,11 @@ async def crawl(
                         url=url,
                         mode=pending_mode,
                         wait=pending_wait,
-                        progress_callback=progress_callback,
+                        progress_reporter=progress_reporter,
                         session=session,
                         task_run_id=task_run_id,
                         run_config_overrides=overrides,
-                        semaphore=policy_semaphore,
+                        semaphore=None,
                     )
                 )
                 for index, url, pending_mode, pending_wait, overrides, _ in pending_urls
@@ -755,11 +842,27 @@ async def crawl(
                 pages_by_index[index] = page
 
     pages = [pages_by_index[index] for index in range(len(urls))]
+    succeeded = sum(1 for page in pages if page.success)
+    failed = len(pages) - succeeded
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            operation_id=batch_operation_id,
+            phase="crawl_batch",
+            status="succeeded" if failed == 0 else "failed",
+            current=len(pages),
+            total=len(urls),
+            message=f"Crawled {len(pages)} pages: {succeeded} succeeded, {failed} failed.",
+            duration=time.perf_counter() - start_time,
+            metadata={"succeeded": succeeded, "failed": failed},
+            error=f"{failed} pages failed." if failed else None,
+        ),
+    )
     return CrawlOutput(
         stats=CrawlStats(
             requested_urls=len(urls),
-            succeeded=sum(1 for page in pages if page.success),
-            failed=sum(1 for page in pages if not page.success),
+            succeeded=succeeded,
+            failed=failed,
             duration_seconds=time.perf_counter() - start_time,
         ),
         pages=pages,
@@ -770,13 +873,13 @@ def crawl_sync(
     urls: list[str],
     mode: CrawlMode | None = None,
     wait: CrawlWait | None = None,
-    progress_callback: CrawlProgressCallback | None = None,
+    progress_reporter: ProgressReporter | None = None,
 ) -> CrawlOutput:
     return asyncio.run(
         crawl(
             urls=urls,
             mode=mode,
             wait=wait,
-            progress_callback=progress_callback,
+            progress_reporter=progress_reporter,
         )
     )

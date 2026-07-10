@@ -6,7 +6,7 @@ from uuid import UUID
 from crawl4ai import JsonCssExtractionStrategy, JsonXPathExtractionStrategy
 from sqlalchemy.orm import Session
 
-from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
+from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
 from actions.shared.quality.service import run_quality_checks
 from actions.shared.data_schema.schemas import SchemaType
 from actions.shared.data_schema.service import schema as schema_service
@@ -19,6 +19,7 @@ from actions.shared.query_schema.service import (
     query_from_page,
 )
 from data_schemas.service import record_data_schema_failure
+from tasks.context import commit_task_checkpoint
 
 from .schemas import ExtractOutput, ExtractSource
 
@@ -76,7 +77,7 @@ async def extract(
     target_json_example: str | None = None,
     schema_type: SchemaType = "css",
     match: str | None = None,
-    progress_callback: CrawlProgressCallback | None = None,
+    progress_reporter: ProgressReporter | None = None,
     session: Session | None = None,
     task_run_id: UUID | None = None,
 ) -> ExtractOutput:
@@ -85,24 +86,24 @@ async def extract(
     if extract_data and not (prompt or "").strip():
         return ExtractOutput(url=url, success=False, error="Data extraction requires a prompt.")
 
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(url=url, label="extract", status="started"),
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(resource=url, phase="extract", status="started"),
     )
     total_start_time = time.perf_counter()
     try:
         crawl_output = await crawl_service(
             urls=[url],
-            progress_callback=progress_callback,
+            progress_reporter=progress_reporter,
             session=session,
             task_run_id=task_run_id,
         )
     except Exception as exc:
-        await emit_crawl_progress(
-            progress_callback,
-            CrawlProgressEvent(
-                url=url,
-                label="extract",
+        await emit_progress(
+            progress_reporter,
+            ProgressEvent(
+                resource=url,
+                phase="extract",
                 status="failed",
                 duration=time.perf_counter() - total_start_time,
                 error=str(exc),
@@ -112,11 +113,11 @@ async def extract(
 
     page = crawl_output.pages[0] if crawl_output.pages else None
     if page is None or not page.success:
-        await emit_crawl_progress(
-            progress_callback,
-            CrawlProgressEvent(
-                url=url,
-                label="extract",
+        await emit_progress(
+            progress_reporter,
+            ProgressEvent(
+                resource=url,
+                phase="extract",
                 status="failed",
                 duration=time.perf_counter() - total_start_time,
                 error=page.error if page else "Crawl failed before producing a page.",
@@ -130,11 +131,11 @@ async def extract(
 
     html = page.html
     if html is None:
-        await emit_crawl_progress(
-            progress_callback,
-            CrawlProgressEvent(
-                url=page.url,
-                label="extract",
+        await emit_progress(
+            progress_reporter,
+            ProgressEvent(
+                resource=page.url,
+                phase="extract",
                 status="failed",
                 duration=time.perf_counter() - total_start_time,
                 error="Crawl did not produce HTML.",
@@ -153,6 +154,7 @@ async def extract(
                 crawl_id=page.crawl_id,
                 artifact_ids=page.artifact_ids,
             )
+            commit_task_checkpoint(session)
         if query_params is None:
             query_task = asyncio.create_task(
                 query_from_page(
@@ -160,7 +162,7 @@ async def extract(
                     html=html,
                     crawl_id=page.crawl_id,
                     artifact_ids=page.artifact_ids,
-                    progress_callback=progress_callback,
+                    progress_reporter=progress_reporter,
                 )
             )
 
@@ -186,7 +188,7 @@ async def extract(
                     schema_type=schema_type,
                     html=html,
                     match=match,
-                    progress_callback=progress_callback,
+                    progress_reporter=progress_reporter,
                     session=session,
                     task_run_id=task_run_id,
                 )
@@ -195,9 +197,16 @@ async def extract(
                 schema_id=schema_output.schema_id,
                 schema_type=schema_output.schema_type,
             )
-            await emit_crawl_progress(
-                progress_callback,
-                CrawlProgressEvent(url=page.url, label="apply data schema", status="started"),
+            await emit_progress(
+                progress_reporter,
+                ProgressEvent(
+                    resource=page.url,
+                    phase="apply_data_schema",
+                    status="started",
+                    current=attempt + 1,
+                    total=max_replacements + 1,
+                    message=f"Applying extraction schema, attempt {attempt + 1} of {max_replacements + 1}.",
+                ),
             )
             apply_start_time = time.perf_counter()
             try:
@@ -223,23 +232,31 @@ async def extract(
                     error=last_error,
                     exhausted=exhausted,
                 )
-            await emit_crawl_progress(
-                progress_callback,
-                CrawlProgressEvent(
-                    url=page.url,
-                    label="apply data schema",
+                commit_task_checkpoint(session)
+            await emit_progress(
+                progress_reporter,
+                ProgressEvent(
+                    resource=page.url,
+                    phase="apply_data_schema",
                     status="failed",
+                    current=attempt + 1,
+                    total=max_replacements + 1,
+                    message=(
+                        "Schema application failed; no retries remain."
+                        if exhausted
+                        else "Schema application failed; regenerating the schema."
+                    ),
                     duration=time.perf_counter() - apply_start_time,
                     error=last_error,
                 ),
             )
             if exhausted or session is None or schema_uuid is None:
                 await cancel_query_task()
-                await emit_crawl_progress(
-                    progress_callback,
-                    CrawlProgressEvent(
-                        url=page.url,
-                        label="extract",
+                await emit_progress(
+                    progress_reporter,
+                    ProgressEvent(
+                        resource=page.url,
+                        phase="extract",
                         status="failed",
                         duration=time.perf_counter() - total_start_time,
                         error=last_error,
@@ -249,9 +266,16 @@ async def extract(
                     warnings = run_quality_checks(url=page.url, html=html, extraction_results=[])
                 return ExtractOutput(url=page.url, success=False, source=source, warnings=warnings, error=last_error)
 
-            await emit_crawl_progress(
-                progress_callback,
-                CrawlProgressEvent(url=page.url, label="regenerate data schema", status="started"),
+            await emit_progress(
+                progress_reporter,
+                ProgressEvent(
+                    resource=page.url,
+                    phase="regenerate_data_schema",
+                    status="started",
+                    current=attempt + 2,
+                    total=max_replacements + 1,
+                    message=f"Regenerating extraction schema for attempt {attempt + 2}.",
+                ),
             )
             regenerate_start_time = time.perf_counter()
             schema_output = await schema_service(
@@ -261,19 +285,22 @@ async def extract(
                 schema_type=schema_type,
                 html=html,
                 match=match,
-                progress_callback=progress_callback,
+                progress_reporter=progress_reporter,
                 session=session,
                 task_run_id=task_run_id,
                 reuse_existing=False,
                 replace_schema_id=schema_uuid,
             )
             warnings = []
-            await emit_crawl_progress(
-                progress_callback,
-                CrawlProgressEvent(
-                    url=page.url,
-                    label="regenerate data schema",
+            await emit_progress(
+                progress_reporter,
+                ProgressEvent(
+                    resource=page.url,
+                    phase="regenerate_data_schema",
                     status="succeeded",
+                    current=attempt + 2,
+                    total=max_replacements + 1,
+                    message="Replacement extraction schema generated.",
                     duration=time.perf_counter() - regenerate_start_time,
                 ),
             )
@@ -282,12 +309,16 @@ async def extract(
             warnings = run_quality_checks(url=page.url, html=html, extraction_results=[])
             return ExtractOutput(url=page.url, success=False, source=source, warnings=warnings, error=last_error)
 
-        await emit_crawl_progress(
-            progress_callback,
-            CrawlProgressEvent(
-                url=page.url,
-                label="apply data schema",
+        await emit_progress(
+            progress_reporter,
+            ProgressEvent(
+                resource=page.url,
+                phase="apply_data_schema",
                 status="succeeded",
+                current=attempt + 1,
+                total=max_replacements + 1,
+                message=f"Extracted {len(results)} records.",
+                metadata={"records": len(results), "warnings": len(warnings)},
                 duration=time.perf_counter() - apply_start_time,
             ),
         )
@@ -310,22 +341,23 @@ async def extract(
                     task_run_id=task_run_id,
                     crawl_id=page.crawl_id,
                 )
+                commit_task_checkpoint(session)
         elif query_params is None:
             query_params = await query_from_page(
                 page_url=page.url,
                 html=html,
                 crawl_id=page.crawl_id,
                 artifact_ids=page.artifact_ids,
-                progress_callback=progress_callback,
+                progress_reporter=progress_reporter,
                 session=session,
                 task_run_id=task_run_id,
             )
 
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(
-            url=page.url,
-            label="extract",
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            resource=page.url,
+            phase="extract",
             status="succeeded",
             duration=time.perf_counter() - total_start_time,
         ),
@@ -348,7 +380,7 @@ def extract_sync(
     target_json_example: str | None = None,
     schema_type: SchemaType = "css",
     match: str | None = None,
-    progress_callback: CrawlProgressCallback | None = None,
+    progress_reporter: ProgressReporter | None = None,
 ) -> ExtractOutput:
     return asyncio.run(
         extract(
@@ -359,6 +391,6 @@ def extract_sync(
             target_json_example=target_json_example,
             schema_type=schema_type,
             match=match,
-            progress_callback=progress_callback,
+            progress_reporter=progress_reporter,
         )
     )

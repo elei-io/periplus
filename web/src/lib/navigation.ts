@@ -27,7 +27,8 @@ export const navigationGroups: NavigationGroup[] = [
         href: "/playground/search",
         icon: SearchIcon,
         title: "Search Playground",
-        description: "Run ad hoc web searches and inspect ranked results.",
+        description:
+          "Try live search providers and inspect results as they arrive.",
       },
       {
         name: "Index",

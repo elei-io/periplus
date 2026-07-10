@@ -7,7 +7,7 @@ from rich.table import Table
 
 from actions.crawl.schemas import CrawlOutput
 from cli.action_runs import run_action
-from cli.progress import CrawlProgressRenderer
+from cli.progress import ProgressRenderer
 
 console = Console()
 _CRAWL_ADAPTER = TypeAdapter(CrawlOutput)
@@ -16,14 +16,14 @@ _CRAWL_ADAPTER = TypeAdapter(CrawlOutput)
 def crawl(
     urls: Annotated[list[str], typer.Argument(help="One or more URLs to crawl.")],
 ) -> None:
-    with CrawlProgressRenderer(console) as progress:
+    with ProgressRenderer(console) as progress:
         output = run_action(
             primitive="crawl",
             input_value={
                 "urls": urls,
             },
             response_adapter=_CRAWL_ADAPTER,
-            progress_callback=progress.callback,
+            progress_consumer=progress.callback,
         )
 
     table = Table(title="Crawl results")

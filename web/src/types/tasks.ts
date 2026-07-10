@@ -6,6 +6,46 @@ export type TaskPrimitive =
   | "extract"
   | "calibrate"
 
+export type TaskRunSubmission = {
+  task_id: string
+  run_id: string
+  status: "queued"
+}
+
+export type TaskRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped"
+
+export type TaskRunRecord = {
+  id: string
+  task_id: string
+  status: TaskRunStatus
+  trigger_kind: "scheduled" | "manual" | "effect" | "retry" | "backfill"
+  queued_at: string
+  started_at: string | null
+  finished_at: string | null
+  cancellation_requested_at: string | null
+  cancelled_at: string | null
+  retry_at: string | null
+  attempt: number
+  failed_attempts: number
+  max_attempts: number
+  input_json: Record<string, unknown>
+  output_json: Record<string, unknown> | null
+  warnings_json: Record<string, unknown>
+  error: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type TaskProgressEnvelope<T = unknown> = {
+  event_id: string
+  run_id: string
+  attempt: number
+  sequence: number
+  type: "progress" | "succeeded" | "failed" | "cancelled" | "skipped"
+  timestamp: string
+  data: T
+}
+
 export type OnceSchedule = {
   kind: "once"
   run_at: string

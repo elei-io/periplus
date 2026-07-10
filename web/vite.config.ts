@@ -16,6 +16,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      "/calibrate": apiProxyTarget,
       "/extract": apiProxyTarget,
       "/index": apiProxyTarget,
       "/crawl": apiProxyTarget,
@@ -24,7 +25,9 @@ export default defineConfig({
       "/query": apiProxyTarget,
       "/query-schemas": apiProxyTarget,
       "/search": apiProxyTarget,
+      "/schema": apiProxyTarget,
       "/tasks": apiProxyTarget,
+      "/task-runs": apiProxyTarget,
       "/artifacts": apiProxyTarget,
       "/urls": apiProxyTarget,
     },

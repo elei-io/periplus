@@ -16,10 +16,10 @@ import {
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import type { ExtractOutput } from "@/types/extract"
-import type { CrawlProgressEvent } from "@/types/index"
+import type { ProgressEvent } from "@/types/progress"
 
 type ExtractResultsProps = {
-  events: CrawlProgressEvent[]
+  events: ProgressEvent[]
   result: ExtractOutput
 }
 

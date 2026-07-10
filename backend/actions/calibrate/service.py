@@ -12,9 +12,10 @@ from sqlalchemy.orm import Session
 
 from actions.crawl.service import crawl_one_for_task
 from actions.shared.crawl import CrawlMode, CrawlWait
-from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
+from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
 from crawl_policies.models import CrawlPolicy
 from urls.service import normalize_url, resolve_domain_url_match_for_url
+from tasks.context import commit_task_checkpoint
 
 from .schemas import (
     CalibrationCandidate,
@@ -235,7 +236,7 @@ async def calibrate(
     *,
     url: str,
     force: bool = False,
-    progress_callback: CrawlProgressCallback | None = None,
+    progress_reporter: ProgressReporter | None = None,
     session: Session,
     task_run_id: UUID,
 ) -> CalibrationOutput:
@@ -246,6 +247,7 @@ async def calibrate(
     if existing_policy is not None and not force:
         config = existing_policy.config or {}
         selected_template = config.get("template") or "static_fast"
+        commit_task_checkpoint(session)
         return CalibrationOutput(
             url=normalized_url,
             match=match,
@@ -258,24 +260,39 @@ async def calibrate(
             selected_page=None,
         )
 
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(url=normalized_url, label="calibrate", status="started"),
+    commit_task_checkpoint(session)
+
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            resource=normalized_url,
+            phase="calibrate",
+            status="started",
+            message=f"Testing {len(_TEMPLATES)} crawl strategies.",
+        ),
     )
 
     candidates: list[CalibrationCandidate] = []
     pages_by_template = {}
     for index, template in enumerate(_TEMPLATES):
-        await emit_crawl_progress(
-            progress_callback,
-            CrawlProgressEvent(url=normalized_url, label=f"test {template.name}", status="started"),
+        await emit_progress(
+            progress_reporter,
+            ProgressEvent(
+                resource=normalized_url,
+                phase="calibration_candidate",
+                status="started",
+                current=index + 1,
+                total=len(_TEMPLATES),
+                metadata={"template": template.name},
+                message=f"Testing the {template.name} strategy.",
+            ),
         )
         page = await crawl_one_for_task(
             url=normalized_url,
             mode=template.mode,
             wait=template.wait,
             index=index,
-            progress_callback=progress_callback,
+            progress_reporter=progress_reporter,
             session=session,
             task_run_id=task_run_id,
             run_config_overrides=template.run_config_overrides,
@@ -297,12 +314,20 @@ async def calibrate(
             artifact_ids=page.artifact_ids,
         )
         candidates.append(candidate)
-        await emit_crawl_progress(
-            progress_callback,
-            CrawlProgressEvent(
-                url=normalized_url,
-                label=f"test {template.name}",
+        await emit_progress(
+            progress_reporter,
+            ProgressEvent(
+                resource=normalized_url,
+                phase="calibration_candidate",
                 status="succeeded" if page.success else "failed",
+                current=index + 1,
+                total=len(_TEMPLATES),
+                metadata={"template": template.name},
+                message=(
+                    f"The {template.name} strategy succeeded."
+                    if page.success
+                    else f"The {template.name} strategy failed."
+                ),
                 duration=page.duration_seconds,
                 error=page.error,
             ),
@@ -321,11 +346,17 @@ async def calibrate(
     policy.enabled = True
     policy.config = config
     session.add(policy)
-    session.flush()
+    commit_task_checkpoint(session)
 
-    await emit_crawl_progress(
-        progress_callback,
-        CrawlProgressEvent(url=normalized_url, label="calibrate", status="succeeded"),
+    await emit_progress(
+        progress_reporter,
+        ProgressEvent(
+            resource=normalized_url,
+            phase="calibrate",
+            status="succeeded",
+            message=f"Selected the {selected.template} crawl strategy.",
+            metadata={"selected_template": selected.template},
+        ),
     )
 
     return CalibrationOutput(

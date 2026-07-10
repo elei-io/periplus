@@ -324,14 +324,8 @@ def record_data_schema_failure(
 
 
 def record_data_schema_use(session: Session, *, task_run_id: UUID | None, schema: DataSchema) -> None:
-    if task_run_id is None:
-        return
-
-    run = session.get(TaskRun, task_run_id)
-    if run is None:
-        return
-
-    run.data_schema_id = schema.id
+    # Run lifecycle rows are control-plane state and are finalized only by the executor.
+    # Schema provenance is already recorded by generated_by_task_run_id and URL matches.
     schema.updated_at = datetime.now(UTC)
     session.flush()
 

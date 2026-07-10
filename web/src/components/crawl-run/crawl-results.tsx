@@ -20,11 +20,11 @@ import {
 } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { resultActionHref } from "@/lib/result-actions"
-import type { CrawlProgressEvent } from "@/types/index"
+import type { ProgressEvent } from "@/types/progress"
 import type { CrawlOutput, CrawlPage } from "@/types/crawl"
 
 type CrawlResultsProps = {
-  events: CrawlProgressEvent[]
+  events: ProgressEvent[]
   result: CrawlOutput
 }
 
@@ -45,7 +45,7 @@ export function CrawlResults({ events, result }: CrawlResultsProps) {
 }
 
 type CrawlPageResultsProps = {
-  events: CrawlProgressEvent[]
+  events: ProgressEvent[]
   page: CrawlPage
   result: CrawlOutput
 }

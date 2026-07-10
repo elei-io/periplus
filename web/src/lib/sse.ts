@@ -1,11 +1,13 @@
 export type SseMessage = {
   event: string
   data: string
+  id?: string
 }
 
 export function parseSseMessage(rawMessage: string): SseMessage | null {
   const lines = rawMessage.split(/\r?\n/)
   let event = "message"
+  let id: string | undefined
   const dataLines: string[] = []
 
   for (const line of lines) {
@@ -17,6 +19,9 @@ export function parseSseMessage(rawMessage: string): SseMessage | null {
     if (line.startsWith("data:")) {
       dataLines.push(line.slice("data:".length).trimStart())
     }
+    if (line.startsWith("id:")) {
+      id = line.slice("id:".length).trim()
+    }
   }
 
   if (dataLines.length === 0) {
@@ -26,6 +31,7 @@ export function parseSseMessage(rawMessage: string): SseMessage | null {
   return {
     event,
     data: dataLines.join("\n"),
+    id,
   }
 }
 

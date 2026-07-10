@@ -1,4 +1,4 @@
-import type { CrawlProgressEvent } from "@/types/index"
+import type { ProgressEvent } from "@/types/progress"
 
 export type SearchProvider = "duckduckgo" | "brave" | "yahoo"
 
@@ -23,7 +23,7 @@ export type SearchResult = {
 export type SearchStreamEvent =
   | {
       type: "progress"
-      data: CrawlProgressEvent
+      data: ProgressEvent
     }
   | {
       type: "result"

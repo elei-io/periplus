@@ -7,7 +7,7 @@ from rich.table import Table
 
 from actions.index.schemas import IndexLink
 from cli.action_runs import run_action
-from cli.progress import CrawlProgressRenderer
+from cli.progress import ProgressRenderer
 
 console = Console()
 _INDEX_ADAPTER = TypeAdapter(list[IndexLink])
@@ -47,7 +47,7 @@ def index(
         ),
     ] = None,
 ) -> None:
-    with CrawlProgressRenderer(console) as progress:
+    with ProgressRenderer(console) as progress:
         links = run_action(
             primitive="index",
             input_value={
@@ -60,7 +60,7 @@ def index(
                 "exclude_result": exclude_result or [],
             },
             response_adapter=_INDEX_ADAPTER,
-            progress_callback=progress.callback,
+            progress_consumer=progress.callback,
         )
 
     table = Table(title=f"Index links from {url!r}")

@@ -2,7 +2,7 @@ export type CrawlMode = "static" | "dynamic" | "app"
 
 export type CrawlWait = "none" | "stable" | "network" | "fixed"
 
-export type CrawlProgressStatus = "started" | "succeeded" | "failed"
+import type { ProgressEvent } from "@/types/progress"
 
 export type IndexFilterType =
   | "include_crawl"
@@ -38,18 +38,10 @@ export type IndexLink = {
   internal: boolean
 }
 
-export type CrawlProgressEvent = {
-  url: string
-  status: CrawlProgressStatus
-  label: string
-  duration: number | null
-  error: string | null
-}
-
 export type IndexStreamEvent =
   | {
       type: "progress"
-      data: CrawlProgressEvent
+      data: ProgressEvent
     }
   | {
       type: "result"
