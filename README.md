@@ -9,7 +9,7 @@ Its current user-facing web actions are `search`, `index`, `crawl`, and `extract
 `extract` can produce structured data with a `DataSchema`, query parameter affordances with a
 `QuerySchema`, or both in one crawl.
 
-The target architecture is documented in [ARCHITECHTURE.md](ARCHITECHTURE.md). The repository,
+The target architecture is documented in [ARCHITECTURE.md](ARCHITECTURE.md). The repository,
 DuckLake, raw HTML, and state-ownership contract lives in [STORAGE.md](STORAGE.md).
 
 ## Repository Layout
@@ -23,7 +23,7 @@ backend/actions/shared/
 backend/repository/   Raw objects, DuckLake catalogue, ingestion, reads, and maintenance
 backend/dom/          Versioned loss-minimized DOM schema and encoder
 backend/repository/   Raw object storage, cache resolution, and catalogue ingestion
-backend/tasks/        Schedulable task/effect definitions and current run implementation
+backend/tasks/        Schedulable task definitions and frozen run execution
 backend/db/           Postgres setup, SQLAlchemy base/session, and Alembic
 docker/atlas/         Backend container image
 docker-compose.yml    Local API, worker, Postgres, and NATS stack

@@ -3,7 +3,7 @@
 This file is the first stop for Codex agents working in Atlas.
 
 The storage and state-ownership contract lives in `STORAGE.md`. Read it completely before changing
-crawls, task/effect runs, repository storage, DOM/Parquet generation, or DuckLake. Crawl history
+crawls, task runs, repository storage, DOM/Parquet generation, or DuckLake. Crawl history
 must never be reintroduced into the Atlas control-plane Postgres database.
 
 ## Project Shape
@@ -14,7 +14,7 @@ must never be reintroduced into the Atlas control-plane Postgres database.
   - `backend/actions/` for primitive action behavior.
   - `backend/actions/shared/` for crawler, quality, progress, data-schema, and query-schema support shared between actions.
   - `backend/urls/`, `backend/crawl_policies/`, `backend/data_schemas/`, and `backend/query_schemas/` for user-editable matching, policy, and schema state.
-  - `backend/tasks/` for persisted schedulable task/effect definitions and the current run implementation; target executions live in JetStream.
+  - `backend/tasks/` for persisted schedulable task definitions and the current run implementation; target executions live in JetStream.
   - `backend/repository/ducklake/` owns the DuckLake implementation, schema contract, and bootstrap boundary.
   - `backend/dom/` owns the versioned element schema, bounded Arrow encoder, page-local reader, and structural query helpers.
   - `backend/repository/` owns raw object storage, the JetStream ingestion queue/writer, and repository maintenance around the catalogue.
@@ -22,7 +22,7 @@ must never be reintroduced into the Atlas control-plane Postgres database.
 - Page-loading options are shared through `actions.shared.crawl`. Do not duplicate `mode`/`wait` config in individual primitives.
 - `crawl` is the page acquisition chokepoint. The target stores canonical content-addressed HTML in the configured filesystem/S3 repository and durable crawl/document/element state in DuckLake.
 - Keep business behavior in `backend/actions/`, `backend/tasks/`, `backend/dom/`, and `backend/repository/`; API and CLI layers should stay thin.
-- The architecture rationale lives in `ARCHITECHTURE.md`; storage detail lives in `STORAGE.md`. Read both before changing the API/task/browser/storage execution model.
+- The architecture rationale lives in `ARCHITECTURE.md`; storage detail lives in `STORAGE.md`. Read both before changing the API/task/browser/storage execution model.
 
 ## Setup
 
@@ -67,7 +67,7 @@ docker compose up --build
 - Routers and CLI commands validate/input/output; action, task, DOM, and repository modules own behavior.
 - Prefer typed Pydantic models for request/response boundaries.
 - Keep Postgres infrastructure under `backend/db`: SQLAlchemy base/session setup, model registry, and Alembic files.
-- Keep user-editable SQLAlchemy task/effect definitions in `tasks/models.py` and Pydantic contracts in `tasks/schemas.py`. Do not add new Postgres task/effect run dependencies; target executions belong in JetStream.
+- Keep user-editable SQLAlchemy task definitions in `tasks/models.py` and Pydantic contracts in `tasks/schemas.py`. Do not add new Postgres task-run dependencies; target executions belong in JetStream.
 - The Postgres artifact/crawl/URL-history models are gone. Do not add compatibility models or routes; use DuckLake documents/crawls/elements according to `STORAGE.md`.
 - Keep action Pydantic contracts in `actions/<name>/schemas.py`.
 - Use SQLAlchemy 2 models from `db.Base` for database tables and manage schema changes with Alembic.
