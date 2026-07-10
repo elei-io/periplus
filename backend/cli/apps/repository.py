@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import httpx
+import json
 import typer
 
 from cli.config import api_url
@@ -16,6 +17,27 @@ def _check(response: httpx.Response) -> None:
     except ValueError:
         detail = response.text
     raise typer.BadParameter(str(detail or response.reason_phrase))
+
+
+def _show(path: str) -> None:
+    with httpx.Client(base_url=api_url(), timeout=None) as client:
+        response = client.get(path)
+        _check(response)
+    typer.echo(json.dumps(response.json(), indent=2))
+
+
+@repository.command("document")
+def document(document_id: str) -> None:
+    """Show durable metadata for one content-addressed document."""
+
+    _show(f"/operations/repository/documents/{document_id}")
+
+
+@repository.command("crawl")
+def crawl(crawl_id: str) -> None:
+    """Show one durable crawl record."""
+
+    _show(f"/operations/repository/crawls/{crawl_id}")
 
 
 @repository.command("dead-letters")
