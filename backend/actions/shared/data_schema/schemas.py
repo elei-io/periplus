@@ -2,8 +2,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from actions.shared.crawl import CrawlMode, CrawlWait
-
 SchemaType = Literal["css", "xpath"]
 
 
@@ -18,14 +16,6 @@ class Input(BaseModel):
     schema_id: str | None = Field(
         default=None,
         description="Optional stable identifier for the generated schema.",
-    )
-    mode: CrawlMode = Field(
-        default="static",
-        description="The crawl preset to use when schema generation needs to fetch the page.",
-    )
-    wait: CrawlWait = Field(
-        default="none",
-        description="The wait strategy to use when schema generation needs to fetch the page.",
     )
 
 

@@ -11,13 +11,14 @@ from actions.search.schemas import SearchProvider
 from actions.shared.quality.schemas import QualityWarning
 from actions.shared.data_schema.schemas import Input as SchemaInput
 from actions.crawl.schemas import Input as CrawlInput
+from actions.calibrate.schemas import Input as CalibrateInput
 
 
 class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-TaskPrimitive = Literal["search", "index", "crawl", "schema", "extract"]
+TaskPrimitive = Literal["search", "index", "crawl", "schema", "extract", "calibrate"]
 TaskRunStatus = Literal["queued", "running", "succeeded", "failed", "cancelled", "skipped"]
 TaskRunTriggerKind = Literal["scheduled", "manual", "effect", "retry", "backfill"]
 EffectRunStatus = Literal["running", "applied", "skipped", "failed"]
@@ -39,7 +40,7 @@ class SearchInput(StrictBaseModel):
 
 
 TaskInputJson = Annotated[
-    SearchInput | IndexInput | CrawlInput | SchemaInput | ExtractInput,
+    SearchInput | IndexInput | CrawlInput | SchemaInput | ExtractInput | CalibrateInput,
     Field(union_mode="left_to_right"),
 ]
 
@@ -175,6 +176,7 @@ class CrawlPageOutput(StrictBaseModel):
     url: str
     success: bool
     artifact_ids: list[UUID] = Field(default_factory=list)
+    artifact_warnings: list[QualityWarning] = Field(default_factory=list)
 
 
 class SearchOutputJson(StrictBaseModel):

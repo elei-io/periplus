@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from actions.extract.service import extract
 from actions.index.service import index
 from actions.crawl.service import crawl
+from actions.calibrate.service import calibrate
 from actions.search.service import search
 from actions.shared.data_schema.service import schema
 from actions.shared.progress import CrawlProgressCallback
@@ -107,6 +108,20 @@ async def _execute_primitive(
             warnings=warnings,
         )
 
+    if primitive == "calibrate":
+        output = await calibrate(
+            **payload,
+            progress_callback=progress_callback,
+            session=session,
+            task_run_id=run.id,
+        )
+        response_json = _json_safe(output)
+        return PrimitiveExecution(
+            output_json=response_json,
+            response_json=response_json,
+            warnings=[],
+        )
+
     raise ValueError(f"Unsupported task primitive: {primitive}")
 
 
@@ -124,7 +139,7 @@ async def _execute_crawl_primitive(
     warnings: list[dict] = []
     pages = []
     for page in output.pages:
-        page_warnings = [_json_safe(warning) for warning in page.warnings]
+        page_warnings = [_json_safe(warning) for warning in page.artifact_warnings]
         warnings.extend(page_warnings)
         pages.append(
             {
@@ -135,6 +150,7 @@ async def _execute_crawl_primitive(
                 "error": page.error,
                 "crawl_id": str(page.crawl_id) if page.crawl_id else None,
                 "artifact_ids": [str(artifact_id) for artifact_id in page.artifact_ids],
+                "artifact_warnings": page_warnings,
             }
         )
 

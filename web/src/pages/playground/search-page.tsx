@@ -26,8 +26,8 @@ export function SearchPage() {
             Start with a query
           </h1>
           <p className="text-sm leading-6 text-muted-foreground md:text-[0.95rem]">
-            Collect organic search results from a one-off run. Use settings to
-            tune how many results Atlas should return.
+            Collect organic search results from a one-off run and choose how
+            many result pages Atlas should scan.
           </p>
         </div>
         <SearchForm

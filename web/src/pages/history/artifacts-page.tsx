@@ -192,9 +192,9 @@ export function ArtifactsPage() {
           <FilterSelect
             value={filters.warnings}
             options={[
-              { value: "all", label: "All warnings" },
+              { value: "all", label: "All quality" },
               { value: "clean", label: "Clean" },
-              { value: "warning", label: "Warnings" },
+              { value: "warning", label: "Quality warnings" },
             ]}
             onChange={(warnings) =>
               patchFilters({ warnings: warnings as ArtifactFilters["warnings"] })
@@ -227,7 +227,7 @@ export function ArtifactsPage() {
             <TableHead>Kind</TableHead>
             <TableHead>URL</TableHead>
             <TableHead>Status</TableHead>
-            <TableHead>Warnings</TableHead>
+            <TableHead>Quality Warnings</TableHead>
             <TableHead>Size</TableHead>
             <TableHead>Created</TableHead>
             <TableHead className="w-20" />

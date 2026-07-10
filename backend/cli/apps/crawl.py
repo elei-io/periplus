@@ -1,4 +1,4 @@
-from typing import Annotated, Literal
+from typing import Annotated
 
 import typer
 from pydantic import TypeAdapter
@@ -15,27 +15,12 @@ _CRAWL_ADAPTER = TypeAdapter(CrawlOutput)
 
 def crawl(
     urls: Annotated[list[str], typer.Argument(help="One or more URLs to crawl.")],
-    mode: Annotated[
-        Literal["static", "dynamic", "app"],
-        typer.Option("--mode", help="Crawl preset for static pages, dynamic pages, or heavy SPAs."),
-    ] = "static",
-    wait: Annotated[
-        Literal["none", "stable", "network", "fixed"],
-        typer.Option("--wait", help="Wait strategy before returning crawl data."),
-    ] = "none",
-    concurrency: Annotated[
-        int,
-        typer.Option("--concurrency", "-c", min=1, help="Number of pages to crawl in parallel."),
-    ] = 10,
 ) -> None:
     with CrawlProgressRenderer(console) as progress:
         output = run_action(
             primitive="crawl",
             input_value={
                 "urls": urls,
-                "mode": mode,
-                "wait": wait,
-                "concurrency": concurrency,
             },
             response_adapter=_CRAWL_ADAPTER,
             progress_callback=progress.callback,
@@ -58,7 +43,7 @@ def crawl(
             str(page.status_code or ""),
             str(len(page.html or "")),
             str(link_count),
-            str(len(page.warnings)),
+            str(len(page.artifact_warnings)),
         )
 
     if not output.pages:

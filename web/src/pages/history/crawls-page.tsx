@@ -108,9 +108,9 @@ export function CrawlsPage() {
           <FilterSelect
             value={filters.warnings}
             options={[
-              { value: "all", label: "All warnings" },
+              { value: "all", label: "All transport" },
               { value: "clean", label: "Clean" },
-              { value: "warning", label: "Warnings" },
+              { value: "warning", label: "Transport warnings" },
             ]}
             onChange={(warnings) => patchFilters({ warnings: warnings as CrawlFilters["warnings"] })}
             aria-label="Warning state"
@@ -127,7 +127,7 @@ export function CrawlsPage() {
             <TableHead>Started</TableHead>
             <TableHead>Duration</TableHead>
             <TableHead>Status</TableHead>
-            <TableHead>Warnings</TableHead>
+            <TableHead>Transport Warnings</TableHead>
             <TableHead>Artifacts</TableHead>
             <TableHead>Input hash</TableHead>
             <TableHead className="w-20" />

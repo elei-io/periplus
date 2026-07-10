@@ -22,9 +22,6 @@ export type IndexInput = {
   url: string
   max_depth: number
   dedupe: boolean
-  concurrency: number
-  mode: CrawlMode
-  wait: CrawlWait
   include_crawl: string[]
   exclude_crawl: string[]
   include_result: string[]

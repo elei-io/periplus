@@ -22,6 +22,8 @@ from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, e
 from actions.shared.quality.service import run_quality_checks
 from artifacts.models import Artifact
 from artifacts.service import get_cached_html_artifact, task_run_artifacts_dir
+from crawl_policies.models import CrawlPolicy
+from crawl_policies.service import find_crawl_policy_for_url
 from crawls.models import Crawl
 from tasks.models import TaskRunArtifact, TaskRunCrawl
 from urls.service import resolve_url
@@ -37,8 +39,13 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _input_hash(url: str, mode: CrawlMode, wait: CrawlWait) -> str:
-    payload = {"url": url, "mode": mode, "wait": wait}
+def _input_hash(
+    url: str,
+    mode: CrawlMode,
+    wait: CrawlWait,
+    run_config_overrides: dict[str, Any] | None = None,
+) -> str:
+    payload = {"url": url, "mode": mode, "wait": wait, "run_config_overrides": run_config_overrides or {}}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -99,7 +106,7 @@ async def _crawl_url(
         )
         html = result.html or ""
         crawl = _crawl_payload(result)
-        warnings = run_quality_checks(url=result.url, html=html, crawl=crawl)
+        artifact_warnings = run_quality_checks(url=result.url, html=html, crawl=crawl)
     except Exception as exc:
         duration = time.perf_counter() - start_time
         await emit_crawl_progress(
@@ -131,7 +138,7 @@ async def _crawl_url(
         duration_seconds=duration,
         html=html,
         crawl=crawl,
-        warnings=warnings,
+        artifact_warnings=artifact_warnings,
         error=result.error_message,
     )
 
@@ -174,20 +181,21 @@ def _errors(page: CrawlPage, crawl: dict[str, Any] | None) -> dict[str, Any]:
     return {"message": error} if error else {}
 
 
-def _warnings_json(warnings: list[Any]) -> dict[str, Any]:
+def _warnings_json(warnings: list[Any], *, kind: str) -> dict[str, Any]:
     dumped = [
         warning.model_dump(mode="json") if hasattr(warning, "model_dump") else _json_safe(warning)
         for warning in warnings
     ]
     return {
+        "kind": kind,
         "codes": [warning.get("code") for warning in dumped if warning.get("code")],
         "count": len(dumped),
         "warnings": dumped,
     }
 
 
-def _empty_warnings_json() -> dict[str, Any]:
-    return {"codes": [], "count": 0, "warnings": []}
+def _empty_transport_warnings_json() -> dict[str, Any]:
+    return {"kind": "transport", "codes": [], "count": 0, "warnings": []}
 
 
 def _add_task_run_artifact_usage(
@@ -259,11 +267,12 @@ def _persist_page(
     page: CrawlPage,
     mode: CrawlMode,
     wait: CrawlWait,
+    run_config_overrides: dict[str, Any] | None = None,
 ) -> CrawlPage:
     url = resolve_url(session, page.url or requested_url)
-    input_hash = _input_hash(url.normalized_url, mode, wait)
+    input_hash = _input_hash(url.normalized_url, mode, wait, run_config_overrides)
     crawl_payload = page.crawl or {}
-    artifact_warnings_json = _warnings_json(page.warnings)
+    artifact_warnings_json = _warnings_json(page.artifact_warnings, kind="artifact_quality")
     finished_at = _utc_now()
     duration_ms = int(page.duration_seconds * 1000)
     started_at = finished_at - timedelta(milliseconds=duration_ms)
@@ -274,14 +283,19 @@ def _persist_page(
         started_at=started_at,
         finished_at=finished_at,
         duration_ms=duration_ms,
-        inputs_json={"url": requested_url, "mode": mode, "wait": wait},
+        inputs_json={
+            "url": requested_url,
+            "mode": mode,
+            "wait": wait,
+            "run_config_overrides": run_config_overrides or {},
+        },
         input_hash=input_hash,
         success=page.success,
         status_code=page.status_code,
         redirects_json=_redirects(crawl_payload),
         errors_json=_errors(page, crawl_payload),
         retry_count=0,
-        warnings_json=_empty_warnings_json(),
+        warnings_json=_empty_transport_warnings_json(),
         meta=_crawl_meta(crawl_payload),
     )
     session.add(crawl)
@@ -321,10 +335,11 @@ async def _crawl_raw_html(
     artifact: Artifact,
     mode: CrawlMode,
     wait: CrawlWait,
+    run_config_overrides: dict[str, Any] | None = None,
 ) -> CrawlPage:
     result = await crawler.arun(
         url=f"raw:{html}",
-        config=run_config_for_mode(mode=mode, wait=wait),
+        config=run_config_for_mode(mode=mode, wait=wait, **(run_config_overrides or {})),
     )
     crawl_payload = _crawl_payload(result)
     crawl = artifact.crawl
@@ -366,7 +381,7 @@ async def _crawl_raw_html(
         artifact_ids=[artifact.id],
         html=result.html or html,
         crawl=crawl_payload,
-        warnings=[],
+        artifact_warnings=[],
         error=crawl_payload.get("error_message"),
     )
 
@@ -379,11 +394,18 @@ async def _cached_page(
     requested_url: str,
     mode: CrawlMode,
     wait: CrawlWait,
+    run_config_overrides: dict[str, Any] | None,
+    cache_block_rules: dict[str, Any] | None,
     progress_callback: CrawlProgressCallback | None,
 ) -> CrawlPage | None:
     url = resolve_url(session, requested_url)
-    input_hash = _input_hash(url.normalized_url, mode, wait)
-    cached = get_cached_html_artifact(session, url_id=url.id, input_hash=input_hash)
+    input_hash = _input_hash(url.normalized_url, mode, wait, run_config_overrides)
+    cached = get_cached_html_artifact(
+        session,
+        url_id=url.id,
+        input_hash=input_hash,
+        cache_block_rules=cache_block_rules,
+    )
     if cached is None:
         return None
 
@@ -422,7 +444,73 @@ async def _cached_page(
         artifact=cached.html_artifact,
         mode=mode,
         wait=wait,
+        run_config_overrides=run_config_overrides,
     )
+
+
+def _default_max_concurrency_for_mode(mode: CrawlMode) -> int:
+    return 5 if mode == "app" else 10
+
+
+def _max_concurrency_from_config(config: dict[str, Any], mode: CrawlMode) -> int:
+    raw_max_concurrency = config.get("max_concurrency")
+    if isinstance(raw_max_concurrency, int) and raw_max_concurrency > 0:
+        return raw_max_concurrency
+    if isinstance(raw_max_concurrency, str) and raw_max_concurrency.isdigit():
+        return max(1, int(raw_max_concurrency))
+    return _default_max_concurrency_for_mode(mode)
+
+
+def _cache_block_rules_from_config(config: dict[str, Any]) -> dict[str, Any]:
+    cache_block_rules = config.get("cache_block_rules")
+    return cache_block_rules if isinstance(cache_block_rules, dict) else {}
+
+
+def _transport_from_policy(policy: CrawlPolicy) -> tuple[CrawlMode, CrawlWait, dict[str, Any], int, dict[str, Any]]:
+    config = policy.config or {}
+    mode = config.get("mode") or "static"
+    wait = config.get("wait") or "none"
+    run_config_overrides = config.get("run_config_overrides") or {}
+    return (
+        mode,
+        wait,
+        run_config_overrides,
+        _max_concurrency_from_config(config, mode),
+        _cache_block_rules_from_config(config),
+    )
+
+
+async def _policy_transport_or_calibrated_page(
+    *,
+    url: str,
+    index: int,
+    progress_callback: CrawlProgressCallback | None,
+    session: Session,
+    task_run_id: UUID,
+) -> tuple[CrawlMode, CrawlWait, dict[str, Any], int, dict[str, Any], CrawlPage | None]:
+    policy = find_crawl_policy_for_url(session, url=url)
+    if policy is not None:
+        mode, wait, run_config_overrides, max_concurrency, cache_block_rules = _transport_from_policy(policy)
+        return mode, wait, run_config_overrides, max_concurrency, cache_block_rules, None
+
+    from actions.calibrate.service import calibrate
+
+    output = await calibrate(
+        url=url,
+        force=False,
+        progress_callback=progress_callback,
+        session=session,
+        task_run_id=task_run_id,
+    )
+    mode = output.selected_config.get("mode") or "static"
+    wait = output.selected_config.get("wait") or "none"
+    run_config_overrides = output.selected_config.get("run_config_overrides") or {}
+    max_concurrency = _max_concurrency_from_config(output.selected_config, mode)
+    cache_block_rules = _cache_block_rules_from_config(output.selected_config)
+    selected_page = output.selected_page
+    if selected_page is not None:
+        return mode, wait, run_config_overrides, max_concurrency, cache_block_rules, selected_page.model_copy(update={"url": url})
+    return mode, wait, run_config_overrides, max_concurrency, cache_block_rules, None
 
 
 async def _crawl_one(
@@ -450,8 +538,8 @@ async def _crawl_one(
 async def crawl_one_for_task(
     *,
     url: str,
-    mode: CrawlMode,
-    wait: CrawlWait,
+    mode: CrawlMode | None = None,
+    wait: CrawlWait | None = None,
     index: int,
     progress_callback: CrawlProgressCallback | None = None,
     session: Session | None = None,
@@ -459,6 +547,19 @@ async def crawl_one_for_task(
     run_config_overrides: dict[str, Any] | None = None,
     crawler: AsyncWebCrawler | None = None,
 ) -> CrawlPage:
+    if mode is None or wait is None:
+        if session is None or task_run_id is None:
+            raise RuntimeError("policy-driven crawl requires task-run execution context")
+        mode, wait, run_config_overrides, _, _, selected_page = await _policy_transport_or_calibrated_page(
+            url=url,
+            index=index,
+            progress_callback=progress_callback,
+            session=session,
+            task_run_id=task_run_id,
+        )
+        if selected_page is not None:
+            return selected_page
+
     if crawler is None:
         async with AsyncWebCrawler(config=browser_config_for_mode(mode)) as owned_crawler:
             page = await _crawl_url(
@@ -488,70 +589,169 @@ async def crawl_one_for_task(
             page=page,
             mode=mode,
             wait=wait,
+            run_config_overrides=run_config_overrides,
         )
 
     return page
 
 
+async def _crawl_one_for_task_index(
+    *,
+    index: int,
+    url: str,
+    mode: CrawlMode | None,
+    wait: CrawlWait | None,
+    progress_callback: CrawlProgressCallback | None,
+    session: Session | None,
+    task_run_id: UUID | None,
+    run_config_overrides: dict[str, Any] | None,
+    semaphore: asyncio.Semaphore | None = None,
+) -> tuple[int, CrawlPage]:
+    if semaphore is not None:
+        async with semaphore:
+            page = await crawl_one_for_task(
+                url=url,
+                mode=mode,
+                wait=wait,
+                index=index,
+                progress_callback=progress_callback,
+                session=session,
+                task_run_id=task_run_id,
+                run_config_overrides=run_config_overrides,
+            )
+            return index, page
+
+    page = await crawl_one_for_task(
+        url=url,
+        mode=mode,
+        wait=wait,
+        index=index,
+        progress_callback=progress_callback,
+        session=session,
+        task_run_id=task_run_id,
+        run_config_overrides=run_config_overrides,
+    )
+    return index, page
+
+
 async def crawl(
     urls: list[str],
-    mode: CrawlMode = "static",
-    wait: CrawlWait = "none",
-    concurrency: int = 10,
+    mode: CrawlMode | None = None,
+    wait: CrawlWait | None = None,
     progress_callback: CrawlProgressCallback | None = None,
     session: Session | None = None,
     task_run_id: UUID | None = None,
 ) -> CrawlOutput:
     start_time = time.perf_counter()
     pages_by_index: dict[int, CrawlPage] = {}
-    semaphore = asyncio.Semaphore(max(1, concurrency))
-    pending_urls: list[tuple[int, str]] = []
+    fallback_concurrency = _default_max_concurrency_for_mode(mode or "static")
+    semaphore = asyncio.Semaphore(fallback_concurrency)
+    pending_urls: list[tuple[int, str, CrawlMode | None, CrawlWait | None, dict[str, Any] | None, int]] = []
 
-    async with AsyncWebCrawler(config=browser_config_for_mode(mode)) as crawler:
+    if mode is not None and wait is not None:
+        async with AsyncWebCrawler(config=browser_config_for_mode(mode)) as crawler:
+            for index, url in enumerate(urls):
+                page = None
+                if session is not None and task_run_id is not None:
+                    page = await _cached_page(
+                        crawler,
+                        session,
+                        task_run_id=task_run_id,
+                        requested_url=url,
+                        mode=mode,
+                        wait=wait,
+                        run_config_overrides=None,
+                        cache_block_rules=None,
+                        progress_callback=progress_callback,
+                    )
+                if page is None:
+                    pending_urls.append((index, url, mode, wait, None, fallback_concurrency))
+                else:
+                    pages_by_index[index] = page
+
+            if pending_urls:
+                tasks = [
+                    asyncio.create_task(
+                        _crawl_one(
+                            crawler=crawler,
+                            index=index,
+                            url=url,
+                            mode=pending_mode or "static",
+                            wait=pending_wait or "none",
+                            semaphore=semaphore,
+                            progress_callback=progress_callback,
+                        )
+                    )
+                    for index, url, pending_mode, pending_wait, _, _ in pending_urls
+                ]
+                for task in asyncio.as_completed(tasks):
+                    index, page = await task
+                    if session is not None and task_run_id is not None:
+                        page = _persist_page(
+                            session,
+                            task_run_id=task_run_id,
+                            index=index,
+                            requested_url=urls[index],
+                            page=page,
+                            mode=mode,
+                            wait=wait,
+                            run_config_overrides=None,
+                        )
+                    pages_by_index[index] = page
+    else:
         for index, url in enumerate(urls):
-            page = None
-            if session is not None and task_run_id is not None:
+            if session is None or task_run_id is None:
+                pending_urls.append((index, url, "static", "none", None, _default_max_concurrency_for_mode("static")))
+                continue
+            policy = find_crawl_policy_for_url(session, url=url)
+            if policy is None:
+                page = await crawl_one_for_task(
+                    url=url,
+                    index=index,
+                    progress_callback=progress_callback,
+                    session=session,
+                    task_run_id=task_run_id,
+                )
+                pages_by_index[index] = page
+                continue
+            policy_mode, policy_wait, policy_overrides, max_concurrency, cache_block_rules = _transport_from_policy(policy)
+            async with AsyncWebCrawler(config=browser_config_for_mode(policy_mode)) as crawler:
                 page = await _cached_page(
                     crawler,
                     session,
                     task_run_id=task_run_id,
                     requested_url=url,
-                    mode=mode,
-                    wait=wait,
+                    mode=policy_mode,
+                    wait=policy_wait,
+                    run_config_overrides=policy_overrides,
+                    cache_block_rules=cache_block_rules,
                     progress_callback=progress_callback,
                 )
             if page is None:
-                pending_urls.append((index, url))
+                pending_urls.append((index, url, policy_mode, policy_wait, policy_overrides, max_concurrency))
             else:
                 pages_by_index[index] = page
 
         if pending_urls:
+            policy_semaphore = asyncio.Semaphore(max(1, min(max_concurrency for *_, max_concurrency in pending_urls)))
             tasks = [
                 asyncio.create_task(
-                    _crawl_one(
-                        crawler=crawler,
+                    _crawl_one_for_task_index(
                         index=index,
                         url=url,
-                        mode=mode,
-                        wait=wait,
-                        semaphore=semaphore,
+                        mode=pending_mode,
+                        wait=pending_wait,
                         progress_callback=progress_callback,
+                        session=session,
+                        task_run_id=task_run_id,
+                        run_config_overrides=overrides,
+                        semaphore=policy_semaphore,
                     )
                 )
-                for index, url in pending_urls
+                for index, url, pending_mode, pending_wait, overrides, _ in pending_urls
             ]
             for task in asyncio.as_completed(tasks):
                 index, page = await task
-                if session is not None and task_run_id is not None:
-                    page = _persist_page(
-                        session,
-                        task_run_id=task_run_id,
-                        index=index,
-                        requested_url=urls[index],
-                        page=page,
-                        mode=mode,
-                        wait=wait,
-                    )
                 pages_by_index[index] = page
 
     pages = [pages_by_index[index] for index in range(len(urls))]
@@ -568,9 +768,8 @@ async def crawl(
 
 def crawl_sync(
     urls: list[str],
-    mode: CrawlMode = "static",
-    wait: CrawlWait = "none",
-    concurrency: int = 10,
+    mode: CrawlMode | None = None,
+    wait: CrawlWait | None = None,
     progress_callback: CrawlProgressCallback | None = None,
 ) -> CrawlOutput:
     return asyncio.run(
@@ -578,7 +777,6 @@ def crawl_sync(
             urls=urls,
             mode=mode,
             wait=wait,
-            concurrency=concurrency,
             progress_callback=progress_callback,
         )
     )

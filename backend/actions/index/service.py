@@ -7,12 +7,9 @@ from sqlalchemy.orm import Session
 
 from actions.crawl.schemas import CrawlPage
 from actions.crawl.service import crawl as crawl_service
-from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.shared.progress import CrawlProgressCallback
 
 from .schemas import IndexLink
-
-_DEFAULT_CONCURRENCY = 10
 
 
 def _normalize_url(url: str, base_url: str) -> str:
@@ -105,9 +102,6 @@ async def index(
     url: str,
     max_depth: int = 1,
     dedupe: bool = False,
-    concurrency: int = _DEFAULT_CONCURRENCY,
-    mode: CrawlMode = "static",
-    wait: CrawlWait = "none",
     include_crawl: list[str] | None = None,
     exclude_crawl: list[str] | None = None,
     include_result: list[str] | None = None,
@@ -117,7 +111,7 @@ async def index(
     task_run_id: UUID | None = None,
 ) -> list[IndexLink]:
     start_url = _normalize_url(url, url)
-    if max_depth < 0 or concurrency < 1 or not _is_crawlable_url(start_url):
+    if max_depth < 0 or not _is_crawlable_url(start_url):
         return []
 
     include_crawl_patterns = include_crawl or []
@@ -137,9 +131,6 @@ async def index(
 
         crawl_output = await crawl_service(
             urls=page_urls,
-            mode=mode,
-            wait=wait,
-            concurrency=concurrency,
             progress_callback=progress_callback,
             session=session,
             task_run_id=task_run_id,
@@ -198,9 +189,6 @@ def index_sync(
     url: str,
     max_depth: int = 1,
     dedupe: bool = False,
-    concurrency: int = _DEFAULT_CONCURRENCY,
-    mode: CrawlMode = "static",
-    wait: CrawlWait = "none",
     include_crawl: list[str] | None = None,
     exclude_crawl: list[str] | None = None,
     include_result: list[str] | None = None,
@@ -212,9 +200,6 @@ def index_sync(
             url=url,
             max_depth=max_depth,
             dedupe=dedupe,
-            concurrency=concurrency,
-            mode=mode,
-            wait=wait,
             include_crawl=include_crawl,
             exclude_crawl=exclude_crawl,
             include_result=include_result,

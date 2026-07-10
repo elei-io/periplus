@@ -1,4 +1,10 @@
-export type TaskPrimitive = "search" | "index" | "crawl" | "schema" | "extract"
+export type TaskPrimitive =
+  | "search"
+  | "index"
+  | "crawl"
+  | "schema"
+  | "extract"
+  | "calibrate"
 
 export type OnceSchedule = {
   kind: "once"

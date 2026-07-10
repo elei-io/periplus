@@ -87,7 +87,7 @@ export function CrawlDetailPage({ crawlId }: { crawlId: string }) {
             ["Domain", crawl.domain],
             ["Path", crawl.path_name],
             ["Artifacts", String(crawl.artifact_count)],
-            ["Warnings", String(crawl.warning_count)],
+            ["Transport Warnings", String(crawl.warning_count)],
             ["Error", crawl.error_message],
           ]}
         />
@@ -136,7 +136,7 @@ function WarningDetails({ crawl }: { crawl: CrawlDetailRecord }) {
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <ShieldAlertIcon className="size-4 text-muted-foreground" />
-          <h2 className="text-sm font-medium">Warnings</h2>
+          <h2 className="text-sm font-medium">Transport Warnings</h2>
         </div>
         <Badge variant={crawl.warning_count > 0 ? "destructive" : "outline"}>
           {crawl.warning_count} total
@@ -187,7 +187,7 @@ function ArtifactsTable({ artifacts }: { artifacts: ArtifactRecord[] }) {
         <TableRow>
           <TableHead>Kind</TableHead>
           <TableHead>Status</TableHead>
-          <TableHead>Warnings</TableHead>
+          <TableHead>Quality Warnings</TableHead>
           <TableHead>Size</TableHead>
           <TableHead>Created</TableHead>
         </TableRow>

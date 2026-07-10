@@ -2,7 +2,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.shared.quality.schemas import QualityWarning
 from actions.shared.data_schema.schemas import SchemaType
 from actions.shared.query_schema.schemas import QueryParamOutput
@@ -18,14 +17,6 @@ class Input(BaseModel):
         description="Optional JSON example showing the desired extracted object shape.",
     )
     schema_type: SchemaType = Field(default="css", description="Crawl4AI schema selector type.")
-    mode: CrawlMode = Field(
-        default="static",
-        description="The crawl preset to use before extraction.",
-    )
-    wait: CrawlWait = Field(
-        default="none",
-        description="The wait strategy to use before extraction.",
-    )
     match: str | None = Field(
         default=None,
         description="Optional data schema match pattern for durable schema reuse.",

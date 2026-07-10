@@ -30,9 +30,7 @@ export function ExtractPage() {
             Start with a page
           </h1>
           <p className="text-sm leading-6 text-muted-foreground md:text-[0.95rem]">
-            Describe the records Atlas should extract from a URL. Use settings
-            to tune loading, wait strategy, selector type, and target JSON
-            shape.
+            Describe the records Atlas should extract from a URL.
           </p>
         </div>
         <ExtractForm

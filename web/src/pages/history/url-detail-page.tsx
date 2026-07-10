@@ -84,7 +84,7 @@ export function UrlDetailPage({ urlId }: { urlId: string }) {
             ["Active Artifacts", String(url.active_artifact_count)],
             ["Invalidated Artifacts", String(url.invalidated_artifact_count)],
             ["Cache Eligible", String(url.cache_eligible_count)],
-            ["Artifact Warnings", String(url.artifact_warning_count)],
+            ["Quality Warnings", String(url.artifact_warning_count)],
             ["Latest Artifact", formatDate(url.latest_artifact_at)],
           ]}
         />
@@ -92,7 +92,7 @@ export function UrlDetailPage({ urlId }: { urlId: string }) {
           title="Crawl Health"
           items={[
             ["Crawls", String(url.crawl_count)],
-            ["Crawl Warnings", String(url.crawl_warning_count)],
+            ["Transport Warnings", String(url.crawl_warning_count)],
             ["Total Warnings", String(url.warning_count)],
             ["Latest Status", url.latest_status_code ? String(url.latest_status_code) : null],
             ["Latest Crawl", formatDate(url.latest_crawl_at)],
@@ -147,7 +147,7 @@ function CrawlsTable({ crawls }: { crawls: CrawlRecord[] }) {
           <TableHead>Started</TableHead>
           <TableHead>Status</TableHead>
           <TableHead>Duration</TableHead>
-          <TableHead>Warnings</TableHead>
+          <TableHead>Transport Warnings</TableHead>
           <TableHead>Input Hash</TableHead>
         </TableRow>
       </TableHeader>
@@ -187,7 +187,7 @@ function ArtifactsTable({ artifacts }: { artifacts: ArtifactRecord[] }) {
         <TableRow>
           <TableHead>Kind</TableHead>
           <TableHead>Status</TableHead>
-          <TableHead>Warnings</TableHead>
+          <TableHead>Quality Warnings</TableHead>
           <TableHead>Size</TableHead>
           <TableHead>Created</TableHead>
         </TableRow>

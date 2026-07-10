@@ -10,7 +10,6 @@ from litellm import acompletion
 from sqlalchemy.orm import Session
 
 from actions.crawl.service import crawl as crawl_service
-from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.shared.llm import openrouter_llm_config
 from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
 from data_schemas.service import (
@@ -36,8 +35,6 @@ def _schema_id(
     prompt: str,
     schema_type: SchemaType,
     schema_id: str | None,
-    mode: CrawlMode,
-    wait: CrawlWait,
 ) -> str:
     if schema_id:
         return _safe_id(schema_id)
@@ -48,8 +45,6 @@ def _schema_id(
         "domain": domain,
         "prompt": prompt,
         "schema_type": schema_type,
-        "mode": mode,
-        "wait": wait,
     }
     digest = sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
     return f"{domain}-{digest}"
@@ -57,16 +52,12 @@ def _schema_id(
 
 async def _crawl_html(
     url: str,
-    mode: CrawlMode,
-    wait: CrawlWait,
     progress_callback: CrawlProgressCallback | None,
     session: Session | None,
     task_run_id: UUID | None,
 ) -> str:
     output = await crawl_service(
         urls=[url],
-        mode=mode,
-        wait=wait,
         progress_callback=progress_callback,
         session=session,
         task_run_id=task_run_id,
@@ -134,8 +125,6 @@ async def schema(
     schema_type: SchemaType = "css",
     schema_id: str | None = None,
     html: str | None = None,
-    mode: CrawlMode = "static",
-    wait: CrawlWait = "none",
     progress_callback: CrawlProgressCallback | None = None,
     session: Session | None = None,
     task_run_id: UUID | None = None,
@@ -148,8 +137,6 @@ async def schema(
         prompt=prompt,
         schema_type=schema_type,
         schema_id=schema_id,
-        mode=mode,
-        wait=wait,
     )
     await emit_crawl_progress(
         progress_callback,
@@ -185,8 +172,6 @@ async def schema(
     target_json_example = target_json_example or await _generate_target_json_example(prompt)
     html = html or await _crawl_html(
         url=url,
-        mode=mode,
-        wait=wait,
         progress_callback=progress_callback,
         session=session,
         task_run_id=task_run_id,
@@ -239,8 +224,6 @@ async def schema(
     if session is not None:
         inputs_json = {
             "url": url,
-            "mode": mode,
-            "wait": wait,
             "schema_id": schema_id,
             "match": match_value,
         }
@@ -289,8 +272,6 @@ def schema_sync(
     schema_type: SchemaType = "css",
     schema_id: str | None = None,
     html: str | None = None,
-    mode: CrawlMode = "static",
-    wait: CrawlWait = "none",
     progress_callback: CrawlProgressCallback | None = None,
 ) -> SchemaOutput:
     return asyncio.run(
@@ -301,8 +282,6 @@ def schema_sync(
             schema_type=schema_type,
             schema_id=schema_id,
             html=html,
-            mode=mode,
-            wait=wait,
             progress_callback=progress_callback,
         )
     )

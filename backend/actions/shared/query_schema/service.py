@@ -11,7 +11,6 @@ from litellm import acompletion
 from lxml import html as lxml_html
 from sqlalchemy.orm import Session
 
-from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.shared.llm import openrouter_llm_config
 from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
 from query_schemas.service import find_query_schema_for_url, upsert_query_schema
@@ -431,8 +430,6 @@ def persist_query_param_output(
     output: QueryParamOutput,
     task_run_id: UUID | None,
     crawl_id: UUID | None,
-    mode: CrawlMode,
-    wait: CrawlWait,
 ) -> None:
     if output.query_schema is None:
         return
@@ -446,7 +443,7 @@ def persist_query_param_output(
         evidence_json=[candidate.model_dump(mode="json") for candidate in output.candidates],
         task_run_id=task_run_id,
         crawl_id=crawl_id,
-        inputs_json={"url": output.url, "mode": mode, "wait": wait},
+        inputs_json={"url": output.url},
         warnings_json={"count": len(output.warnings), "warnings": output.warnings},
     )
 
@@ -548,8 +545,6 @@ async def query_from_page(
     html: str,
     crawl_id: UUID | None = None,
     artifact_ids: list[UUID] | None = None,
-    mode: CrawlMode = "app",
-    wait: CrawlWait = "stable",
     progress_callback: CrawlProgressCallback | None = None,
     session: Session | None = None,
     task_run_id: UUID | None = None,
@@ -615,8 +610,6 @@ async def query_from_page(
             ),
             task_run_id=task_run_id,
             crawl_id=crawl_id,
-            mode=mode,
-            wait=wait,
         )
 
     return QueryParamOutput(

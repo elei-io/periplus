@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { AppSidebar } from "@/components/app-sidebar"
+import { CalibratePage } from "@/pages/playground/calibrate-page"
 import { ExtractPage } from "@/pages/playground/extract-page"
 import { IndexPage } from "@/pages/playground/index-page"
 import { CrawlPage } from "@/pages/playground/crawl-page"
@@ -9,6 +10,8 @@ import { TasksPage } from "@/pages/admin/tasks-page"
 import { ArtifactDetailPage } from "@/pages/history/artifact-detail-page"
 import { ArtifactsPage } from "@/pages/history/artifacts-page"
 import { CrawlDetailPage } from "@/pages/history/crawl-detail-page"
+import { CrawlPolicyDetailPage } from "@/pages/history/crawl-policy-detail-page"
+import { CrawlPoliciesPage } from "@/pages/history/crawl-policies-page"
 import { CrawlsPage } from "@/pages/history/crawls-page"
 import { DataSchemaDetailPage } from "@/pages/history/data-schema-detail-page"
 import { DataSchemasPage } from "@/pages/history/data-schemas-page"
@@ -82,6 +85,10 @@ export function App() {
       return <CrawlPage />
     }
 
+    if (activeItem.href === "/playground/calibrate") {
+      return <CalibratePage />
+    }
+
     if (activeItem.href === "/scheduled-work/tasks") {
       return <TasksPage />
     }
@@ -129,6 +136,15 @@ export function App() {
       }
 
       return <QuerySchemasPage />
+    }
+
+    if (activeItem.href === "/history/crawl-policies") {
+      const policyId = pathname.match(/^\/history\/crawl-policies\/([^/]+)$/)?.[1]
+      if (policyId) {
+        return <CrawlPolicyDetailPage policyId={decodeURIComponent(policyId)} />
+      }
+
+      return <CrawlPoliciesPage />
     }
 
     return (

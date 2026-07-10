@@ -76,3 +76,4 @@ class UrlMatch(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     query_schemas = relationship("QuerySchema", back_populates="url_match", foreign_keys="QuerySchema.url_match_id")
+    crawl_policies = relationship("CrawlPolicy", back_populates="url_match", foreign_keys="CrawlPolicy.url_match_id")

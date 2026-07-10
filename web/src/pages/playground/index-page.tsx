@@ -29,8 +29,8 @@ export function IndexPage() {
             Start with a URL
           </h1>
           <p className="text-sm leading-6 text-muted-foreground md:text-[0.95rem]">
-            Discover linked pages from a one-off crawl. Tune depth, loading
-            mode, concurrency, dedupe, and filters from the settings control.
+            Discover linked pages from a one-off crawl. Tune depth, dedupe, and
+            filters from the settings control.
           </p>
         </div>
         <IndexForm

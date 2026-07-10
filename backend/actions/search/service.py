@@ -31,7 +31,6 @@ class SearchProviderConfig:
     base_url: str
     search_param_name: str
     extra_params: dict[str, str] | None = None
-    crawl_config: dict[str, object] | None = None
     paginates: bool = False
 
     @property
@@ -54,7 +53,6 @@ SEARCH_PROVIDERS: dict[SearchProvider, SearchProviderConfig] = {
         label="DuckDuckGo HTML",
         base_url="https://html.duckduckgo.com/html/",
         search_param_name="q",
-        crawl_config={"mode": "static", "wait": "none", "concurrency": 1},
         paginates=True,
     ),
     "brave": SearchProviderConfig(
@@ -62,7 +60,6 @@ SEARCH_PROVIDERS: dict[SearchProvider, SearchProviderConfig] = {
         label="Brave Search",
         base_url="https://search.brave.com/search",
         search_param_name="q",
-        crawl_config={"mode": "app", "wait": "stable", "concurrency": 1},
         paginates=True,
     ),
     "yahoo": SearchProviderConfig(
@@ -70,7 +67,6 @@ SEARCH_PROVIDERS: dict[SearchProvider, SearchProviderConfig] = {
         label="Yahoo Search",
         base_url="https://search.yahoo.com/search",
         search_param_name="p",
-        crawl_config={"mode": "static", "wait": "none", "concurrency": 1},
         paginates=True,
     ),
 }
@@ -151,15 +147,6 @@ def _parse_search_results(
     return results
 
 
-def _crawl_config(provider: SearchProviderConfig) -> dict[str, object]:
-    config = provider.crawl_config or {}
-    return {
-        "mode": config.get("mode", "static"),
-        "wait": config.get("wait", "none"),
-        "concurrency": max(1, int(config.get("concurrency", 1))),
-    }
-
-
 def _candidate_url_for_param_value(
     query_params: QueryParamOutput,
     *,
@@ -233,7 +220,6 @@ async def _extract_search_page(
     *,
     page_url: str,
     provider_config: SearchProviderConfig,
-    crawl_config: dict[str, object],
     progress_callback: CrawlProgressCallback | None,
     session: Session | None,
     task_run_id: UUID | None,
@@ -245,8 +231,6 @@ async def _extract_search_page(
         prompt=provider_config.prompt,
         target_json_example=_SCHEMA_TARGET_JSON_EXAMPLE,
         schema_type="css",
-        mode=crawl_config["mode"],  # type: ignore[arg-type]
-        wait=crawl_config["wait"],  # type: ignore[arg-type]
         match=provider_config.match,
         progress_callback=progress_callback,
         session=session,
@@ -271,7 +255,6 @@ async def search(
     )
     results: list[SearchResult] = []
     seen_urls: set[str] = set()
-    crawl_config = _crawl_config(provider_config)
 
     page_queue: list[str] = [search_url]
     seen_page_urls: set[str] = set()
@@ -292,7 +275,6 @@ async def search(
                     _extract_search_page(
                         page_url=page_url,
                         provider_config=provider_config,
-                        crawl_config=crawl_config,
                         progress_callback=progress_callback,
                         session=None,
                         task_run_id=None,
@@ -307,7 +289,6 @@ async def search(
                     await _extract_search_page(
                         page_url=page_url,
                         provider_config=provider_config,
-                        crawl_config=crawl_config,
                         progress_callback=progress_callback,
                         session=session,
                         task_run_id=task_run_id,

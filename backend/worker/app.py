@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
 import signal
 import time
+from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -66,8 +68,27 @@ async def _loop() -> None:
     print("atlas-worker stopped", flush=True)
 
 
-def main() -> None:
+def _run() -> None:
     asyncio.run(_loop())
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the Atlas task worker.")
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Restart the worker when Python files change (development only).",
+    )
+    args = parser.parse_args()
+
+    if args.reload:
+        from watchfiles import PythonFilter, run_process
+
+        backend_root = Path(__file__).resolve().parents[1]
+        run_process(backend_root, target=_run, watch_filter=PythonFilter())
+        return
+
+    _run()
 
 
 if __name__ == "__main__":

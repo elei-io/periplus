@@ -11,6 +11,10 @@ import type {
   CrawlDetailRecord,
   CrawlFilters,
   CrawlListResponse,
+  CrawlPolicyDetailRecord,
+  CrawlPolicyFilters,
+  CrawlPolicyListResponse,
+  CrawlPolicyUpdateRequest,
   DataSchemaDetailRecord,
   DataSchemaFilters,
   DataSchemaListResponse,
@@ -88,6 +92,19 @@ function crawlParams(filters: CrawlFilters, page?: PageParams) {
   appendParam(params, "status_code", filters.statusCode)
   if (filters.warnings !== "all") {
     params.set("warnings", String(filters.warnings === "warning"))
+  }
+  return params
+}
+
+function crawlPolicyParams(filters: CrawlPolicyFilters, page?: PageParams) {
+  const params = new URLSearchParams(page ? pageParams(page) : undefined)
+  appendParam(params, "match_pattern", filters.matchPattern)
+  appendParam(params, "template", filters.template)
+  if (filters.enabled !== "all") {
+    params.set("enabled", String(filters.enabled === "enabled"))
+  }
+  if (filters.mode !== "all") {
+    params.set("mode", filters.mode)
   }
   return params
 }
@@ -306,6 +323,86 @@ export function useCrawl(id: string | null) {
         throw await apiErrorFromResponse(response)
       }
       return (await response.json()) as CrawlDetailRecord
+    },
+  })
+}
+
+export function useCrawlPolicies(filters: CrawlPolicyFilters, page: PageParams) {
+  return useQuery({
+    queryKey: ["crawl-policies", filters, page],
+    queryFn: async () => {
+      const response = await fetch(
+        apiUrl(`/crawl-policies/?${crawlPolicyParams(filters, page).toString()}`)
+      )
+      if (!response.ok) {
+        throw await apiErrorFromResponse(response)
+      }
+      return (await response.json()) as CrawlPolicyListResponse
+    },
+  })
+}
+
+export function useCrawlPolicy(id: string | null) {
+  return useQuery({
+    enabled: Boolean(id),
+    queryKey: ["crawl-policy", id],
+    queryFn: async () => {
+      const response = await fetch(apiUrl(`/crawl-policies/${id}`))
+      if (!response.ok) {
+        throw await apiErrorFromResponse(response)
+      }
+      return (await response.json()) as CrawlPolicyDetailRecord
+    },
+  })
+}
+
+export function useUpdateCrawlPolicy(id: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (request: CrawlPolicyUpdateRequest) => {
+      const response = await fetch(apiUrl(`/crawl-policies/${id}`), {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(request),
+      })
+      if (!response.ok) {
+        throw await apiErrorFromResponse(response)
+      }
+      return (await response.json()) as CrawlPolicyDetailRecord
+    },
+    onSuccess: () => {
+      toast.success("Updated crawl policy.")
+      void queryClient.invalidateQueries({ queryKey: ["crawl-policy", id] })
+      void queryClient.invalidateQueries({ queryKey: ["crawl-policies"] })
+    },
+    onError: (error) => {
+      toast.error(extractApiError(error))
+    },
+  })
+}
+
+export function useDeleteCrawlPolicy(id: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async () => {
+      const response = await fetch(apiUrl(`/crawl-policies/${id}`), {
+        method: "DELETE",
+      })
+      if (!response.ok) {
+        throw await apiErrorFromResponse(response)
+      }
+    },
+    onSuccess: () => {
+      toast.success("Deleted crawl policy.")
+      void queryClient.invalidateQueries({ queryKey: ["crawl-policy", id] })
+      void queryClient.invalidateQueries({ queryKey: ["crawl-policies"] })
+    },
+    onError: (error) => {
+      toast.error(extractApiError(error))
     },
   })
 }

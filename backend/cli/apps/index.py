@@ -1,4 +1,4 @@
-from typing import Annotated, Literal
+from typing import Annotated
 
 import typer
 from pydantic import TypeAdapter
@@ -19,23 +19,6 @@ def index(
     dedupe: Annotated[
         bool, typer.Option("--dedupe", help="Return each URL once at its lowest depth.")
     ] = False,
-    concurrency: Annotated[
-        int,
-        typer.Option(
-            "--concurrency", "-c", min=1, help="Number of pages to crawl in parallel."
-        ),
-    ] = 10,
-    mode: Annotated[
-        Literal["static", "dynamic", "app"],
-        typer.Option(
-            "--mode",
-            help="Crawl preset for static pages, dynamic pages, or heavy SPAs.",
-        ),
-    ] = "static",
-    wait: Annotated[
-        Literal["none", "stable", "network", "fixed"],
-        typer.Option("--wait", help="Wait strategy before collecting links."),
-    ] = "none",
     include_crawl: Annotated[
         list[str] | None,
         typer.Option(
@@ -71,9 +54,6 @@ def index(
                 "url": url,
                 "max_depth": max_depth,
                 "dedupe": dedupe,
-                "concurrency": concurrency,
-                "mode": mode,
-                "wait": wait,
                 "include_crawl": include_crawl or [],
                 "exclude_crawl": exclude_crawl or [],
                 "include_result": include_result or [],

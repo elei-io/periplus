@@ -2,10 +2,11 @@ import json
 from datetime import UTC, datetime
 from fnmatch import fnmatchcase
 from hashlib import sha256
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlparse, urlunparse
 from uuid import UUID
 
 from sqlalchemy import Select, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from tasks.models import TaskRun
@@ -44,7 +45,29 @@ def match_targets_for_url(url: str) -> tuple[str, ...]:
 
 
 def data_schema_matches_url(schema: DataSchema, url: str) -> bool:
-    return any(fnmatchcase(target, schema.match) for target in match_targets_for_url(url))
+    return any(fnmatchcase(target, schema.match) for target in match_targets_for_url(url)) or _query_key_match(
+        pattern=schema.match,
+        url=url,
+    )
+
+
+def _query_key_match(*, pattern: str, url: str) -> bool:
+    parsed_pattern = urlparse(pattern)
+    parsed_url = urlparse(url)
+    if not parsed_pattern.query or not parsed_pattern.query.endswith("*"):
+        return False
+    if (
+        parsed_pattern.scheme.lower() != parsed_url.scheme.lower()
+        or parsed_pattern.netloc.lower() != parsed_url.netloc.lower()
+        or (parsed_pattern.path or "/") != (parsed_url.path or "/")
+    ):
+        return False
+
+    key_prefix = parsed_pattern.query.removesuffix("*")
+    if not key_prefix or any(char in key_prefix for char in "=&"):
+        return False
+
+    return any(key.startswith(key_prefix) for key, _value in parse_qsl(parsed_url.query, keep_blank_values=True))
 
 
 def _match_specificity(pattern: str) -> tuple[int, int]:
@@ -130,13 +153,31 @@ def create_data_schema(
     inputs_json: dict | None = None,
 ) -> DataSchema:
     parsed = urlparse(url)
-    schema = DataSchema(
-        identity_key=identity_key_for(
+    identity_key = identity_key_for(
+        prompt=prompt,
+        schema_type=schema_type,
+        target_json_example=target_json_example,
+        match=match,
+    )
+    existing = session.scalar(select(DataSchema).where(DataSchema.identity_key == identity_key))
+    if existing is not None:
+        return _update_generated_data_schema(
+            session,
+            schema=existing,
+            identity_key=identity_key,
+            match=match,
             prompt=prompt,
             schema_type=schema_type,
             target_json_example=target_json_example,
-            match=match,
-        ),
+            schema_json=schema_json,
+            task_run_id=task_run_id,
+            inputs_json=inputs_json,
+            domain=parsed.netloc or None,
+            path=parsed.path or None,
+        )
+
+    schema = DataSchema(
+        identity_key=identity_key,
         match=match,
         enabled=True,
         priority=0,
@@ -153,7 +194,66 @@ def create_data_schema(
         validation_status="generated",
         warnings_json={"codes": [], "count": 0, "warnings": []},
     )
-    session.add(schema)
+    try:
+        with session.begin_nested():
+            session.add(schema)
+            session.flush()
+        return schema
+    except IntegrityError:
+        existing = session.scalar(select(DataSchema).where(DataSchema.identity_key == identity_key))
+        if existing is None:
+            raise
+        return _update_generated_data_schema(
+            session,
+            schema=existing,
+            identity_key=identity_key,
+            match=match,
+            prompt=prompt,
+            schema_type=schema_type,
+            target_json_example=target_json_example,
+            schema_json=schema_json,
+            task_run_id=task_run_id,
+            inputs_json=inputs_json,
+            domain=parsed.netloc or None,
+            path=parsed.path or None,
+        )
+
+
+def _update_generated_data_schema(
+    session: Session,
+    *,
+    schema: DataSchema,
+    identity_key: str,
+    match: str,
+    prompt: str,
+    schema_type: str,
+    target_json_example: str | None,
+    schema_json: dict,
+    task_run_id: UUID | None,
+    inputs_json: dict | None,
+    domain: str | None,
+    path: str | None,
+) -> DataSchema:
+    now = datetime.now(UTC)
+    schema.identity_key = identity_key
+    schema.match = match
+    schema.enabled = True
+    schema.prompt = prompt
+    schema.prompt_hash = _text_hash(prompt)
+    schema.schema_type = schema_type
+    schema.target_json_hash = _target_json_hash(target_json_example)
+    schema.domain = domain
+    schema.path = path
+    schema.schema_json = schema_json
+    schema.schema_hash = _json_hash(schema_json)
+    schema.generated_by_task_run_id = task_run_id
+    schema.inputs_json = {**(inputs_json or {}), "match": match}
+    schema.validation_status = "generated"
+    schema.failure_count = 0
+    schema.last_failed_at = None
+    schema.last_error = None
+    schema.warnings_json = {"codes": [], "count": 0, "warnings": []}
+    schema.updated_at = now
     session.flush()
     return schema
 

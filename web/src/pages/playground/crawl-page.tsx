@@ -31,7 +31,7 @@ export function CrawlPage() {
           </h1>
           <p className="text-sm leading-6 text-muted-foreground md:text-[0.95rem]">
             Acquire raw HTML, Crawl4AI metadata, and quality warnings from a
-            one-off page load. Use settings to tune mode and wait strategy.
+            one-off page load. Atlas chooses transport from crawl policies.
           </p>
         </div>
         <CrawlForm

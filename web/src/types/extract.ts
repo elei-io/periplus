@@ -1,4 +1,4 @@
-import type { CrawlMode, CrawlProgressEvent, CrawlWait } from "@/types/index"
+import type { CrawlProgressEvent } from "@/types/index"
 
 export type DataSchemaType = "css" | "xpath"
 
@@ -9,8 +9,6 @@ export type ExtractInput = {
   prompt: string | null
   target_json_example: string | null
   schema_type: DataSchemaType
-  mode: CrawlMode
-  wait: CrawlWait
 }
 
 export type ExtractSource = {

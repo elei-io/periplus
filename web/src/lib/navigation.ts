@@ -6,10 +6,12 @@ import {
   ClipboardListIcon,
   DatabaseIcon,
   FileSearchIcon,
+  FlaskConicalIcon,
   LinkIcon,
   ListFilterIcon,
   RouteIcon,
   SearchIcon,
+  ShieldCheckIcon,
   SparklesIcon,
 } from "lucide-react"
 
@@ -47,6 +49,13 @@ export const navigationGroups: NavigationGroup[] = [
         icon: FileSearchIcon,
         title: "Crawl Playground",
         description: "Fetch page content and inspect crawl output.",
+      },
+      {
+        name: "Calibrate",
+        href: "/playground/calibrate",
+        icon: FlaskConicalIcon,
+        title: "Crawl Policy Calibration",
+        description: "Test transport templates and persist crawl policy settings.",
       },
     ],
   },
@@ -113,6 +122,13 @@ export const navigationGroups: NavigationGroup[] = [
         title: "Query Schema Registry",
         description: "Inspect reusable query parameter data schemas.",
       },
+      {
+        name: "Crawl Policies",
+        href: "/history/crawl-policies",
+        icon: ShieldCheckIcon,
+        title: "Crawl Policy Registry",
+        description: "Inspect, edit, invalidate, and delete crawl transport policies.",
+      },
     ],
   },
 ]
@@ -144,6 +160,11 @@ export function findNavigationItem(pathname: string) {
     return navigationGroups
       .flatMap((group) => group.items)
       .find((item) => item.href === "/history/query-schemas")
+  }
+  if (pathname.startsWith("/history/crawl-policies/")) {
+    return navigationGroups
+      .flatMap((group) => group.items)
+      .find((item) => item.href === "/history/crawl-policies")
   }
   return navigationGroups
     .flatMap((group) => group.items)

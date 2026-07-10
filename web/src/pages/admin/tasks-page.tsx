@@ -85,12 +85,10 @@ const primitives: TaskPrimitive[] = [
   "crawl",
   "schema",
   "extract",
+  "calibrate",
 ]
 const scheduleKinds = ["once", "cron", "interval"] as const
 type ScheduleKind = (typeof scheduleKinds)[number]
-const crawlModes = ["static", "dynamic", "app"] as const
-const crawlWaits = ["none", "stable", "network", "fixed"] as const
-const schemaTypes = ["css", "xpath"] as const
 
 type ScheduleFields = {
   runAt: string
@@ -106,17 +104,14 @@ type TaskInputFields = {
   searchProvider: SearchProvider
   maxPages: string
   reuseExisting: boolean
+  forceCalibration: boolean
   url: string
   urls: string[]
   prompt: string
   extractData: boolean
   extractQueryParams: boolean
-  schemaType: (typeof schemaTypes)[number]
-  mode: (typeof crawlModes)[number]
-  wait: (typeof crawlWaits)[number]
   maxDepth: string
   dedupe: boolean
-  concurrency: string
   includeCrawl: string
   excludeCrawl: string
   includeResult: string
@@ -128,17 +123,14 @@ const defaultInputFields: TaskInputFields = {
   searchProvider: "duckduckgo",
   maxPages: "1",
   reuseExisting: true,
+  forceCalibration: false,
   url: "https://example.com",
   urls: ["https://example.com"],
   prompt: "Extract the main heading.",
   extractData: true,
   extractQueryParams: true,
-  schemaType: "css",
-  mode: "static",
-  wait: "none",
   maxDepth: "0",
   dedupe: false,
-  concurrency: "10",
   includeCrawl: "",
   excludeCrawl: "",
   includeResult: "",
@@ -344,8 +336,6 @@ function buildSchedule(
 }
 
 function buildTaskInput(primitive: TaskPrimitive, fields: TaskInputFields) {
-  const concurrency = Math.max(1, numberOrDefault(fields.concurrency, 10))
-
   if (primitive === "search") {
     if (!fields.query.trim()) {
       throw new Error("Search query is required.")
@@ -366,9 +356,6 @@ function buildTaskInput(primitive: TaskPrimitive, fields: TaskInputFields) {
 
     return {
       urls,
-      mode: fields.mode,
-      wait: fields.wait,
-      concurrency,
     }
   }
 
@@ -381,13 +368,21 @@ function buildTaskInput(primitive: TaskPrimitive, fields: TaskInputFields) {
       url: fields.url.trim(),
       max_depth: Math.max(0, numberOrDefault(fields.maxDepth, 0)),
       dedupe: fields.dedupe,
-      concurrency,
-      mode: fields.mode,
-      wait: fields.wait,
       include_crawl: lines(fields.includeCrawl),
       exclude_crawl: lines(fields.excludeCrawl),
       include_result: lines(fields.includeResult),
       exclude_result: lines(fields.excludeResult),
+    }
+  }
+
+  if (primitive === "calibrate") {
+    if (!fields.url.trim()) {
+      throw new Error("Calibration URL is required.")
+    }
+
+    return {
+      url: fields.url.trim(),
+      force: fields.forceCalibration,
     }
   }
 
@@ -406,9 +401,7 @@ function buildTaskInput(primitive: TaskPrimitive, fields: TaskInputFields) {
   const input = {
     url: fields.url.trim(),
     prompt: fields.prompt.trim() || null,
-    schema_type: fields.schemaType,
-    mode: fields.mode,
-    wait: fields.wait,
+    schema_type: "css",
   }
 
   if (primitive === "extract") {
@@ -1069,6 +1062,28 @@ function PrimitiveTargetFields({
         </Field>
       )}
 
+      {primitive === "calibrate" && (
+        <div className="grid gap-3">
+          <Field label="URL" hint="Representative page used to test crawl transport templates.">
+            <Input
+              value={fields.url}
+              onChange={(event) => patch({ url: event.target.value })}
+            />
+          </Field>
+          <Field label="Force" hint="Re-run calibration even when an enabled policy already exists.">
+            <div className="flex h-7 items-center gap-2">
+              <Switch
+                checked={fields.forceCalibration}
+                onCheckedChange={(forceCalibration) => patch({ forceCalibration })}
+              />
+              <span className="text-xs text-muted-foreground">
+                {fields.forceCalibration ? "On" : "Off"}
+              </span>
+            </div>
+          </Field>
+        </div>
+      )}
+
       {(primitive === "schema" || primitive === "extract") && (
         <div className="grid gap-3">
           <Field
@@ -1130,10 +1145,6 @@ function PrimitiveKnobFields({
         </Field>
       )}
 
-      {primitive === "crawl" && (
-        <CrawlFields fields={fields} onChange={onChange} includeConcurrency />
-      )}
-
       {primitive === "index" && (
         <>
           <div className="grid gap-3 md:grid-cols-2">
@@ -1163,7 +1174,6 @@ function PrimitiveKnobFields({
               </div>
             </Field>
           </div>
-          <CrawlFields fields={fields} onChange={onChange} includeConcurrency />
           <PatternFields fields={fields} onChange={onChange} />
         </>
       )}
@@ -1202,25 +1212,6 @@ function PrimitiveKnobFields({
               </Field>
             </div>
           )}
-          <Field
-            label="Schema type"
-            hint="Selector strategy used by Crawl4AI for generated extraction schemas."
-          >
-            <TaskSelect
-              value={fields.schemaType}
-              className="w-full"
-              options={schemaTypes.map((item) => ({
-                value: item,
-                label: item,
-              }))}
-              onChange={(value) =>
-                onChange({
-                  schemaType: value as TaskInputFields["schemaType"],
-                })
-              }
-            />
-          </Field>
-          <CrawlFields fields={fields} onChange={onChange} />
         </>
       )}
     </>
@@ -1519,66 +1510,6 @@ function DateTimeField({
           onChange(combineLocalDateTime(selectedDatePart, event.target.value))
         }
       />
-    </div>
-  )
-}
-
-function CrawlFields({
-  fields,
-  onChange,
-  includeConcurrency = false,
-}: {
-  fields: TaskInputFields
-  onChange: (next: Partial<TaskInputFields>) => void
-  includeConcurrency?: boolean
-}) {
-  return (
-    <div className="grid gap-3 md:grid-cols-3">
-      <Field
-        label="Mode"
-        hint="Page-loading preset. Static is fastest; dynamic scrolls; app spends more time on JavaScript-heavy pages."
-      >
-        <TaskSelect
-          value={fields.mode}
-          className="w-full"
-          options={crawlModes.map((item) => ({
-            value: item,
-            label: item,
-          }))}
-          onChange={(value) =>
-            onChange({ mode: value as TaskInputFields["mode"] })
-          }
-        />
-      </Field>
-      <Field
-        label="Wait"
-        hint="Readiness strategy before Atlas captures page content."
-      >
-        <TaskSelect
-          value={fields.wait}
-          className="w-full"
-          options={crawlWaits.map((item) => ({
-            value: item,
-            label: item,
-          }))}
-          onChange={(value) =>
-            onChange({ wait: value as TaskInputFields["wait"] })
-          }
-        />
-      </Field>
-      {includeConcurrency && (
-        <Field
-          label="Concurrency"
-          hint="Number of pages Atlas may fetch in parallel for this task."
-        >
-          <Input
-            type="number"
-            min={1}
-            value={fields.concurrency}
-            onChange={(event) => onChange({ concurrency: event.target.value })}
-          />
-        </Field>
-      )}
     </div>
   )
 }

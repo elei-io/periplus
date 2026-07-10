@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from actions.extract.schemas import Input as ExtractInput
 from actions.index.schemas import Input as IndexInput
 from actions.crawl.schemas import Input as CrawlInput
+from actions.calibrate.schemas import Input as CalibrateInput
 from actions.shared.data_schema.schemas import Input as SchemaInput
 from actions.shared.progress import CrawlProgressCallback
 
@@ -51,6 +52,7 @@ _INPUT_MODELS = {
     "crawl": CrawlInput,
     "schema": SchemaInput,
     "extract": ExtractInput,
+    "calibrate": CalibrateInput,
 }
 _ACTIVE_RUN_STATUSES = ("queued", "running")
 
@@ -88,7 +90,7 @@ def _ad_hoc_identity_key(primitive: TaskPrimitive, input_json: dict) -> str:
 
 
 def _ad_hoc_task_name(primitive: TaskPrimitive, input_json: dict) -> str:
-    if primitive in {"index", "schema", "extract"} and isinstance(input_json.get("url"), str):
+    if primitive in {"index", "schema", "extract", "calibrate"} and isinstance(input_json.get("url"), str):
         return f"Ad hoc {primitive}: {input_json['url']}"
     if primitive == "crawl" and isinstance(input_json.get("urls"), list) and input_json["urls"]:
         first_url = input_json["urls"][0]

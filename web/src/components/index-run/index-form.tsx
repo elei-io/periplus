@@ -11,12 +11,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import type {
-  CrawlMode,
-  CrawlWait,
-  IndexFilterRow,
-  IndexInput,
-} from "@/types/index"
+import type { IndexFilterRow, IndexInput } from "@/types/index"
 
 type IndexFormProps = {
   idPrefix: string
@@ -47,36 +42,26 @@ export function IndexForm({
   const [url, setUrl] = useState(initialUrl)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [maxDepth, setMaxDepth] = useState(1)
-  const [concurrency, setConcurrency] = useState(10)
   const [dedupe, setDedupe] = useState(false)
-  const [mode, setMode] = useState<CrawlMode>("static")
-  const [wait, setWait] = useState<CrawlWait>("none")
   const [filters, setFilters] = useState<IndexFilterRow[]>([])
   const [urlError, setUrlError] = useState("")
   const urlInputId = `${idPrefix}-url`
   const maxDepthId = `${idPrefix}-max-depth`
-  const concurrencyId = `${idPrefix}-concurrency`
   const dedupeId = `${idPrefix}-dedupe`
   const controlsDisabled = isRunning || isLocked
 
   const activeSettingsCount = useMemo(() => {
     return (
       Number(maxDepth !== 1) +
-      Number(concurrency !== 10) +
       Number(dedupe) +
-      Number(mode !== "static") +
-      Number(wait !== "none") +
       filters.filter((filter) => filter.value.trim()).length
     )
-  }, [concurrency, dedupe, filters, maxDepth, mode, wait])
+  }, [dedupe, filters, maxDepth])
 
   const reset = () => {
     setUrl("")
     setMaxDepth(1)
-    setConcurrency(10)
     setDedupe(false)
-    setMode("static")
-    setWait("none")
     setFilters([])
     setUrlError("")
     setSettingsOpen(false)
@@ -114,9 +99,6 @@ export function IndexForm({
       url,
       max_depth: maxDepth,
       dedupe,
-      concurrency,
-      mode,
-      wait,
       ...filterBuckets,
     })
     reset()
@@ -207,24 +189,17 @@ export function IndexForm({
       </form>
 
       <IndexSettingsDialog
-        concurrency={concurrency}
-        concurrencyId={concurrencyId}
         dedupe={dedupe}
         dedupeId={dedupeId}
         disabled={controlsDisabled}
         filters={filters}
         maxDepth={maxDepth}
         maxDepthId={maxDepthId}
-        mode={mode}
         open={settingsOpen}
-        wait={wait}
-        onConcurrencyChange={setConcurrency}
         onDedupeChange={setDedupe}
         onFiltersChange={setFilters}
         onMaxDepthChange={setMaxDepth}
-        onModeChange={setMode}
         onOpenChange={setSettingsOpen}
-        onWaitChange={setWait}
       />
     </>
   )

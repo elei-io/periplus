@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from api.routers import (
     artifacts,
     crawl,
+    crawl_policies,
     crawls,
     data_schemas,
     extract,
@@ -22,6 +23,7 @@ app.include_router(index.router)
 app.include_router(query_schemas.router)
 app.include_router(schema.router)
 app.include_router(crawl.router)
+app.include_router(crawl_policies.router)
 app.include_router(crawls.router)
 app.include_router(search.router)
 app.include_router(tasks.router)

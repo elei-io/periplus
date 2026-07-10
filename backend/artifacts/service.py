@@ -2,6 +2,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -43,11 +44,34 @@ def warning_count(artifact: Artifact) -> int:
         return 0
 
 
-def is_cache_eligible(artifact: Artifact) -> bool:
+def _warning_codes(artifact: Artifact) -> set[str]:
+    codes = (artifact.warnings_json or {}).get("codes", [])
+    if not isinstance(codes, list):
+        return set()
+    return {code for code in codes if isinstance(code, str)}
+
+
+def _blocked_by_cache_rules(
+    artifact: Artifact,
+    cache_block_rules: dict[str, Any] | None = None,
+) -> bool:
+    rules = cache_block_rules or {}
+    artifact_warning_codes = rules.get("artifact_warning_codes", [])
+    if not isinstance(artifact_warning_codes, list):
+        return False
+    blocking_codes = {code for code in artifact_warning_codes if isinstance(code, str)}
+    return bool(blocking_codes & _warning_codes(artifact))
+
+
+def is_cache_eligible(
+    artifact: Artifact,
+    *,
+    cache_block_rules: dict[str, Any] | None = None,
+) -> bool:
     return (
         artifact.invalidated_at is None
-        and warning_count(artifact) == 0
         and Path(artifact.path).is_file()
+        and not _blocked_by_cache_rules(artifact, cache_block_rules)
     )
 
 
@@ -56,6 +80,7 @@ def get_cached_html_artifact(
     *,
     url_id: UUID,
     input_hash: str,
+    cache_block_rules: dict[str, Any] | None = None,
 ) -> CachedCrawlArtifacts | None:
     html_statement = (
         select(Artifact)
@@ -69,7 +94,7 @@ def get_cached_html_artifact(
     )
 
     for html_artifact in session.scalars(html_statement):
-        if not is_cache_eligible(html_artifact):
+        if not is_cache_eligible(html_artifact, cache_block_rules=cache_block_rules):
             continue
 
         if html_artifact.crawl is None:

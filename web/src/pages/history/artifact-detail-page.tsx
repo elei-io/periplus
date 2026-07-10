@@ -94,7 +94,7 @@ export function ArtifactDetailPage({ artifactId }: { artifactId: string }) {
         <DetailGroup
           title="Cache"
           items={[
-            ["Warnings", String(artifact.warning_count)],
+            ["Quality Warnings", String(artifact.warning_count)],
             ["Invalidated At", formatDate(artifact.invalidated_at)],
             ["Invalidated Reason", artifact.invalidated_reason],
           ]}
@@ -154,7 +154,7 @@ function WarningDetails({ artifact }: { artifact: ArtifactDetailRecord }) {
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <ShieldAlertIcon className="size-4 text-muted-foreground" />
-          <h2 className="text-sm font-medium">Warnings</h2>
+          <h2 className="text-sm font-medium">Quality Warnings</h2>
         </div>
         <Badge variant={artifact.warning_count > 0 ? "destructive" : "outline"}>
           {artifact.warning_count} total

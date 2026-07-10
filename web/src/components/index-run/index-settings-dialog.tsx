@@ -5,9 +5,7 @@ import {
   FilterEditor,
   InfoTooltip,
   NumberSlider,
-  SelectField,
 } from "@/components/index-run/index-settings-fields"
-import type { SelectOption } from "@/components/index-run/index-settings-fields"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -17,53 +15,25 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Switch } from "@/components/ui/switch"
-import type {
-  CrawlMode,
-  CrawlWait,
-  IndexFilterRow,
-} from "@/types/index"
+import type { IndexFilterRow } from "@/types/index"
 
 type IndexSettingsDialogProps = {
-  concurrency: number
   dedupe: boolean
   disabled: boolean
   filters: IndexFilterRow[]
   maxDepth: number
   maxDepthId: string
-  concurrencyId: string
   dedupeId: string
-  mode: CrawlMode
   open: boolean
-  wait: CrawlWait
-  onConcurrencyChange: (value: number) => void
   onDedupeChange: (value: boolean) => void
   onFiltersChange: (filters: IndexFilterRow[]) => void
   onMaxDepthChange: (value: number) => void
-  onModeChange: (value: CrawlMode) => void
   onOpenChange: (open: boolean) => void
-  onWaitChange: (value: CrawlWait) => void
 }
 
-const crawlModes: Array<SelectOption<CrawlMode>> = [
-  { value: "static", label: "Static" },
-  { value: "dynamic", label: "Dynamic" },
-  { value: "app", label: "App" },
-]
-
-const waitStrategies: Array<SelectOption<CrawlWait>> = [
-  { value: "none", label: "None" },
-  { value: "stable", label: "Stable" },
-  { value: "network", label: "Network" },
-  { value: "fixed", label: "Fixed" },
-]
-
 const settingHints = {
-  mode: "Controls how Atlas loads pages. Static is fastest, dynamic scrolls and waits for richer pages, and app is best for heavily client-rendered sites.",
-  wait: "Controls when Atlas decides a page is ready to inspect. Stable is a good default for pages that hydrate slowly.",
   maxDepth:
     "How many internal-link hops Atlas follows from the starting URL. Depth 1 only indexes links found on the starting page.",
-  concurrency:
-    "How many pages Atlas crawls at once. Higher values can finish faster but put more load on the target site.",
   dedupe:
     "When enabled, each discovered URL appears once, keeping the shallowest occurrence.",
   filters:
@@ -79,24 +49,17 @@ function createFilter(): IndexFilterRow {
 }
 
 export function IndexSettingsDialog({
-  concurrency,
-  concurrencyId,
   dedupe,
   dedupeId,
   disabled,
   filters,
   maxDepth,
   maxDepthId,
-  mode,
   open,
-  wait,
-  onConcurrencyChange,
   onDedupeChange,
   onFiltersChange,
   onMaxDepthChange,
-  onModeChange,
   onOpenChange,
-  onWaitChange,
 }: IndexSettingsDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -104,31 +67,11 @@ export function IndexSettingsDialog({
         <DialogHeader>
           <DialogTitle>Index settings</DialogTitle>
           <DialogDescription>
-            Tune how Atlas loads pages, follows links, and filters the final
-            result set.
+            Tune how Atlas follows links and filters the final result set.
           </DialogDescription>
         </DialogHeader>
 
         <div className="grid max-h-[calc(100svh-10rem)] gap-5 overflow-auto pr-1">
-          <div className="grid gap-4 md:grid-cols-2">
-            <SelectField
-              label="Mode"
-              hint={settingHints.mode}
-              value={mode}
-              disabled={disabled}
-              options={crawlModes}
-              onChange={onModeChange}
-            />
-            <SelectField
-              label="Wait mode"
-              hint={settingHints.wait}
-              value={wait}
-              disabled={disabled}
-              options={waitStrategies}
-              onChange={onWaitChange}
-            />
-          </div>
-
           <div className="grid gap-5 md:grid-cols-2">
             <NumberSlider
               id={maxDepthId}
@@ -139,16 +82,6 @@ export function IndexSettingsDialog({
               value={maxDepth}
               disabled={disabled}
               onChange={onMaxDepthChange}
-            />
-            <NumberSlider
-              id={concurrencyId}
-              label="Concurrency"
-              hint={settingHints.concurrency}
-              min={1}
-              max={50}
-              value={concurrency}
-              disabled={disabled}
-              onChange={onConcurrencyChange}
             />
           </div>
 

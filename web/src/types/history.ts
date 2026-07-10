@@ -274,3 +274,37 @@ export type DataSchemaFilters = {
   enabled: "all" | "enabled" | "disabled"
   warnings: "all" | "clean" | "warning"
 }
+
+export type CrawlPolicyRecord = {
+  id: string
+  url_match_id: string | null
+  match: string
+  enabled: boolean
+  config: Record<string, unknown>
+  template: string | null
+  mode: string | null
+  wait: string | null
+  max_concurrency: number | null
+  created_at: string
+  updated_at: string
+}
+
+export type CrawlPolicyDetailRecord = Omit<
+  CrawlPolicyRecord,
+  "template" | "mode" | "wait" | "max_concurrency"
+>
+
+export type CrawlPolicyListResponse = PaginatedResponse<CrawlPolicyRecord>
+
+export type CrawlPolicyUpdateRequest = {
+  enabled?: boolean
+  match?: string
+  config?: Record<string, unknown>
+}
+
+export type CrawlPolicyFilters = {
+  matchPattern: string
+  enabled: "all" | "enabled" | "disabled"
+  template: string
+  mode: "all" | "static" | "dynamic" | "app"
+}

@@ -1,11 +1,8 @@
-import type { CrawlMode, CrawlProgressEvent, CrawlWait } from "@/types/index"
+import type { CrawlProgressEvent } from "@/types/index"
 import type { QualityWarning } from "@/types/extract"
 
 export type CrawlInput = {
   urls: string[]
-  mode: CrawlMode
-  wait: CrawlWait
-  concurrency: number
 }
 
 export type CrawlPage = {
@@ -15,7 +12,7 @@ export type CrawlPage = {
   duration_seconds: number
   html: string | null
   crawl: Record<string, unknown> | null
-  warnings: QualityWarning[]
+  artifact_warnings: QualityWarning[]
   error: string | null
 }
 

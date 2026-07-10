@@ -6,7 +6,6 @@ from uuid import UUID
 from crawl4ai import JsonCssExtractionStrategy, JsonXPathExtractionStrategy
 from sqlalchemy.orm import Session
 
-from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.shared.progress import CrawlProgressCallback, CrawlProgressEvent, emit_crawl_progress
 from actions.shared.quality.service import run_quality_checks
 from actions.shared.data_schema.schemas import SchemaType
@@ -52,7 +51,7 @@ def _apply_schema(schema_type: SchemaType, extraction_schema: dict, *, url: str,
 
 
 def _clean_empty_schema_error(page: CrawlPage, warnings: list) -> str | None:
-    if page.warnings or page.error or not page.success:
+    if page.artifact_warnings or page.error or not page.success:
         return None
 
     if page.status_code is not None and page.status_code >= 400:
@@ -76,8 +75,6 @@ async def extract(
     extract_query_params: bool = True,
     target_json_example: str | None = None,
     schema_type: SchemaType = "css",
-    mode: CrawlMode = "static",
-    wait: CrawlWait = "none",
     match: str | None = None,
     progress_callback: CrawlProgressCallback | None = None,
     session: Session | None = None,
@@ -96,8 +93,6 @@ async def extract(
     try:
         crawl_output = await crawl_service(
             urls=[url],
-            mode=mode,
-            wait=wait,
             progress_callback=progress_callback,
             session=session,
             task_run_id=task_run_id,
@@ -165,8 +160,6 @@ async def extract(
                     html=html,
                     crawl_id=page.crawl_id,
                     artifact_ids=page.artifact_ids,
-                    mode=mode,
-                    wait=wait,
                     progress_callback=progress_callback,
                 )
             )
@@ -192,8 +185,6 @@ async def extract(
                     target_json_example=target_json_example,
                     schema_type=schema_type,
                     html=html,
-                    mode=mode,
-                    wait=wait,
                     match=match,
                     progress_callback=progress_callback,
                     session=session,
@@ -269,8 +260,6 @@ async def extract(
                 target_json_example=target_json_example,
                 schema_type=schema_type,
                 html=html,
-                mode=mode,
-                wait=wait,
                 match=match,
                 progress_callback=progress_callback,
                 session=session,
@@ -320,8 +309,6 @@ async def extract(
                     output=query_params,
                     task_run_id=task_run_id,
                     crawl_id=page.crawl_id,
-                    mode=mode,
-                    wait=wait,
                 )
         elif query_params is None:
             query_params = await query_from_page(
@@ -329,8 +316,6 @@ async def extract(
                 html=html,
                 crawl_id=page.crawl_id,
                 artifact_ids=page.artifact_ids,
-                mode=mode,
-                wait=wait,
                 progress_callback=progress_callback,
                 session=session,
                 task_run_id=task_run_id,
@@ -362,8 +347,6 @@ def extract_sync(
     extract_query_params: bool = True,
     target_json_example: str | None = None,
     schema_type: SchemaType = "css",
-    mode: CrawlMode = "static",
-    wait: CrawlWait = "none",
     match: str | None = None,
     progress_callback: CrawlProgressCallback | None = None,
 ) -> ExtractOutput:
@@ -375,8 +358,6 @@ def extract_sync(
             extract_query_params=extract_query_params,
             target_json_example=target_json_example,
             schema_type=schema_type,
-            mode=mode,
-            wait=wait,
             match=match,
             progress_callback=progress_callback,
         )

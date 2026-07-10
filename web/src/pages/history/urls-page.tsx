@@ -297,10 +297,10 @@ function UrlRow({
             {url.warning_count}
           </Badge>
           {url.artifact_warning_count > 0 ? (
-            <Badge variant="outline">{url.artifact_warning_count} artifact</Badge>
+            <Badge variant="outline">{url.artifact_warning_count} quality</Badge>
           ) : null}
           {url.crawl_warning_count > 0 ? (
-            <Badge variant="outline">{url.crawl_warning_count} crawl</Badge>
+            <Badge variant="outline">{url.crawl_warning_count} transport</Badge>
           ) : null}
         </div>
       </TableCell>
