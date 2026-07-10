@@ -250,9 +250,5 @@ Atlas operations API. The
 ingestor `/healthz` endpoint returns ready only while its event-loop heartbeat, NATS connection,
 and catalogue validation remain healthy.
 
-Index traversal stores its frontier, exact visited set, and link counts in a temporary DuckDB
-workset. `max_pages`, `max_links`, and `max_temp_bytes` are hard run budgets; terminal task results
-contain only bounded counts and a catalogue reference. Deployments cap caller-supplied budgets with
-`ATLAS_INDEX_MAX_PAGES`, `ATLAS_INDEX_MAX_LINKS`, and `ATLAS_INDEX_MAX_TEMP_BYTES`. The index keeps
-one repository/NATS connection for its full run and streams normalized edges into its workset in
-bounded chunks rather than building a second page-sized edge list.
+Index traversal is a bounded in-memory breadth-first walk. `max_pages` and `max_links` are hard
+run limits, and returned links are capped by `ATLAS_INDEX_RESULT_LIMIT`.

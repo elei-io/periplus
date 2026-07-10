@@ -52,9 +52,6 @@ def index(
     stale_if_error: Annotated[int | None, typer.Option("--stale-if-error", min=0)] = None,
     max_pages: Annotated[int | None, typer.Option("--max-pages", min=1)] = None,
     max_links: Annotated[int | None, typer.Option("--max-links", min=1)] = None,
-    max_temp_bytes: Annotated[
-        int | None, typer.Option("--max-temp-bytes", min=1)
-    ] = None,
 ) -> None:
     input_value = {
         "url": url,
@@ -74,7 +71,6 @@ def index(
     for name, value in (
         ("max_pages", max_pages),
         ("max_links", max_links),
-        ("max_temp_bytes", max_temp_bytes),
     ):
         if value is not None:
             input_value[name] = value
