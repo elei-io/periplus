@@ -798,53 +798,6 @@ def _transport_from_policy(
     )
 
 
-async def _policy_transport_or_calibrated_page(
-    *,
-    url: str,
-    index: int,
-    progress_reporter: ProgressReporter | None,
-    session: Session,
-    task_run_id: UUID,
-    cache: CacheOptions | None,
-    repository_pipeline: RepositoryPipeline | None,
-    policy: CrawlPolicySnapshot | None,
-) -> tuple[CrawlMode, CrawlWait, dict[str, Any], int, dict[str, Any], CrawlPage | None]:
-    if policy is not None:
-        mode, wait, run_config_overrides, max_concurrency, cache_block_rules = _transport_from_policy(policy)
-        commit_task_checkpoint(session)
-        return mode, wait, run_config_overrides, max_concurrency, cache_block_rules, None
-
-    commit_task_checkpoint(session)
-
-    from actions.calibrate.service import calibrate
-
-    output = await calibrate(
-        url=url,
-        force=False,
-        progress_reporter=progress_reporter,
-        session=session,
-        task_run_id=task_run_id,
-        cache=CacheOptions(mode="no_store" if cache and cache.mode == "no_store" else "refresh"),
-        repository_pipeline=repository_pipeline,
-    )
-    mode = output.selected_config.get("mode") or "static"
-    wait = output.selected_config.get("wait") or "none"
-    run_config_overrides = output.selected_config.get("run_config_overrides") or {}
-    max_concurrency = _max_concurrency_from_config(output.selected_config, mode)
-    cache_block_rules = _cache_block_rules_from_config(output.selected_config)
-    selected_page = output.selected_page
-    if selected_page is not None:
-        return (
-            mode,
-            wait,
-            run_config_overrides,
-            max_concurrency,
-            cache_block_rules,
-            selected_page.model_copy(update={"url": url}),
-        )
-    return mode, wait, run_config_overrides, max_concurrency, cache_block_rules, None
-
-
 def _frozen_crawl_policy_for_url(
     session: Session,
     *,
@@ -890,65 +843,18 @@ async def crawl_one_for_task(
     if mode is None or wait is None:
         if session is None or task_run_id is None:
             raise RuntimeError("policy-driven crawl requires task-run execution context")
-        (
-            mode,
-            wait,
-            run_config_overrides,
-            _,
-            cache_block_rules,
-            selected_page,
-        ) = await _policy_transport_or_calibrated_page(
-            url=url,
-            index=index,
-            progress_reporter=progress_reporter,
-            session=session,
-            task_run_id=task_run_id,
-            cache=cache_options,
-            repository_pipeline=repository_pipeline,
-            policy=policy,
-        )
-        if selected_page is not None:
-            if selected_page.crawl_id is not None and repository_pipeline is not None:
-                selected_hit = await repository_pipeline.resolve_crawl(
-                    selected_page.crawl_id,
-                    include_html=False,
-                    include_links=False,
-                )
-                if selected_hit is None:
-                    raise RuntimeError(
-                        f"selected calibration crawl {selected_page.crawl_id} is not committed"
-                    )
-                await record_existing_crawl_usage(
-                    session=session,
-                    task_run_id=task_run_id,
-                    crawl=selected_hit.crawl,
-                    requested_url=url,
-                    role=usage_role,
-                    ordinal=usage_ordinal,
-                    returned=selected_page.success,
-                    repository_pipeline=repository_pipeline,
-                )
-            if include_links and not (selected_page.crawl or {}).get("links"):
-                if selected_page.document_id is not None and repository_pipeline is not None:
-                    links = await repository_pipeline.projected_links(
-                        selected_page.document_id,
-                        page_url=selected_page.url,
-                    )
-                    selected_page = selected_page.model_copy(
-                        update={
-                            "crawl": {
-                                **(selected_page.crawl or {}),
-                                "links": links,
-                            }
-                        }
-                    )
-                else:
-                    selected_page = await _canonicalize_transient_links(selected_page)
-            return (
-                selected_page
-                if retain_html
-                else selected_page.model_copy(update={"html": None})
-            )
+        if policy is None:
+            mode, wait, run_config_overrides = "static", "none", {}
+            cache_block_rules = {}
+        else:
+            (
+                mode,
+                wait,
+                run_config_overrides,
+                _,
+                cache_block_rules,
+            ) = _transport_from_policy(policy)
+        commit_task_checkpoint(session)
 
     cache_policy = resolve_cache_policy(
         crawl_policy_config=policy.config if policy is not None else None,

@@ -343,7 +343,7 @@ function AdminCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
   const deleteCurrentPolicy = () => {
     if (
       !window.confirm(
-        "Delete this crawl policy? Atlas will calibrate a fresh policy the next time a matching crawl runs."
+        "Delete this crawl policy? Matching crawls will use the conservative static default until you calibrate a new policy."
       )
     ) {
       return
