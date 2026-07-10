@@ -60,9 +60,11 @@ Cancellation is cooperative and durable. Queued runs cancel immediately; running
 
 Each worker supervises a bounded number of task runs configured by `ATLAS_WORKER_CONCURRENCY` (default `4`). Multiple worker processes share the same Postgres queue; transactional `FOR UPDATE SKIP LOCKED` claims remain the ownership boundary. Heartbeats report process capacity and active-run count, while active ownership is derived from task-run leases.
 
-Task concurrency is separate from page-acquisition concurrency. Every real browser load acquires a deployment-wide permit configured by `ATLAS_BROWSER_CONCURRENCY` (default `12`) and, when a matching crawl policy defines `max_concurrency`, a global permit keyed by that policy. The policy's URL match is the concurrency scope: all URLs resolved to the same policy share its absolute limit across every run and worker.
+Task concurrency is separate from page-acquisition concurrency. Each task run consumes its page frontier through a bounded worker queue configured by `ATLAS_CRAWL_CONCURRENCY_PER_RUN` (default `3`); frontier size never determines live coroutine or browser count. Because runs execute in isolated subprocesses, one worker can open at most `ATLAS_WORKER_CONCURRENCY × ATLAS_CRAWL_CONCURRENCY_PER_RUN` browsers before deployment-wide limits are applied.
 
-Permits are renewable Postgres leases acquired only after cache lookup. Cache hits do not consume capacity. Waiting is asynchronous and cancellation-aware; expired permits are reclaimed, release emits a best-effort Postgres notification, and polling remains authoritative.
+Every browser instance acquires a deployment-wide permit configured by `ATLAS_BROWSER_CONCURRENCY` (default `12`) before the browser is opened and holds it until the browser is closed. When a matching crawl policy defines `max_concurrency`, the same lease also acquires a global permit keyed by that policy. The policy's URL match is the concurrency scope: all URLs resolved to the same policy share its absolute limit across every run and worker.
+
+Permits are renewable Postgres leases. Cached HTML currently passes through a browser-backed normalization step, so cache reuse is bounded by the same browser lifecycle. Waiting is asynchronous and cancellation-aware; expired permits are reclaimed, release emits a best-effort Postgres notification, and polling remains authoritative.
 
 ## CLI
 

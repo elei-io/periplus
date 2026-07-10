@@ -1,5 +1,6 @@
+import { useVirtualizer } from "@tanstack/react-virtual"
 import { ExternalLinkIcon, LinkIcon } from "lucide-react"
-import { useMemo, useState } from "react"
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
 
 import { ResultLinkContextMenuContent } from "@/components/result-link-actions"
 import { Button } from "@/components/ui/button"
@@ -13,8 +14,10 @@ type IndexResultsProps = {
 
 export function IndexResults({ links }: IndexResultsProps) {
   const [query, setQuery] = useState("")
+  const deferredQuery = useDeferredValue(query)
+  const scrollElementRef = useRef<HTMLDivElement>(null)
   const filteredLinks = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase()
+    const normalizedQuery = deferredQuery.trim().toLowerCase()
 
     if (!normalizedQuery) {
       return links
@@ -25,7 +28,23 @@ export function IndexResults({ links }: IndexResultsProps) {
         value.toLowerCase().includes(normalizedQuery)
       )
     )
-  }, [links, query])
+  }, [deferredQuery, links])
+  // TanStack Virtual is intentionally stateful; React Compiler skips this component.
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const rowVirtualizer = useVirtualizer({
+    count: filteredLinks.length,
+    estimateSize: () => 78,
+    getItemKey: (index) => {
+      const link = filteredLinks[index]
+      return `${link.source_url}-${link.link_index}`
+    },
+    getScrollElement: () => scrollElementRef.current,
+    overscan: 10,
+  })
+
+  useEffect(() => {
+    if (filteredLinks.length > 0) rowVirtualizer.scrollToIndex(0)
+  }, [deferredQuery, filteredLinks.length, rowVirtualizer])
 
   return (
     <div className="flex max-h-[58svh] min-h-48 flex-col gap-3 overflow-hidden">
@@ -57,17 +76,42 @@ export function IndexResults({ links }: IndexResultsProps) {
         <div className="grid min-h-36 place-items-center rounded-xl border border-dashed bg-muted/15 px-6 text-center text-sm text-muted-foreground">
           No links were discovered from this page.
         </div>
+      ) : filteredLinks.length === 0 ? (
+        <div className="grid min-h-36 place-items-center rounded-xl border border-dashed bg-muted/15 px-6 text-center text-sm text-muted-foreground">
+          No links match this filter.
+        </div>
       ) : (
         <div
-          className="min-h-0 flex-1 space-y-1 overflow-auto overscroll-contain rounded-xl border bg-background/30 p-1.5"
+          ref={scrollElementRef}
+          className="min-h-0 flex-1 overflow-auto overscroll-contain rounded-xl border bg-background/30 p-1.5"
           data-testid="index-links-scroll"
+          aria-label={`${filteredLinks.length} discovered links`}
+          role="list"
         >
-          {filteredLinks.map((link) => (
-            <IndexLinkItem
-              key={`${link.source_url}-${link.link_index}`}
-              link={link}
-            />
-          ))}
+          <div
+            className="relative w-full"
+            style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+          >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const link = filteredLinks[virtualRow.index]
+
+              return (
+                <div
+                  key={virtualRow.key}
+                  className="absolute top-0 left-0 w-full pb-1"
+                  style={{
+                    height: `${virtualRow.size}px`,
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                  aria-posinset={virtualRow.index + 1}
+                  aria-setsize={filteredLinks.length}
+                  role="listitem"
+                >
+                  <IndexLinkItem link={link} />
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
     </div>
@@ -78,7 +122,7 @@ function IndexLinkItem({ link }: { link: IndexLink }) {
   return (
     <ContextMenu>
       <ContextMenuTrigger>
-        <article className="grid gap-1.5 rounded-lg p-2.5 transition-colors hover:bg-muted/40">
+        <article className="grid h-full gap-1.5 rounded-lg p-2.5 transition-colors hover:bg-muted/40">
           <div className="flex min-w-0 items-start justify-between gap-3">
             <div className="min-w-0">
               <h2 className="truncate text-sm font-medium">

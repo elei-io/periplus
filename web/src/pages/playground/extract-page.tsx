@@ -1,119 +1,60 @@
-import { useEffect, useMemo, useState } from "react"
-import type { ReactNode } from "react"
+import { useMemo } from "react"
 
 import { ExtractForm } from "@/components/extract-run/extract-form"
-import { ExtractResults } from "@/components/extract-run/extract-results"
-import { IndexProgress } from "@/components/index-run/index-progress"
-import { useExtractRun } from "@/hooks/use-extract-run"
-import { cn } from "@/lib/utils"
+import { ExtractRunCell } from "@/components/extract-run/extract-run-cell"
+import { PlaygroundPageHeader } from "@/components/playground-page-header"
+import { PlaygroundRunStack } from "@/components/playground-run-stack"
+import { useExtractRuns, useSubmitExtract } from "@/hooks/use-extract-runs"
+
+const activeStatuses = new Set(["queued", "running"])
+const recentStatuses = new Set(["succeeded", "failed"])
 
 export function ExtractPage() {
-  const extractRun = useExtractRun()
-  const [runKey, setRunKey] = useState(0)
+  const runsQuery = useExtractRuns()
+  const submitExtract = useSubmitExtract()
   const initialUrl = useMemo(() => {
     return new URLSearchParams(window.location.search).get("url") ?? ""
   }, [])
-  const hasProgress = extractRun.events.length > 0
-  const showResults =
-    extractRun.isSuccess && !extractRun.isRunning && extractRun.result !== null
+  const runs = runsQuery.data ?? []
+  const activeRuns = runs.filter((run) => activeStatuses.has(run.status))
+  const recentRuns = runs.filter((run) => recentStatuses.has(run.status))
 
   return (
-    <div
-      className={cn(
-        "grid min-h-[calc(100svh-7rem)] w-full items-start gap-8 transition-[padding] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
-        hasProgress ? "content-start py-8" : "content-start pt-[18svh]"
-      )}
-    >
-      <section className="mx-auto grid w-full max-w-4xl gap-5">
-        <div className="grid max-w-[38rem] gap-2 text-left">
-          <h1 className="text-2xl font-semibold tracking-normal">
-            Start with a page
-          </h1>
-          <p className="text-sm leading-6 text-muted-foreground md:text-[0.95rem]">
-            Describe the records Atlas should extract from a URL.
-          </p>
-        </div>
+    <div className="grid min-h-[calc(100svh-7rem)] w-full content-start py-9 md:py-11">
+      <section className="mx-auto grid w-full max-w-4xl gap-6">
+        <PlaygroundPageHeader
+          title="Turn a page into data"
+          description="Describe the records you want and watch Atlas turn a live page into structured results."
+          taskNote="Every run is saved as a task"
+          taskHref="/scheduled-work/tasks?primitive=extract"
+        />
         <ExtractForm
           idPrefix="extract-playground"
           initialUrl={initialUrl}
-          isRunning={extractRun.isRunning}
-          onCancel={extractRun.cancel}
-          onSubmit={(input) => {
-            setRunKey((currentRunKey) => currentRunKey + 1)
-            extractRun.run(input)
-          }}
+          isSubmitting={submitExtract.isPending}
+          onSubmit={(input) =>
+            submitExtract.mutateAsync(input).then(() => undefined)
+          }
         />
-        <AnimatedSection
-          className="mx-auto w-full max-w-4xl"
-          hiddenClassName="-translate-y-1 opacity-0"
-          show={hasProgress && !showResults}
-          transitionClassName="duration-300"
-        >
-          <IndexProgress events={extractRun.events} />
-        </AnimatedSection>
-      </section>
-
-      <AnimatedSection
-        key={`results-${runKey}`}
-        className="mx-auto w-full max-w-5xl"
-        hiddenClassName="translate-y-3 opacity-0"
-        show={showResults}
-        transitionClassName="duration-500"
-      >
-        {extractRun.result ? (
-          <ExtractResults
-            events={extractRun.events}
-            result={extractRun.result}
-          />
+        <PlaygroundRunStack
+          activeRuns={activeRuns}
+          ariaLabel="Extract activity"
+          recentRuns={recentRuns}
+          renderRun={(run, density) => (
+            <ExtractRunCell run={run} density={density} />
+          )}
+        />
+        {runsQuery.isLoading ? (
+          <p className="px-1 text-xs text-muted-foreground">
+            Loading activity…
+          </p>
         ) : null}
-      </AnimatedSection>
-    </div>
-  )
-}
-
-type AnimatedSectionProps = {
-  children: ReactNode
-  className: string
-  hiddenClassName: string
-  show: boolean
-  transitionClassName: string
-}
-
-function AnimatedSection({
-  children,
-  className,
-  hiddenClassName,
-  show,
-  transitionClassName,
-}: AnimatedSectionProps) {
-  const [entered, setEntered] = useState(false)
-
-  useEffect(() => {
-    if (!show) {
-      return undefined
-    }
-
-    const frame = window.requestAnimationFrame(() => {
-      setEntered(true)
-    })
-
-    return () => window.cancelAnimationFrame(frame)
-  }, [show])
-
-  if (!show) {
-    return null
-  }
-
-  return (
-    <div
-      className={cn(
-        "transition-[opacity,transform] ease-[cubic-bezier(0.22,1,0.36,1)]",
-        className,
-        transitionClassName,
-        entered ? "translate-y-0 opacity-100" : hiddenClassName
-      )}
-    >
-      {children}
+        {runsQuery.isError ? (
+          <p className="px-1 text-sm text-destructive">
+            {runsQuery.error.message}
+          </p>
+        ) : null}
+      </section>
     </div>
   )
 }
