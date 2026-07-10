@@ -7,7 +7,7 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 import { useEffect, useState } from "react"
 
-import { IndexResults } from "@/components/index-run/index-results"
+import { CatalogueRunSummary } from "@/components/catalogue-run-summary"
 import { PlaygroundRunStatusMark } from "@/components/playground-run-status-mark"
 import { Button } from "@/components/ui/button"
 import {
@@ -24,9 +24,9 @@ import { useTaskRunProgress, useTaskRunResult } from "@/hooks/use-action-runs"
 import { useCancelIndexRun } from "@/hooks/use-index-runs"
 import { truncateMiddle } from "@/lib/truncate"
 import { cn } from "@/lib/utils"
-import type { IndexInput, IndexLink } from "@/types/index"
+import type { IndexInput } from "@/types/index"
 import type { ProgressEvent } from "@/types/progress"
-import type { TaskRunRecord } from "@/types/tasks"
+import type { TaskResultSummary, TaskRunRecord } from "@/types/tasks"
 
 const activeStatuses = new Set(["queued", "running"])
 
@@ -51,7 +51,7 @@ export function IndexRunCell({ run, density }: IndexRunCellProps) {
     return () => window.clearInterval(timer)
   }, [active])
 
-  const resultQuery = useTaskRunResult<IndexLink[]>(
+  const resultQuery = useTaskRunResult<TaskResultSummary>(
     run.id,
     expanded && run.status === "succeeded"
   )
@@ -107,7 +107,7 @@ export function IndexRunCell({ run, density }: IndexRunCellProps) {
     depthProgressEvent,
     "discovered_links"
   )
-  const savedLinkCount = resultQuery.data?.length ?? null
+  const savedLinkCount = resultQuery.data?.counts.links ?? null
   const linkCount = liveLinkCount ?? savedLinkCount
   const elapsedFrom = run.started_at ?? run.queued_at
   const elapsedTo = run.finished_at ? new Date(run.finished_at).getTime() : now
@@ -245,9 +245,9 @@ export function IndexRunCell({ run, density }: IndexRunCellProps) {
             <p className="text-sm text-destructive">
               {resultQuery.error.message}
             </p>
-          ) : (
-            <IndexResults links={resultQuery.data ?? []} />
-          )}
+          ) : resultQuery.data ? (
+            <CatalogueRunSummary result={resultQuery.data} />
+          ) : null}
         </div>
       </CollapsibleContent>
     </Collapsible>

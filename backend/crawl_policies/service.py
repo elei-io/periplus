@@ -10,7 +10,11 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from crawl_policies.models import CrawlPolicy
-from crawl_policies.schemas import CrawlPolicyListRecord
+from crawl_policies.schemas import (
+    CrawlPolicyListRecord,
+    CrawlPolicySnapshot,
+    UrlMatchSnapshot,
+)
 from urls.models import UrlMatch
 from urls.service import normalize_url
 
@@ -25,9 +29,9 @@ def generated_metric_slug(match: str, *, suffix: str) -> str:
     return f"{readable[:48]}-{suffix[:8].lower()}"
 
 
-def _matches(url: str, url_match: UrlMatch) -> bool:
+def _matches(url: str, url_match: UrlMatch | UrlMatchSnapshot) -> bool:
     parsed = urlparse(normalize_url(url))
-    if not url_match.enabled:
+    if not getattr(url_match, "enabled", True):
         return False
     if parsed.scheme != url_match.scheme or parsed.netloc != url_match.host:
         return False
@@ -38,7 +42,7 @@ def _matches(url: str, url_match: UrlMatch) -> bool:
     return False
 
 
-def _specificity(url_match: UrlMatch) -> tuple[int, int]:
+def _specificity(url_match: UrlMatch | UrlMatchSnapshot) -> tuple[int, int]:
     wildcard_count = url_match.path_pattern.count("*")
     literal_count = len(url_match.path_pattern.replace("*", ""))
     return (url_match.priority, literal_count - wildcard_count)
@@ -56,6 +60,50 @@ def find_crawl_policy_for_url(session: Session, *, url: str) -> CrawlPolicy | No
     if not matches:
         return None
     return max(matches, key=lambda policy: _specificity(policy.url_match))
+
+
+def snapshot_enabled_crawl_policies(session: Session) -> list[dict]:
+    """Capture all policy and matcher fields that may affect a queued run."""
+
+    rows = session.execute(
+        select(CrawlPolicy, UrlMatch)
+        .join(UrlMatch, CrawlPolicy.url_match_id == UrlMatch.id)
+        .where(CrawlPolicy.enabled.is_(True))
+        .where(UrlMatch.enabled.is_(True))
+        .order_by(CrawlPolicy.id)
+    )
+    return [
+        CrawlPolicySnapshot(
+            id=policy.id,
+            revision=policy.revision,
+            metric_slug=policy.metric_slug,
+            domain_group=policy.domain_group,
+            match=_match_string(matcher),
+            config=policy.config or {},
+            matcher=UrlMatchSnapshot(
+                scheme=matcher.scheme,
+                host=matcher.host,
+                path_pattern=matcher.path_pattern,
+                match_type=matcher.match_type,
+                priority=matcher.priority,
+            ),
+        ).model_dump(mode="json")
+        for policy, matcher in rows
+    ]
+
+
+def find_crawl_policy_snapshot_for_url(
+    snapshots: list[dict],
+    *,
+    url: str,
+) -> CrawlPolicySnapshot | None:
+    """Match a URL exclusively against the policy set frozen at enqueue time."""
+
+    policies = [CrawlPolicySnapshot.model_validate(snapshot) for snapshot in snapshots]
+    matches = [policy for policy in policies if _matches(url, policy.matcher)]
+    if not matches:
+        return None
+    return max(matches, key=lambda policy: _specificity(policy.matcher))
 
 
 def match_for_policy(policy: CrawlPolicy) -> str:
@@ -94,6 +142,7 @@ def _list_record(policy: CrawlPolicy) -> CrawlPolicyListRecord:
         match=match_for_policy(policy),
         enabled=policy.enabled,
         config=policy.config or {},
+        revision=policy.revision,
         template=str(_config_value(policy, "template") or "") or None,
         mode=str(_config_value(policy, "mode") or "") or None,
         wait=str(_config_value(policy, "wait") or "") or None,
@@ -178,6 +227,15 @@ def update_crawl_policy(
     config: dict | None = None,
     domain_group: str | None = None,
 ) -> CrawlPolicy:
+    policy = session.scalar(
+        select(CrawlPolicy)
+        .where(CrawlPolicy.id == policy.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if policy is None:
+        raise ValueError("crawl policy no longer exists")
+    policy.revision += 1
     if enabled is not None:
         policy.enabled = enabled
     if match is not None:

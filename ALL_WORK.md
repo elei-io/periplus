@@ -1,5 +1,11 @@
 # Atlas Work Plan
 
+> **Completed historical plan, superseded for future orchestration.** This file describes the
+> current Postgres-backed run queue and progress-only JetStream implementation. The agreed target
+> keeps task/effect definitions in Postgres, moves task/effect runs and ingestion work to
+> JetStream, and moves durable crawl history to DuckLake. See [`ARCHITECHTURE.md`](ARCHITECHTURE.md)
+> and [`STORAGE.md`](STORAGE.md). Do not extend the Postgres run/artifact design based on this plan.
+
 Atlas is greenfield. All architecture changes are hard cutovers: do not add compatibility aliases, deprecated routes, fallback execution modes, or transitional response negotiation.
 
 ## Goal: Worker-Only Action Execution

@@ -10,11 +10,13 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from actions.crawl.service import crawl_one_for_task
+from actions.crawl.service import crawl_one_for_task, record_existing_crawl_usage
 from actions.shared.crawl import CrawlMode, CrawlWait
+from actions.shared.cache import CacheOptions
 from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
 from crawl_policies.models import CrawlPolicy
 from crawl_policies.service import generated_metric_slug
+from repository import RepositoryPipeline, repository_ingestor_from_env
 from urls.service import normalize_url, resolve_domain_url_match_for_url
 from tasks.context import commit_task_checkpoint
 
@@ -141,8 +143,13 @@ def _candidate_config(template: CrawlPolicyTemplate) -> dict[str, Any]:
         "mode": template.mode,
         "wait": template.wait,
         "max_concurrency": _default_max_concurrency(template),
+        "cache": {
+            "mode": "prefer",
+            "max_age_seconds": 120,
+            "stale_if_error_seconds": None,
+        },
         "cache_block_rules": {
-            "artifact_warning_codes": [],
+            "quality_warning_codes": [],
         },
         "run_config_overrides": template.run_config_overrides,
     }
@@ -240,6 +247,8 @@ async def calibrate(
     progress_reporter: ProgressReporter | None = None,
     session: Session,
     task_run_id: UUID,
+    cache: CacheOptions | None = None,
+    repository_pipeline: RepositoryPipeline | None = None,
 ) -> CalibrationOutput:
     normalized_url = normalize_url(url)
     url_match = resolve_domain_url_match_for_url(session, normalized_url, task_run_id=task_run_id)
@@ -260,6 +269,18 @@ async def calibrate(
             candidates=[],
             selected_page=None,
         )
+
+    if repository_pipeline is None and (cache is None or cache.mode != "no_store"):
+        async with RepositoryPipeline(repository_ingestor_from_env()) as owned_pipeline:
+            return await calibrate(
+                url=url,
+                force=force,
+                progress_reporter=progress_reporter,
+                session=session,
+                task_run_id=task_run_id,
+                cache=cache,
+                repository_pipeline=owned_pipeline,
+            )
 
     commit_task_checkpoint(session)
 
@@ -297,9 +318,20 @@ async def calibrate(
             session=session,
             task_run_id=task_run_id,
             run_config_overrides=template.run_config_overrides,
+            cache=cache or CacheOptions(mode="refresh"),
+            include_links=False,
+            repository_pipeline=repository_pipeline,
+            usage_role="calibration_candidate",
+            usage_ordinal=index,
+            usage_returned=False,
         )
+        quality = _quality(page.html or "", page.quality_warnings)
+        # Candidate HTML is durable by this point. Calibration only needs its
+        # computed quality until a winner is chosen, so retain lightweight page
+        # metadata rather than all five captured documents simultaneously.
+        if page.crawl_id is not None:
+            page = page.model_copy(update={"html": None})
         pages_by_template[template.name] = page
-        quality = _quality(page.html or "", page.artifact_warnings)
         reason = "candidate succeeded" if page.success else page.error or "candidate failed"
         candidate = CalibrationCandidate(
             template=template.name,
@@ -312,7 +344,7 @@ async def calibrate(
             status_code=page.status_code,
             quality=quality,
             crawl_id=page.crawl_id,
-            artifact_ids=page.artifact_ids,
+            document_id=page.document_id,
         )
         candidates.append(candidate)
         await emit_progress(
@@ -336,6 +368,27 @@ async def calibrate(
 
     selected = _select_candidate(candidates)
     selected_page = pages_by_template.get(selected.template)
+    if selected_page is not None and selected_page.crawl_id is not None:
+        selected_hit = await repository_pipeline.resolve_crawl(
+            selected_page.crawl_id,
+            include_html=True,
+            include_links=False,
+        )
+        if selected_hit is None:
+            raise RuntimeError(
+                f"selected calibration crawl {selected_page.crawl_id} is not committed"
+            )
+        await record_existing_crawl_usage(
+            session=session,
+            task_run_id=task_run_id,
+            crawl=selected_hit.crawl,
+            requested_url=normalized_url,
+            role="calibration_result",
+            ordinal=candidates.index(selected),
+            returned=selected.success,
+            repository_pipeline=repository_pipeline,
+        )
+        selected_page = selected_page.model_copy(update={"html": selected_hit.html})
     config = _policy_config(selected=selected, candidates=candidates)
     if existing_policy is None:
         policy_id = uuid4()
@@ -348,7 +401,15 @@ async def calibrate(
             config=config,
         )
     else:
-        policy = existing_policy
+        policy = session.scalar(
+            select(CrawlPolicy)
+            .where(CrawlPolicy.id == existing_policy.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if policy is None:
+            raise RuntimeError("crawl policy was deleted during calibration")
+        policy.revision += 1
     policy.url_match_id = url_match.id
     policy.match = match
     policy.enabled = True

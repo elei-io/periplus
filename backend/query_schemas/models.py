@@ -43,9 +43,9 @@ class QuerySchema(Base):
     schema_hash: Mapped[str] = mapped_column(Text)
     generated_from_crawl_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("crawls.id", use_alter=True, ondelete="SET NULL"),
         nullable=True,
     )
+    generated_from_document_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     generated_by_task_run_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("task_runs.id", use_alter=True, ondelete="SET NULL"),
@@ -56,6 +56,5 @@ class QuerySchema(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
-    generated_from_crawl = relationship("Crawl", foreign_keys=[generated_from_crawl_id])
     generated_by_task_run = relationship("TaskRun", foreign_keys=[generated_by_task_run_id])
     url_match = relationship("UrlMatch", back_populates="query_schemas", foreign_keys=[url_match_id])

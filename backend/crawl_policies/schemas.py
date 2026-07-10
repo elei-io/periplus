@@ -1,8 +1,36 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from actions.shared.cache import CacheOptions
+
+
+class UrlMatchSnapshot(BaseModel):
+    """The immutable URL-matching fields used by a queued task run."""
+
+    model_config = ConfigDict(frozen=True)
+
+    scheme: str
+    host: str
+    path_pattern: str
+    match_type: Literal["exact", "glob"]
+    priority: int
+
+
+class CrawlPolicySnapshot(BaseModel):
+    """The complete CrawlPolicy execution view frozen when a run is queued."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    revision: int
+    metric_slug: str
+    domain_group: str
+    match: str
+    config: dict[str, Any]
+    matcher: UrlMatchSnapshot
 
 
 class CrawlPolicyRecord(BaseModel):
@@ -15,6 +43,7 @@ class CrawlPolicyRecord(BaseModel):
     match: str
     enabled: bool
     config: dict[str, Any]
+    revision: int
     created_at: datetime
     updated_at: datetime
 
@@ -38,3 +67,10 @@ class CrawlPolicyUpdateRequest(BaseModel):
     match: str | None = None
     config: dict[str, Any] | None = None
     domain_group: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_-]{0,62}$")
+
+    @field_validator("config")
+    @classmethod
+    def validate_cache_config(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None and "cache" in value:
+            CacheOptions.model_validate(value["cache"])
+        return value

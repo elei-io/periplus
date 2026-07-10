@@ -2,6 +2,11 @@
 
 This document records the intended observability model and developer experience for Atlas operational metrics. It is an implementation guide, not a commitment to build an in-app dashboard. Atlas should expose a Prometheus scrape surface; Prometheus and its downstream tooling own storage, querying, dashboards, and alerting.
 
+> Migration note: crawl history metrics read DuckLake, while queue, run, worker, and permit metrics
+> still read their current Postgres execution owner. The target ownership model in `STORAGE.md`
+> moves temporal execution to JetStream. Metric names may remain stable where their semantics do,
+> but collectors must always read the authoritative owner described below.
+
 Atlas already has `backend/metrics/` for historical, Prometheus-shaped JSON used by UI/API surfaces. That is distinct from the live operational metrics described here. Live instrumentation will live under `backend/observability/`, with call sites importing semantic helpers such as `from observability import crawl_metrics`. The existing `backend/metrics/` package remains responsible for historical UI/API data. Both packages must be included explicitly in the Python package configuration.
 
 ## Goals
@@ -25,7 +30,10 @@ task queue wait
 
 End-to-end duration remains useful, but it must not be the only duration. Operators need to distinguish an undersized worker pool, global browser saturation, one saturated CrawlPolicy, a slow domain, and slow downstream processing.
 
-Metrics are not the source of truth for an individual run. Prometheus answers aggregate operational questions. Postgres holds durable task/crawl state, logs explain individual failures, and progress events support the live user experience.
+Metrics are not the source of truth for an individual run. Prometheus answers aggregate
+operational questions. JetStream holds current/recent execution state, DuckLake holds durable
+crawl/document history, Postgres holds user-editable definitions, logs explain individual
+failures, and lifecycle/progress events support the live user experience.
 
 ## Metric design rules
 
@@ -58,12 +66,14 @@ Labels must come from small, bounded sets. Suitable labels include:
 Do not use the following as general metric labels:
 
 - URL or raw hostname
-- task, run, crawl, artifact, or lease ID
+- task, run, crawl, document, ingestion, or lease/fencing ID
 - exception text
 - progress operation ID
 - user prompt or other input data
 
-Raw host reporting is allowed only through an explicit, bounded allowlist. Full per-domain investigation belongs in Postgres or logs. If broad domain reporting becomes necessary, use a periodic bounded top-N aggregation rather than creating a series for every host.
+Raw host reporting is allowed only through an explicit, bounded allowlist. Full per-domain
+investigation belongs in DuckLake or logs. If broad domain reporting becomes necessary, use a
+periodic bounded top-N aggregation rather than creating a series for every host.
 
 CrawlPolicy capacity is the one place where policy identity is inherently required. Before capacity metrics are added, CrawlPolicy must gain a required, unique, immutable, operator-facing `metric_slug` with a restricted character set and length. Creation and migration may generate an initial readable slug from policy configuration plus a collision-resistant suffix, after which changing it requires deliberate operator action and creates a documented time-series discontinuity. Policy capacity metrics use that slug. Crawl latency and outcome metrics use an optional, explicitly configured `domain_group`; policies without one use the fixed value `unclassified`. Never derive either label from a URL, raw hostname, match expression, prompt, or UUID at recording time.
 
@@ -143,10 +153,41 @@ Permit usage counts only rows whose lease has not expired at collection time. Pe
 - `atlas_crawl_redirects_total{domain_group}`
 - `atlas_crawl_response_size_bytes{domain_group}`
 - `atlas_crawl_warnings_total{kind,domain_group}`
+- `atlas_repository_cache_lookups_total{outcome}`
+- `atlas_repository_cache_entry_age_seconds{outcome}`
+- `atlas_repository_raw_writes_total{outcome}`
+- `atlas_repository_raw_write_duration_seconds{outcome}`
+- `atlas_repository_raw_html_bytes`
+- `atlas_repository_raw_compressed_bytes`
+- `atlas_repository_ingestion_attempts_total{outcome}`
+- `atlas_repository_ingestion_queue_duration_seconds{outcome}`
+- `atlas_repository_ingestion_preparation_duration_seconds{outcome}`
+- `atlas_repository_ingestion_commit_duration_seconds{outcome}`
+- `atlas_repository_ingestion_batches_total{outcome}`
+- `atlas_repository_ingestion_batch_items`
+- `atlas_repository_ingestion_batch_element_rows`
+- `atlas_repository_ingestion_batch_staged_bytes`
+- `atlas_repository_ingestion_jobs_pending`
+- `atlas_repository_ingestion_jobs_ack_pending`
+- `atlas_repository_ingestion_jobs_redelivered`
 
 `source` distinguishes `network` from `cache`. A page acquisition is one logical request handled by `crawl_one_for_task`, whether it reuses an existing Crawl or creates a new one. Its duration starts after capacity is acquired and includes browser startup, cache normalization or network loading, quality checks, and browser teardown; it excludes capacity waiting and result persistence. This makes the cost of cached pages visible even though cached `CrawlPage.duration_seconds` is currently zero.
 
-Navigation duration is the narrower `_crawl_url`/Crawl4AI network operation and is recorded only for `source="network"`. A persisted crawl is a newly created durable `Crawl` row; cache reuse must not increment `atlas_crawls_persisted_total`. HTTP response totals describe the logical acquisition result, including the stored status returned by cache reuse.
+Navigation duration is the narrower `_crawl_url`/Crawl4AI network operation and is recorded only
+for `source="network"`. A persisted crawl is a newly committed DuckLake crawl row; cache reuse must
+not increment `atlas_crawls_persisted_total`. HTTP response totals describe the logical acquisition
+result, including the stored status returned by repository reuse.
+
+Repository cache outcomes are bounded values such as `hit`, `miss`, `refresh`, `no_store`,
+`stale_if_error`, and `stale_miss`. Entry age is observed only when repository data is actually
+reused. URLs, crawl IDs, document hashes, and object keys never appear as labels.
+
+Repository ingestion is a separate process and exposes its own Prometheus endpoint on
+`ATLAS_INGESTOR_METRICS_PORT` (default `9091`). Raw-write observations are emitted by task workers;
+queue, preparation, and commit observations are emitted by the ingestor. Ingestion `outcome` values
+are bounded (`succeeded`/`failed` for attempts and batches;
+`created`/`deduplicated`/`failed` for raw writes). A failed redelivery is an ingestion attempt, so
+attempt counters may exceed logical crawl count by design.
 
 Failure reasons must be normalized rather than copied from exception messages. The initial taxonomy should cover:
 
@@ -188,15 +229,22 @@ Page-load success is not necessarily scraping success. After the core metrics ar
 - URLs discovered, suppressed as duplicates, completed, and truncated by depth/page limits
 - frontier pending/in-flight work and frontier age
 - extraction records produced and empty extraction outcomes
-- cache hit, miss, rejection, age, and invalidation reason
-- artifact bytes read/written and persistence failures
+- repository/cache hit, miss, rejection, age, and invalidation reason
+- raw/compressed HTML and staging bytes read/written
+- document deduplication hits
+- repository ingestion batch rows/bytes, queue age, duration, retries, and failures
+- DuckLake query rows/scanned bytes, duration, timeout, and rejection
+- data-file counts/sizes, compaction, snapshot expiration, and cleanup
 - per-run crawl worker utilization
 
 These should reveal whether capacity is idle because the frontier cannot feed it and whether successful crawls produce useful data.
 
 ### Dependencies and process resources
 
-Eventually expose Postgres latency/pool pressure, NATS publish latency/failures, progress delivery failures, artifact persistence failures, provider latency/rate limits, and standard process CPU/RSS/file-descriptor metrics. Browser concurrency can be below its configured ceiling while memory or file descriptors are already exhausted.
+Eventually expose Postgres latency/pool pressure, JetStream publish/consume/redelivery failures,
+object-store latency/failures, DuckLake catalog/query/maintenance failures, provider latency/rate
+limits, and standard process CPU/RSS/file-descriptor metrics. Browser concurrency can be below its
+configured ceiling while memory or file descriptors are already exhausted.
 
 The API can remain healthy while no worker can claim work. HTTP uptime is therefore not a sufficient Atlas health signal.
 
@@ -277,12 +325,16 @@ Code-recorded metrics include:
 - queue, capacity, page-acquisition, navigation, and execution durations
 - retries, recoveries, cancellations, timeouts, and lease losses
 
-Postgres-derived scrape metrics include:
+JetStream-derived target scrape metrics include:
 
 - queue depth and oldest queued age
-- running task count and active task leases
-- permits in use and configured permit capacity
 - live workers, worker capacity, and heartbeat age
+- running task count, active ownership, redelivery, and ingestion backlog
+
+Postgres-derived target scrape metrics include editable CrawlPolicy capacity and, until separately
+redesigned, active browser/policy permit leases. DuckLake-derived bounded snapshots include durable
+crawl and repository state. Object-store and repository instrumentation supplies byte, latency,
+failure, and maintenance observations.
 
 Do not maintain these global gauges solely with paired `inc()`/`dec()` calls. A killed subprocess or worker would leave them incorrect.
 
@@ -296,7 +348,8 @@ Lifecycle counters have precise boundaries:
 - `atlas_task_run_attempts_total` increments once per successful claim/attempt and records that attempt's eventual outcome.
 - `atlas_task_run_recoveries_total` increments once for each recovery transition performed by the supervisor.
 - `atlas_page_acquisitions_total` increments once for every completed or terminated logical page acquisition request.
-- `atlas_crawls_persisted_total` increments only after the new Crawl transaction commits.
+- `atlas_crawls_persisted_total` increments only after the DuckLake crawl/document/element commit
+  succeeds.
 
 Record observations after the corresponding durable commit when one exists. These counters are sufficiently accurate for operational rates and initial SLOs, provided dropped-observation metrics remain healthy. If Atlas later requires auditable or billing-grade counts, implement a transactional outbox or calculate them from durable data rather than strengthening the in-memory metrics channel.
 
@@ -304,22 +357,47 @@ Record observations after the corresponding durable commit when one exists. Thes
 
 Atlas has two scrape surfaces with deliberately non-overlapping ownership:
 
-1. The API exposes `/metrics` on its existing HTTP server. It owns API process/runtime metrics and cluster-wide gauges derived from Postgres plus shared deployment configuration: queue state, task leases, permit usage/capacity, and worker heartbeat/capacity state.
+1. The API exposes `/metrics` on its existing HTTP server. It owns API process/runtime metrics and
+   cluster-wide gauges derived from JetStream, Postgres configuration/current permit state, and
+   bounded DuckLake repository snapshots: queue/ingestion state, current runs, permit
+   usage/capacity, worker state, and repository posture.
 2. Each worker supervisor exposes `/metrics` on a dedicated HTTP port. It owns worker process/runtime metrics, supervisor counters, child event observations, duration histograms, and the worker-local portion of transient state such as capacity waiters.
 
-Cluster-wide gauges must never also be exported by every worker. Browser capacity comes from the shared `ATLAS_BROWSER_CONCURRENCY` deployment setting, policy capacity comes from CrawlPolicy configuration, and current usage comes from active Postgres permit rows. The API and every worker must receive a consistent browser-capacity setting. Worker-local event counters, histograms, and waiter gauges are summed across worker targets. In a deployment with multiple API replicas, every replica may expose the same cluster-wide database gauges for availability; recording rules and dashboards must aggregate those gauges with `max without(instance, pod)` rather than `sum`. A future singleton exporter may take over this responsibility without changing metric names.
+Cluster-wide gauges must never also be exported by every worker. Browser capacity comes from the
+shared `ATLAS_BROWSER_CONCURRENCY` deployment setting, policy capacity comes from CrawlPolicy
+configuration, and current usage comes from the authoritative permit backend (currently active
+Postgres permit rows; a future JetStream KV move is undecided). The API and every worker must
+receive a consistent browser-capacity setting. Worker-local event counters, histograms, and waiter
+gauges are summed across worker targets. In a deployment with multiple API replicas, every replica
+may expose the same cluster-wide gauges for availability; recording rules and dashboards must
+aggregate those gauges with `max without(instance, pod)` rather than `sum`. A future singleton
+exporter may take over this responsibility without changing metric names.
 
 Browser permits measure task-scoped browser processes, not page tabs. Concurrent pages within a task share the browser and remain governed by per-run page concurrency plus per-policy permits. Mixed transport modes may require one browser permit per mode within the same task.
 
-The API's root `/metrics` path is distinct from the existing resource-history endpoints such as `/crawls/metrics`. The initial worker defaults are `ATLAS_METRICS_ENABLED=true`, `ATLAS_METRICS_HOST=0.0.0.0`, and `ATLAS_METRICS_PORT=9090`. Container and deployment configuration must expose the worker port to Prometheus without publishing it publicly. The API uses its normal listen address and port.
+The API's root `/metrics` Prometheus path is distinct from the typed operations snapshot used by
+the in-app observability hub. The initial worker defaults are `ATLAS_METRICS_ENABLED=true`,
+`ATLAS_METRICS_HOST=0.0.0.0`, and `ATLAS_METRICS_PORT=9090`. Container and deployment configuration
+must expose the worker port to Prometheus without publishing it publicly. The API uses its normal
+listen address and port.
 
-Postgres-backed collection must use bounded queries and a short statement timeout. A failed collection should omit or retain no value for the affected collector, increment `atlas_metrics_collection_errors_total{collector}`, and never make the API or worker unhealthy.
+Postgres-, JetStream-, and DuckLake-backed collection must use bounded operations and short
+timeouts. A failed collection should omit or retain no value for the affected collector, increment
+`atlas_metrics_collection_errors_total{collector}`, and never make the API or worker unhealthy.
 
-The Prometheus collector is an adapter over `observability.collect_cluster_metrics(session)`, which returns a typed `ClusterMetricsSnapshot` with nested task and permit snapshots. The Atlas operations JSON endpoint calls this service directly rather than parsing Prometheus exposition or duplicating its SQL. Semantic event helpers and the central catalog remain reusable by other adapters in the same way.
+The Prometheus collector is an adapter over a typed cluster-snapshot service. During migration the
+existing service is Postgres-shaped; the target composes bounded JetStream execution, Postgres
+configuration/permit, and DuckLake repository snapshots. The Atlas operations JSON endpoint calls
+this service directly rather than parsing Prometheus exposition. Semantic event helpers and the
+central metric catalog remain reusable by other adapters.
 
 ### In-app operations hub
 
-`GET /operations/metrics` and the `/scheduled-work/metrics` page provide a deliberately small in-app operational view. The response combines current cluster state from `collect_cluster_metrics`, bounded recent-window aggregates from durable task and crawl records, and optional Prometheus enrichment when `ATLAS_PROMETHEUS_URL` is configured. Supported windows are 15 minutes, 1 hour, 6 hours, and 24 hours.
+`GET /operations/metrics` and the `/scheduled-work/metrics` page provide a deliberately small
+in-app operational view. The target response combines current/recent JetStream execution state,
+bounded DuckLake crawl/repository aggregates, Postgres policy/permit configuration, and optional
+Prometheus enrichment when `ATLAS_PROMETHEUS_URL` is configured. Supported windows are 15 minutes,
+1 hour, 6 hours, and 24 hours.
 
 The in-app page focuses on worker and browser posture, queue pressure, task outcomes and latency, crawl success and latency, failure reasons, domain health, and per-policy capacity. Resource registry and cache pages remain CRUD-oriented and link from the hub where an investigation surface exists. Atlas does not persist a second time-series dataset for this UI; Prometheus remains authoritative for complete history, alerting, waiter state, histogram-derived capacity latency, and observation-loss rates.
 
@@ -355,7 +433,10 @@ Do not derive all operational metrics from `ProgressEvent`. Progress contains us
 - Progress: transient user experience and cancellation checkpoints.
 - Metrics: bounded aggregate operations and capacity.
 - Logs: detailed errors and identifiers for investigation.
-- Postgres: durable run, crawl, artifact, and lease truth.
+- JetStream: temporal run/effect/ingestion state, lifecycle events, cancellation, and worker state.
+- Postgres: user-editable definitions and current permit truth until permit ownership is redesigned.
+- DuckLake: durable crawl, document, and element truth.
+- Repository object storage: canonical HTML and optional debug media.
 - Traces, if introduced: per-request causal timing across components.
 
 ## Initial alerts and SLO candidates
@@ -380,7 +461,8 @@ The last condition detects queue notification, claiming, or worker-loop failures
 - Add a recorder interface, no-op recorder, in-memory test recorder, and Prometheus supervisor recorder.
 - Add execution metric context and the dedicated bounded child-to-supervisor metrics queue without changing the result/control pipe.
 - Expose API `/metrics` and the dedicated worker scrape port; add dependency, environment, Compose, and deployment configuration.
-- Add bounded Postgres-backed cluster collectors and multiple-API aggregation recording rules.
+- Migrate bounded cluster collectors to their authoritative JetStream/Postgres/DuckLake sources and
+  retain multiple-API aggregation recording rules.
 - Add standard runtime/process collectors.
 
 ### Phase 2: critical flow metrics
@@ -392,9 +474,9 @@ The last condition detects queue notification, claiming, or worker-loop failures
 
 ### Phase 3: operational depth
 
-- Cache effectiveness and artifact metrics.
+- Repository/cache effectiveness, document deduplication, ingestion, query, and maintenance metrics.
 - Frontier flow and useful extraction outcomes.
-- Postgres, NATS, provider, and persistence dependency metrics.
+- Postgres, JetStream, DuckLake, object-store, provider, and persistence dependency metrics.
 - Recording rules, dashboards, and alerts based on observed distributions.
 
 Before adding any new metric, answer:

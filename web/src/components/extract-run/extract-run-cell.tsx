@@ -7,7 +7,7 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 import { useEffect, useState } from "react"
 
-import { ExtractResults } from "@/components/extract-run/extract-results"
+import { CatalogueRunSummary } from "@/components/catalogue-run-summary"
 import { PlaygroundRunStatusMark } from "@/components/playground-run-status-mark"
 import { Button } from "@/components/ui/button"
 import {
@@ -24,9 +24,9 @@ import { useTaskRunProgress, useTaskRunResult } from "@/hooks/use-action-runs"
 import { useCancelExtractRun } from "@/hooks/use-extract-runs"
 import { truncateMiddle } from "@/lib/truncate"
 import { cn } from "@/lib/utils"
-import type { ExtractInput, ExtractOutput } from "@/types/extract"
+import type { ExtractInput } from "@/types/extract"
 import type { ProgressEvent, ProgressPhase } from "@/types/progress"
-import type { TaskRunRecord } from "@/types/tasks"
+import type { TaskResultSummary, TaskRunRecord } from "@/types/tasks"
 
 const activeStatuses = new Set(["queued", "running"])
 
@@ -51,7 +51,7 @@ export function ExtractRunCell({ run, density }: ExtractRunCellProps) {
     return () => window.clearInterval(timer)
   }, [active])
 
-  const resultQuery = useTaskRunResult<ExtractOutput>(
+  const resultQuery = useTaskRunResult<TaskResultSummary>(
     run.id,
     expanded && run.status === "succeeded"
   )
@@ -210,7 +210,7 @@ export function ExtractRunCell({ run, density }: ExtractRunCellProps) {
               {resultQuery.error.message}
             </p>
           ) : resultQuery.data ? (
-            <ExtractResults input={input} result={resultQuery.data} />
+            <CatalogueRunSummary result={resultQuery.data} />
           ) : null}
         </div>
       </CollapsibleContent>
@@ -226,16 +226,12 @@ function getLatestMetadataNumber(events: ProgressEvent[], key: string) {
   return null
 }
 
-function getSavedRecordCount(output: ExtractOutput | undefined) {
-  const results = output?.results
-  return Array.isArray(results) ? results.length : null
+function getSavedRecordCount(output: TaskResultSummary | undefined) {
+  return output?.counts.records ?? null
 }
 
-function getSavedParamCount(output: ExtractOutput | undefined) {
-  const queryParams = output?.query_params
-  if (!queryParams || typeof queryParams !== "object") return null
-  const params = (queryParams as Record<string, unknown>).params
-  return Array.isArray(params) ? params.length : null
+function getSavedParamCount(output: TaskResultSummary | undefined) {
+  return output?.counts.query_parameters ?? null
 }
 
 function getModeLabel(input: ExtractInput) {

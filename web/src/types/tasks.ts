@@ -1,10 +1,5 @@
 export type TaskPrimitive =
-  | "search"
-  | "index"
-  | "crawl"
-  | "schema"
-  | "extract"
-  | "calibrate"
+  "search" | "index" | "crawl" | "schema" | "extract" | "calibrate"
 
 export type TaskRunSubmission = {
   task_id: string
@@ -12,11 +7,14 @@ export type TaskRunSubmission = {
   status: "queued"
 }
 
-export type TaskRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped"
+export type TaskRunStatus =
+  "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped"
 
 export type TaskRunRecord = {
   id: string
   task_id: string
+  task_revision: number
+  primitive: TaskPrimitive
   status: TaskRunStatus
   trigger_kind: "scheduled" | "manual" | "effect" | "retry" | "backfill"
   queued_at: string
@@ -33,6 +31,16 @@ export type TaskRunRecord = {
   error: string | null
   created_at: string
   updated_at: string
+}
+
+export type TaskResultSummary = {
+  version: 1
+  primitive: TaskPrimitive
+  status: "succeeded"
+  counts: Record<string, number>
+  catalogue: {
+    run_id: string
+  } | null
 }
 
 export type TaskProgressEnvelope<T = unknown> = {
@@ -74,6 +82,7 @@ export type TaskRecord = {
   name: string
   primitive: TaskPrimitive
   input_json: Record<string, unknown>
+  revision: number
   schedule_json: TaskSchedule | null
   identity_key: string | null
   created_by_effect_run_id: string | null

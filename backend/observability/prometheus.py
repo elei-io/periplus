@@ -108,7 +108,12 @@ class WorkerMetricAggregator:
             self._collectors[definition.name] = collector
 
     def apply(self, observation: MetricObservation) -> None:
-        collector = self._collectors[observation.name].labels(**observation.labels)
+        base_collector = self._collectors[observation.name]
+        collector = (
+            base_collector.labels(**observation.labels)
+            if observation.labels
+            else base_collector
+        )
         if observation.operation == "snapshot":
             if observation.child_id is None:
                 return
@@ -132,7 +137,13 @@ class WorkerMetricAggregator:
                 if child_id not in children:
                     continue
                 children.pop(child_id, None)
-                self._collectors[name].labels(**dict(label_items)).set(sum(children.values()))
+                labels = dict(label_items)
+                collector = (
+                    self._collectors[name].labels(**labels)
+                    if labels
+                    else self._collectors[name]
+                )
+                collector.set(sum(children.values()))
 
     def dropped(self, reason: str) -> None:
         self._collectors["atlas_metric_observations_dropped_total"].labels(reason=reason).inc()

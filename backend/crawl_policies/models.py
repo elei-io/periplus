@@ -34,6 +34,7 @@ class CrawlPolicy(Base):
     match: Mapped[str] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     config: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
@@ -52,14 +53,11 @@ class CrawlPermit(Base):
     permit_key: Mapped[str] = mapped_column(Text)
     slot: Mapped[int] = mapped_column(Integer)
     policy_id: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("crawl_policies.id", ondelete="CASCADE"), nullable=True
+        PG_UUID(as_uuid=True), nullable=True
     )
     holder_worker_id: Mapped[str] = mapped_column(Text)
     task_run_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("task_runs.id", ondelete="CASCADE")
-    )
-    url_id: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("urls.id", ondelete="SET NULL"), nullable=True
     )
     acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     leased_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))

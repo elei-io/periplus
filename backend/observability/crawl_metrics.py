@@ -92,7 +92,7 @@ def page_acquisition(
             domain_group=domain_group,
             mode=mode,
         )
-    for warning in page.artifact_warnings:
+    for warning in page.quality_warnings:
         record(
             "atlas_crawl_warnings_total",
             kind=str(warning.code),
@@ -116,3 +116,13 @@ def crawl_persisted(*, page: CrawlPage, mode: CrawlMode, domain_group: str) -> N
         mode=mode,
         domain_group=domain_group,
     )
+
+
+def repository_cache(*, outcome: str, age_seconds: float | None = None) -> None:
+    record("atlas_repository_cache_lookups_total", outcome=outcome)
+    if age_seconds is not None:
+        record(
+            "atlas_repository_cache_entry_age_seconds",
+            max(0.0, age_seconds),
+            outcome=outcome,
+        )

@@ -1,8 +1,8 @@
 [project]
 name = "atlas"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
+description = "Web acquisition and normalization for SQL-centric data pipelines"
+readme = { text = "Atlas backend services and command-line tools.", content-type = "text/markdown" }
 requires-python = ">=3.14"
 dependencies = [
     "alembic>=1.18",
@@ -15,40 +15,22 @@ dependencies = [
     "prometheus-client>=0.22",
     "sqlalchemy>=2.0",
     "typer>=0.26.8",
+    "ducklake-client>=0.8.1",
+    "boto3>=1.42",
+    "zstandard>=0.25",
+    "html5lib>=1.1",
+    "pyarrow>=21",
 ]
 
 [project.scripts]
 atlas = "cli.app:app"
 atlas-worker = "worker.app:main"
+atlas-ingestor = "repository.worker:main"
 
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = [
-    "actions",
-    "actions.extract",
-    "actions.index",
-    "actions.crawl",
-    "actions.search",
-    "actions.shared",
-    "actions.shared.data_schema",
-    "actions.shared.query_schema",
-    "actions.shared.quality",
-    "artifacts",
-    "crawl_policies",
-    "crawls",
-    "data_schemas",
-    "query_schemas",
-    "api",
-    "api.routers",
-    "cli",
-    "cli.apps",
-    "db",
-    "metrics",
-    "observability",
-    "tasks",
-    "urls",
-    "worker",
-]
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests*"]

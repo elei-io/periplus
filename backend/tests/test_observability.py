@@ -10,7 +10,12 @@ from prometheus_client import generate_latest
 from actions.crawl.schemas import CrawlPage
 from api.app import app
 from crawl_policies.service import generated_metric_slug
-from observability import capacity_metrics, crawl_metrics, metric_recorder_scope
+from observability import (
+    capacity_metrics,
+    crawl_metrics,
+    metric_recorder_scope,
+    repository_metrics,
+)
 from observability.prometheus import WorkerMetricAggregator
 from observability.prometheus_source import collect_prometheus_metrics
 from observability.recorder import InMemoryRecorder, MetricObservation
@@ -61,6 +66,71 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual(waits[0].labels["blocked_scope"], "browser")
         snapshots = recorder.matching("atlas_crawl_permit_waiters")
         self.assertEqual([observation.value for observation in snapshots], [1, 0])
+
+    def test_repository_cache_records_bounded_outcome_and_entry_age(self) -> None:
+        recorder = InMemoryRecorder()
+        with metric_recorder_scope(recorder):
+            crawl_metrics.repository_cache(outcome="hit", age_seconds=42.5)
+            crawl_metrics.repository_cache(outcome="refresh")
+
+        self.assertEqual(
+            recorder.total("atlas_repository_cache_lookups_total", outcome="hit"),
+            1,
+        )
+        self.assertEqual(
+            recorder.total(
+                "atlas_repository_cache_entry_age_seconds",
+                outcome="hit",
+            ),
+            42.5,
+        )
+        self.assertEqual(
+            recorder.total(
+                "atlas_repository_cache_lookups_total",
+                outcome="refresh",
+            ),
+            1,
+        )
+
+    def test_repository_ingestion_metrics_are_bounded_and_batch_scoped(self) -> None:
+        recorder = InMemoryRecorder()
+        with metric_recorder_scope(recorder):
+            repository_metrics.raw_write(
+                outcome="deduplicated",
+                duration_seconds=0.1,
+                html_bytes=100,
+                compressed_bytes=50,
+            )
+            repository_metrics.attempt(outcome="succeeded", queue_seconds=0.2)
+            repository_metrics.batch(
+                outcome="succeeded",
+                duration_seconds=0.3,
+                items=2,
+                element_rows=20,
+                staged_bytes=200,
+            )
+            repository_metrics.queue_state(
+                pending=3,
+                ack_pending=2,
+                redelivered=1,
+            )
+
+        self.assertEqual(
+            recorder.total(
+                "atlas_repository_raw_writes_total",
+                outcome="deduplicated",
+            ),
+            1,
+        )
+        self.assertEqual(
+            recorder.total(
+                "atlas_repository_ingestion_attempts_total",
+                outcome="succeeded",
+            ),
+            1,
+        )
+        self.assertEqual(recorder.total("atlas_repository_ingestion_batch_items"), 2)
+        self.assertEqual(recorder.total("atlas_repository_ingestion_jobs_pending"), 3)
 
     def test_worker_aggregator_sums_and_forgets_child_snapshots(self) -> None:
         aggregator = WorkerMetricAggregator()

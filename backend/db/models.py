@@ -1,8 +1,6 @@
 """Import SQLAlchemy model classes here so Alembic autogenerate can see them."""
 
-import artifacts.models  # noqa: F401
 import crawl_policies.models  # noqa: F401
-import crawls.models  # noqa: F401
 import data_schemas.models  # noqa: F401
 import query_schemas.models  # noqa: F401
 import tasks.models  # noqa: F401

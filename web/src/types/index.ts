@@ -3,6 +3,7 @@ export type CrawlMode = "static" | "dynamic" | "app"
 export type CrawlWait = "none" | "stable" | "network" | "fixed"
 
 import type { ProgressEvent } from "@/types/progress"
+import type { CacheOptions } from "@/types/cache"
 
 export type IndexFilterType =
   | "include_crawl"
@@ -26,6 +27,7 @@ export type IndexInput = {
   exclude_crawl: string[]
   include_result: string[]
   exclude_result: string[]
+  cache?: CacheOptions | null
 }
 
 export type IndexLink = {

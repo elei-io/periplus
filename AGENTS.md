@@ -2,6 +2,10 @@
 
 This file is the first stop for Codex agents working in Atlas.
 
+The storage and state-ownership contract lives in `STORAGE.md`. Read it completely before changing
+crawls, task/effect runs, repository storage, DOM/Parquet generation, or DuckLake. Crawl history
+must never be reintroduced into the Atlas control-plane Postgres database.
+
 ## Project Shape
 
 - Atlas is a Python backend with three entrypoints over shared action/task logic:
@@ -9,21 +13,23 @@ This file is the first stop for Codex agents working in Atlas.
   - `backend/cli/` for Typer commands.
   - `backend/actions/` for primitive action behavior.
   - `backend/actions/shared/` for crawler, quality, progress, data-schema, and query-schema support shared between actions.
-  - `backend/artifacts/` for ephemeral task-run artifact metadata and disk helpers.
-  - `backend/urls/`, `backend/crawls/`, `backend/crawl_policies/`, `backend/data_schemas/`, and `backend/query_schemas/` for durable crawl data model records.
-  - `backend/tasks/` for persisted schedulable work and task/effect runs.
+  - `backend/urls/`, `backend/crawl_policies/`, `backend/data_schemas/`, and `backend/query_schemas/` for user-editable matching, policy, and schema state.
+  - `backend/tasks/` for persisted schedulable task/effect definitions and the current run implementation; target executions live in JetStream.
+  - `backend/catalogue/` owns the DuckLake client configuration, schema contract, and bootstrap boundary.
+  - `backend/dom/` owns the versioned element schema, bounded Arrow encoder, page-local reader, and structural query helpers.
+  - `backend/repository/` owns raw object storage, the JetStream ingestion queue/writer, and repository maintenance around the catalogue.
 - Current user-facing actions are `search`, `index`, `crawl`, and `extract`. Data schema generation lives in `actions.shared.data_schema`; query parameter schema generation lives in `actions.shared.query_schema` and is exposed through `extract`.
 - Page-loading options are shared through `actions.shared.crawl`. Do not duplicate `mode`/`wait` config in individual primitives.
-- `crawl` is the page acquisition chokepoint. Task-backed actions that load pages pass their task-run context into `actions.crawl`, which reuses healthy artifacts when eligible and otherwise records URLs, crawls, reusable artifacts, and task-run usage in Postgres.
-- Keep business behavior in `backend/actions/`, `backend/artifacts/`, and `backend/tasks/`; API and CLI layers should stay thin.
-- The architecture rationale lives in `ARCHITECHTURE.md`. Read it before changing the API/task/browser execution model.
+- `crawl` is the page acquisition chokepoint. The target stores canonical content-addressed HTML in the configured filesystem/S3 repository and durable crawl/document/element state in DuckLake.
+- Keep business behavior in `backend/actions/`, `backend/tasks/`, `backend/catalogue/`, `backend/dom/`, and `backend/repository/`; API and CLI layers should stay thin.
+- The architecture rationale lives in `ARCHITECHTURE.md`; storage detail lives in `STORAGE.md`. Read both before changing the API/task/browser/storage execution model.
 
 ## Setup
 
 - Use `uv` from the `backend/` directory for Python commands.
 - The project targets Python 3.14.
-- Docker Compose is the easiest way to run the local API and Postgres stack.
-- Ephemeral task-run artifacts live under ignored paths: `.artifacts/` and `.env`.
+- Docker Compose is the easiest way to run the local API, worker, Postgres, and NATS stack.
+- Local repository and staging paths under `.atlas/` are ignored. `.env` is ignored.
 
 ## Common Commands
 
@@ -43,7 +49,7 @@ Equivalent direct commands:
 
 ```sh
 cd backend && uv sync
-cd backend && uv run python -m compileall actions artifacts api cli db tasks urls crawls data_schemas query_schemas crawl_policies
+cd backend && uv run python -m compileall actions api catalogue cli db dom repository tasks urls data_schemas query_schemas crawl_policies
 cd backend && uv run alembic -c db/alembic.ini upgrade head
 cd backend && uv run alembic -c db/alembic.ini check
 cd backend && uv run fastapi dev api/app.py
@@ -58,17 +64,19 @@ docker compose up --build
 
 ## Coding Notes
 
-- Preserve the current split: routers and CLI commands validate/input/output; action, artifact, and task modules own behavior.
+- Routers and CLI commands validate/input/output; action, task, DOM, and repository modules own behavior.
 - Prefer typed Pydantic models for request/response boundaries.
 - Keep Postgres infrastructure under `backend/db`: SQLAlchemy base/session setup, model registry, and Alembic files.
-- Keep SQLAlchemy task tables in `tasks/models.py` and Pydantic contracts in `tasks/schemas.py`.
-- Keep SQLAlchemy artifact tables in `artifacts/models.py` and Pydantic contracts in `artifacts/schemas.py`.
+- Keep user-editable SQLAlchemy task/effect definitions in `tasks/models.py` and Pydantic contracts in `tasks/schemas.py`. Do not add new Postgres task/effect run dependencies; target executions belong in JetStream.
+- The Postgres artifact/crawl/URL-history models are gone. Do not add compatibility models or routes; use DuckLake documents/crawls/elements according to `STORAGE.md`.
 - Keep action Pydantic contracts in `actions/<name>/schemas.py`.
 - Use SQLAlchemy 2 models from `db.Base` for database tables and manage schema changes with Alembic.
 - Keep shared Crawl4AI browser/run configuration in `actions.shared.crawl`.
 - Use durable `data_schemas` records for generated Crawl4AI data schemas instead of embedding schema generation in another primitive. Schema reuse is controlled by explicit URL match patterns.
 - Use `actions.extract` to compose HTML from `actions.crawl` with generated schemas from `actions.shared.data_schema` and `actions.shared.query_schema`. The extract primitive can run data extraction, query-parameter extraction, or both.
-- Do not add optional crawl artifact formats until a real caller needs them.
+- Do not add optional crawl media formats until a real caller needs them. Raw HTML.zst and the versioned DOM representation are the initial durable formats.
+- DuckLake owns physical catalog Parquet paths and compaction output. Never create a permanent Parquet file per crawl in DuckLake's data path.
+- Store repository object keys relative to the configured filesystem/S3 root; never expose local paths in public API contracts.
 - Avoid introducing a separate browser service or per-action job worker unless the architecture document is deliberately updated too.
 - Do not commit generated artifacts, schemas, virtualenvs, or secrets.
 
@@ -88,5 +96,7 @@ docker compose up --build
 
 - `DATABASE_URL` controls Postgres access.
 - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_PORT` configure the local Compose Postgres service.
-- `ARTIFACTS_ROOT`, `ARTIFACTS_CLEANUP_INTERVAL`, and `ARTIFACT_CACHE_AGE_SECONDS` control local artifact storage and cleanup.
+- `ATLAS_CATALOGUE_*` configures DuckLake metadata and its local DuckDB runtime. PostgreSQL is the default metadata catalogue and uses a separate `atlas_catalogue` database.
+- `ATLAS_REPOSITORY_STORAGE=disk|s3` and the other `ATLAS_REPOSITORY_*` variables configure both raw-object storage and DuckLake data storage; do not introduce a second storage-backend selection.
+- `ATLAS_INGEST_*` configures the dedicated repository writer's batching, redelivery, and stale-staging cleanup. Crawl workers must not write DuckLake directly.
 - `OPENROUTER_API_KEY`, `OPENROUTER_SCHEMA_MODEL`, and `OPENROUTER_SEARCH_EXTRACTOR_MODEL` are optional schema generation settings.

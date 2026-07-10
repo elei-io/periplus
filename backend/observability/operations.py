@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import Float, case, cast, extract, func, select
+from sqlalchemy import extract, func, select
 from sqlalchemy.orm import Session
 
-from crawls.models import Crawl
-from tasks.models import Task, TaskRun
-from urls.models import Url
+from catalogue import Catalogue, CatalogueService, catalogue_config_from_env
+from tasks.models import TaskRun
 
 from .cluster import collect_cluster_metrics
 from .schemas import (
@@ -55,10 +54,9 @@ def collect_operations_metrics(
     cluster = collect_cluster_metrics(session, now=now)
 
     task_status_rows = session.execute(
-        select(Task.primitive, TaskRun.status, func.count())
-        .join(TaskRun, TaskRun.task_id == Task.id)
+        select(TaskRun.primitive, TaskRun.status, func.count())
         .where(TaskRun.finished_at >= cutoff)
-        .group_by(Task.primitive, TaskRun.status)
+        .group_by(TaskRun.primitive, TaskRun.status)
     )
     task_statuses: dict[str, dict[str, int]] = {}
     for primitive, status, count in task_status_rows:
@@ -99,62 +97,26 @@ def collect_operations_metrics(
         TaskRun.finished_at >= cutoff,
     )
 
-    crawl_duration = cast(Crawl.duration_ms, Float) / 1000.0
-    crawl_total, crawl_succeeded = session.execute(
-        select(
-            func.count(Crawl.id),
-            func.count(Crawl.id).filter(Crawl.success.is_(True)),
-        ).where(Crawl.finished_at >= cutoff)
-    ).one()
-    crawl_total = int(crawl_total or 0)
-    crawl_succeeded = int(crawl_succeeded or 0)
-    crawl_p50, crawl_p95 = _percentiles(
-        session,
-        crawl_duration,
-        Crawl.finished_at >= cutoff,
-        Crawl.duration_ms.is_not(None),
-    )
+    with Catalogue(catalogue_config_from_env()) as catalogue:
+        durable_health = CatalogueService(catalogue).crawl_health_since(cutoff)
+    crawl_summary = durable_health["summary"]
+    crawl_total = int(crawl_summary["total"] or 0)
+    crawl_succeeded = int(crawl_summary["succeeded"] or 0)
+    crawl_p50 = _number(crawl_summary["duration_p50_seconds"])
+    crawl_p95 = _number(crawl_summary["duration_p95_seconds"])
 
-    domain_rows = session.execute(
-        select(
-            Url.domain,
-            func.count(Crawl.id).label("total"),
-            func.count(Crawl.id).filter(Crawl.success.is_(False)).label("failed"),
-            func.percentile_cont(0.95).within_group(crawl_duration).label("p95"),
-        )
-        .join(Crawl, Crawl.url_id == Url.id)
-        .where(Crawl.finished_at >= cutoff)
-        .group_by(Url.domain)
-        .order_by(func.count(Crawl.id).desc())
-        .limit(10)
-    )
     domains = [
         DomainHealthMetrics(
-            domain=domain,
-            total=int(total),
-            failed=int(failed),
-            success_ratio=_ratio(int(total) - int(failed), int(total)),
-            duration_p95_seconds=_number(p95),
+            domain=str(row["domain"] or "unknown"),
+            total=int(row["total"]),
+            failed=int(row["failed"]),
+            success_ratio=_ratio(
+                int(row["total"]) - int(row["failed"]), int(row["total"])
+            ),
+            duration_p95_seconds=_number(row["duration_p95_seconds"]),
         )
-        for domain, total, failed, p95 in domain_rows
+        for row in durable_health["domains"]
     ]
-
-    error_text = func.lower(func.coalesce(Crawl.errors_json["message"].as_string(), ""))
-    failure_reason = case(
-        (Crawl.status_code == 429, "http_429"),
-        (Crawl.status_code.between(400, 499), "http_4xx"),
-        (Crawl.status_code.between(500, 599), "http_5xx"),
-        (error_text.like("%timeout%"), "timeout"),
-        (error_text.like("%browser%"), "browser"),
-        (error_text.like("%capacity%"), "capacity"),
-        else_="navigation",
-    )
-    failure_rows = session.execute(
-        select(failure_reason.label("reason"), func.count())
-        .where(Crawl.finished_at >= cutoff, Crawl.success.is_(False))
-        .group_by(failure_reason)
-        .order_by(func.count().desc())
-    )
 
     return OperationsMetricsResponse(
         generated_at=now,
@@ -192,8 +154,8 @@ def collect_operations_metrics(
         ),
         domains=domains,
         failures=[
-            FailureReasonMetrics(reason=reason, count=int(count))
-            for reason, count in failure_rows
+            FailureReasonMetrics(reason=str(row["reason"]), count=int(row["count"]))
+            for row in durable_health["failures"]
         ],
         prometheus=PrometheusOperationsMetrics(configured=False, available=False),
     )

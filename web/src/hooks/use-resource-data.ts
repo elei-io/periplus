@@ -3,11 +3,6 @@ import { toast } from "sonner"
 
 import { apiErrorFromResponse, apiUrl, extractApiError } from "@/lib/api"
 import type {
-  ArtifactDetailRecord,
-  ArtifactFilters,
-  ArtifactInvalidateRequest,
-  ArtifactInvalidateResponse,
-  ArtifactListResponse,
   CrawlPolicyDetailRecord,
   CrawlPolicyFilters,
   CrawlPolicyListResponse,
@@ -35,21 +30,6 @@ function pageParams(page: PageParams) {
     limit: String(page.limit),
     offset: String(page.offset),
   }
-}
-
-function artifactParams(filters: ArtifactFilters, page?: PageParams) {
-  const params = new URLSearchParams(page ? pageParams(page) : undefined)
-  appendParam(params, "url_pattern", filters.urlPattern)
-  if (filters.kind !== "all") {
-    params.set("kind", filters.kind)
-  }
-  if (filters.invalidated !== "all") {
-    params.set("invalidated", String(filters.invalidated === "invalidated"))
-  }
-  if (filters.warnings !== "all") {
-    params.set("warnings", String(filters.warnings === "warning"))
-  }
-  return params
 }
 
 function querySchemaParams(filters: QuerySchemaFilters, page?: PageParams) {
@@ -95,35 +75,6 @@ function dataSchemaParams(filters: DataSchemaFilters, page?: PageParams) {
     params.set("warnings", String(filters.warnings === "warning"))
   }
   return params
-}
-
-export function useArtifacts(filters: ArtifactFilters, page: PageParams) {
-  return useQuery({
-    queryKey: ["artifacts", filters, page],
-    queryFn: async () => {
-      const response = await fetch(
-        apiUrl(`/artifacts/?${artifactParams(filters, page).toString()}`)
-      )
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as ArtifactListResponse
-    },
-  })
-}
-
-export function useArtifact(id: string | null) {
-  return useQuery({
-    enabled: Boolean(id),
-    queryKey: ["artifact", id],
-    queryFn: async () => {
-      const response = await fetch(apiUrl(`/artifacts/${id}`))
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as ArtifactDetailRecord
-    },
-  })
 }
 
 export function useQuerySchemas(filters: QuerySchemaFilters, page: PageParams) {
@@ -364,33 +315,6 @@ export function useDeleteDataSchema(id: string) {
       toast.success("Deleted data schema.")
       void queryClient.invalidateQueries({ queryKey: ["data-schema", id] })
       void queryClient.invalidateQueries({ queryKey: ["data-schemas"] })
-    },
-    onError: (error) => {
-      toast.error(extractApiError(error))
-    },
-  })
-}
-
-export function useInvalidateArtifacts() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (request: ArtifactInvalidateRequest) => {
-      const response = await fetch(apiUrl("/artifacts/invalidate"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(request),
-      })
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as ArtifactInvalidateResponse
-    },
-    onSuccess: (result) => {
-      toast.success(`Invalidated ${result.invalidated} artifacts.`)
-      void queryClient.invalidateQueries({ queryKey: ["artifacts"] })
     },
     onError: (error) => {
       toast.error(extractApiError(error))

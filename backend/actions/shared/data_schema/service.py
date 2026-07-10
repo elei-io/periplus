@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from actions.crawl.service import crawl as crawl_service
 from actions.shared.llm import openrouter_llm_config
+from actions.shared.cache import CacheOptions
 from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
 from data_schemas.service import (
     create_data_schema,
@@ -56,19 +57,23 @@ async def _crawl_html(
     progress_reporter: ProgressReporter | None,
     session: Session | None,
     task_run_id: UUID | None,
-) -> str:
+    cache: CacheOptions | dict[str, object] | None,
+) -> tuple[str, UUID | None, str | None]:
     output = await crawl_service(
         urls=[url],
         progress_reporter=progress_reporter,
         session=session,
         task_run_id=task_run_id,
+        cache=cache,
+        include_links=False,
+        usage_role="schema_generation_input",
     )
     page = output.pages[0] if output.pages else None
     if page is None or not page.success or page.html is None:
         error = page.error if page else "Crawl failed before producing a page."
         raise RuntimeError(error or "Crawl did not produce HTML.")
 
-    return page.html
+    return page.html, page.crawl_id, page.document_id
 
 
 def _extract_json(value: str) -> str:
@@ -126,12 +131,15 @@ async def schema(
     schema_type: SchemaType = "css",
     schema_id: str | None = None,
     html: str | None = None,
+    crawl_id: UUID | None = None,
+    document_id: str | None = None,
     progress_reporter: ProgressReporter | None = None,
     session: Session | None = None,
     task_run_id: UUID | None = None,
     match: str | None = None,
     reuse_existing: bool = True,
     replace_schema_id: UUID | None = None,
+    cache: CacheOptions | dict[str, object] | None = None,
 ) -> SchemaOutput:
     schema_id = _schema_id(
         url=url,
@@ -175,12 +183,14 @@ async def schema(
         commit_task_checkpoint(session)
 
     target_json_example = target_json_example or await _generate_target_json_example(prompt)
-    html = html or await _crawl_html(
-        url=url,
-        progress_reporter=progress_reporter,
-        session=session,
-        task_run_id=task_run_id,
-    )
+    if html is None:
+        html, crawl_id, document_id = await _crawl_html(
+            url=url,
+            progress_reporter=progress_reporter,
+            session=session,
+            task_run_id=task_run_id,
+            cache=cache,
+        )
     await emit_progress(
         progress_reporter,
         ProgressEvent(
@@ -253,6 +263,8 @@ async def schema(
                 match=match,
                 schema_json=generated_schema,
                 task_run_id=task_run_id,
+                crawl_id=crawl_id,
+                document_id=document_id,
                 inputs_json=inputs_json,
             )
         else:
@@ -265,6 +277,8 @@ async def schema(
                 match=match_value,
                 schema_json=generated_schema,
                 task_run_id=task_run_id,
+                crawl_id=crawl_id,
+                document_id=document_id,
                 inputs_json=inputs_json,
             )
         record_data_schema_use(session, task_run_id=task_run_id, schema=durable_schema)
@@ -290,6 +304,7 @@ def schema_sync(
     schema_id: str | None = None,
     html: str | None = None,
     progress_reporter: ProgressReporter | None = None,
+    cache: CacheOptions | dict[str, object] | None = None,
 ) -> SchemaOutput:
     return asyncio.run(
         schema(
@@ -300,5 +315,6 @@ def schema_sync(
             schema_id=schema_id,
             html=html,
             progress_reporter=progress_reporter,
+            cache=cache,
         )
     )

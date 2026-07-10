@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from tasks.executor import _renew_lease, recover_expired_runs
-from tasks.models import TaskRun, TaskRunLease
-from tasks.service import request_task_run_cancellation
+from tasks.models import Task, TaskRun, TaskRunLease
+from tasks.service import enqueue_task_run, request_task_run_cancellation
 
 
 def _run(status: str) -> TaskRun:
@@ -15,6 +15,8 @@ def _run(status: str) -> TaskRun:
     return TaskRun(
         id=uuid4(),
         task_id=uuid4(),
+        task_revision=1,
+        primitive="crawl",
         status=status,
         trigger_kind="manual",
         queued_at=now,
@@ -29,6 +31,34 @@ def _run(status: str) -> TaskRun:
 
 
 class TaskLifecycleTests(unittest.TestCase):
+    def test_enqueued_run_freezes_task_revision(self) -> None:
+        task = Task(
+            id=uuid4(),
+            name="Revision test",
+            primitive="crawl",
+            input_json={"urls": ["https://example.com"]},
+            revision=7,
+        )
+        session = MagicMock()
+        session.scalar.return_value = False
+        policy_snapshots = [{"id": str(uuid4()), "revision": 3}]
+
+        with patch(
+            "tasks.service.snapshot_enabled_crawl_policies",
+            return_value=policy_snapshots,
+        ):
+            run = enqueue_task_run(session, task, "manual")
+
+        assert run is not None
+        self.assertEqual(run.task_revision, 7)
+        self.assertEqual(run.primitive, "crawl")
+        self.assertEqual(run.crawl_policy_snapshots_json, policy_snapshots)
+
+        task.primitive = "index"
+        task.input_json = {"url": "https://changed.example"}
+        self.assertEqual(run.primitive, "crawl")
+        self.assertEqual(run.input_json, {"urls": ["https://example.com"]})
+
     def test_preclaimed_child_lease_does_not_refresh_worker_capacity(self) -> None:
         run = _run("running")
         lease = TaskRunLease(

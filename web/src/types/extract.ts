@@ -1,4 +1,5 @@
 import type { ProgressEvent } from "@/types/progress"
+import type { CacheOptions } from "@/types/cache"
 
 export type DataSchemaType = "css" | "xpath"
 
@@ -9,6 +10,7 @@ export type ExtractInput = {
   prompt: string | null
   target_json_example: string | null
   schema_type: DataSchemaType
+  cache?: CacheOptions | null
 }
 
 export type ExtractSource = {
@@ -58,7 +60,7 @@ export type QuerySchema = {
 export type QueryParamOutput = {
   url: string
   crawl_id: string | null
-  artifact_ids: string[]
+  document_id: string | null
   candidates: QueryParamCandidate[]
   query_schema: QuerySchema | null
   params: QueryParamGroup[]

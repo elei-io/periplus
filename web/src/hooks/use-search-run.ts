@@ -1,6 +1,11 @@
 import { useActionRun } from "@/hooks/use-action-run"
-import type { SearchInput, SearchResult } from "@/types/search"
+import type { SearchInput } from "@/types/search"
+import type { TaskResultSummary } from "@/types/tasks"
 
 export function useSearchRun() {
-  return useActionRun<SearchInput, SearchResult[]>("/search/", "Search", [])
+  return useActionRun<SearchInput, TaskResultSummary | null>(
+    "/search/",
+    "Search",
+    null
+  )
 }

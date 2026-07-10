@@ -34,7 +34,7 @@ export type CalibrationCandidate = {
   status_code: number | null
   quality: CalibrationQuality
   crawl_id: string | null
-  artifact_ids: string[]
+  document_id: string | null
 }
 
 export type CrawlPolicyRecord = {
@@ -45,6 +45,7 @@ export type CrawlPolicyRecord = {
   match: string
   enabled: boolean
   config: Record<string, unknown>
+  revision: number
   created_at: string
   updated_at: string
 }

@@ -406,7 +406,7 @@ def cached_query_output_from_page(
     page_url: str,
     html: str | None = None,
     crawl_id: UUID | None = None,
-    artifact_ids: list[UUID] | None = None,
+    document_id: str | None = None,
 ) -> QueryParamOutput | None:
     cached = find_query_schema_for_url(session, url=page_url)
     if cached is None:
@@ -417,7 +417,7 @@ def cached_query_output_from_page(
     return QueryParamOutput(
         url=page_url,
         crawl_id=str(crawl_id) if crawl_id else None,
-        artifact_ids=[str(artifact_id) for artifact_id in artifact_ids or []],
+        document_id=document_id,
         candidates=candidates,
         query_schema=_schema_from_record(cached),
         params=_params_from_current_candidates(candidates, cached_params) if html is not None else cached_params,
@@ -431,6 +431,7 @@ def persist_query_param_output(
     output: QueryParamOutput,
     task_run_id: UUID | None,
     crawl_id: UUID | None,
+    document_id: str | None,
 ) -> None:
     if output.query_schema is None:
         return
@@ -444,6 +445,7 @@ def persist_query_param_output(
         evidence_json=[candidate.model_dump(mode="json") for candidate in output.candidates],
         task_run_id=task_run_id,
         crawl_id=crawl_id,
+        document_id=document_id,
         inputs_json={"url": output.url},
         warnings_json={"count": len(output.warnings), "warnings": output.warnings},
     )
@@ -552,7 +554,7 @@ async def query_from_page(
     page_url: str,
     html: str,
     crawl_id: UUID | None = None,
-    artifact_ids: list[UUID] | None = None,
+    document_id: str | None = None,
     progress_reporter: ProgressReporter | None = None,
     session: Session | None = None,
     task_run_id: UUID | None = None,
@@ -563,7 +565,7 @@ async def query_from_page(
             page_url=page_url,
             html=html,
             crawl_id=crawl_id,
-            artifact_ids=artifact_ids,
+            document_id=document_id,
         )
         if cached_output is not None:
             commit_task_checkpoint(session)
@@ -598,7 +600,7 @@ async def query_from_page(
         return QueryParamOutput(
             url=page_url,
             crawl_id=str(crawl_id) if crawl_id else None,
-            artifact_ids=[str(artifact_id) for artifact_id in artifact_ids or []],
+            document_id=document_id,
             warnings=["No same-page query parameter evidence found."],
         )
 
@@ -619,7 +621,7 @@ async def query_from_page(
             output=QueryParamOutput(
                 url=page_url,
                 crawl_id=str(crawl_id) if crawl_id else None,
-                artifact_ids=[str(artifact_id) for artifact_id in artifact_ids or []],
+                document_id=document_id,
                 candidates=candidates,
                 query_schema=query_schema,
                 params=params,
@@ -627,13 +629,14 @@ async def query_from_page(
             ),
             task_run_id=task_run_id,
             crawl_id=crawl_id,
+            document_id=document_id,
         )
         commit_task_checkpoint(session)
 
     return QueryParamOutput(
         url=page_url,
         crawl_id=str(crawl_id) if crawl_id else None,
-        artifact_ids=[str(artifact_id) for artifact_id in artifact_ids or []],
+        document_id=document_id,
         candidates=candidates,
         query_schema=query_schema,
         params=params,

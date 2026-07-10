@@ -249,7 +249,7 @@ function TemplateCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
         max_concurrency: parsedConcurrency,
         run_config_overrides: selectedTemplate.runConfigOverrides,
         cache_block_rules: policy.config.cache_block_rules ?? {
-          artifact_warning_codes: [],
+          quality_warning_codes: [],
         },
         selection: {
           ...objectValue(policy.config.selection),
@@ -459,8 +459,8 @@ function formatCacheBlocks(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return "-"
   }
-  const codes = (value as { artifact_warning_codes?: unknown })
-    .artifact_warning_codes
+  const codes = (value as { quality_warning_codes?: unknown })
+    .quality_warning_codes
   if (!Array.isArray(codes) || codes.length === 0) {
     return "none"
   }

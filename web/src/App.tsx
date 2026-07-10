@@ -14,8 +14,6 @@ import { IndexPage } from "@/pages/playground/index-page"
 import { CrawlPage } from "@/pages/playground/crawl-page"
 import { SearchPage } from "@/pages/playground/search-page"
 import { TasksPage } from "@/pages/admin/tasks-page"
-import { ArtifactDetailPage } from "@/pages/cache/artifact-detail-page"
-import { ArtifactsPage } from "@/pages/cache/artifacts-page"
 import { CrawlPolicyDetailPage } from "@/pages/settings/crawl-policy-detail-page"
 import { CrawlPoliciesPage } from "@/pages/settings/crawl-policies-page"
 import { DataSchemaDetailPage } from "@/pages/cache/data-schema-detail-page"
@@ -114,17 +112,6 @@ export function App() {
           <MetricsPage />
         </Suspense>
       )
-    }
-
-    if (activeItem.href === "/cache/artifacts") {
-      const artifactId = pathname.match(/^\/cache\/artifacts\/([^/]+)$/)?.[1]
-      if (artifactId) {
-        return (
-          <ArtifactDetailPage artifactId={decodeURIComponent(artifactId)} />
-        )
-      }
-
-      return <ArtifactsPage />
     }
 
     if (activeItem.href === "/cache/data-schemas") {

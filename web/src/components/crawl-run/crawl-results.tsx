@@ -72,7 +72,7 @@ function CrawlPageResults({ events, page, result }: CrawlPageResultsProps) {
             </div>
             <CardDescription>
               {result.stats.succeeded} succeeded, {result.stats.failed} failed,{" "}
-              {page.status_code ?? "no"} status, {page.artifact_warnings.length} quality warnings
+              {page.status_code ?? "no"} status, {page.quality_warnings.length} quality warnings
             </CardDescription>
           </div>
 
@@ -158,7 +158,7 @@ function CrawlPageResults({ events, page, result }: CrawlPageResultsProps) {
             value="warnings"
             className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
-            <QualityWarnings warnings={page.artifact_warnings} />
+            <QualityWarnings warnings={page.quality_warnings} />
           </TabsContent>
 
           <TabsContent

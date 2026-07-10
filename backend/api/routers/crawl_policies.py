@@ -31,6 +31,7 @@ def _record(policy) -> CrawlPolicyRecord:
         match=match_for_policy(policy),
         enabled=policy.enabled,
         config=policy.config or {},
+        revision=policy.revision,
         created_at=policy.created_at,
         updated_at=policy.updated_at,
     )

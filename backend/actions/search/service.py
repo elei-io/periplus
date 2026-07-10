@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from actions.extract.schemas import ExtractOutput
 from actions.extract.service import extract as extract_service
 from actions.shared.progress import ProgressEvent, ProgressReporter, emit_progress
+from actions.shared.cache import CacheOptions
 from actions.shared.query_schema.schemas import QueryParamOutput
 from actions.shared.search_url import build_search_url, default_search_match
 
@@ -223,6 +224,7 @@ async def _extract_search_page(
     progress_reporter: ProgressReporter | None,
     session: Session | None,
     task_run_id: UUID | None,
+    cache: CacheOptions | dict[str, object] | None,
 ) -> ExtractOutput:
     return await extract_service(
         url=page_url,
@@ -235,6 +237,7 @@ async def _extract_search_page(
         progress_reporter=progress_reporter,
         session=session,
         task_run_id=task_run_id,
+        cache=cache,
     )
 
 
@@ -245,6 +248,7 @@ async def search(
     progress_reporter: ProgressReporter | None = None,
     session: Session | None = None,
     task_run_id: UUID | None = None,
+    cache: CacheOptions | dict[str, object] | None = None,
 ) -> list[SearchResult]:
     provider_config = SEARCH_PROVIDERS[provider]
     search_url = build_search_url(
@@ -291,6 +295,7 @@ async def search(
                         progress_reporter=progress_reporter,
                         session=None,
                         task_run_id=None,
+                        cache=cache,
                     )
                     for page_url in batch
                 ]
@@ -305,6 +310,7 @@ async def search(
                         progress_reporter=progress_reporter,
                         session=session,
                         task_run_id=task_run_id,
+                        cache=cache,
                     )
                 )
 
@@ -366,6 +372,7 @@ def search_sync(
     max_pages: int = 1,
     provider: SearchProvider = "duckduckgo",
     progress_reporter: ProgressReporter | None = None,
+    cache: CacheOptions | dict[str, object] | None = None,
 ) -> list[SearchResult]:
     return asyncio.run(
         search(
@@ -373,5 +380,6 @@ def search_sync(
             max_pages=max_pages,
             provider=provider,
             progress_reporter=progress_reporter,
+            cache=cache,
         )
     )

@@ -14,7 +14,6 @@ from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from artifacts.cleanup import artifact_cleanup_interval_seconds, run_artifact_cleanup_once
 from db import SessionLocal
 from observability.prometheus import WorkerMetricAggregator, start_worker_metrics_server
 from observability.recorder import CallbackRecorder, MetricObservation, QueueRecorder, metric_recorder_scope
@@ -247,13 +246,10 @@ async def _loop() -> None:
     poll_seconds = float(os.getenv("ATLAS_WORKER_POLL_SECONDS", "5"))
     scheduler_limit = int(os.getenv("ATLAS_SCHEDULER_BATCH_SIZE", "20"))
     worker_id = os.getenv("ATLAS_WORKER_ID") or f"{os.uname().nodename}:{os.getpid()}"
-    cleanup_interval_seconds = artifact_cleanup_interval_seconds()
-    next_cleanup_at = 0.0
     heartbeat_cleanup_interval_seconds = worker_heartbeat_cleanup_interval_seconds()
     next_heartbeat_cleanup_at = 0.0
     playwright_cleanup_interval = playwright_cleanup_interval_seconds()
     next_playwright_cleanup_at = 0.0
-    last_cleanup_error_signature: tuple[tuple[str, int], ...] | None = None
     stop = asyncio.Event()
     queue_listener = RunQueueListener()
     try:
@@ -353,45 +349,6 @@ async def _loop() -> None:
                             browsers=cleanup.browsers_found,
                             processes=cleanup.processes_signalled,
                         )
-
-            if cleanup_interval_seconds > 0 and time.monotonic() >= next_cleanup_at:
-                next_cleanup_at = time.monotonic() + cleanup_interval_seconds
-                try:
-                    cleanup = await asyncio.to_thread(run_artifact_cleanup_once, SessionLocal)
-                    if cleanup.changed:
-                        anomaly_reasons: dict[str, int] = {}
-                        for anomaly in cleanup.anomalies:
-                            reason = anomaly["reason"]
-                            anomaly_reasons[reason] = anomaly_reasons.get(reason, 0) + 1
-                        error_signature = tuple(sorted(anomaly_reasons.items())) or None
-                        has_cleanup_activity = any(
-                            (
-                                cleanup.invalidated,
-                                cleanup.rows_deleted,
-                                cleanup.files_deleted,
-                                cleanup.missing_files,
-                            )
-                        )
-                        if has_cleanup_activity or error_signature != last_cleanup_error_signature:
-                            worker_log(
-                                logging.WARNING if cleanup.errors else logging.INFO,
-                                "artifact_cleanup.completed",
-                                worker_id=worker_id,
-                                invalidated=cleanup.invalidated,
-                                rows_deleted=cleanup.rows_deleted,
-                                files_deleted=cleanup.files_deleted,
-                                missing_files=cleanup.missing_files,
-                                errors=cleanup.errors,
-                                error_reasons=anomaly_reasons or None,
-                            )
-                        last_cleanup_error_signature = error_signature
-                except Exception:
-                    worker_log(
-                        logging.ERROR,
-                        "artifact_cleanup.failed",
-                        worker_id=worker_id,
-                        exc_info=True,
-                    )
 
             while len(active_runs) < concurrency:
                 claimed = await asyncio.to_thread(_claim_available_run, worker_id, concurrency)

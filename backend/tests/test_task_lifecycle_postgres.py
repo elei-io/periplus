@@ -63,6 +63,9 @@ class PostgresTaskLifecycleTests(unittest.TestCase):
             )
             task = session.get(Task, submission.task_id)
             assert task is not None
+            run = session.get(TaskRun, submission.run_id)
+            assert run is not None
+            self.assertEqual(run.task_revision, task.revision)
             task.identity_key = f"test:lifecycle:{uuid4()}"
 
         with self.Session.begin() as session:

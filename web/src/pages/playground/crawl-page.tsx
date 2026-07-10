@@ -3,7 +3,7 @@ import type { ReactNode } from "react"
 
 import { IndexProgress } from "@/components/index-run/index-progress"
 import { CrawlForm } from "@/components/crawl-run/crawl-form"
-import { CrawlResults } from "@/components/crawl-run/crawl-results"
+import { CatalogueRunSummary } from "@/components/catalogue-run-summary"
 import { useCrawlRun } from "@/hooks/use-crawl-run"
 import { cn } from "@/lib/utils"
 
@@ -62,7 +62,7 @@ export function CrawlPage() {
         transitionClassName="duration-500"
       >
         {crawlRun.result ? (
-          <CrawlResults events={crawlRun.events} result={crawlRun.result} />
+          <CatalogueRunSummary result={crawlRun.result} />
         ) : null}
       </AnimatedSection>
     </div>

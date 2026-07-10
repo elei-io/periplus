@@ -15,6 +15,7 @@ wheels/
 
 .cache
 .artifacts
+.atlas/
 
 
 # Logs

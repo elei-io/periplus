@@ -2,6 +2,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from actions.shared.cache import CacheOptions
 from actions.shared.quality.schemas import QualityWarning
 from actions.shared.data_schema.schemas import SchemaType
 from actions.shared.query_schema.schemas import QueryParamOutput
@@ -20,6 +21,10 @@ class Input(BaseModel):
     match: str | None = Field(
         default=None,
         description="Optional data schema match pattern for durable schema reuse.",
+    )
+    cache: CacheOptions | None = Field(
+        default=None,
+        description="Optional cache behavior overriding the matching CrawlPolicy.",
     )
 
 

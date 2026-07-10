@@ -4,7 +4,7 @@ from .cluster import (
     TaskStateSnapshot,
     collect_cluster_metrics,
 )
-from . import capacity_metrics, crawl_metrics, task_metrics
+from . import capacity_metrics, crawl_metrics, repository_metrics, task_metrics
 from .recorder import InMemoryRecorder, current_recorder, metric_recorder_scope, record, snapshot
 
 __all__ = [
@@ -18,6 +18,7 @@ __all__ = [
     "current_recorder",
     "metric_recorder_scope",
     "record",
+    "repository_metrics",
     "snapshot",
     "task_metrics",
 ]

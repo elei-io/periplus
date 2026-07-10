@@ -1,26 +1,3 @@
-export type ArtifactKind = "html" | "screenshot" | "pdf" | "mhtml"
-
-export type ArtifactRecord = {
-  id: string
-  crawl_id: string | null
-  url_id: string | null
-  task_run_id: string | null
-  kind: ArtifactKind
-  path: string
-  content_type: string
-  size_bytes: number
-  sha256: string
-  input_hash: string | null
-  warning_count: number
-  invalidated_at: string | null
-  invalidated_reason: string | null
-  created_at: string
-  url: string | null
-  normalized_url: string | null
-  domain: string | null
-  path_name: string | null
-}
-
 export type PageParams = {
   limit: number
   offset: number
@@ -31,33 +8,6 @@ export type PaginatedResponse<T> = {
   total: number
   limit: number
   offset: number
-}
-
-export type ArtifactListResponse = PaginatedResponse<ArtifactRecord>
-
-export type ArtifactDetailRecord = ArtifactRecord & {
-  meta: Record<string, unknown>
-  warnings_json: Record<string, unknown>
-}
-
-export type ArtifactFilters = {
-  urlPattern: string
-  kind: "all" | ArtifactKind
-  invalidated: "all" | "active" | "invalidated"
-  warnings: "all" | "clean" | "warning"
-}
-
-export type ArtifactInvalidateRequest = {
-  artifact_ids?: string[]
-  url_ids?: string[]
-  url_pattern?: string
-  kind?: ArtifactKind
-  warnings?: boolean
-  reason: string
-}
-
-export type ArtifactInvalidateResponse = {
-  invalidated: number
 }
 
 export type QuerySchemaRecord = {
@@ -74,6 +24,7 @@ export type QuerySchemaRecord = {
   evidence_count: number
   warning_count: number
   generated_from_crawl_id: string | null
+  generated_from_document_id: string | null
   generated_by_task_run_id: string | null
   created_at: string
   updated_at: string
@@ -144,7 +95,7 @@ export type DataSchemaDetailRecord = DataSchemaRecord & {
   identity_key: string
   schema_json: Record<string, unknown>
   generated_from_crawl_id: string | null
-  generated_from_artifact_id: string | null
+  generated_from_document_id: string | null
   generated_by_task_run_id: string | null
   inputs_json: Record<string, unknown>
   warnings_json: Record<string, unknown>
@@ -174,6 +125,7 @@ export type CrawlPolicyRecord = {
   match: string
   enabled: boolean
   config: Record<string, unknown>
+  revision: number
   template: string | null
   mode: string | null
   wait: string | null

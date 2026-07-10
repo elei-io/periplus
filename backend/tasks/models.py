@@ -8,8 +8,6 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from artifacts.models import Artifact
-from crawls.models import Crawl
 from db import Base
 from data_schemas.models import DataSchema
 
@@ -30,6 +28,7 @@ class Task(Base):
     name: Mapped[str] = mapped_column(Text)
     primitive: Mapped[str] = mapped_column(Text)
     input_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
     schedule_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     identity_key: Mapped[str | None] = mapped_column(Text, unique=True, nullable=True)
 
@@ -101,6 +100,7 @@ class TaskRun(Base):
     __table_args__ = (
         Index("ix_task_runs_task_id", "task_id"),
         Index("ix_task_runs_status", "status"),
+        Index("ix_task_runs_primitive", "primitive"),
         Index("ix_task_runs_queued_at", "queued_at"),
         Index("ix_task_runs_trigger_kind", "trigger_kind"),
         Index(
@@ -113,6 +113,8 @@ class TaskRun(Base):
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     task_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="CASCADE"))
+    task_revision: Mapped[int] = mapped_column(Integer, default=1)
+    primitive: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text)
     trigger_kind: Mapped[str] = mapped_column(Text)
     triggered_by_effect_run_id: Mapped[UUID | None] = mapped_column(
@@ -137,6 +139,7 @@ class TaskRun(Base):
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)
 
     input_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    crawl_policy_snapshots_json: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     output_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     warnings_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -151,24 +154,6 @@ class TaskRun(Base):
     effect_runs: Mapped[list[EffectRun]] = relationship(
         back_populates="source_run",
         foreign_keys="EffectRun.source_run_id",
-    )
-    artifacts: Mapped[list[Artifact]] = relationship(
-        back_populates="task_run",
-        foreign_keys="Artifact.task_run_id",
-    )
-    crawls: Mapped[list[Crawl]] = relationship(
-        back_populates="task_run",
-        foreign_keys="Crawl.task_run_id",
-    )
-    crawl_usages: Mapped[list[TaskRunCrawl]] = relationship(
-        back_populates="task_run",
-        foreign_keys="TaskRunCrawl.task_run_id",
-        cascade="all, delete-orphan",
-    )
-    artifact_usages: Mapped[list[TaskRunArtifact]] = relationship(
-        back_populates="task_run",
-        foreign_keys="TaskRunArtifact.task_run_id",
-        cascade="all, delete-orphan",
     )
     data_schema: Mapped[DataSchema | None] = relationship(
         back_populates="task_runs",
@@ -213,68 +198,6 @@ class WorkerHeartbeat(Base):
     active_run_count: Mapped[int] = mapped_column(Integer, default=0)
     stopping: Mapped[bool] = mapped_column(Boolean, default=False)
     version: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-
-class TaskRunCrawl(Base):
-    __tablename__ = "task_run_crawls"
-    __table_args__ = (
-        Index("ix_task_run_crawls_task_run_id", "task_run_id"),
-        Index("ix_task_run_crawls_crawl_id", "crawl_id"),
-        Index("ix_task_run_crawls_role", "role"),
-    )
-
-    task_run_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("task_runs.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    crawl_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("crawls.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    role: Mapped[str] = mapped_column(Text, primary_key=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-
-    task_run: Mapped[TaskRun] = relationship(
-        back_populates="crawl_usages",
-        foreign_keys=[task_run_id],
-    )
-    crawl: Mapped[Crawl] = relationship(
-        back_populates="task_run_usages",
-        foreign_keys=[crawl_id],
-    )
-
-
-class TaskRunArtifact(Base):
-    __tablename__ = "task_run_artifacts"
-    __table_args__ = (
-        Index("ix_task_run_artifacts_task_run_id", "task_run_id"),
-        Index("ix_task_run_artifacts_artifact_id", "artifact_id"),
-        Index("ix_task_run_artifacts_role", "role"),
-    )
-
-    task_run_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("task_runs.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    artifact_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("artifacts.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    role: Mapped[str] = mapped_column(Text, primary_key=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-
-    task_run: Mapped[TaskRun] = relationship(
-        back_populates="artifact_usages",
-        foreign_keys=[task_run_id],
-    )
-    artifact: Mapped[Artifact] = relationship(
-        back_populates="task_run_usages",
-        foreign_keys=[artifact_id],
-    )
 
 
 class EffectRun(Base):

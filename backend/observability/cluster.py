@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 import db.models  # noqa: F401  # Ensure relationship targets are registered for standalone use.
 from crawl_policies.models import CrawlPermit, CrawlPolicy
 from tasks.heartbeats import worker_heartbeat_retention_seconds
-from tasks.models import Task, TaskRun, WorkerHeartbeat
+from tasks.models import TaskRun, WorkerHeartbeat
 
 _PRIMITIVES = ("search", "index", "crawl", "schema", "extract", "calibrate")
 
@@ -74,10 +74,9 @@ def collect_cluster_metrics(
 
     session.execute(text("SET LOCAL statement_timeout = '2s'"))
     task_rows = session.execute(
-        select(Task.primitive, TaskRun.status, func.count())
-        .join(TaskRun, TaskRun.task_id == Task.id)
+        select(TaskRun.primitive, TaskRun.status, func.count())
         .where(TaskRun.status.in_(("queued", "running")))
-        .group_by(Task.primitive, TaskRun.status)
+        .group_by(TaskRun.primitive, TaskRun.status)
     )
     task_counts: dict[str, dict[str, int]] = {}
     for primitive, status, count in task_rows:

@@ -14,6 +14,7 @@ from actions.index.schemas import Input as IndexInput
 from actions.crawl.schemas import Input as CrawlInput
 from actions.calibrate.schemas import Input as CalibrateInput
 from actions.shared.data_schema.schemas import Input as SchemaInput
+from crawl_policies.service import snapshot_enabled_crawl_policies
 
 from .models import Task, TaskRun, WorkerHeartbeat
 from .schemas import (
@@ -227,11 +228,18 @@ def get_task(session: Session, task_id: UUID) -> TaskRecord:
 
 
 def update_task(session: Session, task_id: UUID, request: TaskUpdate) -> TaskRecord:
-    task = session.get(Task, task_id)
+    task = session.scalar(
+        select(Task)
+        .where(Task.id == task_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if task is None:
         raise TaskNotFoundError(f"Task {task_id} was not found.")
 
     patch = request.model_dump(exclude_unset=True)
+    if patch:
+        task.revision += 1
     primitive = patch.get("primitive", task.primitive)
     if "name" in patch:
         task.name = patch["name"]
@@ -320,8 +328,7 @@ def list_recent_task_runs(
         session.scalars(
             select(TaskRun)
             .options(defer(TaskRun.output_json))
-            .join(Task, Task.id == TaskRun.task_id)
-            .where(Task.primitive == primitive, TaskRun.status.in_(_ACTIVE_RUN_STATUSES))
+            .where(TaskRun.primitive == primitive, TaskRun.status.in_(_ACTIVE_RUN_STATUSES))
             .order_by(TaskRun.queued_at.desc())
         )
     )
@@ -329,8 +336,7 @@ def list_recent_task_runs(
         session.scalars(
             select(TaskRun)
             .options(defer(TaskRun.output_json))
-            .join(Task, Task.id == TaskRun.task_id)
-            .where(Task.primitive == primitive, TaskRun.status.not_in(_ACTIVE_RUN_STATUSES))
+            .where(TaskRun.primitive == primitive, TaskRun.status.not_in(_ACTIVE_RUN_STATUSES))
             .order_by(TaskRun.finished_at.desc().nullslast(), TaskRun.queued_at.desc())
             .limit(terminal_limit)
         )
@@ -356,10 +362,13 @@ def enqueue_task_run(
     now = now or datetime.now(UTC)
     run = TaskRun(
         task_id=task.id,
+        task_revision=task.revision,
+        primitive=task.primitive,
         status="queued",
         trigger_kind=trigger_kind,
         queued_at=now,
-        input_json=task.input_json,
+        input_json=json.loads(json.dumps(task.input_json)),
+        crawl_policy_snapshots_json=snapshot_enabled_crawl_policies(session),
         warnings_json={},
     )
     session.add(run)
@@ -430,10 +439,13 @@ def enqueue_ad_hoc_task_run(
     now = datetime.now(UTC)
     run = TaskRun(
         task_id=task.id,
+        task_revision=task.revision,
+        primitive=task.primitive,
         status="queued",
         trigger_kind="manual",
         queued_at=now,
-        input_json=task.input_json,
+        input_json=json.loads(json.dumps(task.input_json)),
+        crawl_policy_snapshots_json=snapshot_enabled_crawl_policies(session),
         warnings_json={},
     )
     try:
@@ -461,12 +473,7 @@ def get_task_run_result(session: Session, run_id: UUID) -> object:
     if run.status != "succeeded":
         raise RuntimeError(run.error or f"Task run {run.status}.")
 
-    output = run.output_json or {}
-    if run.task.primitive == "search":
-        return output.get("results", [])
-    if run.task.primitive == "index":
-        return output.get("links", [])
-    return output
+    return run.output_json or {}
 
 
 def request_task_run_cancellation(session: Session, run_id: UUID) -> TaskRunRecord:

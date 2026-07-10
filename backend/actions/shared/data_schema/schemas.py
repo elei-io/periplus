@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from actions.shared.cache import CacheOptions
+
 SchemaType = Literal["css", "xpath"]
 
 
@@ -16,6 +18,10 @@ class Input(BaseModel):
     schema_id: str | None = Field(
         default=None,
         description="Optional stable identifier for the generated schema.",
+    )
+    cache: CacheOptions | None = Field(
+        default=None,
+        description="Optional cache behavior overriding the matching CrawlPolicy.",
     )
 
 

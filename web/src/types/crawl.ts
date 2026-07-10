@@ -1,8 +1,10 @@
 import type { ProgressEvent } from "@/types/progress"
 import type { QualityWarning } from "@/types/extract"
+import type { CacheOptions } from "@/types/cache"
 
 export type CrawlInput = {
   urls: string[]
+  cache?: CacheOptions | null
 }
 
 export type CrawlPage = {
@@ -12,7 +14,7 @@ export type CrawlPage = {
   duration_seconds: number
   html: string | null
   crawl: Record<string, unknown> | null
-  artifact_warnings: QualityWarning[]
+  quality_warnings: QualityWarning[]
   error: string | null
 }
 

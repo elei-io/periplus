@@ -1,6 +1,5 @@
 import {
   BarChart3Icon,
-  BoxesIcon,
   BracesIcon,
   CalendarClockIcon,
   ClipboardListIcon,
@@ -91,13 +90,6 @@ export const navigationGroups: NavigationGroup[] = [
     slug: "cache",
     items: [
       {
-        name: "Artifacts",
-        href: "/cache/artifacts",
-        icon: BoxesIcon,
-        title: "Artifact Cache",
-        description: "Browse cached bytes and invalidate reusable artifacts.",
-      },
-      {
         name: "Data Schemas",
         href: "/cache/data-schemas",
         icon: BracesIcon,
@@ -133,11 +125,6 @@ export const navigationGroups: NavigationGroup[] = [
 export const defaultNavigationItem = navigationGroups[0].items[0]
 
 export function findNavigationItem(pathname: string) {
-  if (pathname.startsWith("/cache/artifacts/")) {
-    return navigationGroups
-      .flatMap((group) => group.items)
-      .find((item) => item.href === "/cache/artifacts")
-  }
   if (pathname.startsWith("/cache/data-schemas/")) {
     return navigationGroups
       .flatMap((group) => group.items)

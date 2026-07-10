@@ -42,7 +42,7 @@ def _detail_record(session: Session, schema) -> DataSchemaDetailRecord:
         extraction_schema=schema.schema_json,
         schema_hash=schema.schema_hash,
         generated_from_crawl_id=schema.generated_from_crawl_id,
-        generated_from_artifact_id=schema.generated_from_artifact_id,
+        generated_from_document_id=schema.generated_from_document_id,
         generated_by_task_run_id=schema.generated_by_task_run_id,
         inputs_json=schema.inputs_json,
         validation_status=schema.validation_status,

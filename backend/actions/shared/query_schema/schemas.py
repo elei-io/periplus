@@ -55,7 +55,7 @@ class QuerySchema(BaseModel):
 class QueryParamOutput(BaseModel):
     url: str
     crawl_id: str | None = None
-    artifact_ids: list[str] = Field(default_factory=list)
+    document_id: str | None = None
     candidates: list[QueryParamCandidate] = Field(default_factory=list)
     query_schema: QuerySchema | None = None
     params: list[QueryParamGroup] = Field(default_factory=list)

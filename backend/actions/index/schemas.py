@@ -1,4 +1,7 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from actions.shared.cache import CacheOptions
+from actions.index.limits import IndexLimits
 
 
 class Input(BaseModel):
@@ -30,13 +33,30 @@ class Input(BaseModel):
         default_factory=list,
         description="The URLs to exclude from the result.",
     )
+    cache: CacheOptions | None = Field(
+        default=None,
+        description="Optional cache behavior overriding the matching CrawlPolicy.",
+    )
+    max_pages: int = Field(default=100_000, ge=1)
+    max_links: int = Field(default=5_000_000, ge=1)
+    max_temp_bytes: int = Field(default=10 * 1024 * 1024 * 1024, ge=1)
+
+    @model_validator(mode="after")
+    def deployment_budgets(self) -> Input:
+        limits = IndexLimits.from_env()
+        for name in ("max_pages", "max_links", "max_temp_bytes"):
+            if name not in self.model_fields_set:
+                setattr(self, name, min(getattr(self, name), getattr(limits, name)))
+        limits.validate(
+            max_pages=self.max_pages,
+            max_links=self.max_links,
+            max_temp_bytes=self.max_temp_bytes,
+        )
+        return self
 
 
-class IndexLink(BaseModel):
-    source_url: str
-    url: str
-    text: str
-    title: str
-    depth: int
-    link_index: int
-    internal: bool
+class IndexOutput(BaseModel):
+    pages: int
+    failed_pages: int
+    discovered_links: int
+    result_links: int

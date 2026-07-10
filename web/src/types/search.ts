@@ -1,4 +1,5 @@
 import type { ProgressEvent } from "@/types/progress"
+import type { CacheOptions } from "@/types/cache"
 
 export type SearchProvider = "duckduckgo" | "brave" | "yahoo"
 
@@ -12,6 +13,7 @@ export type SearchInput = {
   query: string
   max_pages: number
   provider: SearchProvider
+  cache?: CacheOptions | null
 }
 
 export type SearchResult = {

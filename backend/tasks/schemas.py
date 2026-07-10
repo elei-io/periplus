@@ -5,13 +5,13 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from actions.extract.schemas import Input as ExtractInput
-from actions.index.schemas import IndexLink
 from actions.index.schemas import Input as IndexInput
 from actions.search.schemas import SearchProvider
 from actions.shared.quality.schemas import QualityWarning
 from actions.shared.data_schema.schemas import Input as SchemaInput
 from actions.crawl.schemas import Input as CrawlInput
 from actions.calibrate.schemas import Input as CalibrateInput
+from actions.shared.cache import CacheOptions
 
 
 class StrictBaseModel(BaseModel):
@@ -37,6 +37,7 @@ class SearchInput(StrictBaseModel):
     query: str
     max_pages: int = Field(default=1, ge=1, le=25)
     provider: SearchProvider = "duckduckgo"
+    cache: CacheOptions | None = None
 
 
 TaskInputJson = Annotated[
@@ -175,41 +176,31 @@ TaskEffectJson = Annotated[
 class CrawlPageOutput(StrictBaseModel):
     url: str
     success: bool
-    artifact_ids: list[UUID] = Field(default_factory=list)
-    artifact_warnings: list[QualityWarning] = Field(default_factory=list)
+    crawl_id: UUID | None = None
+    document_id: str | None = None
+    repository_snapshot: int | None = None
+    quality_warnings: list[QualityWarning] = Field(default_factory=list)
 
 
-class SearchOutputJson(StrictBaseModel):
-    results: list[dict[str, Any]] = Field(default_factory=list)
+class CatalogueResultReference(StrictBaseModel):
+    run_id: UUID
 
 
-class IndexOutputJson(StrictBaseModel):
-    links: list[IndexLink] = Field(default_factory=list)
+class BoundedTaskOutputJson(StrictBaseModel):
+    version: Literal[1] = 1
+    primitive: TaskPrimitive
+    status: Literal["succeeded"] = "succeeded"
+    counts: dict[str, int] = Field(default_factory=dict)
+    catalogue: CatalogueResultReference | None
 
 
-class CrawlOutputJson(StrictBaseModel):
-    pages: list[CrawlPageOutput] = Field(default_factory=list)
-
-
-class SchemaOutputJson(StrictBaseModel):
-    schema_id: str
-
-
-class ExtractOutputJson(StrictBaseModel):
-    records: list[dict[str, Any]] = Field(default_factory=list)
-
-
-TaskOutputJson = Annotated[
-    SearchOutputJson | IndexOutputJson | CrawlOutputJson | SchemaOutputJson | ExtractOutputJson,
-    Field(union_mode="left_to_right"),
-]
+TaskOutputJson = BoundedTaskOutputJson
 
 
 class TaskWarningsJson(StrictBaseModel):
     codes: list[str] = Field(default_factory=list)
     count: int = 0
     path: str | None = None
-    warnings: list[QualityWarning] = Field(default_factory=list)
 
 
 class EffectRunInputJson(StrictBaseModel):
@@ -234,6 +225,7 @@ class TaskRecord(BaseModel):
     name: str
     primitive: TaskPrimitive
     input_json: dict[str, Any]
+    revision: int
     schedule_json: dict[str, Any] | None = None
     identity_key: str | None = None
     created_by_effect_run_id: UUID | None = None
@@ -265,6 +257,8 @@ class TaskRunRecord(BaseModel):
 
     id: UUID
     task_id: UUID
+    task_revision: int
+    primitive: TaskPrimitive
     status: TaskRunStatus
     trigger_kind: TaskRunTriggerKind
     triggered_by_effect_run_id: UUID | None = None
@@ -317,24 +311,6 @@ class TaskOperationsRecord(BaseModel):
 
 class WorkerHeartbeatPurgeRecord(BaseModel):
     deleted: int
-
-
-class TaskRunCrawlRecord(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    task_run_id: UUID
-    crawl_id: UUID
-    role: str
-    created_at: datetime
-
-
-class TaskRunArtifactRecord(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    task_run_id: UUID
-    artifact_id: UUID
-    role: str
-    created_at: datetime
 
 
 class EffectRunRecord(BaseModel):

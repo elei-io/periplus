@@ -19,11 +19,14 @@ from actions.crawl.service import crawl
 from actions.calibrate.service import calibrate
 from actions.search.service import search
 from actions.shared.data_schema.service import schema
+from actions.shared.cache import CacheOptions, resolve_cache_policy
 from actions.shared.progress import ProgressEvent, ProgressReporter
 from observability import task_metrics
 from actions.shared.nats_progress import ProgressPublisher
+from catalogue import Catalogue, CatalogueService, catalogue_config_from_env
+from crawl_policies.service import find_crawl_policy_snapshot_for_url
 
-from .models import Task, TaskRun, TaskRunLease, WorkerHeartbeat
+from .models import TaskRun, TaskRunLease, WorkerHeartbeat
 from .context import TaskExecutionContext, task_execution_scope
 from worker.logging import worker_log
 
@@ -67,14 +70,65 @@ class PrimitiveExecution:
     warnings: list[dict]
 
 
+def _has_durable_run_usage(run_id: UUID) -> bool:
+    with Catalogue(catalogue_config_from_env()) as catalogue:
+        return CatalogueService(catalogue).has_run_usage(run_id)
+
+
+def _run_can_have_durable_usage(run: TaskRun) -> bool:
+    payload = getattr(run, "input_json", {})
+    cache = CacheOptions.model_validate(payload.get("cache") or {})
+    if cache.mode == "no_store":
+        return False
+    urls = payload.get("urls")
+    if not isinstance(urls, list):
+        url = payload.get("url")
+        urls = [url] if isinstance(url, str) else []
+    if not urls or run.primitive == "search":
+        return True
+    snapshots = getattr(run, "crawl_policy_snapshots_json", [])
+    return any(
+        resolve_cache_policy(
+            crawl_policy_config=(
+                policy.config
+                if (policy := find_crawl_policy_snapshot_for_url(snapshots, url=url))
+                else None
+            ),
+            request=cache,
+        ).mode
+        != "no_store"
+        for url in urls
+    )
+
+
+async def _bounded_result(
+    run: TaskRun,
+    *,
+    counts: dict[str, int],
+) -> dict[str, object]:
+    """Build the complete, deliberately small terminal run result."""
+
+    stores_result = (
+        False
+        if not _run_can_have_durable_usage(run)
+        else await asyncio.to_thread(_has_durable_run_usage, run.id)
+    )
+    return {
+        "version": 1,
+        "primitive": run.primitive,
+        "status": "succeeded",
+        "counts": counts,
+        "catalogue": {"run_id": str(run.id)} if stores_result else None,
+    }
+
+
 async def _execute_primitive(
-    task: Task,
     session: Session,
     run: TaskRun,
     progress_reporter: ProgressReporter | None = None,
 ) -> PrimitiveExecution:
-    primitive = task.primitive
-    payload = task.input_json
+    primitive = run.primitive
+    payload = run.input_json
 
     if primitive == "search":
         results = await search(
@@ -83,23 +137,31 @@ async def _execute_primitive(
             session=session,
             task_run_id=run.id,
         )
-        response_json = [_json_safe(result) for result in results]
+        response_json = await _bounded_result(run, counts={"results": len(results)})
         return PrimitiveExecution(
-            output_json={"results": response_json},
+            output_json=response_json,
             response_json=response_json,
             warnings=[],
         )
 
     if primitive == "index":
-        links = await index(
+        output = await index(
             **payload,
             progress_reporter=progress_reporter,
             session=session,
             task_run_id=run.id,
         )
-        response_json = [_json_safe(link) for link in links]
+        response_json = await _bounded_result(
+            run,
+            counts={
+                "links": output.result_links,
+                "discovered_links": output.discovered_links,
+                "pages": output.pages,
+                "failed_pages": output.failed_pages,
+            },
+        )
         return PrimitiveExecution(
-            output_json={"links": response_json},
+            output_json=response_json,
             response_json=response_json,
             warnings=[],
         )
@@ -113,7 +175,12 @@ async def _execute_primitive(
             session=session,
             task_run_id=run.id,
         )
-        response_json = _json_safe(output)
+        response_json = await _bounded_result(
+            run,
+            counts={
+                "schemas": 1,
+            },
+        )
         return PrimitiveExecution(
             output_json=response_json,
             response_json=response_json,
@@ -128,7 +195,16 @@ async def _execute_primitive(
             task_run_id=run.id,
         )
         warnings = [_json_safe(warning) for warning in output.warnings]
-        response_json = _json_safe(output)
+        response_json = await _bounded_result(
+            run,
+            counts={
+                "records": len(output.results),
+                "query_parameters": (
+                    len(output.query_params.params) if output.query_params else 0
+                ),
+                "warnings": len(output.warnings),
+            },
+        )
         return PrimitiveExecution(
             output_json=response_json,
             response_json=response_json,
@@ -142,7 +218,15 @@ async def _execute_primitive(
             session=session,
             task_run_id=run.id,
         )
-        response_json = _json_safe(output)
+        response_json = await _bounded_result(
+            run,
+            counts={
+                "candidates": len(output.candidates),
+                "successful_candidates": sum(
+                    1 for candidate in output.candidates if candidate.success
+                ),
+            },
+        )
         return PrimitiveExecution(
             output_json=response_json,
             response_json=response_json,
@@ -158,17 +242,26 @@ async def _execute_crawl_primitive(
     progress_reporter: ProgressReporter | None = None,
 ) -> PrimitiveExecution:
     output = await crawl(
-        **run.task.input_json,
+        **run.input_json,
         progress_reporter=progress_reporter,
         session=session,
         task_run_id=run.id,
+        retain_pages=False,
+        include_links=False,
     )
     warnings: list[dict] = []
     for page in output.pages:
-        page_warnings = [_json_safe(warning) for warning in page.artifact_warnings]
+        page_warnings = [_json_safe(warning) for warning in page.quality_warnings]
         warnings.extend(page_warnings)
 
-    response_json = _json_safe(output)
+    response_json = await _bounded_result(
+        run,
+        counts={
+            "requested_urls": output.stats.requested_urls,
+            "succeeded": output.stats.succeeded,
+            "failed": output.stats.failed,
+        },
+    )
     return PrimitiveExecution(
         output_json=response_json,
         response_json=response_json,
@@ -256,10 +349,10 @@ async def execute_run(
             else nullcontext()
         )
         with scope:
-            if task.primitive == "crawl":
+            if run.primitive == "crawl":
                 execution = await _execute_crawl_primitive(session, run, progress_reporter)
             else:
-                execution = await _execute_primitive(task, session, run, progress_reporter)
+                execution = await _execute_primitive(session, run, progress_reporter)
         output_json = execution.output_json
         response_json = execution.response_json
         warnings = execution.warnings
@@ -278,10 +371,11 @@ async def execute_run(
         task = run.task
 
         warnings_json = {
-            "codes": [warning.get("code") for warning in warnings if warning.get("code")],
+            "codes": sorted(
+                {str(warning["code"]) for warning in warnings if warning.get("code")}
+            ),
             "count": len(warnings),
             "path": None,
-            "warnings": warnings,
         }
 
         run.status = "succeeded"
@@ -299,7 +393,7 @@ async def execute_run(
         run.status = "cancelled"
         run.error = str(exc)
         run.cancelled_at = _utc_now()
-        run.warnings_json = {"codes": [], "count": 0, "path": None, "warnings": []}
+        run.warnings_json = {"codes": [], "count": 0, "path": None}
     except Exception as exc:
         error = str(exc)
         session.rollback()
@@ -312,7 +406,6 @@ async def execute_run(
             "codes": [],
             "count": 0,
             "path": None,
-            "warnings": [],
         }
         run.status = "failed"
         run.error = error
@@ -426,7 +519,7 @@ def recover_expired_runs(session: Session) -> int:
                 error=run.error,
             )
         task_metrics.recovered(reason="execution_timeout" if timed_out else "lease_expired")
-        task_primitive = run.task.primitive if run.task is not None else None
+        task_primitive = run.primitive
         if task_primitive is not None:
             task_metrics.attempt_finished(
                 primitive=task_primitive,
@@ -487,7 +580,7 @@ def release_task_run(
         run.finished_at = now
         run.error = "Task run cancellation was requested."
         task_metrics.cancelled(phase="running")
-        task_primitive = run.task.primitive if run.task is not None else None
+        task_primitive = run.primitive
         if task_primitive is not None:
             task_metrics.attempt_finished(primitive=task_primitive, outcome="cancelled")
         if task_primitive is not None and run.started_at is not None:
@@ -511,7 +604,7 @@ def release_task_run(
             run.error = None
         if count_failure:
             task_metrics.recovered(reason="worker_exit")
-            task_primitive = run.task.primitive if run.task is not None else None
+            task_primitive = run.primitive
             if task_primitive is not None:
                 task_metrics.attempt_finished(primitive=task_primitive, outcome="failed")
             if (
@@ -529,7 +622,7 @@ def release_task_run(
                     ),
                 )
         else:
-            task_primitive = run.task.primitive if run.task is not None else None
+            task_primitive = run.primitive
             if task_primitive is not None:
                 task_metrics.attempt_finished(primitive=task_primitive, outcome="interrupted")
     session.flush()
@@ -666,7 +759,7 @@ async def run_worker_once(
                 raise TaskRunLeaseLost(f"Preclaimed task run {claimed_run_id} lost ownership.")
         run_id = run.id
         task_id = run.task_id
-        primitive = run.task.primitive
+        primitive = run.primitive
         trigger_kind = run.trigger_kind
         attempt = run.attempt
         lease_token = run.lease.lease_token
@@ -774,7 +867,7 @@ async def run_worker_once(
                 fields = {
                     "run_id": str(run.id),
                     "task_id": str(run.task_id),
-                    "primitive": run.task.primitive,
+                    "primitive": run.primitive,
                     "trigger_kind": run.trigger_kind,
                     "attempt": run.attempt,
                     "duration_ms": duration_ms,

@@ -12,6 +12,7 @@ from actions.shared.data_schema.schemas import SchemaType
 from actions.shared.data_schema.service import schema as schema_service
 from actions.crawl.schemas import CrawlPage
 from actions.crawl.service import crawl as crawl_service
+from actions.shared.cache import CacheOptions
 from actions.shared.query_schema.schemas import QueryParamOutput
 from actions.shared.query_schema.service import (
     cached_query_output_from_page,
@@ -52,7 +53,7 @@ def _apply_schema(schema_type: SchemaType, extraction_schema: dict, *, url: str,
 
 
 def _clean_empty_schema_error(page: CrawlPage, warnings: list) -> str | None:
-    if page.artifact_warnings or page.error or not page.success:
+    if page.quality_warnings or page.error or not page.success:
         return None
 
     if page.status_code is not None and page.status_code >= 400:
@@ -80,6 +81,7 @@ async def extract(
     progress_reporter: ProgressReporter | None = None,
     session: Session | None = None,
     task_run_id: UUID | None = None,
+    cache: CacheOptions | dict[str, object] | None = None,
 ) -> ExtractOutput:
     if not extract_data and not extract_query_params:
         return ExtractOutput(url=url, success=False, error="Enable at least one extraction mode.")
@@ -97,6 +99,8 @@ async def extract(
             progress_reporter=progress_reporter,
             session=session,
             task_run_id=task_run_id,
+            cache=cache,
+            include_links=False,
         )
     except Exception as exc:
         await emit_progress(
@@ -152,7 +156,7 @@ async def extract(
                 page_url=page.url,
                 html=html,
                 crawl_id=page.crawl_id,
-                artifact_ids=page.artifact_ids,
+                document_id=page.document_id,
             )
             commit_task_checkpoint(session)
         if query_params is None:
@@ -161,7 +165,7 @@ async def extract(
                     page_url=page.url,
                     html=html,
                     crawl_id=page.crawl_id,
-                    artifact_ids=page.artifact_ids,
+                    document_id=page.document_id,
                     progress_reporter=progress_reporter,
                 )
             )
@@ -187,6 +191,8 @@ async def extract(
                     target_json_example=target_json_example,
                     schema_type=schema_type,
                     html=html,
+                    crawl_id=page.crawl_id,
+                    document_id=page.document_id,
                     match=match,
                     progress_reporter=progress_reporter,
                     session=session,
@@ -284,6 +290,8 @@ async def extract(
                 target_json_example=target_json_example,
                 schema_type=schema_type,
                 html=html,
+                crawl_id=page.crawl_id,
+                document_id=page.document_id,
                 match=match,
                 progress_reporter=progress_reporter,
                 session=session,
@@ -331,7 +339,7 @@ async def extract(
                 query_params = QueryParamOutput(
                     url=page.url,
                     crawl_id=str(page.crawl_id) if page.crawl_id else None,
-                    artifact_ids=[str(artifact_id) for artifact_id in page.artifact_ids],
+                    document_id=page.document_id,
                     warnings=["Query parameter extraction unavailable."],
                 )
             if session is not None and query_params.query_schema is not None:
@@ -340,6 +348,7 @@ async def extract(
                     output=query_params,
                     task_run_id=task_run_id,
                     crawl_id=page.crawl_id,
+                    document_id=page.document_id,
                 )
                 commit_task_checkpoint(session)
         elif query_params is None:
@@ -347,7 +356,7 @@ async def extract(
                 page_url=page.url,
                 html=html,
                 crawl_id=page.crawl_id,
-                artifact_ids=page.artifact_ids,
+                document_id=page.document_id,
                 progress_reporter=progress_reporter,
                 session=session,
                 task_run_id=task_run_id,
@@ -381,6 +390,7 @@ def extract_sync(
     schema_type: SchemaType = "css",
     match: str | None = None,
     progress_reporter: ProgressReporter | None = None,
+    cache: CacheOptions | dict[str, object] | None = None,
 ) -> ExtractOutput:
     return asyncio.run(
         extract(
@@ -392,5 +402,6 @@ def extract_sync(
             schema_type=schema_type,
             match=match,
             progress_reporter=progress_reporter,
+            cache=cache,
         )
     )

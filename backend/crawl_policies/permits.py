@@ -16,6 +16,7 @@ from observability import capacity_metrics
 from tasks.models import TaskRun, TaskRunLease
 from tasks.context import current_task_execution
 from .models import CrawlPermit, CrawlPolicy
+from .schemas import CrawlPolicySnapshot
 
 _RELEASE_CHANNEL = "atlas_crawl_permits_released"
 
@@ -55,7 +56,7 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def _policy_limit(policy: CrawlPolicy | None) -> int | None:
+def _policy_limit(policy: CrawlPolicy | CrawlPolicySnapshot | None) -> int | None:
     if policy is None:
         return None
     raw = (policy.config or {}).get("max_concurrency")
@@ -121,7 +122,7 @@ class CrawlCapacityLease(AbstractAsyncContextManager[None]):
         *,
         task_run_id: UUID,
         url: str,
-        policy: CrawlPolicy | None,
+        policy: CrawlPolicy | CrawlPolicySnapshot | None,
         progress_reporter: ProgressReporter | None,
         include_browser: bool,
         include_policy: bool,
@@ -338,7 +339,7 @@ def capacity_lease(
     *,
     task_run_id: UUID,
     url: str,
-    policy: CrawlPolicy | None,
+    policy: CrawlPolicy | CrawlPolicySnapshot | None,
     progress_reporter: ProgressReporter | None,
     include_browser: bool = True,
     include_policy: bool = True,

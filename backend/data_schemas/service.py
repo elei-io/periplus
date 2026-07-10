@@ -150,6 +150,8 @@ def create_data_schema(
     match: str,
     schema_json: dict,
     task_run_id: UUID | None = None,
+    crawl_id: UUID | None = None,
+    document_id: str | None = None,
     inputs_json: dict | None = None,
 ) -> DataSchema:
     parsed = urlparse(url)
@@ -171,6 +173,8 @@ def create_data_schema(
             target_json_example=target_json_example,
             schema_json=schema_json,
             task_run_id=task_run_id,
+            crawl_id=crawl_id,
+            document_id=document_id,
             inputs_json=inputs_json,
             domain=parsed.netloc or None,
             path=parsed.path or None,
@@ -190,6 +194,8 @@ def create_data_schema(
         schema_json=schema_json,
         schema_hash=_json_hash(schema_json),
         generated_by_task_run_id=task_run_id,
+        generated_from_crawl_id=crawl_id,
+        generated_from_document_id=document_id,
         inputs_json=inputs_json or {},
         validation_status="generated",
         warnings_json={"codes": [], "count": 0, "warnings": []},
@@ -213,6 +219,8 @@ def create_data_schema(
             target_json_example=target_json_example,
             schema_json=schema_json,
             task_run_id=task_run_id,
+            crawl_id=crawl_id,
+            document_id=document_id,
             inputs_json=inputs_json,
             domain=parsed.netloc or None,
             path=parsed.path or None,
@@ -230,6 +238,8 @@ def _update_generated_data_schema(
     target_json_example: str | None,
     schema_json: dict,
     task_run_id: UUID | None,
+    crawl_id: UUID | None,
+    document_id: str | None,
     inputs_json: dict | None,
     domain: str | None,
     path: str | None,
@@ -247,6 +257,8 @@ def _update_generated_data_schema(
     schema.schema_json = schema_json
     schema.schema_hash = _json_hash(schema_json)
     schema.generated_by_task_run_id = task_run_id
+    schema.generated_from_crawl_id = crawl_id
+    schema.generated_from_document_id = document_id
     schema.inputs_json = {**(inputs_json or {}), "match": match}
     schema.validation_status = "generated"
     schema.failure_count = 0
@@ -267,6 +279,8 @@ def replace_data_schema(
     target_json_example: str | None,
     schema_json: dict,
     task_run_id: UUID | None = None,
+    crawl_id: UUID | None = None,
+    document_id: str | None = None,
     inputs_json: dict | None = None,
     match: str | None = None,
 ) -> DataSchema:
@@ -291,6 +305,8 @@ def replace_data_schema(
     schema.schema_json = schema_json
     schema.schema_hash = _json_hash(schema_json)
     schema.generated_by_task_run_id = task_run_id
+    schema.generated_from_crawl_id = crawl_id
+    schema.generated_from_document_id = document_id
     schema.inputs_json = {**(inputs_json or {}), "match": match_value}
     schema.validation_status = "generated"
     schema.failure_count = 0

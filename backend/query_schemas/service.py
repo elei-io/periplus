@@ -49,6 +49,7 @@ def upsert_query_schema(
     evidence_json: list[dict],
     task_run_id: UUID | None,
     crawl_id: UUID | None,
+    document_id: str | None,
     inputs_json: dict,
     warnings_json: dict | None = None,
 ) -> QuerySchema:
@@ -73,6 +74,7 @@ def upsert_query_schema(
             evidence_json=evidence_json,
             schema_hash=schema_hash,
             generated_from_crawl_id=crawl_id,
+            generated_from_document_id=document_id,
             generated_by_task_run_id=task_run_id,
             inputs_json=inputs_json,
             warnings_json=warnings_json or {"count": 0, "warnings": []},
@@ -89,6 +91,7 @@ def upsert_query_schema(
         schema.evidence_json = evidence_json
         schema.schema_hash = schema_hash
         schema.generated_from_crawl_id = crawl_id
+        schema.generated_from_document_id = document_id
         schema.generated_by_task_run_id = task_run_id
         schema.inputs_json = inputs_json
         schema.warnings_json = warnings_json or {"count": 0, "warnings": []}
@@ -169,6 +172,7 @@ def list_query_schemas(
                 evidence_count=len(schema.evidence_json or []),
                 warning_count=warning_count(schema),
                 generated_from_crawl_id=schema.generated_from_crawl_id,
+                generated_from_document_id=schema.generated_from_document_id,
                 generated_by_task_run_id=schema.generated_by_task_run_id,
                 created_at=schema.created_at,
                 updated_at=schema.updated_at,

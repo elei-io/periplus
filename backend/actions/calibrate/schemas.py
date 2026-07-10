@@ -45,7 +45,7 @@ class CalibrationCandidate(BaseModel):
     status_code: int | None = None
     quality: CalibrationQuality
     crawl_id: UUID | None = None
-    artifact_ids: list[UUID] = Field(default_factory=list)
+    document_id: str | None = None
 
 
 class CalibrationOutput(BaseModel):
