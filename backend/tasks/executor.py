@@ -11,7 +11,7 @@ from collections.abc import Callable
 from uuid import UUID
 
 from sqlalchemy import func, select, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from actions.extract.service import extract
 from actions.index.service import index
@@ -20,6 +20,7 @@ from actions.calibrate.service import calibrate
 from actions.search.service import search
 from actions.shared.data_schema.service import schema
 from actions.shared.progress import ProgressEvent, ProgressReporter
+from observability import task_metrics
 from actions.shared.nats_progress import ProgressPublisher
 
 from .models import Task, TaskRun, TaskRunLease, WorkerHeartbeat
@@ -379,6 +380,7 @@ def recover_expired_runs(session: Session) -> int:
                 previous_worker=previous_worker,
                 reason="lease_expired_after_cancellation",
             )
+            task_metrics.cancelled(phase="running")
         elif timed_out:
             run.status = "failed"
             run.finished_at = now
@@ -423,6 +425,25 @@ def recover_expired_runs(session: Session) -> int:
                 failed_attempts=run.failed_attempts,
                 error=run.error,
             )
+        task_metrics.recovered(reason="execution_timeout" if timed_out else "lease_expired")
+        task_primitive = run.task.primitive if run.task is not None else None
+        if task_primitive is not None:
+            task_metrics.attempt_finished(
+                primitive=task_primitive,
+                outcome="cancelled" if run.status == "cancelled" else "failed",
+            )
+        if (
+            task_primitive is not None
+            and run.status in {"succeeded", "failed", "cancelled", "skipped"}
+            and run.started_at is not None
+            and run.finished_at is not None
+        ):
+            task_metrics.terminal_run(
+                primitive=task_primitive,
+                status=run.status,
+                trigger_kind=run.trigger_kind,
+                duration_seconds=max(0.0, (run.finished_at - run.started_at).total_seconds()),
+            )
         recovered += 1
     session.flush()
     return recovered
@@ -465,6 +486,17 @@ def release_task_run(
         run.cancelled_at = now
         run.finished_at = now
         run.error = "Task run cancellation was requested."
+        task_metrics.cancelled(phase="running")
+        task_primitive = run.task.primitive if run.task is not None else None
+        if task_primitive is not None:
+            task_metrics.attempt_finished(primitive=task_primitive, outcome="cancelled")
+        if task_primitive is not None and run.started_at is not None:
+            task_metrics.terminal_run(
+                primitive=task_primitive,
+                status=run.status,
+                trigger_kind=run.trigger_kind,
+                duration_seconds=max(0.0, (run.finished_at - run.started_at).total_seconds()),
+            )
     else:
         if count_failure:
             run.failed_attempts += 1
@@ -477,6 +509,29 @@ def release_task_run(
             run.retry_at = now
             run.started_at = None
             run.error = None
+        if count_failure:
+            task_metrics.recovered(reason="worker_exit")
+            task_primitive = run.task.primitive if run.task is not None else None
+            if task_primitive is not None:
+                task_metrics.attempt_finished(primitive=task_primitive, outcome="failed")
+            if (
+                task_primitive is not None
+                and run.status == "failed"
+                and run.started_at is not None
+                and run.finished_at is not None
+            ):
+                task_metrics.terminal_run(
+                    primitive=task_primitive,
+                    status=run.status,
+                    trigger_kind=run.trigger_kind,
+                    duration_seconds=max(
+                        0.0, (run.finished_at - run.started_at).total_seconds()
+                    ),
+                )
+        else:
+            task_primitive = run.task.primitive if run.task is not None else None
+            if task_primitive is not None:
+                task_metrics.attempt_finished(primitive=task_primitive, outcome="interrupted")
     session.flush()
     return True
 
@@ -522,7 +577,14 @@ def record_worker_heartbeat(
     session.flush()
 
 
-def _renew_lease(session_factory, worker_id: str, run_id: UUID, lease_token: UUID) -> None:
+def _renew_lease(
+    session_factory,
+    worker_id: str,
+    run_id: UUID,
+    lease_token: UUID,
+    *,
+    maintain_worker_heartbeat: bool = True,
+) -> None:
     with session_factory() as session:
         session.execute(text("SET LOCAL lock_timeout = '2s'"))
         lease = session.scalar(
@@ -542,12 +604,19 @@ def _renew_lease(session_factory, worker_id: str, run_id: UUID, lease_token: UUI
         now = _utc_now()
         lease.heartbeat_at = now
         lease.expires_at = now + timedelta(seconds=_worker_lease_seconds())
-        record_worker_heartbeat(session, worker_id, capacity=_worker_concurrency())
+        if maintain_worker_heartbeat:
+            record_worker_heartbeat(session, worker_id, capacity=_worker_concurrency())
         session.commit()
 
 
 async def _maintain_lease(
-    session_factory, worker_id: str, run_id: UUID, lease_token: UUID, stop: asyncio.Event
+    session_factory,
+    worker_id: str,
+    run_id: UUID,
+    lease_token: UUID,
+    stop: asyncio.Event,
+    *,
+    maintain_worker_heartbeat: bool = True,
 ) -> None:
     interval = _env_seconds("ATLAS_WORKER_HEARTBEAT_SECONDS", 10)
     while not stop.is_set():
@@ -556,7 +625,14 @@ async def _maintain_lease(
             break
         except TimeoutError:
             pass
-        await asyncio.to_thread(_renew_lease, session_factory, worker_id, run_id, lease_token)
+        await asyncio.to_thread(
+            _renew_lease,
+            session_factory,
+            worker_id,
+            run_id,
+            lease_token,
+            maintain_worker_heartbeat=maintain_worker_heartbeat,
+        )
 
 
 async def run_worker_once(
@@ -567,6 +643,7 @@ async def run_worker_once(
     claimed_lease_token: UUID | None = None,
 ) -> bool:
     worker_id = worker_id or f"{os.uname().nodename}:{os.getpid()}"
+    owns_worker_heartbeat = claimed_run_id is None
     with session_factory() as session:
         if claimed_run_id is None:
             recover_expired_runs(session)
@@ -594,7 +671,8 @@ async def run_worker_once(
         attempt = run.attempt
         lease_token = run.lease.lease_token
         queued_at = run.queued_at
-        record_worker_heartbeat(session, worker_id, capacity=_worker_concurrency())
+        if owns_worker_heartbeat:
+            record_worker_heartbeat(session, worker_id, capacity=_worker_concurrency())
         session.commit()
     if claimed_callback is not None:
         claimed_callback(run_id, lease_token)
@@ -609,10 +687,21 @@ async def run_worker_once(
         attempt=attempt,
         queue_ms=round((_utc_now() - queued_at).total_seconds() * 1000),
     )
+    task_metrics.queue_wait(
+        primitive=primitive,
+        seconds=max(0.0, (_utc_now() - queued_at).total_seconds()),
+    )
 
     lease_stop = asyncio.Event()
     lease_task = asyncio.create_task(
-        _maintain_lease(session_factory, worker_id, run_id, lease_token, lease_stop)
+        _maintain_lease(
+            session_factory,
+            worker_id,
+            run_id,
+            lease_token,
+            lease_stop,
+            maintain_worker_heartbeat=owns_worker_heartbeat,
+        )
     )
     async with ProgressPublisher(run_id, attempt=attempt) as publisher:
         async def check_cancelled() -> None:
@@ -741,9 +830,36 @@ async def run_worker_once(
         finally:
             lease_stop.set()
             await asyncio.gather(lease_task, return_exceptions=True)
-            with session_factory() as session:
-                record_worker_heartbeat(session, worker_id, capacity=_worker_concurrency())
-                session.commit()
+            if owns_worker_heartbeat:
+                with session_factory() as session:
+                    record_worker_heartbeat(session, worker_id, capacity=_worker_concurrency())
+                    session.commit()
+
+    with session_factory() as metrics_session:
+        completed_run = metrics_session.get(
+            TaskRun,
+            run_id,
+            options=(defer(TaskRun.output_json),),
+        )
+        if (
+            completed_run is not None
+            and completed_run.status in {"succeeded", "failed", "cancelled", "skipped"}
+            and completed_run.started_at is not None
+            and completed_run.finished_at is not None
+        ):
+            task_metrics.terminal_run(
+                primitive=primitive,
+                status=completed_run.status,
+                trigger_kind=trigger_kind,
+                duration_seconds=max(
+                    0.0,
+                    (completed_run.finished_at - completed_run.started_at).total_seconds(),
+                ),
+            )
+            task_metrics.attempt_finished(
+                primitive=primitive,
+                outcome=completed_run.status,
+            )
 
     return True
 

@@ -2,13 +2,15 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CrawlPolicyRecord(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    metric_slug: str
+    domain_group: str
     url_match_id: UUID | None = None
     match: str
     enabled: bool
@@ -35,3 +37,4 @@ class CrawlPolicyUpdateRequest(BaseModel):
     enabled: bool | None = None
     match: str | None = None
     config: dict[str, Any] | None = None
+    domain_group: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_-]{0,62}$")

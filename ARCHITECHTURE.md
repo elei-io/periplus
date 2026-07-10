@@ -36,6 +36,8 @@ Run state is exposed through:
 
 Tasks are reusable definitions; task runs are individual executions. Progress, results, and errors are therefore addressed by run ID.
 
+Task-run list, detail, and cancellation responses are status records and never include `output_json`. Clients poll only this bounded status representation. Durable output is fetched exclusively from `GET /task-runs/{run_id}/result` after success, normally when the user explicitly opens a result. Large results must never be amplified through status polling.
+
 ## Progress
 
 Workers publish envelopes to `atlas.task-runs.<run_id>.progress`. JetStream retains them for the duration configured by `NATS_RETENTION`, which defaults to `5m`. Event IDs use `attempt:sequence`, so retries of one run cannot collide with retained messages from an earlier attempt. SSE supports replay within that window using `Last-Event-ID`; after expiry, clients use durable task-run status and results from Postgres.
@@ -50,7 +52,9 @@ Postgres emits transactional `NOTIFY atlas_task_runs_queued` wake-ups through tr
 
 Running work uses renewable records in the dedicated `task_run_leases` table. Each claim creates a random lease token and attempt number. Heartbeats touch only the lease record; action transactions never mutate orchestration ownership. Completion and durable checkpoints are fenced by the token, so a worker that lost its lease cannot overwrite a later attempt. Expired work is requeued until its configured maximum attempt count, then failed.
 
-Each action run executes in an isolated, killable subprocess with its own async event loop. Synchronous database, browser, or provider stalls therefore cannot block the worker supervisor, other action slots, recovery, process heartbeats, or graceful shutdown. Control-plane database work runs outside the supervisor event loop and uses bounded lock waits.
+Each action run executes in an isolated, killable subprocess with its own async event loop and process group. Synchronous database, browser, or provider stalls therefore cannot block the worker supervisor, other action slots, recovery, process heartbeats, or graceful shutdown. Terminating a run kills the complete process group so Playwright drivers and browser descendants cannot outlive it. Control-plane database work runs outside the supervisor event loop and uses bounded lock waits.
+
+Only the worker supervisor records worker heartbeat, capacity, and active-slot state. Isolated children renew their task-run lease but must not keep a dead supervisor logically alive or advertise its full capacity. Worker maintenance periodically removes orphaned Atlas Playwright task trees and, when no Playwright driver is active, detached Chromium profile trees left by interrupted runs. Operators can run the same node-local cleanup immediately with `atlas purge playwright`.
 
 Action persistence must use short transactions. No database transaction may remain open across browser work, LLM calls, capacity waits, or other unbounded awaits. `task_runs` changes only at lifecycle transitions; intermediate crawl, artifact, and schema provenance belongs to the corresponding domain tables.
 
@@ -60,21 +64,21 @@ Cancellation is cooperative and durable. Queued runs cancel immediately; running
 
 Each worker supervises a bounded number of task runs configured by `ATLAS_WORKER_CONCURRENCY` (default `4`). Multiple worker processes share the same Postgres queue; transactional `FOR UPDATE SKIP LOCKED` claims remain the ownership boundary. Heartbeats report process capacity and active-run count, while active ownership is derived from task-run leases.
 
-Task concurrency is separate from page-acquisition concurrency. Each task run consumes its page frontier through a bounded worker queue configured by `ATLAS_CRAWL_CONCURRENCY_PER_RUN` (default `3`); frontier size never determines live coroutine or browser count. Because runs execute in isolated subprocesses, one worker can open at most `ATLAS_WORKER_CONCURRENCY × ATLAS_CRAWL_CONCURRENCY_PER_RUN` browsers before deployment-wide limits are applied.
+Task concurrency is separate from page-acquisition concurrency. Each task run consumes its page frontier through a bounded worker queue configured by `ATLAS_CRAWL_CONCURRENCY_PER_RUN` (default `3`); frontier size never determines live coroutine or browser count. All page workers in one task share a concurrency-safe crawler for each transport mode, so the normal single-mode run opens one browser process while retaining bounded parallel page contexts. Because runs execute in isolated subprocesses, normal browser-process count is bounded by active task runs rather than page concurrency; a mixed-mode crawl may open one browser per mode.
 
-Every browser instance acquires a deployment-wide permit configured by `ATLAS_BROWSER_CONCURRENCY` (default `12`) before the browser is opened and holds it until the browser is closed. When a matching crawl policy defines `max_concurrency`, the same lease also acquires a global permit keyed by that policy. The policy's URL match is the concurrency scope: all URLs resolved to the same policy share its absolute limit across every run and worker.
+Every task-scoped browser instance acquires a deployment-wide permit configured by `ATLAS_BROWSER_CONCURRENCY` (default `12`) before the browser is opened and holds it until the shared crawler closes. A matching crawl policy's `max_concurrency` permit remains scoped to each URL acquisition, so concurrent pages are still bounded per policy without multiplying browser processes. The policy's URL match is the concurrency scope: all URLs resolved to the same policy share its absolute limit across every run and worker.
 
 Permits are renewable Postgres leases. Cached HTML currently passes through a browser-backed normalization step, so cache reuse is bounded by the same browser lifecycle. Waiting is asynchronous and cancellation-aware; expired permits are reclaimed, release emits a best-effort Postgres notification, and polling remains authoritative.
 
 ## CLI
 
-The `atlas` CLI is an HTTP/SSE client. `atlas init --url <api-url>` writes `atlas.json` in the current project directory. Configuration is resolved in this order:
+The `atlas` CLI is an HTTP/SSE client for durable Atlas state. `atlas init --url <api-url>` writes `atlas.json` in the current project directory. Configuration is resolved in this order:
 
 ```text
 --api-url > ATLAS_API_URL > nearest atlas.json
 ```
 
-The CLI does not connect to Postgres or import the action executor.
+The CLI does not connect to Postgres or import the action executor. Node-local process maintenance is the deliberate exception: `atlas purge playwright` inspects and terminates orphaned Playwright task trees on the machine where the command runs, because an API pod cannot clean worker processes on another Kubernetes node.
 
 ## Code Ownership
 
@@ -87,6 +91,10 @@ The CLI does not connect to Postgres or import the action executor.
 
 Crawl remains the page-acquisition chokepoint. Shared page-loading configuration stays in `actions.shared.crawl`; no action may create a parallel browser execution path.
 
-## Operational Requirements
+## Operational Metrics
 
-The API can remain healthy while workers are unavailable, so operations must eventually expose worker heartbeat, queue depth, oldest queued age, lease expiry/recovery, NATS health, queue latency, and execution duration. Correctness must not depend on Postgres notification delivery; workers poll for queued runs as a fallback.
+The API can remain healthy while workers are unavailable. The API `/metrics` endpoint therefore exposes cluster state derived through the reusable observability snapshot service, including worker heartbeat/capacity, queue depth and age, and crawl permit usage/capacity. Each worker exposes a private metrics port for task, capacity-wait, and page-acquisition events aggregated from its isolated children. Prometheus owns aggregation and history; Atlas UI APIs may reuse the same typed snapshot and semantic metric logic. The complete metric contract and cardinality rules live in `METRICS.md`.
+
+The in-app `/scheduled-work/metrics` hub consumes `GET /operations/metrics`, which combines the same cluster snapshot with bounded durable task/crawl aggregates and optional server-side Prometheus queries. Resource registry and cache pages remain focused on individual records rather than embedding analytics bands.
+
+Correctness must not depend on metric delivery or Postgres notification delivery; workers poll for queued runs as a fallback.

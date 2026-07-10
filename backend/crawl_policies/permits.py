@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
+from observability import capacity_metrics
 from tasks.models import TaskRun, TaskRunLease
 from tasks.context import current_task_execution
 from .models import CrawlPermit, CrawlPolicy
@@ -122,26 +123,37 @@ class CrawlCapacityLease(AbstractAsyncContextManager[None]):
         url: str,
         policy: CrawlPolicy | None,
         progress_reporter: ProgressReporter | None,
+        include_browser: bool,
+        include_policy: bool,
     ) -> None:
         self._session_factory = session_factory
         self._task_run_id = task_run_id
         self._url = url
         self._policy = policy
         self._progress_reporter = progress_reporter
+        self._include_browser = include_browser
+        self._include_policy = include_policy
         self._permit_ids: list[UUID] = []
         self._stop = asyncio.Event()
         self._maintainer: asyncio.Task | None = None
         self._owner: asyncio.Task | None = None
         self._lost = False
         self._lease_token: UUID | None = None
+        self._policy_label = policy.metric_slug if policy is not None else ""
         self._lease_seconds = _env_int("ATLAS_CRAWL_PERMIT_LEASE_SECONDS", 60)
 
     async def __aenter__(self) -> None:
+        if not self._include_browser and (
+            not self._include_policy or _policy_limit(self._policy) is None
+        ):
+            return None
         timeout = float(os.getenv("ATLAS_CRAWL_PERMIT_TIMEOUT_SECONDS", "120"))
         deadline = asyncio.get_running_loop().time() + max(1.0, timeout)
         waiting_emitted = False
         waiting_started_at: float | None = None
         listener = _PermitReleaseListener(self._session_factory)
+        wait_metrics = capacity_metrics.CapacityWaitMetrics(policy=self._policy_label)
+        metric_outcome = "lease_lost"
         try:
             while True:
                 acquired: list[UUID] = []
@@ -172,11 +184,21 @@ class CrawlCapacityLease(AbstractAsyncContextManager[None]):
                         or lease.lease_token != execution.lease_token
                     ):
                         raise RuntimeError("Task run lost ownership while waiting for crawl capacity.")
-                    specs = [
-                        ("browser:global", _env_int("ATLAS_BROWSER_CONCURRENCY", 12), None),
-                    ]
+                    specs = []
+                    if self._include_browser:
+                        specs.append(
+                            (
+                                "browser:global",
+                                _env_int("ATLAS_BROWSER_CONCURRENCY", 12),
+                                None,
+                            )
+                        )
                     policy_limit = _policy_limit(self._policy)
-                    if self._policy is not None and policy_limit is not None:
+                    if (
+                        self._include_policy
+                        and self._policy is not None
+                        and policy_limit is not None
+                    ):
                         policy_key = str(self._policy.id)
                         specs.append((f"policy:{policy_key}", policy_limit, self._policy.id))
                     for permit_key, capacity, policy_id in specs:
@@ -190,6 +212,9 @@ class CrawlCapacityLease(AbstractAsyncContextManager[None]):
                             lease_seconds=self._lease_seconds,
                         )
                         if permit is None:
+                            wait_metrics.blocked_by(
+                                "browser" if permit_key == "browser:global" else "policy"
+                            )
                             break
                         acquired.append(permit.id)
                     if len(acquired) == len(specs):
@@ -216,8 +241,16 @@ class CrawlCapacityLease(AbstractAsyncContextManager[None]):
                 if asyncio.get_running_loop().time() >= deadline:
                     raise TimeoutError(f"Timed out waiting for crawl capacity for {self._url}.")
                 await listener.wait(0.25)
+            metric_outcome = "acquired"
+        except asyncio.CancelledError:
+            metric_outcome = "cancelled"
+            raise
+        except TimeoutError:
+            metric_outcome = "timeout"
+            raise
         finally:
             await listener.close()
+            wait_metrics.finish(metric_outcome)
         if waiting_emitted:
             waited = asyncio.get_running_loop().time() - (waiting_started_at or deadline)
             await emit_progress(
@@ -296,6 +329,7 @@ class CrawlCapacityLease(AbstractAsyncContextManager[None]):
                 session.execute(text(f"SELECT pg_notify('{_RELEASE_CHANNEL}', :payload)"), {"payload": str(self._task_run_id)})
                 session.commit()
         if self._lost:
+            capacity_metrics.lease_lost(scope="unknown", policy=self._policy_label)
             raise RuntimeError("Crawl capacity lease was lost.")
 
 
@@ -306,6 +340,8 @@ def capacity_lease(
     url: str,
     policy: CrawlPolicy | None,
     progress_reporter: ProgressReporter | None,
+    include_browser: bool = True,
+    include_policy: bool = True,
 ) -> CrawlCapacityLease:
     return CrawlCapacityLease(
         sessionmaker(bind=session.get_bind(), expire_on_commit=False),
@@ -313,4 +349,6 @@ def capacity_lease(
         url=url,
         policy=policy,
         progress_reporter=progress_reporter,
+        include_browser=include_browser,
+        include_policy=include_policy,
     )

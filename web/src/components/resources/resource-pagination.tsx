@@ -2,9 +2,9 @@ import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 
-export const HISTORY_PAGE_SIZE = 50
+export const RESOURCE_PAGE_SIZE = 50
 
-export function HistoryPagination({
+export function ResourcePagination({
   total,
   limit,
   offset,

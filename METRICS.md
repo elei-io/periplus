@@ -73,6 +73,7 @@ Core label vocabularies are fixed initially:
 - Page source: `network`, `cache`
 - Page outcome: `succeeded`, `failed`, `cancelled`
 - Task terminal status: `succeeded`, `failed`, `cancelled`, `skipped`
+- Task attempt outcome: `succeeded`, `failed`, `cancelled`, `interrupted`
 - Permit outcome: `acquired`, `timeout`, `cancelled`, `lease_lost`
 - HTTP status class: `1xx`, `2xx`, `3xx`, `4xx`, `5xx`, `none`
 
@@ -103,7 +104,11 @@ Normalized recovery reasons should initially include `lease_expired`, `worker_ex
 
 Queue depth must always be accompanied by oldest queued age and a queue-duration histogram. Queue depth alone cannot distinguish healthy bursts from stuck work.
 
-Worker gauges are cluster aggregates and do not carry a `worker_id` label. Atlas's default worker IDs contain PIDs, and historical heartbeat rows are not bounded. A worker is live when `stopping` is false and `last_seen_at` is newer than a configurable staleness threshold; the initial threshold is two heartbeat intervals. Capacity and active-run totals include live workers only. `atlas_workers_stale` counts non-stopping rows older than that threshold but newer than a 24-hour reporting retention; older heartbeat rows are ignored and may be garbage-collected. The oldest-heartbeat gauge is the maximum age among live workers, or zero when no worker is live.
+Worker gauges are cluster aggregates and do not carry a `worker_id` label. Atlas's default worker IDs contain PIDs. A worker is live when `stopping` is false and `last_seen_at` is newer than a configurable staleness threshold; the initial threshold is two heartbeat intervals. Capacity and active-run totals include live workers only. `atlas_workers_stale` counts non-stopping rows older than that threshold but newer than the reporting retention, which defaults to 24 hours through `ATLAS_WORKER_HEARTBEAT_RETENTION_SECONDS`. Workers delete heartbeat rows older than that retention on an hourly maintenance cadence controlled by `ATLAS_WORKER_HEARTBEAT_CLEANUP_INTERVAL_SECONDS`, bounding the table without removing live state. The oldest-heartbeat gauge is the maximum age among live workers, or zero when no worker is live.
+
+Operators can immediately remove stale and gracefully stopped heartbeat rows with `atlas purge workers`. The CLI calls the reusable `POST /operations/purge/workers` API; it never deletes workers whose heartbeat is still live.
+
+Worker capacity is supervisor-owned. Isolated run children renew only their task-run lease and never refresh the worker heartbeat, preventing an orphaned child from keeping a dead worker live or advertising unused slots. Workers scan for orphaned Atlas Playwright task trees every `ATLAS_PLAYWRIGHT_CLEANUP_INTERVAL_SECONDS` (default 300 seconds). When no Playwright driver is active, cleanup also removes detached Chromium profile trees left by interrupted runs; live browsers are never selected. `atlas purge playwright` runs the same node-local cleanup on demand, and `--dry-run` reports what would be terminated.
 
 ### Browser and CrawlPolicy capacity
 
@@ -304,9 +309,21 @@ Atlas has two scrape surfaces with deliberately non-overlapping ownership:
 
 Cluster-wide gauges must never also be exported by every worker. Browser capacity comes from the shared `ATLAS_BROWSER_CONCURRENCY` deployment setting, policy capacity comes from CrawlPolicy configuration, and current usage comes from active Postgres permit rows. The API and every worker must receive a consistent browser-capacity setting. Worker-local event counters, histograms, and waiter gauges are summed across worker targets. In a deployment with multiple API replicas, every replica may expose the same cluster-wide database gauges for availability; recording rules and dashboards must aggregate those gauges with `max without(instance, pod)` rather than `sum`. A future singleton exporter may take over this responsibility without changing metric names.
 
+Browser permits measure task-scoped browser processes, not page tabs. Concurrent pages within a task share the browser and remain governed by per-run page concurrency plus per-policy permits. Mixed transport modes may require one browser permit per mode within the same task.
+
 The API's root `/metrics` path is distinct from the existing resource-history endpoints such as `/crawls/metrics`. The initial worker defaults are `ATLAS_METRICS_ENABLED=true`, `ATLAS_METRICS_HOST=0.0.0.0`, and `ATLAS_METRICS_PORT=9090`. Container and deployment configuration must expose the worker port to Prometheus without publishing it publicly. The API uses its normal listen address and port.
 
 Postgres-backed collection must use bounded queries and a short statement timeout. A failed collection should omit or retain no value for the affected collector, increment `atlas_metrics_collection_errors_total{collector}`, and never make the API or worker unhealthy.
+
+The Prometheus collector is an adapter over `observability.collect_cluster_metrics(session)`, which returns a typed `ClusterMetricsSnapshot` with nested task and permit snapshots. The Atlas operations JSON endpoint calls this service directly rather than parsing Prometheus exposition or duplicating its SQL. Semantic event helpers and the central catalog remain reusable by other adapters in the same way.
+
+### In-app operations hub
+
+`GET /operations/metrics` and the `/scheduled-work/metrics` page provide a deliberately small in-app operational view. The response combines current cluster state from `collect_cluster_metrics`, bounded recent-window aggregates from durable task and crawl records, and optional Prometheus enrichment when `ATLAS_PROMETHEUS_URL` is configured. Supported windows are 15 minutes, 1 hour, 6 hours, and 24 hours.
+
+The in-app page focuses on worker and browser posture, queue pressure, task outcomes and latency, crawl success and latency, failure reasons, domain health, and per-policy capacity. Resource registry and cache pages remain CRUD-oriented and link from the hub where an investigation surface exists. Atlas does not persist a second time-series dataset for this UI; Prometheus remains authoritative for complete history, alerting, waiter state, histogram-derived capacity latency, and observation-loss rates.
+
+Per-policy capacity rows display the CrawlPolicy matcher for operator recognition. The separate immutable `metric_slug` remains the policy's Prometheus identity and stable row key; raw match expressions must not become Prometheus labels.
 
 ## Isolated subprocess transport
 

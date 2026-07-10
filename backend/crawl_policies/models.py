@@ -24,6 +24,8 @@ class CrawlPolicy(Base):
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    metric_slug: Mapped[str] = mapped_column(Text, unique=True, default=lambda: f"policy-{uuid4().hex[:12]}")
+    domain_group: Mapped[str] = mapped_column(Text, default="unclassified")
     url_match_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("url_matches.id", use_alter=True, ondelete="SET NULL"),

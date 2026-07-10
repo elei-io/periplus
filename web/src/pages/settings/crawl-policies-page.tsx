@@ -24,9 +24,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { useCrawlPolicies, useUpdateCrawlPolicy } from "@/hooks/use-history-data"
-import { HistoryPagination, HISTORY_PAGE_SIZE } from "@/pages/history/history-pagination"
-import type { CrawlPolicyFilters, CrawlPolicyRecord } from "@/types/history"
+import {
+  useCrawlPolicies,
+  useUpdateCrawlPolicy,
+} from "@/hooks/use-resource-data"
+import {
+  ResourcePagination,
+  RESOURCE_PAGE_SIZE,
+} from "@/components/resources/resource-pagination"
+import type { CrawlPolicyFilters, CrawlPolicyRecord } from "@/types/resources"
 
 const defaultFilters: CrawlPolicyFilters = {
   matchPattern: "",
@@ -39,7 +45,7 @@ export function CrawlPoliciesPage() {
   const [filters, setFilters] = useState<CrawlPolicyFilters>(defaultFilters)
   const [offset, setOffset] = useState(0)
   const policiesQuery = useCrawlPolicies(filters, {
-    limit: HISTORY_PAGE_SIZE,
+    limit: RESOURCE_PAGE_SIZE,
     offset,
   })
   const policies = policiesQuery.data?.items ?? []
@@ -76,7 +82,9 @@ export function CrawlPoliciesPage() {
               className="pl-9"
               value={filters.matchPattern}
               placeholder="https://example.com/*"
-              onChange={(event) => patchFilters({ matchPattern: event.target.value })}
+              onChange={(event) =>
+                patchFilters({ matchPattern: event.target.value })
+              }
             />
           </div>
           <Input
@@ -105,7 +113,9 @@ export function CrawlPoliciesPage() {
               { value: "disabled", label: "Disabled" },
             ]}
             onChange={(enabled) =>
-              patchFilters({ enabled: enabled as CrawlPolicyFilters["enabled"] })
+              patchFilters({
+                enabled: enabled as CrawlPolicyFilters["enabled"],
+              })
             }
             aria-label="Enabled state"
           />
@@ -129,7 +139,10 @@ export function CrawlPoliciesPage() {
           ))}
           {!policiesQuery.isLoading && policies.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+              <TableCell
+                colSpan={6}
+                className="h-24 text-center text-muted-foreground"
+              >
                 No crawl policies match.
               </TableCell>
             </TableRow>
@@ -137,9 +150,9 @@ export function CrawlPoliciesPage() {
         </TableBody>
       </Table>
 
-      <HistoryPagination
+      <ResourcePagination
         total={total}
-        limit={policiesQuery.data?.limit ?? HISTORY_PAGE_SIZE}
+        limit={policiesQuery.data?.limit ?? RESOURCE_PAGE_SIZE}
         offset={policiesQuery.data?.offset ?? offset}
         isFetching={policiesQuery.isFetching}
         onOffsetChange={setOffset}
@@ -159,7 +172,7 @@ function CrawlPolicyRow({ policy }: { policy: CrawlPolicyRecord }) {
     <TableRow>
       <TableCell className="max-w-[32rem]">
         <a
-          href={`/history/crawl-policies/${policy.id}`}
+          href={`/settings/crawl-policies/${policy.id}`}
           className="block min-w-0 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
         >
           <span className="block truncate font-medium text-link underline-offset-4 hover:underline">
@@ -175,7 +188,9 @@ function CrawlPolicyRow({ policy }: { policy: CrawlPolicyRecord }) {
       </TableCell>
       <TableCell>
         <Badge variant="secondary">{policy.mode ?? "-"}</Badge>
-        <span className="ml-2 text-xs text-muted-foreground">{policy.wait ?? ""}</span>
+        <span className="ml-2 text-xs text-muted-foreground">
+          {policy.wait ?? ""}
+        </span>
       </TableCell>
       <TableCell>{policy.max_concurrency ?? "-"}</TableCell>
       <TableCell>
@@ -184,7 +199,9 @@ function CrawlPolicyRow({ policy }: { policy: CrawlPolicyRecord }) {
             {policy.enabled ? <CheckCircle2Icon /> : <XCircleIcon />}
             {policy.enabled ? "Enabled" : "Disabled"}
           </Badge>
-          <span className="text-xs text-muted-foreground">{formatDate(policy.updated_at)}</span>
+          <span className="text-xs text-muted-foreground">
+            {formatDate(policy.updated_at)}
+          </span>
         </div>
       </TableCell>
       <TableCell>
@@ -212,7 +229,8 @@ function FilterSelect({
   onChange: (value: string) => void
   "aria-label": string
 }) {
-  const selectedLabel = options.find((option) => option.value === value)?.label ?? value
+  const selectedLabel =
+    options.find((option) => option.value === value)?.label ?? value
 
   return (
     <Select

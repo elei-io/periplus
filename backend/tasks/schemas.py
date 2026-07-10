@@ -279,7 +279,6 @@ class TaskRunRecord(BaseModel):
     failed_attempts: int
     max_attempts: int
     input_json: dict[str, Any]
-    output_json: dict[str, Any] | None = None
     warnings_json: dict[str, Any]
     error: str | None = None
     created_at: datetime
@@ -314,6 +313,10 @@ class TaskOperationsRecord(BaseModel):
     average_execution_seconds: float | None = None
     nats_available: bool | None = None
     workers: list[WorkerHeartbeatRecord]
+
+
+class WorkerHeartbeatPurgeRecord(BaseModel):
+    deleted: int
 
 
 class TaskRunCrawlRecord(BaseModel):

@@ -29,7 +29,6 @@ export type TaskRunRecord = {
   failed_attempts: number
   max_attempts: number
   input_json: Record<string, unknown>
-  output_json: Record<string, unknown> | null
   warnings_json: Record<string, unknown>
   error: string | null
   created_at: string

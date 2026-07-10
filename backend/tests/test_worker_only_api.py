@@ -25,6 +25,7 @@ class WorkerOnlyApiTests(unittest.TestCase):
         self.assertIn("get", paths["/task-runs/{run_id}/result"])
         self.assertIn("post", paths["/task-runs/{run_id}/cancel"])
         self.assertIn("get", paths["/task-runs/operations/summary"])
+        self.assertIn("get", paths["/operations/metrics"])
 
     def test_cli_config_walks_to_nearest_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

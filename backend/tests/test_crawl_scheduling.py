@@ -4,11 +4,18 @@ import asyncio
 import os
 import unittest
 from contextlib import AbstractAsyncContextManager
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from actions.crawl.schemas import CrawlPage
-from actions.crawl.service import _crawl_concurrency_per_run, crawl, crawl_one_for_task
+from actions.crawl.service import (
+    _CrawlerPool,
+    _cached_page,
+    _crawl_concurrency_per_run,
+    crawl,
+    crawl_one_for_task,
+)
 
 
 class CrawlSchedulingTests(unittest.IsolatedAsyncioTestCase):
@@ -23,9 +30,11 @@ class CrawlSchedulingTests(unittest.IsolatedAsyncioTestCase):
     async def test_batch_uses_bounded_workers_and_preserves_input_order(self) -> None:
         active = 0
         peak_active = 0
+        crawler_pools: set[int] = set()
 
         async def fake_crawl_one_for_task(**kwargs) -> CrawlPage:
             nonlocal active, peak_active
+            crawler_pools.add(id(kwargs["crawler_pool"]))
             active += 1
             peak_active = max(peak_active, active)
             try:
@@ -46,6 +55,7 @@ class CrawlSchedulingTests(unittest.IsolatedAsyncioTestCase):
             output = await crawl(urls, mode="static", wait="none")
 
         self.assertEqual(peak_active, 2)
+        self.assertEqual(len(crawler_pools), 1)
         self.assertEqual([page.url for page in output.pages], urls)
         self.assertEqual(output.stats.succeeded, len(urls))
 
@@ -104,6 +114,104 @@ class CrawlSchedulingTests(unittest.IsolatedAsyncioTestCase):
             events,
             ["lease-enter", "browser-enter", "crawl", "browser-exit", "lease-exit"],
         )
+
+    async def test_crawler_pool_reuses_one_crawler_per_mode(self) -> None:
+        entered: list[str] = []
+
+        class Crawler(AbstractAsyncContextManager[object]):
+            def __init__(self, *, config) -> None:
+                self.config = config
+
+            async def __aenter__(self):
+                entered.append("crawler")
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback) -> None:
+                return None
+
+        with patch("actions.crawl.service.AsyncWebCrawler", new=Crawler):
+            async with _CrawlerPool() as pool:
+                first, second = await asyncio.gather(
+                    pool.get("static"),
+                    pool.get("static"),
+                )
+                dynamic = await pool.get("dynamic")
+
+        self.assertIs(first, second)
+        self.assertIsNot(first, dynamic)
+        self.assertEqual(entered, ["crawler", "crawler"])
+
+    async def test_shared_crawler_holds_one_global_permit_for_its_lifetime(self) -> None:
+        events: list[str] = []
+
+        class Lease(AbstractAsyncContextManager[None]):
+            async def __aenter__(self) -> None:
+                events.append("permit-enter")
+
+            async def __aexit__(self, exc_type, exc, traceback) -> None:
+                events.append("permit-exit")
+
+        class Crawler(AbstractAsyncContextManager[object]):
+            def __init__(self, *, config) -> None:
+                self.config = config
+
+            async def __aenter__(self):
+                events.append("browser-enter")
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback) -> None:
+                events.append("browser-exit")
+
+        session = MagicMock()
+        run_id = uuid4()
+        with (
+            patch("actions.crawl.service.capacity_lease", return_value=Lease()) as lease,
+            patch("actions.crawl.service.AsyncWebCrawler", new=Crawler),
+        ):
+            async with _CrawlerPool(session=session, task_run_id=run_id) as pool:
+                first, second = await asyncio.gather(
+                    pool.get("static", resource_url="https://example.com/1"),
+                    pool.get("static", resource_url="https://example.com/2"),
+                )
+
+        self.assertIs(first, second)
+        lease.assert_called_once_with(
+            session,
+            task_run_id=run_id,
+            url="https://example.com/1",
+            policy=None,
+            progress_reporter=None,
+            include_policy=False,
+        )
+        self.assertEqual(
+            events,
+            ["permit-enter", "browser-enter", "browser-exit", "permit-exit"],
+        )
+
+    async def test_cache_miss_commits_before_network_navigation(self) -> None:
+        session = MagicMock()
+        with (
+            patch(
+                "actions.crawl.service.resolve_url",
+                return_value=SimpleNamespace(id=uuid4(), normalized_url="https://example.com"),
+            ),
+            patch("actions.crawl.service.get_cached_html_artifact", return_value=None),
+            patch("actions.crawl.service.commit_task_checkpoint") as checkpoint,
+        ):
+            page = await _cached_page(
+                object(),  # type: ignore[arg-type]
+                session,
+                task_run_id=uuid4(),
+                requested_url="https://example.com",
+                mode="static",
+                wait="none",
+                run_config_overrides=None,
+                cache_block_rules=None,
+                progress_reporter=None,
+            )
+
+        self.assertIsNone(page)
+        checkpoint.assert_called_once_with(session)
 
 
 if __name__ == "__main__":

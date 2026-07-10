@@ -107,7 +107,7 @@ export function IndexRunCell({ run, density }: IndexRunCellProps) {
     depthProgressEvent,
     "discovered_links"
   )
-  const savedLinkCount = getSavedLinkCount(run)
+  const savedLinkCount = resultQuery.data?.length ?? null
   const linkCount = liveLinkCount ?? savedLinkCount
   const elapsedFrom = run.started_at ?? run.queued_at
   const elapsedTo = run.finished_at ? new Date(run.finished_at).getTime() : now
@@ -260,11 +260,6 @@ function getMetadataNumber(
 ): number | null {
   const value = event?.metadata?.[key]
   return typeof value === "number" ? value : null
-}
-
-function getSavedLinkCount(run: TaskRunRecord): number | null {
-  const links = run.output_json?.links
-  return Array.isArray(links) ? links.length : null
 }
 
 function terminalMessage(run: TaskRunRecord) {

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import unittest
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-from tasks.executor import recover_expired_runs
+from tasks.executor import _renew_lease, recover_expired_runs
 from tasks.models import TaskRun, TaskRunLease
 from tasks.service import request_task_run_cancellation
 
@@ -29,6 +29,35 @@ def _run(status: str) -> TaskRun:
 
 
 class TaskLifecycleTests(unittest.TestCase):
+    def test_preclaimed_child_lease_does_not_refresh_worker_capacity(self) -> None:
+        run = _run("running")
+        lease = TaskRunLease(
+            run_id=run.id,
+            worker_id="supervisor-worker",
+            lease_token=uuid4(),
+            attempt=run.attempt,
+            claimed_at=datetime.now(UTC),
+            heartbeat_at=datetime.now(UTC),
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        )
+        session = MagicMock()
+        session.scalar.return_value = lease
+        session.get.return_value = run
+        session_factory = MagicMock()
+        session_factory.return_value.__enter__.return_value = session
+
+        with patch("tasks.executor.record_worker_heartbeat") as heartbeat:
+            _renew_lease(
+                session_factory,
+                "supervisor-worker",
+                run.id,
+                lease.lease_token,
+                maintain_worker_heartbeat=False,
+            )
+
+        heartbeat.assert_not_called()
+        session.commit.assert_called_once_with()
+
     def test_queued_cancellation_is_immediately_terminal(self) -> None:
         run = _run("queued")
         session = MagicMock()

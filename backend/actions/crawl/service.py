@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import time
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -28,11 +29,61 @@ from crawl_policies.models import CrawlPolicy
 from crawl_policies.permits import capacity_lease
 from crawl_policies.service import find_crawl_policy_for_url
 from crawls.models import Crawl
+from observability import crawl_metrics
 from tasks.models import TaskRunArtifact, TaskRunCrawl
 from tasks.context import commit_task_checkpoint, current_task_execution
 from urls.service import resolve_url
 
 from .schemas import CrawlOutput, CrawlPage, CrawlStats
+
+
+class _CrawlerPool:
+    def __init__(
+        self,
+        *,
+        session: Session | None = None,
+        task_run_id: UUID | None = None,
+        progress_reporter: ProgressReporter | None = None,
+    ) -> None:
+        self._session = session
+        self._task_run_id = task_run_id
+        self._progress_reporter = progress_reporter
+        self._stack = AsyncExitStack()
+        self._crawlers: dict[CrawlMode, AsyncWebCrawler] = {}
+        self._locks: dict[CrawlMode, asyncio.Lock] = {}
+
+    async def __aenter__(self) -> _CrawlerPool:
+        await self._stack.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        await self._stack.__aexit__(exc_type, exc, traceback)
+
+    async def get(self, mode: CrawlMode, *, resource_url: str = "") -> AsyncWebCrawler:
+        crawler = self._crawlers.get(mode)
+        if crawler is not None:
+            return crawler
+        lock = self._locks.setdefault(mode, asyncio.Lock())
+        async with lock:
+            crawler = self._crawlers.get(mode)
+            if crawler is not None:
+                return crawler
+            if self._session is not None and self._task_run_id is not None:
+                await self._stack.enter_async_context(
+                    capacity_lease(
+                        self._session,
+                        task_run_id=self._task_run_id,
+                        url=resource_url,
+                        policy=None,
+                        progress_reporter=self._progress_reporter,
+                        include_policy=False,
+                    )
+                )
+            crawler = await self._stack.enter_async_context(
+                AsyncWebCrawler(config=browser_config_for_mode(mode))
+            )
+            self._crawlers[mode] = crawler
+            return crawler
 
 
 def _json_safe(value: Any) -> Any:
@@ -93,6 +144,7 @@ async def _crawl_url(
     wait: CrawlWait,
     progress_reporter: ProgressReporter | None,
     run_config_overrides: dict[str, Any] | None = None,
+    domain_group: str = "unclassified",
 ) -> CrawlPage:
     await emit_progress(
         progress_reporter,
@@ -124,12 +176,14 @@ async def _crawl_url(
                 error=str(exc),
             ),
         )
-        return CrawlPage(
+        page = CrawlPage(
             url=url,
             success=False,
             duration_seconds=duration,
             error=str(exc),
         )
+        crawl_metrics.navigation(page=page, mode=mode, domain_group=domain_group)
+        return page
 
     duration = time.perf_counter() - start_time
     await emit_progress(
@@ -150,7 +204,7 @@ async def _crawl_url(
             error=result.error_message,
         ),
     )
-    return CrawlPage(
+    page = CrawlPage(
         url=result.url,
         success=result.success,
         status_code=result.status_code,
@@ -160,6 +214,8 @@ async def _crawl_url(
         artifact_warnings=artifact_warnings,
         error=result.error_message,
     )
+    crawl_metrics.navigation(page=page, mode=mode, domain_group=domain_group)
+    return page
 
 
 def _crawl_meta(crawl: dict[str, Any] | None) -> dict[str, Any]:
@@ -437,6 +493,7 @@ async def _cached_page(
         cache_block_rules=cache_block_rules,
     )
     if cached is None:
+        commit_task_checkpoint(session)
         return None
 
     await emit_progress(
@@ -581,8 +638,10 @@ async def crawl_one_for_task(
     session: Session | None = None,
     task_run_id: UUID | None = None,
     run_config_overrides: dict[str, Any] | None = None,
+    crawler_pool: _CrawlerPool | None = None,
 ) -> CrawlPage:
     cache_block_rules: dict[str, Any] | None = None
+    policy: CrawlPolicy | None = None
     if mode is None or wait is None:
         if session is None or task_run_id is None:
             raise RuntimeError("policy-driven crawl requires task-run execution context")
@@ -603,35 +662,99 @@ async def crawl_one_for_task(
         if selected_page is not None:
             return selected_page
 
-    async def load_page() -> tuple[CrawlPage, bool]:
-        async with AsyncWebCrawler(config=browser_config_for_mode(mode)) as owned_crawler:
-            if session is not None and task_run_id is not None:
-                cached_page = await _cached_page(
-                    owned_crawler,
-                    session,
-                    task_run_id=task_run_id,
-                    requested_url=url,
-                    mode=mode,
-                    wait=wait,
-                    run_config_overrides=run_config_overrides,
-                    cache_block_rules=cache_block_rules,
-                    progress_reporter=progress_reporter,
-                )
-                if cached_page is not None:
-                    return cached_page, True
-            page = await _crawl_url(
-                crawler=owned_crawler,
-                url=url,
+    if session is not None:
+        policy = find_crawl_policy_for_url(session, url=url)
+    domain_group = policy.domain_group if policy is not None else "unclassified"
+    acquisition_recorded = False
+    if session is not None and task_run_id is not None:
+        commit_task_checkpoint(session)
+    shared_crawler = (
+        await crawler_pool.get(mode, resource_url=url)
+        if crawler_pool is not None
+        else None
+    )
+
+    async def load_with(crawler: AsyncWebCrawler) -> tuple[CrawlPage, bool]:
+        if session is not None and task_run_id is not None:
+            cached_page = await _cached_page(
+                crawler,
+                session,
+                task_run_id=task_run_id,
+                requested_url=url,
                 mode=mode,
                 wait=wait,
-                progress_reporter=progress_reporter,
                 run_config_overrides=run_config_overrides,
+                cache_block_rules=cache_block_rules,
+                progress_reporter=progress_reporter,
             )
-            return page, False
+            if cached_page is not None:
+                return cached_page, True
+        page = await _crawl_url(
+            crawler=crawler,
+            url=url,
+            mode=mode,
+            wait=wait,
+            progress_reporter=progress_reporter,
+            run_config_overrides=run_config_overrides,
+            domain_group=domain_group,
+        )
+        return page, False
+
+    async def load_page() -> tuple[CrawlPage, bool]:
+        if shared_crawler is not None:
+            return await load_with(shared_crawler)
+        async with AsyncWebCrawler(config=browser_config_for_mode(mode)) as owned_crawler:
+            return await load_with(owned_crawler)
+
+    async def measured_load_page() -> tuple[CrawlPage, bool]:
+        nonlocal acquisition_recorded
+        started_at = time.perf_counter()
+        try:
+            loaded_page, used_cache = await load_page()
+        except asyncio.CancelledError:
+            cancelled_page = CrawlPage(
+                url=url,
+                success=False,
+                duration_seconds=time.perf_counter() - started_at,
+                error="Page acquisition cancelled.",
+            )
+            crawl_metrics.page_acquisition(
+                page=cancelled_page,
+                duration_seconds=cancelled_page.duration_seconds,
+                mode=mode,
+                source="network",
+                domain_group=domain_group,
+                outcome="cancelled",
+            )
+            acquisition_recorded = True
+            raise
+        except Exception as exc:
+            failed_page = CrawlPage(
+                url=url,
+                success=False,
+                duration_seconds=time.perf_counter() - started_at,
+                error=str(exc),
+            )
+            crawl_metrics.page_acquisition(
+                page=failed_page,
+                duration_seconds=failed_page.duration_seconds,
+                mode=mode,
+                source="network",
+                domain_group=domain_group,
+            )
+            acquisition_recorded = True
+            raise
+        crawl_metrics.page_acquisition(
+            page=loaded_page,
+            duration_seconds=time.perf_counter() - started_at,
+            mode=mode,
+            source="cache" if used_cache else "network",
+            domain_group=domain_group,
+        )
+        acquisition_recorded = True
+        return loaded_page, used_cache
 
     if session is not None and task_run_id is not None:
-        policy = find_crawl_policy_for_url(session, url=url)
-        commit_task_checkpoint(session)
         try:
             async with capacity_lease(
                 session,
@@ -639,8 +762,9 @@ async def crawl_one_for_task(
                 url=url,
                 policy=policy,
                 progress_reporter=progress_reporter,
+                include_browser=shared_crawler is None,
             ):
-                page, reused_cache = await load_page()
+                page, reused_cache = await measured_load_page()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -656,8 +780,10 @@ async def crawl_one_for_task(
             )
             page = CrawlPage(url=url, success=False, duration_seconds=0.0, error=str(exc))
             reused_cache = False
+            if not acquisition_recorded:
+                crawl_metrics.crawl_failure(page=page, mode=mode, domain_group=domain_group)
     else:
-        page, reused_cache = await load_page()
+        page, reused_cache = await measured_load_page()
 
     if session is not None and task_run_id is not None and not reused_cache:
         page = _persist_page(
@@ -670,6 +796,7 @@ async def crawl_one_for_task(
             wait=wait,
             run_config_overrides=run_config_overrides,
         )
+        crawl_metrics.crawl_persisted(page=page, mode=mode, domain_group=domain_group)
 
     return page
 
@@ -746,7 +873,7 @@ async def crawl(
     else:
         worker_session_factory = None
 
-    async def crawl_worker() -> None:
+    async def crawl_worker(crawler_pool: _CrawlerPool) -> None:
         worker_session = worker_session_factory() if worker_session_factory is not None else None
         try:
             while True:
@@ -763,6 +890,7 @@ async def crawl(
                         progress_reporter=progress_reporter,
                         session=worker_session,
                         task_run_id=task_run_id,
+                        crawler_pool=crawler_pool,
                     )
                     pages_by_index[index] = page
                     await _emit_crawl_batch_checkpoint(
@@ -779,14 +907,22 @@ async def crawl(
                 worker_session.close()
 
     worker_count = min(len(urls), _crawl_concurrency_per_run())
-    workers = [asyncio.create_task(crawl_worker()) for _ in range(worker_count)]
-    try:
-        await asyncio.gather(*workers)
-    except BaseException:
-        for worker in workers:
-            worker.cancel()
-        await asyncio.gather(*workers, return_exceptions=True)
-        raise
+    async with _CrawlerPool(
+        session=session if task_run_id is not None else None,
+        task_run_id=task_run_id,
+        progress_reporter=progress_reporter,
+    ) as crawler_pool:
+        workers = [
+            asyncio.create_task(crawl_worker(crawler_pool))
+            for _ in range(worker_count)
+        ]
+        try:
+            await asyncio.gather(*workers)
+        except BaseException:
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+            raise
 
     pages = [pages_by_index[index] for index in range(len(urls))]
     succeeded = sum(1 for page in pages if page.success)

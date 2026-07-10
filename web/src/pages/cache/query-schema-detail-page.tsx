@@ -13,22 +13,23 @@ import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { useDeleteQuerySchema, useQuerySchema, useUpdateQuerySchema } from "@/hooks/use-history-data"
+import {
+  useDeleteQuerySchema,
+  useQuerySchema,
+  useUpdateQuerySchema,
+} from "@/hooks/use-resource-data"
 
 type QuerySchemaDetailPageProps = {
   schemaId: string
 }
 
-export function QuerySchemaDetailPage({ schemaId }: QuerySchemaDetailPageProps) {
+export function QuerySchemaDetailPage({
+  schemaId,
+}: QuerySchemaDetailPageProps) {
   const schemaQuery = useQuerySchema(schemaId)
   const schema = schemaQuery.data
 
@@ -57,7 +58,7 @@ export function QuerySchemaDetailPage({ schemaId }: QuerySchemaDetailPageProps) 
               variant="ghost"
               size="icon-sm"
               nativeButton={false}
-              render={<a href="/history/query-schemas" />}
+              render={<a href="/cache/query-schemas" />}
             >
               <ArrowLeftIcon />
             </Button>
@@ -73,7 +74,9 @@ export function QuerySchemaDetailPage({ schemaId }: QuerySchemaDetailPageProps) 
                 </Badge>
                 <Badge variant="outline">{schema.schema_type}</Badge>
                 <Badge variant="outline">{schema.param_count} params</Badge>
-                <Badge variant="outline">{schema.evidence_count} evidence</Badge>
+                <Badge variant="outline">
+                  {schema.evidence_count} evidence
+                </Badge>
               </div>
             </div>
           </div>
@@ -91,7 +94,9 @@ export function QuerySchemaDetailPage({ schemaId }: QuerySchemaDetailPageProps) 
               variant="outline"
               size="sm"
               nativeButton={false}
-              render={<a href={schema.match} target="_blank" rel="noreferrer" />}
+              render={
+                <a href={schema.match} target="_blank" rel="noreferrer" />
+              }
             >
               <ExternalLinkIcon />
               Open
@@ -139,13 +144,17 @@ function QuerySchemaAdmin({
   }
 
   const deleteCurrentSchema = () => {
-    if (!window.confirm("Delete this query schema? Atlas will generate a fresh one the next time this page shape is extracted.")) {
+    if (
+      !window.confirm(
+        "Delete this query schema? Atlas will generate a fresh one the next time this page shape is extracted."
+      )
+    ) {
       return
     }
 
     deleteSchema.mutate(undefined, {
       onSuccess: () => {
-        window.history.pushState(null, "", "/history/query-schemas")
+        window.history.pushState(null, "", "/cache/query-schemas")
         window.dispatchEvent(new PopStateEvent("popstate"))
       },
     })
@@ -214,8 +223,16 @@ function MetadataCard({
         <MetaRow label="Hash" value={schema.schema_hash} mono />
         <MetaRow label="Domain" value={schema.domain ?? "-"} />
         <MetaRow label="Path" value={schema.path ?? "-"} />
-        <MetaRow label="Crawl" value={schema.generated_from_crawl_id ?? "-"} mono />
-        <MetaRow label="Task run" value={schema.generated_by_task_run_id ?? "-"} mono />
+        <MetaRow
+          label="Crawl"
+          value={schema.generated_from_crawl_id ?? "-"}
+          mono
+        />
+        <MetaRow
+          label="Task run"
+          value={schema.generated_by_task_run_id ?? "-"}
+          mono
+        />
         <MetaRow label="Created" value={formatDate(schema.created_at)} />
         <MetaRow label="Updated" value={formatDate(schema.updated_at)} />
       </CardContent>
@@ -223,11 +240,21 @@ function MetadataCard({
   )
 }
 
-function MetaRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+function MetaRow({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string
+  value: string
+  mono?: boolean
+}) {
   return (
     <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-3">
       <span className="text-muted-foreground">{label}</span>
-      <span className={`truncate ${mono ? "font-mono text-xs" : ""}`}>{value}</span>
+      <span className={`truncate ${mono ? "font-mono text-xs" : ""}`}>
+        {value}
+      </span>
     </div>
   )
 }

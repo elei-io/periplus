@@ -2,7 +2,6 @@ import {
   ArrowLeftIcon,
   BracesIcon,
   FileArchiveIcon,
-  RouteIcon,
   SaveIcon,
   ShieldAlertIcon,
   Trash2Icon,
@@ -16,8 +15,12 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import { useDataSchema, useDeleteDataSchema, useUpdateDataSchema } from "@/hooks/use-history-data"
-import type { DataSchemaDetailRecord } from "@/types/history"
+import {
+  useDataSchema,
+  useDeleteDataSchema,
+  useUpdateDataSchema,
+} from "@/hooks/use-resource-data"
+import type { DataSchemaDetailRecord } from "@/types/resources"
 
 export function DataSchemaDetailPage({ schemaId }: { schemaId: string }) {
   const schemaQuery = useDataSchema(schemaId)
@@ -97,7 +100,7 @@ export function DataSchemaDetailPage({ schemaId }: { schemaId: string }) {
 
       <section className="rounded-md border bg-card/80 p-3">
         <h2 className="mb-2 text-sm font-medium">Prompt</h2>
-        <p className="whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
+        <p className="text-sm leading-6 whitespace-pre-wrap text-muted-foreground">
           {schema.prompt}
         </p>
       </section>
@@ -111,7 +114,11 @@ export function DataSchemaDetailPage({ schemaId }: { schemaId: string }) {
       <section className="grid gap-3 xl:grid-cols-2">
         <JsonPanel title="Schema JSON" value={schema.schema_json} />
         <JsonPanel title="Inputs" value={schema.inputs_json} />
-        <JsonPanel title="Warning Metadata" value={schema.warnings_json} compact />
+        <JsonPanel
+          title="Warning Metadata"
+          value={schema.warnings_json}
+          compact
+        />
       </section>
     </div>
   )
@@ -123,8 +130,12 @@ function SchemaAdminEditor({ schema }: { schema: DataSchemaDetailRecord }) {
   const [match, setMatch] = useState(schema.match)
   const [enabled, setEnabled] = useState(schema.enabled)
   const [priority, setPriority] = useState(String(schema.priority))
-  const [validationStatus, setValidationStatus] = useState(schema.validation_status ?? "")
-  const [schemaJson, setSchemaJson] = useState(JSON.stringify(schema.schema_json, null, 2))
+  const [validationStatus, setValidationStatus] = useState(
+    schema.validation_status ?? ""
+  )
+  const [schemaJson, setSchemaJson] = useState(
+    JSON.stringify(schema.schema_json, null, 2)
+  )
 
   const save = () => {
     let parsedSchema: Record<string, unknown>
@@ -156,13 +167,17 @@ function SchemaAdminEditor({ schema }: { schema: DataSchemaDetailRecord }) {
   }
 
   const deleteCurrentSchema = () => {
-    if (!window.confirm("Delete this data schema? Existing task runs will keep their output, but this schema will no longer be reusable.")) {
+    if (
+      !window.confirm(
+        "Delete this data schema? Existing task runs will keep their output, but this schema will no longer be reusable."
+      )
+    ) {
       return
     }
 
     deleteSchema.mutate(undefined, {
       onSuccess: () => {
-        window.history.pushState(null, "", "/history/data-schemas")
+        window.history.pushState(null, "", "/cache/data-schemas")
         window.dispatchEvent(new PopStateEvent("popstate"))
       },
     })
@@ -190,7 +205,10 @@ function SchemaAdminEditor({ schema }: { schema: DataSchemaDetailRecord }) {
       </div>
       <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_8rem_10rem]">
         <Field label="Match">
-          <Input value={match} onChange={(event) => setMatch(event.target.value)} />
+          <Input
+            value={match}
+            onChange={(event) => setMatch(event.target.value)}
+          />
         </Field>
         <Field label="Priority">
           <Input
@@ -203,7 +221,9 @@ function SchemaAdminEditor({ schema }: { schema: DataSchemaDetailRecord }) {
         <Field label="Enabled">
           <div className="flex h-7 items-center gap-2">
             <Switch checked={enabled} onCheckedChange={setEnabled} />
-            <span className="text-xs text-muted-foreground">{enabled ? "On" : "Off"}</span>
+            <span className="text-xs text-muted-foreground">
+              {enabled ? "On" : "Off"}
+            </span>
           </div>
         </Field>
       </div>
@@ -226,13 +246,7 @@ function SchemaAdminEditor({ schema }: { schema: DataSchemaDetailRecord }) {
   )
 }
 
-function Field({
-  label,
-  children,
-}: {
-  label: string
-  children: ReactNode
-}) {
+function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="grid gap-1">
       <Label>{label}</Label>
@@ -244,23 +258,14 @@ function Field({
 function LinkActions({ schema }: { schema: DataSchemaDetailRecord }) {
   return (
     <section className="flex flex-wrap gap-2">
-      {schema.generated_from_crawl_id ? (
-        <Button
-          variant="outline"
-          size="sm"
-          nativeButton={false}
-          render={<a href={`/history/crawls/${schema.generated_from_crawl_id}`} />}
-        >
-          <RouteIcon />
-          Source Crawl
-        </Button>
-      ) : null}
       {schema.generated_from_artifact_id ? (
         <Button
           variant="outline"
           size="sm"
           nativeButton={false}
-          render={<a href={`/history/artifacts/${schema.generated_from_artifact_id}`} />}
+          render={
+            <a href={`/cache/artifacts/${schema.generated_from_artifact_id}`} />
+          }
         >
           <FileArchiveIcon />
           Source Artifact
@@ -276,7 +281,7 @@ function BackButton() {
       variant="outline"
       size="sm"
       nativeButton={false}
-      render={<a href="/history/data-schemas" />}
+      render={<a href="/cache/data-schemas" />}
     >
       <ArrowLeftIcon />
       Data Schemas
@@ -301,9 +306,14 @@ function WarningDetails({ schema }: { schema: DataSchemaDetailRecord }) {
       {warnings.length > 0 ? (
         <div className="grid gap-3">
           {warnings.map((warning) => (
-            <article key={warning.code} className="grid gap-3 rounded-md border bg-muted/30 p-3">
+            <article
+              key={warning.code}
+              className="grid gap-3 rounded-md border bg-muted/30 p-3"
+            >
               <div className="min-w-0">
-                <div className="truncate text-sm font-medium">{warning.name}</div>
+                <div className="truncate text-sm font-medium">
+                  {warning.name}
+                </div>
                 <div className="truncate font-mono text-xs text-muted-foreground">
                   {warning.code}
                 </div>
@@ -335,9 +345,12 @@ function DetailGroup({
       <h2 className="mb-2 text-sm font-medium">{title}</h2>
       <dl className="grid gap-2 text-xs">
         {items.map(([label, value]) => (
-          <div key={label} className="grid gap-1 md:grid-cols-[9rem_minmax(0,1fr)]">
+          <div
+            key={label}
+            className="grid gap-1 md:grid-cols-[9rem_minmax(0,1fr)]"
+          >
             <dt className="text-muted-foreground">{label}</dt>
-            <dd className="min-w-0 break-words font-mono">{value || "-"}</dd>
+            <dd className="min-w-0 font-mono break-words">{value || "-"}</dd>
           </div>
         ))}
       </dl>

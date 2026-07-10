@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.28",
     "nats-py>=2.11",
     "psycopg[binary]>=3.2",
+    "prometheus-client>=0.22",
     "sqlalchemy>=2.0",
     "typer>=0.26.8",
 ]
@@ -45,6 +46,8 @@ packages = [
     "cli",
     "cli.apps",
     "db",
+    "metrics",
+    "observability",
     "tasks",
     "urls",
     "worker",

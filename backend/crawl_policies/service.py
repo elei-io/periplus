@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 from datetime import UTC, datetime
 from urllib.parse import urlparse, urlunparse
 from uuid import UUID
@@ -16,6 +17,12 @@ from urls.service import normalize_url
 
 def _match_string(url_match: UrlMatch) -> str:
     return urlunparse((url_match.scheme, url_match.host, url_match.path_pattern, "", "", ""))
+
+
+def generated_metric_slug(match: str, *, suffix: str) -> str:
+    host = urlparse(match).hostname or "policy"
+    readable = re.sub(r"[^a-z0-9]+", "-", host.lower()).strip("-") or "policy"
+    return f"{readable[:48]}-{suffix[:8].lower()}"
 
 
 def _matches(url: str, url_match: UrlMatch) -> bool:
@@ -81,6 +88,8 @@ def _config_int(policy: CrawlPolicy, name: str) -> int | None:
 def _list_record(policy: CrawlPolicy) -> CrawlPolicyListRecord:
     return CrawlPolicyListRecord(
         id=policy.id,
+        metric_slug=policy.metric_slug,
+        domain_group=policy.domain_group,
         url_match_id=policy.url_match_id,
         match=match_for_policy(policy),
         enabled=policy.enabled,
@@ -167,6 +176,7 @@ def update_crawl_policy(
     enabled: bool | None = None,
     match: str | None = None,
     config: dict | None = None,
+    domain_group: str | None = None,
 ) -> CrawlPolicy:
     if enabled is not None:
         policy.enabled = enabled
@@ -174,6 +184,11 @@ def update_crawl_policy(
         policy.match = match
     if config is not None:
         policy.config = config
+    if domain_group is not None:
+        normalized_group = domain_group.strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", normalized_group):
+            raise ValueError("domain_group must contain 1-63 lowercase letters, numbers, underscores, or hyphens")
+        policy.domain_group = normalized_group
     policy.updated_at = datetime.now(UTC)
     session.flush()
     return policy

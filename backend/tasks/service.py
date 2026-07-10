@@ -6,7 +6,7 @@ from uuid import UUID
 from croniter import croniter
 from sqlalchemy import exists, func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 from pydantic import ValidationError
 
 from actions.extract.schemas import Input as ExtractInput
@@ -302,6 +302,7 @@ def list_task_runs(
 
     statement = (
         select(TaskRun)
+        .options(defer(TaskRun.output_json))
         .where(TaskRun.task_id == task_id)
         .order_by(TaskRun.queued_at.desc())
         .limit(limit)
@@ -318,6 +319,7 @@ def list_recent_task_runs(
     active = list(
         session.scalars(
             select(TaskRun)
+            .options(defer(TaskRun.output_json))
             .join(Task, Task.id == TaskRun.task_id)
             .where(Task.primitive == primitive, TaskRun.status.in_(_ACTIVE_RUN_STATUSES))
             .order_by(TaskRun.queued_at.desc())
@@ -326,6 +328,7 @@ def list_recent_task_runs(
     terminal = list(
         session.scalars(
             select(TaskRun)
+            .options(defer(TaskRun.output_json))
             .join(Task, Task.id == TaskRun.task_id)
             .where(Task.primitive == primitive, TaskRun.status.not_in(_ACTIVE_RUN_STATUSES))
             .order_by(TaskRun.finished_at.desc().nullslast(), TaskRun.queued_at.desc())
@@ -443,7 +446,7 @@ def enqueue_ad_hoc_task_run(
 
 
 def get_task_run(session: Session, run_id: UUID) -> TaskRunRecord:
-    run = session.get(TaskRun, run_id)
+    run = session.get(TaskRun, run_id, options=(defer(TaskRun.output_json),))
     if run is None:
         raise TaskNotFoundError(f"Task run {run_id} was not found.")
     return _run_record(run)
@@ -467,7 +470,7 @@ def get_task_run_result(session: Session, run_id: UUID) -> object:
 
 
 def request_task_run_cancellation(session: Session, run_id: UUID) -> TaskRunRecord:
-    run = session.get(TaskRun, run_id)
+    run = session.get(TaskRun, run_id, options=(defer(TaskRun.output_json),))
     if run is None:
         raise TaskNotFoundError(f"Task run {run_id} was not found.")
     if run.status in {"succeeded", "failed", "cancelled", "skipped"}:
@@ -491,8 +494,8 @@ def task_operations(session: Session, stale_after_seconds: int = 30) -> TaskOper
     oldest = session.scalar(select(func.min(TaskRun.queued_at)).where(TaskRun.status == "queued"))
     stale_before = now - timedelta(seconds=stale_after_seconds)
     recent = list(
-        session.scalars(
-            select(TaskRun)
+        session.execute(
+            select(TaskRun.queued_at, TaskRun.started_at, TaskRun.finished_at)
             .where(TaskRun.started_at.is_not(None), TaskRun.finished_at.is_not(None))
             .order_by(TaskRun.finished_at.desc())
             .limit(100)

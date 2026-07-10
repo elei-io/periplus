@@ -1,8 +1,4 @@
-export type ArtifactKind =
-  | "html"
-  | "screenshot"
-  | "pdf"
-  | "mhtml"
+export type ArtifactKind = "html" | "screenshot" | "pdf" | "mhtml"
 
 export type ArtifactRecord = {
   id: string
@@ -37,35 +33,6 @@ export type PaginatedResponse<T> = {
   offset: number
 }
 
-export type MetricCard = {
-  metric: string
-  label: string
-  value: number | string
-  unit: string | null
-  tone: string | null
-  description: string | null
-}
-
-export type MetricDatum = {
-  metric: string
-  label: string
-  value: number
-  labels: Record<string, string>
-}
-
-export type MetricBreakdown = {
-  metric: string
-  label: string
-  unit: string | null
-  items: MetricDatum[]
-}
-
-export type HistoryMetricsResponse = {
-  window_seconds: number
-  cards: MetricCard[]
-  breakdowns: MetricBreakdown[]
-}
-
 export type ArtifactListResponse = PaginatedResponse<ArtifactRecord>
 
 export type ArtifactDetailRecord = ArtifactRecord & {
@@ -91,41 +58,6 @@ export type ArtifactInvalidateRequest = {
 
 export type ArtifactInvalidateResponse = {
   invalidated: number
-}
-
-export type UrlRecord = {
-  id: string
-  url: string
-  normalized_url: string
-  scheme: string
-  host: string
-  domain: string
-  path: string
-  query: string | null
-  query_fingerprint: string | null
-  crawl_count: number
-  artifact_count: number
-  active_artifact_count: number
-  invalidated_artifact_count: number
-  cache_eligible_count: number
-  latest_status_code: number | null
-  latest_crawl_at: string | null
-  latest_artifact_at: string | null
-  warning_count: number
-  crawl_warning_count: number
-  artifact_warning_count: number
-}
-
-export type UrlListResponse = PaginatedResponse<UrlRecord>
-
-export type UrlDetailRecord = UrlRecord & {
-  recent_crawls: CrawlRecord[]
-  artifacts: ArtifactRecord[]
-}
-
-export type UrlFilters = {
-  urlPattern: string
-  domain: string
 }
 
 export type QuerySchemaRecord = {
@@ -171,46 +103,6 @@ export type QuerySchemaFilters = {
   warnings: "all" | "clean" | "warning"
 }
 
-export type CrawlRecord = {
-  id: string
-  url_id: string
-  task_run_id: string
-  started_at: string
-  finished_at: string | null
-  duration_ms: number | null
-  input_hash: string
-  success: boolean
-  status_code: number | null
-  retry_count: number
-  warning_count: number
-  error_message: string | null
-  artifact_count: number
-  url: string
-  normalized_url: string
-  domain: string
-  path_name: string
-}
-
-export type CrawlListResponse = PaginatedResponse<CrawlRecord>
-
-export type CrawlDetailRecord = CrawlRecord & {
-  inputs_json: Record<string, unknown>
-  redirects_json: Record<string, unknown>
-  errors_json: Record<string, unknown>
-  warnings_json: Record<string, unknown>
-  meta: Record<string, unknown>
-  created_at: string
-  artifacts: ArtifactRecord[]
-}
-
-export type CrawlFilters = {
-  urlPattern: string
-  domain: string
-  success: "all" | "succeeded" | "failed"
-  statusCode: string
-  warnings: "all" | "clean" | "warning"
-}
-
 export type DataSchemaRecord = {
   id: string
   match: string
@@ -233,10 +125,9 @@ export type DataSchemaRecord = {
   updated_at: string
 }
 
-export type DataSchemaListResponse = PaginatedResponse<DataSchemaRecord>
-  & {
-    summary: DataSchemaSummary
-  }
+export type DataSchemaListResponse = PaginatedResponse<DataSchemaRecord> & {
+  summary: DataSchemaSummary
+}
 
 export type DataSchemaSummary = {
   total_schemas: number
@@ -277,6 +168,8 @@ export type DataSchemaFilters = {
 
 export type CrawlPolicyRecord = {
   id: string
+  metric_slug: string
+  domain_group: string
   url_match_id: string | null
   match: string
   enabled: boolean
@@ -300,6 +193,7 @@ export type CrawlPolicyUpdateRequest = {
   enabled?: boolean
   match?: string
   config?: Record<string, unknown>
+  domain_group?: string
 }
 
 export type CrawlPolicyFilters = {

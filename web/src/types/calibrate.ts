@@ -39,6 +39,8 @@ export type CalibrationCandidate = {
 
 export type CrawlPolicyRecord = {
   id: string
+  metric_slug: string
+  domain_group: string
   url_match_id: string | null
   match: string
   enabled: boolean

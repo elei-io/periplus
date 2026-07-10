@@ -1,7 +1,7 @@
 import {
+  BracesIcon,
   CheckCircle2Icon,
   FilterIcon,
-  ListFilterIcon,
   RefreshCwIcon,
   XCircleIcon,
 } from "lucide-react"
@@ -24,29 +24,32 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { useQuerySchemas } from "@/hooks/use-history-data"
-import { HistoryPagination, HISTORY_PAGE_SIZE } from "@/pages/history/history-pagination"
-import type { QuerySchemaFilters, QuerySchemaRecord } from "@/types/history"
+import { useDataSchemas } from "@/hooks/use-resource-data"
+import {
+  RESOURCE_PAGE_SIZE,
+  ResourcePagination,
+} from "@/components/resources/resource-pagination"
+import type { DataSchemaFilters, DataSchemaRecord } from "@/types/resources"
 
-const defaultFilters: QuerySchemaFilters = {
+const defaultFilters: DataSchemaFilters = {
   matchPattern: "",
-  domain: "",
+  prompt: "",
   schemaType: "all",
   enabled: "all",
   warnings: "all",
 }
 
-export function QuerySchemasPage() {
-  const [filters, setFilters] = useState<QuerySchemaFilters>(defaultFilters)
+export function DataSchemasPage() {
+  const [filters, setFilters] = useState<DataSchemaFilters>(defaultFilters)
   const [offset, setOffset] = useState(0)
-  const schemasQuery = useQuerySchemas(filters, {
-    limit: HISTORY_PAGE_SIZE,
+  const schemasQuery = useDataSchemas(filters, {
+    limit: RESOURCE_PAGE_SIZE,
     offset,
   })
   const schemas = schemasQuery.data?.items ?? []
   const total = schemasQuery.data?.total ?? 0
 
-  const patchFilters = (patch: Partial<QuerySchemaFilters>) => {
+  const patchFilters = (patch: Partial<DataSchemaFilters>) => {
     setOffset(0)
     setFilters((current) => ({ ...current, ...patch }))
   }
@@ -56,8 +59,8 @@ export function QuerySchemasPage() {
       <section className="flex flex-col gap-3 border-b pb-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
-            <ListFilterIcon className="size-4 text-muted-foreground" />
-            <h1 className="truncate text-lg font-medium">Query Schemas</h1>
+            <BracesIcon className="size-4 text-muted-foreground" />
+            <h1 className="truncate text-lg font-medium">Data Schemas</h1>
             <Badge variant="outline">{total}</Badge>
           </div>
           <Button
@@ -70,20 +73,22 @@ export function QuerySchemasPage() {
             Refresh
           </Button>
         </div>
-        <div className="grid gap-2 xl:grid-cols-[minmax(16rem,1fr)_14rem_9rem_9rem_10rem]">
+        <div className="grid gap-2 xl:grid-cols-[minmax(16rem,1fr)_minmax(14rem,1fr)_9rem_9rem_10rem]">
           <div className="relative">
             <FilterIcon className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               className="pl-9"
               value={filters.matchPattern}
-              placeholder="*example.com/search*"
-              onChange={(event) => patchFilters({ matchPattern: event.target.value })}
+              placeholder="*example.com/item/*"
+              onChange={(event) =>
+                patchFilters({ matchPattern: event.target.value })
+              }
             />
           </div>
           <Input
-            value={filters.domain}
-            placeholder="example.com"
-            onChange={(event) => patchFilters({ domain: event.target.value })}
+            value={filters.prompt}
+            placeholder="Prompt contains..."
+            onChange={(event) => patchFilters({ prompt: event.target.value })}
           />
           <FilterSelect
             value={filters.schemaType}
@@ -93,7 +98,9 @@ export function QuerySchemasPage() {
               { value: "xpath", label: "XPath" },
             ]}
             onChange={(schemaType) =>
-              patchFilters({ schemaType: schemaType as QuerySchemaFilters["schemaType"] })
+              patchFilters({
+                schemaType: schemaType as DataSchemaFilters["schemaType"],
+              })
             }
             aria-label="Schema type"
           />
@@ -105,7 +112,7 @@ export function QuerySchemasPage() {
               { value: "disabled", label: "Disabled" },
             ]}
             onChange={(enabled) =>
-              patchFilters({ enabled: enabled as QuerySchemaFilters["enabled"] })
+              patchFilters({ enabled: enabled as DataSchemaFilters["enabled"] })
             }
             aria-label="Enabled state"
           />
@@ -117,7 +124,9 @@ export function QuerySchemasPage() {
               { value: "warning", label: "Warnings" },
             ]}
             onChange={(warnings) =>
-              patchFilters({ warnings: warnings as QuerySchemaFilters["warnings"] })
+              patchFilters({
+                warnings: warnings as DataSchemaFilters["warnings"],
+              })
             }
             aria-label="Warning state"
           />
@@ -128,30 +137,34 @@ export function QuerySchemasPage() {
         <TableHeader>
           <TableRow>
             <TableHead>Match</TableHead>
+            <TableHead>Prompt</TableHead>
             <TableHead>Type</TableHead>
-            <TableHead>Params</TableHead>
-            <TableHead>Evidence</TableHead>
-            <TableHead>Warnings</TableHead>
+            <TableHead>Priority</TableHead>
+            <TableHead>Failures</TableHead>
+            <TableHead>Used</TableHead>
             <TableHead>Updated</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {schemas.map((schema) => (
-            <QuerySchemaRow key={schema.id} schema={schema} />
+            <DataSchemaRow key={schema.id} schema={schema} />
           ))}
           {!schemasQuery.isLoading && schemas.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
-                No query schemas match.
+              <TableCell
+                colSpan={7}
+                className="h-24 text-center text-muted-foreground"
+              >
+                No data schemas match.
               </TableCell>
             </TableRow>
           ) : null}
         </TableBody>
       </Table>
 
-      <HistoryPagination
+      <ResourcePagination
         total={total}
-        limit={schemasQuery.data?.limit ?? HISTORY_PAGE_SIZE}
+        limit={schemasQuery.data?.limit ?? RESOURCE_PAGE_SIZE}
         offset={schemasQuery.data?.offset ?? offset}
         isFetching={schemasQuery.isFetching}
         onOffsetChange={setOffset}
@@ -160,37 +173,44 @@ export function QuerySchemasPage() {
   )
 }
 
-function QuerySchemaRow({ schema }: { schema: QuerySchemaRecord }) {
+function DataSchemaRow({ schema }: { schema: DataSchemaRecord }) {
   return (
     <TableRow>
-      <TableCell className="max-w-[30rem]">
+      <TableCell className="max-w-[24rem]">
         <a
-          href={`/history/query-schemas/${schema.id}`}
+          href={`/cache/data-schemas/${schema.id}`}
           className="block min-w-0 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
         >
           <span className="block truncate font-medium text-link underline-offset-4 hover:underline">
             {schema.match}
           </span>
-          <span className="block truncate text-muted-foreground">{schema.domain || schema.path || "-"}</span>
+          <span className="block truncate text-muted-foreground">
+            {schema.domain || schema.path || "-"}
+          </span>
         </a>
+      </TableCell>
+      <TableCell className="max-w-[28rem]">
+        <span className="line-clamp-2 text-sm">{schema.prompt}</span>
       </TableCell>
       <TableCell>
         <Badge variant="outline">{schema.schema_type}</Badge>
       </TableCell>
-      <TableCell>{schema.param_count}</TableCell>
-      <TableCell>{schema.evidence_count}</TableCell>
+      <TableCell>{schema.priority}</TableCell>
       <TableCell>
-        <Badge variant={schema.warning_count > 0 ? "destructive" : "outline"}>
-          {schema.warning_count}
+        <Badge variant={schema.failure_count > 0 ? "destructive" : "outline"}>
+          {schema.failure_count}
         </Badge>
       </TableCell>
+      <TableCell>{schema.task_run_count}</TableCell>
       <TableCell>
         <div className="flex items-center gap-2">
           <Badge variant={schema.enabled ? "secondary" : "destructive"}>
             {schema.enabled ? <CheckCircle2Icon /> : <XCircleIcon />}
             {schema.enabled ? "Enabled" : "Disabled"}
           </Badge>
-          <span className="text-xs text-muted-foreground">{formatDate(schema.updated_at)}</span>
+          <span className="text-xs text-muted-foreground">
+            {formatDate(schema.updated_at)}
+          </span>
         </div>
       </TableCell>
     </TableRow>
@@ -208,7 +228,8 @@ function FilterSelect({
   onChange: (value: string) => void
   "aria-label": string
 }) {
-  const selectedLabel = options.find((option) => option.value === value)?.label ?? value
+  const selectedLabel =
+    options.find((option) => option.value === value)?.label ?? value
 
   return (
     <Select

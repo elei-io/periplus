@@ -74,7 +74,7 @@ export function SearchRunCell({ run, density }: SearchRunCellProps) {
       ? Math.min(100, (progressEvent.current / progressEvent.total) * 100)
       : null
   const liveResultCount = getMetadataNumber(progressEvent, "results")
-  const savedResultCount = getSavedResultCount(run)
+  const savedResultCount = resultQuery.data?.length ?? null
   const resultCount = liveResultCount ?? savedResultCount
   const elapsedFrom = run.started_at ?? run.queued_at
   const elapsedTo = run.finished_at ? new Date(run.finished_at).getTime() : now
@@ -224,11 +224,6 @@ function getMetadataNumber(
 ): number | null {
   const value = event?.metadata?.[key]
   return typeof value === "number" ? value : null
-}
-
-function getSavedResultCount(run: TaskRunRecord): number | null {
-  const results = run.output_json?.results
-  return Array.isArray(results) ? results.length : null
 }
 
 function terminalMessage(run: TaskRunRecord) {

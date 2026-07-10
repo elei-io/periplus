@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlunparse
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -14,6 +14,7 @@ from actions.crawl.service import crawl_one_for_task
 from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
 from crawl_policies.models import CrawlPolicy
+from crawl_policies.service import generated_metric_slug
 from urls.service import normalize_url, resolve_domain_url_match_for_url
 from tasks.context import commit_task_checkpoint
 
@@ -336,11 +337,18 @@ async def calibrate(
     selected = _select_candidate(candidates)
     selected_page = pages_by_template.get(selected.template)
     config = _policy_config(selected=selected, candidates=candidates)
-    policy = existing_policy or CrawlPolicy(
-        url_match_id=url_match.id,
-        match=match,
-        config=config,
-    )
+    if existing_policy is None:
+        policy_id = uuid4()
+        policy = CrawlPolicy(
+            id=policy_id,
+            metric_slug=generated_metric_slug(match, suffix=policy_id.hex),
+            domain_group="unclassified",
+            url_match_id=url_match.id,
+            match=match,
+            config=config,
+        )
+    else:
+        policy = existing_policy
     policy.url_match_id = url_match.id
     policy.match = match
     policy.enabled = True

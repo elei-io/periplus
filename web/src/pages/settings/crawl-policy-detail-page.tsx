@@ -12,12 +12,7 @@ import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -32,14 +27,15 @@ import {
   useCrawlPolicy,
   useDeleteCrawlPolicy,
   useUpdateCrawlPolicy,
-} from "@/hooks/use-history-data"
-import type { CrawlPolicyDetailRecord } from "@/types/history"
+} from "@/hooks/use-resource-data"
+import type { CrawlPolicyDetailRecord } from "@/types/resources"
 
 type CrawlPolicyDetailPageProps = {
   policyId: string
 }
 
-type CrawlPolicyTemplate = "static_fast" | "static_wait" | "dynamic_scan" | "app_stable" | "app_deep"
+type CrawlPolicyTemplate =
+  "static_fast" | "static_wait" | "dynamic_scan" | "app_stable" | "app_deep"
 
 type CrawlPolicyTemplateConfig = {
   template: CrawlPolicyTemplate
@@ -101,7 +97,9 @@ function templateConfigFor(value: unknown) {
   return crawlPolicyTemplates.find((template) => template.template === value)
 }
 
-export function CrawlPolicyDetailPage({ policyId }: CrawlPolicyDetailPageProps) {
+export function CrawlPolicyDetailPage({
+  policyId,
+}: CrawlPolicyDetailPageProps) {
   const policyQuery = useCrawlPolicy(policyId)
   const policy = policyQuery.data
 
@@ -130,7 +128,7 @@ export function CrawlPolicyDetailPage({ policyId }: CrawlPolicyDetailPageProps) 
               variant="ghost"
               size="icon-sm"
               nativeButton={false}
-              render={<a href="/history/crawl-policies" />}
+              render={<a href="/settings/crawl-policies" />}
             >
               <ArrowLeftIcon />
             </Button>
@@ -179,7 +177,9 @@ export function CrawlPolicyDetailPage({ policyId }: CrawlPolicyDetailPageProps) 
 
 function ConfigEditor({ policy }: { policy: CrawlPolicyDetailRecord }) {
   const updatePolicy = useUpdateCrawlPolicy(policy.id)
-  const [configText, setConfigText] = useState(JSON.stringify(policy.config, null, 2))
+  const [configText, setConfigText] = useState(
+    JSON.stringify(policy.config, null, 2)
+  )
 
   const save = () => {
     try {
@@ -219,14 +219,19 @@ function ConfigEditor({ policy }: { policy: CrawlPolicyDetailRecord }) {
 
 function TemplateCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
   const updatePolicy = useUpdateCrawlPolicy(policy.id)
-  const currentTemplate = templateConfigFor(policy.config.template) ?? crawlPolicyTemplates[0]
+  const currentTemplate =
+    templateConfigFor(policy.config.template) ?? crawlPolicyTemplates[0]
   const initialConcurrency =
     typeof policy.config.max_concurrency === "number"
       ? policy.config.max_concurrency
       : currentTemplate.maxConcurrency
-  const [templateName, setTemplateName] = useState<CrawlPolicyTemplate>(currentTemplate.template)
+  const [templateName, setTemplateName] = useState<CrawlPolicyTemplate>(
+    currentTemplate.template
+  )
   const selectedTemplate = templateConfigFor(templateName) ?? currentTemplate
-  const [maxConcurrency, setMaxConcurrency] = useState(String(initialConcurrency))
+  const [maxConcurrency, setMaxConcurrency] = useState(
+    String(initialConcurrency)
+  )
 
   const saveTemplate = () => {
     const parsedConcurrency = Number.parseInt(maxConcurrency, 10)
@@ -259,7 +264,11 @@ function TemplateCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle>Template</CardTitle>
-          <Button size="sm" onClick={saveTemplate} disabled={updatePolicy.isPending}>
+          <Button
+            size="sm"
+            onClick={saveTemplate}
+            disabled={updatePolicy.isPending}
+          >
             <SaveIcon />
             Save template
           </Button>
@@ -279,7 +288,10 @@ function TemplateCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
               setMaxConcurrency(String(nextTemplate.maxConcurrency))
             }}
           >
-            <SelectTrigger aria-label="Crawl policy template" className="w-full">
+            <SelectTrigger
+              aria-label="Crawl policy template"
+              className="w-full"
+            >
               <span>{selectedTemplate.label}</span>
             </SelectTrigger>
             <SelectContent>
@@ -329,13 +341,17 @@ function AdminCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
   }
 
   const deleteCurrentPolicy = () => {
-    if (!window.confirm("Delete this crawl policy? Atlas will calibrate a fresh policy the next time a matching crawl runs.")) {
+    if (
+      !window.confirm(
+        "Delete this crawl policy? Atlas will calibrate a fresh policy the next time a matching crawl runs."
+      )
+    ) {
       return
     }
 
     deletePolicy.mutate(undefined, {
       onSuccess: () => {
-        window.history.pushState(null, "", "/history/crawl-policies")
+        window.history.pushState(null, "", "/settings/crawl-policies")
         window.dispatchEvent(new PopStateEvent("popstate"))
       },
     })
@@ -356,7 +372,11 @@ function AdminCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
               <Trash2Icon />
               Delete
             </Button>
-            <Button size="sm" onClick={saveEnabled} disabled={updatePolicy.isPending}>
+            <Button
+              size="sm"
+              onClick={saveEnabled}
+              disabled={updatePolicy.isPending}
+            >
               <SaveIcon />
               Save
             </Button>
@@ -393,9 +413,14 @@ function MetadataCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
       </CardHeader>
       <CardContent className="grid gap-2 text-sm">
         <MetaRow label="ID" value={policy.id} mono />
+        <MetaRow label="Metric slug" value={policy.metric_slug} mono />
+        <MetaRow label="Domain group" value={policy.domain_group} mono />
         <MetaRow label="URL match" value={policy.url_match_id ?? "-"} mono />
         <MetaRow label="Match" value={policy.match} />
-        <MetaRow label="Template" value={String(policy.config.template ?? "-")} />
+        <MetaRow
+          label="Template"
+          value={String(policy.config.template ?? "-")}
+        />
         <MetaRow label="Mode" value={String(policy.config.mode ?? "-")} />
         <MetaRow label="Wait" value={String(policy.config.wait ?? "-")} />
         <MetaRow
@@ -425,25 +450,42 @@ function formatOverrides(value: Record<string, unknown>) {
   if (entries.length === 0) {
     return "none"
   }
-  return entries.map(([key, entryValue]) => `${key}: ${String(entryValue)}`).join(", ")
+  return entries
+    .map(([key, entryValue]) => `${key}: ${String(entryValue)}`)
+    .join(", ")
 }
 
 function formatCacheBlocks(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return "-"
   }
-  const codes = (value as { artifact_warning_codes?: unknown }).artifact_warning_codes
+  const codes = (value as { artifact_warning_codes?: unknown })
+    .artifact_warning_codes
   if (!Array.isArray(codes) || codes.length === 0) {
     return "none"
   }
-  return codes.filter((code): code is string => typeof code === "string").join(", ") || "none"
+  return (
+    codes
+      .filter((code): code is string => typeof code === "string")
+      .join(", ") || "none"
+  )
 }
 
-function MetaRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+function MetaRow({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string
+  value: string
+  mono?: boolean
+}) {
   return (
     <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-3">
       <span className="text-muted-foreground">{label}</span>
-      <span className={`truncate ${mono ? "font-mono text-xs" : ""}`}>{value}</span>
+      <span className={`truncate ${mono ? "font-mono text-xs" : ""}`}>
+        {value}
+      </span>
     </div>
   )
 }

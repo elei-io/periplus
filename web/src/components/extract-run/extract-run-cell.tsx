@@ -57,8 +57,8 @@ export function ExtractRunCell({ run, density }: ExtractRunCellProps) {
   )
   const liveRecordCount = getLatestMetadataNumber(events, "records")
   const liveParamCount = getLatestMetadataNumber(events, "parameters")
-  const savedRecordCount = getSavedRecordCount(run)
-  const savedParamCount = getSavedParamCount(run)
+  const savedRecordCount = getSavedRecordCount(resultQuery.data)
+  const savedParamCount = getSavedParamCount(resultQuery.data)
   const recordCount = input.extract_data
     ? (liveRecordCount ?? savedRecordCount)
     : null
@@ -226,13 +226,13 @@ function getLatestMetadataNumber(events: ProgressEvent[], key: string) {
   return null
 }
 
-function getSavedRecordCount(run: TaskRunRecord) {
-  const results = run.output_json?.results
+function getSavedRecordCount(output: ExtractOutput | undefined) {
+  const results = output?.results
   return Array.isArray(results) ? results.length : null
 }
 
-function getSavedParamCount(run: TaskRunRecord) {
-  const queryParams = run.output_json?.query_params
+function getSavedParamCount(output: ExtractOutput | undefined) {
+  const queryParams = output?.query_params
   if (!queryParams || typeof queryParams !== "object") return null
   const params = (queryParams as Record<string, unknown>).params
   return Array.isArray(params) ? params.length : null

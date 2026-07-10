@@ -33,18 +33,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { useArtifacts, useInvalidateArtifacts } from "@/hooks/use-resource-data"
 import {
-  useArtifactMetrics,
-  useArtifacts,
-  useInvalidateArtifacts,
-} from "@/hooks/use-history-data"
-import { HistoryMetricsBand } from "@/pages/history/history-metrics"
-import { HistoryPagination, HISTORY_PAGE_SIZE } from "@/pages/history/history-pagination"
+  ResourcePagination,
+  RESOURCE_PAGE_SIZE,
+} from "@/components/resources/resource-pagination"
 import type {
   ArtifactFilters,
   ArtifactKind,
   ArtifactRecord,
-} from "@/types/history"
+} from "@/types/resources"
 
 const artifactKinds: Array<"all" | ArtifactKind> = [
   "all",
@@ -68,20 +66,25 @@ export function ArtifactsPage() {
   }))
   const [offset, setOffset] = useState(0)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [confirmMode, setConfirmMode] = useState<"selected" | "filtered" | null>(null)
+  const [confirmMode, setConfirmMode] = useState<
+    "selected" | "filtered" | null
+  >(null)
   const artifactsQuery = useArtifacts(filters, {
-    limit: HISTORY_PAGE_SIZE,
+    limit: RESOURCE_PAGE_SIZE,
     offset,
   })
-  const metricsQuery = useArtifactMetrics(filters)
   const invalidateMutation = useInvalidateArtifacts()
-  const artifacts = artifactsQuery.data?.items ?? []
+  const artifacts = useMemo(
+    () => artifactsQuery.data?.items ?? [],
+    [artifactsQuery.data?.items]
+  )
   const total = artifactsQuery.data?.total ?? 0
   const selectedArtifacts = useMemo(() => {
     return artifacts.filter((artifact) => selectedIds.has(artifact.id))
   }, [artifacts, selectedIds])
   const allVisibleSelected =
-    artifacts.length > 0 && artifacts.every((artifact) => selectedIds.has(artifact.id))
+    artifacts.length > 0 &&
+    artifacts.every((artifact) => selectedIds.has(artifact.id))
 
   const patchFilters = (patch: Partial<ArtifactFilters>) => {
     setSelectedIds(new Set())
@@ -110,7 +113,9 @@ export function ArtifactsPage() {
         url_pattern: filters.urlPattern.trim() || undefined,
         kind: filters.kind === "all" ? undefined : filters.kind,
         warnings:
-          filters.warnings === "all" ? undefined : filters.warnings === "warning",
+          filters.warnings === "all"
+            ? undefined
+            : filters.warnings === "warning",
         reason: "manual-ui-filter",
       },
       {
@@ -168,13 +173,20 @@ export function ArtifactsPage() {
               className="pl-9"
               value={filters.urlPattern}
               placeholder="*example.com/item/*"
-              onChange={(event) => patchFilters({ urlPattern: event.target.value })}
+              onChange={(event) =>
+                patchFilters({ urlPattern: event.target.value })
+              }
             />
           </div>
           <FilterSelect
             value={filters.kind}
-            options={artifactKinds.map((kind) => ({ value: kind, label: kind }))}
-            onChange={(kind) => patchFilters({ kind: kind as ArtifactFilters["kind"] })}
+            options={artifactKinds.map((kind) => ({
+              value: kind,
+              label: kind,
+            }))}
+            onChange={(kind) =>
+              patchFilters({ kind: kind as ArtifactFilters["kind"] })
+            }
             aria-label="Artifact kind"
           />
           <FilterSelect
@@ -185,7 +197,9 @@ export function ArtifactsPage() {
               { value: "invalidated", label: "Invalidated" },
             ]}
             onChange={(invalidated) =>
-              patchFilters({ invalidated: invalidated as ArtifactFilters["invalidated"] })
+              patchFilters({
+                invalidated: invalidated as ArtifactFilters["invalidated"],
+              })
             }
             aria-label="Cache state"
           />
@@ -197,14 +211,14 @@ export function ArtifactsPage() {
               { value: "warning", label: "Quality warnings" },
             ]}
             onChange={(warnings) =>
-              patchFilters({ warnings: warnings as ArtifactFilters["warnings"] })
+              patchFilters({
+                warnings: warnings as ArtifactFilters["warnings"],
+              })
             }
             aria-label="Warning state"
           />
         </div>
       </section>
-
-      <HistoryMetricsBand metrics={metricsQuery.data} isLoading={metricsQuery.isLoading} />
 
       <Table containerClassName="min-h-0 flex-1 rounded-md border bg-card/80">
         <TableHeader>
@@ -254,7 +268,10 @@ export function ArtifactsPage() {
           ))}
           {!artifactsQuery.isLoading && artifacts.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
+              <TableCell
+                colSpan={8}
+                className="h-24 text-center text-muted-foreground"
+              >
                 No artifacts match.
               </TableCell>
             </TableRow>
@@ -262,9 +279,9 @@ export function ArtifactsPage() {
         </TableBody>
       </Table>
 
-      <HistoryPagination
+      <ResourcePagination
         total={total}
-        limit={artifactsQuery.data?.limit ?? HISTORY_PAGE_SIZE}
+        limit={artifactsQuery.data?.limit ?? RESOURCE_PAGE_SIZE}
         offset={artifactsQuery.data?.offset ?? offset}
         isFetching={artifactsQuery.isFetching}
         onOffsetChange={(nextOffset) => {
@@ -283,7 +300,9 @@ export function ArtifactsPage() {
             setConfirmMode(null)
           }
         }}
-        onConfirm={confirmMode === "selected" ? invalidateSelected : invalidateFiltered}
+        onConfirm={
+          confirmMode === "selected" ? invalidateSelected : invalidateFiltered
+        }
       />
     </div>
   )
@@ -299,7 +318,7 @@ function ArtifactRow({
   onSelectedChange: (selected: boolean) => void
 }) {
   const warnings = artifact.warning_count
-  const detailHref = `/history/artifacts/${artifact.id}`
+  const detailHref = `/cache/artifacts/${artifact.id}`
 
   return (
     <TableRow data-state={selected ? "selected" : undefined}>
@@ -334,7 +353,9 @@ function ArtifactRow({
         </Badge>
       </TableCell>
       <TableCell>
-        <Badge variant={warnings > 0 ? "destructive" : "outline"}>{warnings}</Badge>
+        <Badge variant={warnings > 0 ? "destructive" : "outline"}>
+          {warnings}
+        </Badge>
       </TableCell>
       <TableCell>{formatBytes(artifact.size_bytes)}</TableCell>
       <TableCell>{formatDate(artifact.created_at)}</TableCell>
@@ -353,7 +374,13 @@ function ArtifactRow({
             variant="ghost"
             size="icon-sm"
             nativeButton={false}
-            render={<a href={artifact.normalized_url} target="_blank" rel="noreferrer" />}
+            render={
+              <a
+                href={artifact.normalized_url}
+                target="_blank"
+                rel="noreferrer"
+              />
+            }
           >
             <ExternalLinkIcon />
           </Button>
@@ -390,10 +417,18 @@ function InvalidateDialog({
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>
+          <Button
+            variant="outline"
+            disabled={pending}
+            onClick={() => onOpenChange(false)}
+          >
             Cancel
           </Button>
-          <Button variant="destructive" disabled={pending || count === 0} onClick={onConfirm}>
+          <Button
+            variant="destructive"
+            disabled={pending || count === 0}
+            onClick={onConfirm}
+          >
             <ShieldOffIcon />
             Invalidate
           </Button>

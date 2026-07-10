@@ -8,9 +8,6 @@ import type {
   ArtifactInvalidateRequest,
   ArtifactInvalidateResponse,
   ArtifactListResponse,
-  CrawlDetailRecord,
-  CrawlFilters,
-  CrawlListResponse,
   CrawlPolicyDetailRecord,
   CrawlPolicyFilters,
   CrawlPolicyListResponse,
@@ -19,16 +16,12 @@ import type {
   DataSchemaFilters,
   DataSchemaListResponse,
   DataSchemaUpdateRequest,
-  HistoryMetricsResponse,
   PageParams,
   QuerySchemaDetailRecord,
   QuerySchemaFilters,
   QuerySchemaListResponse,
   QuerySchemaUpdateRequest,
-  UrlDetailRecord,
-  UrlFilters,
-  UrlListResponse,
-} from "@/types/history"
+} from "@/types/resources"
 
 function appendParam(params: URLSearchParams, name: string, value: string) {
   const trimmed = value.trim()
@@ -59,13 +52,6 @@ function artifactParams(filters: ArtifactFilters, page?: PageParams) {
   return params
 }
 
-function urlParams(filters: UrlFilters, page?: PageParams) {
-  const params = new URLSearchParams(page ? pageParams(page) : undefined)
-  appendParam(params, "url_pattern", filters.urlPattern)
-  appendParam(params, "domain", filters.domain)
-  return params
-}
-
 function querySchemaParams(filters: QuerySchemaFilters, page?: PageParams) {
   const params = new URLSearchParams(page ? pageParams(page) : undefined)
   appendParam(params, "match_pattern", filters.matchPattern)
@@ -76,20 +62,6 @@ function querySchemaParams(filters: QuerySchemaFilters, page?: PageParams) {
   if (filters.enabled !== "all") {
     params.set("enabled", String(filters.enabled === "enabled"))
   }
-  if (filters.warnings !== "all") {
-    params.set("warnings", String(filters.warnings === "warning"))
-  }
-  return params
-}
-
-function crawlParams(filters: CrawlFilters, page?: PageParams) {
-  const params = new URLSearchParams(page ? pageParams(page) : undefined)
-  appendParam(params, "url_pattern", filters.urlPattern)
-  appendParam(params, "domain", filters.domain)
-  if (filters.success !== "all") {
-    params.set("success", String(filters.success === "succeeded"))
-  }
-  appendParam(params, "status_code", filters.statusCode)
   if (filters.warnings !== "all") {
     params.set("warnings", String(filters.warnings === "warning"))
   }
@@ -140,19 +112,6 @@ export function useArtifacts(filters: ArtifactFilters, page: PageParams) {
   })
 }
 
-export function useArtifactMetrics(filters: ArtifactFilters) {
-  return useQuery({
-    queryKey: ["artifact-metrics", filters],
-    queryFn: async () => {
-      const response = await fetch(apiUrl(`/artifacts/metrics?${artifactParams(filters).toString()}`))
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as HistoryMetricsResponse
-    },
-  })
-}
-
 export function useArtifact(id: string | null) {
   return useQuery({
     enabled: Boolean(id),
@@ -163,46 +122,6 @@ export function useArtifact(id: string | null) {
         throw await apiErrorFromResponse(response)
       }
       return (await response.json()) as ArtifactDetailRecord
-    },
-  })
-}
-
-export function useUrls(filters: UrlFilters, page: PageParams) {
-  return useQuery({
-    queryKey: ["urls", filters, page],
-    queryFn: async () => {
-      const response = await fetch(apiUrl(`/urls/?${urlParams(filters, page).toString()}`))
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as UrlListResponse
-    },
-  })
-}
-
-export function useUrlMetrics(filters: UrlFilters) {
-  return useQuery({
-    queryKey: ["url-metrics", filters],
-    queryFn: async () => {
-      const response = await fetch(apiUrl(`/urls/metrics?${urlParams(filters).toString()}`))
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as HistoryMetricsResponse
-    },
-  })
-}
-
-export function useUrl(id: string | null) {
-  return useQuery({
-    enabled: Boolean(id),
-    queryKey: ["url", id],
-    queryFn: async () => {
-      const response = await fetch(apiUrl(`/urls/${id}`))
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as UrlDetailRecord
     },
   })
 }
@@ -287,52 +206,17 @@ export function useDeleteQuerySchema(id: string) {
   })
 }
 
-export function useCrawls(filters: CrawlFilters, page: PageParams) {
-  return useQuery({
-    queryKey: ["crawls", filters, page],
-    queryFn: async () => {
-      const response = await fetch(apiUrl(`/crawls/?${crawlParams(filters, page).toString()}`))
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as CrawlListResponse
-    },
-  })
-}
-
-export function useCrawlMetrics(filters: CrawlFilters) {
-  return useQuery({
-    queryKey: ["crawl-metrics", filters],
-    queryFn: async () => {
-      const response = await fetch(apiUrl(`/crawls/metrics?${crawlParams(filters).toString()}`))
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as HistoryMetricsResponse
-    },
-  })
-}
-
-export function useCrawl(id: string | null) {
-  return useQuery({
-    enabled: Boolean(id),
-    queryKey: ["crawl", id],
-    queryFn: async () => {
-      const response = await fetch(apiUrl(`/crawls/${id}`))
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as CrawlDetailRecord
-    },
-  })
-}
-
-export function useCrawlPolicies(filters: CrawlPolicyFilters, page: PageParams) {
+export function useCrawlPolicies(
+  filters: CrawlPolicyFilters,
+  page: PageParams
+) {
   return useQuery({
     queryKey: ["crawl-policies", filters, page],
     queryFn: async () => {
       const response = await fetch(
-        apiUrl(`/crawl-policies/?${crawlPolicyParams(filters, page).toString()}`)
+        apiUrl(
+          `/crawl-policies/?${crawlPolicyParams(filters, page).toString()}`
+        )
       )
       if (!response.ok) {
         throw await apiErrorFromResponse(response)
@@ -422,21 +306,6 @@ export function useDataSchemas(filters: DataSchemaFilters, page: PageParams) {
   })
 }
 
-export function useDataSchemaMetrics(filters: DataSchemaFilters) {
-  return useQuery({
-    queryKey: ["data-schema-metrics", filters],
-    queryFn: async () => {
-      const response = await fetch(
-        apiUrl(`/data-schemas/metrics?${dataSchemaParams(filters).toString()}`)
-      )
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as HistoryMetricsResponse
-    },
-  })
-}
-
 export function useDataSchema(id: string | null) {
   return useQuery({
     enabled: Boolean(id),
@@ -472,7 +341,6 @@ export function useUpdateDataSchema(id: string) {
       toast.success("Updated data schema.")
       void queryClient.invalidateQueries({ queryKey: ["data-schema", id] })
       void queryClient.invalidateQueries({ queryKey: ["data-schemas"] })
-      void queryClient.invalidateQueries({ queryKey: ["data-schema-metrics"] })
     },
     onError: (error) => {
       toast.error(extractApiError(error))
@@ -496,7 +364,6 @@ export function useDeleteDataSchema(id: string) {
       toast.success("Deleted data schema.")
       void queryClient.invalidateQueries({ queryKey: ["data-schema", id] })
       void queryClient.invalidateQueries({ queryKey: ["data-schemas"] })
-      void queryClient.invalidateQueries({ queryKey: ["data-schema-metrics"] })
     },
     onError: (error) => {
       toast.error(extractApiError(error))
@@ -524,13 +391,6 @@ export function useInvalidateArtifacts() {
     onSuccess: (result) => {
       toast.success(`Invalidated ${result.invalidated} artifacts.`)
       void queryClient.invalidateQueries({ queryKey: ["artifacts"] })
-      void queryClient.invalidateQueries({ queryKey: ["artifact-metrics"] })
-      void queryClient.invalidateQueries({ queryKey: ["urls"] })
-      void queryClient.invalidateQueries({ queryKey: ["url-metrics"] })
-      void queryClient.invalidateQueries({ queryKey: ["url"] })
-      void queryClient.invalidateQueries({ queryKey: ["crawls"] })
-      void queryClient.invalidateQueries({ queryKey: ["crawl-metrics"] })
-      void queryClient.invalidateQueries({ queryKey: ["crawl"] })
     },
     onError: (error) => {
       toast.error(extractApiError(error))

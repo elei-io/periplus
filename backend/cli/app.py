@@ -4,6 +4,7 @@ import typer
 
 from cli.apps import extract, index, schema, crawl, search
 from cli.config import init_config
+from cli.apps.purge import purge
 from cli.apps.runs import runs
 
 app = typer.Typer(help="Atlas backend CLI.", invoke_without_command=True)
@@ -13,6 +14,7 @@ app.command(name="schema")(schema.schema)
 app.command(name="crawl")(crawl.crawl)
 app.command(name="search")(search.search)
 app.add_typer(runs, name="runs")
+app.add_typer(purge, name="purge")
 
 
 @app.command(name="init")

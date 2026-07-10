@@ -5,6 +5,7 @@ RUN apt-get update \
         build-essential \
         libxml2-dev \
         libxslt1-dev \
+        procps \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 

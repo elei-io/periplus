@@ -28,6 +28,7 @@ export default defineConfig({
       "/schema": apiProxyTarget,
       "/tasks": apiProxyTarget,
       "/task-runs": apiProxyTarget,
+      "/operations": apiProxyTarget,
       "/artifacts": apiProxyTarget,
       "/urls": apiProxyTarget,
     },

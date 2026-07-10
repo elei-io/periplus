@@ -9,6 +9,7 @@ from api.routers import (
     data_schemas,
     extract,
     index,
+    operational_metrics,
     query_schemas,
     schema,
     search,
@@ -23,6 +24,7 @@ app.include_router(calibrate.router)
 app.include_router(data_schemas.router)
 app.include_router(extract.router)
 app.include_router(index.router)
+app.include_router(operational_metrics.router)
 app.include_router(query_schemas.router)
 app.include_router(schema.router)
 app.include_router(crawl.router)

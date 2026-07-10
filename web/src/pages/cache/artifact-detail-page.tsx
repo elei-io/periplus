@@ -7,8 +7,8 @@ import {
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { useArtifact } from "@/hooks/use-history-data"
-import type { ArtifactDetailRecord } from "@/types/history"
+import { useArtifact } from "@/hooks/use-resource-data"
+import type { ArtifactDetailRecord } from "@/types/resources"
 
 export function ArtifactDetailPage({ artifactId }: { artifactId: string }) {
   const artifactQuery = useArtifact(artifactId)
@@ -40,7 +40,9 @@ export function ArtifactDetailPage({ artifactId }: { artifactId: string }) {
           <FileArchiveIcon className="size-4 text-muted-foreground" />
           <h1 className="truncate text-lg font-medium">Artifact</h1>
           <Badge variant="outline">{artifact.kind}</Badge>
-          <Badge variant={artifact.invalidated_at ? "destructive" : "secondary"}>
+          <Badge
+            variant={artifact.invalidated_at ? "destructive" : "secondary"}
+          >
             {artifact.invalidated_at ? "Invalidated" : "Active"}
           </Badge>
         </div>
@@ -51,7 +53,13 @@ export function ArtifactDetailPage({ artifactId }: { artifactId: string }) {
               variant="outline"
               size="sm"
               nativeButton={false}
-              render={<a href={artifact.normalized_url} target="_blank" rel="noreferrer" />}
+              render={
+                <a
+                  href={artifact.normalized_url}
+                  target="_blank"
+                  rel="noreferrer"
+                />
+              }
             >
               <ExternalLinkIcon />
               Open URL
@@ -116,7 +124,7 @@ function BackButton() {
       variant="outline"
       size="sm"
       nativeButton={false}
-      render={<a href="/history/artifacts" />}
+      render={<a href="/cache/artifacts" />}
     >
       <ArrowLeftIcon />
       Artifacts
@@ -136,9 +144,12 @@ function DetailGroup({
       <h2 className="mb-2 text-sm font-medium">{title}</h2>
       <dl className="grid gap-2 text-xs">
         {items.map(([label, value]) => (
-          <div key={label} className="grid gap-1 md:grid-cols-[9rem_minmax(0,1fr)]">
+          <div
+            key={label}
+            className="grid gap-1 md:grid-cols-[9rem_minmax(0,1fr)]"
+          >
             <dt className="text-muted-foreground">{label}</dt>
-            <dd className="min-w-0 break-words font-mono">{value || "-"}</dd>
+            <dd className="min-w-0 font-mono break-words">{value || "-"}</dd>
           </div>
         ))}
       </dl>
@@ -169,12 +180,16 @@ function WarningDetails({ artifact }: { artifact: ArtifactDetailRecord }) {
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="min-w-0">
-                  <div className="truncate text-sm font-medium">{warning.name}</div>
+                  <div className="truncate text-sm font-medium">
+                    {warning.name}
+                  </div>
                   <div className="truncate font-mono text-xs text-muted-foreground">
                     {warning.code}
                   </div>
                 </div>
-                <Badge variant="outline">{warning.signals.length} signals</Badge>
+                <Badge variant="outline">
+                  {warning.signals.length} signals
+                </Badge>
               </div>
               {warning.signals.length > 0 ? (
                 <dl className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
@@ -186,7 +201,9 @@ function WarningDetails({ artifact }: { artifact: ArtifactDetailRecord }) {
                       <dt className="truncate text-xs text-muted-foreground">
                         {signal.name}
                       </dt>
-                      <dd className="font-mono text-sm">{String(signal.value)}</dd>
+                      <dd className="font-mono text-sm">
+                        {String(signal.value)}
+                      </dd>
                     </div>
                   ))}
                 </dl>
@@ -223,7 +240,8 @@ function parseWarnings(value: unknown): ArtifactWarning[] {
       return warning !== null && typeof warning === "object"
     })
     .map((warning, index) => {
-      const code = typeof warning.code === "string" ? warning.code : `warning-${index + 1}`
+      const code =
+        typeof warning.code === "string" ? warning.code : `warning-${index + 1}`
       const name = typeof warning.name === "string" ? warning.name : code
       const description =
         typeof warning.description === "string" ? warning.description : null

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react"
 
 import { AppSidebar } from "@/components/app-sidebar"
 import { CalibratePage } from "@/pages/playground/calibrate-page"
@@ -7,18 +14,14 @@ import { IndexPage } from "@/pages/playground/index-page"
 import { CrawlPage } from "@/pages/playground/crawl-page"
 import { SearchPage } from "@/pages/playground/search-page"
 import { TasksPage } from "@/pages/admin/tasks-page"
-import { ArtifactDetailPage } from "@/pages/history/artifact-detail-page"
-import { ArtifactsPage } from "@/pages/history/artifacts-page"
-import { CrawlDetailPage } from "@/pages/history/crawl-detail-page"
-import { CrawlPolicyDetailPage } from "@/pages/history/crawl-policy-detail-page"
-import { CrawlPoliciesPage } from "@/pages/history/crawl-policies-page"
-import { CrawlsPage } from "@/pages/history/crawls-page"
-import { DataSchemaDetailPage } from "@/pages/history/data-schema-detail-page"
-import { DataSchemasPage } from "@/pages/history/data-schemas-page"
-import { QuerySchemaDetailPage } from "@/pages/history/query-schema-detail-page"
-import { QuerySchemasPage } from "@/pages/history/query-schemas-page"
-import { UrlDetailPage } from "@/pages/history/url-detail-page"
-import { UrlsPage } from "@/pages/history/urls-page"
+import { ArtifactDetailPage } from "@/pages/cache/artifact-detail-page"
+import { ArtifactsPage } from "@/pages/cache/artifacts-page"
+import { CrawlPolicyDetailPage } from "@/pages/settings/crawl-policy-detail-page"
+import { CrawlPoliciesPage } from "@/pages/settings/crawl-policies-page"
+import { DataSchemaDetailPage } from "@/pages/cache/data-schema-detail-page"
+import { DataSchemasPage } from "@/pages/cache/data-schemas-page"
+import { QuerySchemaDetailPage } from "@/pages/cache/query-schema-detail-page"
+import { QuerySchemasPage } from "@/pages/cache/query-schemas-page"
 import {
   defaultNavigationItem,
   findNavigationItem,
@@ -29,6 +32,12 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar"
+
+const MetricsPage = lazy(() =>
+  import("@/pages/admin/metrics-page").then((module) => ({
+    default: module.MetricsPage,
+  }))
+)
 
 function getCurrentPathname() {
   return window.location.pathname
@@ -93,35 +102,33 @@ export function App() {
       return <TasksPage />
     }
 
-    if (activeItem.href === "/history/artifacts") {
-      const artifactId = pathname.match(/^\/history\/artifacts\/([^/]+)$/)?.[1]
+    if (activeItem.href === "/scheduled-work/metrics") {
+      return (
+        <Suspense
+          fallback={
+            <div className="flex w-full items-center justify-center text-sm text-muted-foreground">
+              Loading operations…
+            </div>
+          }
+        >
+          <MetricsPage />
+        </Suspense>
+      )
+    }
+
+    if (activeItem.href === "/cache/artifacts") {
+      const artifactId = pathname.match(/^\/cache\/artifacts\/([^/]+)$/)?.[1]
       if (artifactId) {
-        return <ArtifactDetailPage artifactId={decodeURIComponent(artifactId)} />
+        return (
+          <ArtifactDetailPage artifactId={decodeURIComponent(artifactId)} />
+        )
       }
 
       return <ArtifactsPage />
     }
 
-    if (activeItem.href === "/history/crawls") {
-      const crawlId = pathname.match(/^\/history\/crawls\/([^/]+)$/)?.[1]
-      if (crawlId) {
-        return <CrawlDetailPage crawlId={decodeURIComponent(crawlId)} />
-      }
-
-      return <CrawlsPage />
-    }
-
-    if (activeItem.href === "/history/urls") {
-      const urlId = pathname.match(/^\/history\/urls\/([^/]+)$/)?.[1]
-      if (urlId) {
-        return <UrlDetailPage urlId={decodeURIComponent(urlId)} />
-      }
-
-      return <UrlsPage />
-    }
-
-    if (activeItem.href === "/history/data-schemas") {
-      const schemaId = pathname.match(/^\/history\/data-schemas\/([^/]+)$/)?.[1]
+    if (activeItem.href === "/cache/data-schemas") {
+      const schemaId = pathname.match(/^\/cache\/data-schemas\/([^/]+)$/)?.[1]
       if (schemaId) {
         return <DataSchemaDetailPage schemaId={decodeURIComponent(schemaId)} />
       }
@@ -129,8 +136,8 @@ export function App() {
       return <DataSchemasPage />
     }
 
-    if (activeItem.href === "/history/query-schemas") {
-      const schemaId = pathname.match(/^\/history\/query-schemas\/([^/]+)$/)?.[1]
+    if (activeItem.href === "/cache/query-schemas") {
+      const schemaId = pathname.match(/^\/cache\/query-schemas\/([^/]+)$/)?.[1]
       if (schemaId) {
         return <QuerySchemaDetailPage schemaId={decodeURIComponent(schemaId)} />
       }
@@ -138,8 +145,10 @@ export function App() {
       return <QuerySchemasPage />
     }
 
-    if (activeItem.href === "/history/crawl-policies") {
-      const policyId = pathname.match(/^\/history\/crawl-policies\/([^/]+)$/)?.[1]
+    if (activeItem.href === "/settings/crawl-policies") {
+      const policyId = pathname.match(
+        /^\/settings\/crawl-policies\/([^/]+)$/
+      )?.[1]
       if (policyId) {
         return <CrawlPolicyDetailPage policyId={decodeURIComponent(policyId)} />
       }

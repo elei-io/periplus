@@ -26,7 +26,12 @@ export function useActionRuns(primitive: TaskPrimitive) {
       if (!response.ok) throw await apiErrorFromResponse(response)
       return (await response.json()) as TaskRunRecord[]
     },
-    refetchInterval: 2_000,
+    refetchInterval: (query) =>
+      query.state.data?.some((run) =>
+        ["queued", "running"].includes(run.status)
+      )
+        ? 2_000
+        : 10_000,
   })
 }
 

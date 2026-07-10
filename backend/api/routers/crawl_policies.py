@@ -25,6 +25,8 @@ router = APIRouter(prefix="/crawl-policies", tags=["crawl-policies"])
 def _record(policy) -> CrawlPolicyRecord:
     return CrawlPolicyRecord(
         id=policy.id,
+        metric_slug=policy.metric_slug,
+        domain_group=policy.domain_group,
         url_match_id=policy.url_match_id,
         match=match_for_policy(policy),
         enabled=policy.enabled,
@@ -94,6 +96,7 @@ def update(
         enabled=request.enabled,
         match=request.match,
         config=request.config,
+        domain_group=request.domain_group,
     )
     return _record(updated)
 
