@@ -14,10 +14,6 @@ export async function listTasks(filters: TaskFilters = {}) {
   if (typeof filters.archived === "boolean") {
     params.set("archived", String(filters.archived))
   }
-  if (filters.origin) {
-    params.set("origin", filters.origin)
-  }
-
   const query = params.toString()
   const response = await fetch(apiUrl(`/tasks/${query ? `?${query}` : ""}`))
   if (!response.ok) {

@@ -400,7 +400,6 @@ Blank optional values generally mean “use the library/default behavior.”
 - `ATLAS_METRICS_HOST` — task-worker metrics bind host.
 - `ATLAS_METRICS_PORT` — task-worker metrics port.
 - `ATLAS_INGESTOR_METRICS_PORT` — repository-writer metrics port.
-- `ATLAS_PROMETHEUS_URL` — optional Prometheus base URL used by API operational views.
 - `ATLAS_INGESTOR_HEALTH_HOST` — repository-writer health server bind host.
 - `ATLAS_INGESTOR_HEALTH_PORT` — repository-writer health server port.
 - `ATLAS_INGESTOR_HEALTH_HEARTBEAT_TIMEOUT_SECONDS` — event-loop heartbeat staleness threshold.

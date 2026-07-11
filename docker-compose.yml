@@ -14,7 +14,6 @@ services:
       - ./.atlas/repository:/app/.atlas/repository
     environment:
       ATLAS_BROWSER_CONCURRENCY: ${ATLAS_BROWSER_CONCURRENCY:-12}
-      ATLAS_PROMETHEUS_URL: ${ATLAS_PROMETHEUS_URL:-}
       ATLAS_CATALOGUE_CATALOG: postgres
       ATLAS_CATALOGUE_CATALOG_DSN: "host=atlas-postgres port=5432 dbname=${POSTGRES_CATALOGUE_DB:-atlas_catalogue} user=${POSTGRES_USER:-atlas} password=${POSTGRES_PASSWORD:-atlas}"
       ATLAS_CATALOGUE_ALIAS: ${ATLAS_CATALOGUE_ALIAS:-atlas}

@@ -13,8 +13,7 @@ from nats.errors import TimeoutError as NatsTimeoutError
 
 from repository.ducklake import CatalogueConflictError, CatalogueValidationError
 from observability import repository_metrics
-from observability.prometheus import WorkerMetricAggregator, start_worker_metrics_server
-from observability.recorder import CallbackRecorder, metric_recorder_scope
+from prometheus_client import start_http_server
 from repository.health import HealthMonitor, start_health_server
 from repository.pipeline import IngestionWorkerConfig
 from repository.queue import (
@@ -71,21 +70,15 @@ async def run() -> None:
     )
     next_staging_cleanup = time.monotonic() + staging_cleanup_interval
     next_queue_snapshot = 0.0
-    metric_aggregator = WorkerMetricAggregator()
-    metric_scope = metric_recorder_scope(
-        CallbackRecorder(metric_aggregator.apply, child_id="repository-ingestor")
-    )
-    metric_scope.__enter__()
     metrics_server = None
     if os.getenv("ATLAS_METRICS_ENABLED", "true").lower() not in {
         "0",
         "false",
         "no",
     }:
-        metrics_server, _metrics_thread = start_worker_metrics_server(
-            metric_aggregator,
-            port=int(os.getenv("ATLAS_INGESTOR_METRICS_PORT", "9091")),
-            address=os.getenv("ATLAS_METRICS_HOST", "0.0.0.0"),
+        metrics_server, _metrics_thread = start_http_server(
+            int(os.getenv("ATLAS_INGESTOR_METRICS_PORT", "9091")),
+            addr=os.getenv("ATLAS_METRICS_HOST", "0.0.0.0"),
         )
     health_monitor = HealthMonitor(
         heartbeat_timeout_seconds=float(
@@ -246,7 +239,6 @@ async def run() -> None:
         if metrics_server is not None:
             await asyncio.to_thread(metrics_server.shutdown)
             metrics_server.server_close()
-        metric_scope.__exit__(None, None, None)
 
 
 def main() -> None:

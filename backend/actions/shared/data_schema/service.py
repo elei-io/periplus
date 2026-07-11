@@ -66,7 +66,6 @@ async def _crawl_html(
         task_run_id=task_run_id,
         cache=cache,
         include_links=False,
-        usage_role="schema_generation_input",
     )
     page = output.pages[0] if output.pages else None
     if page is None or not page.success or page.html is None:

@@ -45,7 +45,6 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
                 "actions.crawl.service.crawl_single_url",
                 new=AsyncMock(return_value=result),
             ),
-            patch("actions.crawl.service.crawl_metrics.navigation"),
         ):
             page = await _crawl_url(
                 crawler=object(),  # type: ignore[arg-type]

@@ -1,66 +1,38 @@
-"""Bounded operational observations for the repository ingestion path."""
+"""Direct Prometheus metrics for repository ingestion."""
 
-from __future__ import annotations
+from prometheus_client import Counter, Gauge, Histogram
 
-from .recorder import record, snapshot
+_raw_writes = Counter("atlas_repository_raw_writes_total", "Raw HTML write outcomes.", ("outcome",))
+_attempts = Counter("atlas_repository_ingestion_attempts_total", "Repository ingestion outcomes.", ("outcome",))
+_batches = Counter("atlas_repository_ingestion_batches_total", "Repository batch outcomes.", ("outcome",))
+_duration = Histogram("atlas_repository_ingestion_duration_seconds", "Repository ingestion phase duration.", ("phase", "outcome"))
+_batch_items = Histogram("atlas_repository_ingestion_batch_items", "Items per repository batch.")
+_pending = Gauge("atlas_repository_ingestion_jobs_pending", "Repository jobs waiting in JetStream.")
+_ack_pending = Gauge("atlas_repository_ingestion_jobs_ack_pending", "Delivered repository jobs awaiting acknowledgement.")
+_redelivered = Gauge("atlas_repository_ingestion_jobs_redelivered", "Redelivered repository jobs.")
 
 
-def raw_write(
-    *,
-    outcome: str,
-    duration_seconds: float,
-    html_bytes: int | None = None,
-    compressed_bytes: int | None = None,
-) -> None:
-    record("atlas_repository_raw_writes_total", outcome=outcome)
-    record(
-        "atlas_repository_raw_write_duration_seconds",
-        max(0.0, duration_seconds),
-        outcome=outcome,
-    )
-    if html_bytes is not None:
-        record("atlas_repository_raw_html_bytes", html_bytes)
-    if compressed_bytes is not None:
-        record("atlas_repository_raw_compressed_bytes", compressed_bytes)
+def raw_write(*, outcome: str, duration_seconds: float, html_bytes: int | None = None, compressed_bytes: int | None = None) -> None:
+    _raw_writes.labels(outcome).inc()
+    _duration.labels("raw_write", outcome).observe(max(0.0, duration_seconds))
 
 
 def attempt(*, outcome: str, queue_seconds: float) -> None:
-    record("atlas_repository_ingestion_attempts_total", outcome=outcome)
-    record(
-        "atlas_repository_ingestion_queue_duration_seconds",
-        max(0.0, queue_seconds),
-        outcome=outcome,
-    )
+    _attempts.labels(outcome).inc()
+    _duration.labels("queue", outcome).observe(max(0.0, queue_seconds))
 
 
 def preparation(*, outcome: str, duration_seconds: float) -> None:
-    record(
-        "atlas_repository_ingestion_preparation_duration_seconds",
-        max(0.0, duration_seconds),
-        outcome=outcome,
-    )
+    _duration.labels("preparation", outcome).observe(max(0.0, duration_seconds))
 
 
-def batch(
-    *,
-    outcome: str,
-    duration_seconds: float,
-    items: int,
-    element_rows: int,
-    staged_bytes: int,
-) -> None:
-    record("atlas_repository_ingestion_batches_total", outcome=outcome)
-    record(
-        "atlas_repository_ingestion_commit_duration_seconds",
-        max(0.0, duration_seconds),
-        outcome=outcome,
-    )
-    record("atlas_repository_ingestion_batch_items", items)
-    record("atlas_repository_ingestion_batch_element_rows", element_rows)
-    record("atlas_repository_ingestion_batch_staged_bytes", staged_bytes)
+def batch(*, outcome: str, duration_seconds: float, items: int, element_rows: int, staged_bytes: int) -> None:
+    _batches.labels(outcome).inc()
+    _duration.labels("commit", outcome).observe(max(0.0, duration_seconds))
+    _batch_items.observe(items)
 
 
 def queue_state(*, pending: int, ack_pending: int, redelivered: int) -> None:
-    snapshot("atlas_repository_ingestion_jobs_pending", pending)
-    snapshot("atlas_repository_ingestion_jobs_ack_pending", ack_pending)
-    snapshot("atlas_repository_ingestion_jobs_redelivered", redelivered)
+    _pending.set(pending)
+    _ack_pending.set(ack_pending)
+    _redelivered.set(redelivered)

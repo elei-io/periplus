@@ -63,8 +63,6 @@ async def index(
             if len(visited) + len(pending) > max_pages:
                 raise ValueError(f"index exceeded its {max_pages} page limit")
             depth_by_url = dict(pending)
-            ordinals = list(range(len(visited), len(visited) + len(pending)))
-
             async def consume(_index: int, requested: str, page: CrawlPage) -> None:
                 nonlocal failed, discovered
                 visited.add(requested)
@@ -89,7 +87,7 @@ async def index(
                         frontier.setdefault(target, depth + 1)
 
             await emit_progress(progress_reporter, ProgressEvent(operation_id=f"{task_run_id or 'index'}:frontier", phase="index_depth", status="started", resource=start, current=len(visited), total=len(frontier), message=f"Indexing {len(pending)} queued pages."))
-            await crawl_service(urls=[item for item, _ in pending], progress_reporter=progress_reporter, session=session, task_run_id=task_run_id, cache=cache, page_consumer=consume, retain_pages=False, include_links=True, repository_pipeline=pipeline, usage_role="index_traversal", usage_ordinals=ordinals)
+            await crawl_service(urls=[item for item, _ in pending], progress_reporter=progress_reporter, session=session, task_run_id=task_run_id, cache=cache, page_consumer=consume, retain_pages=False, include_links=True, repository_pipeline=pipeline)
             await emit_progress(progress_reporter, ProgressEvent(operation_id=f"{task_run_id or 'index'}:frontier", phase="index_depth", status="succeeded", resource=start, current=len(visited), total=len(frontier), message=f"Indexed {len(visited)} pages.", metadata={"discovered_links": discovered}))
     finally:
         if pipeline is not None:

@@ -20,8 +20,6 @@ from data_schemas.service import (
     warning_count,
 )
 from db.session import get_session
-from metrics.history import DEFAULT_WINDOW_SECONDS, data_schema_metrics
-from metrics.schemas import HistoryMetricsResponse
 
 router = APIRouter(prefix="/data-schemas", tags=["data-schemas"])
 
@@ -54,27 +52,6 @@ def _detail_record(session: Session, schema) -> DataSchemaDetailRecord:
         updated_at=schema.updated_at,
         task_run_count=task_run_count(session, schema.id),
         warning_count=warning_count(schema),
-    )
-
-
-@router.get("/metrics", response_model=HistoryMetricsResponse)
-def metrics(
-    session: Annotated[Session, Depends(get_session)],
-    match_pattern: Annotated[str | None, Query()] = None,
-    prompt: Annotated[str | None, Query()] = None,
-    schema_type: Annotated[str | None, Query()] = None,
-    enabled: Annotated[bool | None, Query()] = None,
-    warnings: Annotated[bool | None, Query()] = None,
-    window_seconds: Annotated[int, Query(ge=60, le=7 * 24 * 60 * 60)] = DEFAULT_WINDOW_SECONDS,
-) -> HistoryMetricsResponse:
-    return data_schema_metrics(
-        session=session,
-        match_pattern=match_pattern,
-        prompt=prompt,
-        schema_type=schema_type,
-        enabled=enabled,
-        warnings=warnings,
-        window_seconds=window_seconds,
     )
 
 

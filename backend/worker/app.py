@@ -9,6 +9,7 @@ import signal
 from datetime import UTC, datetime
 
 from nats.errors import TimeoutError as NatsTimeoutError
+from prometheus_client import start_http_server
 
 from actions.shared.nats_progress import ProgressPublisher
 from actions.shared.progress import ProgressEvent, ProgressReporter
@@ -107,6 +108,12 @@ async def run() -> None:
         loop.add_signal_handler(sig, stop.set)
     worker_id = os.getenv("ATLAS_WORKER_ID") or f"{os.uname().nodename}:{os.getpid()}"
     capacity = max(1, int(os.getenv("ATLAS_WORKER_CONCURRENCY", "4")))
+    metrics_server = None
+    if os.getenv("ATLAS_METRICS_ENABLED", "true").lower() not in {"0", "false", "no"}:
+        metrics_server, _metrics_thread = start_http_server(
+            int(os.getenv("ATLAS_METRICS_PORT", "9090")),
+            addr=os.getenv("ATLAS_METRICS_HOST", "0.0.0.0"),
+        )
     client = await connect_nats()
     jetstream = client.jetstream()
     runs, workers = await ensure_task_storage(jetstream)
@@ -148,6 +155,9 @@ async def run() -> None:
         scheduler_task.cancel()
         await asyncio.gather(presence_task, scheduler_task, *active, return_exceptions=True)
         await client.drain()
+        if metrics_server is not None:
+            await asyncio.to_thread(metrics_server.shutdown)
+            metrics_server.server_close()
 
 
 def main() -> None:

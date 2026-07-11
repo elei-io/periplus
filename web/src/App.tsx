@@ -1,6 +1,4 @@
 import {
-  lazy,
-  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -30,12 +28,6 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar"
-
-const MetricsPage = lazy(() =>
-  import("@/pages/admin/metrics-page").then((module) => ({
-    default: module.MetricsPage,
-  }))
-)
 
 function getCurrentPathname() {
   return window.location.pathname
@@ -98,20 +90,6 @@ export function App() {
 
     if (activeItem.href === "/scheduled-work/tasks") {
       return <TasksPage />
-    }
-
-    if (activeItem.href === "/scheduled-work/metrics") {
-      return (
-        <Suspense
-          fallback={
-            <div className="flex w-full items-center justify-center text-sm text-muted-foreground">
-              Loading operations…
-            </div>
-          }
-        >
-          <MetricsPage />
-        </Suspense>
-      )
     }
 
     if (activeItem.href === "/cache/data-schemas") {

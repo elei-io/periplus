@@ -1,5 +1,4 @@
 import {
-  BarChart3Icon,
   BracesIcon,
   ClipboardListIcon,
   DatabaseIcon,
@@ -68,14 +67,6 @@ export const navigationGroups: NavigationGroup[] = [
         icon: ClipboardListIcon,
         title: "Task Admin",
         description: "Create, schedule, filter, and archive task definitions.",
-      },
-      {
-        name: "Metrics",
-        href: "/scheduled-work/metrics",
-        icon: BarChart3Icon,
-        title: "Atlas Operations",
-        description:
-          "Monitor capacity, queue pressure, task outcomes, and crawl health.",
       },
     ],
   },

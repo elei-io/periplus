@@ -174,7 +174,6 @@ async def _crawl_url(
             duration_seconds=duration,
             error=str(exc),
         )
-        crawl_metrics.navigation(page=page, mode=mode, domain_group=domain_group)
         return page
 
     duration = time.perf_counter() - start_time
@@ -206,7 +205,6 @@ async def _crawl_url(
         quality_warnings=quality_warnings,
         error=result.error_message,
     )
-    crawl_metrics.navigation(page=page, mode=mode, domain_group=domain_group)
     return page
 
 
@@ -281,11 +279,7 @@ async def _persist_page(
     cache_policy: ResolvedCachePolicy,
     retain_html: bool,
     include_links: bool,
-    usage_role: str = "primitive_result",
-    usage_ordinal: int | None = None,
-    usage_returned: bool | None = None,
 ) -> CrawlPage:
-    usage_ordinal = index if usage_ordinal is None else usage_ordinal
     normalized_url = normalize_url(requested_url)
     input_hash = _input_hash(normalized_url, mode, wait, run_config_overrides)
     crawl_payload = page.crawl or {}
@@ -417,9 +411,6 @@ async def _repository_cached_page(
     cache_status: str = "repository",
     include_html: bool = True,
     include_links: bool = True,
-    usage_role: str = "primitive_result",
-    usage_ordinal: int = 0,
-    usage_returned: bool | None = None,
 ) -> CrawlPage | None:
     hit = await repository_pipeline.resolve_cached_page(
         normalized_url=normalized_url,
@@ -494,9 +485,6 @@ async def _repository_retry_page(
     progress_reporter: ProgressReporter | None,
     include_html: bool,
     include_links: bool,
-    usage_role: str = "primitive_result",
-    usage_ordinal: int = 0,
-    usage_returned: bool | None = None,
 ) -> CrawlPage | None:
     """Resume a crawl already committed by an earlier attempt of this run."""
 
@@ -701,11 +689,7 @@ async def crawl_one_for_task(
     cache: CacheOptions | dict[str, Any] | None = None,
     retain_html: bool = True,
     include_links: bool = True,
-    usage_role: str = "primitive_result",
-    usage_ordinal: int | None = None,
-    usage_returned: bool | None = None,
 ) -> CrawlPage:
-    usage_ordinal = index if usage_ordinal is None else usage_ordinal
     cache_options = cache if isinstance(cache, CacheOptions) else CacheOptions.model_validate(cache or {})
     cache_block_rules: dict[str, Any] | None = None
     policy = (
@@ -787,9 +771,6 @@ async def crawl_one_for_task(
             cache_status="stale_if_error",
             include_html=retain_html,
             include_links=include_links,
-            usage_role=usage_role,
-            usage_ordinal=usage_ordinal,
-            usage_returned=usage_returned,
         )
         if stale_page is None:
             return page
@@ -812,9 +793,6 @@ async def crawl_one_for_task(
             progress_reporter=progress_reporter,
             include_html=retain_html,
             include_links=include_links,
-            usage_role=usage_role,
-            usage_ordinal=usage_ordinal,
-            usage_returned=usage_returned,
         )
         if resumed_page is not None:
             crawl_metrics.page_acquisition(
@@ -845,9 +823,6 @@ async def crawl_one_for_task(
             captured_after=fresh_after,
             include_html=retain_html,
             include_links=include_links,
-            usage_role=usage_role,
-            usage_ordinal=usage_ordinal,
-            usage_returned=usage_returned,
         )
         if repository_page is not None:
             crawl_metrics.page_acquisition(
@@ -992,9 +967,6 @@ async def crawl_one_for_task(
             cache_policy=cache_policy,
             retain_html=retain_html,
             include_links=include_links,
-            usage_role=usage_role,
-            usage_ordinal=usage_ordinal,
-            usage_returned=usage_returned,
         )
         if page.repository_crawl_created:
             crawl_metrics.crawl_persisted(
@@ -1084,14 +1056,9 @@ async def crawl(
     retain_pages: bool = True,
     include_links: bool = True,
     repository_pipeline: RepositoryPipeline | None = None,
-    usage_role: str = "primitive_result",
-    usage_ordinals: list[int] | None = None,
-    usage_returned: bool | None = None,
 ) -> CrawlOutput:
     if (mode is None) != (wait is None):
         raise ValueError("mode and wait must either both be provided or both be policy-driven")
-    if usage_ordinals is not None and len(usage_ordinals) != len(urls):
-        raise ValueError("usage_ordinals must contain one ordinal per URL")
 
     start_time = time.perf_counter()
     batch_operation_id = f"{task_run_id or 'crawl'}:batch"
@@ -1146,9 +1113,6 @@ async def crawl(
                         cache=cache,
                         retain_html=retain_pages,
                         include_links=include_links,
-                        usage_role=usage_role,
-                        usage_ordinal=(usage_ordinals[index] if usage_ordinals is not None else index),
-                        usage_returned=usage_returned,
                     )
                     if page_consumer is not None:
                         await page_consumer(index, url, page)

@@ -321,9 +321,6 @@ async def calibrate(
             cache=cache or CacheOptions(mode="refresh"),
             include_links=False,
             repository_pipeline=repository_pipeline,
-            usage_role="calibration_candidate",
-            usage_ordinal=index,
-            usage_returned=False,
         )
         quality = _quality(page.html or "", page.quality_warnings)
         # Candidate HTML is durable by this point. Calibration only needs its
