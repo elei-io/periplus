@@ -18,6 +18,8 @@ problem, not a hypothetical future scale problem.
 - Produces structured data from retained pages.
 - Reuses explicit crawl policies and data/query schemas.
 - Preserves raw evidence and a queryable DOM representation.
+- Publishes derived web evidence as stable, typed tables that downstream data tools can consume
+  through snapshots or incremental changes.
 - Runs scheduled or ad hoc work with inspectable current state and recovery paths.
 
 ## What Atlas is not
@@ -26,6 +28,7 @@ problem, not a hypothetical future scale problem.
 - A general workflow orchestration platform.
 - A browser farm or standalone browser-service framework.
 - A general-purpose data warehouse.
+- A destination connector platform or general data-pipeline orchestrator.
 - A collection of per-action workers, queues, and storage systems.
 - A compatibility museum for storage models the project has left behind.
 - A reason to retain every possible media format or analytical projection.
