@@ -10,9 +10,11 @@ ELEMENT_COLUMNS: dict[str, ColumnDef] = {
     "document_id": ColumnDef("VARCHAR", nullable=False),
     "element_index": ColumnDef("INTEGER", nullable=False),
     "parent_index": ColumnDef("INTEGER"),
+    "subtree_end_index": ColumnDef("INTEGER", nullable=False),
+    "depth": ColumnDef("INTEGER", nullable=False),
     "tag": ColumnDef("VARCHAR", nullable=False),
     "namespace_uri": ColumnDef("VARCHAR"),
     "attributes": ColumnDef(MapType("VARCHAR", "VARCHAR"), nullable=False),
-    "text": ColumnDef("VARCHAR"),
-    "tail": ColumnDef("VARCHAR"),
+    "text_direct": ColumnDef("VARCHAR", nullable=False),
+    "text_tail": ColumnDef("VARCHAR", nullable=False),
 }

@@ -54,11 +54,13 @@ class DomEncoderTests(unittest.TestCase):
                 "document_id",
                 "element_index",
                 "parent_index",
+                "subtree_end_index",
+                "depth",
                 "tag",
                 "namespace_uri",
                 "attributes",
-                "text",
-                "tail",
+                "text_direct",
+                "text_tail",
             ),
         )
 
@@ -81,9 +83,11 @@ class DomEncoderTests(unittest.TestCase):
                 (7, 6, "b"),
             ],
         )
-        self.assertEqual(rows[6].text, "Two ")
-        self.assertEqual(rows[7].text, "bold")
-        self.assertEqual(rows[7].tail, ".")
+        self.assertEqual(rows[4].subtree_end_index, 7)
+        self.assertEqual(rows[7].depth, 4)
+        self.assertEqual(rows[6].text_direct, "Two ")
+        self.assertEqual(rows[7].text_direct, "bold")
+        self.assertEqual(rows[7].text_tail, ".")
 
     def test_html5_parser_repairs_fragments_deterministically(self) -> None:
         first = encode_html("<p>first<p>second")
@@ -91,7 +95,9 @@ class DomEncoderTests(unittest.TestCase):
 
         self.assertEqual(first, second)
         self.assertEqual([row.tag for row in first], ["html", "head", "body", "p", "p"])
-        self.assertEqual([row.text for row in first[-2:]], ["first", "second"])
+        self.assertEqual(
+            [row.text_direct for row in first[-2:]], ["first", "second"]
+        )
 
     def test_preserves_empty_and_absent_attribute_values(self) -> None:
         row = next(
@@ -128,9 +134,9 @@ class DomEncoderTests(unittest.TestCase):
         div = next(row for row in rows if row.tag == "div")
         span = next(row for row in rows if row.tag == "span")
 
-        self.assertEqual(div.text, "beforebetween")
-        self.assertEqual(span.text, "inside")
-        self.assertEqual(span.tail, "afterlast")
+        self.assertEqual(div.text_direct, "beforebetween")
+        self.assertEqual(span.text_direct, "inside")
+        self.assertEqual(span.text_tail, "afterlast")
 
     def test_does_not_collapse_whitespace_or_resolve_urls(self) -> None:
         anchor = next(
@@ -140,7 +146,7 @@ class DomEncoderTests(unittest.TestCase):
         )
 
         self.assertEqual(anchor.attributes["href"], "../docs")
-        self.assertEqual(anchor.text, "  A\n  B  ")
+        self.assertEqual(anchor.text_direct, "  A\n  B  ")
 
     def test_rows_are_page_local_and_have_exact_v1_shape(self) -> None:
         row = encode_html("")[0]
@@ -151,11 +157,13 @@ class DomEncoderTests(unittest.TestCase):
             (
                 "element_index",
                 "parent_index",
+                "subtree_end_index",
+                "depth",
                 "tag",
                 "namespace_uri",
                 "attributes",
-                "text",
-                "tail",
+                "text_direct",
+                "text_tail",
             ),
         )
 

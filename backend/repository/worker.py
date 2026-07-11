@@ -7,6 +7,7 @@ import asyncio
 import logging
 import signal
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from nats.errors import TimeoutError as NatsTimeoutError
@@ -37,6 +38,41 @@ from repository.ingestion.queue import (
 from repository.service import repository_ingestor_from_env
 
 
+@dataclass(frozen=True, slots=True)
+class RepositoryCompactionConfig:
+    enabled: bool
+    interval_seconds: float
+    minimum_files: int
+    maximum_input_file_bytes: int
+    target_file_bytes: int
+    maximum_compacted_files: int
+
+    @classmethod
+    def from_env(cls) -> RepositoryCompactionConfig:
+        config = cls(
+            enabled=get_bool("ATLAS_REPOSITORY_COMPACTION_ENABLED"),
+            interval_seconds=get_float(
+                "ATLAS_REPOSITORY_COMPACTION_INTERVAL_SECONDS"
+            ),
+            minimum_files=get_int("ATLAS_REPOSITORY_COMPACTION_MIN_FILES"),
+            maximum_input_file_bytes=get_int(
+                "ATLAS_REPOSITORY_COMPACTION_MAX_INPUT_FILE_BYTES"
+            ),
+            target_file_bytes=get_int(
+                "ATLAS_REPOSITORY_COMPACTION_TARGET_FILE_BYTES"
+            ),
+            maximum_compacted_files=get_int(
+                "ATLAS_REPOSITORY_COMPACTION_MAX_OUTPUT_FILES"
+            ),
+        )
+        if config.target_file_bytes <= config.maximum_input_file_bytes:
+            raise ValueError(
+                "ATLAS_REPOSITORY_COMPACTION_TARGET_FILE_BYTES must be greater than "
+                "ATLAS_REPOSITORY_COMPACTION_MAX_INPUT_FILE_BYTES"
+            )
+        return config
+
+
 async def run() -> None:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -44,6 +80,7 @@ async def run() -> None:
         loop.add_signal_handler(value, stop.set)
 
     config = IngestionWorkerConfig.from_env()
+    compaction_config = RepositoryCompactionConfig.from_env()
     client = await connect_repository_nats()
     jetstream = client.jetstream()
     await ensure_repository_stream(jetstream)
@@ -70,6 +107,7 @@ async def run() -> None:
         older_than_seconds=staging_grace,
     )
     next_staging_cleanup = time.monotonic() + staging_cleanup_interval
+    next_compaction = 0.0
     next_queue_snapshot = 0.0
     metrics_server = None
     if get_bool("ATLAS_METRICS_ENABLED"):
@@ -117,6 +155,9 @@ async def run() -> None:
                 if deleted:
                     logging.info("removed %d abandoned repository staging files", deleted)
                 next_staging_cleanup = time.monotonic() + staging_cleanup_interval
+            if compaction_config.enabled and time.monotonic() >= next_compaction:
+                await _compact_repository(ingestor, compaction_config)
+                next_compaction = time.monotonic() + compaction_config.interval_seconds
             try:
                 messages = await subscription.fetch(
                     batch=config.max_items,
@@ -459,6 +500,49 @@ async def _heartbeat_messages(messages) -> None:
         await asyncio.gather(
             *(message.in_progress() for message in messages),
             return_exceptions=True,
+        )
+
+
+async def _compact_repository(
+    ingestor,
+    config: RepositoryCompactionConfig,
+) -> None:
+    started = time.perf_counter()
+    try:
+        results = await asyncio.to_thread(
+            ingestor.catalogue_service.compact_small_files,
+            minimum_files=config.minimum_files,
+            maximum_input_file_bytes=config.maximum_input_file_bytes,
+            target_file_bytes=config.target_file_bytes,
+            maximum_compacted_files=config.maximum_compacted_files,
+        )
+    except Exception:
+        repository_metrics.compaction(
+            outcome="failed",
+            duration_seconds=time.perf_counter() - started,
+            files_processed=0,
+            files_created=0,
+        )
+        logging.warning("repository compaction failed", exc_info=True)
+        return
+
+    files_processed = sum(result.files_processed for result in results)
+    files_created = sum(result.files_created for result in results)
+    repository_metrics.compaction(
+        outcome="compacted" if files_processed else "noop",
+        duration_seconds=time.perf_counter() - started,
+        files_processed=files_processed,
+        files_created=files_created,
+    )
+    for result in results:
+        logging.info(
+            "repository compacted table=%s eligible_files=%d eligible_bytes=%d "
+            "files_processed=%d files_created=%d",
+            result.table_name,
+            result.eligible_files,
+            result.eligible_bytes,
+            result.files_processed,
+            result.files_created,
         )
 
 

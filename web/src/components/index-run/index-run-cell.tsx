@@ -24,7 +24,7 @@ import { useTaskRunProgress, useTaskRunResult } from "@/hooks/use-action-runs"
 import { useCancelIndexRun } from "@/hooks/use-index-runs"
 import { truncateMiddle } from "@/lib/truncate"
 import { cn } from "@/lib/utils"
-import type { IndexInput, IndexLink } from "@/types/index"
+import type { IndexInput, IndexOutput } from "@/types/index"
 import type { ProgressEvent } from "@/types/progress"
 import type { TaskRunRecord } from "@/types/tasks"
 
@@ -51,7 +51,7 @@ export function IndexRunCell({ run, density }: IndexRunCellProps) {
     return () => window.clearInterval(timer)
   }, [active])
 
-  const resultQuery = useTaskRunResult<IndexLink[]>(
+  const resultQuery = useTaskRunResult<IndexOutput>(
     run.id,
     expanded && run.status === "succeeded"
   )
@@ -107,7 +107,7 @@ export function IndexRunCell({ run, density }: IndexRunCellProps) {
     depthProgressEvent,
     "discovered_links"
   )
-  const savedLinkCount = resultQuery.data?.length ?? null
+  const savedLinkCount = resultQuery.data?.links.length ?? null
   const linkCount = liveLinkCount ?? savedLinkCount
   const elapsedFrom = run.started_at ?? run.queued_at
   const elapsedTo = run.finished_at ? new Date(run.finished_at).getTime() : now
@@ -246,7 +246,7 @@ export function IndexRunCell({ run, density }: IndexRunCellProps) {
               {resultQuery.error.message}
             </p>
           ) : (
-            <IndexResults links={resultQuery.data ?? []} />
+            <IndexResults links={resultQuery.data?.links ?? []} />
           )}
         </div>
       </CollapsibleContent>

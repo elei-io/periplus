@@ -16,22 +16,11 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/calibrate": apiProxyTarget,
-      "/catalogue": apiProxyTarget,
-      "/extract": apiProxyTarget,
-      "/index": apiProxyTarget,
-      "/crawl": apiProxyTarget,
-      "/crawls": apiProxyTarget,
-      "/data-schemas": apiProxyTarget,
-      "/query": apiProxyTarget,
-      "/query-schemas": apiProxyTarget,
-      "/search": apiProxyTarget,
-      "/schema": apiProxyTarget,
-      "/tasks": apiProxyTarget,
-      "/task-runs": apiProxyTarget,
-      "/operations": apiProxyTarget,
-      "/artifacts": apiProxyTarget,
-      "/urls": apiProxyTarget,
+      "/api": {
+        target: apiProxyTarget,
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api(?=\/|$)/, ""),
+      },
     },
   },
 })

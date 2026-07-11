@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import TracebackType
 from typing import TYPE_CHECKING
+from urllib.parse import urljoin
 
 from ducklake_client import DuckLake, DuckLakeError, SQLType
 
@@ -26,6 +27,7 @@ class Catalogue:
 
     def __init__(self, config: CatalogueConfig) -> None:
         self.config = config
+        self._scalar_functions_registered = False
         self.lake = DuckLake(
             catalog=config.catalog,
             storage=config.storage,
@@ -36,7 +38,16 @@ class Catalogue:
 
     @property
     def connection(self) -> duckdb.DuckDBPyConnection:
-        return self.lake.connection
+        connection = self.lake.connection
+        if not self._scalar_functions_registered:
+            connection.create_function(
+                "resolve_url",
+                _resolve_url,
+                ["VARCHAR", "VARCHAR"],
+                "VARCHAR",
+            )
+            self._scalar_functions_registered = True
+        return connection
 
     def bootstrap(self) -> None:
         """Create or migrate the catalogue and reject incompatible tables."""
@@ -59,7 +70,23 @@ class Catalogue:
                 **ELEMENT_COLUMNS,
             )
         self._migrate_schema()
+        self._configure_layout()
+        from repository.catalogue.macros import install_catalogue_macros
+
+        install_catalogue_macros(self)
         self.validate_schema()
+
+    def _configure_layout(self) -> None:
+        """Apply the one physical partition contract for new crawl data."""
+
+        table = ".".join(
+            _quote_identifier(value)
+            for value in (self.config.alias, self.config.schema, "crawls")
+        )
+        self.connection.execute(
+            f"ALTER TABLE {table} SET PARTITIONED BY ("
+            "year(captured_at), month(captured_at), day(captured_at))"
+        )
 
     def _migrate_schema(self) -> None:
         """Apply small, idempotent DuckLake schema upgrades owned by Atlas."""
@@ -124,6 +151,74 @@ class Catalogue:
                     f"schema v{CATALOGUE_SCHEMA_VERSION}: "
                     f"expected {normalized_expected!r}, got {actual_columns!r}"
                 )
+        self._validate_layout()
+        self._validate_macros()
+
+    def _validate_layout(self) -> None:
+        metadata = _quote_identifier(f"__ducklake_metadata_{self.config.alias}")
+        rows = self.connection.execute(
+            f"""
+            SELECT pc.partition_key_index, c.column_name, pc.transform
+            FROM {metadata}.ducklake_partition_info AS pi
+            JOIN {metadata}.ducklake_partition_column AS pc
+              ON pc.partition_id = pi.partition_id
+             AND pc.table_id = pi.table_id
+            JOIN {metadata}.ducklake_table AS t ON t.table_id = pi.table_id
+            JOIN {metadata}.ducklake_schema AS s ON s.schema_id = t.schema_id
+            JOIN {metadata}.ducklake_column AS c
+              ON c.table_id = t.table_id
+             AND c.column_id = pc.column_id
+             AND c.end_snapshot IS NULL
+            WHERE s.schema_name = ?
+              AND t.table_name = 'crawls'
+              AND pi.end_snapshot IS NULL
+              AND t.end_snapshot IS NULL
+              AND s.end_snapshot IS NULL
+            ORDER BY pc.partition_key_index
+            """,
+            [self.config.schema],
+        ).fetchall()
+        expected = [
+            (0, "captured_at", "year"),
+            (1, "captured_at", "month"),
+            (2, "captured_at", "day"),
+        ]
+        if rows != expected:
+            raise CatalogueSchemaError(
+                f"catalogue table 'crawls' must be partitioned by "
+                f"year/month/day(captured_at), got {rows!r}"
+            )
+
+    def _validate_macros(self) -> None:
+        rows = self.connection.execute(
+            """
+            SELECT function_name
+            FROM duckdb_functions()
+            WHERE database_name = ?
+              AND schema_name = ?
+              AND function_type = 'macro'
+              AND function_name IN (
+                  'get_attribute', 'has_attribute', 'has_text', 'text_content',
+                  'inner_html', 'readable_text'
+              )
+            ORDER BY function_name
+            """,
+            [self.config.alias, self.config.schema],
+        ).fetchall()
+        actual = [str(row[0]) for row in rows]
+        expected = [
+            "get_attribute",
+            "has_attribute",
+            "has_text",
+            "inner_html",
+            "readable_text",
+            "text_content",
+        ]
+        if actual != expected:
+            raise CatalogueSchemaError(
+                f"catalogue DOM macros do not match the managed contract: "
+                f"expected {expected!r}, got {actual!r}"
+            )
 
     def latest_snapshot(self) -> int | None:
         return self.lake.snapshots.latest()
@@ -156,3 +251,7 @@ def _type_sql(value: str | SQLType) -> str:
 
 def _quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
+
+
+def _resolve_url(source: str, href: str) -> str:
+    return urljoin(source, href)

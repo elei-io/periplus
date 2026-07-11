@@ -26,7 +26,7 @@ import { truncateMiddle } from "@/lib/truncate"
 import { cn } from "@/lib/utils"
 import type { ProgressEvent } from "@/types/progress"
 import { searchProviders } from "@/types/search"
-import type { SearchInput, SearchResult } from "@/types/search"
+import type { SearchInput, SearchOutput } from "@/types/search"
 import type { TaskRunRecord } from "@/types/tasks"
 
 const activeStatuses = new Set(["queued", "running"])
@@ -52,7 +52,7 @@ export function SearchRunCell({ run, density }: SearchRunCellProps) {
     return () => window.clearInterval(timer)
   }, [active])
 
-  const resultQuery = useTaskRunResult<SearchResult[]>(
+  const resultQuery = useTaskRunResult<SearchOutput>(
     run.id,
     expanded && run.status === "succeeded"
   )
@@ -74,7 +74,7 @@ export function SearchRunCell({ run, density }: SearchRunCellProps) {
       ? Math.min(100, (progressEvent.current / progressEvent.total) * 100)
       : null
   const liveResultCount = getMetadataNumber(progressEvent, "results")
-  const savedResultCount = resultQuery.data?.length ?? null
+  const savedResultCount = resultQuery.data?.results.length ?? null
   const resultCount = liveResultCount ?? savedResultCount
   const elapsedFrom = run.started_at ?? run.queued_at
   const elapsedTo = run.finished_at ? new Date(run.finished_at).getTime() : now
@@ -210,7 +210,7 @@ export function SearchRunCell({ run, density }: SearchRunCellProps) {
               {resultQuery.error.message}
             </p>
           ) : (
-            <SearchResults results={resultQuery.data ?? []} />
+            <SearchResults results={resultQuery.data?.results ?? []} />
           )}
         </div>
       </CollapsibleContent>

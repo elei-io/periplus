@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+from ipaddress import ip_address
+from typing import Any
+from urllib.parse import urlparse
 from uuid import UUID
 
+from crawl4ai.utils import get_base_domain
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
@@ -41,6 +45,13 @@ class CrawlRecord(CatalogueRecord):
     requested_url: str = Field(min_length=1)
     normalized_url: str = Field(min_length=1)
     final_url: str | None = None
+    page_url: str = Field(min_length=1)
+    url_scheme: str = Field(min_length=1)
+    url_host: str = Field(min_length=1)
+    url_port: int = Field(ge=0, le=65535)
+    url_registrable_domain: str = Field(min_length=1)
+    url_path: str = Field(min_length=1)
+    url_query: str
     captured_at: datetime
     status_code: int | None = Field(default=None, ge=100, le=599)
     duration_ms: int | None = Field(default=None, ge=0)
@@ -53,6 +64,33 @@ class CrawlRecord(CatalogueRecord):
     warnings_json: list[JsonValue] = Field(default_factory=list)
     errors_json: list[JsonValue] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def derive_page_url_fields(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        result = dict(value)
+        page_url = str(result.get("final_url") or result.get("normalized_url") or "")
+        parsed = urlparse(page_url)
+        host = (parsed.hostname or "").lower()
+        scheme = parsed.scheme.lower()
+        try:
+            ip_address(host)
+        except ValueError:
+            registrable_domain = get_base_domain(page_url) or host
+        else:
+            registrable_domain = host
+        result.update(
+            page_url=page_url,
+            url_scheme=scheme,
+            url_host=host,
+            url_port=parsed.port or {"http": 80, "https": 443}.get(scheme, 0),
+            url_registrable_domain=registrable_domain,
+            url_path=parsed.path or "/",
+            url_query=parsed.query,
+        )
+        return result
+
     @model_validator(mode="after")
     def validate_documentless_failure(self) -> CrawlRecord:
         if self.document_id is None and not self.errors_json:
@@ -63,11 +101,13 @@ class CrawlRecord(CatalogueRecord):
 class ElementRecord(CatalogueRecord):
     element_index: int = Field(ge=0)
     parent_index: int | None = Field(default=None, ge=0)
+    subtree_end_index: int = Field(ge=0)
+    depth: int = Field(ge=0)
     tag: str = Field(min_length=1)
     namespace_uri: str | None = None
     attributes: dict[str, str] = Field(default_factory=dict)
-    text: str | None = None
-    tail: str | None = None
+    text_direct: str
+    text_tail: str
 
 
 class LinkRecord(CatalogueRecord):

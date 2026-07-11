@@ -64,5 +64,6 @@ Configuration is documented alongside its defaults in [`.env.example`](.env.exam
 
 - [Vision](docs/VISION.md) — what Atlas is for, and what it is not.
 - [Architecture](docs/ARCHITECTURE.md) — components, state ownership, and execution paths.
+- [Catalogue SQL](docs/CATALOGUE_SQL.md) — analytical tables and DOM-style query helpers.
 - [Hazards](docs/HAZARDS.md) — mistakes and complexity traps to avoid.
 - [Agent guide](AGENTS.md) — concise working rules for coding agents.

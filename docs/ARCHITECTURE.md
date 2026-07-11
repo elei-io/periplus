@@ -69,8 +69,9 @@ result, acknowledges the message, and removes staging. Redelivery is safe becaus
 writes are idempotent.
 
 Terminal ingestion failures enter a file-backed dead-letter stream. Explicit repository commands
-inspect and requeue them. Cleanup, object deletion, and DuckLake compaction are maintenance
-operations, never hidden side effects of reads or crawls.
+inspect and requeue them. The repository worker runs bounded, threshold-driven DuckLake small-file
+compaction between ingestion batches. Cleanup, object deletion, and other large maintenance remain
+explicit operations, never hidden side effects of reads or crawls.
 
 ## Reads and cache
 

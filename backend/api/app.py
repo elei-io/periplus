@@ -1,5 +1,9 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
+from api.catalogue_pool import CatalogueReadPool
+from config import get_float, get_int
 from api.routers import (
     calibrate,
     catalogue,
@@ -17,7 +21,23 @@ from api.routers import (
     task_runs,
 )
 
-app = FastAPI(title="Atlas API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    pool = CatalogueReadPool(
+        get_int("ATLAS_CATALOGUE_READ_POOL_SIZE"),
+        threads=get_int("ATLAS_CATALOGUE_READ_THREADS"),
+        wait_timeout_seconds=get_float("ATLAS_CATALOGUE_READ_POOL_WAIT_SECONDS"),
+    )
+    pool.open()
+    app.state.catalogue_read_pool = pool
+    try:
+        yield
+    finally:
+        pool.close()
+
+
+app = FastAPI(title="Atlas API", lifespan=lifespan)
 app.include_router(calibrate.router)
 app.include_router(catalogue.router)
 app.include_router(data_schemas.router)

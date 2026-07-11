@@ -23,8 +23,8 @@ class ElementLike(Protocol):
     parent_index: int | None
     tag: str
     attributes: dict[str, str]
-    text: str | None
-    tail: str | None
+    text_direct: str
+    text_tail: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,13 +167,13 @@ def _scan_elements(
         opened = _OpenElement(
             element_index=element.element_index,
             tag=tag,
-            tail=element.tail,
+            tail=element.text_tail,
             anchor=anchor,
         )
         stack.append(opened)
-        if element.text:
+        if element.text_direct:
             for active_anchor in active_anchors:
-                active_anchor.text.write(element.text)
+                active_anchor.text.write(element.text_direct)
 
         if (
             page_url is not None

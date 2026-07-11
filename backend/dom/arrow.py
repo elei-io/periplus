@@ -17,11 +17,13 @@ ELEMENT_ARROW_SCHEMA = pa.schema(
         pa.field("document_id", pa.string(), nullable=False),
         pa.field("element_index", pa.int32(), nullable=False),
         pa.field("parent_index", pa.int32()),
+        pa.field("subtree_end_index", pa.int32(), nullable=False),
+        pa.field("depth", pa.int32(), nullable=False),
         pa.field("tag", pa.string(), nullable=False),
         pa.field("namespace_uri", pa.string()),
         pa.field("attributes", pa.map_(pa.string(), pa.string()), nullable=False),
-        pa.field("text", pa.string()),
-        pa.field("tail", pa.string()),
+        pa.field("text_direct", pa.string(), nullable=False),
+        pa.field("text_tail", pa.string(), nullable=False),
     ]
 )
 
@@ -81,11 +83,13 @@ def element_record_batches(
                 "document_id": document_id,
                 "element_index": row.element_index,
                 "parent_index": row.parent_index,
+                "subtree_end_index": row.subtree_end_index,
+                "depth": row.depth,
                 "tag": row.tag,
                 "namespace_uri": row.namespace_uri,
                 "attributes": row.attributes,
-                "text": row.text,
-                "tail": row.tail,
+                "text_direct": row.text_direct,
+                "text_tail": row.text_tail,
             }
         )
         if len(pending) >= batch_rows:

@@ -31,6 +31,15 @@ class CatalogueBatchEntry:
     replace_projection: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class CompactionResult:
+    table_name: str
+    eligible_files: int
+    eligible_bytes: int
+    files_processed: int
+    files_created: int
+
+
 class CatalogueService:
     """The only application boundary for Atlas catalogue reads and writes."""
 
@@ -45,6 +54,111 @@ class CatalogueService:
 
         with self._write_fence():
             return self._record_crawl_batch_unfenced(entries)
+
+    def compact_small_files(
+        self,
+        *,
+        minimum_files: int,
+        maximum_input_file_bytes: int,
+        target_file_bytes: int,
+        maximum_compacted_files: int,
+    ) -> list[CompactionResult]:
+        """Merge small files in bounded table-level operations when thresholds are met."""
+
+        for name, value in (
+            ("minimum_files", minimum_files),
+            ("maximum_input_file_bytes", maximum_input_file_bytes),
+            ("target_file_bytes", target_file_bytes),
+            ("maximum_compacted_files", maximum_compacted_files),
+        ):
+            if value <= 0:
+                raise CatalogueValidationError(f"{name} must be greater than zero")
+        if target_file_bytes <= maximum_input_file_bytes:
+            raise CatalogueValidationError(
+                "target_file_bytes must be greater than maximum_input_file_bytes"
+            )
+
+        with self._write_fence():
+            candidates = self._small_file_candidates(
+                maximum_input_file_bytes=maximum_input_file_bytes,
+            )
+            results: list[CompactionResult] = []
+            for table_name, eligible_files, eligible_bytes in candidates:
+                if eligible_files < minimum_files:
+                    continue
+                self.catalogue.connection.execute(
+                    "CALL ducklake_set_option("
+                    "?, 'target_file_size', ?, schema => ?, table_name => ?)",
+                    [
+                        self.catalogue.config.alias,
+                        f"{target_file_bytes}B",
+                        self.catalogue.config.schema,
+                        table_name,
+                    ],
+                )
+                rows = self.catalogue.connection.execute(
+                    "CALL ducklake_merge_adjacent_files("
+                    "?, ?, schema => ?, max_compacted_files => ?, max_file_size => ?)",
+                    [
+                        self.catalogue.config.alias,
+                        table_name,
+                        self.catalogue.config.schema,
+                        maximum_compacted_files,
+                        maximum_input_file_bytes,
+                    ],
+                ).fetchall()
+                results.append(
+                    CompactionResult(
+                        table_name=table_name,
+                        eligible_files=eligible_files,
+                        eligible_bytes=eligible_bytes,
+                        files_processed=sum(int(row[2]) for row in rows),
+                        files_created=sum(int(row[3]) for row in rows),
+                    )
+                )
+            return results
+
+    def _small_file_candidates(
+        self,
+        *,
+        maximum_input_file_bytes: int,
+    ) -> list[tuple[str, int, int]]:
+        metadata = _quote_identifier(
+            f"__ducklake_metadata_{self.catalogue.config.alias}"
+        )
+        rows = self.catalogue.connection.execute(
+            f"""
+            SELECT
+                table_name,
+                max(partition_files) AS eligible_files,
+                sum(partition_bytes) AS eligible_bytes
+            FROM (
+                SELECT
+                    table_info.table_name,
+                    data_file.partition_id,
+                    count(*) AS partition_files,
+                    sum(data_file.file_size_bytes) AS partition_bytes
+                FROM {metadata}.ducklake_data_file AS data_file
+                JOIN {metadata}.ducklake_table AS table_info
+                  ON table_info.table_id = data_file.table_id
+                JOIN {metadata}.ducklake_schema AS schema_info
+                  ON schema_info.schema_id = table_info.schema_id
+                WHERE data_file.end_snapshot IS NULL
+                  AND table_info.end_snapshot IS NULL
+                  AND schema_info.end_snapshot IS NULL
+                  AND schema_info.schema_name = ?
+                  AND data_file.file_size_bytes < ?
+                GROUP BY table_info.table_name, data_file.partition_id
+            ) AS partitions
+            GROUP BY table_name
+            ORDER BY table_name
+            """,
+            [self.catalogue.config.schema, maximum_input_file_bytes],
+        ).fetchall()
+        return [
+            (str(table_name), int(eligible_files), int(eligible_bytes))
+            for table_name, eligible_files, eligible_bytes in rows
+        ]
 
     def _record_crawl_batch_unfenced(
         self,
@@ -291,7 +405,8 @@ class CatalogueService:
     ) -> list[ElementRecord]:
         _validate_page(limit=limit, offset=offset)
         sql = (
-            "SELECT element_index, parent_index, tag, namespace_uri, attributes, text, tail "
+            "SELECT element_index, parent_index, subtree_end_index, depth, tag, "
+            "namespace_uri, attributes, text_direct, text_tail "
             f"FROM {self._table('elements')} WHERE document_id = $document_id "
             "ORDER BY element_index"
         )
@@ -316,7 +431,8 @@ class CatalogueService:
         if batch_size <= 0:
             raise CatalogueValidationError("batch_size must be greater than zero")
         reader = self.catalogue.connection.execute(
-            "SELECT element_index, parent_index, tag, namespace_uri, attributes, text, tail "
+            "SELECT element_index, parent_index, subtree_end_index, depth, tag, "
+            "namespace_uri, attributes, text_direct, text_tail "
             f"FROM {self._table('elements')} WHERE document_id = ? "
             "ORDER BY element_index",
             [document_id],
@@ -331,6 +447,8 @@ class CatalogueService:
                         if row["parent_index"] is not None
                         else None
                     ),
+                    subtree_end_index=int(row["subtree_end_index"]),
+                    depth=int(row["depth"]),
                     tag=str(row["tag"]),
                     namespace_uri=row["namespace_uri"],
                     attributes=(
@@ -338,8 +456,8 @@ class CatalogueService:
                         if attributes is not None
                         else {}
                     ),
-                    text=row["text"],
-                    tail=row["tail"],
+                    text_direct=str(row["text_direct"]),
+                    text_tail=str(row["text_tail"]),
                 )
 
     def get_links(self, document_id: str) -> list[LinkRecord]:
@@ -524,6 +642,10 @@ class CatalogueService:
             if element.parent_index is not None and element.parent_index >= element.element_index:
                 raise CatalogueValidationError(
                     "an element parent must precede the element in document order"
+                )
+            if element.subtree_end_index < element.element_index:
+                raise CatalogueValidationError(
+                    "an element subtree must end at or after the element"
                 )
 
 def _document_from_row(row: dict[str, Any]) -> DocumentRecord:

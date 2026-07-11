@@ -40,6 +40,14 @@ export type IndexLink = {
   internal: boolean
 }
 
+export type IndexOutput = {
+  pages: number
+  failed_pages: number
+  discovered_links: number
+  result_links: number
+  links: IndexLink[]
+}
+
 export type IndexStreamEvent =
   | {
       type: "progress"

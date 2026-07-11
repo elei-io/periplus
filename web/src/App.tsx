@@ -1,9 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { AppSidebar } from "@/components/app-sidebar"
 import { CalibratePage } from "@/pages/playground/calibrate-page"
@@ -138,7 +133,7 @@ export function App() {
   return (
     <SidebarProvider>
       <AppSidebar pathname={activeItem.href} onNavigate={handleNavigate} />
-      <SidebarInset>
+      <SidebarInset className="h-svh min-h-0 overflow-hidden">
         <header className="relative z-10 flex h-14 shrink-0 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur-xl">
           <SidebarTrigger />
           <div className="flex min-w-0 flex-col">
@@ -150,9 +145,9 @@ export function App() {
             </span>
           </div>
         </header>
-        <div className="app-surface relative flex flex-1 overflow-hidden p-4 lg:p-6">
+        <div className="app-surface relative flex min-w-0 flex-1 overflow-hidden p-4 lg:p-6">
           <div className="app-surface-grain pointer-events-none absolute inset-0" />
-          <div className="relative z-10 flex w-full">{page}</div>
+          <div className="relative z-10 flex min-w-0 flex-1">{page}</div>
         </div>
       </SidebarInset>
     </SidebarProvider>

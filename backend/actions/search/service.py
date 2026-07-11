@@ -13,7 +13,7 @@ from actions.shared.cache import CacheOptions
 from actions.shared.query_schema.schemas import QueryParamOutput
 from actions.shared.search_url import build_search_url, default_search_match
 
-from .schemas import SearchProvider, SearchResult
+from .schemas import SearchOutput, SearchProvider, SearchResult
 
 _SCHEMA_TARGET_JSON_EXAMPLE = json.dumps(
     {
@@ -249,7 +249,7 @@ async def search(
     session: Session | None = None,
     task_run_id: UUID | None = None,
     cache: CacheOptions | dict[str, object] | None = None,
-) -> list[SearchResult]:
+) -> SearchOutput:
     provider_config = SEARCH_PROVIDERS[provider]
     search_url = build_search_url(
         base_url=provider_config.base_url,
@@ -364,7 +364,7 @@ async def search(
             metadata={"provider": provider, "results": len(results)},
         ),
     )
-    return results
+    return SearchOutput(results=results)
 
 
 def search_sync(
@@ -373,7 +373,7 @@ def search_sync(
     provider: SearchProvider = "duckduckgo",
     progress_reporter: ProgressReporter | None = None,
     cache: CacheOptions | dict[str, object] | None = None,
-) -> list[SearchResult]:
+) -> SearchOutput:
     return asyncio.run(
         search(
             query=query,

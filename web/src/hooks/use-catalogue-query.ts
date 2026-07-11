@@ -17,11 +17,12 @@ async function runCatalogueQuery(sql: string): Promise<CatalogueQueryResult> {
 
   const table = tableFromIPC(await response.arrayBuffer())
   const columns = table.schema.fields.map((field) => field.name)
-  const rows: unknown[][] = []
-  for (const row of table) {
-    rows.push(columns.map((column) => row[column]))
-  }
-  return { columns, rows }
+  const columnTypes = table.schema.fields.map((field) => String(field.type))
+  const vectors = columns.map((_, index) => table.getChildAt(index))
+  const rows = Array.from({ length: table.numRows }, (_, rowIndex) =>
+    vectors.map((vector) => vector?.get(rowIndex))
+  )
+  return { columns, columnTypes, rows }
 }
 
 export function useCatalogueQuery() {

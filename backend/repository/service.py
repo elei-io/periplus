@@ -424,7 +424,7 @@ class RepositoryIngestor:
             links=(
                 self.catalogue_service.get_projected_links(
                     document.document_id,
-                    page_url=crawl.final_url or crawl.normalized_url,
+                    page_url=crawl.page_url,
                 )
                 if include_links
                 else None

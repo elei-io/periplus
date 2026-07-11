@@ -22,6 +22,10 @@ export type SearchResult = {
   description: string
 }
 
+export type SearchOutput = {
+  results: SearchResult[]
+}
+
 export type SearchStreamEvent =
   | {
       type: "progress"

@@ -10,6 +10,8 @@ _batch_items = Histogram("atlas_repository_ingestion_batch_items", "Items per re
 _pending = Gauge("atlas_repository_ingestion_jobs_pending", "Repository jobs waiting in JetStream.")
 _ack_pending = Gauge("atlas_repository_ingestion_jobs_ack_pending", "Delivered repository jobs awaiting acknowledgement.")
 _redelivered = Gauge("atlas_repository_ingestion_jobs_redelivered", "Redelivered repository jobs.")
+_compactions = Counter("atlas_repository_compactions_total", "Repository compaction checks.", ("outcome",))
+_compaction_files = Counter("atlas_repository_compaction_files_total", "Repository files involved in compaction.", ("kind",))
 
 
 def raw_write(*, outcome: str, duration_seconds: float, html_bytes: int | None = None, compressed_bytes: int | None = None) -> None:
@@ -36,3 +38,16 @@ def queue_state(*, pending: int, ack_pending: int, redelivered: int) -> None:
     _pending.set(pending)
     _ack_pending.set(ack_pending)
     _redelivered.set(redelivered)
+
+
+def compaction(
+    *,
+    outcome: str,
+    duration_seconds: float,
+    files_processed: int,
+    files_created: int,
+) -> None:
+    _compactions.labels(outcome).inc()
+    _duration.labels("compaction", outcome).observe(max(0.0, duration_seconds))
+    _compaction_files.labels("processed").inc(files_processed)
+    _compaction_files.labels("created").inc(files_created)

@@ -39,7 +39,6 @@ def validate_result_size(value: object) -> None:
 @dataclass
 class PrimitiveExecution:
     output_json: object
-    response_json: object
     warnings: list[dict]
 
 
@@ -60,30 +59,28 @@ async def execute_task(
     )
     with task_execution_scope(context):
         if run.primitive == "search":
-            results = await search(**payload, progress_reporter=progress_reporter, session=session, task_run_id=run.id)
-            response = [_json_safe(result) for result in results]
-            execution = PrimitiveExecution({"results": response}, response, [])
+            output = await search(**payload, progress_reporter=progress_reporter, session=session, task_run_id=run.id)
+            execution = PrimitiveExecution(_json_safe(output), [])
         elif run.primitive == "index":
             output = await index(**payload, progress_reporter=progress_reporter, session=session, task_run_id=run.id)
-            response = [_json_safe(link) for link in output.links]
-            execution = PrimitiveExecution({"links": response}, response, [])
+            execution = PrimitiveExecution(_json_safe(output), [])
         elif run.primitive == "crawl":
             output = await crawl(**payload, progress_reporter=progress_reporter, session=session, task_run_id=run.id, retain_pages=True, include_links=True)
             warnings = [_json_safe(warning) for page in output.pages for warning in page.quality_warnings]
             response = _json_safe(output)
-            execution = PrimitiveExecution(response, response, warnings)
+            execution = PrimitiveExecution(response, warnings)
         elif run.primitive == "schema":
             output = await schema(**payload, progress_reporter=progress_reporter, session=session, task_run_id=run.id)
             response = _json_safe(output)
-            execution = PrimitiveExecution(response, response, [])
+            execution = PrimitiveExecution(response, [])
         elif run.primitive == "extract":
             output = await extract(**payload, progress_reporter=progress_reporter, session=session, task_run_id=run.id)
             response = _json_safe(output)
-            execution = PrimitiveExecution(response, response, [_json_safe(value) for value in output.warnings])
+            execution = PrimitiveExecution(response, [_json_safe(value) for value in output.warnings])
         elif run.primitive == "calibrate":
             output = await calibrate(**payload, progress_reporter=progress_reporter, session=session, task_run_id=run.id)
             response = _json_safe(output)
-            execution = PrimitiveExecution(response, response, [])
+            execution = PrimitiveExecution(response, [])
         else:
             raise ValueError(f"Unsupported task primitive: {run.primitive}")
     validate_result_size(execution.output_json)

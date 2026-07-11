@@ -44,11 +44,13 @@ class ElementRow:
 
     element_index: int
     parent_index: int | None
+    subtree_end_index: int
+    depth: int
     tag: str
     namespace_uri: str | None
     attributes: dict[str, str]
-    text: str | None
-    tail: str | None
+    text_direct: str
+    text_tail: str
 
 
 def parse_html(source: str) -> Element:
@@ -74,12 +76,25 @@ def iter_tree_elements(root: Element) -> Iterator[ElementRow]:
     """Yield rows for an already parsed HTML5 tree."""
 
     next_index = 0
+    subtree_sizes: dict[int, int] = {}
+
+    def count_subtree(element: Element) -> int:
+        size = 1 + sum(
+            count_subtree(child)
+            for child in element
+            if isinstance(child.tag, str)
+        )
+        subtree_sizes[id(element)] = size
+        return size
+
+    count_subtree(root)
 
     def walk(
         element: Element,
         *,
         parent_index: int | None,
-        tail: str | None,
+        depth: int,
+        text_tail: str,
     ) -> Iterator[ElementRow]:
         nonlocal next_index
         element_index = next_index
@@ -96,20 +111,23 @@ def iter_tree_elements(root: Element) -> Iterator[ElementRow]:
         yield ElementRow(
             element_index=element_index,
             parent_index=parent_index,
+            subtree_end_index=element_index + subtree_sizes[id(element)] - 1,
+            depth=depth,
             tag=tag,
             namespace_uri=namespace_uri,
             attributes=attributes,
-            text=text,
-            tail=tail,
+            text_direct=text or "",
+            text_tail=text_tail,
         )
         for child, child_tail in zip(children, child_tails, strict=True):
             yield from walk(
                 child,
                 parent_index=element_index,
-                tail=child_tail,
+                depth=depth + 1,
+                text_tail=child_tail or "",
             )
 
-    yield from walk(root, parent_index=None, tail=None)
+    yield from walk(root, parent_index=None, depth=0, text_tail="")
 
 
 def encode_html(source: str) -> list[ElementRow]:

@@ -30,7 +30,7 @@ def run_hot_path_benchmark(
         [samples],
     ).fetchall()
     crawl_rows = catalogue.connection.execute(
-        "SELECT document_id, normalized_url, final_url, input_hash FROM "
+        "SELECT document_id, normalized_url, page_url, input_hash FROM "
         f"{table('crawls')} WHERE document_id IS NOT NULL "
         "LIMIT ?",
         [samples],
@@ -60,14 +60,14 @@ def run_hot_path_benchmark(
     link_samples = crawl_rows[: min(len(crawl_rows), 20)]
     link_timings = [
         _timed(
-            lambda document_id=document_id, normalized_url=normalized_url, final_url=final_url: (
+            lambda document_id=document_id, page_url=page_url: (
                 service.get_projected_links(
                     str(document_id),
-                    page_url=str(final_url or normalized_url),
+                    page_url=str(page_url),
                 )
             )
         )
-        for document_id, normalized_url, final_url, _ in link_samples
+        for document_id, _, page_url, _ in link_samples
     ]
     return {
         "samples": {
