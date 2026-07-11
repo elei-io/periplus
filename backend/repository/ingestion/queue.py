@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from datetime import UTC, datetime
+from typing import Literal
 from uuid import UUID
 
 import nats

@@ -2,13 +2,71 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
-from actions.crawl.service import _canonicalize_transient_links, _crawl_url
+from actions.crawl.schemas import CrawlPage
+from actions.crawl.service import _canonicalize_transient_links, _crawl_url, _persist_page
+from actions.shared.cache import ResolvedCachePolicy
 from dom import links_from_html
 
 
 class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_persisted_page_can_release_retained_html(self) -> None:
+        run_id = uuid4()
+        task_id = uuid4()
+        page = CrawlPage(
+            url="https://example.com/",
+            success=True,
+            status_code=200,
+            duration_seconds=0.1,
+            html="<html><body>ok</body></html>",
+            crawl={},
+        )
+        pipeline = SimpleNamespace(
+            store_raw=AsyncMock(),
+            submit_stored=AsyncMock(
+                return_value=SimpleNamespace(
+                    document_id="sha256:test",
+                    repository_snapshot=1,
+                    crawl_created=True,
+                )
+            ),
+        )
+
+        with (
+            patch(
+                "actions.crawl.service._repository_retry_page",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "actions.crawl.service._run_envelope",
+                return_value=SimpleNamespace(
+                    task_id=task_id,
+                    task_revision=1,
+                    primitive="crawl",
+                    data_schema_id=None,
+                ),
+            ),
+        ):
+            result = await _persist_page(
+                MagicMock(),
+                task_run_id=run_id,
+                index=0,
+                requested_url=page.url,
+                page=page,
+                mode="static",
+                wait="none",
+                repository_pipeline=pipeline,
+                cache_policy=ResolvedCachePolicy(mode="prefer", max_age_seconds=120),
+                retain_html=False,
+                include_links=False,
+            )
+
+        self.assertIsNone(result.html)
+        pipeline.store_raw.assert_awaited_once()
+        pipeline.submit_stored.assert_awaited_once()
+
     async def test_fresh_crawl_replaces_transient_links_with_canonical_projection(self) -> None:
         html = (
             '<html><head><base href="/assets/"></head><body>'

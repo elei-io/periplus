@@ -360,19 +360,19 @@ async def _persist_page(
             warnings_json=[_json_safe(warning) for warning in page.quality_warnings],
             errors_json=[error] if error else [],
         )
+        result_page = page
         if page.html is not None:
             await pipeline.store_raw(captured_html=page.html, identity=identity)
             if not retain_html:
                 # Raw storage is the last operation that needs the captured string.
                 # Drop this function's reference before ingestion backpressure and
                 # structural reads so large pages do not accumulate in crawl workers.
-                page = page.model_copy(update={"html": None})
-        result_page = page
+                result_page = page.model_copy(update={"html": None})
         repository_result = await pipeline.submit_stored(record)
         links = (
             await pipeline.projected_links(
                 repository_result.document_id,
-                page_url=crawl_payload.get("redirected_url") or page.url,
+                page_url=crawl_payload.get("redirected_url") or result_page.url,
             )
             if include_links and repository_result.document_id is not None
             else None
