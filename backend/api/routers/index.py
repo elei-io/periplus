@@ -12,9 +12,9 @@ router = APIRouter(prefix="/index", tags=["index"])
 
 
 @router.post("/", response_model=TaskRunSubmission, status_code=202)
-def index(
+async def index(
     request: Input,
     response: Response,
     session: Annotated[Session, Depends(get_session)],
 ) -> TaskRunSubmission:
-    return submit_action(session, "index", request.model_dump(), response)
+    return await submit_action(session, "index", request.model_dump(), response)

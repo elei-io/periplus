@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import os
 from datetime import UTC, datetime
-from typing import Literal
 from uuid import UUID
 
 import nats
@@ -34,9 +32,6 @@ import zstandard
 from repository.ducklake import (
     CatalogueWriteResult,
     CrawlRecord,
-    RunCrawlUsageRecord,
-    RunManifestRecord,
-    RunManifestWriteResult,
 )
 
 STREAM = "ATLAS_REPOSITORY"
@@ -53,23 +48,7 @@ class IngestionJob(BaseModel):
     request_id: str
     reply_subject: str
     enqueued_at: datetime
-    kind: Literal["crawl", "manifest"] = "crawl"
-    crawl: CrawlRecord | None = None
-    run_manifest_zstd: str | None = None
-    run_usage: RunCrawlUsageRecord | None = None
-
-    @model_validator(mode="after")
-    def validate_run_usage_pair(self) -> IngestionJob:
-        if self.kind == "crawl" and self.crawl is None:
-            raise ValueError("crawl ingestion requires a crawl")
-        if self.kind == "manifest" and (
-            self.crawl is not None or self.run_usage is not None or self.run_manifest_zstd is None
-        ):
-            raise ValueError("manifest ingestion requires only run_manifest_zstd")
-        if self.kind == "crawl" and self.run_manifest_zstd is not None:
-            raise ValueError("crawl ingestion must not embed a run manifest")
-        return self
-
+    crawl: CrawlRecord
 
 class IngestionResponse(BaseModel):
     """Small notification payload; durable truth lives in ``IngestionState``."""
@@ -77,7 +56,7 @@ class IngestionResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     request_id: str
-    result: CatalogueWriteResult | RunManifestWriteResult | None = None
+    result: CatalogueWriteResult | None = None
     error: str | None = None
 
 
@@ -108,24 +87,15 @@ class IngestionState(BaseModel):
 
     request_id: str
     status: Literal["pending", "succeeded", "failed"]
-    kind: Literal["crawl", "manifest"] = "crawl"
-    crawl: CrawlRecord | None = None
-    run_manifest_zstd: str | None = None
-    run_usage: RunCrawlUsageRecord | None = None
+    crawl: CrawlRecord
     enqueued_at: datetime
     updated_at: datetime
     published_at: datetime | None = None
-    result: CatalogueWriteResult | RunManifestWriteResult | None = None
+    result: CatalogueWriteResult | None = None
     error: str | None = None
 
     @model_validator(mode="after")
     def validate_state(self) -> IngestionState:
-        if self.kind == "crawl" and self.crawl is None:
-            raise ValueError("crawl ingestion requires a crawl")
-        if self.kind == "manifest" and (
-            self.crawl is not None or self.run_usage is not None or self.run_manifest_zstd is None
-        ):
-            raise ValueError("manifest ingestion requires only run_manifest_zstd")
         if self.status == "pending" and (self.result is not None or self.error is not None):
             raise ValueError("pending ingestion cannot contain a terminal result")
         if self.status == "succeeded" and (self.result is None or self.error is not None):
@@ -151,26 +121,6 @@ def projection_ingestion_request_id(document_id: str) -> str:
         f"{PARSER_VERSION}\0{PARSER_OPTIONS_HASH}"
     )
     return "projection-" + hashlib.sha256(value.encode()).hexdigest()
-
-
-def run_usage_ingestion_request_id(usage_id: UUID) -> str:
-    return f"usage-{usage_id.hex}"
-
-
-def run_manifest_ingestion_request_id(run_id: UUID) -> str:
-    return f"manifest-{run_id.hex}"
-
-
-def encode_run_manifest(manifest: RunManifestRecord) -> str:
-    payload = manifest.model_dump_json().encode()
-    compressed = zstandard.ZstdCompressor(level=3).compress(payload)
-    return base64.b64encode(compressed).decode("ascii")
-
-
-def decode_run_manifest(value: str) -> RunManifestRecord:
-    compressed = base64.b64decode(value, validate=True)
-    payload = zstandard.ZstdDecompressor().decompress(compressed)
-    return RunManifestRecord.model_validate_json(payload)
 
 
 def _validate_envelope(payload: bytes, *, label: str) -> None:
@@ -352,10 +302,7 @@ async def ensure_pending_ingestion(
     results,
     *,
     request_id: str,
-    crawl: CrawlRecord | None = None,
-    kind: Literal["crawl", "manifest"] = "crawl",
-    run_manifest_zstd: str | None = None,
-    run_usage: RunCrawlUsageRecord | None = None,
+    crawl: CrawlRecord,
 ) -> IngestionState:
     """Create pending state once, retaining the first frozen crawl envelope."""
 
@@ -363,10 +310,7 @@ async def ensure_pending_ingestion(
     pending = IngestionState(
         request_id=request_id,
         status="pending",
-        kind=kind,
         crawl=crawl,
-        run_manifest_zstd=run_manifest_zstd,
-        run_usage=run_usage,
         enqueued_at=now,
         updated_at=now,
     )
@@ -388,7 +332,7 @@ async def store_ingestion_response(
     results,
     *,
     job: IngestionJob,
-    result: CatalogueWriteResult | RunManifestWriteResult | None = None,
+    result: CatalogueWriteResult | None = None,
     error: str | None = None,
 ) -> IngestionState:
     """Revision-fence a terminal transition before acknowledging the work message.
@@ -499,10 +443,7 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
             recovered = await ensure_pending_ingestion(
                 results,
                 request_id=dead_letter.job.request_id,
-                kind=dead_letter.job.kind,
                 crawl=dead_letter.job.crawl,
-                run_manifest_zstd=dead_letter.job.run_manifest_zstd,
-                run_usage=dead_letter.job.run_usage,
             )
             if recovered.status == "succeeded":
                 raise RuntimeError("the ingestion has already succeeded")
@@ -570,17 +511,9 @@ def result_from_ingestion_state(state: IngestionState) -> CatalogueWriteResult:
     return state.result
 
 
-def manifest_result_from_ingestion_state(state: IngestionState) -> RunManifestWriteResult:
-    if state.status == "failed":
-        raise RuntimeError(state.error or "run manifest ingestion failed")
-    if state.status != "succeeded" or not isinstance(state.result, RunManifestWriteResult):
-        raise RuntimeError("run manifest ingestion has not completed")
-    return state.result
-
-
 def _terminal_result(
     state: IngestionState,
-) -> CatalogueWriteResult | RunManifestWriteResult:
+) -> CatalogueWriteResult:
     if state.status == "failed":
         raise RuntimeError(state.error or "repository ingestion failed")
     if state.status != "succeeded" or state.result is None:
@@ -605,7 +538,6 @@ class IngestionQueueClient:
         crawl: CrawlRecord,
         *,
         request_id: str | None = None,
-        run_usage: RunCrawlUsageRecord | None = None,
     ) -> CatalogueWriteResult:
         """Publish/resume one operation and wait on durable state, not its inbox."""
 
@@ -613,27 +545,10 @@ class IngestionQueueClient:
         state = await self._pending_state(
             request_id=request_id,
             crawl=crawl,
-            run_usage=run_usage,
         )
         if state.status != "pending":
             return result_from_ingestion_state(state)
         result = await self._publish_and_wait(state)
-        if not isinstance(result, CatalogueWriteResult):
-            raise RuntimeError("repository crawl ingestion returned a manifest result")
-        return result
-
-    async def submit_manifest(self, manifest: RunManifestRecord) -> RunManifestWriteResult:
-        encoded = encode_run_manifest(manifest)
-        state = await self._pending_state(
-            request_id=run_manifest_ingestion_request_id(manifest.run_id),
-            kind="manifest",
-            run_manifest_zstd=encoded,
-        )
-        if state.status != "pending":
-            return manifest_result_from_ingestion_state(state)
-        result = await self._publish_and_wait(state)
-        if not isinstance(result, RunManifestWriteResult):
-            raise RuntimeError("run manifest ingestion returned a crawl result")
         return result
 
     async def resume(self, crawl_id: UUID) -> CatalogueWriteResult | None:
@@ -652,24 +567,18 @@ class IngestionQueueClient:
         self,
         *,
         request_id: str,
-        crawl: CrawlRecord | None = None,
-        kind: Literal["crawl", "manifest"] = "crawl",
-        run_manifest_zstd: str | None = None,
-        run_usage: RunCrawlUsageRecord | None = None,
+        crawl: CrawlRecord,
     ) -> IngestionState:
         self._require_connected()
         return await ensure_pending_ingestion(
             self.results,
             request_id=request_id,
-            kind=kind,
             crawl=crawl,
-            run_manifest_zstd=run_manifest_zstd,
-            run_usage=run_usage,
         )
 
     async def _publish_and_wait(
         self, state: IngestionState
-    ) -> CatalogueWriteResult | RunManifestWriteResult:
+    ) -> CatalogueWriteResult:
         self._require_connected()
         reply_subject = self.client.new_inbox()
         subscription = await self.client.subscribe(reply_subject)
@@ -677,10 +586,7 @@ class IngestionQueueClient:
             request_id=state.request_id,
             reply_subject=reply_subject,
             enqueued_at=state.enqueued_at,
-            kind=state.kind,
             crawl=state.crawl,
-            run_manifest_zstd=state.run_manifest_zstd,
-            run_usage=state.run_usage,
         )
         poll_seconds = _positive_float("ATLAS_INGEST_RESULT_POLL_SECONDS", 0.5)
         try:

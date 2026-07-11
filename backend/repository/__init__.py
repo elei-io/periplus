@@ -17,7 +17,6 @@ from repository.html import (
 )
 from repository.object_store import FileObjectStore, ObjectStore, S3ObjectStore
 from repository.pipeline import IngestionWorkerConfig, RepositoryPipeline
-from repository.queue import run_usage_ingestion_request_id
 from repository.service import (
     PreparedIngestion,
     RepositoryCacheHit,
@@ -49,6 +48,5 @@ __all__ = [
     "ensure_s3_bucket_from_env",
     "object_store_from_env",
     "repository_ingestor_from_env",
-    "run_usage_ingestion_request_id",
     "staging_root_from_env",
 ]

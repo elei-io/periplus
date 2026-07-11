@@ -12,9 +12,9 @@ router = APIRouter(prefix="/crawl", tags=["crawl"])
 
 
 @router.post("/", response_model=TaskRunSubmission, status_code=202)
-def crawl(
+async def crawl(
     request: Input,
     response: Response,
     session: Annotated[Session, Depends(get_session)],
 ) -> TaskRunSubmission:
-    return submit_action(session, "crawl", request.model_dump(), response)
+    return await submit_action(session, "crawl", request.model_dump(), response)

@@ -9,8 +9,6 @@ from observability.operations import SUPPORTED_WINDOWS, collect_operations_metri
 from observability.prometheus import api_metrics_payload
 from observability.prometheus_source import collect_prometheus_metrics
 from observability.schemas import OperationsMetricsResponse
-from tasks.heartbeats import purge_stale_worker_heartbeats
-from tasks.schemas import WorkerHeartbeatPurgeRecord
 
 router = APIRouter(tags=["operations"])
 
@@ -35,15 +33,3 @@ def operations_metrics(
     return snapshot.model_copy(
         update={"prometheus": collect_prometheus_metrics(window_seconds)}
     )
-
-
-@router.post(
-    "/operations/purge/workers",
-    response_model=WorkerHeartbeatPurgeRecord,
-)
-def purge_workers(
-    session: Annotated[Session, Depends(get_session)],
-) -> WorkerHeartbeatPurgeRecord:
-    deleted = purge_stale_worker_heartbeats(session)
-    session.commit()
-    return WorkerHeartbeatPurgeRecord(deleted=deleted)

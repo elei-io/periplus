@@ -125,7 +125,7 @@ Atlas uses a managed repository:
 ```text
 Postgres       control-plane database + separate DuckLake metadata database
 JetStream      ingestion jobs, recent progress events, cancellation, and worker state
-DuckLake       durable crawls, documents, DOM elements, and run/crawl usage manifests
+DuckLake       durable crawls, documents, and DOM elements
 filesystem/S3  content-addressed raw HTML.zst and optional debug media
 ```
 

@@ -6,10 +6,10 @@ This is the non-negotiable boundary for Atlas durable state.
 
 | Owner | Stores | Must not store |
 | --- | --- | --- |
-| Postgres `atlas` | tasks, schedules, frozen task-run envelopes, schemas, crawl policies | crawl history, HTML, DOM elements |
+| Postgres `atlas` | tasks, schedules, schemas, URL matches, crawl policies | execution state, crawl history, HTML, DOM elements |
 | Repository objects | immutable `html/sha256/...html.zst` objects | mutable metadata |
-| DuckLake | documents, crawls, elements, run manifests, run-to-crawl usage | task scheduling state |
-| JetStream | task execution, ingestion jobs/results, progress, dead letters | irreplaceable long-term analytics |
+| DuckLake | documents, crawls, elements | task scheduling or execution state |
+| JetStream/KV | task work/current state, worker presence, ingestion jobs/results, progress, dead letters | irreplaceable long-term analytics |
 | Prometheus | operational metrics and history | correctness-critical state |
 
 ## Durable records
@@ -25,16 +25,13 @@ optional document identity. A failed acquisition may be documentless but must co
 DuckLake owns its physical Parquet layout and compaction; Atlas must not create a permanent file per
 crawl in DuckLake's data directory.
 
-`run_manifests` freezes task revision, primitive, input, and queue time. `run_crawl_usages` records
-which crawls a run used, their role and order, and whether they were returned to the caller.
-
 ## Write path
 
 1. Crawl acquires a page and computes the HTML SHA-256 identity.
 2. It stores compressed HTML idempotently under the content-addressed object key.
 3. It publishes a frozen ingestion job containing repository-relative identities and provenance.
 4. The repository writer verifies the raw object, creates a bounded local DOM staging file, and
-   commits a microbatch of document, crawl, element, manifest, and usage rows.
+   commits a microbatch of document, crawl, and element rows.
 5. Only after commit does it acknowledge the message and remove staging.
 
 Writes are idempotent. Reusing an identity with different immutable content is a conflict. A worker

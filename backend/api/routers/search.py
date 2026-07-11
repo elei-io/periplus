@@ -11,9 +11,9 @@ router = APIRouter(prefix="/search", tags=["search"])
 
 
 @router.post("/", response_model=TaskRunSubmission, status_code=202)
-def search(
+async def search(
     request: SearchInput,
     response: Response,
     session: Annotated[Session, Depends(get_session)],
 ) -> TaskRunSubmission:
-    return submit_action(session, "search", request.model_dump(), response)
+    return await submit_action(session, "search", request.model_dump(), response)

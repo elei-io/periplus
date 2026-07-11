@@ -20,9 +20,6 @@ from repository.ducklake import (
     CatalogueWriteResult,
     CrawlRecord,
     DocumentRecord,
-    RunCrawlUsageRecord,
-    RunManifestRecord,
-    RunManifestWriteResult,
     catalogue_config_from_env,
 )
 from dom import (
@@ -92,8 +89,6 @@ class RepositoryIngestor:
         self,
         *,
         crawl: CrawlRecord,
-        run_manifest: RunManifestRecord | None = None,
-        run_usage: RunCrawlUsageRecord | None = None,
         known_documents: Mapping[str, DocumentRecord] | None = None,
     ) -> PreparedIngestion:
         """Prepare a queued ingestion using only its durable raw object reference."""
@@ -102,8 +97,6 @@ class RepositoryIngestor:
             return PreparedIngestion(
                 document=None,
                 crawl=crawl,
-                run_manifest=run_manifest,
-                run_usage=run_usage,
             )
 
         prefix = "sha256:"
@@ -129,8 +122,6 @@ class RepositoryIngestor:
             return PreparedIngestion(
                 document=existing,
                 crawl=crawl,
-                run_manifest=run_manifest,
-                run_usage=run_usage,
             )
 
         captured_html = self.html_repository.read(object_key)
@@ -182,8 +173,6 @@ class RepositoryIngestor:
             element_count=projection.element_count,
             staged_bytes=projection.size_bytes,
             replace_projection=existing is not None,
-            run_manifest=run_manifest,
-            run_usage=run_usage,
         )
 
     def commit_prepared_batch(
@@ -203,8 +192,6 @@ class RepositoryIngestor:
                         crawl=value.crawl,
                         elements_path=value.elements_path,
                         replace_projection=value.replace_projection,
-                        run_manifest=value.run_manifest,
-                        run_usage=value.run_usage,
                     )
                     for value in prepared
                 ]
@@ -219,7 +206,6 @@ class RepositoryIngestor:
         self,
         *,
         crawl: CrawlRecord,
-        run_usage: RunCrawlUsageRecord | None = None,
     ) -> CatalogueWriteResult | None:
         """Return a success result only when the complete crawl job is durable."""
 
@@ -236,15 +222,6 @@ class RepositoryIngestor:
             if document is None or not self._projection_is_current(document):
                 return None
 
-        if run_usage is not None:
-            existing_usage = self.catalogue_service.get_run_usage(run_usage.usage_id)
-            if existing_usage is None:
-                return None
-            if existing_usage != run_usage:
-                raise CatalogueConflictError(
-                    f"usage_id {str(run_usage.usage_id)!r} has different durable provenance"
-                )
-
         snapshot = self.catalogue.latest_snapshot()
         if snapshot is None:
             raise CatalogueValidationError("DuckLake did not publish a repository snapshot")
@@ -253,28 +230,6 @@ class RepositoryIngestor:
             crawl_id=crawl.crawl_id,
             document_created=False,
             crawl_created=False,
-            repository_snapshot=snapshot,
-        )
-
-    def reconcile_manifest_commit(
-        self,
-        manifest: RunManifestRecord,
-    ) -> RunManifestWriteResult | None:
-        """Return a success result only when the exact run manifest is durable."""
-
-        existing = self.catalogue_service.get_run_manifest(manifest.run_id)
-        if existing is None:
-            return None
-        if existing != manifest:
-            raise CatalogueConflictError(
-                f"run_id {str(manifest.run_id)!r} has a different durable manifest"
-            )
-        snapshot = self.catalogue.latest_snapshot()
-        if snapshot is None:
-            raise CatalogueValidationError("DuckLake did not publish a repository snapshot")
-        return RunManifestWriteResult(
-            run_id=manifest.run_id,
-            manifest_created=False,
             repository_snapshot=snapshot,
         )
 
@@ -537,8 +492,6 @@ class PreparedIngestion:
     element_count: int = 0
     staged_bytes: int = 0
     replace_projection: bool = False
-    run_manifest: RunManifestRecord | None = None
-    run_usage: RunCrawlUsageRecord | None = None
 
 
 def _blocked_by_cache_rules(

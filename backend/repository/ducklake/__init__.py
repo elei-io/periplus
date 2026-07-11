@@ -15,10 +15,6 @@ from repository.ducklake.records import (
     DocumentRecord,
     ElementRecord,
     LinkRecord,
-    RunCrawlUsageRecord,
-    RunCrawlUsageRole,
-    RunManifestRecord,
-    RunManifestWriteResult,
 )
 from repository.ducklake.service import CatalogueBatchEntry, CatalogueService
 
@@ -37,9 +33,5 @@ __all__ = [
     "DocumentRecord",
     "ElementRecord",
     "LinkRecord",
-    "RunCrawlUsageRecord",
-    "RunCrawlUsageRole",
-    "RunManifestRecord",
-    "RunManifestWriteResult",
     "catalogue_config_from_env",
 ]

@@ -1,12 +1,12 @@
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from hashlib import sha256
 from uuid import UUID
 
 from croniter import croniter
-from sqlalchemy import exists, func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, defer
+from sqlalchemy.orm import Session
 from pydantic import ValidationError
 
 from actions.extract.schemas import Input as ExtractInput
@@ -16,7 +16,8 @@ from actions.calibrate.schemas import Input as CalibrateInput
 from actions.shared.data_schema.schemas import Input as SchemaInput
 from crawl_policies.service import snapshot_enabled_crawl_policies
 
-from .models import Task, TaskRun, WorkerHeartbeat
+from .models import Task
+from .queue import TaskRunState, WorkerState, connect_nats, create_run, ensure_task_storage, get_run, list_runs, new_run, publish_run, release_task, reserve_task, update_run
 from .schemas import (
     SearchInput,
     TaskCreate,
@@ -77,7 +78,7 @@ def _record(task: Task) -> TaskRecord:
     return TaskRecord.model_validate(task)
 
 
-def _run_record(run: TaskRun) -> TaskRunRecord:
+def _run_record(run: TaskRunState) -> TaskRunRecord:
     return TaskRunRecord.model_validate(run)
 
 
@@ -292,112 +293,67 @@ def copy_task(session: Session, task_id: UUID) -> TaskRecord:
     return _record(copied)
 
 
-def list_task_runs(
-    session: Session,
-    task_id: UUID,
-    limit: int = 100,
-    offset: int = 0,
-) -> list[TaskRunRecord]:
+async def _nats():
+    client = await connect_nats()
+    jetstream = client.jetstream()
+    runs, workers = await ensure_task_storage(jetstream)
+    return client, jetstream, runs, workers
+
+
+async def _all_runs() -> list[TaskRunState]:
+    client, _jetstream, runs, _workers = await _nats()
+    try:
+        return await list_runs(runs)
+    finally:
+        await client.drain()
+
+
+async def list_task_runs(session: Session, task_id: UUID, limit: int = 100, offset: int = 0) -> list[TaskRunRecord]:
     if session.get(Task, task_id) is None:
         raise TaskNotFoundError(f"Task {task_id} was not found.")
-
-    statement = (
-        select(TaskRun)
-        .options(defer(TaskRun.output_json))
-        .where(TaskRun.task_id == task_id)
-        .order_by(TaskRun.queued_at.desc())
-        .limit(limit)
-        .offset(offset)
-    )
-    return [_run_record(run) for run in session.scalars(statement)]
+    values = sorted((run for run in await _all_runs() if run.task_id == task_id), key=lambda run: run.queued_at, reverse=True)
+    return [_run_record(run) for run in values[offset:offset + limit]]
 
 
-def list_recent_task_runs(
-    session: Session,
-    primitive: TaskPrimitive,
-    terminal_limit: int = 3,
-) -> list[TaskRunRecord]:
-    active = list(
-        session.scalars(
-            select(TaskRun)
-            .options(defer(TaskRun.output_json))
-            .where(TaskRun.primitive == primitive, TaskRun.status.in_(_ACTIVE_RUN_STATUSES))
-            .order_by(TaskRun.queued_at.desc())
-        )
-    )
-    terminal = list(
-        session.scalars(
-            select(TaskRun)
-            .options(defer(TaskRun.output_json))
-            .where(TaskRun.primitive == primitive, TaskRun.status.not_in(_ACTIVE_RUN_STATUSES))
-            .order_by(TaskRun.finished_at.desc().nullslast(), TaskRun.queued_at.desc())
-            .limit(terminal_limit)
-        )
-    )
+async def list_recent_task_runs(primitive: TaskPrimitive, terminal_limit: int = 3) -> list[TaskRunRecord]:
+    values = [run for run in await _all_runs() if run.primitive == primitive]
+    active = sorted((run for run in values if run.status in _ACTIVE_RUN_STATUSES), key=lambda run: run.queued_at, reverse=True)
+    terminal = sorted((run for run in values if run.status not in _ACTIVE_RUN_STATUSES), key=lambda run: run.finished_at or run.queued_at, reverse=True)[:terminal_limit]
     return [_run_record(run) for run in (*active, *terminal)]
 
 
-def enqueue_task_run(
-    session: Session,
-    task: Task,
-    trigger_kind: TaskRunTriggerKind,
-    now: datetime | None = None,
-) -> TaskRun | None:
-    active_statement = select(
-        exists().where(
-            TaskRun.task_id == task.id,
-            TaskRun.status.in_(_ACTIVE_RUN_STATUSES),
-        )
-    )
-    if session.scalar(active_statement):
-        return None
-
-    now = now or datetime.now(UTC)
-    run = TaskRun(
-        task_id=task.id,
-        task_revision=task.revision,
-        primitive=task.primitive,
-        status="queued",
-        trigger_kind=trigger_kind,
-        queued_at=now,
-        input_json=json.loads(json.dumps(task.input_json)),
-        crawl_policy_snapshots_json=snapshot_enabled_crawl_policies(session),
-        warnings_json={},
-    )
-    session.add(run)
-    task.next_run_at = _next_run_after_enqueue(task.schedule_json, now=now)
-    return run
+async def enqueue_task_run(session: Session, task: Task, trigger_kind: TaskRunTriggerKind, now: datetime | None = None) -> TaskRunState | None:
+    client, jetstream, runs, _workers = await _nats()
+    try:
+        now = now or datetime.now(UTC)
+        run = new_run(task_id=task.id, task_revision=task.revision, primitive=task.primitive, trigger_kind=trigger_kind, input_json=json.loads(json.dumps(task.input_json)), crawl_policy_snapshots_json=snapshot_enabled_crawl_policies(session), now=now)
+        if not await reserve_task(runs, task.id, run.id):
+            return None
+        try:
+            await create_run(runs, run)
+            await publish_run(jetstream, run.id)
+        except BaseException:
+            await runs.delete(run.id.hex)
+            await release_task(runs, task.id, run.id)
+            raise
+        task.next_run_at = _next_run_after_enqueue(task.schedule_json, now=now)
+        return run
+    finally:
+        await client.drain()
 
 
-def enqueue_due_task_runs(session: Session, limit: int = 20) -> int:
+async def enqueue_due_task_runs(session: Session, limit: int = 20) -> int:
     now = datetime.now(UTC)
-    statement = (
-        select(Task)
-        .where(
-            Task.archived_at.is_(None),
-            Task.schedule_json.is_not(None),
-            Task.next_run_at.is_not(None),
-            Task.next_run_at <= now,
-        )
-        .order_by(Task.next_run_at.asc())
-        .limit(limit)
-        .with_for_update(skip_locked=True)
-    )
-
+    statement = select(Task).where(Task.archived_at.is_(None), Task.schedule_json.is_not(None), Task.next_run_at.is_not(None), Task.next_run_at <= now).order_by(Task.next_run_at.asc()).limit(limit).with_for_update(skip_locked=True)
     enqueued = 0
     for task in session.scalars(statement):
-        if enqueue_task_run(session, task, trigger_kind="scheduled", now=now) is not None:
+        if await enqueue_task_run(session, task, trigger_kind="scheduled", now=now) is not None:
             enqueued += 1
-
     session.flush()
     return enqueued
 
 
-def enqueue_ad_hoc_task_run(
-    session: Session,
-    primitive: TaskPrimitive,
-    input_value: dict,
-) -> TaskRunSubmission:
+async def enqueue_ad_hoc_task_run(session: Session, primitive: TaskPrimitive, input_value: dict) -> TaskRunSubmission:
     input_json = _validate_input(primitive, input_value)
     identity_key = _ad_hoc_identity_key(primitive, input_json)
     task = session.scalar(select(Task).where(Task.identity_key == identity_key))
@@ -420,45 +376,29 @@ def enqueue_ad_hoc_task_run(
             if task is None:
                 raise
 
-    active_statement = select(
-        exists().where(
-            TaskRun.task_id == task.id,
-            TaskRun.status.in_(_ACTIVE_RUN_STATUSES),
-        )
-    )
-    if session.scalar(active_statement):
+    run = await enqueue_task_run(session, task, "manual")
+    if run is None:
         raise TaskRunConflictError("Task already has an active run.")
-
-    now = datetime.now(UTC)
-    run = TaskRun(
-        task_id=task.id,
-        task_revision=task.revision,
-        primitive=task.primitive,
-        status="queued",
-        trigger_kind="manual",
-        queued_at=now,
-        input_json=json.loads(json.dumps(task.input_json)),
-        crawl_policy_snapshots_json=snapshot_enabled_crawl_policies(session),
-        warnings_json={},
-    )
-    try:
-        with session.begin_nested():
-            session.add(run)
-            session.flush()
-    except IntegrityError as exc:
-        raise TaskRunConflictError("Task already has an active run.") from exc
     return TaskRunSubmission(task_id=task.id, run_id=run.id)
 
 
-def get_task_run(session: Session, run_id: UUID) -> TaskRunRecord:
-    run = session.get(TaskRun, run_id, options=(defer(TaskRun.output_json),))
+async def get_task_run(run_id: UUID) -> TaskRunRecord:
+    client, _jetstream, runs, _workers = await _nats()
+    try:
+        run = await get_run(runs, run_id)
+    finally:
+        await client.drain()
     if run is None:
         raise TaskNotFoundError(f"Task run {run_id} was not found.")
     return _run_record(run)
 
 
-def get_task_run_result(session: Session, run_id: UUID) -> object:
-    run = session.get(TaskRun, run_id)
+async def get_task_run_result(run_id: UUID) -> object:
+    client, _jetstream, runs, _workers = await _nats()
+    try:
+        run = await get_run(runs, run_id)
+    finally:
+        await client.drain()
     if run is None:
         raise TaskNotFoundError(f"Task run {run_id} was not found.")
     if run.status in _ACTIVE_RUN_STATUSES:
@@ -469,59 +409,57 @@ def get_task_run_result(session: Session, run_id: UUID) -> object:
     return run.output_json or {}
 
 
-def request_task_run_cancellation(session: Session, run_id: UUID) -> TaskRunRecord:
-    run = session.get(TaskRun, run_id, options=(defer(TaskRun.output_json),))
-    if run is None:
-        raise TaskNotFoundError(f"Task run {run_id} was not found.")
-    if run.status in {"succeeded", "failed", "cancelled", "skipped"}:
+async def request_task_run_cancellation(run_id: UUID) -> TaskRunRecord:
+    client, _jetstream, runs, _workers = await _nats()
+    now = datetime.now(UTC)
+    def cancel(run: TaskRunState) -> TaskRunState:
+        if run.status in {"succeeded", "failed", "cancelled", "skipped"}:
+            return run
+        updates = {"cancellation_requested_at": now, "updated_at": now}
+        if run.status == "queued":
+            updates.update(status="cancelled", cancelled_at=now, finished_at=now, error="Task run cancelled before execution.")
+        return run.model_copy(update=updates)
+    try:
+        try:
+            run = await update_run(runs, run_id, cancel)
+        except KeyError as exc:
+            raise TaskNotFoundError(f"Task run {run_id} was not found.") from exc
+        if run.status == "cancelled":
+            await release_task(runs, run.task_id, run.id)
         return _run_record(run)
-
-    now = datetime.now(UTC)
-    run.cancellation_requested_at = now
-    if run.status == "queued":
-        run.status = "cancelled"
-        run.cancelled_at = now
-        run.finished_at = now
-        run.error = "Task run cancelled before execution."
-    session.flush()
-    return _run_record(run)
+    finally:
+        await client.drain()
 
 
-def task_operations(session: Session, stale_after_seconds: int = 30) -> TaskOperationsRecord:
-    now = datetime.now(UTC)
-    workers = list(session.scalars(select(WorkerHeartbeat).order_by(WorkerHeartbeat.worker_id)))
-    counts = dict(session.execute(select(TaskRun.status, func.count()).group_by(TaskRun.status)).all())
-    oldest = session.scalar(select(func.min(TaskRun.queued_at)).where(TaskRun.status == "queued"))
-    stale_before = now - timedelta(seconds=stale_after_seconds)
-    recent = list(
-        session.execute(
-            select(TaskRun.queued_at, TaskRun.started_at, TaskRun.finished_at)
-            .where(TaskRun.started_at.is_not(None), TaskRun.finished_at.is_not(None))
-            .order_by(TaskRun.finished_at.desc())
-            .limit(100)
-        )
-    )
+async def task_operations() -> TaskOperationsRecord:
+    client, _jetstream, runs_bucket, workers_bucket = await _nats()
+    try:
+        runs = await list_runs(runs_bucket)
+        worker_values: list[WorkerState] = []
+        try:
+            for key in await workers_bucket.keys():
+                worker_values.append(WorkerState.model_validate_json((await workers_bucket.get(key)).value))
+        except Exception:
+            pass
+    finally:
+        await client.drain()
+    queued = [run for run in runs if run.status == "queued"]
+    recent = [run for run in runs if run.started_at is not None and run.finished_at is not None]
     queue_latencies = [
         (run.started_at - run.queued_at).total_seconds()
         for run in recent
-        if run.started_at is not None
     ]
     execution_times = [
         (run.finished_at - run.started_at).total_seconds()
         for run in recent
-        if run.started_at is not None and run.finished_at is not None
     ]
     return TaskOperationsRecord(
-        queued=counts.get("queued", 0),
-        running=counts.get("running", 0),
-        cancelling=session.scalar(
-            select(func.count()).select_from(TaskRun).where(
-                TaskRun.status == "running", TaskRun.cancellation_requested_at.is_not(None)
-            )
-        ) or 0,
-        stale_workers=sum(not worker.stopping and worker.last_seen_at < stale_before for worker in workers),
-        oldest_queued_at=oldest,
+        queued=len(queued),
+        running=sum(run.status == "running" for run in runs),
+        cancelling=sum(run.status == "running" and run.cancellation_requested_at is not None for run in runs),
+        stale_workers=0,
+        oldest_queued_at=min((run.queued_at for run in queued), default=None),
         average_queue_latency_seconds=(sum(queue_latencies) / len(queue_latencies) if queue_latencies else None),
         average_execution_seconds=(sum(execution_times) / len(execution_times) if execution_times else None),
-        workers=workers,
+        workers=worker_values,
     )

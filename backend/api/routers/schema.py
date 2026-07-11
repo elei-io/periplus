@@ -12,9 +12,9 @@ router = APIRouter(prefix="/schema", tags=["schema"])
 
 
 @router.post("/", response_model=TaskRunSubmission, status_code=202)
-def schema(
+async def schema(
     request: Input,
     response: Response,
     session: Annotated[Session, Depends(get_session)],
 ) -> TaskRunSubmission:
-    return submit_action(session, "schema", request.model_dump(), response)
+    return await submit_action(session, "schema", request.model_dump(), response)

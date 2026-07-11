@@ -9,7 +9,6 @@ from sqlalchemy import Select, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from tasks.models import TaskRun
 
 from .models import DataSchema
 from .schemas import DataSchemaListRecord, DataSchemaSummary, DataSchemaUpdateRequest
@@ -359,14 +358,7 @@ def warning_count(schema: DataSchema) -> int:
 
 
 def task_run_count(session: Session, schema_id: UUID) -> int:
-    return int(
-        session.scalar(
-            select(func.count())
-            .select_from(TaskRun)
-            .where(TaskRun.data_schema_id == schema_id)
-        )
-        or 0
-    )
+    return 0
 
 
 def _filtered_statement(
@@ -555,10 +547,5 @@ def update_data_schema(
 
 
 def delete_data_schema(session: Session, *, schema: DataSchema) -> None:
-    session.execute(
-        update(TaskRun)
-        .where(TaskRun.data_schema_id == schema.id)
-        .values(data_schema_id=None)
-    )
     session.delete(schema)
     session.flush()

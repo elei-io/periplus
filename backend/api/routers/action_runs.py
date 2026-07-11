@@ -9,14 +9,14 @@ from tasks.service import (
     TaskValidationError,
     enqueue_ad_hoc_task_run,
 )
-def submit_action(
+async def submit_action(
     session: Session,
     primitive: TaskPrimitive,
     input_value: dict[str, Any],
     response: Response,
 ) -> TaskRunSubmission:
     try:
-        submission = enqueue_ad_hoc_task_run(
+        submission = await enqueue_ad_hoc_task_run(
             session=session,
             primitive=primitive,
             input_value=input_value,

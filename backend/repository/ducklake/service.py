@@ -19,9 +19,6 @@ from repository.ducklake.records import (
     DocumentRecord,
     ElementRecord,
     LinkRecord,
-    RunCrawlUsageRecord,
-    RunManifestRecord,
-    RunManifestWriteResult,
 )
 from dom import ElementRow, GroupedLinkPayload, anchors_from_elements, links_from_elements
 
@@ -32,8 +29,6 @@ class CatalogueBatchEntry:
     crawl: CrawlRecord
     elements_path: Path | None = None
     replace_projection: bool = False
-    run_manifest: RunManifestRecord | None = None
-    run_usage: RunCrawlUsageRecord | None = None
 
 
 class CatalogueService:
@@ -51,29 +46,6 @@ class CatalogueService:
         with self._write_fence():
             return self._record_crawl_batch_unfenced(entries)
 
-    def record_run_manifest(self, manifest: RunManifestRecord) -> RunManifestWriteResult:
-        """Idempotently store one run manifest independently of page ingestion."""
-
-        created = False
-        with self._write_fence(), self.catalogue.lake.transaction():
-            existing = self.get_run_manifest(manifest.run_id)
-            if existing is not None:
-                if existing != manifest:
-                    raise CatalogueConflictError(
-                        f"run_id {str(manifest.run_id)!r} already has a different manifest"
-                    )
-            else:
-                self._append("run_manifests", [_run_manifest_values(manifest)])
-                created = True
-        snapshot = self.catalogue.latest_snapshot()
-        if snapshot is None:
-            raise CatalogueValidationError("DuckLake did not publish a repository snapshot")
-        return RunManifestWriteResult(
-            run_id=manifest.run_id,
-            manifest_created=created,
-            repository_snapshot=snapshot,
-        )
-
     def _record_crawl_batch_unfenced(
         self,
         entries: Sequence[CatalogueBatchEntry],
@@ -84,7 +56,6 @@ class CatalogueService:
         replacement_documents: dict[str, DocumentRecord] = {}
         element_paths: dict[str, Path] = {}
         new_crawls: dict[UUID, CrawlRecord] = {}
-        new_run_usages: dict[UUID, RunCrawlUsageRecord] = {}
         document_created: list[bool] = []
         crawl_created: list[bool] = []
 
@@ -100,11 +71,6 @@ class CatalogueService:
             crawls_by_id = self._lookup_batch_crawls(
                 [entry.crawl for entry in entries]
             )
-            usages = [entry.run_usage for entry in entries if entry.run_usage is not None]
-            manifests_by_id = self._lookup_batch_run_manifests(
-                [usage.run_id for usage in usages]
-            )
-            usages_by_id = self._lookup_batch_run_usages(usages)
 
             for entry in entries:
                 document = entry.document
@@ -186,40 +152,6 @@ class CatalogueService:
                     new_crawls[crawl.crawl_id] = crawl
                     crawl_created.append(True)
 
-                manifest = entry.run_manifest
-                usage = entry.run_usage
-                if manifest is not None:
-                    raise CatalogueValidationError(
-                        "run manifests must be committed by the manifest operation"
-                    )
-                if usage is not None:
-                    manifest = manifests_by_id.get(usage.run_id)
-                    if manifest is None:
-                        raise CatalogueValidationError(
-                            f"run usage references missing manifest {str(usage.run_id)!r}"
-                        )
-                    self._validate_run_usage(
-                        manifest=manifest,
-                        usage=usage,
-                        crawl=crawl,
-                    )
-                    existing_usage = usages_by_id.get(usage.usage_id)
-                    pending_usage = new_run_usages.get(usage.usage_id)
-                    if existing_usage is not None:
-                        if existing_usage != usage:
-                            raise CatalogueConflictError(
-                                f"usage_id {str(usage.usage_id)!r} already has different "
-                                "run usage"
-                            )
-                    elif pending_usage is not None:
-                        if pending_usage != usage:
-                            raise CatalogueConflictError(
-                                f"microbatch contains conflicting run usage "
-                                f"{str(usage.usage_id)!r}"
-                            )
-                    else:
-                        new_run_usages[usage.usage_id] = usage
-
             if replacement_documents:
                 identifiers = list(replacement_documents)
                 placeholders = ", ".join("?" for _ in identifiers)
@@ -250,14 +182,6 @@ class CatalogueService:
                 self._append(
                     "crawls",
                     [_crawl_values(value) for value in new_crawls.values()],
-                )
-            if new_run_usages:
-                self._append(
-                    "run_crawl_usages",
-                    [
-                        value.model_dump(mode="python")
-                        for value in new_run_usages.values()
-                    ],
                 )
 
         snapshot = self.catalogue.latest_snapshot()
@@ -318,49 +242,6 @@ class CatalogueService:
         )
         row = _one_or_none(rows, identity=f"crawl_id {str(crawl_id)!r}")
         return _crawl_from_row(row) if row is not None else None
-
-    def get_run_manifest(self, run_id: UUID) -> RunManifestRecord | None:
-        rows = self.catalogue.lake.sql_dicts(
-            f"SELECT * FROM {self._table('run_manifests')} WHERE run_id = $run_id",
-            run_id=run_id,
-        )
-        row = _one_or_none(rows, identity=f"run_id {str(run_id)!r}")
-        return _run_manifest_from_row(row) if row is not None else None
-
-    def get_run_usage(self, usage_id: UUID) -> RunCrawlUsageRecord | None:
-        rows = self.catalogue.lake.sql_dicts(
-            f"SELECT * FROM {self._table('run_crawl_usages')} "
-            "WHERE usage_id = $usage_id",
-            usage_id=usage_id,
-        )
-        row = _one_or_none(rows, identity=f"usage_id {str(usage_id)!r}")
-        return RunCrawlUsageRecord.model_validate(row) if row is not None else None
-
-    def has_run_usage(self, run_id: UUID) -> bool:
-        value = self.catalogue.lake.sql_scalar(
-            f"SELECT EXISTS(SELECT 1 FROM {self._table('run_crawl_usages')} "
-            "WHERE run_id = $run_id)",
-            run_id=run_id,
-        )
-        return bool(value)
-
-    def get_run_usages(
-        self,
-        run_id: UUID,
-        *,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[RunCrawlUsageRecord]:
-        _validate_page(limit=limit, offset=offset)
-        rows = self.catalogue.lake.sql_dicts(
-            f"SELECT * FROM {self._table('run_crawl_usages')} "
-            "WHERE run_id = $run_id ORDER BY ordinal, role, usage_id "
-            "LIMIT $limit OFFSET $offset",
-            run_id=run_id,
-            limit=limit,
-            offset=offset,
-        )
-        return [RunCrawlUsageRecord.model_validate(row) for row in rows]
 
     def find_cached_crawls(
         self,
@@ -578,42 +459,6 @@ class CatalogueService:
             result[crawl.crawl_id] = crawl
         return result
 
-    def _lookup_batch_run_manifests(
-        self,
-        run_ids: Sequence[UUID],
-    ) -> dict[UUID, RunManifestRecord]:
-        rows = self._lookup_rows_by_identity("run_manifests", "run_id", run_ids)
-        result: dict[UUID, RunManifestRecord] = {}
-        for row in rows:
-            manifest = _run_manifest_from_row(row)
-            if manifest.run_id in result:
-                raise CatalogueConflictError(
-                    f"catalogue contains duplicate rows for run_id "
-                    f"{str(manifest.run_id)!r}"
-                )
-            result[manifest.run_id] = manifest
-        return result
-
-    def _lookup_batch_run_usages(
-        self,
-        usages: Sequence[RunCrawlUsageRecord],
-    ) -> dict[UUID, RunCrawlUsageRecord]:
-        rows = self._lookup_rows_by_identity(
-            "run_crawl_usages",
-            "usage_id",
-            [usage.usage_id for usage in usages],
-        )
-        result: dict[UUID, RunCrawlUsageRecord] = {}
-        for row in rows:
-            usage = RunCrawlUsageRecord.model_validate(row)
-            if usage.usage_id in result:
-                raise CatalogueConflictError(
-                    f"catalogue contains duplicate rows for usage_id "
-                    f"{str(usage.usage_id)!r}"
-                )
-            result[usage.usage_id] = usage
-        return result
-
     def _lookup_rows_by_identity(
         self,
         table_name: str,
@@ -746,23 +591,6 @@ class CatalogueService:
                     "an element parent must precede the element in document order"
                 )
 
-    @staticmethod
-    def _validate_run_usage(
-        *,
-        manifest: RunManifestRecord,
-        usage: RunCrawlUsageRecord,
-        crawl: CrawlRecord,
-    ) -> None:
-        if usage.run_id != manifest.run_id:
-            raise CatalogueValidationError("run usage must reference its run manifest")
-        if usage.crawl_id != crawl.crawl_id:
-            raise CatalogueValidationError("run usage must reference its crawl")
-        if usage.document_id != crawl.document_id:
-            raise CatalogueValidationError(
-                "run usage document_id must match crawl.document_id"
-            )
-
-
 def _document_from_row(row: dict[str, Any]) -> DocumentRecord:
     return DocumentRecord.model_validate(row)
 
@@ -771,14 +599,6 @@ def _crawl_values(crawl: CrawlRecord) -> dict[str, object]:
     values = crawl.model_dump(mode="python")
     for name in ("input_json", "warnings_json", "errors_json"):
         values[name] = json.dumps(values[name], separators=(",", ":"), sort_keys=True)
-    return values
-
-
-def _run_manifest_values(manifest: RunManifestRecord) -> dict[str, object]:
-    values = manifest.model_dump(mode="python")
-    values["input_json"] = json.dumps(
-        values["input_json"], separators=(",", ":"), sort_keys=True
-    )
     return values
 
 
@@ -833,13 +653,6 @@ def _crawl_from_row(row: dict[str, Any]) -> CrawlRecord:
         if isinstance(values.get(name), str):
             values[name] = json.loads(values[name])
     return CrawlRecord.model_validate(values)
-
-
-def _run_manifest_from_row(row: dict[str, Any]) -> RunManifestRecord:
-    values = dict(row)
-    if isinstance(values.get("input_json"), str):
-        values["input_json"] = json.loads(values["input_json"])
-    return RunManifestRecord.model_validate(values)
 
 
 def _validate_page(*, limit: int | None, offset: int) -> None:

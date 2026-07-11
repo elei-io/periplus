@@ -26,12 +26,7 @@ from actions.shared.cache import CacheOptions, ResolvedCachePolicy, resolve_cach
 from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
 from actions.shared.quality.schemas import QualityWarning
 from actions.shared.quality.service import run_quality_checks
-from repository.ducklake import (
-    CrawlRecord,
-    RunCrawlUsageRecord,
-    RunCrawlUsageRole,
-    RunManifestRecord,
-)
+from repository.ducklake import CrawlRecord
 from dom import links_from_html
 from crawl_policies.schemas import CrawlPolicySnapshot
 from crawl_policies.permits import capacity_lease
@@ -42,10 +37,9 @@ from repository import (
     RepositoryPipeline,
     identify_html,
     repository_ingestor_from_env,
-    run_usage_ingestion_request_id,
 )
-from tasks.models import TaskRun
 from tasks.context import commit_task_checkpoint
+from tasks.context import current_task_execution
 from urls.service import normalize_url
 
 from .schemas import CrawlOutput, CrawlPage, CrawlStats
@@ -248,7 +242,9 @@ def _durable_crawl_id(
 
 @dataclass(frozen=True)
 class _RunEnvelope:
-    manifest: RunManifestRecord
+    task_id: UUID
+    task_revision: int
+    primitive: str
     data_schema_id: UUID | None
 
 
@@ -259,82 +255,14 @@ def _run_envelope(
 ) -> _RunEnvelope:
     """Freeze the Postgres-backed run data needed by repository ingestion."""
 
-    run = session.get(TaskRun, task_run_id)
-    if run is None:
-        raise RuntimeError(f"Task run {task_run_id} does not exist")
+    execution = current_task_execution()
+    if execution is None or execution.run_id != task_run_id:
+        raise RuntimeError(f"Task run {task_run_id} has no execution context")
     return _RunEnvelope(
-        manifest=RunManifestRecord(
-            run_id=run.id,
-            task_id=run.task_id,
-            task_revision=run.task_revision,
-            primitive=run.primitive,
-            input_json=_json_safe(run.input_json),
-            queued_at=run.queued_at,
-        ),
-        data_schema_id=getattr(run, "data_schema_id", None),
-    )
-
-
-def _run_usage_record(
-    run_manifest: RunManifestRecord,
-    *,
-    crawl: CrawlRecord,
-    requested_url: str,
-    normalized_url: str,
-    source: str,
-    role: RunCrawlUsageRole,
-    ordinal: int,
-    returned: bool,
-) -> RunCrawlUsageRecord:
-    return RunCrawlUsageRecord(
-        usage_id=uuid5(
-            run_manifest.run_id,
-            f"usage\0{crawl.crawl_id}\0{normalized_url}\0{role}\0{ordinal}",
-        ),
-        run_id=run_manifest.run_id,
-        crawl_id=crawl.crawl_id,
-        document_id=crawl.document_id,
-        requested_url=requested_url,
-        normalized_url=normalized_url,
-        source=source,
-        role=role,
-        ordinal=ordinal,
-        returned=returned,
-    )
-
-
-async def record_existing_crawl_usage(
-    *,
-    session: Session,
-    task_run_id: UUID,
-    crawl: CrawlRecord,
-    requested_url: str,
-    role: RunCrawlUsageRole,
-    ordinal: int,
-    returned: bool,
-    repository_pipeline: RepositoryPipeline,
-    source: str = "repository",
-) -> None:
-    """Append a purpose-specific usage for an already committed crawl."""
-
-    normalized_url = normalize_url(requested_url)
-    manifest = _run_envelope(session, task_run_id=task_run_id).manifest
-    usage = _run_usage_record(
-        manifest,
-        crawl=crawl,
-        requested_url=requested_url,
-        normalized_url=normalized_url,
-        source=source,
-        role=role,
-        ordinal=ordinal,
-        returned=returned,
-    )
-    commit_task_checkpoint(session)
-    await repository_pipeline.submit_stored(
-        crawl,
-        request_id=run_usage_ingestion_request_id(usage.usage_id),
-        run_manifest=manifest,
-        run_usage=usage,
+        task_id=execution.task_id,
+        task_revision=execution.task_revision,
+        primitive=execution.primitive,
+        data_schema_id=execution.data_schema_id,
     )
 
 
@@ -353,7 +281,7 @@ async def _persist_page(
     cache_policy: ResolvedCachePolicy,
     retain_html: bool,
     include_links: bool,
-    usage_role: RunCrawlUsageRole = "primitive_result",
+    usage_role: str = "primitive_result",
     usage_ordinal: int | None = None,
     usage_returned: bool | None = None,
 ) -> CrawlPage:
@@ -387,7 +315,6 @@ async def _persist_page(
             return resumed
 
         run_envelope = _run_envelope(session, task_run_id=task_run_id)
-        run_manifest = run_envelope.manifest
         commit_task_checkpoint(session)
 
         identity = (
@@ -402,9 +329,9 @@ async def _persist_page(
             crawl_id=crawl_id,
             document_id=identity.document_id if identity is not None else None,
             run_id=task_run_id,
-            task_id=run_manifest.task_id,
-            task_revision=run_manifest.task_revision,
-            primitive=run_manifest.primitive,
+            task_id=run_envelope.task_id,
+            task_revision=run_envelope.task_revision,
+            primitive=run_envelope.primitive,
             requested_url=requested_url,
             normalized_url=normalized_url,
             final_url=crawl_payload.get("redirected_url") or page.url,
@@ -447,21 +374,7 @@ async def _persist_page(
                 # structural reads so large pages do not accumulate in crawl workers.
                 page = page.model_copy(update={"html": None})
         result_page = page
-        run_usage = _run_usage_record(
-            run_manifest,
-            crawl=record,
-            requested_url=requested_url,
-            normalized_url=normalized_url,
-            source="network",
-            role=usage_role,
-            ordinal=usage_ordinal,
-            returned=page.success if usage_returned is None else usage_returned,
-        )
-        repository_result = await pipeline.submit_stored(
-            record,
-            run_manifest=run_manifest,
-            run_usage=run_usage,
-        )
+        repository_result = await pipeline.submit_stored(record)
         links = (
             await pipeline.projected_links(
                 repository_result.document_id,
@@ -504,7 +417,7 @@ async def _repository_cached_page(
     cache_status: str = "repository",
     include_html: bool = True,
     include_links: bool = True,
-    usage_role: RunCrawlUsageRole = "primitive_result",
+    usage_role: str = "primitive_result",
     usage_ordinal: int = 0,
     usage_returned: bool | None = None,
 ) -> CrawlPage | None:
@@ -523,24 +436,7 @@ async def _repository_cached_page(
         )
         return None
 
-    run_manifest = _run_envelope(session, task_run_id=task_run_id).manifest
-    run_usage = _run_usage_record(
-        run_manifest,
-        crawl=hit.crawl,
-        requested_url=requested_url,
-        normalized_url=normalized_url,
-        source=cache_status,
-        role=usage_role,
-        ordinal=usage_ordinal,
-        returned=hit.crawl.document_id is not None if usage_returned is None else usage_returned,
-    )
     commit_task_checkpoint(session)
-    usage_result = await repository_pipeline.submit_stored(
-        hit.crawl,
-        request_id=run_usage_ingestion_request_id(run_usage.usage_id),
-        run_manifest=run_manifest,
-        run_usage=run_usage,
-    )
 
     cached_age_seconds = max(
         0.0, (_utc_now() - hit.crawl.captured_at).total_seconds()
@@ -583,7 +479,7 @@ async def _repository_cached_page(
         cache_status=cache_status,
         duration_seconds=0.0,
         crawl_payload=crawl_payload,
-    ).model_copy(update={"repository_snapshot": usage_result.repository_snapshot})
+    )
 
 
 async def _repository_retry_page(
@@ -598,7 +494,7 @@ async def _repository_retry_page(
     progress_reporter: ProgressReporter | None,
     include_html: bool,
     include_links: bool,
-    usage_role: RunCrawlUsageRole = "primitive_result",
+    usage_role: str = "primitive_result",
     usage_ordinal: int = 0,
     usage_returned: bool | None = None,
 ) -> CrawlPage | None:
@@ -620,30 +516,7 @@ async def _repository_retry_page(
             f"crawl identity {crawl_id} resolved to incompatible durable provenance"
         )
 
-    run_manifest = _run_envelope(session, task_run_id=task_run_id).manifest
-    run_usage = _run_usage_record(
-        run_manifest,
-        crawl=hit.crawl,
-        requested_url=requested_url,
-        normalized_url=normalized_url,
-        # A retry resumes the same network usage committed by this run; changing
-        # the durable source would make the retry-stable usage identity conflict.
-        source="network",
-        role=usage_role,
-        ordinal=usage_ordinal,
-        returned=(
-            hit.crawl.document_id is not None and not hit.crawl.errors_json
-            if usage_returned is None
-            else usage_returned
-        ),
-    )
     commit_task_checkpoint(session)
-    usage_result = await repository_pipeline.submit_stored(
-        hit.crawl,
-        request_id=run_usage_ingestion_request_id(run_usage.usage_id),
-        run_manifest=run_manifest,
-        run_usage=run_usage,
-    )
 
     crawl_metrics.repository_cache(
         outcome="retry_resume",
@@ -669,7 +542,7 @@ async def _repository_retry_page(
         normalized_url=normalized_url,
         cache_status="retry_resume",
         duration_seconds=(hit.crawl.duration_ms or 0) / 1000.0,
-    ).model_copy(update={"repository_snapshot": usage_result.repository_snapshot})
+    )
 
 
 def _crawl_page_from_repository_hit(
@@ -804,9 +677,9 @@ def _frozen_crawl_policy_for_url(
     task_run_id: UUID,
     url: str,
 ) -> CrawlPolicySnapshot | None:
-    run = session.get(TaskRun, task_run_id)
-    if run is None:
-        raise RuntimeError(f"Task run {task_run_id} does not exist")
+    run = current_task_execution()
+    if run is None or run.run_id != task_run_id:
+        raise RuntimeError(f"Task run {task_run_id} has no execution context")
     return find_crawl_policy_snapshot_for_url(
         run.crawl_policy_snapshots_json,
         url=url,
@@ -828,7 +701,7 @@ async def crawl_one_for_task(
     cache: CacheOptions | dict[str, Any] | None = None,
     retain_html: bool = True,
     include_links: bool = True,
-    usage_role: RunCrawlUsageRole = "primitive_result",
+    usage_role: str = "primitive_result",
     usage_ordinal: int | None = None,
     usage_returned: bool | None = None,
 ) -> CrawlPage:
@@ -1211,7 +1084,7 @@ async def crawl(
     retain_pages: bool = True,
     include_links: bool = True,
     repository_pipeline: RepositoryPipeline | None = None,
-    usage_role: RunCrawlUsageRole = "primitive_result",
+    usage_role: str = "primitive_result",
     usage_ordinals: list[int] | None = None,
     usage_returned: bool | None = None,
 ) -> CrawlOutput:

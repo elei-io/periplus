@@ -12,9 +12,9 @@ router = APIRouter(prefix="/calibrate", tags=["calibrate"])
 
 
 @router.post("/", response_model=TaskRunSubmission, status_code=202)
-def calibrate(
+async def calibrate(
     request: Input,
     response: Response,
     session: Annotated[Session, Depends(get_session)],
 ) -> TaskRunSubmission:
-    return submit_action(session, "calibrate", request.model_dump(), response)
+    return await submit_action(session, "calibrate", request.model_dump(), response)

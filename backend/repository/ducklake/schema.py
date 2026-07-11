@@ -48,34 +48,9 @@ CRAWL_COLUMNS: dict[str, ColumnDef] = {
     "errors_json": ColumnDef("JSON", nullable=False),
 }
 
-RUN_MANIFEST_COLUMNS: dict[str, ColumnDef] = {
-    "run_id": ColumnDef("UUID", nullable=False),
-    "task_id": ColumnDef("UUID", nullable=False),
-    "task_revision": ColumnDef("INTEGER", nullable=False),
-    "primitive": ColumnDef("VARCHAR", nullable=False),
-    "input_json": ColumnDef("JSON", nullable=False),
-    "queued_at": ColumnDef("TIMESTAMPTZ", nullable=False),
-}
-
-RUN_CRAWL_USAGE_COLUMNS: dict[str, ColumnDef] = {
-    "usage_id": ColumnDef("UUID", nullable=False),
-    "run_id": ColumnDef("UUID", nullable=False),
-    "crawl_id": ColumnDef("UUID", nullable=False),
-    "document_id": ColumnDef("VARCHAR"),
-    "requested_url": ColumnDef("VARCHAR", nullable=False),
-    "normalized_url": ColumnDef("VARCHAR", nullable=False),
-    "source": ColumnDef("VARCHAR", nullable=False),
-    "role": ColumnDef("VARCHAR", nullable=False),
-    "ordinal": ColumnDef("BIGINT", nullable=False),
-    "returned": ColumnDef("BOOLEAN", nullable=False),
-}
-
-
 def expected_columns() -> dict[str, dict[str, ColumnDef]]:
     return {
         "documents": DOCUMENT_COLUMNS,
         "crawls": CRAWL_COLUMNS,
         "elements": ELEMENT_COLUMNS,
-        "run_manifests": RUN_MANIFEST_COLUMNS,
-        "run_crawl_usages": RUN_CRAWL_USAGE_COLUMNS,
     }

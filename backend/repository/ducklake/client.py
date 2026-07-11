@@ -13,8 +13,6 @@ from repository.ducklake.schema import (
     CATALOGUE_SCHEMA_VERSION,
     CRAWL_COLUMNS,
     DOCUMENT_COLUMNS,
-    RUN_CRAWL_USAGE_COLUMNS,
-    RUN_MANIFEST_COLUMNS,
     expected_columns,
 )
 from dom.schema import ELEMENT_COLUMNS
@@ -60,21 +58,19 @@ class Catalogue:
                 schema_name=self.config.schema,
                 **ELEMENT_COLUMNS,
             )
-            self.lake.table.create(
-                "run_manifests",
-                schema_name=self.config.schema,
-                **RUN_MANIFEST_COLUMNS,
-            )
-            self.lake.table.create(
-                "run_crawl_usages",
-                schema_name=self.config.schema,
-                **RUN_CRAWL_USAGE_COLUMNS,
-            )
         self._migrate_schema()
         self.validate_schema()
 
     def _migrate_schema(self) -> None:
         """Apply small, idempotent DuckLake schema upgrades owned by Atlas."""
+
+        for obsolete in ("run_crawl_usages", "run_manifests"):
+            table = ".".join(
+                _quote_identifier(value)
+                for value in (self.config.alias, self.config.schema, obsolete)
+            )
+            with self.lake.transaction():
+                self.connection.execute(f"DROP TABLE IF EXISTS {table}")
 
         info = self.lake.table.info(
             "crawls",
@@ -97,34 +93,6 @@ class Catalogue:
                     f"ALTER TABLE {table} ALTER COLUMN document_id DROP NOT NULL"
                 )
 
-        usage_info = self.lake.table.info(
-            "run_crawl_usages",
-            schema_name=self.config.schema,
-            include_summary=False,
-            include_row_count=False,
-            include_snapshots=False,
-        )
-        usage_columns = {column.name for column in usage_info.columns}
-        usage_table = ".".join(
-            _quote_identifier(value)
-            for value in (self.config.alias, self.config.schema, "run_crawl_usages")
-        )
-        additions = (
-            ("role", "VARCHAR", "'primitive_result'"),
-            ("ordinal", "BIGINT", "0"),
-            ("returned", "BOOLEAN", "true"),
-        )
-        for name, data_type, default in additions:
-            if name in usage_columns:
-                continue
-            with self.lake.transaction():
-                self.connection.execute(
-                    f"ALTER TABLE {usage_table} ADD COLUMN {name} {data_type} "
-                    f"DEFAULT {default}"
-                )
-                self.connection.execute(
-                    f"ALTER TABLE {usage_table} ALTER COLUMN {name} SET NOT NULL"
-                )
 
     def validate_schema(self) -> None:
         """Validate columns without scanning catalogue data."""

@@ -29,7 +29,6 @@ from repository.queue import (
     ensure_repository_consumer,
     ensure_pending_ingestion,
     ensure_repository_stream,
-    decode_run_manifest,
     ingestion_response,
     max_delivery_attempts,
     publish_dead_letter,
@@ -154,9 +153,7 @@ async def run() -> None:
             document_ids = [
                 job.crawl.document_id
                 for _, job in decoded_messages
-                if job.kind == "crawl"
-                and job.crawl is not None
-                and job.crawl.document_id is not None
+                if job.crawl.document_id is not None
             ]
             try:
                 known_documents = await asyncio.to_thread(
@@ -190,10 +187,7 @@ async def run() -> None:
                 durable_state = await ensure_pending_ingestion(
                     results_store,
                     request_id=job.request_id,
-                    kind=job.kind,
                     crawl=job.crawl,
-                    run_manifest_zstd=job.run_manifest_zstd,
-                    run_usage=job.run_usage,
                 )
                 if durable_state.status != "pending":
                     await _notify(client, job, durable_state)
@@ -204,33 +198,10 @@ async def run() -> None:
                             client, message, job, durable_state.error or "ingestion failed"
                         )
                     continue
-                if job.kind == "manifest":
-                    await flush_prepared()
-                    try:
-                        manifest = decode_run_manifest(job.run_manifest_zstd or "")
-                        result = await asyncio.to_thread(
-                            ingestor.catalogue_service.record_run_manifest,
-                            manifest,
-                        )
-                    except Exception as exc:
-                        logging.exception("run manifest ingestion failed")
-                        await _retry_or_fail(
-                            client, results_store, ingestor, message, job, exc
-                        )
-                        continue
-                    durable_state = await store_ingestion_response(
-                        results_store,
-                        job=job,
-                        result=result,
-                    )
-                    await _notify(client, job, durable_state)
-                    await message.ack()
-                    continue
                 try:
                     value = await asyncio.to_thread(
                         ingestor.prepare_from_raw,
                         crawl=job.crawl,
-                        run_usage=job.run_usage,
                         known_documents=known_documents,
                     )
                 except Exception as exc:
@@ -420,20 +391,10 @@ async def _retry_or_fail(
     deliveries = message.metadata.num_delivered
     if deliveries >= max_delivery_attempts():
         try:
-            if job.kind == "manifest":
-                manifest = decode_run_manifest(job.run_manifest_zstd or "")
-                reconciled = await asyncio.to_thread(
-                    ingestor.reconcile_manifest_commit,
-                    manifest,
-                )
-            else:
-                if job.crawl is None:
-                    raise ValueError("crawl ingestion job is missing its crawl")
-                reconciled = await asyncio.to_thread(
-                    ingestor.reconcile_crawl_commit,
-                    crawl=job.crawl,
-                    run_usage=job.run_usage,
-                )
+            reconciled = await asyncio.to_thread(
+                ingestor.reconcile_crawl_commit,
+                crawl=job.crawl,
+            )
         except CatalogueConflictError as reconcile_exc:
             # The stable operation identity points at different durable data, so
             # it cannot be reconciled as this job's success.

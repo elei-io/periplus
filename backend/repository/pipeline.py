@@ -9,12 +9,7 @@ from dataclasses import dataclass
 from types import TracebackType
 from uuid import UUID
 
-from repository.ducklake import (
-    CatalogueWriteResult,
-    CrawlRecord,
-    RunCrawlUsageRecord,
-    RunManifestRecord,
-)
+from repository.ducklake import CatalogueWriteResult, CrawlRecord
 from observability import repository_metrics
 from repository.html import HtmlIdentity
 from repository.queue import IngestionQueueClient, projection_ingestion_request_id
@@ -78,17 +73,11 @@ class RepositoryPipeline:
         captured_html: str,
         crawl: CrawlRecord,
         identity: HtmlIdentity | None = None,
-        run_manifest: RunManifestRecord | None = None,
-        run_usage: RunCrawlUsageRecord | None = None,
     ) -> CatalogueWriteResult:
         if not self._running:
             raise RuntimeError("repository pipeline is not running")
         await self.store_raw(captured_html=captured_html, identity=identity)
-        return await self.submit_stored(
-            crawl,
-            run_manifest=run_manifest,
-            run_usage=run_usage,
-        )
+        return await self.submit_stored(crawl)
 
     async def store_raw(
         self,
@@ -124,18 +113,10 @@ class RepositoryPipeline:
         crawl: CrawlRecord,
         *,
         request_id: str | None = None,
-        run_manifest: RunManifestRecord | None = None,
-        run_usage: RunCrawlUsageRecord | None = None,
     ) -> CatalogueWriteResult:
         if not self._running:
             raise RuntimeError("repository pipeline is not running")
-        if run_manifest is not None:
-            await self.queue.submit_manifest(run_manifest)
-        return await self.queue.submit(
-            crawl,
-            request_id=request_id,
-            run_usage=run_usage,
-        )
+        return await self.queue.submit(crawl, request_id=request_id)
 
     async def resolve_cached_page(self, **kwargs: object):
         """Read cache state, delegating stale projection repair to the writer."""

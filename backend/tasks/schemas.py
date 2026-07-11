@@ -159,8 +159,3 @@ class TaskOperationsRecord(BaseModel):
     average_execution_seconds: float | None = None
     nats_available: bool | None = None
     workers: list[WorkerHeartbeatRecord]
-
-
-class WorkerHeartbeatPurgeRecord(BaseModel):
-    deleted: int
-

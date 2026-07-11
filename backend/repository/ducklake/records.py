@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
@@ -61,37 +60,6 @@ class CrawlRecord(CatalogueRecord):
         return self
 
 
-class RunManifestRecord(CatalogueRecord):
-    run_id: UUID
-    task_id: UUID
-    task_revision: int = Field(ge=1)
-    primitive: str = Field(min_length=1)
-    input_json: dict[str, JsonValue]
-    queued_at: datetime
-
-
-RunCrawlUsageRole = Literal[
-    "primitive_result",
-    "index_traversal",
-    "calibration_candidate",
-    "calibration_result",
-    "schema_generation_input",
-]
-
-
-class RunCrawlUsageRecord(CatalogueRecord):
-    usage_id: UUID
-    run_id: UUID
-    crawl_id: UUID
-    document_id: str | None = Field(default=None, min_length=1)
-    requested_url: str = Field(min_length=1)
-    normalized_url: str = Field(min_length=1)
-    source: str = Field(min_length=1)
-    role: RunCrawlUsageRole
-    ordinal: int = Field(ge=0)
-    returned: bool
-
-
 class ElementRecord(CatalogueRecord):
     element_index: int = Field(ge=0)
     parent_index: int | None = Field(default=None, ge=0)
@@ -115,10 +83,4 @@ class CatalogueWriteResult(CatalogueRecord):
     crawl_id: UUID
     document_created: bool
     crawl_created: bool
-    repository_snapshot: int
-
-
-class RunManifestWriteResult(CatalogueRecord):
-    run_id: UUID
-    manifest_created: bool
     repository_snapshot: int

@@ -42,12 +42,10 @@ class UrlMatch(Base):
     priority: Mapped[int] = mapped_column(Integer, default=0)
     created_by_task_run_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("task_runs.id", use_alter=True, ondelete="SET NULL"),
         nullable=True,
     )
     updated_by_task_run_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("task_runs.id", use_alter=True, ondelete="SET NULL"),
         nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

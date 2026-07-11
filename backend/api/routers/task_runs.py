@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from actions.shared.nats_progress import nats_available, stream_progress
-from db.session import SessionLocal, get_session
+from db.session import get_session
 from tasks.schemas import TaskOperationsRecord, TaskPrimitive, TaskRunRecord
 from tasks.service import (
     TaskNotFoundError,
@@ -49,9 +49,8 @@ def _terminal_envelope(run: TaskRunRecord, cursor: tuple[int, int]) -> dict[str,
     }
 
 
-def _read_run(run_id: UUID) -> TaskRunRecord:
-    with SessionLocal() as session:
-        return get_task_run(session, run_id)
+async def _read_run(run_id: UUID) -> TaskRunRecord:
+    return await get_task_run(run_id)
 
 
 def _terminal_sse(run: TaskRunRecord, cursor: tuple[int, int]) -> str:
@@ -98,7 +97,7 @@ async def _poll_until_terminal(run_id: UUID, cursor: tuple[int, int]) -> AsyncIt
     heartbeat_seconds = 15
     elapsed = 0
     while True:
-        run = _read_run(run_id)
+        run = await _read_run(run_id)
         if run.status in _TERMINAL:
             yield _terminal_sse(run, cursor)
             return
@@ -111,43 +110,41 @@ async def _poll_until_terminal(run_id: UUID, cursor: tuple[int, int]) -> AsyncIt
 
 @router.get("/operations/summary", response_model=TaskOperationsRecord)
 async def operations() -> TaskOperationsRecord:
-    with SessionLocal() as session:
-        summary = task_operations(session)
+    summary = await task_operations()
     summary.nats_available = await nats_available()
     return summary
 
 
 @router.get("/", response_model=list[TaskRunRecord])
-def list_(
-    session: Annotated[Session, Depends(get_session)],
+async def list_(
     primitive: TaskPrimitive,
     terminal_limit: int = 3,
 ) -> list[TaskRunRecord]:
     if terminal_limit < 0 or terminal_limit > 20:
         raise HTTPException(status_code=422, detail="terminal_limit must be between 0 and 20.")
-    return list_recent_task_runs(session, primitive=primitive, terminal_limit=terminal_limit)
+    return await list_recent_task_runs(primitive=primitive, terminal_limit=terminal_limit)
 
 
 @router.get("/{run_id}", response_model=TaskRunRecord)
-def get(run_id: UUID, session: Annotated[Session, Depends(get_session)]) -> TaskRunRecord:
+async def get(run_id: UUID) -> TaskRunRecord:
     try:
-        return get_task_run(session, run_id)
+        return await get_task_run(run_id)
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/{run_id}/cancel", response_model=TaskRunRecord)
-def cancel(run_id: UUID, session: Annotated[Session, Depends(get_session)]) -> TaskRunRecord:
+async def cancel(run_id: UUID) -> TaskRunRecord:
     try:
-        return request_task_run_cancellation(session, run_id)
+        return await request_task_run_cancellation(run_id)
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/{run_id}/result", response_model=None)
-def result(run_id: UUID, session: Annotated[Session, Depends(get_session)]) -> Any:
+async def result(run_id: UUID) -> Any:
     try:
-        return get_task_run_result(session, run_id)
+        return await get_task_run_result(run_id)
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except TaskRunConflictError as exc:
@@ -157,7 +154,7 @@ def result(run_id: UUID, session: Annotated[Session, Depends(get_session)]) -> A
 
 
 async def _progress_stream(run_id: UUID, after_event_id: tuple[int, int]) -> AsyncIterator[str]:
-    run = _read_run(run_id)
+    run = await _read_run(run_id)
     if run.status in _TERMINAL:
         yield _terminal_sse(run, after_event_id)
         return
@@ -176,7 +173,7 @@ async def _progress_stream(run_id: UUID, after_event_id: tuple[int, int]) -> Asy
             after_event_id=after_event_id,
         ):
             if envelope["type"] == "heartbeat":
-                run = _read_run(run_id)
+                run = await _read_run(run_id)
                 if run.status in _TERMINAL:
                     yield _terminal_sse(run, after_event_id)
                     return
@@ -197,12 +194,12 @@ async def _progress_stream(run_id: UUID, after_event_id: tuple[int, int]) -> Asy
 
 
 @router.get("/{run_id}/progress")
-def progress(
+async def progress(
     run_id: UUID,
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> StreamingResponse:
     try:
-        _read_run(run_id)
+        await _read_run(run_id)
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     try:

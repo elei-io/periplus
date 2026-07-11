@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import extract, func, select
 from sqlalchemy.orm import Session
 
 from repository.ducklake import Catalogue, CatalogueService, catalogue_config_from_env
-from tasks.models import TaskRun
 
 from .cluster import collect_cluster_metrics
 from .schemas import (
@@ -32,16 +30,6 @@ def _ratio(numerator: int, denominator: int) -> float:
     return round(numerator / denominator, 4) if denominator else 0.0
 
 
-def _percentiles(session: Session, expression, *filters) -> tuple[float, float]:
-    row = session.execute(
-        select(
-            func.percentile_cont(0.5).within_group(expression),
-            func.percentile_cont(0.95).within_group(expression),
-        ).where(*filters)
-    ).one()
-    return _number(row[0]), _number(row[1])
-
-
 def collect_operations_metrics(
     session: Session,
     *,
@@ -53,14 +41,7 @@ def collect_operations_metrics(
     cutoff = now - timedelta(seconds=window_seconds)
     cluster = collect_cluster_metrics(session, now=now)
 
-    task_status_rows = session.execute(
-        select(TaskRun.primitive, TaskRun.status, func.count())
-        .where(TaskRun.finished_at >= cutoff)
-        .group_by(TaskRun.primitive, TaskRun.status)
-    )
     task_statuses: dict[str, dict[str, int]] = {}
-    for primitive, status, count in task_status_rows:
-        task_statuses.setdefault(primitive, {})[status] = int(count)
 
     task_states: list[TaskStateMetrics] = []
     for state in cluster.tasks:
@@ -82,20 +63,7 @@ def collect_operations_metrics(
     }
     terminal_runs = sum(all_statuses.values())
     decided_runs = all_statuses["succeeded"] + all_statuses["failed"]
-    queue_seconds = extract("epoch", TaskRun.started_at - TaskRun.queued_at)
-    execution_seconds = extract("epoch", TaskRun.finished_at - TaskRun.started_at)
-    queue_p50, queue_p95 = _percentiles(
-        session,
-        queue_seconds,
-        TaskRun.started_at.is_not(None),
-        TaskRun.started_at >= cutoff,
-    )
-    execution_p50, execution_p95 = _percentiles(
-        session,
-        execution_seconds,
-        TaskRun.finished_at.is_not(None),
-        TaskRun.finished_at >= cutoff,
-    )
+    queue_p50 = queue_p95 = execution_p50 = execution_p95 = 0.0
 
     with Catalogue(catalogue_config_from_env()) as catalogue:
         durable_health = CatalogueService(catalogue).crawl_health_since(cutoff)

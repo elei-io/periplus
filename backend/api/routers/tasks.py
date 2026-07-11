@@ -58,14 +58,14 @@ def get(task_id: UUID, session: Annotated[Session, Depends(get_session)]) -> Tas
 
 
 @router.get("/{task_id}/runs", response_model=list[TaskRunRecord])
-def list_runs(
+async def list_runs(
     task_id: UUID,
     session: Annotated[Session, Depends(get_session)],
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[TaskRunRecord]:
     try:
-        return list_task_runs(session=session, task_id=task_id, limit=limit, offset=offset)
+        return await list_task_runs(session=session, task_id=task_id, limit=limit, offset=offset)
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

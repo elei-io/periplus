@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from actions.crawl.service import crawl_one_for_task, record_existing_crawl_usage
+from actions.crawl.service import crawl_one_for_task
 from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.shared.cache import CacheOptions
 from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
@@ -378,16 +378,6 @@ async def calibrate(
             raise RuntimeError(
                 f"selected calibration crawl {selected_page.crawl_id} is not committed"
             )
-        await record_existing_crawl_usage(
-            session=session,
-            task_run_id=task_run_id,
-            crawl=selected_hit.crawl,
-            requested_url=normalized_url,
-            role="calibration_result",
-            ordinal=candidates.index(selected),
-            returned=selected.success,
-            repository_pipeline=repository_pipeline,
-        )
         selected_page = selected_page.model_copy(update={"html": selected_hit.html})
     config = _policy_config(selected=selected, candidates=candidates)
     if existing_policy is None:

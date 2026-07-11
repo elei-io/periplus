@@ -12,9 +12,9 @@ router = APIRouter(prefix="/extract", tags=["extract"])
 
 
 @router.post("/", response_model=TaskRunSubmission, status_code=202)
-def extract(
+async def extract(
     request: Input,
     response: Response,
     session: Annotated[Session, Depends(get_session)],
 ) -> TaskRunSubmission:
-    return submit_action(session, "extract", request.model_dump(), response)
+    return await submit_action(session, "extract", request.model_dump(), response)
