@@ -104,9 +104,10 @@ requires evidence that the current primitive is insufficient.
 - `backend/api/` and `backend/cli/` adapt external requests and remain thin.
 - `backend/db/` owns Postgres infrastructure and migrations.
 
-Docker Compose starts Postgres, applies migrations, creates and bootstraps the separate DuckLake
-metadata database, starts NATS, then runs the API, runtime worker, and repository worker. Disk is the
-default repository backend; the optional S3 profile uses MinIO locally.
+Docker Compose runs one idempotent `atlas-setup` job after Postgres is healthy. It creates the
+separate catalogue database, applies Alembic migrations, and bootstraps DuckLake before the API or
+workers start. Disk is the default repository backend; the optional S3 profile uses a separate
+MinIO bucket-initialization job because external S3 provisioning is operator-owned.
 
 ## Exact contracts
 

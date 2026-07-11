@@ -53,7 +53,7 @@ Useful development commands:
 
 ```sh
 make check                  # compile backend modules and run unit tests
-make db-upgrade             # apply Postgres migrations
+make setup                  # create databases, migrate, and bootstrap the catalogue
 make catalogue-check        # validate the DuckLake catalogue
 make compose-down           # stop the local stack
 ```

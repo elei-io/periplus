@@ -1,4 +1,4 @@
-.PHONY: sync check catalogue-bootstrap catalogue-check catalogue-test-postgres repository-test-s3 api runtime-worker repository-worker cli db-upgrade db-revision compose-up compose-down
+.PHONY: sync check setup catalogue-check catalogue-test-postgres repository-test-s3 api runtime-worker repository-worker cli db-revision compose-up compose-down
 
 sync:
 	cd backend && uv sync
@@ -7,8 +7,8 @@ check:
 	cd backend && uv run python -m compileall actions api cli config control db dom observability repository runtime
 	cd backend && uv run python -m unittest discover -s tests
 
-catalogue-bootstrap:
-	cd backend && uv run python -m repository.catalogue bootstrap
+setup:
+	cd backend && uv run atlas-setup
 
 catalogue-check:
 	cd backend && uv run python -m repository.catalogue check
@@ -32,9 +32,6 @@ repository-worker:
 
 cli:
 	cd backend && uv run atlas --help
-
-db-upgrade:
-	cd backend && uv run alembic -c db/alembic.ini upgrade head
 
 db-revision:
 	cd backend && uv run alembic -c db/alembic.ini revision --autogenerate -m "$(m)"

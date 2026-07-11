@@ -49,7 +49,7 @@ Use `uv` from `backend/`; the project targets Python 3.14. Common root commands:
 make sync
 make check
 make api
-make db-upgrade
+make setup
 make catalogue-check
 make compose-up
 ```

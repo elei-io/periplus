@@ -51,9 +51,7 @@ services:
     depends_on:
       atlas-postgres:
         condition: service_healthy
-      atlas-db-migrate:
-        condition: service_completed_successfully
-      atlas-catalogue-bootstrap:
+      atlas-setup:
         condition: service_completed_successfully
       atlas-nats:
         condition: service_healthy
@@ -135,9 +133,7 @@ services:
     depends_on:
       atlas-postgres:
         condition: service_healthy
-      atlas-db-migrate:
-        condition: service_completed_successfully
-      atlas-catalogue-bootstrap:
+      atlas-setup:
         condition: service_completed_successfully
       atlas-nats:
         condition: service_healthy
@@ -211,23 +207,24 @@ services:
       ATLAS_REPOSITORY_WORKER_HEALTH_HOST: 0.0.0.0
       ATLAS_REPOSITORY_WORKER_HEALTH_PORT: 9092
     depends_on:
-      atlas-catalogue-bootstrap:
+      atlas-setup:
         condition: service_completed_successfully
       atlas-nats:
         condition: service_healthy
     restart: unless-stopped
 
-  atlas-catalogue-bootstrap:
+  atlas-setup:
     build:
       context: .
       dockerfile: docker/atlas/Dockerfile
     image: atlas-backend:local
     working_dir: /app/backend
-    command: python -m repository.catalogue bootstrap
+    command: atlas-setup
     volumes:
       - .:/app
       - ./.atlas/repository:/app/.atlas/repository
     environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}
       ATLAS_CATALOGUE_CATALOG: postgres
       ATLAS_CATALOGUE_CATALOG_DSN: "host=atlas-postgres port=5432 dbname=${POSTGRES_CATALOGUE_DB:-atlas_catalogue} user=${POSTGRES_USER:-atlas} password=${POSTGRES_PASSWORD:-atlas}"
       ATLAS_CATALOGUE_ALIAS: ${ATLAS_CATALOGUE_ALIAS:-atlas}
@@ -255,24 +252,11 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
     depends_on:
-      atlas-postgres-init:
-        condition: service_completed_successfully
-    restart: "no"
-
-  atlas-db-migrate:
-    build:
-      context: .
-      dockerfile: docker/atlas/Dockerfile
-    image: atlas-backend:local
-    working_dir: /app/backend
-    command: alembic -c db/alembic.ini upgrade head
-    volumes:
-      - .:/app
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}
-    depends_on:
       atlas-postgres:
         condition: service_healthy
+      atlas-minio-init:
+        condition: service_completed_successfully
+        required: false
     restart: "no"
 
   atlas-nats:
@@ -307,26 +291,6 @@ services:
       - atlas-postgres-data:/var/lib/postgresql
     restart: unless-stopped
 
-  atlas-postgres-init:
-    image: postgres:18
-    command:
-      - sh
-      - -ec
-      - |
-        exists="$$(psql --host atlas-postgres --username "$$POSTGRES_USER" --dbname "$$POSTGRES_DB" --tuples-only --no-align --command "SELECT 1 FROM pg_database WHERE datname = '$$POSTGRES_CATALOGUE_DB'")"
-        if [ "$$exists" != "1" ]; then
-          createdb --host atlas-postgres --username "$$POSTGRES_USER" --owner "$$POSTGRES_USER" "$$POSTGRES_CATALOGUE_DB"
-        fi
-    environment:
-      PGHOST: atlas-postgres
-      PGPASSWORD: ${POSTGRES_PASSWORD:-atlas}
-      POSTGRES_DB: ${POSTGRES_DB:-atlas}
-      POSTGRES_USER: ${POSTGRES_USER:-atlas}
-      POSTGRES_CATALOGUE_DB: ${POSTGRES_CATALOGUE_DB:-atlas_catalogue}
-    depends_on:
-      atlas-postgres:
-        condition: service_healthy
-    restart: "no"
 
   atlas-minio:
     profiles: ["s3"]

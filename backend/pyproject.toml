@@ -26,6 +26,7 @@ dependencies = [
 
 [project.scripts]
 atlas = "cli.app:app"
+atlas-setup = "deployment:main"
 atlas-runtime-worker = "runtime.worker:main"
 atlas-repository-worker = "repository.worker:main"
 
@@ -33,6 +34,9 @@ atlas-repository-worker = "repository.worker:main"
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+py-modules = ["deployment"]
+
 [tool.setuptools.packages.find]
 where = ["."]
-exclude = ["tests*"]
+exclude = ["tests*", "build*"]
