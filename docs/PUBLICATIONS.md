@@ -1,6 +1,6 @@
 # Queries, Views, and Publications
 
-Status: proposed
+Status: accepted design; implementation pending
 
 Atlas turns retained web evidence into tabular data that other analytical systems can consume.
 This document defines the intended user-facing layers between catalogue exploration and durable,
@@ -50,11 +50,10 @@ over catalogue tables, publications, or other views.
 - DuckLake records view metadata and snapshot validity in its metadata catalogue. This implementation
   history does not make views versioned Atlas definitions.
 
-Atlas may keep a Postgres control-plane reference to a DuckLake view when an active UI or API caller
-needs Atlas metadata such as ownership, description, or discoverability. Such a record must reference
-the DuckLake view identity and must not copy its SQL. DuckLake remains the single authority. Directly
-created DuckLake views can be discovered or explicitly adopted rather than mirrored through dual
-writes.
+Every view created or adopted through Atlas has a Postgres control-plane reference for ownership,
+description, and discoverability. The record references the DuckLake view identity and never copies
+its SQL. DuckLake remains the single authority. Directly created DuckLake views remain discoverable
+and unowned until explicitly adopted.
 
 ### Publications
 
@@ -71,6 +70,35 @@ consumer-facing dataset boundary.
 
 "Dataset" may be used in user-facing copy where it is clearer, but `publication` names the Atlas
 concept: a dataset made available to systems beyond Atlas.
+
+## Names and catalogue layout
+
+Atlas reserves three DuckLake schemas:
+
+- `main` contains Atlas evidence tables and catalogue helpers;
+- `views` contains persistent user-defined views;
+- `published` contains Atlas-managed publication tables.
+
+Physical view and publication names use lower-case snake case, match
+`^[a-z][a-z0-9_]{0,62}$`, and are unique within their schema. Display names and descriptions are
+separate Postgres metadata and may change freely. A publication's physical schema and table name
+become immutable when it is activated because downstream consumers bind to that
+identity. Renaming the product label does not rename the DuckLake table.
+
+Atlas reserves the `_atlas_` column prefix in publication tables. User-defined output columns may
+not use it. Every v1 publication table contains:
+
+- `_atlas_crawl_id UUID NOT NULL`;
+- `_atlas_document_id VARCHAR NOT NULL`;
+- `_atlas_captured_at TIMESTAMPTZ NOT NULL`;
+- `_atlas_query_revision_id UUID NOT NULL`;
+- `_atlas_query_binding_id UUID NOT NULL`;
+- `_atlas_materialization_run_id UUID NOT NULL`;
+- `_atlas_materialized_at TIMESTAMPTZ NOT NULL`.
+
+The publication's declared user identity columns plus `_atlas_crawl_id` form its effective logical
+key. DuckLake constraints are not the correctness mechanism; the repository writer enforces this key
+while reconciling a crawl.
 
 ## Boundaries
 
@@ -106,9 +134,45 @@ The existing Atlas ownership rules continue to apply.
 
 Prometheus and progress events remain observational and are never correctness state.
 
+## Control-plane definitions
+
+The implementation uses explicit Postgres entities rather than JSON embedded in tasks:
+
+- A **query** is the stable editable identity shown to a user.
+- A **query revision** is an immutable SQL body, content hash, parameter declaration, creation time,
+  and author. Updating a query inserts a revision and moves the query's current-revision pointer in
+  one transaction. Revisions are never updated or deleted while referenced.
+- A **catalogue view reference** stores the DuckLake `view_uuid`, current qualified name, display
+  metadata, and adoption state. It never stores view SQL.
+- A **publication** stores its stable UUID, immutable physical table identity after activation,
+  display metadata, lifecycle state, observation semantics, and declared identity columns.
+- A **publication field** gives every user column a stable UUID, physical name, DuckDB type,
+  nullability, ordinal, and lifecycle state. The field UUID survives a column rename.
+- A **publication query binding** selects one immutable query revision, maps its result columns to
+  publication field UUIDs, and declares URL matching, half-open captured-time applicability
+  `[effective_from, effective_until)`, and priority.
+
+Bindings are immutable after activation. Changing matching, applicability, priority, or field mapping
+creates a successor binding and archives the previous one for new resolution. Historical rows and
+materialization records retain the binding UUID that actually ran.
+
+Bindings may overlap only when selection remains deterministic. Atlas chooses the highest priority,
+then the most specific URL match. Creation is rejected if two eligible bindings would tie. A crawl
+must resolve to exactly one binding; zero matches is a visible skipped materialization, and multiple
+top matches are a configuration failure rather than an arbitrary choice.
+
+Definitions use archive state instead of destructive deletion once referenced by a run or durable
+publication row. Draft, active, paused, and archived publication lifecycle states have these effects:
+
+- `draft`: definition may change and no work is produced;
+- `active`: new crawls resolve bindings and materialize;
+- `paused`: existing data remains consumable but no new live work is produced;
+- `archived`: no new work or schema changes are accepted; the DuckLake table remains readable until
+  an explicit destructive repository operation removes it.
+
 ## Publication contract
 
-A publication definition declares at least:
+A publication definition declares:
 
 - a stable DuckLake schema and table identity;
 - whether rows represent observations or current state;
@@ -120,11 +184,17 @@ A publication definition declares at least:
 
 An observation publication normally includes the crawl identity in its effective key. A current-state
 publication uses a declared business key and explicit ordering rules to decide which observation wins.
-Atlas should default to preserving observations because they retain the temporal relationship to web
-evidence. Current-state publications are an explicit projection with stronger reconciliation rules.
+Version one supports observation publications only. They retain the temporal relationship to web
+evidence and give backfills and corrections deterministic per-crawl behavior. Users can define a view
+over observations to expose current state, normally by selecting the greatest
+`(_atlas_captured_at, _atlas_crawl_id)` for each business key.
 
-Exploratory output without stable row identity may be append-only, but Atlas must clearly report that
-reliable correction, deletion, and upsert semantics are unavailable.
+A future maintained current-state publication requires an active caller and a separate design for
+late observations, winner deletion, and recovery of the previous winner. It is not an alternative
+mode hidden in the v1 implementation.
+
+Version-one publications require at least one declared user identity column. Exploratory output
+without stable identity remains a saved query or view; it cannot be activated as a publication.
 
 ## Query revisions and applicability
 
@@ -148,6 +218,33 @@ run; it is not a hidden side effect of editing SQL.
 A query revision must produce the publication's identity and current output columns. A new query
 revision does not require a new publication or table when the consumer-facing schema remains valid.
 
+Saved queries may be arbitrary safe read-only SQL. A query revision becomes eligible for a
+publication binding only when it satisfies the materialization contract:
+
+- it is one read-only `SELECT` statement;
+- it declares exactly one required named parameter, `$crawl_id`;
+- it reads crawl evidence only through the bounded table macros `publication_crawl($crawl_id)`,
+  `publication_document($crawl_id)`, and `publication_elements($crawl_id)`;
+- direct reads of `crawls`, `documents`, `elements`, publication tables, arbitrary views, external
+  files, attached databases, table functions, and network functions are rejected;
+- approved scalar catalogue helpers such as `get_attribute`, `has_text`, `text_content`,
+  `readable_text`, `inner_html`, and `resolve_url` remain available;
+- its result column names are unique;
+- its result-to-field mapping covers every non-null publication field;
+- missing nullable fields are materialized as `NULL`;
+- unmapped result columns are rejected;
+- each result row has non-null declared identity values;
+- duplicate logical keys in one crawl fail the crawl's publication materialization.
+
+Atlas validates a binding by preparing the SQL, inspecting its Arrow schema, and exercising it
+against representative retained evidence before activation. The frozen materialization plan contains
+the query revision, parameter contract, field mapping, publication schema fingerprint, and binding
+identity; the repository worker never resolves mutable definitions during execution.
+
+Validation parses the statement and applies an allowlist; searching SQL text is not sufficient. The
+three bounded table macros are installed and owned by the repository catalogue. Each returns rows
+only for its supplied crawl identity, making total catalogue size irrelevant to one live evaluation.
+
 ## Schema evolution
 
 A publication may evolve through real DuckLake DDL instead of receiving a new table for every schema
@@ -158,8 +255,34 @@ particular mutation is safe depends on the downstream consumer, so Atlas exposes
 boundary rather than hiding it behind a compatibility table or dual write.
 
 Changes to row identity or observation/current-state semantics are more significant than ordinary
-column DDL. Atlas must treat them as explicit contract changes and show their effect on existing rows,
-backfills, and consumers before applying them.
+column DDL. Version one does not permit changing publication identity columns after activation.
+Create a new publication when the meaning of row identity changes.
+
+All DDL for a managed publication goes through an Atlas schema-change operation. Direct out-of-band
+DDL is detected by the publication schema fingerprint, pauses materialization, and requires explicit
+adoption or repair; Atlas never silently changes its Postgres contract to match it.
+
+The operation validates every active and historically backfillable query binding, previews the
+DuckLake DDL and affected fields, and requires explicit confirmation. Version one supports:
+
+- adding a nullable field;
+- adding a non-null field with a deterministic constant default;
+- renaming a field while retaining its stable field UUID;
+- widening a field type when DuckDB can cast every existing value;
+- dropping a non-identity field;
+- changing nullability only after a full validation scan succeeds.
+
+Narrowing or otherwise lossy type conversions are rejected in version one. Rename, drop, and
+nullability changes require a typed confirmation containing the publication's physical name. Additive
+and widening changes require ordinary confirmation. Every accepted mutation executes as one DuckLake
+DDL transaction and records the resulting schema fingerprint in Postgres only after DuckLake commits.
+If the Postgres update fails, Atlas pauses the publication and repairs by reading the authoritative
+DuckLake schema; it does not reverse the committed DDL with a compatibility shim.
+
+Publication bindings map query output aliases to stable publication field UUIDs. A physical rename
+therefore does not change historical query SQL. Dropped fields are removed from materialized output;
+historical bindings remain reproducible for their surviving fields. New non-null fields require a
+default or compatible replacement bindings before the DDL is accepted.
 
 ## Materialization
 
@@ -190,6 +313,44 @@ NATS continues to own queued work and current execution state.
 Live materialization, backfills, and corrections use the same evaluation and reconciliation behavior.
 They differ in how their crawl scope is selected and why the run was created.
 
+For live work, the runtime resolves matching publication bindings after page acquisition and freezes
+the resulting plans into the crawl ingestion job. The repository worker first commits the crawl and
+DOM evidence. It then publishes deterministic live materialization jobs and only afterward
+acknowledges the ingestion message. A crash after the evidence commit but before publication causes
+ingestion redelivery; the already-idempotent crawl commit is recognized and the same stable
+materialization jobs are published again. A broken publication can therefore fail independently
+without preventing source evidence from becoming durable.
+
+Failed crawls and successful crawls without a document do not produce materialization jobs; their
+skipped reason remains visible in the ingestion result.
+
+Materialization uses two additional subjects in the existing repository work stream:
+
+- `atlas.repository.materialize.live` for newly committed crawls;
+- `atlas.repository.materialize.backfill` for explicit backfills and corrections.
+
+Only the repository worker consumes either subject and writes DuckLake. A job contains one
+publication, a frozen plan, and at most 100 crawl IDs by default; the bound is configurable within the
+NATS envelope and repository staging limits. The worker drains live ingestion and live materialization
+preferentially, but after ten live batches it accepts one waiting backfill batch. One bounded backfill
+batch is the maximum delay imposed on newly arriving work. These are subjects and durable consumers
+in the existing repository stream, not another writer or state owner.
+
+Backfill planning pages through crawl IDs in deterministic `(captured_at, crawl_id)` order and
+publishes frozen batches. Current run and batch state lives in NATS KV. Successful analytical history
+lives in DuckLake; Postgres retains only the editable definition and optional provenance UUIDs.
+
+DuckLake keeps two private analytical tables in `main`:
+
+- `publication_runs` records one live, backfill, or correction run, its frozen scope, initiating
+  provenance, start and finish times, counts, and terminal outcome;
+- `publication_attempts` records one publication/crawl attempt, its operation identity, binding and
+  query revision, row-change counts, warnings, errors, and terminal outcome.
+
+These tables make zero-row, skipped, and failed derivations inspectable without putting durable run
+history in Postgres. They are written only by the repository worker and are not public publication
+tables.
+
 ## Backfills and corrections
 
 A backfill evaluates a frozen historical crawl scope that has not yet been materialized for a
@@ -217,6 +378,12 @@ produced a row without changing the logical row's identity.
 Large backfills are explicit, bounded operations. They must not be hidden in interactive reads or
 ordinary crawl requests. Their commits should remain small enough for bounded CDC consumption and
 safe repository operation.
+
+Live materialization is never paused behind an entire backfill. Because each crawl is reconciled by
+its effective logical key, live and historical batches may interleave safely. Two jobs targeting the
+same publication and crawl have the same stable operation identity; NATS KV compare-and-swap and the
+repository reconciliation make redelivery idempotent. A correction submitted for a crawl already in
+flight waits for that stable operation to reach a terminal state before publishing its successor.
 
 ## Incremental consumption
 
@@ -258,9 +425,28 @@ Re-running an external pipeline is a downstream operation and is not an Atlas re
 Exact CDC replay is limited by DuckLake snapshot retention. Atlas must expose retention and gap
 conditions clearly; it must never silently substitute current state for missing historical events.
 
+The default exact-replay retention target is 30 days and is configurable per deployment. Snapshot
+maintenance does not pin history indefinitely for lagging consumers: consumer lag is warned at 50%
+of the retention window, critical at 80%, and becomes an explicit `CDC_GAP` when required history has
+expired. Operators may increase retention before a planned outage or backfill. A consumer outside the
+window must snapshot-bootstrap and resume from the bootstrap snapshot.
+
+Snapshot bootstrap belongs to DuckLake CDC rather than a custom Atlas cursor API. The CDC extension
+and Python client must provide one operation that:
+
+1. chooses and pins a committed snapshot `S`;
+2. creates or resets the table consumer to start strictly after `S`;
+3. exposes the publication table as of `S` through a dedicated read connection;
+4. releases the snapshot only after the caller confirms its snapshot sink succeeded;
+5. then permits ordinary CDC reads after `S`.
+
+Atlas exposes publication connection metadata and diagnostics but does not proxy downstream DML or
+store a second consumer cursor.
+
 ## Correctness invariants
 
 - No publication row becomes visible before its supporting crawl evidence is durable.
+- Failure of publication materialization does not roll back or hide already durable crawl evidence.
 - Materializing the same frozen input more than once is idempotent.
 - Query revisions used by a run do not change while it executes.
 - Publication row identity is independent of the query revision that produced it.
@@ -270,8 +456,78 @@ conditions clearly; it must never silently substitute current state for missing 
 - Consumer notifications may be lost without losing publication data or replayability.
 - A consumer advances its cursor only after its required downstream work succeeds.
 - Missing retained CDC history is an explicit gap requiring replay reset or snapshot bootstrap.
+- DuckLake CDC is the external publication change boundary; Atlas does not use it to schedule internal
+  materialization work in version one.
 
-## Initial delivery sequence
+## Views lifecycle
+
+Every view created through Atlas receives a Postgres catalogue-view reference. A DuckLake view
+created directly is visible through catalogue discovery but has no Atlas ownership or descriptive
+metadata until explicitly adopted. Adoption stores its `view_uuid` and current qualified name after
+verifying that the view is in the `views` schema.
+
+Create and adopt operations never copy SQL into Postgres. Atlas reads the current definition from
+DuckLake when displaying or editing a view. Replacing a view executes DuckLake DDL and leaves the
+stable Atlas reference attached to the resulting DuckLake identity returned by the operation.
+
+Cross-store failure is handled as reference repair, not dual authority:
+
+- an Atlas-created DuckLake view whose Postgres reference was not committed appears as unowned and
+  may be adopted;
+- a reference whose DuckLake view was dropped appears unavailable and may be detached;
+- Atlas never recreates a missing view from Postgres because Postgres does not contain its SQL.
+
+Dropping a referenced view requires an explicit impact preview. Atlas first drops the authoritative
+DuckLake object and then archives the Postgres reference. An interrupted operation converges through
+the unavailable-reference repair path.
+
+## Application surface
+
+HTTP and CLI adapters expose the same application services. Exact Pydantic shapes live beside their
+implementation, but version one provides these operations:
+
+- create, list, inspect, edit, archive, and restore saved queries;
+- list query revisions and run any retained revision interactively;
+- create, discover, adopt, replace, detach, and drop catalogue views;
+- create and inspect draft publications and their fields;
+- create, validate, preview, activate, and archive query bindings;
+- activate, pause, resume, archive, and inspect publications;
+- preview and apply supported publication schema changes;
+- start bounded backfill or correction runs and inspect their NATS-backed current state;
+- inspect durable publication runs and attempts from DuckLake;
+- obtain the qualified DuckLake table identity, schema, keys, schema fingerprint, CDC readiness, and
+  retention diagnostics needed by an external consumer.
+
+Mutating adapters validate and translate only. Query revisioning, binding resolution, schema-change
+rules, job freezing, reconciliation, and repair behavior live in control, action, runtime, and
+repository modules according to the existing Atlas boundaries.
+
+## Version-one acceptance criteria
+
+The feature is ready when all of the following hold:
+
+- editing a saved query retains and reruns every immutable revision;
+- a DuckLake view remains usable without an Atlas reference, and adoption never duplicates its SQL;
+- one publication accepts two query revisions for different captured-time ranges without changing
+  its physical table;
+- every publication evaluation is demonstrably scoped to one supplied crawl ID;
+- crawl evidence commits successfully even when its publication materialization later fails;
+- redelivery after crashes between evidence commit, job publication, publication commit, and message
+  acknowledgement produces no duplicate logical rows or lost jobs;
+- a bounded backfill can interleave with live work and converge to the same table as chronological
+  materialization;
+- a correction emits the expected insert, update, and delete changes and no changes for equal rows;
+- every supported DDL mutation produces a CDC schema boundary and materialization resumes only with
+  the matching schema fingerprint;
+- a consumer can snapshot-bootstrap at `S`, consume strictly later changes, restart, and replay a
+  previously uncommitted window;
+- expired history produces `CDC_GAP` and never silently falls back to a snapshot;
+- publication rows, runs, and attempts trace back to query binding, query revision, crawl, document,
+  and raw HTML evidence;
+- `make check` covers the control and repository contracts, plus a low-volume end-to-end crawl,
+  materialization, CDC, schema-change, replay, and backfill scenario.
+
+## Version-one delivery sequence
 
 1. Add versioned saved queries and interactive revision history.
 2. Add user-defined DuckLake views without a second SQL authority.
@@ -281,15 +537,16 @@ conditions clearly; it must never silently substitute current state for missing 
 6. Expose publication tables through snapshot reads and DuckLake CDC.
 7. Add snapshot bootstrap, schema-boundary, retention, and consumer diagnostics.
 
-## Open questions
+Each step ships only when its active caller exists. Steps do not introduce compatibility aliases or
+dual storage paths for earlier development contracts.
 
-- Which publication naming and DuckLake schema conventions should Atlas reserve?
-- Should Atlas create a Postgres reference for every managed view or only views with Atlas-specific
-  metadata?
-- How should directly created DuckLake views be discovered and adopted?
-- What is the first supported current-state ordering policy?
-- How should live materialization interleave with a large historical backfill?
-- Which schema mutations require an explicit impact acknowledgement?
-- How should a consistent snapshot-to-CDC bootstrap be exposed to remote consumers?
-- What snapshot retention defaults are appropriate for expected consumer lag?
-- Should materialization ever use DuckLake CDC as an internal trigger, or remain entirely NATS-driven?
+## Deferred by decision
+
+The following are resolved as outside version one rather than left as open design questions:
+
+- Maintained current-state publications are deferred; use a DuckLake view over observation rows.
+- Publication identity mutation is deferred; create a new publication.
+- Lossy type conversion is deferred; create a new field or publication.
+- Atlas-managed destination connectors and pipeline schedules are out of scope.
+- A remote Atlas CDC proxy is out of scope; consumers connect through DuckLake and DuckLake CDC.
+- CDC-triggered internal materialization is out of scope; NATS remains the internal work owner.

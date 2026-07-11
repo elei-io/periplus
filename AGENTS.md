@@ -63,6 +63,28 @@ npm run typecheck
 npm run build
 ```
 
+## Dogfooded DuckLake libraries
+
+Atlas intentionally dogfoods the maintainer's DuckLake libraries:
+
+- `ducklake-client` — Python catalogue client used by the repository; local source at
+  `/Users/ekku/Code/quack/ducklake-python-client`.
+- `ducklake-cdc` — DuckDB extension providing durable DuckLake change streams; local source at
+  `/Users/ekku/Code/quack/ducklake-cdc-extension`.
+- `ducklake-cdc-client` — Python CDC client intended for publication consumers; local source at
+  `/Users/ekku/Code/quack/ducklake-cdc-python-client`.
+
+Treat these as actively maintained upstreams, not immutable third-party constraints. When Atlas
+reveals a missing primitive, awkward API, correctness risk, performance problem, or documentation
+gap, prefer a small coherent upstream improvement over an Atlas-only wrapper, workaround, or copied
+implementation. Record actionable findings in [UPSTREAM.md](UPSTREAM.md), including evidence and the
+Atlas use case. The maintainer expects candid feedback and can publish updated packages quickly.
+
+Do not silently depend on unpublished local upstream changes. Unless the user explicitly asks for
+cross-repository work, change only Atlas and report the upstream need. After an upstream release,
+consume its published package normally, update the lockfile, and remove any temporary Atlas code
+that the released capability supersedes.
+
 ## Implementation rules
 
 - Prefer typed Pydantic boundaries and SQLAlchemy 2 models.
