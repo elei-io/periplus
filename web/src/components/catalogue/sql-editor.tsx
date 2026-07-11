@@ -18,27 +18,32 @@ type SqlEditorProps = {
   onChange: (value: string) => void
   onRun: () => void
   views?: Array<{ view_name: string; columns: string[] }>
+  materializedViews?: Array<{ name: string; columns: Array<{ name: string }> }>
 }
 
-export function SqlEditor({ value, onChange, onRun, views = [] }: SqlEditorProps) {
+export function SqlEditor({ value, onChange, onRun, views = [], materializedViews = [] }: SqlEditorProps) {
   const sqlLanguage = useMemo(() => {
     const tables = catalogueTables
     const viewTables = Object.fromEntries(
       views.map((view) => [view.view_name, view.columns])
+    )
+    const materializedTables = Object.fromEntries(
+      materializedViews.map((view) => [view.name, view.columns.map((column) => column.name)])
     )
     const catalogueSchema = {
       ...tables,
       ...viewTables,
       main: tables,
       views: viewTables,
-      atlas: { main: tables, views: viewTables },
+      materialized: materializedTables,
+      atlas: { main: tables, views: viewTables, materialized: materializedTables },
     }
     return sql({
       dialect: PostgreSQL,
       schema: catalogueSchema,
       upperCaseKeywords: true,
     })
-  }, [views])
+  }, [views, materializedViews])
 
   const extensions = useMemo(
     () => [

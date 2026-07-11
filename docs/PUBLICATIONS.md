@@ -1,4 +1,4 @@
-# Queries, Views, and Publications
+# Queries, Views, Materialized Views, and Publications
 
 Status: accepted design; implementation pending
 
@@ -20,7 +20,8 @@ message buses, or other destinations.
 
 ## User-facing layers
 
-Queries, views, and publications are separate concepts with deliberately different guarantees.
+Queries, views, materialized views, and publications are separate concepts with deliberately
+different guarantees.
 
 ### Queries
 
@@ -57,27 +58,40 @@ and unowned until explicitly adopted.
 
 ### Publications
 
-A publication is a stable, typed DuckLake table defined by a user and managed by Atlas. It is the
-consumer-facing dataset boundary.
+A publication is an external consumer contract attached to an eligible Atlas materialized view. It
+does not copy or independently maintain the materialized data.
 
-- A publication has a stable table identity and declared row semantics.
-- Atlas materializes and reconciles its rows from committed crawl evidence.
-- One or more immutable query revisions describe how to derive those rows.
-- The publication schema may evolve through explicit DuckLake DDL.
-- Publication data carries provenance back to its crawl, document, query revision, and
-  materialization run.
-- DuckLake snapshots and CDC make publication changes incrementally consumable.
+- A publication exposes the materialized view's stable table identity and declared row semantics.
+- It adds an external schema contract, compatibility checks, CDC exposure, replay retention,
+  snapshot bootstrap, connection metadata, and consumer diagnostics.
+- Removing a publication does not remove its underlying materialized view.
+- Backfills, corrections, rebuilds, and live maintenance remain materialized-view behavior.
 
 "Dataset" may be used in user-facing copy where it is clearer, but `publication` names the Atlas
 concept: a dataset made available to systems beyond Atlas.
 
+### Materialized views
+
+A materialized view is an Atlas-managed, durable DuckLake table derived from an exact saved-query
+revision or view.
+
+- It owns typed schema, row identity, derivation bindings, refresh behavior, backfills, corrections,
+  rebuilds, and provenance.
+- It may remain entirely internal to Atlas and has no inherent external compatibility promise.
+- Version one supports explicit full refresh from one immutable saved-query revision.
+- Later versions add bounded per-crawl maintenance, reconciliation, and historical backfills without
+  changing the distinction between materialization and publication.
+- Publishing promotes the existing table contract; it never creates a second data copy.
+
 ## Names and catalogue layout
 
-Atlas reserves three DuckLake schemas:
+Atlas reserves four DuckLake schemas:
 
 - `main` contains Atlas evidence tables and catalogue helpers;
 - `views` contains persistent user-defined views;
-- `published` contains Atlas-managed publication tables.
+- `materialized` contains Atlas-managed durable query results;
+- `published` is reserved for future publication-facing catalogue objects; version one publications
+  expose eligible `materialized` tables without copying them.
 
 Physical view and publication names use lower-case snake case, match
 `^[a-z][a-z0-9_]{0,62}$`, and are unique within their schema. Display names and descriptions are

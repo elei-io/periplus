@@ -2,6 +2,7 @@
 
 import control.crawl_policies.models  # noqa: F401
 import control.catalogue_views.models  # noqa: F401
+import control.materialized_views.models  # noqa: F401
 import control.catalogue_queries.models  # noqa: F401
 import control.data_schemas.models  # noqa: F401
 import control.query_schemas.models  # noqa: F401

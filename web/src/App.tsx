@@ -10,6 +10,7 @@ import { TasksPage } from "@/pages/admin/tasks-page"
 import { CatalogueSqlPage } from "@/pages/catalogue/sql-page"
 import { CatalogueViewsPage } from "@/pages/catalogue/views-page"
 import { CatalogueQueriesPage } from "@/pages/catalogue/queries-page"
+import { MaterializedViewsPage } from "@/pages/catalogue/materialized-views-page"
 import { CrawlPolicyDetailPage } from "@/pages/settings/crawl-policy-detail-page"
 import { CrawlPoliciesPage } from "@/pages/settings/crawl-policies-page"
 import { DataSchemaDetailPage } from "@/pages/cache/data-schema-detail-page"
@@ -76,6 +77,10 @@ export function App() {
 
     if (activeItem.href === "/catalogue/queries") {
       return <CatalogueQueriesPage />
+    }
+
+    if (activeItem.href === "/catalogue/materialized-views") {
+      return <MaterializedViewsPage />
     }
 
     if (activeItem.href === "/playground/index") {

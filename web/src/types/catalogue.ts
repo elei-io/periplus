@@ -57,3 +57,22 @@ export type SavedQuery = {
 
 export type SavedQueryDetail = SavedQuery & { revisions: SavedQueryRevision[] }
 export type SavedQueryList = { items: SavedQuery[]; total: number }
+
+export type MaterializedViewRecord = {
+  id: string
+  name: string
+  qualified_name: string
+  display_name: string
+  description: string | null
+  query_revision_id: string
+  query_id: string
+  query_name: string
+  query_revision: number
+  ducklake_table_uuid: string
+  row_count: number
+  columns: Array<{ name: string; data_type: string; nullable: boolean }>
+  last_refreshed_at: string
+  created_at: string
+  updated_at: string
+}
+export type MaterializedViewList = { items: MaterializedViewRecord[]; total: number }

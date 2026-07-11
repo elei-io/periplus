@@ -21,6 +21,7 @@ import { useCatalogueQuery } from "@/hooks/use-catalogue-query"
 import { useCatalogueLint } from "@/hooks/use-catalogue-lint"
 import { useCatalogueViews } from "@/hooks/use-catalogue-views"
 import { useSavedQuery } from "@/hooks/use-saved-queries"
+import { useMaterializedViews } from "@/hooks/use-materialized-views"
 import {
   Tooltip,
   TooltipContent,
@@ -61,6 +62,7 @@ export function CatalogueSqlPage() {
   const catalogueQuery = useCatalogueQuery()
   const catalogueLint = useCatalogueLint(query)
   const catalogueViews = useCatalogueViews()
+  const materializedViews = useMaterializedViews()
 
   useEffect(() => {
     if (!savedQuery.data) return
@@ -155,6 +157,7 @@ export function CatalogueSqlPage() {
           views={(catalogueViews.data?.items ?? []).filter(
             (view) => view.available
           )}
+          materializedViews={materializedViews.data?.items ?? []}
         />
         {catalogueLint.data && catalogueLint.data.diagnostics.length > 0 && (
           <div className="space-y-1.5 border-t border-amber-500/20 bg-amber-500/5 px-4 py-2.5">

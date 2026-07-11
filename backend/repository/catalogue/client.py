@@ -55,6 +55,7 @@ class Catalogue:
         with self.lake.transaction():
             self.lake.schema.create(self.config.schema)
             self.lake.schema.create("views")
+            self.lake.schema.create("materialized")
             self.lake.table.create(
                 "documents",
                 schema_name=self.config.schema,
