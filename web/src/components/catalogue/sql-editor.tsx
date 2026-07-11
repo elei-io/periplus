@@ -13,22 +13,33 @@ import {
   sqlSyntaxHighlighting,
 } from "@/components/catalogue/sql-editor-theme"
 
-const tables = catalogueTables
-const catalogueSchema = { ...tables, main: tables, atlas: { main: tables } }
-
-const sqlLanguage = sql({
-  dialect: PostgreSQL,
-  schema: catalogueSchema,
-  upperCaseKeywords: true,
-})
-
 type SqlEditorProps = {
   value: string
   onChange: (value: string) => void
   onRun: () => void
+  views?: Array<{ view_name: string; columns: string[] }>
 }
 
-export function SqlEditor({ value, onChange, onRun }: SqlEditorProps) {
+export function SqlEditor({ value, onChange, onRun, views = [] }: SqlEditorProps) {
+  const sqlLanguage = useMemo(() => {
+    const tables = catalogueTables
+    const viewTables = Object.fromEntries(
+      views.map((view) => [view.view_name, view.columns])
+    )
+    const catalogueSchema = {
+      ...tables,
+      ...viewTables,
+      main: tables,
+      views: viewTables,
+      atlas: { main: tables, views: viewTables },
+    }
+    return sql({
+      dialect: PostgreSQL,
+      schema: catalogueSchema,
+      upperCaseKeywords: true,
+    })
+  }, [views])
+
   const extensions = useMemo(
     () => [
       sqlLanguage,
@@ -39,7 +50,7 @@ export function SqlEditor({ value, onChange, onRun }: SqlEditorProps) {
       sqlEditorTheme,
       EditorView.lineWrapping,
     ],
-    []
+    [sqlLanguage]
   )
 
   return (

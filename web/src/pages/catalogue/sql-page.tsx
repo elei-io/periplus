@@ -6,15 +6,23 @@ import {
   Rows3Icon,
   SparklesIcon,
   TriangleAlertIcon,
+  ViewIcon,
 } from "lucide-react"
 
 import { CatalogueResultsTable } from "@/components/catalogue/catalogue-results-table"
 import { catalogueTables } from "@/components/catalogue/catalogue-schema"
 import { SqlEditor } from "@/components/catalogue/sql-editor"
+import { SaveViewDialog } from "@/components/catalogue/save-view-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { useCatalogueQuery } from "@/hooks/use-catalogue-query"
 import { useCatalogueLint } from "@/hooks/use-catalogue-lint"
+import { useCatalogueViews } from "@/hooks/use-catalogue-views"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 
 const initialSql = `SELECT *\nFROM documents\nLIMIT 100;`
 
@@ -37,8 +45,10 @@ export function CatalogueSqlPage() {
   const [query, setQuery] = useState(initialSql)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [elapsed, setElapsed] = useState<number | null>(null)
+  const [saveViewOpen, setSaveViewOpen] = useState(false)
   const catalogueQuery = useCatalogueQuery()
   const catalogueLint = useCatalogueLint(query)
+  const catalogueViews = useCatalogueViews()
 
   function execute() {
     if (!query.trim() || catalogueQuery.isPending) return
@@ -68,6 +78,23 @@ export function CatalogueSqlPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setSaveViewOpen(true)}
+                    disabled={!query.trim()}
+                  />
+                }
+              >
+                <ViewIcon /> Save as view
+              </TooltipTrigger>
+              <TooltipContent>
+                Create a persistent, non-materialized DuckLake view from this SQL
+              </TooltipContent>
+            </Tooltip>
             <Badge
               variant="outline"
               className="hidden font-mono text-[10px] sm:inline-flex"
@@ -88,7 +115,14 @@ export function CatalogueSqlPage() {
             </Button>
           </div>
         </div>
-        <SqlEditor value={query} onChange={setQuery} onRun={execute} />
+        <SqlEditor
+          value={query}
+          onChange={setQuery}
+          onRun={execute}
+          views={(catalogueViews.data?.items ?? []).filter(
+            (view) => view.available
+          )}
+        />
         {catalogueLint.data && catalogueLint.data.diagnostics.length > 0 && (
           <div className="space-y-1.5 border-t border-amber-500/20 bg-amber-500/5 px-4 py-2.5">
             {catalogueLint.data.diagnostics.map((diagnostic) => (
@@ -120,6 +154,7 @@ export function CatalogueSqlPage() {
           </span>
         </div>
       </section>
+      <SaveViewDialog open={saveViewOpen} onOpenChange={setSaveViewOpen} sql={query} />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
         <div className="flex min-h-5 items-center gap-3 text-[11px] text-muted-foreground">
           {catalogueQuery.data ? (

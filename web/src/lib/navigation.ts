@@ -9,6 +9,7 @@ import {
   ShieldCheckIcon,
   SparklesIcon,
   TablePropertiesIcon,
+  ViewIcon,
 } from "lucide-react"
 
 import type { NavigationGroup } from "@/types/navigation"
@@ -24,6 +25,13 @@ export const navigationGroups: NavigationGroup[] = [
         icon: TablePropertiesIcon,
         title: "Catalogue SQL",
         description: "Run read-only SQL and inspect Arrow results.",
+      },
+      {
+        name: "Views",
+        href: "/catalogue/views",
+        icon: ViewIcon,
+        title: "Catalogue Views",
+        description: "Inspect and edit persistent DuckLake views.",
       },
     ],
   },

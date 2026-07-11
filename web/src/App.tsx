@@ -8,6 +8,7 @@ import { CrawlPage } from "@/pages/playground/crawl-page"
 import { SearchPage } from "@/pages/playground/search-page"
 import { TasksPage } from "@/pages/admin/tasks-page"
 import { CatalogueSqlPage } from "@/pages/catalogue/sql-page"
+import { CatalogueViewsPage } from "@/pages/catalogue/views-page"
 import { CrawlPolicyDetailPage } from "@/pages/settings/crawl-policy-detail-page"
 import { CrawlPoliciesPage } from "@/pages/settings/crawl-policies-page"
 import { DataSchemaDetailPage } from "@/pages/cache/data-schema-detail-page"
@@ -66,6 +67,10 @@ export function App() {
   const page = (() => {
     if (activeItem.href === "/catalogue/sql") {
       return <CatalogueSqlPage />
+    }
+
+    if (activeItem.href === "/catalogue/views") {
+      return <CatalogueViewsPage />
     }
 
     if (activeItem.href === "/playground/index") {
