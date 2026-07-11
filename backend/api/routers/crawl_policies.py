@@ -4,12 +4,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from crawl_policies.schemas import (
+from control.crawl_policies.schemas import (
     CrawlPolicyListResponse,
     CrawlPolicyRecord,
     CrawlPolicyUpdateRequest,
 )
-from crawl_policies.service import (
+from control.crawl_policies.service import (
     count_crawl_policies,
     delete_crawl_policy,
     get_crawl_policy,

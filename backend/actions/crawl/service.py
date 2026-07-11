@@ -28,9 +28,9 @@ from actions.shared.quality.schemas import QualityWarning
 from actions.shared.quality.service import run_quality_checks
 from repository.ducklake import CrawlRecord
 from dom import links_from_html
-from crawl_policies.schemas import CrawlPolicySnapshot
+from control.crawl_policies.schemas import CrawlPolicySnapshot
 from crawl_policies.permits import capacity_lease
-from crawl_policies.service import find_crawl_policy_snapshot_for_url
+from control.crawl_policies.service import find_crawl_policy_snapshot_for_url
 from observability import crawl_metrics
 from repository import (
     RepositoryCacheHit,
@@ -40,7 +40,7 @@ from repository import (
 )
 from tasks.context import commit_task_checkpoint
 from tasks.context import current_task_execution
-from urls.service import normalize_url
+from control.url_matching import normalize_url
 
 from .schemas import CrawlOutput, CrawlPage, CrawlStats
 

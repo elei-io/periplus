@@ -19,7 +19,7 @@ from actions.shared.query_schema.service import (
     persist_query_param_output,
     query_from_page,
 )
-from data_schemas.service import record_data_schema_failure
+from control.data_schemas.service import record_data_schema_failure
 from tasks.context import commit_task_checkpoint
 
 from .schemas import ExtractOutput, ExtractSource

@@ -11,8 +11,8 @@ from sqlalchemy.orm import Session
 from config import get_float, get_int
 
 from actions.shared.progress import ProgressEvent, ProgressReporter, emit_progress
-from crawl_policies.models import CrawlPolicy
-from crawl_policies.schemas import CrawlPolicySnapshot
+from control.crawl_policies.models import CrawlPolicy
+from control.crawl_policies.schemas import CrawlPolicySnapshot
 
 _semaphores: dict[str, tuple[int, asyncio.Semaphore]] = {}
 

@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from actions.crawl.schemas import CrawlOutput, CrawlPage, CrawlStats
 from actions.shared.data_schema.service import _crawl_html
-from data_schemas.service import (
+from control.data_schemas.service import (
     create_data_schema,
     data_schema_matches_url,
     match_targets_for_url,

@@ -14,10 +14,10 @@ from actions.crawl.service import crawl_one_for_task
 from actions.shared.crawl import CrawlMode, CrawlWait
 from actions.shared.cache import CacheOptions
 from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
-from crawl_policies.models import CrawlPolicy
-from crawl_policies.service import generated_metric_slug
+from control.crawl_policies.models import CrawlPolicy
+from control.crawl_policies.service import generated_metric_slug
 from repository import RepositoryPipeline, repository_ingestor_from_env
-from urls.service import normalize_url, resolve_domain_url_match_for_url
+from control.url_matching import normalize_url, resolve_domain_url_match_for_url
 from tasks.context import commit_task_checkpoint
 
 from .schemas import (

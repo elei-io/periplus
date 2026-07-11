@@ -9,14 +9,14 @@ from uuid import UUID
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
-from crawl_policies.models import CrawlPolicy
-from crawl_policies.schemas import (
+from control.crawl_policies.models import CrawlPolicy
+from control.crawl_policies.schemas import (
     CrawlPolicyListRecord,
     CrawlPolicySnapshot,
     UrlMatchSnapshot,
 )
-from urls.models import UrlMatch
-from urls.service import normalize_url
+from control.url_matching import UrlMatch
+from control.url_matching import normalize_url
 
 
 def _match_string(url_match: UrlMatch) -> str:

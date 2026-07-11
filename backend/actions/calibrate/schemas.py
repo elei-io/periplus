@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 from actions.crawl.schemas import CrawlPage
 from actions.shared.crawl import CrawlMode, CrawlWait
-from crawl_policies.schemas import CrawlPolicyRecord
+from control.crawl_policies.schemas import CrawlPolicyRecord
 
 
 CalibrationTemplate = Literal[

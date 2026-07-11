@@ -9,8 +9,8 @@ from uuid import UUID
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
-from data_schemas.service import default_match_for_url
-from urls.service import resolve_url_match_for_url
+from control.data_schemas.service import default_match_for_url
+from control.url_matching import resolve_url_match_for_url
 
 from .models import QuerySchema
 from .schemas import QuerySchemaListRecord

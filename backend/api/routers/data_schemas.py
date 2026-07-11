@@ -4,12 +4,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from data_schemas.schemas import (
+from control.data_schemas.schemas import (
     DataSchemaDetailRecord,
     DataSchemaListResponse,
     DataSchemaUpdateRequest,
 )
-from data_schemas.service import (
+from control.data_schemas.service import (
     count_data_schemas,
     data_schema_summary,
     get_data_schema,

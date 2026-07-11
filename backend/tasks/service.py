@@ -14,9 +14,9 @@ from actions.index.schemas import Input as IndexInput
 from actions.crawl.schemas import Input as CrawlInput
 from actions.calibrate.schemas import Input as CalibrateInput
 from actions.shared.data_schema.schemas import Input as SchemaInput
-from crawl_policies.service import snapshot_enabled_crawl_policies
+from control.crawl_policies.service import snapshot_enabled_crawl_policies
 
-from .models import Task
+from control.tasks.models import Task
 from .queue import TaskRunState, WorkerState, connect_nats, create_run, ensure_task_storage, get_run, list_runs, new_run, publish_run, release_task, reserve_task, update_run
 from .schemas import (
     SearchInput,

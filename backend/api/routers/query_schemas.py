@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from db.session import get_session
-from query_schemas.schemas import QuerySchemaDetailRecord, QuerySchemaListResponse, QuerySchemaUpdateRequest
-from query_schemas.service import (
+from control.query_schemas.schemas import QuerySchemaDetailRecord, QuerySchemaListResponse, QuerySchemaUpdateRequest
+from control.query_schemas.service import (
     count_query_schemas,
     delete_query_schema,
     get_query_schema,

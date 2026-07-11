@@ -13,7 +13,7 @@ from actions.crawl.service import crawl as crawl_service
 from actions.shared.llm import openrouter_llm_config
 from actions.shared.cache import CacheOptions
 from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
-from data_schemas.service import (
+from control.data_schemas.service import (
     create_data_schema,
     default_match_for_url,
     find_reusable_data_schema,
