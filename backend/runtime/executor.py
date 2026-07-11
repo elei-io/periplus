@@ -15,8 +15,8 @@ from actions.index.service import index
 from actions.search.service import search
 from actions.shared.data_schema.service import schema
 from actions.shared.progress import ProgressReporter
-from tasks.context import TaskExecutionContext, task_execution_scope
-from tasks.queue import TaskRunState
+from runtime.context import TaskExecutionContext, task_execution_scope
+from runtime.task_queue import TaskRunState
 
 
 class TaskRunCancelled(Exception):

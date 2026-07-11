@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from actions.shared.llm import openrouter_llm_config
 from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
 from control.query_schemas.service import find_query_schema_for_url, upsert_query_schema
-from tasks.context import commit_task_checkpoint
+from runtime.context import commit_task_checkpoint
 
 from .schemas import QueryParamCandidate, QueryParamGroup, QueryParamOutput, QueryParamResult, QuerySchema
 

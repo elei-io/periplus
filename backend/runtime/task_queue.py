@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Literal
 from uuid import UUID, uuid4
 
 import nats
@@ -11,7 +12,10 @@ from nats.js.api import AckPolicy, ConsumerConfig, KeyValueConfig, RetentionPoli
 from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError, NotFoundError
 from pydantic import BaseModel, ConfigDict, Field
 
-from tasks.schemas import TaskPrimitive, TaskRunStatus, TaskRunTriggerKind
+from control.tasks.schemas import TaskPrimitive
+
+TaskRunStatus = Literal["queued", "running", "succeeded", "failed", "cancelled", "skipped"]
+TaskRunTriggerKind = Literal["scheduled", "manual", "retry", "backfill"]
 
 TASK_STREAM = "ATLAS_TASKS"
 TASK_SUBJECT = "atlas.tasks.run"

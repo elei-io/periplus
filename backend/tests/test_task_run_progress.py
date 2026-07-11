@@ -6,14 +6,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-from actions.shared.nats_progress import ProgressPublisher, _connect_nats, stream_progress
+from runtime.progress import ProgressPublisher, _connect_nats, stream_progress
 from actions.shared.progress import ProgressEvent
 from api.routers.task_runs import _progress_stream
 
 
 class ProgressPublisherTests(unittest.IsolatedAsyncioTestCase):
     async def test_best_effort_connections_disable_reconnect_noise(self) -> None:
-        with patch("actions.shared.nats_progress.nats.connect", AsyncMock(return_value="client")) as connect:
+        with patch("runtime.progress.nats.connect", AsyncMock(return_value="client")) as connect:
             client = await _connect_nats()
 
         self.assertEqual(client, "client")
@@ -78,7 +78,7 @@ class ProgressPublisherTests(unittest.IsolatedAsyncioTestCase):
         client = SimpleNamespace(drain=AsyncMock())
         jetstream = SimpleNamespace(subscribe=AsyncMock(return_value=subscription))
 
-        with patch("actions.shared.nats_progress._jetstream", AsyncMock(return_value=(client, jetstream))):
+        with patch("runtime.progress._jetstream", AsyncMock(return_value=(client, jetstream))):
             events = [event async for event in stream_progress(run_id, current_attempt=2)]
 
         self.assertEqual([event["type"] for event in events], ["skipped"])
@@ -116,7 +116,7 @@ class ProgressPublisherTests(unittest.IsolatedAsyncioTestCase):
         client = SimpleNamespace(drain=AsyncMock())
         jetstream = SimpleNamespace(subscribe=AsyncMock(return_value=subscription))
 
-        with patch("actions.shared.nats_progress._jetstream", AsyncMock(return_value=(client, jetstream))):
+        with patch("runtime.progress._jetstream", AsyncMock(return_value=(client, jetstream))):
             events = [event async for event in stream_progress(run_id, current_attempt=2)]
 
         self.assertEqual([event["event_id"] for event in events], ["2:1", "2:2"])

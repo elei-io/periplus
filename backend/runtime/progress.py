@@ -14,8 +14,8 @@ from nats.js.api import RetentionPolicy, StorageType, StreamConfig
 from nats.js.errors import NotFoundError
 from config import get_str
 
-from .progress import ProgressEvent
-from worker.logging import dependency_recovered, dependency_unavailable, worker_log
+from actions.shared.progress import ProgressEvent
+from runtime.logging import dependency_recovered, dependency_unavailable, worker_log
 
 _STREAM = "ATLAS_PROGRESS"
 _SUBJECTS = ["atlas.task-runs.*.progress"]

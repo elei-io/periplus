@@ -29,7 +29,7 @@ from actions.shared.quality.service import run_quality_checks
 from repository.ducklake import CrawlRecord
 from dom import links_from_html
 from control.crawl_policies.schemas import CrawlPolicySnapshot
-from crawl_policies.permits import capacity_lease
+from runtime.crawl_capacity import capacity_lease
 from control.crawl_policies.service import find_crawl_policy_snapshot_for_url
 from observability import crawl_metrics
 from repository import (
@@ -38,8 +38,8 @@ from repository import (
     identify_html,
     repository_ingestor_from_env,
 )
-from tasks.context import commit_task_checkpoint
-from tasks.context import current_task_execution
+from runtime.context import commit_task_checkpoint
+from runtime.context import current_task_execution
 from control.url_matching import normalize_url
 
 from .schemas import CrawlOutput, CrawlPage, CrawlStats

@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session
 
 from api.routers.action_runs import submit_action
 from db.session import get_session
-from tasks.schemas import SearchInput, TaskRunSubmission
+from control.tasks.schemas import SearchInput
+from runtime.task_runs import TaskRunSubmission
 
 router = APIRouter(prefix="/search", tags=["search"])
 

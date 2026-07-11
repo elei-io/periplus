@@ -4,7 +4,7 @@ sync:
 	cd backend && uv sync
 
 check:
-	cd backend && uv run python -m compileall actions api cli db dom repository tasks urls data_schemas query_schemas crawl_policies metrics observability worker
+	cd backend && uv run python -m compileall actions api cli config control db dom observability repository runtime
 	cd backend && uv run python -m unittest discover -s tests
 
 catalogue-bootstrap:

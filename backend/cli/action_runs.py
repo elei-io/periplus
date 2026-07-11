@@ -10,7 +10,7 @@ from pydantic import TypeAdapter
 
 from actions.shared.progress import ProgressEvent
 from cli.config import api_url
-from tasks.schemas import TaskPrimitive
+from control.tasks.schemas import TaskPrimitive
 
 
 def _check(response: httpx.Response) -> None:

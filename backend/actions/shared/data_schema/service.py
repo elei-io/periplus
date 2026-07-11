@@ -20,7 +20,7 @@ from control.data_schemas.service import (
     record_data_schema_use,
     replace_data_schema,
 )
-from tasks.context import commit_task_checkpoint
+from runtime.context import commit_task_checkpoint
 
 from .schemas import SchemaOutput, SchemaType
 

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from actions.shared.data_schema.schemas import Input
 from api.routers.action_runs import submit_action
 from db.session import get_session
-from tasks.schemas import TaskRunSubmission
+from runtime.task_runs import TaskRunSubmission
 
 router = APIRouter(prefix="/schema", tags=["schema"])
 

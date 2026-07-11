@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from db.session import get_session
-from tasks.schemas import TaskCreate, TaskPrimitive, TaskRecord, TaskRunRecord, TaskUpdate
-from tasks.service import (
+from control.tasks.schemas import TaskCreate, TaskPrimitive, TaskRecord, TaskUpdate
+from control.tasks.service import (
     TaskConflictError,
     TaskNotFoundError,
     TaskValidationError,
@@ -14,10 +14,10 @@ from tasks.service import (
     create_task,
     archive_task,
     get_task,
-    list_task_runs,
     list_tasks,
     update_task,
 )
+from runtime.task_runs import TaskRunRecord, list_task_runs
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 

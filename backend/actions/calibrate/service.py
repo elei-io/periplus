@@ -18,7 +18,7 @@ from control.crawl_policies.models import CrawlPolicy
 from control.crawl_policies.service import generated_metric_slug
 from repository import RepositoryPipeline, repository_ingestor_from_env
 from control.url_matching import normalize_url, resolve_domain_url_match_for_url
-from tasks.context import commit_task_checkpoint
+from runtime.context import commit_task_checkpoint
 
 from .schemas import (
     CalibrationCandidate,

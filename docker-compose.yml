@@ -64,7 +64,7 @@ services:
       dockerfile: docker/atlas/Dockerfile
     image: atlas-backend:local
     working_dir: /app/backend
-    command: python -m worker.app
+    command: python -m runtime.workers
     volumes:
       - .:/app
       - ./.atlas/repository:/app/.atlas/repository
