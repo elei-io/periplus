@@ -1,4 +1,4 @@
-"""NATS-backed Atlas task worker."""
+"""NATS-backed Atlas runtime worker."""
 
 from __future__ import annotations
 
@@ -107,12 +107,12 @@ async def run() -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
-    worker_id = get_optional("ATLAS_WORKER_ID") or f"{os.uname().nodename}:{os.getpid()}"
-    capacity = get_int("ATLAS_WORKER_CONCURRENCY")
+    worker_id = get_optional("ATLAS_RUNTIME_WORKER_ID") or f"{os.uname().nodename}:{os.getpid()}"
+    capacity = get_int("ATLAS_RUNTIME_WORKER_CONCURRENCY")
     metrics_server = None
     if get_bool("ATLAS_METRICS_ENABLED"):
         metrics_server, _metrics_thread = start_http_server(
-            get_int("ATLAS_METRICS_PORT"),
+            get_int("ATLAS_RUNTIME_WORKER_METRICS_PORT"),
             addr=get_str("ATLAS_METRICS_HOST"),
         )
     client = await connect_nats()
@@ -134,7 +134,7 @@ async def run() -> None:
                 await run_scheduler_once(SessionLocal, limit=get_int("ATLAS_SCHEDULER_BATCH_SIZE"))
             except Exception:
                 pass
-            await asyncio.sleep(max(0.5, get_float("ATLAS_WORKER_POLL_SECONDS")))
+            await asyncio.sleep(max(0.5, get_float("ATLAS_RUNTIME_WORKER_POLL_SECONDS")))
 
     presence_task = asyncio.create_task(presence())
     scheduler_task = asyncio.create_task(schedule())
@@ -162,7 +162,7 @@ async def run() -> None:
 
 
 def main() -> None:
-    argparse.ArgumentParser(description="Run the Atlas NATS task worker.").parse_args()
+    argparse.ArgumentParser(description="Run the Atlas runtime worker.").parse_args()
     asyncio.run(run())
 
 

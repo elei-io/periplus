@@ -17,7 +17,7 @@ layer, or abstraction.
 - Crawl history belongs only in DuckLake; never reintroduce it into control-plane Postgres.
 - Raw HTML is immutable, content-addressed, and stored through `backend/repository/`.
 - `crawl` is the only page-acquisition chokepoint. Other actions compose it.
-- Task workers publish frozen ingestion jobs; only the repository ingestor writes DuckLake.
+- Runtime workers publish frozen ingestion jobs; only the repository worker writes DuckLake.
 - DuckLake owns analytical Parquet layout and compaction. Do not create permanent per-crawl files.
 - Browser concurrency is bounded per worker; replica count determines deployment-wide capacity.
 - API and CLI code validate and adapt. Business behavior belongs in actions, tasks, and repository

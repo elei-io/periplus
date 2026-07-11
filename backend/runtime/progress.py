@@ -30,10 +30,6 @@ def _retention_seconds(value: str | None = None) -> float:
     return amount * {"ms": 0.001, "s": 1, "m": 60, "h": 3600}[match.group(2)]
 
 
-def _nats_url() -> str:
-    return get_str("NATS_URL")
-
-
 def _subject(run_id: UUID) -> str:
     return f"atlas.task-runs.{run_id}.progress"
 
@@ -44,7 +40,7 @@ async def _ignore_connection_error(_exc: Exception) -> None:
 
 async def _connect_nats():
     return await nats.connect(
-        _nats_url(),
+        get_str("NATS_URL"),
         error_cb=_ignore_connection_error,
         allow_reconnect=False,
         max_reconnect_attempts=1,

@@ -7,7 +7,7 @@ CLI / web
     |
 FastAPI -- definitions --------------------------> Postgres
     |
-    +-- frozen task run --> JetStream/KV --> task worker
+    +-- frozen task run --> JetStream/KV --> runtime worker
                                               |
                                            action
                                               |
@@ -18,7 +18,7 @@ FastAPI -- definitions --------------------------> Postgres
        immutable HTML.zst                              frozen ingestion job
        filesystem or S3                                      JetStream
                                                                   |
-                                                        repository ingestor
+                                                         repository worker
                                                                   |
                                                               DuckLake
 ```
@@ -55,7 +55,7 @@ replicas adds deployment capacity.
 `crawl` is the only page-acquisition primitive. Search, index, schema generation, and extraction
 compose it rather than creating their own browser paths.
 
-For a captured page, the task worker:
+For a captured page, the runtime worker:
 
 1. Normalizes the request and acquires the page under a bounded local permit.
 2. Hashes the raw UTF-8 HTML and stores compressed content idempotently under
@@ -63,7 +63,7 @@ For a captured page, the task worker:
 3. Publishes a frozen ingestion job containing repository-relative identity and provenance.
 4. Waits for durable ingestion state; an inbox reply may reduce latency but is not authoritative.
 
-The repository ingestor is the only runtime DuckLake writer. It verifies the raw object, builds a
+The repository worker is the only runtime DuckLake writer. It verifies the raw object, builds a
 bounded page-local DOM staging file, commits document/crawl/element microbatches, records the
 result, acknowledges the message, and removes staging. Redelivery is safe because identities and
 writes are idempotent.
@@ -105,7 +105,7 @@ requires evidence that the current primitive is insufficient.
 - `backend/db/` owns Postgres infrastructure and migrations.
 
 Docker Compose starts Postgres, applies migrations, creates and bootstraps the separate DuckLake
-metadata database, starts NATS, then runs the API, task worker, and repository ingestor. Disk is the
+metadata database, starts NATS, then runs the API, runtime worker, and repository worker. Disk is the
 default repository backend; the optional S3 profile uses MinIO locally.
 
 ## Exact contracts

@@ -1,4 +1,4 @@
-.PHONY: sync check catalogue-bootstrap catalogue-check catalogue-test-postgres repository-test-s3 api ingestor cli db-upgrade db-revision compose-up compose-down
+.PHONY: sync check catalogue-bootstrap catalogue-check catalogue-test-postgres repository-test-s3 api runtime-worker repository-worker cli db-upgrade db-revision compose-up compose-down
 
 sync:
 	cd backend && uv sync
@@ -24,8 +24,11 @@ repository-test-s3:
 api:
 	cd backend && uv run fastapi dev api/app.py
 
-ingestor:
-	cd backend && uv run python -m repository.ingestion.worker
+runtime-worker:
+	cd backend && uv run python -m runtime.worker
+
+repository-worker:
+	cd backend && uv run python -m repository.worker
 
 cli:
 	cd backend && uv run atlas --help

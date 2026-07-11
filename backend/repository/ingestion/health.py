@@ -1,4 +1,4 @@
-"""Live readiness state and HTTP endpoint for the repository ingestor."""
+"""Live readiness state and HTTP endpoint for the repository worker."""
 
 from __future__ import annotations
 
@@ -72,13 +72,13 @@ def start_health_server(
     port: int,
     monitor: HealthMonitor,
 ) -> tuple[ThreadingHTTPServer, threading.Thread]:
-    """Start the ingestor readiness endpoint backed by live worker state."""
+    """Start the repository-worker readiness endpoint backed by live state."""
 
     server = _HealthServer((address, port), _HealthHandler)
     server.monitor = monitor
     thread = threading.Thread(
         target=server.serve_forever,
-        name="atlas-ingestor-health",
+        name="atlas-repository-worker-health",
         daemon=True,
     )
     thread.start()

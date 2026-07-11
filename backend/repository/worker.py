@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import signal
@@ -73,18 +74,18 @@ async def run() -> None:
     metrics_server = None
     if get_bool("ATLAS_METRICS_ENABLED"):
         metrics_server, _metrics_thread = start_http_server(
-            get_int("ATLAS_INGESTOR_METRICS_PORT"),
+            get_int("ATLAS_REPOSITORY_WORKER_METRICS_PORT"),
             addr=get_str("ATLAS_METRICS_HOST"),
         )
     health_monitor = HealthMonitor(
         heartbeat_timeout_seconds=float(
-            get_str("ATLAS_INGESTOR_HEALTH_HEARTBEAT_TIMEOUT_SECONDS")
+            get_str("ATLAS_REPOSITORY_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS")
         )
     )
     health_monitor.dependencies_ready()
     health_server, _health_thread = start_health_server(
-        address=get_str("ATLAS_INGESTOR_HEALTH_HOST"),
-        port=get_int("ATLAS_INGESTOR_HEALTH_PORT"),
+        address=get_str("ATLAS_REPOSITORY_WORKER_HEALTH_HOST"),
+        port=get_int("ATLAS_REPOSITORY_WORKER_HEALTH_PORT"),
         monitor=health_monitor,
     )
     health_heartbeat_task = asyncio.create_task(_health_heartbeat(health_monitor))
@@ -238,6 +239,7 @@ async def run() -> None:
 
 
 def main() -> None:
+    argparse.ArgumentParser(description="Run the Atlas repository worker.").parse_args()
     logging.basicConfig(
         level=get_str("ATLAS_LOG_LEVEL"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -467,8 +469,8 @@ async def _health_heartbeat(monitor: HealthMonitor) -> None:
 
 
 async def _dependency_probe(client, ingestor, monitor: HealthMonitor) -> None:
-    interval = get_float("ATLAS_INGESTOR_HEALTH_PROBE_INTERVAL_SECONDS")
-    timeout = get_float("ATLAS_INGESTOR_HEALTH_PROBE_TIMEOUT_SECONDS")
+    interval = get_float("ATLAS_REPOSITORY_WORKER_HEALTH_PROBE_INTERVAL_SECONDS")
+    timeout = get_float("ATLAS_REPOSITORY_WORKER_HEALTH_PROBE_TIMEOUT_SECONDS")
     if interval <= 0 or timeout <= 0:
         monitor.dependencies_unavailable(
             "repository health probe intervals must be greater than zero"

@@ -35,8 +35,8 @@ Extract a shared abstraction when a second active caller proves the common contr
 
 ## Storage mistakes
 
-**Letting task workers write DuckLake.** Concurrent catalogue writers complicate correctness and
-operations. Workers store raw evidence and publish; the repository ingestor is the single writer.
+**Letting runtime workers write DuckLake.** Concurrent catalogue writers complicate correctness and
+operations. Runtime workers store raw evidence and publish; the repository worker is the single writer.
 
 **Creating permanent Parquet per crawl.** Small files and application-owned layout fight DuckLake
 compaction. Use bounded temporary staging and let DuckLake own physical data files.

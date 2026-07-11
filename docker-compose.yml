@@ -58,28 +58,28 @@ services:
       atlas-nats:
         condition: service_healthy
 
-  atlas-worker:
+  atlas-runtime-worker:
     build:
       context: .
       dockerfile: docker/atlas/Dockerfile
     image: atlas-backend:local
     working_dir: /app/backend
-    command: python -m runtime.workers
+    command: python -m runtime.worker
     volumes:
       - .:/app
       - ./.atlas/repository:/app/.atlas/repository
     expose:
       - "9090"
     environment:
-      ATLAS_WORKER_POLL_SECONDS: ${ATLAS_WORKER_POLL_SECONDS:-5}
+      ATLAS_RUNTIME_WORKER_POLL_SECONDS: ${ATLAS_RUNTIME_WORKER_POLL_SECONDS:-5}
       ATLAS_TASK_RUN_TIMEOUT_SECONDS: ${ATLAS_TASK_RUN_TIMEOUT_SECONDS:-1800}
       ATLAS_SCHEDULER_BATCH_SIZE: ${ATLAS_SCHEDULER_BATCH_SIZE:-20}
-      ATLAS_WORKER_ID: ${ATLAS_WORKER_ID:-}
-      ATLAS_WORKER_CONCURRENCY: ${ATLAS_WORKER_CONCURRENCY:-4}
+      ATLAS_RUNTIME_WORKER_ID: ${ATLAS_RUNTIME_WORKER_ID:-}
+      ATLAS_RUNTIME_WORKER_CONCURRENCY: ${ATLAS_RUNTIME_WORKER_CONCURRENCY:-4}
       ATLAS_TASK_STREAM_REPLICAS: ${ATLAS_TASK_STREAM_REPLICAS:-1}
       ATLAS_TASK_ACK_WAIT_SECONDS: ${ATLAS_TASK_ACK_WAIT_SECONDS:-60}
       ATLAS_TASK_RUN_STATE_MAX_BYTES: ${ATLAS_TASK_RUN_STATE_MAX_BYTES:-268435456}
-      ATLAS_WORKER_PRESENCE_TTL_SECONDS: ${ATLAS_WORKER_PRESENCE_TTL_SECONDS:-30}
+      ATLAS_RUNTIME_WORKER_PRESENCE_TTL_SECONDS: ${ATLAS_RUNTIME_WORKER_PRESENCE_TTL_SECONDS:-30}
       ATLAS_CRAWL_CONCURRENCY_PER_RUN: ${ATLAS_CRAWL_CONCURRENCY_PER_RUN:-3}
       ATLAS_BROWSER_CONCURRENCY: ${ATLAS_BROWSER_CONCURRENCY:-12}
       ATLAS_CRAWL_PERMIT_TIMEOUT_SECONDS: ${ATLAS_CRAWL_PERMIT_TIMEOUT_SECONDS:-120}
@@ -122,7 +122,7 @@ services:
       ATLAS_LOG_LEVEL: ${ATLAS_LOG_LEVEL:-INFO}
       ATLAS_METRICS_ENABLED: ${ATLAS_METRICS_ENABLED:-true}
       ATLAS_METRICS_HOST: ${ATLAS_METRICS_HOST:-0.0.0.0}
-      ATLAS_METRICS_PORT: ${ATLAS_METRICS_PORT:-9090}
+      ATLAS_RUNTIME_WORKER_METRICS_PORT: ${ATLAS_RUNTIME_WORKER_METRICS_PORT:-9090}
       ATLAS_EXTRACT_MAX_ATTEMPTS: ${ATLAS_EXTRACT_MAX_ATTEMPTS:-2}
       DATABASE_URL: postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}
       NATS_URL: nats://atlas-nats:4222
@@ -141,16 +141,16 @@ services:
         condition: service_completed_successfully
       atlas-nats:
         condition: service_healthy
-      atlas-ingestor:
+      atlas-repository-worker:
         condition: service_healthy
 
-  atlas-ingestor:
+  atlas-repository-worker:
     build:
       context: .
       dockerfile: docker/atlas/Dockerfile
     image: atlas-backend:local
     working_dir: /app/backend
-    command: python -m repository.ingestion.worker
+    command: python -m repository.worker
     volumes:
       - .:/app
       - ./.atlas/repository:/app/.atlas/repository
@@ -207,9 +207,9 @@ services:
       ATLAS_LOG_LEVEL: ${ATLAS_LOG_LEVEL:-INFO}
       ATLAS_METRICS_ENABLED: ${ATLAS_METRICS_ENABLED:-true}
       ATLAS_METRICS_HOST: ${ATLAS_METRICS_HOST:-0.0.0.0}
-      ATLAS_INGESTOR_METRICS_PORT: ${ATLAS_INGESTOR_METRICS_PORT:-9091}
-      ATLAS_INGESTOR_HEALTH_HOST: 0.0.0.0
-      ATLAS_INGESTOR_HEALTH_PORT: 9092
+      ATLAS_REPOSITORY_WORKER_METRICS_PORT: ${ATLAS_REPOSITORY_WORKER_METRICS_PORT:-9091}
+      ATLAS_REPOSITORY_WORKER_HEALTH_HOST: 0.0.0.0
+      ATLAS_REPOSITORY_WORKER_HEALTH_PORT: 9092
     depends_on:
       atlas-catalogue-bootstrap:
         condition: service_completed_successfully

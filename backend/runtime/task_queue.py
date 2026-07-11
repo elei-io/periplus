@@ -79,10 +79,10 @@ async def ensure_task_storage(jetstream):
         await jetstream.stream_info(TASK_STREAM)
     except NotFoundError:
         await jetstream.add_stream(config=stream)
-    consumer = ConsumerConfig(durable_name=TASK_CONSUMER, ack_policy=AckPolicy.EXPLICIT, ack_wait=get_float("ATLAS_TASK_ACK_WAIT_SECONDS"), filter_subject=TASK_SUBJECT, max_ack_pending=get_int("ATLAS_WORKER_CONCURRENCY"), max_deliver=-1)
+    consumer = ConsumerConfig(durable_name=TASK_CONSUMER, ack_policy=AckPolicy.EXPLICIT, ack_wait=get_float("ATLAS_TASK_ACK_WAIT_SECONDS"), filter_subject=TASK_SUBJECT, max_ack_pending=get_int("ATLAS_RUNTIME_WORKER_CONCURRENCY"), max_deliver=-1)
     await jetstream.add_consumer(TASK_STREAM, config=consumer)
     runs = await _bucket(jetstream, KeyValueConfig(bucket=RUNS_BUCKET, description="Current Atlas task-run state", history=1, max_bytes=get_int("ATLAS_TASK_RUN_STATE_MAX_BYTES"), storage=StorageType.FILE, replicas=get_int("ATLAS_TASK_STREAM_REPLICAS")))
-    workers = await _bucket(jetstream, KeyValueConfig(bucket=WORKERS_BUCKET, description="Ephemeral Atlas task-worker presence", history=1, ttl=get_float("ATLAS_WORKER_PRESENCE_TTL_SECONDS"), storage=StorageType.FILE, replicas=get_int("ATLAS_TASK_STREAM_REPLICAS")))
+    workers = await _bucket(jetstream, KeyValueConfig(bucket=WORKERS_BUCKET, description="Ephemeral Atlas task-worker presence", history=1, ttl=get_float("ATLAS_RUNTIME_WORKER_PRESENCE_TTL_SECONDS"), storage=StorageType.FILE, replicas=get_int("ATLAS_TASK_STREAM_REPLICAS")))
     return runs, workers
 
 
