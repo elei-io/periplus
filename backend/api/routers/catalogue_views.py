@@ -63,6 +63,7 @@ def create(payload: CatalogueViewCreate, session: Annotated[Session, Depends(get
                 sql=payload.sql,
                 display_name=payload.display_name,
                 description=payload.description,
+                created_from_query_revision_id=payload.created_from_query_revision_id,
             )
     except (CatalogueViewError, CatalogueQueryError, duckdb.Error) as exc:
         _raise_mutation_error(exc)

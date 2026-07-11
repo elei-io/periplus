@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import {
   Clock3Icon,
   DatabaseIcon,
@@ -7,17 +7,20 @@ import {
   SparklesIcon,
   TriangleAlertIcon,
   ViewIcon,
+  SaveIcon,
 } from "lucide-react"
 
 import { CatalogueResultsTable } from "@/components/catalogue/catalogue-results-table"
 import { catalogueTables } from "@/components/catalogue/catalogue-schema"
 import { SqlEditor } from "@/components/catalogue/sql-editor"
 import { SaveViewDialog } from "@/components/catalogue/save-view-dialog"
+import { SaveQueryDialog } from "@/components/catalogue/save-query-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { useCatalogueQuery } from "@/hooks/use-catalogue-query"
 import { useCatalogueLint } from "@/hooks/use-catalogue-lint"
 import { useCatalogueViews } from "@/hooks/use-catalogue-views"
+import { useSavedQuery } from "@/hooks/use-saved-queries"
 import {
   Tooltip,
   TooltipContent,
@@ -42,13 +45,30 @@ const examples = [
 ]
 
 export function CatalogueSqlPage() {
+  const params = new URLSearchParams(window.location.search)
+  const [savedQueryId, setSavedQueryId] = useState<string | null>(
+    params.get("query")
+  )
+  const [requestedRevision, setRequestedRevision] = useState<number | null>(
+    Number(params.get("revision") || "") || null
+  )
+  const savedQuery = useSavedQuery(savedQueryId)
   const [query, setQuery] = useState(initialSql)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [elapsed, setElapsed] = useState<number | null>(null)
   const [saveViewOpen, setSaveViewOpen] = useState(false)
+  const [saveQueryOpen, setSaveQueryOpen] = useState(false)
   const catalogueQuery = useCatalogueQuery()
   const catalogueLint = useCatalogueLint(query)
   const catalogueViews = useCatalogueViews()
+
+  useEffect(() => {
+    if (!savedQuery.data) return
+    const revision = requestedRevision
+      ? savedQuery.data.revisions.find((item) => item.revision === requestedRevision)
+      : null
+    setQuery(revision?.sql ?? savedQuery.data.sql)
+  }, [savedQuery.data, requestedRevision])
 
   function execute() {
     if (!query.trim() || catalogueQuery.isPending) return
@@ -65,8 +85,21 @@ export function CatalogueSqlPage() {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto">
       <section className="sql-workbench overflow-hidden rounded-xl border bg-card shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-muted/20 px-4 py-3">
+        <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 border-b bg-card/95 px-4 py-3 backdrop-blur">
           <div className="flex items-center gap-2">
+            {savedQuery.data && (
+              <Badge variant="secondary">
+                {savedQuery.data.name} · v{savedQuery.data.current_revision}
+              </Badge>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setSaveQueryOpen(true)}
+              disabled={!query.trim()}
+            >
+              <SaveIcon /> {savedQuery.data ? "Save revision" : "Save query"}
+            </Button>
             <div className="flex size-7 items-center justify-center rounded-md bg-primary/10 text-primary">
               <DatabaseIcon className="size-3.5" />
             </div>
@@ -154,7 +187,23 @@ export function CatalogueSqlPage() {
           </span>
         </div>
       </section>
-      <SaveViewDialog open={saveViewOpen} onOpenChange={setSaveViewOpen} sql={query} />
+      <SaveQueryDialog
+        open={saveQueryOpen}
+        onOpenChange={setSaveQueryOpen}
+        sql={query}
+        query={savedQuery.data ?? null}
+        onSaved={(saved) => {
+          setSavedQueryId(saved.id)
+          setRequestedRevision(null)
+          window.history.replaceState(null, "", `/catalogue/sql?query=${saved.id}`)
+        }}
+      />
+      <SaveViewDialog
+        open={saveViewOpen}
+        onOpenChange={setSaveViewOpen}
+        sql={query}
+        queryRevisionId={savedQuery.data?.current_revision_id}
+      />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
         <div className="flex min-h-5 items-center gap-3 text-[11px] text-muted-foreground">
           {catalogueQuery.data ? (

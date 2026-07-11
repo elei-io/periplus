@@ -57,7 +57,7 @@ export function SqlEditor({ value, onChange, onRun, views = [] }: SqlEditorProps
     <CodeMirror
       aria-label="Catalogue SQL editor"
       value={value}
-      height="280px"
+      height="clamp(240px, 38vh, 360px)"
       theme="none"
       extensions={extensions}
       onChange={onChange}

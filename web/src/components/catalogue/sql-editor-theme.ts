@@ -22,7 +22,6 @@ export const sqlSyntaxHighlighting = syntaxHighlighting(sqlHighlightStyle)
 export const sqlEditorTheme = Prec.highest(
   EditorView.theme({
     "&": {
-      height: "100%",
       backgroundColor: "transparent",
       color: "var(--card-foreground)",
       fontSize: "13px",

@@ -28,6 +28,32 @@ export type CatalogueViewRecord = {
   available: boolean
   created_at: string | null
   updated_at: string | null
+  created_from_query_revision_id: string | null
 }
 
 export type CatalogueViewList = { items: CatalogueViewRecord[] }
+
+export type SavedQueryRevision = {
+  id: string
+  query_id: string
+  revision: number
+  sql: string
+  sql_hash: string
+  change_note: string | null
+  created_at: string
+}
+
+export type SavedQuery = {
+  id: string
+  name: string
+  description: string | null
+  current_revision_id: string
+  current_revision: number
+  sql: string
+  archived_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type SavedQueryDetail = SavedQuery & { revisions: SavedQueryRevision[] }
+export type SavedQueryList = { items: SavedQuery[]; total: number }

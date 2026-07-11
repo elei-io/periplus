@@ -7,6 +7,7 @@ from config import get_float, get_int
 from api.routers import (
     calibrate,
     catalogue,
+    catalogue_queries,
     catalogue_views,
     crawl,
     crawl_policies,
@@ -41,6 +42,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Atlas API", lifespan=lifespan)
 app.include_router(calibrate.router)
 app.include_router(catalogue.router)
+app.include_router(catalogue_queries.router)
 app.include_router(catalogue_views.router)
 app.include_router(data_schemas.router)
 app.include_router(extract.router)

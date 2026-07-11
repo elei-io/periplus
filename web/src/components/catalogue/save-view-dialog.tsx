@@ -14,7 +14,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { useCreateCatalogueView } from "@/hooks/use-catalogue-views"
 
-export function SaveViewDialog({ open, onOpenChange, sql }: { open: boolean; onOpenChange: (open: boolean) => void; sql: string }) {
+export function SaveViewDialog({ open, onOpenChange, sql, queryRevisionId }: { open: boolean; onOpenChange: (open: boolean) => void; sql: string; queryRevisionId?: string }) {
   const [name, setName] = useState("")
   const [displayName, setDisplayName] = useState("")
   const [description, setDescription] = useState("")
@@ -29,7 +29,7 @@ export function SaveViewDialog({ open, onOpenChange, sql }: { open: boolean; onO
 
   function submit() {
     create.mutate(
-      { name, display_name: displayName || undefined, description: description || undefined, sql },
+      { name, display_name: displayName || undefined, description: description || undefined, sql, created_from_query_revision_id: queryRevisionId },
       { onSuccess: () => onOpenChange(false) }
     )
   }

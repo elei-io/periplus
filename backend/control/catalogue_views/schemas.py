@@ -11,6 +11,7 @@ class CatalogueViewCreate(BaseModel):
     display_name: str | None = Field(default=None, max_length=200)
     description: str | None = Field(default=None, max_length=2_000)
     sql: str = Field(min_length=1, max_length=100_000)
+    created_from_query_revision_id: UUID | None = None
 
 
 class CatalogueViewUpdate(BaseModel):
@@ -44,6 +45,7 @@ class CatalogueViewRecord(BaseModel):
     available: bool
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    created_from_query_revision_id: UUID | None = None
 
 
 class CatalogueViewListResponse(BaseModel):

@@ -22,7 +22,7 @@ export function useCatalogueViews() {
 export function useCreateCatalogueView() {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: (input: { name: string; display_name?: string; description?: string; sql: string }) =>
+    mutationFn: (input: { name: string; display_name?: string; description?: string; sql: string; created_from_query_revision_id?: string }) =>
       json<CatalogueViewRecord>("/catalogue/views/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

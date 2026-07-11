@@ -42,11 +42,12 @@ def get_record(session: Session, store: CatalogueViewStore, reference_id: UUID) 
     return _record(view, reference) if view is not None else _missing_record(reference)
 
 
-def create_reference(session: Session, store: CatalogueViewStore, *, name: str, sql: str, display_name: str | None, description: str | None) -> CatalogueViewRecord:
+def create_reference(session: Session, store: CatalogueViewStore, *, name: str, sql: str, display_name: str | None, description: str | None, created_from_query_revision_id: UUID | None = None) -> CatalogueViewRecord:
     view = store.create(name=name, sql=sql)
     reference = _new_or_revived_reference(
         session, view, display_name=display_name, description=description
     )
+    reference.created_from_query_revision_id = created_from_query_revision_id
     try:
         session.flush()
     except IntegrityError as exc:
@@ -109,6 +110,7 @@ def _record(view: DuckLakeView, reference: CatalogueViewReference | None) -> Cat
         available=True,
         created_at=reference.created_at if reference else None,
         updated_at=reference.updated_at if reference else None,
+        created_from_query_revision_id=(reference.created_from_query_revision_id if reference else None),
     )
 
 
@@ -127,6 +129,7 @@ def _missing_record(reference: CatalogueViewReference) -> CatalogueViewRecord:
         available=False,
         created_at=reference.created_at,
         updated_at=reference.updated_at,
+        created_from_query_revision_id=reference.created_from_query_revision_id,
     )
 
 

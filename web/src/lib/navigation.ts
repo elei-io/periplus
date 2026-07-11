@@ -3,6 +3,7 @@ import {
   ClipboardListIcon,
   DatabaseIcon,
   FileSearchIcon,
+  FileCode2Icon,
   FlaskConicalIcon,
   ListFilterIcon,
   SearchIcon,
@@ -25,6 +26,13 @@ export const navigationGroups: NavigationGroup[] = [
         icon: TablePropertiesIcon,
         title: "Catalogue SQL",
         description: "Run read-only SQL and inspect Arrow results.",
+      },
+      {
+        name: "Queries",
+        href: "/catalogue/queries",
+        icon: FileCode2Icon,
+        title: "Saved Queries",
+        description: "Author SQL with immutable revision history.",
       },
       {
         name: "Views",
