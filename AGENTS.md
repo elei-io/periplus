@@ -7,6 +7,11 @@ layer, or abstraction.
 
 ## Non-negotiable boundaries
 
+- Atlas is 100% greenfield. Do not add backwards-compatibility shims, legacy aliases, dual
+  reads/writes, fallback routes, deprecated environment variables, or migration bridges. Change
+  the contract directly and delete the superseded path. Prefer resetting disposable development
+  state over carrying compatibility code unless the user explicitly requires a real data
+  migration.
 - Postgres is the control plane: editable tasks, schedules, policies, matches, and schemas.
 - NATS JetStream/KV owns queued work and current task-run, worker, progress, and ingestion state.
 - Crawl history belongs only in DuckLake; never reintroduce it into control-plane Postgres.
