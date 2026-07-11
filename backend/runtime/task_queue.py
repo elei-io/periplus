@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 import nats
 from config import get_float, get_int, get_str
 from nats.js.api import AckPolicy, ConsumerConfig, KeyValueConfig, RetentionPolicy, StorageType, StreamConfig
-from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError, NotFoundError
+from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError, NoKeysError, NotFoundError
 from pydantic import BaseModel, ConfigDict, Field
 
 from control.tasks.schemas import TaskPrimitive
@@ -165,7 +165,7 @@ async def update_run(bucket, run_id: UUID, mutate) -> TaskRunState:
 async def list_runs(bucket) -> list[TaskRunState]:
     try:
         keys = await bucket.keys()
-    except (KeyNotFoundError, KeyDeletedError):
+    except (KeyNotFoundError, KeyDeletedError, NoKeysError):
         return []
     values = []
     for key in keys:
