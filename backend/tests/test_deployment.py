@@ -41,3 +41,12 @@ class DeploymentTests(TestCase):
             manager.mock_calls,
             [call.ensure(), call.migrate(), call.bootstrap()],
         )
+
+    @patch("deployment.command.upgrade")
+    def test_migrations_use_packaged_configuration(self, upgrade) -> None:
+        deployment.migrate_control_database()
+
+        config, revision = upgrade.call_args.args
+        self.assertIsNone(config.config_file_name)
+        self.assertEqual(revision, "head")
+        self.assertTrue(config.get_main_option("script_location").endswith("db/alembic"))

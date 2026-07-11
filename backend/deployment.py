@@ -41,7 +41,7 @@ def ensure_catalogue_database() -> None:
 
 
 def migrate_control_database() -> None:
-    config = Config(str(_BACKEND_ROOT / "db" / "alembic.ini"))
+    config = Config()
     config.set_main_option("script_location", str(_BACKEND_ROOT / "db" / "alembic"))
     command.upgrade(config, "head")
 
