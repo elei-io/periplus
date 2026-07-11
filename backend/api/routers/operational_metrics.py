@@ -9,6 +9,7 @@ from observability.operations import SUPPORTED_WINDOWS, collect_operations_metri
 from observability.prometheus import api_metrics_payload
 from observability.prometheus_source import collect_prometheus_metrics
 from observability.schemas import OperationsMetricsResponse
+from tasks.service import all_task_runs, task_operations
 
 router = APIRouter(tags=["operations"])
 
@@ -19,7 +20,7 @@ def prometheus_metrics() -> Response:
 
 
 @router.get("/operations/metrics", response_model=OperationsMetricsResponse)
-def operations_metrics(
+async def operations_metrics(
     session: Annotated[Session, Depends(get_session)],
     window_seconds: Annotated[int, Query()] = 21600,
 ) -> OperationsMetricsResponse:
@@ -28,7 +29,12 @@ def operations_metrics(
             status_code=422,
             detail=f"window_seconds must be one of {sorted(SUPPORTED_WINDOWS)}.",
         )
-    snapshot = collect_operations_metrics(session, window_seconds=window_seconds)
+    snapshot = collect_operations_metrics(
+        session,
+        window_seconds=window_seconds,
+        task_runs=await all_task_runs(),
+        task_summary=await task_operations(),
+    )
     session.commit()
     return snapshot.model_copy(
         update={"prometheus": collect_prometheus_metrics(window_seconds)}

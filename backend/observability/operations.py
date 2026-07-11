@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy.orm import Session
 
 from repository.ducklake import Catalogue, CatalogueService, catalogue_config_from_env
+from tasks.queue import TaskRunState
+from tasks.schemas import TaskOperationsRecord
 
 from .cluster import collect_cluster_metrics
 from .schemas import (
@@ -34,23 +36,31 @@ def collect_operations_metrics(
     session: Session,
     *,
     window_seconds: int,
+    task_runs: list[TaskRunState] | None = None,
+    task_summary: TaskOperationsRecord | None = None,
 ) -> OperationsMetricsResponse:
     if window_seconds not in SUPPORTED_WINDOWS:
         raise ValueError("Unsupported metrics window.")
     now = datetime.now(UTC)
     cutoff = now - timedelta(seconds=window_seconds)
     cluster = collect_cluster_metrics(session, now=now)
+    task_runs = task_runs or []
 
     task_statuses: dict[str, dict[str, int]] = {}
+    for run in task_runs:
+        if run.finished_at is not None and run.finished_at >= cutoff:
+            statuses = task_statuses.setdefault(run.primitive, {})
+            statuses[run.status] = statuses.get(run.status, 0) + 1
 
     task_states: list[TaskStateMetrics] = []
-    for state in cluster.tasks:
-        statuses = task_statuses.get(state.primitive, {})
+    primitives = {state.primitive for state in cluster.tasks} | {run.primitive for run in task_runs}
+    for primitive in sorted(primitives):
+        statuses = task_statuses.get(primitive, {})
         task_states.append(
             TaskStateMetrics(
-                primitive=state.primitive,
-                queued=state.queued,
-                running=state.running,
+                primitive=primitive,
+                queued=sum(run.primitive == primitive and run.status == "queued" for run in task_runs),
+                running=sum(run.primitive == primitive and run.status == "running" for run in task_runs),
                 succeeded=statuses.get("succeeded", 0),
                 failed=statuses.get("failed", 0),
                 cancelled=statuses.get("cancelled", 0),
@@ -63,7 +73,16 @@ def collect_operations_metrics(
     }
     terminal_runs = sum(all_statuses.values())
     decided_runs = all_statuses["succeeded"] + all_statuses["failed"]
-    queue_p50 = queue_p95 = execution_p50 = execution_p95 = 0.0
+    def percentile(values: list[float], fraction: float) -> float:
+        if not values:
+            return 0.0
+        ordered = sorted(values)
+        return ordered[min(len(ordered) - 1, round((len(ordered) - 1) * fraction))]
+
+    queue_values = [(run.started_at - run.queued_at).total_seconds() for run in task_runs if run.started_at is not None and run.started_at >= cutoff]
+    execution_values = [(run.finished_at - run.started_at).total_seconds() for run in task_runs if run.started_at is not None and run.finished_at is not None and run.finished_at >= cutoff]
+    queue_p50, queue_p95 = percentile(queue_values, 0.5), percentile(queue_values, 0.95)
+    execution_p50, execution_p95 = percentile(execution_values, 0.5), percentile(execution_values, 0.95)
 
     with Catalogue(catalogue_config_from_env()) as catalogue:
         durable_health = CatalogueService(catalogue).crawl_health_since(cutoff)
@@ -90,10 +109,10 @@ def collect_operations_metrics(
         generated_at=now,
         window_seconds=window_seconds,
         cluster=ClusterOperationsMetrics(
-            workers_live=cluster.workers_live,
-            workers_stale=cluster.workers_stale,
-            worker_capacity=cluster.worker_capacity,
-            worker_active_runs=cluster.worker_active_runs,
+            workers_live=len(task_summary.workers) if task_summary is not None else 0,
+            workers_stale=task_summary.stale_workers if task_summary is not None else 0,
+            worker_capacity=sum(worker.capacity for worker in task_summary.workers) if task_summary is not None else 0,
+            worker_active_runs=sum(worker.active_run_count for worker in task_summary.workers) if task_summary is not None else 0,
             oldest_live_worker_heartbeat_age_seconds=(
                 cluster.oldest_live_worker_heartbeat_age_seconds
             ),

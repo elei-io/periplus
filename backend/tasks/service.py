@@ -300,7 +300,7 @@ async def _nats():
     return client, jetstream, runs, workers
 
 
-async def _all_runs() -> list[TaskRunState]:
+async def all_task_runs() -> list[TaskRunState]:
     client, _jetstream, runs, _workers = await _nats()
     try:
         return await list_runs(runs)
@@ -311,12 +311,12 @@ async def _all_runs() -> list[TaskRunState]:
 async def list_task_runs(session: Session, task_id: UUID, limit: int = 100, offset: int = 0) -> list[TaskRunRecord]:
     if session.get(Task, task_id) is None:
         raise TaskNotFoundError(f"Task {task_id} was not found.")
-    values = sorted((run for run in await _all_runs() if run.task_id == task_id), key=lambda run: run.queued_at, reverse=True)
+    values = sorted((run for run in await all_task_runs() if run.task_id == task_id), key=lambda run: run.queued_at, reverse=True)
     return [_run_record(run) for run in values[offset:offset + limit]]
 
 
 async def list_recent_task_runs(primitive: TaskPrimitive, terminal_limit: int = 3) -> list[TaskRunRecord]:
-    values = [run for run in await _all_runs() if run.primitive == primitive]
+    values = [run for run in await all_task_runs() if run.primitive == primitive]
     active = sorted((run for run in values if run.status in _ACTIVE_RUN_STATUSES), key=lambda run: run.queued_at, reverse=True)
     terminal = sorted((run for run in values if run.status not in _ACTIVE_RUN_STATUSES), key=lambda run: run.finished_at or run.queued_at, reverse=True)[:terminal_limit]
     return [_run_record(run) for run in (*active, *terminal)]
