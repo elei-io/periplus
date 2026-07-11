@@ -33,6 +33,7 @@ class CatalogueBatchEntry:
 
 @dataclass(frozen=True, slots=True)
 class CompactionResult:
+    schema_name: str
     table_name: str
     eligible_files: int
     eligible_bytes: int
@@ -62,6 +63,8 @@ class CatalogueService:
         maximum_input_file_bytes: int,
         target_file_bytes: int,
         maximum_compacted_files: int,
+        maximum_operation_bytes: int = 256 * 1024 * 1024,
+        cleanup_older_than_seconds: int = 7 * 24 * 60 * 60,
     ) -> list[CompactionResult]:
         """Merge small files in bounded table-level operations when thresholds are met."""
 
@@ -70,6 +73,8 @@ class CatalogueService:
             ("maximum_input_file_bytes", maximum_input_file_bytes),
             ("target_file_bytes", target_file_bytes),
             ("maximum_compacted_files", maximum_compacted_files),
+            ("maximum_operation_bytes", maximum_operation_bytes),
+            ("cleanup_older_than_seconds", cleanup_older_than_seconds),
         ):
             if value <= 0:
                 raise CatalogueValidationError(f"{name} must be greater than zero")
@@ -77,13 +82,28 @@ class CatalogueService:
             raise CatalogueValidationError(
                 "target_file_bytes must be greater than maximum_input_file_bytes"
             )
+        if target_file_bytes > maximum_operation_bytes:
+            raise CatalogueValidationError(
+                "target_file_bytes must not exceed maximum_operation_bytes"
+            )
 
         with self._write_fence():
+            # DuckLake inlines tiny writes into its metadata catalogue. Flush those
+            # accumulated rows before file compaction so Postgres does not become
+            # an unbounded data store at low ingestion rates.
+            self.catalogue.connection.execute(
+                "CALL ducklake_flush_inlined_data(?)",
+                [self.catalogue.config.alias],
+            ).fetchall()
             candidates = self._small_file_candidates(
                 maximum_input_file_bytes=maximum_input_file_bytes,
             )
             results: list[CompactionResult] = []
-            for table_name, eligible_files, eligible_bytes in candidates:
+            bounded_compactions = min(
+                maximum_compacted_files,
+                max(1, maximum_operation_bytes // target_file_bytes),
+            )
+            for schema_name, table_name, eligible_files, eligible_bytes in candidates:
                 if eligible_files < minimum_files:
                     continue
                 self.catalogue.connection.execute(
@@ -92,7 +112,7 @@ class CatalogueService:
                     [
                         self.catalogue.config.alias,
                         f"{target_file_bytes}B",
-                        self.catalogue.config.schema,
+                        schema_name,
                         table_name,
                     ],
                 )
@@ -102,13 +122,14 @@ class CatalogueService:
                     [
                         self.catalogue.config.alias,
                         table_name,
-                        self.catalogue.config.schema,
-                        maximum_compacted_files,
+                        schema_name,
+                        bounded_compactions,
                         maximum_input_file_bytes,
                     ],
                 ).fetchall()
                 results.append(
                     CompactionResult(
+                        schema_name=schema_name,
                         table_name=table_name,
                         eligible_files=eligible_files,
                         eligible_bytes=eligible_bytes,
@@ -116,24 +137,34 @@ class CatalogueService:
                         files_created=sum(int(row[3]) for row in rows),
                     )
                 )
+            # Compaction schedules superseded files for deletion. Keep a generous
+            # grace window for long reads, then reclaim only scheduled files;
+            # snapshot expiry and orphan deletion remain explicit retention actions.
+            self.catalogue.connection.execute(
+                "CALL ducklake_cleanup_old_files(?, older_than => "
+                "now() - CAST(? AS BIGINT) * INTERVAL '1 second')",
+                [self.catalogue.config.alias, cleanup_older_than_seconds],
+            ).fetchall()
             return results
 
     def _small_file_candidates(
         self,
         *,
         maximum_input_file_bytes: int,
-    ) -> list[tuple[str, int, int]]:
+    ) -> list[tuple[str, str, int, int]]:
         metadata = _quote_identifier(
             f"__ducklake_metadata_{self.catalogue.config.alias}"
         )
         rows = self.catalogue.connection.execute(
             f"""
             SELECT
+                schema_name,
                 table_name,
                 max(partition_files) AS eligible_files,
                 sum(partition_bytes) AS eligible_bytes
             FROM (
                 SELECT
+                    schema_info.schema_name,
                     table_info.table_name,
                     data_file.partition_id,
                     count(*) AS partition_files,
@@ -146,18 +177,23 @@ class CatalogueService:
                 WHERE data_file.end_snapshot IS NULL
                   AND table_info.end_snapshot IS NULL
                   AND schema_info.end_snapshot IS NULL
-                  AND schema_info.schema_name = ?
+                  AND schema_info.schema_name IN (?, 'materialized')
                   AND data_file.file_size_bytes < ?
-                GROUP BY table_info.table_name, data_file.partition_id
+                GROUP BY schema_info.schema_name, table_info.table_name, data_file.partition_id
             ) AS partitions
-            GROUP BY table_name
-            ORDER BY table_name
+            GROUP BY schema_name, table_name
+            ORDER BY schema_name, table_name
             """,
             [self.catalogue.config.schema, maximum_input_file_bytes],
         ).fetchall()
         return [
-            (str(table_name), int(eligible_files), int(eligible_bytes))
-            for table_name, eligible_files, eligible_bytes in rows
+            (
+                str(schema_name),
+                str(table_name),
+                int(eligible_files),
+                int(eligible_bytes),
+            )
+            for schema_name, table_name, eligible_files, eligible_bytes in rows
         ]
 
     def _record_crawl_batch_unfenced(
@@ -281,14 +317,14 @@ class CatalogueService:
                     [value.model_dump(mode="python") for value in new_documents.values()],
                 )
             if element_paths:
-                relation = self.catalogue.connection.read_parquet(
-                    [str(path) for path in element_paths.values()],
-                    union_by_name=True,
-                )
-                self.catalogue.lake.table.append(
-                    "elements",
-                    relation,
-                    schema_name=self.catalogue.config.schema,
+                # Keep the whole commit inside the attached DuckLake database.
+                # DuckDBPyRelation.query() creates a helper view in ``memory``;
+                # after the document append that becomes an illegal second
+                # database write in the same transaction.
+                self.catalogue.connection.execute(
+                    f"INSERT INTO {self._table('elements')} BY NAME "
+                    "SELECT * FROM read_parquet(?, union_by_name = true)",
+                    [[str(path) for path in element_paths.values()]],
                 )
             if replacement_documents:
                 self._update_projection_recipes(list(replacement_documents.values()))
@@ -298,7 +334,34 @@ class CatalogueService:
                     [_crawl_values(value) for value in new_crawls.values()],
                 )
 
-        snapshot = self.catalogue.latest_snapshot()
+            made_changes = bool(
+                new_documents
+                or element_paths
+                or replacement_documents
+                or new_crawls
+            )
+            if made_changes:
+                self.catalogue.set_commit_message(
+                    author="Atlas repository",
+                    message=f"Ingested {len(entries)} crawl operation(s)",
+                    extra={
+                        "crawl_ids": [str(entry.crawl.crawl_id) for entry in entries],
+                        "new_documents": len(new_documents),
+                        "new_crawls": len(new_crawls),
+                        "element_rows": sum(
+                            entry.document.element_count
+                            for entry in entries
+                            if entry.document is not None
+                            and entry.document.document_id in element_paths
+                        ),
+                    },
+                )
+
+        snapshot = (
+            self.catalogue.last_committed_snapshot()
+            if made_changes
+            else self.catalogue.latest_snapshot()
+        )
         if snapshot is None:
             raise CatalogueValidationError("DuckLake did not publish a repository snapshot")
         return [

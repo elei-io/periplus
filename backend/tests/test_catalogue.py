@@ -9,7 +9,14 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import UUID
 
-from ducklake_client import ColumnDef, DiskStorage, DuckDBCatalog, PostgresCatalog, S3Storage
+from ducklake_client import (
+    ColumnDef,
+    DiskStorage,
+    DuckDBCatalog,
+    DuckLakeAttachConfig,
+    PostgresCatalog,
+    S3Storage,
+)
 
 from repository.catalogue import Catalogue, CatalogueConfig, CatalogueConfigError, catalogue_config_from_env
 from repository.catalogue import CrawlRecord
@@ -35,7 +42,7 @@ class CatalogueConfigTests(unittest.TestCase):
         self.assertIsInstance(config.storage, DiskStorage)
         self.assertEqual(config.alias, "atlas")
         self.assertEqual(config.schema, "main")
-        self.assertEqual(config.attach.data_inlining_row_limit, 0)
+        self.assertEqual(config.attach.data_inlining_row_limit, 10)
         self.assertTrue(config.attach.override_data_path)
 
     def test_s3_configuration_maps_credentials_and_endpoint(self) -> None:
@@ -86,12 +93,54 @@ class CatalogueConfigTests(unittest.TestCase):
 
 
 class CatalogueBootstrapTests(unittest.TestCase):
+    def test_current_connection_snapshot_and_commit_metadata_are_available(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                with catalogue.lake.transaction():
+                    catalogue.connection.execute(
+                        "INSERT INTO atlas.main.crawls ("
+                        "crawl_id, document_id, run_id, task_id, task_revision, "
+                        "primitive, requested_url, normalized_url, final_url, page_url, "
+                        "url_scheme, url_host, url_port, url_registrable_domain, "
+                        "url_path, url_query, captured_at, status_code, duration_ms, "
+                        "input_json, input_hash, crawl_policy_id, crawl_policy_revision, "
+                        "data_schema_id, query_schema_id, warnings_json, errors_json"
+                        ") SELECT uuid(), NULL, uuid(), uuid(), 1, 'crawl', 'https://x', "
+                        "'https://x/', NULL, 'https://x/', 'https', 'x', 443, 'x', '/', "
+                        "'', now(), NULL, NULL, '{}', 'hash', NULL, NULL, NULL, NULL, "
+                        "'[]', '[\"expected failure\"]'"
+                    )
+                    catalogue.set_commit_message(
+                        author="Atlas test",
+                        message="Snapshot attribution",
+                        extra={"operation": "test"},
+                    )
+                snapshot = catalogue.last_committed_snapshot()
+                latest = catalogue.latest_snapshot()
+                metadata = catalogue.connection.execute(
+                    "SELECT author, commit_message, commit_extra_info "
+                    "FROM atlas.snapshots() WHERE snapshot_id = ?",
+                    [snapshot],
+                ).fetchone()
+
+        self.assertEqual(snapshot, latest)
+        self.assertEqual(metadata[0], "Atlas test")
+        self.assertEqual(metadata[1], "Snapshot attribution")
+        self.assertEqual(metadata[2], '{"operation":"test"}')
+
     def test_small_file_compaction_waits_for_threshold_and_merges(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = CatalogueConfig(
                 catalog=DuckDBCatalog(root / "catalog.ducklake"),
                 storage=DiskStorage(root / "lake"),
+                attach=DuckLakeAttachConfig(data_inlining_row_limit=0),
             )
             with Catalogue(config) as catalogue:
                 catalogue.bootstrap()
@@ -147,6 +196,38 @@ class CatalogueBootstrapTests(unittest.TestCase):
         self.assertEqual(compacted[0].files_processed, 4)
         self.assertEqual(compacted[0].files_created, 1)
         self.assertEqual(active_files, 1)
+
+    def test_small_file_compaction_includes_materialized_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+                attach=DuckLakeAttachConfig(data_inlining_row_limit=0),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                catalogue.connection.execute(
+                    "CREATE TABLE atlas.materialized.compact_me(value INTEGER)"
+                )
+                for index in range(4):
+                    catalogue.connection.execute(
+                        "INSERT INTO atlas.materialized.compact_me VALUES (?)",
+                        [index],
+                    )
+
+                compacted = CatalogueService(catalogue).compact_small_files(
+                    minimum_files=4,
+                    maximum_input_file_bytes=1024 * 1024,
+                    target_file_bytes=2 * 1024 * 1024,
+                    maximum_compacted_files=2,
+                )
+
+        self.assertEqual(len(compacted), 1)
+        self.assertEqual(compacted[0].schema_name, "materialized")
+        self.assertEqual(compacted[0].table_name, "compact_me")
+        self.assertEqual(compacted[0].files_processed, 4)
+        self.assertEqual(compacted[0].files_created, 1)
 
     def test_resolve_url_uses_standard_reference_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

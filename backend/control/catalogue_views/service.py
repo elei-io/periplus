@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from control.materialized_views.models import MaterializedView
 from repository.catalogue.views import CatalogueViewConflictError, CatalogueViewStore, DuckLakeView
 
 from .models import CatalogueViewReference
@@ -21,11 +22,36 @@ def list_records(session: Session, store: CatalogueViewStore) -> list[CatalogueV
             select(CatalogueViewReference).where(CatalogueViewReference.archived_at.is_(None))
         )
     )
+    materializations = list(
+        session.scalars(
+            select(MaterializedView).where(
+                MaterializedView.source_view_reference_id.in_(
+                    [reference.id for reference in references]
+                ),
+                MaterializedView.archived_at.is_(None),
+            )
+        )
+    ) if references else []
+    dependencies: dict[UUID, list[MaterializedView]] = {}
+    for materialization in materializations:
+        if materialization.source_view_reference_id is not None:
+            dependencies.setdefault(materialization.source_view_reference_id, []).append(materialization)
     by_uuid = {reference.ducklake_view_uuid: reference for reference in references}
     views = store.list()
-    records = [_record(view, by_uuid.get(view.view_uuid)) for view in views]
+    records = [
+        _record(
+            view,
+            by_uuid.get(view.view_uuid),
+            dependencies.get(by_uuid[view.view_uuid].id, []) if view.view_uuid in by_uuid else [],
+        )
+        for view in views
+    ]
     present = {view.view_uuid for view in views}
-    records.extend(_missing_record(reference) for reference in references if reference.ducklake_view_uuid not in present)
+    records.extend(
+        _missing_record(reference, dependencies.get(reference.id, []))
+        for reference in references
+        if reference.ducklake_view_uuid not in present
+    )
     return sorted(records, key=lambda item: item.qualified_name)
 
 
@@ -39,7 +65,12 @@ def get_record(session: Session, store: CatalogueViewStore, reference_id: UUID) 
     if reference is None:
         return None
     view = store.get(reference.ducklake_view_uuid)
-    return _record(view, reference) if view is not None else _missing_record(reference)
+    dependencies = _attached_materializations(session, reference.id)
+    return (
+        _record(view, reference, dependencies)
+        if view is not None
+        else _missing_record(reference, dependencies)
+    )
 
 
 def create_reference(session: Session, store: CatalogueViewStore, *, name: str, sql: str, display_name: str | None, description: str | None, created_from_query_revision_id: UUID | None = None) -> CatalogueViewRecord:
@@ -80,7 +111,7 @@ def update_reference(session: Session, store: CatalogueViewStore, reference: Cat
         reference.display_name = display_name.strip() or view.view_name
     reference.description = description
     session.flush()
-    return _record(view, reference)
+    return _record(view, reference, _attached_materializations(session, reference.id))
 
 
 def detach_reference(session: Session, reference: CatalogueViewReference) -> None:
@@ -95,7 +126,11 @@ def drop_referenced_view(session: Session, store: CatalogueViewStore, reference:
     detach_reference(session, reference)
 
 
-def _record(view: DuckLakeView, reference: CatalogueViewReference | None) -> CatalogueViewRecord:
+def _record(
+    view: DuckLakeView,
+    reference: CatalogueViewReference | None,
+    materializations: list[MaterializedView] | None = None,
+) -> CatalogueViewRecord:
     return CatalogueViewRecord(
         id=reference.id if reference else None,
         ducklake_view_uuid=view.view_uuid,
@@ -111,10 +146,14 @@ def _record(view: DuckLakeView, reference: CatalogueViewReference | None) -> Cat
         created_at=reference.created_at if reference else None,
         updated_at=reference.updated_at if reference else None,
         created_from_query_revision_id=(reference.created_from_query_revision_id if reference else None),
+        attached_materialized_views=_dependency_records(materializations or []),
     )
 
 
-def _missing_record(reference: CatalogueViewReference) -> CatalogueViewRecord:
+def _missing_record(
+    reference: CatalogueViewReference,
+    materializations: list[MaterializedView] | None = None,
+) -> CatalogueViewRecord:
     return CatalogueViewRecord(
         id=reference.id,
         ducklake_view_uuid=reference.ducklake_view_uuid,
@@ -130,7 +169,33 @@ def _missing_record(reference: CatalogueViewReference) -> CatalogueViewRecord:
         created_at=reference.created_at,
         updated_at=reference.updated_at,
         created_from_query_revision_id=reference.created_from_query_revision_id,
+        attached_materialized_views=_dependency_records(materializations or []),
     )
+
+
+def _attached_materializations(
+    session: Session, reference_id: UUID
+) -> list[MaterializedView]:
+    return list(
+        session.scalars(
+            select(MaterializedView).where(
+                MaterializedView.source_view_reference_id == reference_id,
+                MaterializedView.archived_at.is_(None),
+            )
+        )
+    )
+
+
+def _dependency_records(materializations: list[MaterializedView]) -> list[dict[str, object]]:
+    return [
+        {
+            "id": materialization.id,
+            "name": materialization.name,
+            "display_name": materialization.display_name,
+            "refresh_mode": materialization.refresh_mode,
+        }
+        for materialization in sorted(materializations, key=lambda item: item.name)
+    ]
 
 
 def _new_or_revived_reference(

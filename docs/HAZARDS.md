@@ -41,11 +41,29 @@ operations. Runtime workers store raw evidence and publish; the repository worke
 **Creating permanent Parquet per crawl.** Small files and application-owned layout fight DuckLake
 compaction. Use bounded temporary staging and let DuckLake own physical data files.
 
+**Reporting the globally latest snapshot as a write result.** Another DuckLake connection may commit
+between the local transaction and the lookup. Attribute writes with `last_committed_snapshot()` on
+the committing connection; reserve a global latest lookup for reads.
+
+**Running DuckLake `CHECKPOINT` without a retention contract.** It bundles inlined-data flushing,
+compaction, delete rewrites, snapshot expiration, scheduled-file cleanup, and orphan deletion. Atlas
+may automate bounded flushing, compaction, and aged scheduled-file cleanup, but snapshot expiration
+must be fenced by retained CDC consumer positions and orphan deletion remains an explicit operation.
+
+**Backing up DuckLake metadata and data files independently.** The Postgres catalogue identifies the
+exact files belonging to each snapshot. Production recovery needs coordinated Postgres PITR or a
+snapshot-aligned dump plus versioned/replicated object storage. Run manual file-layout maintenance
+before taking a matched backup, not between its catalogue and object-store capture points.
+
 **Separating raw-object and analytical storage selection.** The stores can silently land in
 different environments. One repository backend selection must configure both.
 
 **Exposing physical paths.** Local and DuckLake paths change across deployments. Public contracts
 use repository-relative object keys, document IDs, and crawl IDs.
+
+**Passing worker-local staging paths between services.** It works in single-host development and
+fails as soon as workers land on different nodes. Cross-process staging must use repository-relative
+keys in the configured object store, with integrity metadata verified by the writer.
 
 **Mutating content-addressed objects.** A hash identity is immutable. Different bytes under the
 same identity are a conflict, never an update.

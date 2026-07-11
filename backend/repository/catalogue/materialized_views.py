@@ -29,6 +29,9 @@ class MaterializedTable:
     name: str
     row_count: int
     columns: tuple[tuple[str, str, bool], ...]
+    active_file_count: int
+    active_storage_bytes: int
+    partitioning: tuple[str, ...]
 
 
 class MaterializedViewStore:
@@ -42,6 +45,31 @@ class MaterializedViewStore:
             raise MaterializedViewConflictError(f"Table {MATERIALIZED_SCHEMA}.{name} already exists.")
         self._use_main()
         self.catalogue.connection.execute(f"CREATE TABLE {_qualified(self.catalogue, name)} AS {sql}")
+        return self.inspect(name)
+
+    def create_empty_scoped(
+        self, *, name: str, sql: str, parameters: dict[str, object]
+    ) -> MaterializedTable:
+        """Create only the result schema; scoped jobs populate rows later."""
+
+        _validate_name(name)
+        classify_select(sql)
+        if any(
+            item.table_name == name
+            for item in self.catalogue.lake.table.list(
+                schema_name=MATERIALIZED_SCHEMA
+            )
+        ):
+            raise MaterializedViewConflictError(
+                f"Table {MATERIALIZED_SCHEMA}.{name} already exists."
+            )
+        self._use_main()
+        query = sql.strip().removesuffix(";")
+        self.catalogue.connection.execute(
+            f"CREATE TABLE {_qualified(self.catalogue, name)} AS "
+            f"SELECT * FROM ({query}) AS scoped_result WHERE false",
+            parameters,
+        )
         return self.inspect(name)
 
     def refresh(self, *, name: str, expected_uuid: UUID, sql: str) -> MaterializedTable:
@@ -58,6 +86,54 @@ class MaterializedViewStore:
         if current.table_uuid != expected_uuid:
             raise MaterializedViewConflictError("The materialized table changed; refresh the page before dropping it.")
         self.catalogue.connection.execute(f"DROP TABLE {_qualified(self.catalogue, name)}")
+
+    def drop_managed(
+        self, *, name: str, expected_uuid: UUID, materialized_view_id: UUID
+    ) -> None:
+        current = self.inspect(name)
+        if current.table_uuid != expected_uuid:
+            raise MaterializedViewConflictError(
+                "The materialized table changed; deletion has been stopped."
+            )
+        coverage = ".".join(
+            f'"{part}"'
+            for part in (
+                self.catalogue.config.alias,
+                self.catalogue.config.schema,
+                "materialization_scope_results",
+            )
+        )
+        with self.catalogue.lake.transaction():
+            self.catalogue.connection.execute(
+                f"DELETE FROM {coverage} WHERE materialized_view_id = ?",
+                [materialized_view_id],
+            )
+            self.catalogue.connection.execute(
+                f"DROP TABLE {_qualified(self.catalogue, name)}"
+            )
+
+    def set_daily_partition(self, *, name: str, column: str) -> MaterializedTable:
+        _validate_name(name)
+        _validate_name(column)
+        current = self.inspect(name)
+        data_type = next(
+            (data_type for item, data_type, _ in current.columns if item == column),
+            None,
+        )
+        if data_type is None:
+            raise MaterializedViewError(
+                f"Partition column {column!r} is not present in the result."
+            )
+        if "DATE" not in data_type and "TIMESTAMP" not in data_type:
+            raise MaterializedViewError(
+                "Daily partitioning requires a DATE or TIMESTAMP result column."
+            )
+        self.catalogue.connection.execute(
+            f"ALTER TABLE {_qualified(self.catalogue, name)} SET PARTITIONED BY "
+            f"(year({_quote_identifier(column)}), month({_quote_identifier(column)}), "
+            f"day({_quote_identifier(column)}))"
+        )
+        return self.inspect(name)
 
     def inspect(self, name: str) -> MaterializedTable:
         try:
@@ -86,11 +162,46 @@ class MaterializedViewStore:
         ).fetchone()
         if identity is None:
             raise MaterializedViewConflictError(f"Materialized table {name} has no DuckLake identity.")
+        file_stats = self.catalogue.connection.execute(
+            f"""
+            SELECT count(*), coalesce(sum(f.file_size_bytes), 0)
+            FROM {metadata_catalog}.{metadata_schema}.ducklake_data_file AS f
+            JOIN {metadata_catalog}.{metadata_schema}.ducklake_table AS t
+              ON t.table_id = f.table_id
+            JOIN {metadata_catalog}.{metadata_schema}.ducklake_schema AS s
+              ON s.schema_id = t.schema_id
+            WHERE f.end_snapshot IS NULL AND t.end_snapshot IS NULL
+              AND s.end_snapshot IS NULL AND s.schema_name = ? AND t.table_name = ?
+            """,
+            [MATERIALIZED_SCHEMA, name],
+        ).fetchone()
+        partition_rows = self.catalogue.connection.execute(
+            f"""
+            SELECT pc.transform, c.column_name
+            FROM {metadata_catalog}.{metadata_schema}.ducklake_partition_info AS pi
+            JOIN {metadata_catalog}.{metadata_schema}.ducklake_partition_column AS pc
+              ON pc.partition_id = pi.partition_id AND pc.table_id = pi.table_id
+            JOIN {metadata_catalog}.{metadata_schema}.ducklake_table AS t
+              ON t.table_id = pi.table_id
+            JOIN {metadata_catalog}.{metadata_schema}.ducklake_schema AS s
+              ON s.schema_id = t.schema_id
+            JOIN {metadata_catalog}.{metadata_schema}.ducklake_column AS c
+              ON c.table_id = pc.table_id AND c.column_id = pc.column_id
+            WHERE pi.end_snapshot IS NULL AND t.end_snapshot IS NULL
+              AND s.end_snapshot IS NULL AND c.end_snapshot IS NULL
+              AND s.schema_name = ? AND t.table_name = ?
+            ORDER BY pc.partition_key_index
+            """,
+            [MATERIALIZED_SCHEMA, name],
+        ).fetchall()
         return MaterializedTable(
             table_uuid=UUID(str(identity[0])),
             name=name,
             row_count=int(info.row_count or 0),
             columns=tuple((column.name, column.data_type, column.nullable) for column in info.columns),
+            active_file_count=int(file_stats[0] if file_stats else 0),
+            active_storage_bytes=int(file_stats[1] if file_stats else 0),
+            partitioning=tuple(f"{row[0]}({row[1]})" for row in partition_rows),
         )
 
     def _use_main(self) -> None:
@@ -106,3 +217,7 @@ def _validate_name(value: str) -> None:
 
 def _qualified(catalogue: Catalogue, name: str) -> str:
     return ".".join(f'"{part}"' for part in (catalogue.config.alias, MATERIALIZED_SCHEMA, name))
+
+
+def _quote_identifier(value: str) -> str:
+    return f'"{value.replace(chr(34), chr(34) * 2)}"'

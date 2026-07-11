@@ -5,8 +5,8 @@ import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from control.materialized_views.schemas import MaterializedViewCreate, MaterializedViewListResponse, MaterializedViewRecord, MaterializedViewRefresh
-from control.materialized_views.service import create, drop, get_model, list_records, record, refresh
+from control.materialized_views.schemas import MaterializedViewCreate, MaterializedViewListResponse, MaterializedViewMaintenanceUpdate, MaterializedViewRecord, MaterializedViewRefresh
+from control.materialized_views.service import create, get_model, list_records, record, refresh, request_deletion, update_maintenance
 from db.session import get_session
 from repository.catalogue import Catalogue
 from repository.catalogue.config import catalogue_config_from_env
@@ -57,14 +57,35 @@ def refresh_(view_id: UUID, payload: MaterializedViewRefresh, session: Annotated
         _raise(exc)
 
 
-@router.delete("/{view_id}", status_code=204)
-def drop_(view_id: UUID, expected_ducklake_table_uuid: UUID, session: Annotated[Session, Depends(get_session)]) -> None:
+@router.patch("/{view_id}/maintenance", response_model=MaterializedViewRecord)
+def maintenance(
+    view_id: UUID,
+    payload: MaterializedViewMaintenanceUpdate,
+    session: Annotated[Session, Depends(get_session)],
+) -> MaterializedViewRecord:
     model = get_model(session, view_id)
     if model is None:
         raise HTTPException(status_code=404, detail="Materialized view not found.")
     try:
         with _catalogue() as catalogue:
-            drop(session, MaterializedViewStore(catalogue), model, expected_uuid=expected_ducklake_table_uuid)
+            return update_maintenance(
+                session,
+                MaterializedViewStore(catalogue),
+                model,
+                **payload.model_dump(),
+            )
+    except (MaterializedViewError, duckdb.Error) as exc:
+        _raise(exc)
+
+
+@router.delete("/{view_id}", response_model=MaterializedViewRecord)
+def drop_(view_id: UUID, expected_ducklake_table_uuid: UUID, session: Annotated[Session, Depends(get_session)]) -> MaterializedViewRecord:
+    model = get_model(session, view_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Materialized view not found.")
+    try:
+        with _catalogue() as catalogue:
+            return request_deletion(session, MaterializedViewStore(catalogue), model, expected_uuid=expected_ducklake_table_uuid)
     except (MaterializedViewError, duckdb.Error) as exc:
         _raise(exc)
 

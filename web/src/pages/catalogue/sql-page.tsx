@@ -8,6 +8,7 @@ import {
   TriangleAlertIcon,
   ViewIcon,
   SaveIcon,
+  DatabaseZapIcon,
 } from "lucide-react"
 
 import { CatalogueResultsTable } from "@/components/catalogue/catalogue-results-table"
@@ -15,6 +16,7 @@ import { catalogueTables } from "@/components/catalogue/catalogue-schema"
 import { SqlEditor } from "@/components/catalogue/sql-editor"
 import { SaveViewDialog } from "@/components/catalogue/save-view-dialog"
 import { SaveQueryDialog } from "@/components/catalogue/save-query-dialog"
+import { MaterializeQueryDialog } from "@/components/catalogue/materialize-query-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { useCatalogueQuery } from "@/hooks/use-catalogue-query"
@@ -59,6 +61,7 @@ export function CatalogueSqlPage() {
   const [elapsed, setElapsed] = useState<number | null>(null)
   const [saveViewOpen, setSaveViewOpen] = useState(false)
   const [saveQueryOpen, setSaveQueryOpen] = useState(false)
+  const [materializeOpen, setMaterializeOpen] = useState(false)
   const catalogueQuery = useCatalogueQuery()
   const catalogueLint = useCatalogueLint(query)
   const catalogueViews = useCatalogueViews()
@@ -113,6 +116,14 @@ export function CatalogueSqlPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setMaterializeOpen(true)}
+              disabled={!query.trim()}
+            >
+              <DatabaseZapIcon /> Materialize
+            </Button>
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -206,6 +217,11 @@ export function CatalogueSqlPage() {
         onOpenChange={setSaveViewOpen}
         sql={query}
         queryRevisionId={savedQuery.data?.current_revision_id}
+      />
+      <MaterializeQueryDialog
+        open={materializeOpen}
+        onOpenChange={setMaterializeOpen}
+        source={{ kind: "sql", sql: query, query: savedQuery.data ?? null }}
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
         <div className="flex min-h-5 items-center gap-3 text-[11px] text-muted-foreground">

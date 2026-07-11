@@ -264,7 +264,9 @@ class RepositoryIngestor:
             raise ValueError("older_than_seconds must be greater than zero")
         cutoff = datetime.now(UTC) - timedelta(seconds=older_than_seconds)
         deleted = 0
-        for path in self.staging_root.glob("*.parquet"):
+        paths = list(self.staging_root.glob("*.parquet"))
+        paths.extend(self.staging_root.rglob("*.arrow"))
+        for path in paths:
             try:
                 modified_at = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
                 if modified_at >= cutoff:

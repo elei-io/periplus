@@ -1,6 +1,7 @@
 # Queries, Views, Materialized Views, and Publications
 
-Status: accepted design; implementation pending
+Status: accepted design; queries, views, full-refresh and scoped incremental materialized views,
+including their user-facing lifecycle controls, are implemented; publications remain pending
 
 Atlas turns retained web evidence into tabular data that other analytical systems can consume.
 This document defines the intended user-facing layers between catalogue exploration and durable,
@@ -78,10 +79,40 @@ revision or view.
 - It owns typed schema, row identity, derivation bindings, refresh behavior, backfills, corrections,
   rebuilds, and provenance.
 - It may remain entirely internal to Atlas and has no inherent external compatibility promise.
-- Version one supports explicit full refresh from one immutable saved-query revision.
-- Later versions add bounded per-crawl maintenance, reconciliation, and historical backfills without
-  changing the distinction between materialization and publication.
+- Full-refresh materialized views execute one immutable saved-query revision explicitly.
+- Scoped incremental materialized views bind one definition revision to a stable scope parameter.
+  Live maintenance, replay, and historical backfill all execute the same bounded scope job.
 - Publishing promotes the existing table contract; it never creates a second data copy.
+
+The first scoped materialization is `materialized.document_links`. Its unit is one immutable
+`document_id`, so query cost is bounded by one DOM regardless of total catalogue size. Activation
+freezes a DuckLake snapshot, starts CDC strictly after that boundary, and enumerates documents visible
+at the boundary for throttled backfill. A durable scope-result row records success even when a
+document produces zero links.
+
+Managed materialized tables should declare their physical time column when one exists. Seeded
+document links carry the immutable document ingestion time as `document_created_at` and are
+partitioned by `year/month/day(document_created_at)`.
+Partitioning is never inferred from an unrelated timestamp merely to obtain a layout. Repository
+compaction covers both `main` and `materialized`, operates within each partition, and remains the only
+path that rewrites small analytical files.
+
+CDC is discovery, not the execution queue. It publishes stable scope operations to separate live and
+backfill JetStream subjects. Live work is polled first. A supervised materialization worker evaluates
+one scope, enforces row and byte limits while streaming Arrow, and stages the result through the
+configured repository object store. The repository worker alone verifies its checksum, fences the
+active definition revision, atomically replaces that scope, and records coverage. Terminal failures
+enter a bounded dead-letter stream and remain explicitly requeueable. This same activation protocol
+is the basis for user-created scoped materialized views; seeded views merely ensure common
+projections begin accumulating on day one.
+
+Live discovery and historical backfill are independent controls. Pausing either preserves the
+materialized table, completed coverage, activation boundary, and CDC cursor; resuming continues from
+that durable state rather than rebuilding. The backfill rate is editable while the definition is
+active. Deletion is a fenced repository operation: Atlas first disables both producers and marks the
+definition for deletion, queued commits reject the stale definition, and only the repository worker
+drops the DuckLake table and coverage before archiving the Postgres definition. DuckLake snapshots
+may retain the physical Parquet files until the configured retention window expires.
 
 ## Names and catalogue layout
 
@@ -140,9 +171,9 @@ The existing Atlas ownership rules continue to apply.
 
 | Owner | Publication-related state |
 | --- | --- |
-| Postgres control plane | Editable publication definitions, query revision metadata, applicability rules, declared identities, and optional references to DuckLake-owned views |
-| NATS JetStream/KV | Queued materialization work, current run state, progress, retries, and worker presence |
-| DuckLake | Authoritative views, typed publication tables, publication row history, DDL history, and crawl evidence |
+| Postgres control plane | Editable materialized-view and publication definitions, query revision metadata, applicability rules, declared identities, and optional references to DuckLake-owned views |
+| NATS JetStream/KV | Separate live/backfill scope queues, repository commit queue, current run state, progress, retries, and worker presence |
+| DuckLake | Authoritative views, typed materialized/publication tables, durable scope coverage, row and DDL history, and crawl evidence |
 | DuckLake CDC metadata | Downstream consumer subscriptions, leases, cursors, and audit state |
 | Repository objects | Immutable raw HTML supporting publication provenance and later recomputation |
 
@@ -445,6 +476,11 @@ of the retention window, critical at 80%, and becomes an explicit `CDC_GAP` when
 expired. Operators may increase retention before a planned outage or backfill. A consumer outside the
 window must snapshot-bootstrap and resume from the bootstrap snapshot.
 
+Atlas must not run an unqualified DuckLake `CHECKPOINT` or expire snapshots on wall-clock age alone.
+The expiration floor is the oldest snapshot still required by an accepted publication CDC position,
+an active materialization consumer, or an in-progress snapshot bootstrap. Until that floor is
+implemented and observable, snapshot expiration remains an explicit operator action.
+
 Snapshot bootstrap belongs to DuckLake CDC rather than a custom Atlas cursor API. The CDC extension
 and Python client must provide one operation that:
 
@@ -563,4 +599,5 @@ The following are resolved as outside version one rather than left as open desig
 - Lossy type conversion is deferred; create a new field or publication.
 - Atlas-managed destination connectors and pipeline schedules are out of scope.
 - A remote Atlas CDC proxy is out of scope; consumers connect through DuckLake and DuckLake CDC.
-- CDC-triggered internal materialization is out of scope; NATS remains the internal work owner.
+- CDC may discover changed source scopes, but it never performs or owns internal execution; every
+  materialization still crosses the NATS work boundary.

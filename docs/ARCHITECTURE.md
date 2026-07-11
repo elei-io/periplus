@@ -21,6 +21,11 @@ FastAPI -- definitions --------------------------> Postgres
                                                          repository worker
                                                                   |
                                                               DuckLake
+
+Saved-query materializations add one supervised planner/evaluator beside this path. DuckLake CDC
+discovers changed document scopes and historical activation scans page through bounded scope IDs.
+Both publish JetStream work. Evaluation streams a bounded Arrow object through the configured
+repository object store; only the repository worker verifies and commits it to DuckLake.
 ```
 
 Prometheus receives operational metrics. It is not part of the correctness path.
@@ -70,8 +75,16 @@ writes are idempotent.
 
 Terminal ingestion failures enter a file-backed dead-letter stream. Explicit repository commands
 inspect and requeue them. The repository worker runs bounded, threshold-driven DuckLake small-file
-compaction between ingestion batches. Cleanup, object deletion, and other large maintenance remain
+compaction between ingestion batches. Tiny DuckLake writes use the documented metadata inlining
+limit and are flushed before compaction. Compaction output is bounded by DuckLake's
+`max_compacted_files`; superseded files are reclaimed only after the configured read-safety grace
+period. Snapshot expiration, orphan deletion, and other retention-changing maintenance remain
 explicit operations, never hidden side effects of reads or crawls.
+
+Repository and materialization transactions annotate their DuckLake snapshots with an Atlas author,
+operation description, and bounded identifiers. Write responses use DuckLake's
+`last_committed_snapshot()` for the current connection rather than the globally latest snapshot, so
+concurrent writers cannot misattribute a commit.
 
 ## Reads and cache
 
@@ -100,6 +113,8 @@ requires evidence that the current primitive is insufficient.
 - `backend/repository/objects/` owns immutable raw storage.
 - `backend/repository/ingestion/` owns the repository queue and single-writer path.
 - `backend/repository/catalogue/` implements DuckLake behind the repository boundary.
+- `backend/materialization/` owns scoped planning, CDC discovery, bounded evaluation, durable
+  failure administration, and the repository-writer commit contract.
 - `backend/repository/service.py` is the application-facing durable read/write boundary.
 - `backend/dom/` owns the versioned structural projection.
 - `backend/api/` and `backend/cli/` adapt external requests and remain thin.

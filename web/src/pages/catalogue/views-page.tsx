@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { BracesIcon, DatabaseIcon, RefreshCwIcon, Trash2Icon, UnlinkIcon } from "lucide-react"
+import { BracesIcon, DatabaseIcon, DatabaseZapIcon, RefreshCwIcon, Trash2Icon, TriangleAlertIcon, UnlinkIcon } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -19,6 +19,7 @@ import {
   useUpdateCatalogueView,
 } from "@/hooks/use-catalogue-views"
 import type { CatalogueViewRecord } from "@/types/catalogue"
+import { MaterializeQueryDialog } from "@/components/catalogue/materialize-query-dialog"
 
 export function CatalogueViewsPage() {
   const viewsQuery = useCatalogueViews()
@@ -86,8 +87,23 @@ function ViewDetail({ view }: { view: CatalogueViewRecord }) {
   const adopt = useAdoptCatalogueView()
   const detach = useDetachCatalogueView()
   const drop = useDropCatalogueView()
+  const [materializeOpen, setMaterializeOpen] = useState(false)
+  const dependencies = view.attached_materialized_views
+
+  const save = () => {
+    const definitionChanged = sql.trim() !== view.sql.trim()
+    if (
+      definitionChanged &&
+      dependencies.length > 0 &&
+      !window.confirm(
+        `Change the source definition used by ${dependencies.length} materialized view${dependencies.length === 1 ? "" : "s"}? Existing materialized rows will not change automatically; refresh or rebuild them explicitly.`
+      )
+    ) return
+    update.mutate({ view, sql, display_name: displayName, description })
+  }
 
   return (
+    <>
     <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card/80">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
         <div>
@@ -99,6 +115,11 @@ function ViewDetail({ view }: { view: CatalogueViewRecord }) {
           <div className="mt-1 font-mono text-[10px] text-muted-foreground">{view.qualified_name} · {view.ducklake_view_uuid}</div>
         </div>
         <div className="flex items-center gap-2">
+          {view.available && view.managed && (
+            <Button size="sm" variant="outline" onClick={() => setMaterializeOpen(true)}>
+              <DatabaseZapIcon />Materialize
+            </Button>
+          )}
           {!view.managed && (
             <Tooltip>
               <TooltipTrigger
@@ -147,7 +168,7 @@ function ViewDetail({ view }: { view: CatalogueViewRecord }) {
                     onClick={() => {
                       if (
                         window.confirm(
-                          `Permanently drop ${view.qualified_name} from DuckLake? Its Atlas reference will also be archived.`
+                          `Permanently drop ${view.qualified_name} from DuckLake? Its Atlas reference will also be archived.${dependencies.length > 0 ? ` ${dependencies.length} attached materialized view${dependencies.length === 1 ? "" : "s"} will retain their data but lose their refresh source.` : ""}`
                         )
                       )
                         drop.mutate(view)
@@ -167,6 +188,24 @@ function ViewDetail({ view }: { view: CatalogueViewRecord }) {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <div className="grid gap-4">
+          {dependencies.length > 0 && (
+            <div className="flex gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+              <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" />
+              <div>
+                <div className="font-medium">
+                  Source for {dependencies.length} materialized view{dependencies.length === 1 ? "" : "s"}
+                </div>
+                <p className="mt-1 text-foreground/70">
+                  Changing this SQL replaces the DuckLake view identity. Existing materialized rows remain unchanged until explicitly refreshed or rebuilt.
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {dependencies.map((dependency) => (
+                    <Badge key={dependency.id} variant="outline">materialized.{dependency.name}</Badge>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-1.5"><Label>Display name</Label><Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} disabled={!view.managed} /></div>
             <div className="grid gap-1.5"><Label>Description</Label><Input value={description} onChange={(event) => setDescription(event.target.value)} disabled={!view.managed} /></div>
@@ -176,11 +215,17 @@ function ViewDetail({ view }: { view: CatalogueViewRecord }) {
             <Textarea className="min-h-72 resize-y font-mono text-xs" value={sql} onChange={(event) => setSql(event.target.value)} disabled={!view.managed || !view.available} />
           </div>
           {view.managed && view.available && (
-            <div className="flex justify-end"><Button onClick={() => update.mutate({ view, sql, display_name: displayName, description })} disabled={!sql.trim() || update.isPending}>{update.isPending ? "Saving…" : "Save changes"}</Button></div>
+            <div className="flex justify-end"><Button onClick={save} disabled={!sql.trim() || update.isPending}>{update.isPending ? "Saving…" : "Save changes"}</Button></div>
           )}
         </div>
       </div>
     </section>
+    <MaterializeQueryDialog
+      open={materializeOpen}
+      onOpenChange={setMaterializeOpen}
+      source={{ kind: "view", view }}
+    />
+    </>
   )
 }
 

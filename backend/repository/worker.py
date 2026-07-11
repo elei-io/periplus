@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import signal
 import time
@@ -16,6 +17,21 @@ from repository.catalogue import CatalogueConflictError, CatalogueValidationErro
 from observability import repository_metrics
 from prometheus_client import start_http_server
 from config import get_bool, get_float, get_int, get_str
+from control.materialized_views.models import MaterializedView
+from control.catalogue_views.models import CatalogueViewReference
+from control.catalogue_queries.models import CatalogueQuery, CatalogueQueryRevision
+from db.session import session_scope
+from materialization.commit import commit_scope, record_scope_failure
+from materialization.queue import (
+    COMMIT_DURABLE,
+    COMMIT_STREAM,
+    COMMIT_SUBJECT,
+    DEAD_LETTER_SUBJECT,
+    MaterializationDeadLetter,
+    MaterializationCommitJob,
+    MaterializationFailureJob,
+    ensure_streams as ensure_materialization_streams,
+)
 from repository.ingestion.health import HealthMonitor, start_health_server
 from repository.ingestion.pipeline import IngestionWorkerConfig
 from repository.ingestion.queue import (
@@ -36,6 +52,8 @@ from repository.ingestion.queue import (
     store_ingestion_response,
 )
 from repository.service import repository_ingestor_from_env
+from repository.catalogue.materialized_views import MaterializedViewStore
+from sqlalchemy import select
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +64,8 @@ class RepositoryCompactionConfig:
     maximum_input_file_bytes: int
     target_file_bytes: int
     maximum_compacted_files: int
+    maximum_operation_bytes: int
+    cleanup_older_than_seconds: int
 
     @classmethod
     def from_env(cls) -> RepositoryCompactionConfig:
@@ -63,6 +83,12 @@ class RepositoryCompactionConfig:
             ),
             maximum_compacted_files=get_int(
                 "ATLAS_REPOSITORY_COMPACTION_MAX_OUTPUT_FILES"
+            ),
+            maximum_operation_bytes=get_int(
+                "ATLAS_REPOSITORY_COMPACTION_MAX_OPERATION_BYTES"
+            ),
+            cleanup_older_than_seconds=get_int(
+                "ATLAS_REPOSITORY_CLEANUP_OLD_FILES_SECONDS"
             ),
         )
         if config.target_file_bytes <= config.maximum_input_file_bytes:
@@ -83,6 +109,7 @@ async def run() -> None:
     compaction_config = RepositoryCompactionConfig.from_env()
     client = await connect_repository_nats()
     jetstream = client.jetstream()
+    await ensure_materialization_streams(jetstream)
     await ensure_repository_stream(jetstream)
     await ensure_dead_letter_stream(jetstream)
     results_store = await ensure_ingestion_results(jetstream)
@@ -91,6 +118,11 @@ async def run() -> None:
         SUBJECT,
         durable=DURABLE,
         stream=STREAM,
+    )
+    materialization_subscription = await jetstream.pull_subscribe(
+        COMMIT_SUBJECT,
+        durable=COMMIT_DURABLE,
+        stream=COMMIT_STREAM,
     )
     ingestor = repository_ingestor_from_env()
     await asyncio.to_thread(ingestor.validate)
@@ -133,6 +165,12 @@ async def run() -> None:
     heartbeat_task = None
     try:
         while not stop.is_set():
+            await asyncio.to_thread(
+                _delete_requested_materialization, ingestor.catalogue
+            )
+            await _commit_materialization_if_ready(
+                jetstream, materialization_subscription, ingestor.catalogue
+            )
             if time.monotonic() >= next_queue_snapshot:
                 try:
                     info = await jetstream.consumer_info(STREAM, DURABLE)
@@ -286,6 +324,112 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     asyncio.run(run())
+
+
+async def _commit_materialization_if_ready(jetstream, subscription, catalogue) -> None:
+    try:
+        messages = await subscription.fetch(batch=1, timeout=0.01)
+    except (NatsTimeoutError, asyncio.TimeoutError):
+        return
+    for message in messages:
+        heartbeat = asyncio.create_task(_heartbeat_messages([message]))
+        try:
+            payload = json.loads(message.data)
+            if payload.get("kind") == "failure":
+                failure = MaterializationFailureJob.model_validate(payload)
+                job = None
+            else:
+                job = MaterializationCommitJob.model_validate(payload)
+                failure = None
+        except Exception:
+            logging.exception("discarding invalid materialization commit job")
+            await message.term()
+            await _cancel_task(heartbeat)
+            continue
+        if failure is not None:
+            try:
+                await asyncio.to_thread(record_scope_failure, catalogue, failure)
+            except Exception:
+                logging.exception("failed to persist materialization scope failure")
+                await message.nak(delay=30)
+            else:
+                await message.ack()
+            finally:
+                await _cancel_task(heartbeat)
+            continue
+        assert job is not None
+        try:
+            await asyncio.to_thread(commit_scope, catalogue, job)
+        except Exception as exc:
+            logging.exception(
+                "materialization commit failed for operation %s",
+                job.scope.operation_id,
+            )
+            deliveries = message.metadata.num_delivered
+            maximum = get_int("ATLAS_MATERIALIZATION_MAX_DELIVER")
+            if deliveries < maximum:
+                await message.nak(delay=5)
+                continue
+            failure = MaterializationFailureJob(
+                scope=job.scope,
+                error=str(exc),
+                started_at=job.started_at,
+                completed_at=datetime.now(UTC),
+            )
+            dead_letter = MaterializationDeadLetter(
+                job=job.scope,
+                stage="commit",
+                error=str(exc),
+                delivery_count=deliveries,
+                failed_at=datetime.now(UTC),
+                staging_key=job.staging_key,
+            )
+            try:
+                await asyncio.to_thread(record_scope_failure, catalogue, failure)
+                await jetstream.publish(
+                    DEAD_LETTER_SUBJECT,
+                    dead_letter.model_dump_json().encode(),
+                    headers={
+                        "Nats-Msg-Id": f"{job.scope.operation_id}-commit-dead"
+                    },
+                )
+            except Exception:
+                logging.exception("failed to persist materialization dead letter")
+                await message.nak(delay=30)
+            else:
+                await message.term()
+        else:
+            await message.ack()
+        finally:
+            await _cancel_task(heartbeat)
+
+
+def _delete_requested_materialization(catalogue) -> None:
+    with session_scope() as session:
+        model = session.scalar(
+            select(MaterializedView)
+            .where(
+                MaterializedView.archived_at.is_(None),
+                MaterializedView.deletion_requested_at.is_not(None),
+            )
+            .order_by(MaterializedView.deletion_requested_at)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        if model is None:
+            return
+        present = any(
+            table.table_name == model.name
+            for table in catalogue.lake.table.list(schema_name="materialized")
+        )
+        if present:
+            MaterializedViewStore(catalogue).drop_managed(
+                name=model.name,
+                expected_uuid=model.ducklake_table_uuid,
+                materialized_view_id=model.id,
+            )
+        model.archived_at = datetime.now(UTC)
+        session.flush()
 
 
 def _would_exceed_batch(prepared, value, *, config: IngestionWorkerConfig) -> bool:
@@ -445,17 +589,30 @@ async def _retry_or_fail(
             results_store,
             job=job,
             result=reconciled,
-            error=None if reconciled is not None else str(exc),
+            error=None if reconciled is not None else _exception_message(exc),
         )
         await _notify(client, job, durable_state)
         if durable_state.status == "succeeded":
             await message.ack()
         else:
             await _dead_letter_or_retry(
-                client, message, job, durable_state.error or str(exc)
+                client, message, job, durable_state.error or _exception_message(exc)
             )
         return
     await message.nak(delay=min(30, 2 ** max(0, deliveries - 1)))
+
+
+def _exception_message(exc: BaseException) -> str:
+    """Retain concise root-cause context in durable operational state."""
+
+    messages: list[str] = []
+    current: BaseException | None = exc
+    while current is not None:
+        message = str(current).strip() or type(current).__name__
+        if not messages or message != messages[-1]:
+            messages.append(message)
+        current = current.__cause__
+    return ": ".join(messages)
 
 
 async def _notify(client, job: IngestionJob, durable_state) -> None:
@@ -515,6 +672,8 @@ async def _compact_repository(
             maximum_input_file_bytes=config.maximum_input_file_bytes,
             target_file_bytes=config.target_file_bytes,
             maximum_compacted_files=config.maximum_compacted_files,
+            maximum_operation_bytes=config.maximum_operation_bytes,
+            cleanup_older_than_seconds=config.cleanup_older_than_seconds,
         )
     except Exception:
         repository_metrics.compaction(
@@ -536,8 +695,9 @@ async def _compact_repository(
     )
     for result in results:
         logging.info(
-            "repository compacted table=%s eligible_files=%d eligible_bytes=%d "
+            "repository compacted table=%s.%s eligible_files=%d eligible_bytes=%d "
             "files_processed=%d files_created=%d",
+            result.schema_name,
             result.table_name,
             result.eligible_files,
             result.eligible_bytes,

@@ -29,6 +29,12 @@ export type CatalogueViewRecord = {
   created_at: string | null
   updated_at: string | null
   created_from_query_revision_id: string | null
+  attached_materialized_views: Array<{
+    id: string
+    name: string
+    display_name: string
+    refresh_mode: "full" | "scope_incremental"
+  }>
 }
 
 export type CatalogueViewList = { items: CatalogueViewRecord[] }
@@ -64,10 +70,28 @@ export type MaterializedViewRecord = {
   qualified_name: string
   display_name: string
   description: string | null
-  query_revision_id: string
-  query_id: string
-  query_name: string
-  query_revision: number
+  query_revision_id: string | null
+  query_id: string | null
+  query_name: string | null
+  query_revision: number | null
+  source_view_uuid: string | null
+  source_view_name: string | null
+  refresh_mode: "full" | "scope_incremental"
+  scope_kind: "document" | null
+  activation_snapshot: number | null
+  live_enabled: boolean
+  backfill_enabled: boolean
+  backfill_scopes_per_minute: number
+  partition_column: string | null
+  partitioning: string[]
+  status: "full_refresh" | "live" | "backfilling" | "paused" | "deleting" | "degraded"
+  completed_scopes: number | null
+  total_scopes: number | null
+  failed_scopes: number
+  last_scope_completed_at: string | null
+  active_file_count: number
+  active_storage_bytes: number
+  deletion_requested_at: string | null
   ducklake_table_uuid: string
   row_count: number
   columns: Array<{ name: string; data_type: string; nullable: boolean }>

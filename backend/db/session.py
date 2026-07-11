@@ -7,6 +7,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from config import get_str
+import db.models  # noqa: F401 - register every mapped table before ORM statements compile
 
 def get_database_url() -> str:
     url = get_str("DATABASE_URL")

@@ -35,7 +35,7 @@ class CatalogueConfig:
     schema: str = "main"
     duckdb: DuckDBConfig = field(default_factory=DuckDBConfig)
     attach: DuckLakeAttachConfig = field(
-        default_factory=lambda: DuckLakeAttachConfig(data_inlining_row_limit=0)
+        default_factory=lambda: DuckLakeAttachConfig(data_inlining_row_limit=10)
     )
 
     def __post_init__(self) -> None:
@@ -67,7 +67,7 @@ def catalogue_config_from_env() -> CatalogueConfig:
         attach=DuckLakeAttachConfig(
             data_inlining_row_limit=_nonnegative_int(
                 "ATLAS_CATALOGUE_DATA_INLINING_ROW_LIMIT",
-                default=0,
+                default=10,
             ),
             override_data_path=(
                 storage_kind == "disk"

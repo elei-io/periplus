@@ -22,6 +22,8 @@ dependencies = [
     "html5lib>=1.1",
     "pyarrow>=21",
     "sqlglot>=27",
+    "ducklake-cdc-client>=0.5.1",
+    "duckdb==1.5.2",
 ]
 
 [project.scripts]
@@ -29,6 +31,7 @@ atlas = "cli.app:app"
 atlas-setup = "deployment:main"
 atlas-runtime-worker = "runtime.worker:main"
 atlas-repository-worker = "repository.worker:main"
+atlas-materialization-worker = "materialization.worker:main"
 
 [build-system]
 requires = ["setuptools"]

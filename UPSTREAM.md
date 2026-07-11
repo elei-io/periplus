@@ -29,7 +29,18 @@ the published release; version control retains the history.
 
 ## Wishlist
 
-No open items yet.
+### Pin-install contract for `ducklake-cdc`
+
+- **Atlas caller:** the materialization worker image and its durable CDC cursor.
+- **Evidence:** `INSTALL ducklake_cdc FROM community` began returning build
+  `ducklake_cdc 723dcf8` while Atlas's image/runtime contract expected `f5d2e37`; the worker correctly
+  refused to consume with an unreviewed extension build, but a rebuild cannot reproduce the older
+  artifact from the same install command.
+- **Smallest useful upstream contract:** a documented immutable release/version install URL (or a
+  semver-selectable community artifact) plus a stable semantic version returned alongside the build
+  hash.
+- **Atlas status:** not blocked; Atlas verifies the currently reviewed published build at startup,
+  but the Dockerfile's community install is not reproducible across future releases.
 
 ## In progress
 

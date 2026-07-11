@@ -10,6 +10,12 @@ from repository.ingestion.admin import (
     list_dead_letters,
     requeue_repository_dead_letter,
 )
+from materialization.admin import (
+    MaterializationDeadLetterList,
+    MaterializationDeadLetterRecord,
+    list_dead_letters as list_materialization_dead_letters,
+    requeue_dead_letter as requeue_materialization_dead_letter,
+)
 from repository import repository_ingestor_from_env
 from repository.catalogue import CrawlRecord, DocumentRecord
 
@@ -51,5 +57,32 @@ async def requeue(sequence: int) -> DeadLetterRecord:
         return await requeue_repository_dead_letter(sequence)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail="repository dead letter was not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get(
+    "/materialization-dead-letters",
+    response_model=MaterializationDeadLetterList,
+)
+async def materialization_dead_letters(
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+) -> MaterializationDeadLetterList:
+    return await list_materialization_dead_letters(limit)
+
+
+@router.post(
+    "/materialization-dead-letters/{sequence}/requeue",
+    response_model=MaterializationDeadLetterRecord,
+)
+async def requeue_materialization(sequence: int) -> MaterializationDeadLetterRecord:
+    if sequence < 1:
+        raise HTTPException(status_code=422, detail="sequence must be greater than zero")
+    try:
+        return await requeue_materialization_dead_letter(sequence)
+    except NotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail="materialization dead letter was not found"
+        ) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

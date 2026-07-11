@@ -51,11 +51,18 @@ def bootstrap_catalogue() -> None:
         catalogue.bootstrap()
 
 
+def seed_materializations() -> None:
+    from materialization.seed_links import seed
+
+    seed()
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     argparse.ArgumentParser(description="Set up an Atlas deployment.").parse_args(argv)
     ensure_catalogue_database()
     migrate_control_database()
     bootstrap_catalogue()
+    seed_materializations()
     print("Atlas setup complete.")
 
 

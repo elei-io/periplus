@@ -18,6 +18,8 @@ RUN UV_PROJECT_ENVIRONMENT=/opt/atlas-venv uv sync --frozen --no-install-project
 # Catalogue attachment must not depend on extension downloads during pod startup.
 RUN /opt/atlas-venv/bin/python -c "import duckdb; connection = duckdb.connect(); [connection.install_extension(name) for name in ('ducklake', 'parquet', 'postgres', 'httpfs', 'sqlite')]; connection.close()"
 
+RUN /opt/atlas-venv/bin/python -c "import duckdb; connection = duckdb.connect(); connection.execute('INSTALL ducklake_cdc FROM community'); connection.execute('LOAD ducklake_cdc'); actual = connection.execute('SELECT cdc_version()').fetchone()[0]; assert actual == 'ducklake_cdc 723dcf8', actual; connection.close()"
+
 RUN /opt/atlas-venv/bin/playwright install --with-deps chromium
 
 COPY backend/ ./

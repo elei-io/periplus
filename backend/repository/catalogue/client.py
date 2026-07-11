@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import TracebackType
 from typing import TYPE_CHECKING
 from urllib.parse import urljoin
@@ -14,6 +15,7 @@ from repository.catalogue.schema import (
     CATALOGUE_SCHEMA_VERSION,
     CRAWL_COLUMNS,
     DOCUMENT_COLUMNS,
+    MATERIALIZATION_SCOPE_RESULT_COLUMNS,
     expected_columns,
 )
 from dom.schema import ELEMENT_COLUMNS
@@ -71,6 +73,11 @@ class Catalogue:
                 schema_name=self.config.schema,
                 **ELEMENT_COLUMNS,
             )
+            self.lake.table.create(
+                "materialization_scope_results",
+                schema_name=self.config.schema,
+                **MATERIALIZATION_SCOPE_RESULT_COLUMNS,
+            )
         self._migrate_schema()
         self._configure_layout()
         from repository.catalogue.macros import install_catalogue_macros
@@ -100,6 +107,27 @@ class Catalogue:
             )
             with self.lake.transaction():
                 self.connection.execute(f"DROP TABLE IF EXISTS {table}")
+
+        coverage = self.lake.table.info(
+            "materialization_scope_results",
+            schema_name=self.config.schema,
+            include_summary=False,
+            include_row_count=False,
+            include_snapshots=False,
+        )
+        if not any(column.name == "partition_value" for column in coverage.columns):
+            table = ".".join(
+                _quote_identifier(value)
+                for value in (
+                    self.config.alias,
+                    self.config.schema,
+                    "materialization_scope_results",
+                )
+            )
+            with self.lake.transaction():
+                self.connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN partition_value DATE"
+                )
 
         info = self.lake.table.info(
             "crawls",
@@ -224,6 +252,30 @@ class Catalogue:
 
     def latest_snapshot(self) -> int | None:
         return self.lake.snapshots.latest()
+
+    def last_committed_snapshot(self) -> int | None:
+        """Return the snapshot committed most recently by this connection."""
+
+        alias = _quote_identifier(self.config.alias)
+        row = self.connection.execute(
+            f"SELECT id FROM {alias}.last_committed_snapshot()"
+        ).fetchone()
+        return None if row is None or row[0] is None else int(row[0])
+
+    def set_commit_message(
+        self,
+        *,
+        author: str,
+        message: str,
+        extra: dict[str, object] | None = None,
+    ) -> None:
+        """Annotate the transaction's DuckLake snapshot for operations and audit."""
+
+        alias = _quote_identifier(self.config.alias)
+        self.connection.execute(
+            f"CALL {alias}.set_commit_message(?, ?, extra_info => ?)",
+            [author, message, json.dumps(extra or {}, separators=(",", ":"))],
+        )
 
     def close(self) -> None:
         self.lake.close()

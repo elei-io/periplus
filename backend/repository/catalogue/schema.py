@@ -6,7 +6,7 @@ from ducklake_client import ColumnDef
 
 from dom.schema import ELEMENT_COLUMNS
 
-CATALOGUE_SCHEMA_VERSION = 4
+CATALOGUE_SCHEMA_VERSION = 6
 
 DOCUMENT_COLUMNS: dict[str, ColumnDef] = {
     "document_id": ColumnDef("VARCHAR", nullable=False),
@@ -55,9 +55,25 @@ CRAWL_COLUMNS: dict[str, ColumnDef] = {
     "errors_json": ColumnDef("JSON", nullable=False),
 }
 
+MATERIALIZATION_SCOPE_RESULT_COLUMNS: dict[str, ColumnDef] = {
+    "materialized_view_id": ColumnDef("UUID", nullable=False),
+    "definition_revision_id": ColumnDef("UUID", nullable=False),
+    "scope_kind": ColumnDef("VARCHAR", nullable=False),
+    "scope_id": ColumnDef("VARCHAR", nullable=False),
+    "operation_id": ColumnDef("VARCHAR", nullable=False),
+    "row_count": ColumnDef("BIGINT", nullable=False),
+    "output_bytes": ColumnDef("BIGINT", nullable=False),
+    "status": ColumnDef("VARCHAR", nullable=False),
+    "error": ColumnDef("VARCHAR"),
+    "started_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+    "completed_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+    "partition_value": ColumnDef("DATE"),
+}
+
 def expected_columns() -> dict[str, dict[str, ColumnDef]]:
     return {
         "documents": DOCUMENT_COLUMNS,
         "crawls": CRAWL_COLUMNS,
         "elements": ELEMENT_COLUMNS,
+        "materialization_scope_results": MATERIALIZATION_SCOPE_RESULT_COLUMNS,
     }
