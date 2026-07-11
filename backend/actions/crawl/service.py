@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import json
-import os
 import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -9,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID, uuid5
+from config import get_int
 
 from crawl4ai import AsyncWebCrawler
 from crawl4ai.models import CrawlResult
@@ -624,7 +624,7 @@ def _default_max_concurrency_for_mode(mode: CrawlMode) -> int:
 
 def _crawl_concurrency_per_run() -> int:
     try:
-        return max(1, int(os.getenv("ATLAS_CRAWL_CONCURRENCY_PER_RUN", "3")))
+        return get_int("ATLAS_CRAWL_CONCURRENCY_PER_RUN")
     except ValueError:
         return 3
 

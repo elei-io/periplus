@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from config import get_optional
 
 CacheMode = Literal["prefer", "refresh", "no_store"]
 
@@ -93,7 +93,7 @@ def _env_nonnegative_int(name: str, *, default: int) -> int:
 
 
 def _env_optional_nonnegative_int(name: str) -> int | None:
-    raw = os.getenv(name)
+    raw = get_optional(name)
     if raw is None or not raw.strip():
         return None
     try:

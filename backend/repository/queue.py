@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 from datetime import UTC, datetime
 from uuid import UUID
 
 import nats
+from config import get_float, get_int, get_str
 from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import (
     AckPolicy,
@@ -124,21 +124,21 @@ def projection_ingestion_request_id(document_id: str) -> str:
 
 
 def _validate_envelope(payload: bytes, *, label: str) -> None:
-    limit = _positive_int("ATLAS_NATS_MAX_ENVELOPE_BYTES", 900 * 1024)
+    limit = get_int("ATLAS_NATS_MAX_ENVELOPE_BYTES")
     if len(payload) > limit:
         raise ValueError(f"{label} is {len(payload)} bytes; limit is {limit} bytes")
 
 
 async def connect_repository_nats():
     return await nats.connect(
-        os.getenv("NATS_URL", "nats://127.0.0.1:4222"),
+        get_str("NATS_URL"),
         connect_timeout=2,
         max_reconnect_attempts=-1,
     )
 
 
 async def ensure_repository_stream(jetstream) -> None:
-    replicas = _positive_int("ATLAS_INGEST_STREAM_REPLICAS", 1)
+    replicas = get_int("ATLAS_INGEST_STREAM_REPLICAS")
     config = StreamConfig(
         name=STREAM,
         subjects=[SUBJECT],
@@ -164,7 +164,7 @@ async def ensure_repository_stream(jetstream) -> None:
 async def ensure_dead_letter_stream(jetstream) -> None:
     """Attach or create the durable operator-managed ingestion failure stream."""
 
-    replicas = _positive_int("ATLAS_INGEST_STREAM_REPLICAS", 1)
+    replicas = get_int("ATLAS_INGEST_STREAM_REPLICAS")
     config = StreamConfig(
         name=DEAD_LETTER_STREAM,
         subjects=[DEAD_LETTER_SUBJECT],
@@ -203,10 +203,10 @@ async def ensure_ingestion_results(jetstream):
             bucket=RESULTS_BUCKET,
             description="Durable latest state for Atlas repository ingestion",
             history=1,
-            ttl=_positive_float("ATLAS_INGEST_RESULT_TTL_SECONDS", 7 * 24 * 60 * 60),
-            max_bytes=_positive_int("ATLAS_INGEST_RESULT_MAX_BYTES", 256 * 1024 * 1024),
+            ttl=get_float("ATLAS_INGEST_RESULT_TTL_SECONDS"),
+            max_bytes=get_int("ATLAS_INGEST_RESULT_MAX_BYTES"),
             storage=StorageType.FILE,
-            replicas=_positive_int("ATLAS_INGEST_RESULT_REPLICAS", 1),
+            replicas=get_int("ATLAS_INGEST_RESULT_REPLICAS"),
         )
         try:
             bucket = await jetstream.create_key_value(config=config)
@@ -220,13 +220,9 @@ async def ensure_ingestion_results(jetstream):
 async def _validate_ingestion_results(bucket) -> None:
     status = await bucket.status()
     config = status.stream_info.config
-    expected_ttl = _positive_float(
-        "ATLAS_INGEST_RESULT_TTL_SECONDS", 7 * 24 * 60 * 60
-    )
-    expected_max_bytes = _positive_int(
-        "ATLAS_INGEST_RESULT_MAX_BYTES", 256 * 1024 * 1024
-    )
-    expected_replicas = _positive_int("ATLAS_INGEST_RESULT_REPLICAS", 1)
+    expected_ttl = get_float("ATLAS_INGEST_RESULT_TTL_SECONDS")
+    expected_max_bytes = get_int("ATLAS_INGEST_RESULT_MAX_BYTES")
+    expected_replicas = get_int("ATLAS_INGEST_RESULT_REPLICAS")
     mismatches: list[str] = []
     if config.storage != StorageType.FILE:
         mismatches.append("file storage")
@@ -250,7 +246,7 @@ def repository_consumer_config() -> ConsumerConfig:
         ack_policy=AckPolicy.EXPLICIT,
         ack_wait=ack_wait_seconds(),
         filter_subject=SUBJECT,
-        max_ack_pending=_positive_int("ATLAS_INGEST_MAX_ACK_PENDING", 1000),
+        max_ack_pending=get_int("ATLAS_INGEST_MAX_ACK_PENDING"),
         # The application terminates a message only after a terminal result is durable.
         # Unlimited server delivery prevents a KV outage at the attempt boundary from
         # silently stranding a message without either work or a durable failure state.
@@ -283,11 +279,11 @@ async def ensure_repository_consumer(jetstream) -> None:
 
 
 def max_delivery_attempts() -> int:
-    return _positive_int("ATLAS_INGEST_MAX_DELIVER", 5)
+    return get_int("ATLAS_INGEST_MAX_DELIVER")
 
 
 def ack_wait_seconds() -> float:
-    return _positive_float("ATLAS_INGEST_ACK_WAIT_SECONDS", 600)
+    return get_float("ATLAS_INGEST_ACK_WAIT_SECONDS")
 
 
 async def get_ingestion_state(results, request_id: str) -> IngestionState | None:
@@ -588,7 +584,7 @@ class IngestionQueueClient:
             enqueued_at=state.enqueued_at,
             crawl=state.crawl,
         )
-        poll_seconds = _positive_float("ATLAS_INGEST_RESULT_POLL_SECONDS", 0.5)
+        poll_seconds = get_float("ATLAS_INGEST_RESULT_POLL_SECONDS")
         try:
             while True:
                 durable = await get_ingestion_state(self.results, state.request_id)
@@ -633,23 +629,3 @@ class IngestionQueueClient:
             self.client = None
             self.jetstream = None
             self.results = None
-
-
-def _positive_int(name: str, default: int) -> int:
-    try:
-        value = int(os.getenv(name, str(default)))
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an integer") from exc
-    if value <= 0:
-        raise ValueError(f"{name} must be greater than zero")
-    return value
-
-
-def _positive_float(name: str, default: float) -> float:
-    try:
-        value = float(os.getenv(name, str(default)))
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a number") from exc
-    if value <= 0:
-        raise ValueError(f"{name} must be greater than zero")
-    return value

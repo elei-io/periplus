@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-import os
 from pathlib import Path
 from types import TracebackType
 from typing import Any
 from uuid import UUID, uuid4
+from config import get_int
 
 from repository.ducklake import (
     Catalogue,
@@ -511,10 +511,4 @@ def _blocked_by_cache_rules(
 
 
 def _positive_env_int(name: str, default: int) -> int:
-    try:
-        value = int(os.getenv(name, str(default)))
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an integer") from exc
-    if value <= 0:
-        raise ValueError(f"{name} must be greater than zero")
-    return value
+    return get_int(name)

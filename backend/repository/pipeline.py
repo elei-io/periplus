@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from dataclasses import dataclass
 from types import TracebackType
 from uuid import UUID
+from config import get_float, get_int
 
 from repository.ducklake import CatalogueWriteResult, CrawlRecord
 from observability import repository_metrics
@@ -26,12 +26,10 @@ class IngestionWorkerConfig:
     @classmethod
     def from_env(cls) -> IngestionWorkerConfig:
         return cls(
-            max_items=_positive_int("ATLAS_INGEST_BATCH_ITEMS", 100),
-            max_element_rows=_positive_int("ATLAS_INGEST_BATCH_ELEMENT_ROWS", 250_000),
-            max_staged_bytes=_positive_int(
-                "ATLAS_INGEST_BATCH_BYTES", 256 * 1024 * 1024
-            ),
-            max_wait_seconds=_positive_float("ATLAS_INGEST_BATCH_WAIT_SECONDS", 0.5),
+            max_items=get_int("ATLAS_INGEST_BATCH_ITEMS"),
+            max_element_rows=get_int("ATLAS_INGEST_BATCH_ELEMENT_ROWS"),
+            max_staged_bytes=get_int("ATLAS_INGEST_BATCH_BYTES"),
+            max_wait_seconds=get_float("ATLAS_INGEST_BATCH_WAIT_SECONDS"),
         )
 
 
@@ -197,23 +195,3 @@ class RepositoryPipeline:
         finally:
             await asyncio.to_thread(self.ingestor.close)
             self._running = False
-
-
-def _positive_int(name: str, default: int) -> int:
-    try:
-        value = int(os.getenv(name, str(default)))
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an integer") from exc
-    if value <= 0:
-        raise ValueError(f"{name} must be greater than zero")
-    return value
-
-
-def _positive_float(name: str, default: float) -> float:
-    try:
-        value = float(os.getenv(name, str(default)))
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a number") from exc
-    if value <= 0:
-        raise ValueError(f"{name} must be greater than zero")
-    return value

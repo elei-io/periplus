@@ -13,6 +13,7 @@ dependencies = [
     "nats-py>=2.11",
     "psycopg[binary]>=3.2",
     "prometheus-client>=0.22",
+    "python-dotenv>=1.2",
     "sqlalchemy>=2.0",
     "typer>=0.26.8",
     "ducklake-client>=0.8.1",
@@ -20,6 +21,7 @@ dependencies = [
     "zstandard>=0.25",
     "html5lib>=1.1",
     "pyarrow>=21",
+    "sqlglot>=27",
 ]
 
 [project.scripts]

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from collections.abc import AsyncIterator
 from dataclasses import asdict
@@ -13,6 +12,7 @@ import nats
 from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import RetentionPolicy, StorageType, StreamConfig
 from nats.js.errors import NotFoundError
+from config import get_str
 
 from .progress import ProgressEvent
 from worker.logging import dependency_recovered, dependency_unavailable, worker_log
@@ -22,7 +22,7 @@ _SUBJECTS = ["atlas.task-runs.*.progress"]
 
 
 def _retention_seconds(value: str | None = None) -> float:
-    raw = value or os.getenv("NATS_RETENTION", "5m")
+    raw = value or get_str("NATS_RETENTION")
     match = re.fullmatch(r"(\d+(?:\.\d+)?)(ms|s|m|h)", raw.strip())
     if match is None:
         raise ValueError("NATS_RETENTION must be a duration such as 30s, 5m, or 1h.")
@@ -31,7 +31,7 @@ def _retention_seconds(value: str | None = None) -> float:
 
 
 def _nats_url() -> str:
-    return os.getenv("NATS_URL", "nats://127.0.0.1:4222")
+    return get_str("NATS_URL")
 
 
 def _subject(run_id: UUID) -> str:

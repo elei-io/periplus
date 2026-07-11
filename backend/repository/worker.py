@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import signal
 import time
 from datetime import UTC, datetime
@@ -14,6 +13,7 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from repository.ducklake import CatalogueConflictError, CatalogueValidationError
 from observability import repository_metrics
 from prometheus_client import start_http_server
+from config import get_bool, get_float, get_int, get_str
 from repository.health import HealthMonitor, start_health_server
 from repository.pipeline import IngestionWorkerConfig
 from repository.queue import (
@@ -59,9 +59,9 @@ async def run() -> None:
     health_ingestor = repository_ingestor_from_env()
     await asyncio.to_thread(health_ingestor.validate)
     staging_cleanup_interval = float(
-        os.getenv("ATLAS_INGEST_STAGING_CLEANUP_INTERVAL_SECONDS", "900")
+        get_str("ATLAS_INGEST_STAGING_CLEANUP_INTERVAL_SECONDS")
     )
-    staging_grace = float(os.getenv("ATLAS_INGEST_STAGING_GRACE_SECONDS", "3600"))
+    staging_grace = get_float("ATLAS_INGEST_STAGING_GRACE_SECONDS")
     if staging_cleanup_interval <= 0 or staging_grace <= 0:
         raise ValueError("repository staging cleanup intervals must be greater than zero")
     await asyncio.to_thread(
@@ -71,24 +71,20 @@ async def run() -> None:
     next_staging_cleanup = time.monotonic() + staging_cleanup_interval
     next_queue_snapshot = 0.0
     metrics_server = None
-    if os.getenv("ATLAS_METRICS_ENABLED", "true").lower() not in {
-        "0",
-        "false",
-        "no",
-    }:
+    if get_bool("ATLAS_METRICS_ENABLED"):
         metrics_server, _metrics_thread = start_http_server(
-            int(os.getenv("ATLAS_INGESTOR_METRICS_PORT", "9091")),
-            addr=os.getenv("ATLAS_METRICS_HOST", "0.0.0.0"),
+            get_int("ATLAS_INGESTOR_METRICS_PORT"),
+            addr=get_str("ATLAS_METRICS_HOST"),
         )
     health_monitor = HealthMonitor(
         heartbeat_timeout_seconds=float(
-            os.getenv("ATLAS_INGESTOR_HEALTH_HEARTBEAT_TIMEOUT_SECONDS", "5")
+            get_str("ATLAS_INGESTOR_HEALTH_HEARTBEAT_TIMEOUT_SECONDS")
         )
     )
     health_monitor.dependencies_ready()
     health_server, _health_thread = start_health_server(
-        address=os.getenv("ATLAS_INGESTOR_HEALTH_HOST", "0.0.0.0"),
-        port=int(os.getenv("ATLAS_INGESTOR_HEALTH_PORT", "9092")),
+        address=get_str("ATLAS_INGESTOR_HEALTH_HOST"),
+        port=get_int("ATLAS_INGESTOR_HEALTH_PORT"),
         monitor=health_monitor,
     )
     health_heartbeat_task = asyncio.create_task(_health_heartbeat(health_monitor))
@@ -243,7 +239,7 @@ async def run() -> None:
 
 def main() -> None:
     logging.basicConfig(
-        level=os.getenv("ATLAS_LOG_LEVEL", "INFO"),
+        level=get_str("ATLAS_LOG_LEVEL"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     asyncio.run(run())
@@ -471,8 +467,8 @@ async def _health_heartbeat(monitor: HealthMonitor) -> None:
 
 
 async def _dependency_probe(client, ingestor, monitor: HealthMonitor) -> None:
-    interval = float(os.getenv("ATLAS_INGESTOR_HEALTH_PROBE_INTERVAL_SECONDS", "10"))
-    timeout = float(os.getenv("ATLAS_INGESTOR_HEALTH_PROBE_TIMEOUT_SECONDS", "2"))
+    interval = get_float("ATLAS_INGESTOR_HEALTH_PROBE_INTERVAL_SECONDS")
+    timeout = get_float("ATLAS_INGESTOR_HEALTH_PROBE_TIMEOUT_SECONDS")
     if interval <= 0 or timeout <= 0:
         monitor.dependencies_unavailable(
             "repository health probe intervals must be greater than zero"

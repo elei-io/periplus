@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import tempfile
 from pathlib import Path
 
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+from config import get_optional, get_path, get_str
 
 from repository.exceptions import RepositoryConfigError
 from repository.object_store import FileObjectStore, ObjectStore, S3ObjectStore
@@ -17,16 +17,16 @@ _DEFAULT_ROOT = Path(__file__).resolve().parents[2] / ".atlas" / "repository"
 
 
 def object_store_from_env() -> ObjectStore:
-    kind = os.getenv("ATLAS_REPOSITORY_STORAGE", "disk").strip().lower()
+    kind = get_str("ATLAS_REPOSITORY_STORAGE").lower()
     if kind == "disk":
-        root = Path(os.getenv("ATLAS_REPOSITORY_ROOT", str(_DEFAULT_ROOT))).expanduser()
+        root = get_path("ATLAS_REPOSITORY_ROOT")
         return FileObjectStore(root)
     if kind == "s3":
         client, bucket = _s3_client_from_env()
         return S3ObjectStore(
             client,
             bucket=bucket,
-            prefix=os.getenv("ATLAS_REPOSITORY_S3_PREFIX", "").strip("/"),
+            prefix=(get_optional("ATLAS_REPOSITORY_S3_PREFIX") or "").strip("/"),
         )
     raise RepositoryConfigError("ATLAS_REPOSITORY_STORAGE must be one of: disk, s3")
 
@@ -34,7 +34,7 @@ def object_store_from_env() -> ObjectStore:
 def ensure_s3_bucket_from_env() -> str:
     """Create the configured bucket when absent; intended for explicit deployment init jobs."""
 
-    if os.getenv("ATLAS_REPOSITORY_STORAGE", "disk").strip().lower() != "s3":
+    if get_str("ATLAS_REPOSITORY_STORAGE").lower() != "s3":
         raise RepositoryConfigError("S3 bucket initialization requires ATLAS_REPOSITORY_STORAGE=s3")
     client, bucket = _s3_client_from_env()
     try:
@@ -93,10 +93,8 @@ def staging_root_from_env() -> Path:
     configured = _optional("ATLAS_REPOSITORY_STAGING_ROOT")
     if configured is not None:
         root = Path(configured).expanduser()
-    elif os.getenv("ATLAS_REPOSITORY_STORAGE", "disk").strip().lower() == "disk":
-        repository_root = Path(
-            os.getenv("ATLAS_REPOSITORY_ROOT", str(_DEFAULT_ROOT))
-        ).expanduser()
+    elif get_str("ATLAS_REPOSITORY_STORAGE").lower() == "disk":
+        repository_root = get_path("ATLAS_REPOSITORY_ROOT")
         root = repository_root / "staging"
     else:
         root = Path(tempfile.gettempdir()) / "atlas-repository-staging"
@@ -112,10 +110,7 @@ def _required(name: str) -> str:
 
 
 def _optional(name: str) -> str | None:
-    value = os.getenv(name)
-    if value is None:
-        return None
-    return value.strip() or None
+    return get_optional(name)
 
 
 def _optional_bool(name: str) -> bool | None:

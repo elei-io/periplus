@@ -3,11 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Text, UniqueConstraint
+from db import Base
+from sqlalchemy import Boolean, DateTime, Index, Integer, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-from db import Base
 
 
 def utc_now() -> datetime:
@@ -31,7 +30,9 @@ class UrlMatch(Base):
         Index("ix_url_matches_enabled", "enabled"),
     )
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     scheme: Mapped[str] = mapped_column(Text)
     host: Mapped[str] = mapped_column(Text)
     domain: Mapped[str] = mapped_column(Text)
@@ -48,8 +49,20 @@ class UrlMatch(Base):
         PG_UUID(as_uuid=True),
         nullable=True,
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
 
-    query_schemas = relationship("QuerySchema", back_populates="url_match", foreign_keys="QuerySchema.url_match_id")
-    crawl_policies = relationship("CrawlPolicy", back_populates="url_match", foreign_keys="CrawlPolicy.url_match_id")
+    query_schemas = relationship(
+        "QuerySchema",
+        back_populates="url_match",
+        foreign_keys="QuerySchema.url_match_id",
+    )
+    crawl_policies = relationship(
+        "CrawlPolicy",
+        back_populates="url_match",
+        foreign_keys="CrawlPolicy.url_match_id",
+    )

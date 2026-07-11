@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
+from config import get_int
 
 from actions.calibrate.service import calibrate
 from actions.crawl.service import crawl
@@ -30,7 +30,7 @@ def _json_safe(value: object) -> object:
 
 
 def validate_result_size(value: object) -> None:
-    limit = int(os.getenv("ATLAS_TASK_RESULT_MAX_BYTES", str(5 * 1024 * 1024)))
+    limit = get_int("ATLAS_TASK_RESULT_MAX_BYTES")
     size = len(json.dumps(value, separators=(",", ":"), default=str).encode())
     if size > limit:
         raise ValueError(f"Task result is {size} bytes, exceeding ATLAS_TASK_RESULT_MAX_BYTES={limit}.")

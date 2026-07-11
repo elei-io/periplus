@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import typer
+from config import get_optional
 
 _CONFIG_NAME = "atlas.json"
 
@@ -18,7 +18,7 @@ def init_config(url: str) -> None:
 
 
 def api_url() -> str:
-    override = os.getenv("ATLAS_API_URL")
+    override = get_optional("ATLAS_API_URL")
     if override:
         return override.rstrip("/")
     for directory in (Path.cwd(), *Path.cwd().parents):

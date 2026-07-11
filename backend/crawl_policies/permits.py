@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import AsyncIterator
 from uuid import UUID
 
 from sqlalchemy.orm import Session
+from config import get_float, get_int
 
 from actions.shared.progress import ProgressEvent, ProgressReporter, emit_progress
 from crawl_policies.models import CrawlPolicy
@@ -70,12 +70,10 @@ async def capacity_lease(
     """
 
     del session, task_run_id
-    timeout = float(os.getenv("ATLAS_CRAWL_PERMIT_TIMEOUT_SECONDS", "120"))
-    if timeout <= 0:
-        raise ValueError("ATLAS_CRAWL_PERMIT_TIMEOUT_SECONDS must be greater than zero")
+    timeout = get_float("ATLAS_CRAWL_PERMIT_TIMEOUT_SECONDS")
     async with AsyncExitStack() as stack:
         if include_browser:
-            capacity = max(1, int(os.getenv("ATLAS_BROWSER_CONCURRENCY", "12")))
+            capacity = get_int("ATLAS_BROWSER_CONCURRENCY")
             await stack.enter_async_context(_slot(_semaphore("browser", capacity), timeout=timeout, resource=url, reporter=progress_reporter))
         policy_limit = _limit(policy)
         if include_policy and policy is not None and policy_limit is not None:

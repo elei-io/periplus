@@ -17,6 +17,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/calibrate": apiProxyTarget,
+      "/catalogue": apiProxyTarget,
       "/extract": apiProxyTarget,
       "/index": apiProxyTarget,
       "/crawl": apiProxyTarget,

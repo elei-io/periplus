@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import UTC, datetime
 from typing import Any
+from config import get_str
 
 _LOGGER = logging.getLogger("atlas.worker")
 _LOGGER.addHandler(logging.NullHandler())
@@ -24,7 +24,7 @@ class _WorkerFormatter(logging.Formatter):
         }
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
-        if os.getenv("ATLAS_LOG_FORMAT", "text").lower() == "json":
+        if get_str("ATLAS_LOG_FORMAT").lower() == "json":
             return json.dumps(payload, default=str, separators=(",", ":"))
         fields = " ".join(
             f"{key}={json.dumps(value, default=str)}"
@@ -36,7 +36,7 @@ class _WorkerFormatter(logging.Formatter):
 
 
 def configure_worker_logging() -> None:
-    level_name = os.getenv("ATLAS_LOG_LEVEL", "INFO").upper()
+    level_name = get_str("ATLAS_LOG_LEVEL").upper()
     level = getattr(logging, level_name, logging.INFO)
     handler = logging.StreamHandler()
     handler.setFormatter(_WorkerFormatter())

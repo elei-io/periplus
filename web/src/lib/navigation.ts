@@ -8,11 +8,25 @@ import {
   SearchIcon,
   ShieldCheckIcon,
   SparklesIcon,
+  TablePropertiesIcon,
 } from "lucide-react"
 
 import type { NavigationGroup } from "@/types/navigation"
 
 export const navigationGroups: NavigationGroup[] = [
+  {
+    name: "Catalogue",
+    slug: "catalogue",
+    items: [
+      {
+        name: "SQL",
+        href: "/catalogue/sql",
+        icon: TablePropertiesIcon,
+        title: "Catalogue SQL",
+        description: "Run read-only SQL and inspect Arrow results.",
+      },
+    ],
+  },
   {
     name: "Playground",
     slug: "playground",

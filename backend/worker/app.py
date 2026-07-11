@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 from nats.errors import TimeoutError as NatsTimeoutError
 from prometheus_client import start_http_server
+from config import get_bool, get_float, get_int, get_optional, get_str
 
 from actions.shared.nats_progress import ProgressPublisher
 from actions.shared.progress import ProgressEvent, ProgressReporter
@@ -40,7 +41,7 @@ async def _process(message, runs, worker_id: str) -> None:
         return
 
     async def keep_alive() -> None:
-        interval = max(1.0, float(os.getenv("ATLAS_TASK_ACK_WAIT_SECONDS", "60")) / 3)
+        interval = max(1.0, get_float("ATLAS_TASK_ACK_WAIT_SECONDS") / 3)
         while True:
             await asyncio.sleep(interval)
             await message.in_progress()
@@ -59,7 +60,7 @@ async def _process(message, runs, worker_id: str) -> None:
                 with SessionLocal() as session:
                     execution = await asyncio.wait_for(
                         execute_task(session, run, reporter),
-                        timeout=float(os.getenv("ATLAS_TASK_RUN_TIMEOUT_SECONDS", "1800")),
+                        timeout=get_float("ATLAS_TASK_RUN_TIMEOUT_SECONDS"),
                     )
                     task = session.get(Task, run.task_id)
                     if task is not None:
@@ -106,13 +107,13 @@ async def run() -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
-    worker_id = os.getenv("ATLAS_WORKER_ID") or f"{os.uname().nodename}:{os.getpid()}"
-    capacity = max(1, int(os.getenv("ATLAS_WORKER_CONCURRENCY", "4")))
+    worker_id = get_optional("ATLAS_WORKER_ID") or f"{os.uname().nodename}:{os.getpid()}"
+    capacity = get_int("ATLAS_WORKER_CONCURRENCY")
     metrics_server = None
-    if os.getenv("ATLAS_METRICS_ENABLED", "true").lower() not in {"0", "false", "no"}:
+    if get_bool("ATLAS_METRICS_ENABLED"):
         metrics_server, _metrics_thread = start_http_server(
-            int(os.getenv("ATLAS_METRICS_PORT", "9090")),
-            addr=os.getenv("ATLAS_METRICS_HOST", "0.0.0.0"),
+            get_int("ATLAS_METRICS_PORT"),
+            addr=get_str("ATLAS_METRICS_HOST"),
         )
     client = await connect_nats()
     jetstream = client.jetstream()
@@ -130,10 +131,10 @@ async def run() -> None:
     async def schedule() -> None:
         while not stop.is_set():
             try:
-                await run_scheduler_once(SessionLocal, limit=max(1, int(os.getenv("ATLAS_SCHEDULER_BATCH_SIZE", "20"))))
+                await run_scheduler_once(SessionLocal, limit=get_int("ATLAS_SCHEDULER_BATCH_SIZE"))
             except Exception:
                 pass
-            await asyncio.sleep(max(0.5, float(os.getenv("ATLAS_WORKER_POLL_SECONDS", "5"))))
+            await asyncio.sleep(max(0.5, get_float("ATLAS_WORKER_POLL_SECONDS")))
 
     presence_task = asyncio.create_task(presence())
     scheduler_task = asyncio.create_task(schedule())

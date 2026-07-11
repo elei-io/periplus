@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ducklake_client import ColumnDef, DiskStorage, DuckDBCatalog, S3Storage
+from ducklake_client import ColumnDef, DiskStorage, DuckDBCatalog, PostgresCatalog, S3Storage
 
 from repository.ducklake import Catalogue, CatalogueConfig, CatalogueConfigError, catalogue_config_from_env
 from repository.ducklake.schema import CRAWL_COLUMNS, expected_columns
@@ -68,13 +68,15 @@ class CatalogueConfigTests(unittest.TestCase):
             with self.assertRaises(CatalogueConfigError):
                 catalogue_config_from_env()
 
-    def test_postgres_is_the_default_catalogue_and_requires_a_dsn(self) -> None:
+    def test_postgres_catalogue_has_a_local_default_dsn(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(
-                CatalogueConfigError,
-                "ATLAS_CATALOGUE_CATALOG_DSN is required",
-            ):
-                catalogue_config_from_env()
+            config = catalogue_config_from_env()
+
+        self.assertIsInstance(config.catalog, PostgresCatalog)
+        self.assertEqual(
+            config.catalog.dsn,
+            "host=127.0.0.1 port=5432 dbname=atlas_catalogue user=atlas password=atlas",
+        )
 
 
 class CatalogueBootstrapTests(unittest.TestCase):

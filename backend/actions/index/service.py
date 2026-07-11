@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from fnmatch import fnmatch
 from itertools import chain
 from urllib.parse import urldefrag, urljoin, urlparse
 from uuid import UUID
 
 from sqlalchemy.orm import Session
+from config import get_int
 
 from actions.crawl.schemas import CrawlPage
 from actions.crawl.service import crawl as crawl_service, repository_required_for_urls
@@ -51,7 +51,7 @@ async def index(
     visited: set[str] = set()
     links: list[IndexLink] = []
     failed = discovered = 0
-    batch_size = max(1, int(os.getenv("ATLAS_INDEX_PAGE_BATCH_SIZE", "32")))
+    batch_size = get_int("ATLAS_INDEX_PAGE_BATCH_SIZE")
     pipeline: RepositoryPipeline | None = None
     cache_options = cache if isinstance(cache, CacheOptions) else CacheOptions.model_validate(cache or {})
     if session is not None and task_run_id is not None and repository_required_for_urls(urls=[start], cache=cache_options, session=session, task_run_id=task_run_id):
@@ -96,7 +96,7 @@ async def index(
     if dedupe:
         links = list({link.url: link for link in links}.values())
     result_count = len(links)
-    limit = max(1, int(os.getenv("ATLAS_INDEX_RESULT_LIMIT", "10000")))
+    limit = get_int("ATLAS_INDEX_RESULT_LIMIT")
     return IndexOutput(pages=len(visited), failed_pages=failed, discovered_links=discovered, result_links=result_count, links=links[:limit])
 
 

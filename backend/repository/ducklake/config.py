@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +17,7 @@ from ducklake_client import (
     SqliteCatalog,
     StorageConfig,
 )
+from config import get_optional, get_path, get_str
 
 from repository.ducklake.exceptions import CatalogueConfigError
 
@@ -46,13 +46,13 @@ class CatalogueConfig:
 def catalogue_config_from_env() -> CatalogueConfig:
     """Build catalogue configuration from Atlas environment variables."""
 
-    root = Path(os.getenv("ATLAS_CATALOGUE_ROOT", str(_DEFAULT_ROOT))).expanduser()
+    root = get_path("ATLAS_CATALOGUE_ROOT")
     catalog = _catalog_from_env(root)
-    storage_kind = os.getenv("ATLAS_REPOSITORY_STORAGE", "disk").strip().lower()
+    storage_kind = get_str("ATLAS_REPOSITORY_STORAGE").lower()
     storage = _storage_from_env(root)
     override_data_path = _optional_bool("ATLAS_CATALOGUE_OVERRIDE_DATA_PATH")
     duckdb = DuckDBConfig(
-        database=os.getenv("ATLAS_CATALOGUE_DUCKDB_DATABASE", ":memory:"),
+        database=get_str("ATLAS_CATALOGUE_DUCKDB_DATABASE"),
         threads=_optional_int("ATLAS_CATALOGUE_DUCKDB_THREADS"),
         memory_limit=_optional("ATLAS_CATALOGUE_DUCKDB_MEMORY_LIMIT"),
         max_temp_directory_size=_optional("ATLAS_CATALOGUE_DUCKDB_MAX_TEMP_SIZE"),
@@ -61,8 +61,8 @@ def catalogue_config_from_env() -> CatalogueConfig:
     return CatalogueConfig(
         catalog=catalog,
         storage=storage,
-        alias=os.getenv("ATLAS_CATALOGUE_ALIAS", "atlas"),
-        schema=os.getenv("ATLAS_CATALOGUE_SCHEMA", "main"),
+        alias=get_str("ATLAS_CATALOGUE_ALIAS"),
+        schema=get_str("ATLAS_CATALOGUE_SCHEMA"),
         duckdb=duckdb,
         attach=DuckLakeAttachConfig(
             data_inlining_row_limit=_nonnegative_int(
@@ -79,16 +79,16 @@ def catalogue_config_from_env() -> CatalogueConfig:
 
 
 def _catalog_from_env(root: Path) -> CatalogConfig:
-    kind = os.getenv("ATLAS_CATALOGUE_CATALOG", "postgres").strip().lower()
+    kind = get_str("ATLAS_CATALOGUE_CATALOG").lower()
     if kind == "duckdb":
         path = Path(
-            os.getenv("ATLAS_CATALOGUE_CATALOG_PATH", str(root / "catalog.ducklake"))
+            get_optional("ATLAS_CATALOGUE_CATALOG_PATH") or root / "catalog.ducklake"
         ).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
         return DuckDBCatalog(path)
     if kind == "sqlite":
         path = Path(
-            os.getenv("ATLAS_CATALOGUE_CATALOG_PATH", str(root / "catalog.sqlite"))
+            get_optional("ATLAS_CATALOGUE_CATALOG_PATH") or root / "catalog.sqlite"
         ).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
         return SqliteCatalog(path)
@@ -101,16 +101,16 @@ def _catalog_from_env(root: Path) -> CatalogConfig:
 
 
 def _storage_from_env(root: Path) -> StorageConfig:
-    kind = os.getenv("ATLAS_REPOSITORY_STORAGE", "disk").strip().lower()
+    kind = get_str("ATLAS_REPOSITORY_STORAGE").lower()
     if kind == "disk":
         repository_root = Path(
-            os.getenv("ATLAS_REPOSITORY_ROOT", str(root))
+            get_str("ATLAS_REPOSITORY_ROOT")
         ).expanduser()
         path = repository_root / "lake"
         path.mkdir(parents=True, exist_ok=True)
         return DiskStorage(path)
     if kind == "s3":
-        repository_prefix = os.getenv("ATLAS_REPOSITORY_S3_PREFIX", "").strip("/")
+        repository_prefix = (get_optional("ATLAS_REPOSITORY_S3_PREFIX") or "").strip("/")
         lake_prefix = f"{repository_prefix}/lake" if repository_prefix else "lake"
         return S3Storage(
             bucket=_required("ATLAS_REPOSITORY_S3_BUCKET"),
@@ -144,11 +144,7 @@ def _required(name: str) -> str:
 
 
 def _optional(name: str) -> str | None:
-    value = os.getenv(name)
-    if value is None:
-        return None
-    stripped = value.strip()
-    return stripped or None
+    return get_optional(name)
 
 
 def _optional_int(name: str) -> int | None:

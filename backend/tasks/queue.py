@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import nats
+from config import get_float, get_int, get_str
 from nats.js.api import AckPolicy, ConsumerConfig, KeyValueConfig, RetentionPolicy, StorageType, StreamConfig
 from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError, NotFoundError
 from pydantic import BaseModel, ConfigDict, Field
@@ -66,19 +66,19 @@ class WorkerState(BaseModel):
 
 
 async def connect_nats():
-    return await nats.connect(os.getenv("NATS_URL", "nats://127.0.0.1:4222"), connect_timeout=2, max_reconnect_attempts=-1)
+    return await nats.connect(get_str("NATS_URL"), connect_timeout=2, max_reconnect_attempts=-1)
 
 
 async def ensure_task_storage(jetstream):
-    stream = StreamConfig(name=TASK_STREAM, subjects=[TASK_SUBJECT], retention=RetentionPolicy.WORK_QUEUE, storage=StorageType.FILE, num_replicas=_positive_int("ATLAS_TASK_STREAM_REPLICAS", 1))
+    stream = StreamConfig(name=TASK_STREAM, subjects=[TASK_SUBJECT], retention=RetentionPolicy.WORK_QUEUE, storage=StorageType.FILE, num_replicas=get_int("ATLAS_TASK_STREAM_REPLICAS"))
     try:
         await jetstream.stream_info(TASK_STREAM)
     except NotFoundError:
         await jetstream.add_stream(config=stream)
-    consumer = ConsumerConfig(durable_name=TASK_CONSUMER, ack_policy=AckPolicy.EXPLICIT, ack_wait=float(os.getenv("ATLAS_TASK_ACK_WAIT_SECONDS", "60")), filter_subject=TASK_SUBJECT, max_ack_pending=_positive_int("ATLAS_WORKER_CONCURRENCY", 4), max_deliver=-1)
+    consumer = ConsumerConfig(durable_name=TASK_CONSUMER, ack_policy=AckPolicy.EXPLICIT, ack_wait=get_float("ATLAS_TASK_ACK_WAIT_SECONDS"), filter_subject=TASK_SUBJECT, max_ack_pending=get_int("ATLAS_WORKER_CONCURRENCY"), max_deliver=-1)
     await jetstream.add_consumer(TASK_STREAM, config=consumer)
-    runs = await _bucket(jetstream, KeyValueConfig(bucket=RUNS_BUCKET, description="Current Atlas task-run state", history=1, max_bytes=_positive_int("ATLAS_TASK_RUN_STATE_MAX_BYTES", 256 * 1024 * 1024), storage=StorageType.FILE, replicas=_positive_int("ATLAS_TASK_STREAM_REPLICAS", 1)))
-    workers = await _bucket(jetstream, KeyValueConfig(bucket=WORKERS_BUCKET, description="Ephemeral Atlas task-worker presence", history=1, ttl=float(os.getenv("ATLAS_WORKER_PRESENCE_TTL_SECONDS", "30")), storage=StorageType.FILE, replicas=_positive_int("ATLAS_TASK_STREAM_REPLICAS", 1)))
+    runs = await _bucket(jetstream, KeyValueConfig(bucket=RUNS_BUCKET, description="Current Atlas task-run state", history=1, max_bytes=get_int("ATLAS_TASK_RUN_STATE_MAX_BYTES"), storage=StorageType.FILE, replicas=get_int("ATLAS_TASK_STREAM_REPLICAS")))
+    workers = await _bucket(jetstream, KeyValueConfig(bucket=WORKERS_BUCKET, description="Ephemeral Atlas task-worker presence", history=1, ttl=get_float("ATLAS_WORKER_PRESENCE_TTL_SECONDS"), storage=StorageType.FILE, replicas=get_int("ATLAS_TASK_STREAM_REPLICAS")))
     return runs, workers
 
 
@@ -182,10 +182,3 @@ async def publish_run(jetstream, run_id: UUID) -> None:
 def new_run(*, task_id: UUID, task_revision: int, primitive: TaskPrimitive, trigger_kind: TaskRunTriggerKind, input_json: dict, crawl_policy_snapshots_json: list[dict], data_schema_id: UUID | None = None, now: datetime | None = None) -> TaskRunState:
     now = now or datetime.now(UTC)
     return TaskRunState(id=uuid4(), task_id=task_id, task_revision=task_revision, primitive=primitive, trigger_kind=trigger_kind, data_schema_id=data_schema_id, queued_at=now, input_json=input_json, crawl_policy_snapshots_json=crawl_policy_snapshots_json, created_at=now, updated_at=now)
-
-
-def _positive_int(name: str, default: int) -> int:
-    value = int(os.getenv(name, str(default)))
-    if value <= 0:
-        raise ValueError(f"{name} must be greater than zero")
-    return value

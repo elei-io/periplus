@@ -1,10 +1,10 @@
 import asyncio
-import os
 import time
 from uuid import UUID
 
 from crawl4ai import JsonCssExtractionStrategy, JsonXPathExtractionStrategy
 from sqlalchemy.orm import Session
+from config import get_int
 
 from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
 from actions.shared.quality.service import run_quality_checks
@@ -26,11 +26,7 @@ from .schemas import ExtractOutput, ExtractSource
 
 
 def _max_extract_attempts() -> int:
-    raw = os.getenv("MAX_EXTRACT_ATTEMPTS", "2")
-    try:
-        return max(0, int(raw))
-    except ValueError:
-        return 2
+    return get_int("ATLAS_EXTRACT_MAX_ATTEMPTS", minimum=0)
 
 
 def _schema_uuid(schema_id: str) -> UUID | None:
