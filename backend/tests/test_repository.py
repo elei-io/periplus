@@ -19,7 +19,7 @@ from repository import (
     RepositoryObjectNotFound,
     S3ObjectStore,
 )
-from repository.config import ensure_s3_bucket_from_env, object_store_from_env
+from repository.objects.config import ensure_s3_bucket_from_env, object_store_from_env
 from repository.exceptions import RepositoryConfigError
 
 
@@ -96,7 +96,7 @@ class RawHtmlRepositoryTests(unittest.TestCase):
 
 
 class RepositoryConfigTests(unittest.TestCase):
-    @patch("repository.config.boto3.client")
+    @patch("repository.objects.config.boto3.client")
     def test_s3_initializer_creates_a_missing_bucket(self, client_factory) -> None:
         client = client_factory.return_value
         client.head_bucket.side_effect = ClientError(
@@ -120,7 +120,7 @@ class RepositoryConfigTests(unittest.TestCase):
         self.assertEqual(bucket, "atlas")
         client.create_bucket.assert_called_once_with(Bucket="atlas")
 
-    @patch("repository.config.boto3.client")
+    @patch("repository.objects.config.boto3.client")
     def test_s3_initializer_preserves_an_existing_bucket(self, client_factory) -> None:
         with patch.dict(
             os.environ,
@@ -135,7 +135,7 @@ class RepositoryConfigTests(unittest.TestCase):
         self.assertEqual(bucket, "atlas")
         client_factory.return_value.create_bucket.assert_not_called()
 
-    @patch("repository.config.boto3.client")
+    @patch("repository.objects.config.boto3.client")
     def test_s3_url_style_is_applied_to_boto_client(self, client) -> None:
         with patch.dict(
             os.environ,

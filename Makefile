@@ -8,10 +8,10 @@ check:
 	cd backend && uv run python -m unittest discover -s tests
 
 catalogue-bootstrap:
-	cd backend && uv run python -m repository.ducklake bootstrap
+	cd backend && uv run python -m repository.catalogue bootstrap
 
 catalogue-check:
-	cd backend && uv run python -m repository.ducklake check
+	cd backend && uv run python -m repository.catalogue check
 
 catalogue-test-postgres:
 	docker compose up -d --wait atlas-postgres
@@ -25,7 +25,7 @@ api:
 	cd backend && uv run fastapi dev api/app.py
 
 ingestor:
-	cd backend && uv run python -m repository.worker
+	cd backend && uv run python -m repository.ingestion.worker
 
 cli:
 	cd backend && uv run atlas --help

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from repository.ducklake.query import CatalogueQueryError, classify_select
+from repository.catalogue.query import CatalogueQueryError, classify_select
 
 
 class CatalogueQueryClassificationTests(unittest.TestCase):

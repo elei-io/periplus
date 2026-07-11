@@ -11,9 +11,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterator
 from uuid import UUID
 
-from repository.ducklake.client import Catalogue
-from repository.ducklake.exceptions import CatalogueConflictError, CatalogueValidationError
-from repository.ducklake.records import (
+from repository.catalogue.client import Catalogue
+from repository.catalogue.exceptions import CatalogueConflictError, CatalogueValidationError
+from repository.catalogue.records import (
     CatalogueWriteResult,
     CrawlRecord,
     DocumentRecord,

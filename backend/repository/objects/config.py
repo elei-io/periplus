@@ -11,7 +11,7 @@ from botocore.exceptions import ClientError
 from config import get_optional, get_path, get_str
 
 from repository.exceptions import RepositoryConfigError
-from repository.object_store import FileObjectStore, ObjectStore, S3ObjectStore
+from repository.objects.store import FileObjectStore, ObjectStore, S3ObjectStore
 
 _DEFAULT_ROOT = Path(__file__).resolve().parents[2] / ".atlas" / "repository"
 

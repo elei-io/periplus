@@ -26,7 +26,7 @@ from actions.shared.cache import CacheOptions, ResolvedCachePolicy, resolve_cach
 from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
 from actions.shared.quality.schemas import QualityWarning
 from actions.shared.quality.service import run_quality_checks
-from repository.ducklake import CrawlRecord
+from repository.catalogue import CrawlRecord
 from dom import links_from_html
 from control.crawl_policies.schemas import CrawlPolicySnapshot
 from runtime.crawl_capacity import capacity_lease

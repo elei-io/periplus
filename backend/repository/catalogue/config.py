@@ -19,7 +19,7 @@ from ducklake_client import (
 )
 from config import get_optional, get_path, get_str
 
-from repository.ducklake.exceptions import CatalogueConfigError
+from repository.catalogue.exceptions import CatalogueConfigError
 
 _SAFE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DEFAULT_ROOT = Path(__file__).resolve().parents[2] / ".atlas" / "repository"

@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 from ducklake_client import ColumnDef, DiskStorage, DuckDBCatalog, PostgresCatalog, S3Storage
 
-from repository.ducklake import Catalogue, CatalogueConfig, CatalogueConfigError, catalogue_config_from_env
-from repository.ducklake.schema import CRAWL_COLUMNS, expected_columns
+from repository.catalogue import Catalogue, CatalogueConfig, CatalogueConfigError, catalogue_config_from_env
+from repository.catalogue.schema import CRAWL_COLUMNS, expected_columns
 
 
 class CatalogueConfigTests(unittest.TestCase):

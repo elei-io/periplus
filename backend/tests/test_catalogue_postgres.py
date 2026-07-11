@@ -14,7 +14,7 @@ from ducklake_client import DiskStorage, PostgresCatalog
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 
-from repository.ducklake import Catalogue, CatalogueConfig, CrawlRecord
+from repository.catalogue import Catalogue, CatalogueConfig, CrawlRecord
 from repository import FileObjectStore, RawHtmlRepository, RepositoryIngestor
 
 

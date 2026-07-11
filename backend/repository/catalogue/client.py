@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 
 from ducklake_client import DuckLake, DuckLakeError, SQLType
 
-from repository.ducklake.config import CatalogueConfig
-from repository.ducklake.exceptions import CatalogueSchemaError
-from repository.ducklake.schema import (
+from repository.catalogue.config import CatalogueConfig
+from repository.catalogue.exceptions import CatalogueSchemaError
+from repository.catalogue.schema import (
     CATALOGUE_SCHEMA_VERSION,
     CRAWL_COLUMNS,
     DOCUMENT_COLUMNS,

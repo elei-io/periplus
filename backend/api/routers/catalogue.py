@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from repository import repository_ingestor_from_env
-from repository.ducklake.query import CatalogueQueryError, classify_select, stream_arrow_query
+from repository.catalogue.query import CatalogueQueryError, classify_select, stream_arrow_query
 
 router = APIRouter(prefix="/catalogue", tags=["catalogue"])
 

@@ -11,7 +11,7 @@ from typing import Any
 from uuid import UUID, uuid4
 from config import get_int
 
-from repository.ducklake import (
+from repository.catalogue import (
     Catalogue,
     CatalogueBatchEntry,
     CatalogueConflictError,
@@ -30,8 +30,8 @@ from dom import (
     GroupedLinkPayload,
     write_dom_parquet,
 )
-from repository.config import object_store_from_env, staging_root_from_env
-from repository.html import HtmlIdentity, RawHtmlRepository, StoredHtml, html_object_key
+from repository.objects.config import object_store_from_env, staging_root_from_env
+from repository.objects.html import HtmlIdentity, RawHtmlRepository, StoredHtml, html_object_key
 
 
 class ProjectionRebuildRequired(RuntimeError):

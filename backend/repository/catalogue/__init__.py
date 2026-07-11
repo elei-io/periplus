@@ -1,22 +1,22 @@
-"""Private DuckLake implementation for the Atlas repository."""
+"""DuckLake catalogue behind the repository boundary."""
 
-from repository.ducklake.client import Catalogue
-from repository.ducklake.config import CatalogueConfig, catalogue_config_from_env
-from repository.ducklake.exceptions import (
+from repository.catalogue.client import Catalogue
+from repository.catalogue.config import CatalogueConfig, catalogue_config_from_env
+from repository.catalogue.exceptions import (
     CatalogueConfigError,
     CatalogueConflictError,
     CatalogueError,
     CatalogueSchemaError,
     CatalogueValidationError,
 )
-from repository.ducklake.records import (
+from repository.catalogue.records import (
     CatalogueWriteResult,
     CrawlRecord,
     DocumentRecord,
     ElementRecord,
     LinkRecord,
 )
-from repository.ducklake.service import CatalogueBatchEntry, CatalogueService
+from repository.catalogue.service import CatalogueBatchEntry, CatalogueService
 
 __all__ = [
     "Catalogue",

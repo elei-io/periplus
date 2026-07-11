@@ -1,17 +1,17 @@
-"""Internal deployment commands for the repository DuckLake."""
+"""Deployment commands for the repository catalogue."""
 
 from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
 
-from repository.ducklake.benchmark import print_hot_path_benchmark
-from repository.ducklake.client import Catalogue
-from repository.ducklake.config import catalogue_config_from_env
+from repository.catalogue.benchmark import print_hot_path_benchmark
+from repository.catalogue.client import Catalogue
+from repository.catalogue.config import catalogue_config_from_env
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m repository.ducklake")
+    parser = argparse.ArgumentParser(prog="python -m repository.catalogue")
     parser.add_argument(
         "command",
         choices=("bootstrap", "check", "benchmark"),

@@ -27,7 +27,7 @@ dependencies = [
 [project.scripts]
 atlas = "cli.app:app"
 atlas-worker = "runtime.workers:main"
-atlas-ingestor = "repository.worker:main"
+atlas-ingestor = "repository.ingestion.worker:main"
 
 [build-system]
 requires = ["setuptools"]

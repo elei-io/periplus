@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 from nats.js.errors import NotFoundError
 
-from repository.queue import (
+from repository.ingestion.queue import (
     DEAD_LETTER_STREAM,
     DeadLetterEntry,
     connect_repository_nats,

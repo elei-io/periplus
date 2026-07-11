@@ -7,7 +7,7 @@ import pyarrow as pa
 from sqlglot import exp, parse
 from sqlglot.errors import ParseError
 
-from repository.ducklake.client import Catalogue
+from repository.catalogue.client import Catalogue
 
 
 class CatalogueQueryError(ValueError):

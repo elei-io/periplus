@@ -150,7 +150,7 @@ services:
       dockerfile: docker/atlas/Dockerfile
     image: atlas-backend:local
     working_dir: /app/backend
-    command: python -m repository.worker
+    command: python -m repository.ingestion.worker
     volumes:
       - .:/app
       - ./.atlas/repository:/app/.atlas/repository
@@ -223,7 +223,7 @@ services:
       dockerfile: docker/atlas/Dockerfile
     image: atlas-backend:local
     working_dir: /app/backend
-    command: python -m repository.ducklake bootstrap
+    command: python -m repository.catalogue bootstrap
     volumes:
       - .:/app
       - ./.atlas/repository:/app/.atlas/repository

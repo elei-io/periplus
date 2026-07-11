@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
-from repository.config import ensure_s3_bucket_from_env
+from repository.objects.config import ensure_s3_bucket_from_env
 
 
 def main(argv: Sequence[str] | None = None) -> int:

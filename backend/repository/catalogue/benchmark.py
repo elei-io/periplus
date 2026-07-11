@@ -9,8 +9,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from repository.ducklake.client import Catalogue
-from repository.ducklake.service import CatalogueService
+from repository.catalogue.client import Catalogue
+from repository.catalogue.service import CatalogueService
 
 
 def run_hot_path_benchmark(

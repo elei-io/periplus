@@ -9,10 +9,10 @@ from types import TracebackType
 from uuid import UUID
 from config import get_float, get_int
 
-from repository.ducklake import CatalogueWriteResult, CrawlRecord
+from repository.catalogue import CatalogueWriteResult, CrawlRecord
 from observability import repository_metrics
-from repository.html import HtmlIdentity
-from repository.queue import IngestionQueueClient, projection_ingestion_request_id
+from repository.objects.html import HtmlIdentity
+from repository.ingestion.queue import IngestionQueueClient, projection_ingestion_request_id
 from repository.service import ProjectionRebuildRequired, RepositoryIngestor
 
 

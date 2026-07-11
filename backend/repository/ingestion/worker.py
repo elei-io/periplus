@@ -10,13 +10,13 @@ from datetime import UTC, datetime
 
 from nats.errors import TimeoutError as NatsTimeoutError
 
-from repository.ducklake import CatalogueConflictError, CatalogueValidationError
+from repository.catalogue import CatalogueConflictError, CatalogueValidationError
 from observability import repository_metrics
 from prometheus_client import start_http_server
 from config import get_bool, get_float, get_int, get_str
-from repository.health import HealthMonitor, start_health_server
-from repository.pipeline import IngestionWorkerConfig
-from repository.queue import (
+from repository.ingestion.health import HealthMonitor, start_health_server
+from repository.ingestion.pipeline import IngestionWorkerConfig
+from repository.ingestion.queue import (
     DURABLE,
     STREAM,
     SUBJECT,

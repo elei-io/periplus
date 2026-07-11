@@ -4,14 +4,14 @@ from fastapi import APIRouter, HTTPException, Query
 from nats.js.errors import NotFoundError
 from uuid import UUID
 
-from repository.admin import (
+from repository.ingestion.admin import (
     DeadLetterList,
     DeadLetterRecord,
     list_dead_letters,
     requeue_repository_dead_letter,
 )
 from repository import repository_ingestor_from_env
-from repository.ducklake import CrawlRecord, DocumentRecord
+from repository.catalogue import CrawlRecord, DocumentRecord
 
 router = APIRouter(prefix="/operations/repository", tags=["operations"])
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import zstandard
 
-from repository.object_store import ObjectStore
+from repository.objects.store import ObjectStore
 from repository.exceptions import RepositoryIntegrityError
 
 

@@ -29,7 +29,7 @@ from nats.js.errors import (
 from pydantic import BaseModel, ConfigDict, model_validator
 import zstandard
 
-from repository.ducklake import (
+from repository.catalogue import (
     CatalogueWriteResult,
     CrawlRecord,
 )
