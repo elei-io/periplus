@@ -26,15 +26,19 @@ layer, or abstraction.
 ## Code map
 
 - `backend/actions/` — search, index, crawl, extract, calibration, and shared action behavior.
-- `backend/tasks/` — Postgres task definitions and NATS-backed run execution.
-- `backend/repository/` — raw objects, ingestion, cache reads, maintenance, and DuckLake boundary.
+- `backend/control/` — editable Postgres-backed tasks, policies, matches, and schemas.
+- `backend/runtime/` — NATS-backed runs, queues, progress, workers, and crawl capacity.
+- `backend/repository/objects/` — immutable content-addressed raw HTML.
+- `backend/repository/ingestion/` — repository queue, pipeline, writer, health, and recovery.
+- `backend/repository/catalogue/` — private DuckLake implementation.
+- `backend/repository/service.py` — application-facing durable repository boundary.
 - `backend/dom/` — versioned structural DOM projection.
 - `backend/api/` and `backend/cli/` — thin adapters.
 - `backend/db/` — SQLAlchemy setup and Alembic migrations.
 - `web/` — React frontend.
 
-Keep action request/response models in `actions/<name>/schemas.py`. Keep task definitions in
-`tasks/models.py`, task/run contracts in `tasks/schemas.py`, and Postgres infrastructure under
+Keep action request/response models in `actions/<name>/schemas.py`. Keep editable definitions under
+`control/`, current execution under `runtime/`, and generic Postgres infrastructure under
 `backend/db/`.
 
 ## Workflow

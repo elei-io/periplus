@@ -94,9 +94,12 @@ requires evidence that the current primitive is insufficient.
 ## Code ownership
 
 - `backend/actions/` owns user-facing behavior and action composition.
-- `backend/tasks/` owns task definitions, scheduling, queueing, and current run execution.
-- `backend/repository/` owns raw storage, cache reads, ingestion, and maintenance.
-- `backend/repository/ducklake/` implements the analytical catalogue behind that boundary.
+- `backend/control/` owns editable Postgres-backed definitions.
+- `backend/runtime/` owns NATS-backed execution and process-local coordination.
+- `backend/repository/objects/` owns immutable raw storage.
+- `backend/repository/ingestion/` owns the repository queue and single-writer path.
+- `backend/repository/catalogue/` implements DuckLake behind the repository boundary.
+- `backend/repository/service.py` is the application-facing durable read/write boundary.
 - `backend/dom/` owns the versioned structural projection.
 - `backend/api/` and `backend/cli/` adapt external requests and remain thin.
 - `backend/db/` owns Postgres infrastructure and migrations.
@@ -110,11 +113,13 @@ default repository backend; the optional S3 profile uses MinIO locally.
 Architecture documents ownership and invariants. Code remains authoritative for exact shapes:
 
 - Configuration and defaults: [`.env.example`](../.env.example)
-- Postgres models: [`backend/tasks/models.py`](../backend/tasks/models.py) and domain model modules
+- Postgres models: [`backend/control/`](../backend/control/)
 - Postgres migrations: [`backend/db/alembic/`](../backend/db/alembic/)
-- Task work and KV state: [`backend/tasks/queue.py`](../backend/tasks/queue.py) and
-  [`backend/tasks/schemas.py`](../backend/tasks/schemas.py)
-- Repository messages and state: [`backend/repository/queue.py`](../backend/repository/queue.py)
-- DuckLake tables: [`backend/repository/ducklake/schema.py`](../backend/repository/ducklake/schema.py)
+- Task work and KV state: [`backend/runtime/task_queue.py`](../backend/runtime/task_queue.py) and
+  [`backend/runtime/task_runs.py`](../backend/runtime/task_runs.py)
+- Repository messages and state:
+  [`backend/repository/ingestion/queue.py`](../backend/repository/ingestion/queue.py)
+- DuckLake tables:
+  [`backend/repository/catalogue/schema.py`](../backend/repository/catalogue/schema.py)
 - DOM projection: [`backend/dom/`](../backend/dom/)
 - HTTP surface: the FastAPI-generated OpenAPI document
