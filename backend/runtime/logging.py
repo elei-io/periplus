@@ -19,7 +19,7 @@ class _WorkerFormatter(logging.Formatter):
             "timestamp": datetime.now(UTC).isoformat(),
             "level": record.levelname,
             "event": record.getMessage(),
-            "service": "atlas-runtime-worker",
+            "service": "atlas-crawl-worker",
             **getattr(record, "fields", {}),
         }
         if record.exc_info:

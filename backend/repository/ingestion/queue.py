@@ -548,6 +548,34 @@ class IngestionQueueClient:
         result = await self._publish_and_wait(state)
         return result
 
+    async def enqueue(
+        self,
+        crawl: CrawlRecord,
+        *,
+        request_id: str | None = None,
+    ) -> None:
+        """Durably publish one operation without occupying acquisition capacity."""
+
+        request_id = request_id or crawl_ingestion_request_id(crawl.crawl_id)
+        state = await self._pending_state(request_id=request_id, crawl=crawl)
+        if state.status != "pending" or state.published_at is not None:
+            return
+        job = IngestionJob(
+            request_id=state.request_id,
+            reply_subject=self.client.new_inbox(),
+            enqueued_at=state.enqueued_at,
+            crawl=state.crawl,
+        )
+        payload = job.model_dump_json().encode()
+        _validate_envelope(payload, label="repository ingestion job")
+        await self.jetstream.publish(
+            SUBJECT,
+            payload,
+            stream=STREAM,
+            headers={"Nats-Msg-Id": state.request_id},
+        )
+        await mark_ingestion_published(self.results, state.request_id)
+
     async def resume(self, crawl_id: UUID) -> CatalogueWriteResult | None:
         """Wait for a previously published initial crawl ingestion, if present."""
 

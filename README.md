@@ -33,7 +33,7 @@ make check
 make compose-up
 ```
 
-Compose starts Postgres, NATS, the API, runtime worker, and repository worker. The API is available
+Compose starts Postgres, NATS, MinIO, the API, crawl worker, catalog worker, and maintenance worker. The API is available
 at `http://127.0.0.1:8000`.
 
 Run the API without Compose:

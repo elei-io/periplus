@@ -145,6 +145,10 @@ class CatalogueBootstrapTests(unittest.TestCase):
             )
             with Catalogue(config) as catalogue:
                 catalogue.bootstrap()
+                catalogue.connection.execute(
+                    "CALL atlas.set_option('data_inlining_row_limit', 0, "
+                    "schema => 'main', table_name => 'elements')"
+                )
                 for index in range(4):
                     catalogue.lake.table.append(
                         "elements",

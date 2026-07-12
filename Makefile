@@ -1,10 +1,10 @@
-.PHONY: sync check setup catalogue-check catalogue-test-postgres repository-test-s3 api runtime-worker repository-worker materialization-worker cli db-revision compose-up compose-down
+.PHONY: sync check setup catalogue-check catalogue-test-postgres repository-test-s3 api crawl-worker catalog-worker maintenance-worker cli db-revision compose-up compose-down
 
 sync:
 	cd backend && uv sync
 
 check:
-	cd backend && uv run python -m compileall actions api cli config control db dom materialization observability repository runtime
+	cd backend && uv run python -m compileall actions api cli config control db dom materialization observability repository runtime workers
 	cd backend && uv run python -m unittest discover -s tests
 
 setup:
@@ -24,14 +24,14 @@ repository-test-s3:
 api:
 	cd backend && uv run fastapi dev api/app.py
 
-runtime-worker:
-	cd backend && uv run python -m runtime.worker
+crawl-worker:
+	cd backend && uv run python -m workers.crawl
 
-repository-worker:
-	cd backend && uv run python -m repository.worker
+catalog-worker:
+	cd backend && uv run python -m workers.catalog
 
-materialization-worker:
-	cd backend && uv run python -m materialization.worker
+maintenance-worker:
+	cd backend && uv run python -m workers.maintenance
 
 cli:
 	cd backend && uv run atlas --help

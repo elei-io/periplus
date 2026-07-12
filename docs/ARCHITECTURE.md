@@ -9,7 +9,7 @@ API / CLI / schedule
                                  |
                            CrawlRequest
                                  |
-                         runtime worker
+                          crawl worker
                                  |
                                crawl
                                  |
@@ -18,19 +18,21 @@ API / CLI / schedule
     immutable HTML.zst                    frozen ingestion job
     repository object store                    JetStream
                                                      |
-                                            repository worker
-                                                     |
-                                                  Quack
+                                             catalog worker
                                                      |
                                                  DuckLake
                                                      |
-                              crawl-scoped enrichment materializations
+                              crawl-scoped catalogue materializations
                                                      |
                                               crawl ready
                                                      |
                                        outgoing bounded SQL edges
                                                      |
                                  admitted target-node CrawlRequests
+
+Off the graph hot path:
+
+maintenance worker --> flush / compaction / retention / cleanup / repair --> DuckLake
 ```
 
 `crawl` is the only page-acquisition primitive. A graph node maps admitted URL inputs to crawl
@@ -49,7 +51,8 @@ DuckLake view may have at most one attached materialization; materialization is 
 definition, not a separate catalogue product or a source of duplicate outputs. DuckLake CDC
 discovers changed document or crawl scopes and historical activation scans page through bounded
 scope IDs. Both publish JetStream work. Evaluation streams a bounded Arrow object through the
-configured repository object store; only the repository worker verifies and commits it to DuckLake.
+configured repository object store. The catalog worker verifies and commits it through its embedded
+DuckDB/DuckLake connection.
 
 ## State ownership
 
@@ -87,23 +90,23 @@ entity, messaging, recursion, and failure contract lives in [CRAWL_GRAPHS.md](CR
 
 ## Crawl and ingestion
 
-For a captured page, the runtime worker:
+For a captured page, the crawl worker:
 
 1. Normalizes the request and acquires the page under a bounded local permit.
 2. Hashes the raw UTF-8 HTML and stores compressed content idempotently under
    `raw/html/sha256/<prefix>/<hash>.html.zst`.
 3. Publishes a frozen ingestion job containing repository-relative identity and graph provenance.
-4. Waits for durable ingestion state; an inbox reply may reduce latency but is not authoritative.
+4. Releases acquisition capacity after durable catalogue-work publication.
 
-The repository worker is the only application authority requesting DuckLake writes. It verifies the
-raw object, builds a bounded page-local DOM staging file, commits document/crawl/element
-microbatches, records the result, acknowledges the message, and removes staging. The stateful Quack
-service physically executes DuckDB and DuckLake operations. Redelivery is safe because identities
-and writes are idempotent.
+Catalog workers verify raw objects, build bounded page-local DOM staging, commit
+document/crawl/element microbatches, execute scoped materializations, and evaluate outgoing edges
+only after durable readiness. Each process uses embedded DuckDB against the shared Postgres-backed
+DuckLake catalogue. Concurrent writers use deterministic operation identity and bounded conflict
+retry; redelivery resolves durable identity before repeating a write.
 
 Terminal ingestion failures enter a file-backed dead-letter stream. Explicit repository commands
-inspect and requeue them. The repository worker runs bounded, threshold-driven DuckLake small-file
-compaction between ingestion batches. Tiny DuckLake writes use the documented metadata inlining
+inspect and requeue them. The maintenance worker runs bounded, threshold-driven DuckLake small-file
+compaction independently of ingestion. Tiny DuckLake writes use the documented metadata inlining
 limit and are flushed before compaction. Compaction output is bounded by DuckLake's
 `max_compacted_files`; superseded files are reclaimed only after the configured read-safety grace
 period. Snapshot expiration, orphan deletion, and other retention-changing maintenance remain
@@ -139,7 +142,8 @@ capacity. NATS coordinates crawl requests and graph admission, not a global brow
 - `backend/control/` owns editable Postgres-backed crawl graphs, policies, matches, schemas, and
   catalogue definitions.
 - `backend/runtime/` owns NATS-backed graph runs, crawl requests, admission, deduplication, progress,
-  workers, and crawl capacity.
+  worker delivery/current state, maintenance delivery, and crawl capacity.
+- `backend/workers/` owns the crawl, catalog, and maintenance process lifecycles.
 - `backend/actions/` contains the current acquisition and analysis implementation during the graph
   cutover; it must not gain new navigation primitives or traversal loops.
 - `backend/repository/objects/` owns immutable content-addressed raw HTML.
@@ -159,7 +163,7 @@ Architecture documents ownership and invariants. Code remains authoritative for 
 implemented shapes while the graph cutover is in progress:
 
 - Crawl graph target contract: [`docs/CRAWL_GRAPHS.md`](CRAWL_GRAPHS.md)
-- Two-worker cutover plan: [`docs/TWO_WORKER_ARCHITECTURE_PLAN.md`](TWO_WORKER_ARCHITECTURE_PLAN.md)
+- Worker cutover contract: [`docs/TWO_WORKER_ARCHITECTURE_PLAN.md`](TWO_WORKER_ARCHITECTURE_PLAN.md)
 - Configuration and defaults: [`.env.example`](../.env.example)
 - Postgres models: [`backend/control/`](../backend/control/)
 - Runtime state and queues: [`backend/runtime/`](../backend/runtime/)

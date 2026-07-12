@@ -21,7 +21,8 @@ layer, or abstraction.
 - Raw HTML is immutable, content-addressed, and stored through `backend/repository/`.
 - `crawl` is the only page-acquisition primitive. Graph nodes map admitted URL inputs to crawl work;
   scoped SQL edges derive URL inputs for subsequent nodes from durable crawl evidence.
-- Runtime workers publish frozen ingestion jobs; only the repository worker writes DuckLake.
+- Crawl workers publish frozen ingestion jobs; only catalog workers perform hot-path DuckLake
+  writes. The maintenance worker performs leased off-path upkeep.
 - DuckLake owns analytical Parquet layout and compaction. Do not create permanent per-crawl files.
 - Browser concurrency is bounded per worker; replica count determines deployment-wide capacity.
 - API and CLI code validate and adapt. Graph execution belongs in runtime, acquisition belongs in
@@ -35,7 +36,8 @@ layer, or abstraction.
 - `backend/control/` — editable Postgres-backed crawl graphs, policies, matches, schemas, and
   catalogue definitions.
 - `backend/runtime/` — NATS-backed graph runs, crawl requests, queues, progress, workers, admission,
-  deduplication, and crawl capacity.
+  deduplication, maintenance delivery, and crawl capacity.
+- `backend/workers/` — crawl, catalog, and maintenance process entrypoints.
 - `backend/repository/objects/` — immutable content-addressed raw HTML.
 - `backend/repository/ingestion/` — repository queue, pipeline, writer, health, and recovery.
 - `backend/repository/catalogue/` — private DuckLake implementation.

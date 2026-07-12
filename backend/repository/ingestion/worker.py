@@ -1,4 +1,4 @@
-"""Dedicated durable repository-ingestion worker."""
+"""Catalogue ingestion loop owned by the catalog worker process."""
 
 from __future__ import annotations
 
@@ -6,12 +6,11 @@ import argparse
 import asyncio
 import json
 import logging
-import signal
 import time
-from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from nats.errors import TimeoutError as NatsTimeoutError
+from nats.js.errors import BucketNotFoundError, KeyDeletedError, KeyNotFoundError
 
 from repository.catalogue import CatalogueConflictError, CatalogueValidationError
 from observability import repository_metrics
@@ -58,61 +57,18 @@ from repository.ingestion.queue import (
 from repository.service import repository_ingestor_from_env
 from repository.catalogue.materializations import MaterializationStore
 from sqlalchemy import select
-
-
-@dataclass(frozen=True, slots=True)
-class RepositoryCompactionConfig:
-    enabled: bool
-    interval_seconds: float
-    minimum_files: int
-    maximum_input_file_bytes: int
-    target_file_bytes: int
-    maximum_compacted_files: int
-    maximum_operation_bytes: int
-    cleanup_older_than_seconds: int
-
-    @classmethod
-    def from_env(cls) -> RepositoryCompactionConfig:
-        config = cls(
-            enabled=get_bool("ATLAS_REPOSITORY_COMPACTION_ENABLED"),
-            interval_seconds=get_float(
-                "ATLAS_REPOSITORY_COMPACTION_INTERVAL_SECONDS"
-            ),
-            minimum_files=get_int("ATLAS_REPOSITORY_COMPACTION_MIN_FILES"),
-            maximum_input_file_bytes=get_int(
-                "ATLAS_REPOSITORY_COMPACTION_MAX_INPUT_FILE_BYTES"
-            ),
-            target_file_bytes=get_int(
-                "ATLAS_REPOSITORY_COMPACTION_TARGET_FILE_BYTES"
-            ),
-            maximum_compacted_files=get_int(
-                "ATLAS_REPOSITORY_COMPACTION_MAX_OUTPUT_FILES"
-            ),
-            maximum_operation_bytes=get_int(
-                "ATLAS_REPOSITORY_COMPACTION_MAX_OPERATION_BYTES"
-            ),
-            cleanup_older_than_seconds=get_int(
-                "ATLAS_REPOSITORY_CLEANUP_OLD_FILES_SECONDS"
-            ),
-        )
-        if config.target_file_bytes <= config.maximum_input_file_bytes:
-            raise ValueError(
-                "ATLAS_REPOSITORY_COMPACTION_TARGET_FILE_BYTES must be greater than "
-                "ATLAS_REPOSITORY_COMPACTION_MAX_INPUT_FILE_BYTES"
-            )
-        return config
+from runtime.maintenance_queue import MAINTENANCE_LEASE_BUCKET
 
 
 async def run() -> None:
     stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for value in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(value, stop.set)
-
     config = IngestionWorkerConfig.from_env()
-    compaction_config = RepositoryCompactionConfig.from_env()
     client = await connect_repository_nats()
     jetstream = client.jetstream()
+    try:
+        maintenance_leases = await jetstream.key_value(MAINTENANCE_LEASE_BUCKET)
+    except BucketNotFoundError:
+        maintenance_leases = None
     await ensure_materialization_streams(jetstream)
     await ensure_repository_stream(jetstream)
     await ensure_dead_letter_stream(jetstream)
@@ -132,34 +88,22 @@ async def run() -> None:
     await asyncio.to_thread(ingestor.validate)
     health_ingestor = repository_ingestor_from_env()
     await asyncio.to_thread(health_ingestor.validate)
-    staging_cleanup_interval = float(
-        get_str("ATLAS_INGEST_STAGING_CLEANUP_INTERVAL_SECONDS")
-    )
-    staging_grace = get_float("ATLAS_INGEST_STAGING_GRACE_SECONDS")
-    if staging_cleanup_interval <= 0 or staging_grace <= 0:
-        raise ValueError("repository staging cleanup intervals must be greater than zero")
-    await asyncio.to_thread(
-        ingestor.cleanup_staging,
-        older_than_seconds=staging_grace,
-    )
-    next_staging_cleanup = time.monotonic() + staging_cleanup_interval
-    next_compaction = 0.0
     next_queue_snapshot = 0.0
     metrics_server = None
     if get_bool("ATLAS_METRICS_ENABLED"):
         metrics_server, _metrics_thread = start_http_server(
-            get_int("ATLAS_REPOSITORY_WORKER_METRICS_PORT"),
+            get_int("ATLAS_CATALOG_WORKER_METRICS_PORT"),
             addr=get_str("ATLAS_METRICS_HOST"),
         )
     health_monitor = HealthMonitor(
         heartbeat_timeout_seconds=float(
-            get_str("ATLAS_REPOSITORY_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS")
+            get_str("ATLAS_CATALOG_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS")
         )
     )
     health_monitor.dependencies_ready()
     health_server, _health_thread = start_health_server(
-        address=get_str("ATLAS_REPOSITORY_WORKER_HEALTH_HOST"),
-        port=get_int("ATLAS_REPOSITORY_WORKER_HEALTH_PORT"),
+        address=get_str("ATLAS_CATALOG_WORKER_HEALTH_HOST"),
+        port=get_int("ATLAS_CATALOG_WORKER_HEALTH_PORT"),
         monitor=health_monitor,
     )
     health_heartbeat_task = asyncio.create_task(_health_heartbeat(health_monitor))
@@ -169,6 +113,9 @@ async def run() -> None:
     heartbeat_task = None
     try:
         while not stop.is_set():
+            if await _maintenance_active(maintenance_leases):
+                await asyncio.sleep(0.25)
+                continue
             await asyncio.to_thread(
                 _dematerialize_requested_materialization, ingestor.catalogue
             )
@@ -189,17 +136,6 @@ async def run() -> None:
                         exc_info=True,
                     )
                 next_queue_snapshot = time.monotonic() + 5
-            if time.monotonic() >= next_staging_cleanup:
-                deleted = await asyncio.to_thread(
-                    ingestor.cleanup_staging,
-                    older_than_seconds=staging_grace,
-                )
-                if deleted:
-                    logging.info("removed %d abandoned repository staging files", deleted)
-                next_staging_cleanup = time.monotonic() + staging_cleanup_interval
-            if compaction_config.enabled and time.monotonic() >= next_compaction:
-                await _compact_repository(ingestor, compaction_config)
-                next_compaction = time.monotonic() + compaction_config.interval_seconds
             try:
                 messages = await subscription.fetch(
                     batch=config.max_items,
@@ -322,7 +258,7 @@ async def run() -> None:
 
 
 def main() -> None:
-    argparse.ArgumentParser(description="Run the Atlas repository worker.").parse_args()
+    argparse.ArgumentParser(description="Run the Atlas catalog ingestion loop.").parse_args()
     logging.basicConfig(
         level=get_str("ATLAS_LOG_LEVEL"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -734,61 +670,25 @@ async def _heartbeat_messages(messages) -> None:
         )
 
 
-async def _compact_repository(
-    ingestor,
-    config: RepositoryCompactionConfig,
-) -> None:
-    started = time.perf_counter()
-    try:
-        results = await asyncio.to_thread(
-            ingestor.catalogue_service.compact_small_files,
-            minimum_files=config.minimum_files,
-            maximum_input_file_bytes=config.maximum_input_file_bytes,
-            target_file_bytes=config.target_file_bytes,
-            maximum_compacted_files=config.maximum_compacted_files,
-            maximum_operation_bytes=config.maximum_operation_bytes,
-            cleanup_older_than_seconds=config.cleanup_older_than_seconds,
-        )
-    except Exception:
-        repository_metrics.compaction(
-            outcome="failed",
-            duration_seconds=time.perf_counter() - started,
-            files_processed=0,
-            files_created=0,
-        )
-        logging.warning("repository compaction failed", exc_info=True)
-        return
-
-    files_processed = sum(result.files_processed for result in results)
-    files_created = sum(result.files_created for result in results)
-    repository_metrics.compaction(
-        outcome="compacted" if files_processed else "noop",
-        duration_seconds=time.perf_counter() - started,
-        files_processed=files_processed,
-        files_created=files_created,
-    )
-    for result in results:
-        logging.info(
-            "repository compacted table=%s.%s eligible_files=%d eligible_bytes=%d "
-            "files_processed=%d files_created=%d",
-            result.schema_name,
-            result.table_name,
-            result.eligible_files,
-            result.eligible_bytes,
-            result.files_processed,
-            result.files_created,
-        )
-
-
 async def _health_heartbeat(monitor: HealthMonitor) -> None:
     while True:
         monitor.heartbeat()
         await asyncio.sleep(1)
 
 
+async def _maintenance_active(bucket) -> bool:
+    if bucket is None:
+        return False
+    try:
+        await bucket.get("global")
+    except (KeyNotFoundError, KeyDeletedError):
+        return False
+    return True
+
+
 async def _dependency_probe(client, ingestor, monitor: HealthMonitor) -> None:
-    interval = get_float("ATLAS_REPOSITORY_WORKER_HEALTH_PROBE_INTERVAL_SECONDS")
-    timeout = get_float("ATLAS_REPOSITORY_WORKER_HEALTH_PROBE_TIMEOUT_SECONDS")
+    interval = get_float("ATLAS_CATALOG_WORKER_HEALTH_PROBE_INTERVAL_SECONDS")
+    timeout = get_float("ATLAS_CATALOG_WORKER_HEALTH_PROBE_TIMEOUT_SECONDS")
     if interval <= 0 or timeout <= 0:
         monitor.dependencies_unavailable(
             "repository health probe intervals must be greater than zero"

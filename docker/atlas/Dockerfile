@@ -17,7 +17,7 @@ RUN UV_PROJECT_ENVIRONMENT=/opt/atlas-venv uv sync --frozen --no-install-project
 
 # Application images need only the Quack transport. Stateful setup builds opt
 # into the attachment extensions explicitly below through a build argument.
-ARG ATLAS_DUCKDB_EXTENSIONS=quack
+ARG ATLAS_DUCKDB_EXTENSIONS=ducklake,parquet,postgres,httpfs,sqlite
 RUN ATLAS_DUCKDB_EXTENSIONS="${ATLAS_DUCKDB_EXTENSIONS}" /opt/atlas-venv/bin/python -c "import os, duckdb; connection = duckdb.connect(); [connection.install_extension(name) for name in os.environ['ATLAS_DUCKDB_EXTENSIONS'].split(',') if name]; connection.close()"
 
 RUN /opt/atlas-venv/bin/playwright install --with-deps chromium

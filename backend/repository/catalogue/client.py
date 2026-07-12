@@ -98,6 +98,7 @@ class Catalogue:
             )
         self._migrate_schema()
         self._configure_layout()
+        self._configure_inlining()
         from repository.catalogue.macros import install_catalogue_macros
 
         install_catalogue_macros(self)
@@ -114,6 +115,20 @@ class Catalogue:
             f"ALTER TABLE {table} SET PARTITIONED BY ("
             "year(captured_at), month(captured_at), day(captured_at))"
         )
+
+    def _configure_inlining(self) -> None:
+        """Persist hot-ingestion table thresholds in DuckLake metadata."""
+
+        for table_name, row_limit in (
+            ("documents", 1000),
+            ("crawls", 1000),
+            ("elements", 16000),
+        ):
+            self.connection.execute(
+                f"CALL {_quote_identifier(self.config.alias)}.set_option("
+                "'data_inlining_row_limit', ?, schema => ?, table_name => ?)",
+                [row_limit, self.config.schema, table_name],
+            )
 
     def _migrate_schema(self) -> None:
         """Apply small, idempotent DuckLake schema upgrades owned by Atlas."""

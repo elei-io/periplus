@@ -1,4 +1,4 @@
-"""NATS-backed crawl-graph runtime worker."""
+"""Atlas crawl hot-path worker."""
 
 from __future__ import annotations
 
@@ -10,25 +10,20 @@ from datetime import UTC, datetime
 
 from nats.errors import TimeoutError as NatsTimeoutError
 from prometheus_client import start_http_server
+from crawl4ai import AsyncWebCrawler
 
 from actions.crawl.service import crawl_graph_request
+from actions.shared.crawl import browser_config_for_mode
 from config import get_bool, get_int, get_optional, get_str
 from db.session import session_scope
-from repository.catalogue import catalogue_from_env
-from repository.catalogue.query import execute_arrow_query
+from repository import RepositoryPipeline, repository_ingestor_from_env
 from runtime.context import GraphExecutionContext
 from runtime.graph_queue import (
     CRAWL_CONSUMER,
     CRAWL_SUBJECT,
-    EDGE_CONSUMER,
-    EDGE_SUBJECT,
     GRAPH_STREAM,
-    READINESS_CONSUMER,
-    READINESS_SUBJECT,
     CrawlRequest,
     CrawlWork,
-    EdgeWork,
-    ReadinessWork,
     WorkerState,
     connect_nats,
     ensure_graph_storage,
@@ -38,12 +33,7 @@ from runtime.graph_queue import (
     list_graph_runs,
     update_crawl_request,
 )
-from runtime.graph_runs import (
-    evaluate_edge,
-    handle_readiness,
-    resolve_policy_snapshot,
-    settle_request,
-)
+from runtime.graph_runs import settle_request
 from runtime.graph_progress import bootstrap_run_progress, transition_node_progress
 
 
@@ -53,7 +43,7 @@ async def _keep_alive(message) -> None:
         await message.in_progress()
 
 
-async def _process_crawl(message, runs, requests, progress) -> None:
+async def _process_crawl(message, runs, requests, progress, crawler, repository_pipeline) -> None:
     work = CrawlWork.model_validate_json(message.data)
     request = await get_crawl_request(requests, work.crawl_request_id)
     if request is None or request.status in {"completed", "failed", "cancelled"}:
@@ -103,6 +93,8 @@ async def _process_crawl(message, runs, requests, progress) -> None:
                 session=session,
                 url=request.url,
                 context=context,
+                crawler=crawler,
+                repository_pipeline=repository_pipeline,
             )
         if page.crawl_id != request.id:
             raise RuntimeError(
@@ -140,68 +132,18 @@ async def _process_crawl(message, runs, requests, progress) -> None:
         await asyncio.gather(heartbeat, return_exceptions=True)
 
 
-async def _process_readiness(message, runs, requests, progress, jetstream) -> None:
-    event = ReadinessWork.model_validate_json(message.data)
-    try:
-        await handle_readiness(
-            runs=runs,
-            requests=requests,
-            progress=progress,
-            jetstream=jetstream,
-            event=event,
-        )
-    except Exception:
-        await message.nak(delay=1)
-        return
-    await message.ack()
-
-
-def _edge_urls(sql: str, parameters: dict[str, object]):
-    with catalogue_from_env() as catalogue:
-        reader = execute_arrow_query(catalogue, sql, parameters)
-        index = reader.schema.get_field_index("url")
-        if index < 0:
-            raise ValueError("Edge SQL did not return its required url column.")
-        for batch in reader:
-            for value in batch.column(index).to_pylist():
-                if value is None:
-                    continue
-                yield str(value)
-
-
-async def _process_edge(message, runs, requests, progress, jetstream) -> None:
-    work = EdgeWork.model_validate_json(message.data)
-    try:
-        with session_scope() as session:
-            await evaluate_edge(
-                runs=runs,
-                requests=requests,
-                progress=progress,
-                jetstream=jetstream,
-                work=work,
-                execute_urls=_edge_urls,
-                policy_resolver=lambda url: resolve_policy_snapshot(session, url),
-            )
-    except Exception:
-        # evaluate_edge durably marks deterministic evaluation failures and settles
-        # their source request, so redelivery cannot make the query succeed.
-        await message.ack()
-        return
-    await message.ack()
-
-
 async def run() -> None:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
 
-    worker_id = get_optional("ATLAS_RUNTIME_WORKER_ID") or f"{os.uname().nodename}:{os.getpid()}"
-    capacity = get_int("ATLAS_RUNTIME_WORKER_CONCURRENCY")
+    worker_id = get_optional("ATLAS_CRAWL_WORKER_ID") or f"{os.uname().nodename}:{os.getpid()}"
+    capacity = get_int("ATLAS_CRAWL_WORKER_CONCURRENCY")
     metrics_server = None
     if get_bool("ATLAS_METRICS_ENABLED"):
         metrics_server, _metrics_thread = start_http_server(
-            get_int("ATLAS_RUNTIME_WORKER_METRICS_PORT"),
+            get_int("ATLAS_CRAWL_WORKER_METRICS_PORT"),
             addr=get_str("ATLAS_METRICS_HOST"),
         )
 
@@ -214,17 +156,6 @@ async def run() -> None:
             await bootstrap_run_progress(progress, requests, active_run)
     crawl_subscription = await jetstream.pull_subscribe(
         CRAWL_SUBJECT, durable=CRAWL_CONSUMER, stream=GRAPH_STREAM
-    )
-    edge_subscription = await jetstream.pull_subscribe(
-        EDGE_SUBJECT, durable=EDGE_CONSUMER, stream=GRAPH_STREAM
-    )
-    readiness_subscription = await jetstream.pull_subscribe(
-        READINESS_SUBJECT, durable=READINESS_CONSUMER, stream=GRAPH_STREAM
-    )
-    subscriptions = (
-        (readiness_subscription, _process_readiness),
-        (edge_subscription, _process_edge),
-        (crawl_subscription, _process_crawl),
     )
     active: set[asyncio.Task] = set()
     started = datetime.now(UTC)
@@ -244,32 +175,27 @@ async def run() -> None:
 
     presence_task = asyncio.create_task(presence())
     try:
-        while not stop.is_set():
-            active = {task for task in active if not task.done()}
-            available = capacity - len(active)
-            if available <= 0:
-                await asyncio.sleep(0.05)
-                continue
-            fetched = False
-            for subscription, processor in subscriptions:
-                try:
-                    messages = await subscription.fetch(batch=available, timeout=0.1)
-                except (NatsTimeoutError, asyncio.TimeoutError):
-                    continue
-                fetched = fetched or bool(messages)
-                for message in messages:
-                    if processor is _process_crawl:
-                        task = asyncio.create_task(processor(message, runs, requests, progress))
-                    else:
-                        task = asyncio.create_task(processor(message, runs, requests, progress, jetstream))
-                    active.add(task)
-                    available -= 1
+        async with AsyncWebCrawler(config=browser_config_for_mode("app")) as crawler:
+            async with RepositoryPipeline(repository_ingestor_from_env()) as repository_pipeline:
+                while not stop.is_set():
+                    active = {task for task in active if not task.done()}
+                    available = capacity - len(active)
                     if available <= 0:
-                        break
-                if available <= 0:
-                    break
-            if not fetched:
-                await asyncio.sleep(0.05)
+                        await asyncio.sleep(0.05)
+                        continue
+                    fetched = False
+                    try:
+                        messages = await crawl_subscription.fetch(batch=available, timeout=0.1)
+                    except (NatsTimeoutError, asyncio.TimeoutError):
+                        messages = []
+                    fetched = bool(messages)
+                    for message in messages:
+                        task = asyncio.create_task(_process_crawl(
+                            message, runs, requests, progress, crawler, repository_pipeline
+                        ))
+                        active.add(task)
+                    if not fetched:
+                        await asyncio.sleep(0.05)
     finally:
         stop.set()
         presence_task.cancel()
@@ -281,7 +207,7 @@ async def run() -> None:
 
 
 def main() -> None:
-    argparse.ArgumentParser(description="Run the Atlas crawl-graph worker.").parse_args()
+    argparse.ArgumentParser(description="Run the Atlas crawl worker.").parse_args()
     asyncio.run(run())
 
 

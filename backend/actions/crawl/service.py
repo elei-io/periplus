@@ -315,25 +315,14 @@ async def _persist_page(
                 # Drop this function's reference before ingestion backpressure and
                 # structural reads so large pages do not accumulate in crawl workers.
                 result_page = page.model_copy(update={"html": None})
-        repository_result = await pipeline.submit_stored(record)
-        links = (
-            await pipeline.projected_links(
-                repository_result.document_id,
-                page_url=crawl_payload.get("redirected_url") or result_page.url,
-            )
-            if include_links and repository_result.document_id is not None
-            else None
-        )
-        durable_payload = (
-            {**crawl_payload, "links": links} if links is not None else crawl_payload
-        )
+        await pipeline.enqueue_stored(record)
         return result_page.model_copy(
             update={
                 "crawl_id": crawl_id,
-                "document_id": repository_result.document_id,
-                "repository_snapshot": repository_result.repository_snapshot,
-                "repository_crawl_created": repository_result.crawl_created,
-                "crawl": durable_payload,
+                "document_id": record.document_id,
+                "repository_snapshot": None,
+                "repository_crawl_created": None,
+                "crawl": crawl_payload,
             }
         )
 
@@ -602,6 +591,7 @@ async def _crawl_graph_request(
     crawl_request_id: UUID,
     run_config_overrides: dict[str, Any] | None = None,
     repository_pipeline: RepositoryPipeline | None = None,
+    crawler: AsyncWebCrawler | None = None,
     cache: CacheOptions | dict[str, Any] | None = None,
     retain_html: bool = True,
     include_links: bool = True,
@@ -757,6 +747,8 @@ async def _crawl_graph_request(
         return page, False
 
     async def load_page() -> tuple[CrawlPage, bool]:
+        if crawler is not None:
+            return await load_with(crawler)
         async with AsyncWebCrawler(config=browser_config_for_mode(mode)) as owned_crawler:
             return await load_with(owned_crawler)
 
@@ -877,10 +869,25 @@ async def crawl_graph_request(
     url: str,
     context: GraphExecutionContext,
     progress_reporter: ProgressReporter | None = None,
+    crawler: AsyncWebCrawler | None = None,
+    repository_pipeline: RepositoryPipeline | None = None,
 ) -> CrawlPage:
-    """Acquire and durably ingest one frozen graph crawl request."""
+    """Acquire and durably ingest one frozen graph crawl request.
+
+    Workers pass process-owned browser and repository lifecycles. Direct callers may omit them for
+    a bounded one-shot acquisition.
+    """
 
     with graph_execution_scope(context):
+        if repository_pipeline is not None:
+            return await _crawl_graph_request(
+                url=url,
+                session=session,
+                crawl_request_id=context.crawl_request_id,
+                repository_pipeline=repository_pipeline,
+                progress_reporter=progress_reporter,
+                crawler=crawler,
+            )
         async with RepositoryPipeline(repository_ingestor_from_env()) as pipeline:
             return await _crawl_graph_request(
                 url=url,
@@ -888,4 +895,5 @@ async def crawl_graph_request(
                 crawl_request_id=context.crawl_request_id,
                 repository_pipeline=pipeline,
                 progress_reporter=progress_reporter,
+                crawler=crawler,
             )

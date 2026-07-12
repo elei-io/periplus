@@ -104,8 +104,8 @@ When a graph is triggered, its frozen root node receives the trigger URL inputs.
 receive URLs from edges and participate in cycles; being root only determines initial admission.
 
 The node does not write DuckLake directly. It maps admitted inputs to the ordinary crawl path, which
-stores immutable raw HTML and publishes ingestion work. The repository worker remains the only
-application authority requesting DuckLake writes.
+stores immutable raw HTML and publishes ingestion work. Catalog workers own ingestion,
+materialization, and navigation-critical DuckLake publication.
 
 ### CrawlGraphEdge
 
@@ -267,10 +267,9 @@ configuration.
 
 ### Acquisition and ingestion
 
-A runtime worker claims one crawl request, acquires the page through the shared crawl path, writes
+A crawl worker claims one crawl request, acquires the page through the shared crawl path, writes
 immutable raw HTML through the repository object boundary, and publishes a frozen ingestion job.
-Only the repository worker validates staging and requests the DuckLake crawl/document/element
-commit.
+Catalog workers validate staging and commit the DuckLake crawl/document/element evidence.
 
 The crawl request may transition through states such as:
 

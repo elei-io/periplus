@@ -188,13 +188,13 @@ async def ensure_graph_storage(jetstream):
     except NotFoundError:
         await jetstream.add_stream(config=stream)
     ack_wait = get_float("ATLAS_GRAPH_ACK_WAIT_SECONDS")
-    pending = get_int("ATLAS_RUNTIME_WORKER_CONCURRENCY")
+    pending = get_int("ATLAS_CRAWL_WORKER_CONCURRENCY")
     for durable, subject in ((CRAWL_CONSUMER, CRAWL_SUBJECT), (EDGE_CONSUMER, EDGE_SUBJECT), (READINESS_CONSUMER, READINESS_SUBJECT)):
         await jetstream.add_consumer(GRAPH_STREAM, config=ConsumerConfig(durable_name=durable, ack_policy=AckPolicy.EXPLICIT, ack_wait=ack_wait, filter_subject=subject, max_ack_pending=pending, max_deliver=-1))
     state_bytes = get_int("ATLAS_GRAPH_STATE_MAX_BYTES")
     runs = await _bucket(jetstream, KeyValueConfig(bucket=RUNS_BUCKET, description="Current Atlas graph-run state", history=1, max_bytes=state_bytes, storage=StorageType.FILE, replicas=replicas))
     requests = await _bucket(jetstream, KeyValueConfig(bucket=REQUESTS_BUCKET, description="Current Atlas crawl-request state", history=1, max_bytes=state_bytes, storage=StorageType.FILE, replicas=replicas))
-    workers = await _bucket(jetstream, KeyValueConfig(bucket=WORKERS_BUCKET, description="Ephemeral Atlas graph-worker presence", history=1, ttl=get_float("ATLAS_RUNTIME_WORKER_PRESENCE_TTL_SECONDS"), storage=StorageType.FILE, replicas=replicas))
+    workers = await _bucket(jetstream, KeyValueConfig(bucket=WORKERS_BUCKET, description="Ephemeral Atlas crawl-worker presence", history=1, ttl=get_float("ATLAS_CRAWL_WORKER_PRESENCE_TTL_SECONDS"), storage=StorageType.FILE, replicas=replicas))
     return runs, requests, workers
 
 

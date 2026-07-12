@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -52,7 +53,10 @@ class CatalogueService:
     ) -> list[CatalogueWriteResult]:
         """Commit a microbatch with one append per logical DuckLake table."""
 
-        with self._write_fence():
+        operation_key = hashlib.sha256(
+            "\0".join(sorted(str(entry.crawl.crawl_id) for entry in entries)).encode()
+        ).hexdigest()
+        with self._write_fence(f"ingest-{operation_key}"):
             return self._record_crawl_batch_unfenced(entries)
 
     def compact_small_files(
@@ -86,7 +90,7 @@ class CatalogueService:
                 "target_file_bytes must not exceed maximum_operation_bytes"
             )
 
-        with self._write_fence():
+        with self._write_fence("maintenance-global"):
             # DuckLake inlines tiny writes into its metadata catalogue. Flush those
             # accumulated rows before file compaction so Postgres does not become
             # an unbounded data store at low ingestion rates.
@@ -626,11 +630,11 @@ class CatalogueService:
         )
 
     @contextmanager
-    def _write_fence(self) -> Iterator[None]:
-        """Serialize repository commits through ducklake-client's catalogue fence."""
+    def _write_fence(self, operation: str) -> Iterator[None]:
+        """Fence redelivery of one deterministic operation without serializing the catalogue."""
 
         with self.catalogue.lake.fence(
-            "repository-commit",
+            operation,
             namespace="atlas",
             timeout=120,
         ):

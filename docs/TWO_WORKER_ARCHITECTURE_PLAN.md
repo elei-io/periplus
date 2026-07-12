@@ -1,13 +1,15 @@
-# Two-Worker Architecture Cutover Plan
+# Hot-Path and Maintenance Worker Architecture Cutover Plan
 
 Status: implementation-ready target contract.
 
 This plan replaces Atlas's current runtime, repository, materialization, and Quack execution story
-with two horizontally scalable worker classes:
+with two horizontally scalable hot-path worker classes and one deliberately off-path maintenance
+worker:
 
 ```text
 crawl-worker
 catalog-worker
+maintenance-worker
 ```
 
 The change is a direct greenfield cutover. Do not add compatibility queues, dual execution paths,
@@ -17,7 +19,8 @@ state, and remove the superseded services when each phase is proven.
 ## Goals
 
 1. **Simplify the architecture story.** One worker acquires pages; one worker turns acquired evidence
-   into trustworthy catalogue state and further graph navigation.
+   into trustworthy catalogue state and further graph navigation; one worker performs catalogue
+   upkeep outside both hot paths.
 2. **Make both planes horizontally scalable.** Crawl capacity and catalogue capacity scale
    independently from their own queue pressure.
 3. **Make failures easy to locate and explain.** A crawl is either waiting for acquisition or
@@ -28,6 +31,8 @@ state, and remove the superseded services when each phase is proven.
 5. **Remove correctness-critical dependence on Quack.** Embedded DuckDB/DuckLake connections in
    catalog workers replace remote Quack connections, connection IDs, and the central compute
    bottleneck.
+6. **Keep maintenance out of throughput scaling.** Flush, compaction, retention, cleanup, and repair
+   work must never consume crawl or catalog worker capacity merely because it shares DuckLake.
 
 ## Non-goals
 
@@ -113,6 +118,17 @@ API / schedule / graph edge
               +------> NATS CrawlRequests selected by graph edges
               |
               +------> DuckLake crawl history and derived evidence
+
+     +--------------------+
+     | maintenance-worker |  one replica by default; scale only from maintenance pressure
+     |--------------------|
+     | flush inlined data |
+     | compact files      |
+     | retention/cleanup  |
+     | bounded repair     |
+     +---------+----------+
+               |
+               +------> DuckLake maintenance under the global maintenance lease
 ```
 
 State ownership does not change:
@@ -197,6 +213,26 @@ Horizontal scaling signals:
 
 Scale catalogue workers independently from crawl workers. The desired ratio is determined by
 observed work cost, not by a fixed one-to-one replica count.
+
+The catalog worker does not compact, flush, expire, delete, or repair catalogue data. It observes
+the global maintenance lease before claiming or committing work and drains bounded in-flight
+transactions when maintenance takes ownership.
+
+### `maintenance-worker`
+
+The maintenance worker owns only bounded, idempotent upkeep:
+
+1. Flush table-specific inlined data when an explicit or measured threshold is reached.
+2. Compact eligible DuckLake data files.
+3. Execute explicitly configured snapshot retention and orphan cleanup.
+4. Remove abandoned repository staging objects after their grace period.
+5. Run narrowly defined catalogue consistency checks and repair operations.
+6. Publish operation progress and completion without participating in graph readiness.
+
+It never claims crawl, ingestion, materialization, or edge work. It runs as one replica by default;
+multiple replicas are safe because every operation has a deterministic ID and the global
+maintenance lease serializes catalogue-wide mutations. Maintenance failure may increase storage
+or query cost, but it cannot make graph navigation observe uncommitted evidence.
 
 ## Concurrent DuckLake writers
 
@@ -303,7 +339,8 @@ flush a table when any is true:
 
 Flush and compaction run under a short catalogue maintenance lease. Ordinary concurrent writes are
 paused or allowed to drain only for the affected maintenance window. Snapshot expiration and orphan
-deletion remain explicit operator actions.
+deletion remain explicit operator actions. Only the maintenance worker acquires this lease for
+runtime upkeep; catalog workers only observe it and drain.
 
 ## Navigation readiness
 
@@ -471,6 +508,16 @@ durables:
 - atlas-catalog-edge-workers
 retention: work queue
 
+stream: ATLAS_MAINTENANCE_WORK
+subjects:
+- atlas.maintenance.flush
+- atlas.maintenance.compact
+- atlas.maintenance.cleanup
+- atlas.maintenance.retention
+- atlas.maintenance.repair
+durable: atlas-maintenance-workers
+retention: work queue
+
 KV
 - atlas_graph_runs
 - atlas_crawl_requests
@@ -478,8 +525,10 @@ KV
 - atlas_graph_edge_evaluations
 - atlas_crawl_workers
 - atlas_catalog_workers
+- atlas_maintenance_workers
 - atlas_catalog_operations
 - atlas_catalog_maintenance
+- atlas_maintenance_operations
 - atlas_catalog_pressure
 ```
 
@@ -658,15 +707,19 @@ retention deletes the bucket entry. Lease acquisition occurs before expensive pr
 
 ```text
 owner: string
-operation: flush | compact | schema
+operation: flush | compact | cleanup | retention | repair | schema
 lease_expires_at: timestamp
 created_at: timestamp
 ```
 
 The initial lease duration is five minutes with a 30-second heartbeat. Schema migration requires no
-active catalog workers and is performed only by `atlas-setup`. Flush and compaction acquire the
-lease, stop claiming new catalog work, wait up to 120 seconds for local operations to drain, run one
-bounded maintenance operation, and release the lease. A failure releases by TTL.
+active catalog workers and is performed only by `atlas-setup`. The maintenance worker acquires the
+lease and publishes the lease state; catalog workers stop claiming new work and drain their local
+operations. After the active catalogue-operation count reaches zero, or the 120-second drain limit
+expires without active commits, the maintenance worker runs one bounded operation and releases the
+lease. A failure releases by TTL. Maintenance operations are recorded in
+`atlas_maintenance_operations` by deterministic operation ID, so redelivery cannot repeat a
+completed retention or repair action.
 
 ## Initial configuration
 
@@ -689,6 +742,13 @@ ATLAS_CATALOG_OPERATION_HEARTBEAT_SECONDS=30
 ATLAS_CATALOG_OPERATION_LOCK_TIMEOUT_SECONDS=60
 ATLAS_CATALOG_WORKER_PRESENCE_TTL_SECONDS=15
 ATLAS_CATALOG_MAX_DELIVER=5
+
+ATLAS_MAINTENANCE_WORKER_CONCURRENCY=1
+ATLAS_MAINTENANCE_WORKER_PRESENCE_TTL_SECONDS=30
+ATLAS_MAINTENANCE_LEASE_SECONDS=300
+ATLAS_MAINTENANCE_HEARTBEAT_SECONDS=30
+ATLAS_MAINTENANCE_CATALOG_DRAIN_SECONDS=120
+ATLAS_MAINTENANCE_MAX_DELIVER=3
 
 ATLAS_CATALOG_BATCH_MAX_OPERATIONS=4
 ATLAS_CATALOG_BATCH_MAX_BYTES=67108864
@@ -755,11 +815,13 @@ not sufficient for performance attribution.
 
 ## Code ownership and work packages
 
-The cutover keeps domain code in its existing packages and introduces only two process entrypoints:
+The cutover keeps domain code in its existing packages and introduces three process entrypoints.
+Only the first two are graph-execution hot paths:
 
 ```text
 backend/workers/crawl.py    # crawl-worker process
 backend/workers/catalog.py  # catalog-worker process
+backend/workers/maintenance.py # maintenance-worker process
 ```
 
 Deployment and local commands are frozen:
@@ -772,6 +834,10 @@ Make target: make crawl-worker
 Compose service: atlas-catalog-worker
 Command: python -m workers.catalog
 Make target: make catalog-worker
+
+Compose service: atlas-maintenance-worker
+Command: python -m workers.maintenance
+Make target: make maintenance-worker
 ```
 
 The API uses its own embedded read-only DuckDB pool and is not a third worker class. It never claims
@@ -783,7 +849,8 @@ Required ownership after cutover:
 | --- | --- | --- |
 | Graph state/admission | `backend/runtime/graph_runs.py`, `graph_progress.py` | GraphRun/CrawlRequest CAS, dedupe, completion |
 | Crawl delivery | `backend/runtime/crawl_queue.py` | `ATLAS_CRAWL_WORK` and crawl worker presence |
-| Catalog delivery | `backend/runtime/catalog_queue.py` | `ATLAS_CATALOG_WORK`, envelopes, operation/maintenance/pressure KV |
+| Catalog delivery | `backend/runtime/catalog_queue.py` | `ATLAS_CATALOG_WORK`, envelopes, operation/pressure KV |
+| Maintenance delivery | `backend/runtime/maintenance_queue.py` | `ATLAS_MAINTENANCE_WORK`, operation and maintenance-lease KV |
 | Acquisition | `backend/actions/crawl/` | HTTP/browser transport and immutable acquisition result |
 | Raw objects | `backend/repository/objects/` | Content-addressed HTML |
 | Catalogue transactions | `backend/repository/catalogue/` | Embedded DuckLake attach, identity resolution, commit, maintenance |
@@ -811,8 +878,9 @@ The work is divided into low-overlap packages and merged in this dependency orde
    transaction retry, identity resolution.
 4. **Base ingestion:** DOM, `page_links`, fan-out planning, table inlining, base transaction.
 5. **Materialization and edges:** live/backfill execution, coverage, readiness, edge SQL, admission.
-6. **Operations:** maintenance lease, flush/compaction, pressure monitor, autoscaling metrics.
-7. **Deletion/deployment:** two services, removed Quack and old streams, docs/UI/CLI updates.
+6. **Operations:** maintenance worker, lease, flush/compaction/retention/cleanup, pressure monitor,
+   autoscaling metrics.
+7. **Deletion/deployment:** three services, removed Quack and old streams, docs/UI/CLI updates.
 
 Packages 2 and 3 can proceed in parallel after package 1. Packages 4 and 5 depend on package 3.
 Package 6 depends on the final streams from package 1 and transaction boundary from package 3.
@@ -857,6 +925,8 @@ object storage:
 - Flush by table preserves current reads and time travel.
 - Flush/compaction cannot overlap schema maintenance.
 - Worker death while holding the maintenance lease recovers after TTL.
+- Maintenance jobs never consume a catalog-worker subscription or concurrency slot.
+- Retention, cleanup, and repair redelivery resolve their deterministic completed operation.
 - Postgres growth and query latency are captured for 1,000 representative crawls.
 
 ### End-to-end graph tests
@@ -868,22 +938,23 @@ object storage:
 - Edge execution never precedes successful frozen fan-out settlement.
 - A terminal materialization failure visibly fails the source request.
 - Cancellation settles current state without new admissions.
-- Both worker classes restart independently during an active 1,000-URL run.
+- All three worker classes restart independently during an active 1,000-URL run.
 
 ## Development reset and deployment sequence
 
 This is a destructive greenfield cutover. The first deployment uses this exact sequence:
 
 1. Stop API, old runtime/repository/materialization workers, and Quack.
-2. Build the new backend image containing both worker entrypoints.
+2. Build the new backend image containing all three worker entrypoints.
 3. Run `atlas-setup` to provision DuckLake tables/options and Postgres control schema.
 4. Purge/delete the superseded graph/repository/materialization work streams and runtime KV.
-5. Recreate `ATLAS_CRAWL_WORK`, `ATLAS_CATALOG_WORK`, and the frozen KV buckets.
+5. Recreate `ATLAS_CRAWL_WORK`, `ATLAS_CATALOG_WORK`, `ATLAS_MAINTENANCE_WORK`, and the frozen KV buckets.
 6. Start one catalog worker and wait for catalogue validation and healthy presence.
 7. Start one crawl worker and wait for healthy presence.
-8. Start the API with an embedded read-only DuckDB catalogue pool.
-9. Run the one-URL smoke graph, self-edge quiescence graph, and concurrent-writer smoke.
-10. Scale catalog workers to two only after the smoke suite passes.
+8. Start one maintenance worker and wait for healthy presence.
+9. Start the API with an embedded read-only DuckDB catalogue pool.
+10. Run the one-URL smoke graph, self-edge quiescence graph, and concurrent-writer smoke.
+11. Scale catalog workers to two only after the smoke suite passes.
 
 Disposable DuckLake development state is recreated because `page_links` changes from generic
 materialization ownership to a system ingestion projection. Immutable raw objects may be retained,
@@ -959,7 +1030,7 @@ Exit: one catalog worker passes all correctness tests and outperforms the curren
 - Run 1, 2, 4, and 8 replicas against the benchmark.
 - Prove concurrent redelivery, ambiguous commit, and worker-death recovery.
 - Add bounded microbatching.
-- Add the maintenance lease and table-specific flush/compaction.
+- Add the maintenance worker, lease, and table-specific flush/compaction.
 
 Exit: at least two replicas commit concurrently with no duplicate logical identities, complete CDC,
 and useful throughput scaling.
@@ -983,7 +1054,8 @@ Exit: sustained acquisition cannot create an unbounded catalogue-readiness backl
   metrics, and diagrams.
 - Delete obsolete compatibility-free code and reset disposable development runtime state.
 
-Exit: Atlas has exactly two worker classes and one documented execution path.
+Exit: Atlas has exactly two hot-path worker classes, one off-path maintenance worker, and one
+documented execution path.
 
 ## Acceptance criteria
 
@@ -992,7 +1064,8 @@ Exit: Atlas has exactly two worker classes and one documented execution path.
 - An operator can locate a stalled URL as either crawl-plane or catalogue-plane work from one page.
 - No worker waits synchronously on another worker's private session or connection.
 - Quack connection identity is absent from runtime and failure contracts.
-- Architecture documentation describes only two worker classes.
+- Architecture documentation describes two hot-path workers and one maintenance worker with no
+  graph-work subscriptions.
 
 ### Correctness
 

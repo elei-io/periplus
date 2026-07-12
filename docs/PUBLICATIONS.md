@@ -162,7 +162,7 @@ view definition. It is a fenced repository operation:
 1. Atlas disables live discovery and backfill.
 2. The definition is marked for dematerialization.
 3. Queued commits reject the stale definition revision.
-4. The repository worker drops the DuckLake table and durable coverage.
+4. A catalog worker drops the DuckLake table and durable coverage.
 5. Atlas archives the materialization attachment.
 
 DuckLake snapshots may retain physical Parquet files until the configured retention window expires.
@@ -240,9 +240,9 @@ Live, backfill, correction, and replay-driven rematerialization all execute the 
 definition. A durable coverage record marks a scope complete even when it produces zero rows.
 
 CDC discovers work; it is not the execution queue. Scope work travels through JetStream. A supervised
-materialization worker evaluates one scope and stages bounded Arrow in repository object storage. The
-repository worker alone verifies the checksum, fences the active definition, atomically replaces the
-scope in DuckLake, and records coverage.
+catalog worker evaluates one scope and stages bounded Arrow in repository object storage. That
+worker verifies the checksum, fences the active definition, atomically replaces the scope in
+DuckLake, and records coverage.
 
 Every scope job identifies `materialization_id`, `definition_revision_id`, `scope_kind`, and
 `scope_id` together with its active query revision, target, scope column, and live/backfill source.
@@ -368,7 +368,7 @@ general downstream transformation graphs.
 - Every incremental evaluation is demonstrably bound to one supplied scope and has explicit resource
   limits.
 - Scope replacement and coverage recording are atomic and idempotent.
-- The repository worker is the only runtime DuckLake writer.
+- Catalog workers are the only graph hot-path DuckLake writers.
 - Pausing or restarting workers does not lose the activation boundary, CDC cursor, or completed
   coverage.
 - Dematerialization fences queued work before dropping the durable table.

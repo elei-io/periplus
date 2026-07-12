@@ -4,10 +4,10 @@ import argparse
 import asyncio
 from datetime import UTC, datetime
 import logging
-import signal
 
 import nats
 from nats.errors import TimeoutError as NatsTimeoutError
+from nats.js.errors import BucketNotFoundError, KeyDeletedError, KeyNotFoundError
 
 from config import get_float, get_int, get_str
 from materialization.backfill import run_backfill
@@ -28,17 +28,18 @@ from materialization.queue import (
     MaterializationScopeJob,
     ensure_streams,
 )
-from repository.ingestion.health import HealthMonitor, start_health_server
+from repository.ingestion.health import HealthMonitor
+from runtime.maintenance_queue import MAINTENANCE_LEASE_BUCKET
 
 
 async def run() -> None:
     stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for value in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(value, stop.set)
-
     client = await nats.connect(get_str("NATS_URL"), max_reconnect_attempts=-1)
     jetstream = client.jetstream()
+    try:
+        maintenance_leases = await jetstream.key_value(MAINTENANCE_LEASE_BUCKET)
+    except BucketNotFoundError:
+        maintenance_leases = None
     await ensure_streams(jetstream)
     live_subscription = await jetstream.pull_subscribe(
         SCOPE_LIVE_SUBJECT, durable=SCOPE_LIVE_DURABLE, stream=SCOPE_STREAM
@@ -50,20 +51,15 @@ async def run() -> None:
     )
     monitor = HealthMonitor(
         heartbeat_timeout_seconds=get_float(
-            "ATLAS_MATERIALIZATION_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
+            "ATLAS_CATALOG_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
         )
-    )
-    server, _thread = start_health_server(
-        address=get_str("ATLAS_MATERIALIZATION_WORKER_HEALTH_HOST"),
-        port=get_int("ATLAS_MATERIALIZATION_WORKER_HEALTH_PORT"),
-        monitor=monitor,
     )
     try:
         async with asyncio.TaskGroup() as tasks:
             tasks.create_task(_heartbeat(monitor, stop))
             tasks.create_task(
                 _consume_scopes(
-                    jetstream, live_subscription, backfill_subscription, stop
+                    jetstream, live_subscription, backfill_subscription, stop, maintenance_leases
                 )
             )
             tasks.create_task(run_backfill(jetstream, stop))
@@ -72,15 +68,16 @@ async def run() -> None:
             tasks.create_task(run_readiness_reconciliation(jetstream, stop))
     finally:
         stop.set()
-        await asyncio.to_thread(server.shutdown)
-        server.server_close()
         await client.close()
 
 
 async def _consume_scopes(
-    jetstream, live_subscription, backfill_subscription, stop: asyncio.Event
+    jetstream, live_subscription, backfill_subscription, stop: asyncio.Event, maintenance_leases
 ) -> None:
     while not stop.is_set():
+        if await _maintenance_active(maintenance_leases):
+            await asyncio.sleep(0.25)
+            continue
         messages = await _fetch_prefer_live(live_subscription, backfill_subscription)
         for message in messages:
             started_at = datetime.now(UTC)
@@ -115,6 +112,16 @@ async def _fetch_prefer_live(live_subscription, backfill_subscription):
             return await backfill_subscription.fetch(batch=1, timeout=0.95)
         except (asyncio.TimeoutError, NatsTimeoutError):
             return []
+
+
+async def _maintenance_active(bucket) -> bool:
+    if bucket is None:
+        return False
+    try:
+        await bucket.get("global")
+    except (KeyNotFoundError, KeyDeletedError):
+        return False
+    return True
 
 
 async def _retry_or_fail(
@@ -173,7 +180,7 @@ async def _ack_heartbeat(message) -> None:
 
 def main() -> None:
     argparse.ArgumentParser(
-        description="Atlas incremental materialization worker"
+        description="Atlas catalog materialization executor"
     ).parse_args()
     logging.basicConfig(
         level=get_str("ATLAS_LOG_LEVEL"),

@@ -88,14 +88,13 @@ silently mutate already queued work.
 
 ## Storage mistakes
 
-**Letting runtime or materialization workers write DuckLake directly.** Concurrent application
-writers complicate correctness and operations. Runtime and materialization workers stage bounded
-work; the repository worker remains the sole application authority requesting DuckLake writes.
+**Letting crawl or maintenance workers perform hot-path catalogue publication.** Catalog workers are
+the only graph-execution processes that ingest, materialize, and evaluate edges. Maintenance uses a
+separate queue and global lease so storage upkeep cannot consume catalog throughput.
 
-**Exposing permissive Quack access outside local development.** The stateful Quack service physically
-executes DuckDB and DuckLake operations. Production access needs separate read, repository-write,
-materialization, and operator capabilities enforced from parsed statements or an equally strong
-boundary; a shared token or SQL-prefix check is insufficient.
+**Reintroducing a central remote DuckDB session.** It couples unrelated writes and makes one compute
+process the throughput and failure boundary. Catalog workers use embedded DuckDB against the shared
+Postgres-backed DuckLake catalogue with deterministic operation identity and bounded retries.
 
 **Creating permanent Parquet per crawl.** Small files and application-owned layout fight DuckLake
 compaction. Use bounded temporary staging and let DuckLake own physical data files.

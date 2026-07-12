@@ -31,9 +31,9 @@ dependencies = [
 [project.scripts]
 atlas = "cli.app:app"
 atlas-setup = "deployment:main"
-atlas-runtime-worker = "runtime.worker:main"
-atlas-repository-worker = "repository.worker:main"
-atlas-materialization-worker = "materialization.worker:main"
+atlas-crawl-worker = "workers.crawl:main"
+atlas-catalog-worker = "workers.catalog:main"
+atlas-maintenance-worker = "workers.maintenance:main"
 
 [build-system]
 requires = ["setuptools"]

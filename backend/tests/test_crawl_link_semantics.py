@@ -27,13 +27,7 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
         )
         pipeline = SimpleNamespace(
             store_raw=AsyncMock(),
-            submit_stored=AsyncMock(
-                return_value=SimpleNamespace(
-                    document_id="sha256:test",
-                    repository_snapshot=1,
-                    crawl_created=True,
-                )
-            ),
+            enqueue_stored=AsyncMock(),
         )
 
         with (
@@ -68,8 +62,8 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(result.html)
         pipeline.store_raw.assert_awaited_once()
-        pipeline.submit_stored.assert_awaited_once()
-        record = pipeline.submit_stored.await_args.args[0]
+        pipeline.enqueue_stored.assert_awaited_once()
+        record = pipeline.enqueue_stored.await_args.args[0]
         self.assertEqual(record.crawl_id, crawl_request_id)
         self.assertEqual(record.graph_id, graph_id)
         self.assertEqual(record.graph_run_id, graph_run_id)

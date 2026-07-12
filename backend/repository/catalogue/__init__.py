@@ -21,11 +21,9 @@ from repository.catalogue.service import CatalogueBatchEntry, CatalogueService
 
 
 def catalogue_from_env():
-    """Open Atlas's required remote Quack catalogue boundary."""
+    """Open an embedded DuckDB connection to Atlas's shared DuckLake catalogue."""
 
-    from repository.catalogue.quack import quack_catalogue_from_env
-
-    return quack_catalogue_from_env()
+    return Catalogue(catalogue_config_from_env())
 
 __all__ = [
     "Catalogue",

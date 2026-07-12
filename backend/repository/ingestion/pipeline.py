@@ -116,6 +116,16 @@ class RepositoryPipeline:
             raise RuntimeError("repository pipeline is not running")
         return await self.queue.submit(crawl, request_id=request_id)
 
+    async def enqueue_stored(
+        self,
+        crawl: CrawlRecord,
+        *,
+        request_id: str | None = None,
+    ) -> None:
+        if not self._running:
+            raise RuntimeError("repository pipeline is not running")
+        await self.queue.enqueue(crawl, request_id=request_id)
+
     async def resolve_cached_page(self, **kwargs: object):
         """Read cache state, delegating stale projection repair to the writer."""
 
