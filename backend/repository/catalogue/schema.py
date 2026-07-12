@@ -51,8 +51,6 @@ CRAWL_COLUMNS: dict[str, ColumnDef] = {
     "input_hash": ColumnDef("VARCHAR", nullable=False),
     "crawl_policy_id": ColumnDef("UUID"),
     "crawl_policy_revision": ColumnDef("INTEGER"),
-    "data_schema_id": ColumnDef("UUID"),
-    "query_schema_id": ColumnDef("UUID"),
     "warnings_json": ColumnDef("JSON", nullable=False),
     "errors_json": ColumnDef("JSON", nullable=False),
 }

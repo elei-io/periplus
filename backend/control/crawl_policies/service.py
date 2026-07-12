@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fnmatch
-import re
 from datetime import UTC, datetime
 from urllib.parse import urlparse, urlunparse
 from uuid import UUID
@@ -12,7 +11,6 @@ from sqlalchemy.orm import Session
 from control.crawl_policies.models import CrawlPolicy
 from control.crawl_policies.schemas import (
     CrawlPolicyListRecord,
-    CrawlPolicySnapshot,
     UrlMatchSnapshot,
 )
 from control.url_matching import UrlMatch
@@ -21,12 +19,6 @@ from control.url_matching import normalize_url
 
 def _match_string(url_match: UrlMatch) -> str:
     return urlunparse((url_match.scheme, url_match.host, url_match.path_pattern, "", "", ""))
-
-
-def generated_metric_slug(match: str, *, suffix: str) -> str:
-    host = urlparse(match).hostname or "policy"
-    readable = re.sub(r"[^a-z0-9]+", "-", host.lower()).strip("-") or "policy"
-    return f"{readable[:48]}-{suffix[:8].lower()}"
 
 
 def _matches(url: str, url_match: UrlMatch | UrlMatchSnapshot) -> bool:
@@ -60,50 +52,6 @@ def find_crawl_policy_for_url(session: Session, *, url: str) -> CrawlPolicy | No
     if not matches:
         return None
     return max(matches, key=lambda policy: _specificity(policy.url_match))
-
-
-def snapshot_enabled_crawl_policies(session: Session) -> list[dict]:
-    """Capture all policy and matcher fields that may affect a queued run."""
-
-    rows = session.execute(
-        select(CrawlPolicy, UrlMatch)
-        .join(UrlMatch, CrawlPolicy.url_match_id == UrlMatch.id)
-        .where(CrawlPolicy.enabled.is_(True))
-        .where(UrlMatch.enabled.is_(True))
-        .order_by(CrawlPolicy.id)
-    )
-    return [
-        CrawlPolicySnapshot(
-            id=policy.id,
-            revision=policy.revision,
-            metric_slug=policy.metric_slug,
-            domain_group=policy.domain_group,
-            match=_match_string(matcher),
-            config=policy.config or {},
-            matcher=UrlMatchSnapshot(
-                scheme=matcher.scheme,
-                host=matcher.host,
-                path_pattern=matcher.path_pattern,
-                match_type=matcher.match_type,
-                priority=matcher.priority,
-            ),
-        ).model_dump(mode="json")
-        for policy, matcher in rows
-    ]
-
-
-def find_crawl_policy_snapshot_for_url(
-    snapshots: list[dict],
-    *,
-    url: str,
-) -> CrawlPolicySnapshot | None:
-    """Match a URL exclusively against the policy set frozen at enqueue time."""
-
-    policies = [CrawlPolicySnapshot.model_validate(snapshot) for snapshot in snapshots]
-    matches = [policy for policy in policies if _matches(url, policy.matcher)]
-    if not matches:
-        return None
-    return max(matches, key=lambda policy: _specificity(policy.matcher))
 
 
 def match_for_policy(policy: CrawlPolicy) -> str:

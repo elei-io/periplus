@@ -20,11 +20,14 @@ API
                                                      |
                                              catalog worker
                                                      |
-                                                 DuckLake
-                                                     |
-                              crawl-scoped catalogue materializations
-                                                     |
-                                              crawl ready
+                              +----------------------+------------------+
+                              |                                         |
+                          DuckLake                         Arrow navigation package
+                              |                           repository object store
+                    asynchronous analytics                           |
+                    and materializations                    NATS verified reference
+                                                                        |
+                                                                 crawl ready
                                                      |
                                        outgoing bounded SQL edges
                                                      |
@@ -36,9 +39,10 @@ maintenance worker --> flush / compaction / retention / cleanup / repair --> Duc
 ```
 
 `crawl` is the only page-acquisition primitive. A graph node maps admitted URL inputs to crawl
-work. After a crawl is durable and every materialization job it triggered settles successfully,
-every outgoing edge evaluates bounded SQL for that `crawl_id`; returned URLs are offered to the
-target nodes. A self-edge expresses
+work. After a crawl is durable, the catalog worker projects a bounded Arrow navigation package from
+the immutable HTML, verifies it in the repository object store, and durably publishes its reference
+through NATS. Every outgoing edge evaluates bounded SQL over `nav.links` for that `crawl_id`;
+returned URLs are offered to the target nodes. A self-edge expresses
 bounded recursion such as pagination or a site walk.
 
 The graph model is deliberately crawl-specific. Nodes do not execute arbitrary compute, and edges
@@ -58,9 +62,9 @@ DuckDB/DuckLake connection.
 
 | Owner | Authoritative state | Must not own |
 | --- | --- | --- |
-| Postgres `atlas` | Editable crawl graphs, graph nodes and edges, crawl policies, URL matches, schemas, and catalogue definitions | Graph execution, queued crawl requests, crawl history, HTML, DOM elements |
-| NATS JetStream/KV | Graph runs, crawl requests, admission and deduplication state, work delivery, workers, progress, ingestion state, and edge-evaluation state | Irreplaceable long-term analytics |
-| Repository objects | Immutable content-addressed raw HTML and bounded temporary staging objects | Mutable metadata |
+| Postgres `atlas` | Editable crawl graphs, graph nodes and edges, crawl policies, URL matches, and catalogue definitions | Graph execution, queued crawl requests, crawl history, HTML, DOM elements |
+| NATS JetStream/KV | Graph runs, crawl requests, admission and deduplication state, work delivery, workers, progress, ingestion state, navigation-package integrity/lifecycle references, and edge-evaluation state | Irreplaceable long-term analytics or navigation package bytes |
+| Repository objects | Immutable content-addressed raw HTML, ephemeral run-scoped Arrow navigation packages, and bounded temporary staging objects | Mutable execution metadata |
 | DuckLake | Documents, crawl attempts, graph provenance, versioned DOM elements, materialized derived facts, and durable materialization coverage | Graph topology or current execution state |
 | Prometheus | Operational counters, gauges, and histograms | Correctness-critical state |
 
@@ -76,7 +80,7 @@ every outgoing edge runs bounded SQL for that crawl and offers returned URLs to 
 crawl-request path:
 
 ```text
-crawl ingested + triggered materialization fan-out settled
+crawl ingested + verified navigation package referenced by NATS
         -> outgoing SQL edges
         -> URL-matched CrawlPolicy resolution
         -> CrawlRequests
@@ -85,7 +89,9 @@ crawl ingested + triggered materialization fan-out settled
 Crawl policy controls pressure and acquisition behavior for matching remotes; it does not bound
 graph work. Edge SQL owns candidate selection and intended termination. Deployment-level hard
 ceilings stop runaway runs. NATS owns current claims, deduplication, readiness processing, and
-idempotent at-least-once delivery. DuckLake coverage proves materialization readiness. The complete
+idempotent at-least-once delivery. Raw HTML remains the recovery authority; missing navigation
+packages are regenerated from it. DuckLake enrichment is asynchronous and is not a graph readiness
+barrier. The complete
 entity, messaging, recursion, and failure contract lives in [CRAWL_GRAPHS.md](CRAWL_GRAPHS.md).
 
 ## Crawl and ingestion
@@ -99,8 +105,9 @@ For a captured page, the crawl worker:
 4. Releases acquisition capacity after durable catalogue-work publication.
 
 Catalog workers verify raw objects, build bounded page-local DOM staging, commit
-document/crawl/element microbatches, execute scoped materializations, and evaluate outgoing edges
-only after durable readiness. Each process uses embedded DuckDB against the shared Postgres-backed
+document/crawl/element microbatches, publish verified run-scoped Arrow navigation packages, execute
+scoped materializations asynchronously, and evaluate outgoing edges from `nav.*` packages after
+durable readiness. Each process uses embedded DuckDB against the shared Postgres-backed
 DuckLake catalogue. Concurrent writers use deterministic operation identity and bounded conflict
 retry; redelivery resolves durable identity before repeating a write.
 
@@ -140,7 +147,7 @@ capacity. NATS coordinates crawl requests and graph admission, not a global brow
 
 ## Code ownership
 
-- `backend/control/` owns editable Postgres-backed crawl graphs, policies, matches, schemas, and
+- `backend/control/` owns editable Postgres-backed crawl graphs, policies, matches, and
   catalogue definitions.
 - `backend/runtime/` owns NATS-backed graph runs, crawl requests, admission, deduplication, progress,
   worker delivery/current state, maintenance delivery, and crawl capacity.

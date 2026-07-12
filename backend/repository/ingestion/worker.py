@@ -21,7 +21,6 @@ from control.catalogue_views.models import CatalogueViewReference
 from control.catalogue_queries.models import CatalogueQuery, CatalogueQueryRevision
 from db.session import session_scope
 from materialization.commit import commit_scope, record_scope_failure
-from materialization.readiness import publish_readiness, readiness_event
 from repository.catalogue.fanout import CrawlMaterializationFanoutStore
 from materialization.queue import (
     COMMIT_DURABLE,
@@ -59,6 +58,34 @@ from repository.catalogue.materializations import MaterializationStore
 from repository.catalogue.operations import operation_lock, operation_locks
 from sqlalchemy import select
 from runtime.maintenance_queue import MAINTENANCE_LEASE_BUCKET
+from runtime.graph_queue import READINESS_SUBJECT, ReadinessWork
+from runtime.navigation import (
+    navigation_event_id,
+    navigation_object_name,
+    put_navigation_package,
+)
+from runtime.navigation_contract import NavigationPackage
+
+
+async def _publish_navigation_readiness(
+    client, job: IngestionJob, package: NavigationPackage
+) -> None:
+    crawl = job.crawl
+    if crawl.graph_run_id is None or crawl.crawl_request_id is None:
+        raise ValueError("navigation readiness requires graph runtime provenance")
+    event = ReadinessWork(
+        event_id=navigation_event_id(crawl.crawl_id, package.sha256),
+        crawl_id=crawl.crawl_id,
+        graph_run_id=crawl.graph_run_id,
+        crawl_request_id=crawl.crawl_request_id,
+        navigation=package,
+        occurred_at=datetime.now(UTC),
+    )
+    await client.jetstream().publish(
+        READINESS_SUBJECT,
+        event.model_dump_json().encode(),
+        headers={"Nats-Msg-Id": str(event.event_id)},
+    )
 
 
 async def run(
@@ -88,6 +115,7 @@ async def run(
         stream=COMMIT_STREAM,
     )
     ingestor = repository_ingestor_from_env()
+    navigation_store = ingestor.html_repository.store
     await asyncio.to_thread(ingestor.validate)
     health_ingestor = repository_ingestor_from_env()
     await asyncio.to_thread(health_ingestor.validate)
@@ -203,6 +231,7 @@ async def run(
                     list(accepted_messages),
                     list(prepared),
                     catalogue_write_lock,
+                    navigation_store,
                 )
                 jobs.clear()
                 accepted_messages.clear()
@@ -216,10 +245,22 @@ async def run(
                     crawl=job.crawl,
                 )
                 if durable_state.status != "pending":
-                    await _notify(client, job, durable_state)
                     if durable_state.status == "succeeded":
+                        try:
+                            if durable_state.navigation is not None:
+                                await _publish_navigation_readiness(
+                                    client, job, durable_state.navigation
+                                )
+                            await _notify(client, job, durable_state)
+                        except Exception:
+                            logging.exception(
+                                "durable repository success notification failed"
+                            )
+                            await message.nak(delay=1)
+                            continue
                         await message.ack()
                     else:
+                        await _notify(client, job, durable_state)
                         await _dead_letter_or_retry(
                             client, message, job, durable_state.error or "ingestion failed"
                         )
@@ -241,7 +282,13 @@ async def run(
                         queue_seconds=(datetime.now(UTC) - job.enqueued_at).total_seconds(),
                     )
                     await _retry_or_fail(
-                        client, results_store, ingestor, message, job, exc
+                        client,
+                        results_store,
+                        ingestor,
+                        navigation_store,
+                        message,
+                        job,
+                        exc,
                     )
                     continue
                 repository_metrics.preparation(
@@ -446,12 +493,7 @@ async def _settle_crawl_fanouts(jetstream, catalogue, scope) -> None:
         scope_id=scope.scope_id,
     )
     for crawl_id in crawl_ids:
-        fanout = await asyncio.to_thread(store.refresh, crawl_id)
-        if fanout.completed_at is None:
-            continue
-        event = await asyncio.to_thread(readiness_event, catalogue, crawl_id)
-        if event is not None:
-            await publish_readiness(jetstream, event)
+        await asyncio.to_thread(store.refresh, crawl_id)
 
 
 async def _commit_fanout_plan(jetstream, catalogue, plan) -> None:
@@ -481,10 +523,6 @@ async def _commit_fanout_plan(jetstream, catalogue, plan) -> None:
             scope.model_dump_json().encode(),
             headers={"Nats-Msg-Id": scope.operation_id},
         )
-    if fanout.completed_at is not None:
-        event = await asyncio.to_thread(readiness_event, catalogue, plan.crawl_id)
-        if event is not None:
-            await publish_readiness(jetstream, event)
 
 
 def _dematerialize_requested_materialization(catalogue) -> None:
@@ -545,6 +583,7 @@ async def _commit_batch_isolated(
     messages,
     prepared,
     catalogue_write_lock: asyncio.Lock,
+    navigation_store,
 ) -> None:
     """Commit valid jobs while recursively isolating deterministic poison entries."""
 
@@ -585,6 +624,7 @@ async def _commit_batch_isolated(
                 messages[:midpoint],
                 prepared[:midpoint],
                 catalogue_write_lock,
+                navigation_store,
             )
             await _commit_batch_isolated(
                 client,
@@ -594,6 +634,7 @@ async def _commit_batch_isolated(
                 messages[midpoint:],
                 prepared[midpoint:],
                 catalogue_write_lock,
+                navigation_store,
             )
             return
 
@@ -608,7 +649,13 @@ async def _commit_batch_isolated(
                     queue_seconds=(datetime.now(UTC) - job.enqueued_at).total_seconds(),
                 )
                 await _retry_or_fail(
-                    client, results_store, ingestor, message, job, exc
+                    client,
+                    results_store,
+                    ingestor,
+                    navigation_store,
+                    message,
+                    job,
+                    exc,
                 )
             return
 
@@ -620,7 +667,13 @@ async def _commit_batch_isolated(
             queue_seconds=(datetime.now(UTC) - job.enqueued_at).total_seconds(),
         )
         await _retry_or_fail(
-            client, results_store, ingestor, messages[0], job, exc
+            client,
+            results_store,
+            ingestor,
+            navigation_store,
+            messages[0],
+            job,
+            exc,
         )
         return
 
@@ -631,17 +684,47 @@ async def _commit_batch_isolated(
         element_rows=element_rows,
         staged_bytes=staged_bytes,
     )
-    for job, message, result in zip(jobs, messages, results, strict=True):
+    for job, message, result, value in zip(
+        jobs, messages, results, prepared, strict=True
+    ):
         repository_metrics.attempt(
             outcome="succeeded",
             queue_seconds=(datetime.now(UTC) - job.enqueued_at).total_seconds(),
         )
-        durable_state = await store_ingestion_response(
-            results_store,
-            job=job,
-            result=result,
-        )
-        await _notify(client, job, durable_state)
+        try:
+            package = None
+            if value.navigation_payload is not None:
+                if job.crawl.graph_run_id is None or job.crawl.document_id is None:
+                    raise ValueError("graph crawl ingestion requires runtime provenance")
+                name = navigation_object_name(
+                    job.crawl.graph_run_id,
+                    job.crawl.document_id,
+                    job.crawl.page_url,
+                )
+                package = await asyncio.to_thread(
+                    put_navigation_package,
+                    navigation_store,
+                    name=name,
+                    payload=value.navigation_payload,
+                    row_count=value.navigation_row_count,
+                )
+            durable_state = await store_ingestion_response(
+                results_store,
+                job=job,
+                result=result,
+                navigation=package,
+            )
+            if durable_state.navigation is not None:
+                await _publish_navigation_readiness(
+                    client, job, durable_state.navigation
+                )
+            await _notify(client, job, durable_state)
+        except Exception:
+            logging.exception(
+                "repository ingestion committed but navigation publication failed"
+            )
+            await message.nak(delay=1)
+            continue
         await message.ack()
 
 
@@ -649,6 +732,7 @@ async def _retry_or_fail(
     client,
     results_store,
     ingestor,
+    navigation_store,
     message,
     job: IngestionJob,
     exc: Exception,
@@ -675,12 +759,52 @@ async def _retry_or_fail(
             await message.nak(delay=30)
             return
 
+        package = None
+        if reconciled is not None and job.crawl.graph_run_id is not None:
+            try:
+                prepared = await asyncio.to_thread(
+                    ingestor.prepare_from_raw,
+                    crawl=job.crawl,
+                )
+                try:
+                    if prepared.navigation_payload is not None:
+                        if job.crawl.document_id is None:
+                            raise ValueError(
+                                "navigation package requires a document identity"
+                            )
+                        package = await asyncio.to_thread(
+                            put_navigation_package,
+                            navigation_store,
+                            name=navigation_object_name(
+                                job.crawl.graph_run_id,
+                                job.crawl.document_id,
+                                job.crawl.page_url,
+                            ),
+                            payload=prepared.navigation_payload,
+                            row_count=prepared.navigation_row_count,
+                        )
+                finally:
+                    await asyncio.to_thread(ingestor.discard_prepared, [prepared])
+            except Exception as navigation_exc:
+                logging.exception("navigation package recovery failed")
+                exc = navigation_exc
+                reconciled = None
         durable_state = await store_ingestion_response(
             results_store,
             job=job,
             result=reconciled,
+            navigation=package,
             error=None if reconciled is not None else _exception_message(exc),
         )
+        if durable_state.navigation is not None:
+            try:
+                await _publish_navigation_readiness(
+                    client, job, durable_state.navigation
+                )
+            except Exception:
+                logging.exception("recovered navigation readiness publication failed")
+                await message.nak(delay=1)
+                return
         await _notify(client, job, durable_state)
         if durable_state.status == "succeeded":
             await message.ack()

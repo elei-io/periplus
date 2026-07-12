@@ -61,8 +61,6 @@ class CrawlRecord(CatalogueRecord):
     input_hash: str = Field(min_length=1)
     crawl_policy_id: UUID | None = None
     crawl_policy_revision: int | None = Field(default=None, ge=1)
-    data_schema_id: UUID | None = None
-    query_schema_id: UUID | None = None
     warnings_json: list[JsonValue] = Field(default_factory=list)
     errors_json: list[JsonValue] = Field(default_factory=list)
 

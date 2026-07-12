@@ -1,9 +1,7 @@
 import {
-  BracesIcon,
   ChartNoAxesCombinedIcon,
   GitForkIcon,
   FileCode2Icon,
-  ListFilterIcon,
   ShieldCheckIcon,
   TablePropertiesIcon,
   ViewIcon,
@@ -60,27 +58,6 @@ export const navigationGroups: NavigationGroup[] = [
     ],
   },
   {
-    name: "Cache",
-    slug: "cache",
-    items: [
-      {
-        name: "Data Schemas",
-        href: "/cache/data-schemas",
-        icon: BracesIcon,
-        title: "Data Schema Registry",
-        description:
-          "Inspect reusable data schemas, matches, failures, and provenance.",
-      },
-      {
-        name: "Query Schemas",
-        href: "/cache/query-schemas",
-        icon: ListFilterIcon,
-        title: "Query Schema Registry",
-        description: "Inspect reusable query parameter data schemas.",
-      },
-    ],
-  },
-  {
     name: "Settings",
     slug: "settings",
     items: [
@@ -113,16 +90,6 @@ export function findNavigationItem(pathname: string) {
         .flatMap((group) => group.items)
         .find((item) => item.href === href)
     }
-  }
-  if (pathname.startsWith("/cache/data-schemas/")) {
-    return navigationGroups
-      .flatMap((group) => group.items)
-      .find((item) => item.href === "/cache/data-schemas")
-  }
-  if (pathname.startsWith("/cache/query-schemas/")) {
-    return navigationGroups
-      .flatMap((group) => group.items)
-      .find((item) => item.href === "/cache/query-schemas")
   }
   if (pathname.startsWith("/settings/crawl-policies/")) {
     return navigationGroups

@@ -55,7 +55,7 @@ import { GraphProgressProvider, useEdgeProgress, useGraphProgressConnection, use
 import type { CrawlGraphDetail, CrawlGraphEdge, CrawlGraphNode, EdgeDedupeMode } from "@/types/graphs"
 
 const DEFAULT_EDGE_SQL = `SELECT url
-FROM materialized.page_links
+FROM nav.links
 WHERE crawl_id = $crawl_id
 LIMIT 100000`
 
@@ -288,7 +288,7 @@ function CrawlNodeCard({ data }: NodeProps<CrawlNode>) {
   const [name, setName] = useState(node.name)
   const [description, setDescription] = useState(node.description ?? "")
   const working = Boolean(progress && (
-    progress.queued + progress.crawling + progress.awaiting_materializations +
+    progress.queued + progress.crawling + progress.awaiting_navigation +
     progress.evaluating_edges > 0
   ))
   return (
@@ -358,7 +358,7 @@ function activityLabel(status: string) {
   return {
     queued: "Queued",
     crawling: "Crawling",
-    awaiting_materializations: "Materializing",
+    awaiting_navigation: "Materializing",
     evaluating_edges: "Following links",
     completed: "Crawled",
     failed: "Failed",

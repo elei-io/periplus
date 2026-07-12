@@ -111,10 +111,10 @@ class CatalogueBootstrapTests(unittest.TestCase):
                         "url_scheme, url_host, url_port, url_registrable_domain, "
                         "url_path, url_query, captured_at, status_code, duration_ms, "
                         "input_json, input_hash, crawl_policy_id, crawl_policy_revision, "
-                        "data_schema_id, query_schema_id, warnings_json, errors_json"
+                        "warnings_json, errors_json"
                         ") SELECT uuid(), NULL, uuid(), uuid(), uuid(), uuid(), NULL, NULL, 'https://x', "
                         "'https://x/', NULL, 'https://x/', 'https', 'x', 443, 'x', '/', "
-                        "'', now(), NULL, NULL, '{}', 'hash', NULL, NULL, NULL, NULL, "
+                        "'', now(), NULL, NULL, '{}', 'hash', NULL, NULL, "
                         "'[]', '[\"expected failure\"]'"
                     )
                     catalogue.set_commit_message(

@@ -3,17 +3,31 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from datetime import UTC, datetime, timedelta
 from threading import Lock
-from uuid import uuid4
+from uuid import UUID, uuid4
+import pyarrow as pa
+from sqlglot import exp, parse_one
 
 from nats.errors import TimeoutError as NatsTimeoutError
 
 from config import get_float, get_int, get_str
 from db.session import session_scope
-from materialization.readiness import readiness_event
 from repository.catalogue import catalogue_from_env
+from repository.ingestion.health import HealthMonitor
+from repository.objects.config import object_store_from_env
 from repository.catalogue.query import execute_arrow_query
+from repository.exceptions import RepositoryObjectNotFound
+from repository.objects.html import RawHtmlRepository, html_object_key
+from runtime.navigation import (
+    build_navigation_package,
+    delete_run_navigation,
+    load_navigation_package,
+    put_navigation_package,
+)
+from runtime.navigation_contract import NavigationPackage
 from runtime.graph_queue import (
     EDGE_CONSUMER,
     EDGE_SUBJECT,
@@ -26,6 +40,7 @@ from runtime.graph_queue import (
     ensure_graph_progress_storage,
     ensure_graph_storage,
     edge_evaluation_identity,
+    list_graph_runs,
     update_edge_evaluation,
 )
 from runtime.graph_runs import EdgeEvaluationBusy, EdgeEvaluationFailed, evaluate_edge, handle_readiness, resolve_policy_snapshot
@@ -34,9 +49,11 @@ from runtime.graph_runs import EdgeEvaluationBusy, EdgeEvaluationFailed, evaluat
 class EdgeUrlExecutor:
     """Execute one bounded DuckDB edge query and make it interruptible."""
 
-    def __init__(self) -> None:
+    def __init__(self, navigation_store, package: NavigationPackage) -> None:
         self._lock = Lock()
         self._connection = None
+        self._navigation_store = navigation_store
+        self._package = package
 
     def interrupt(self) -> None:
         with self._lock:
@@ -45,6 +62,13 @@ class EdgeUrlExecutor:
             connection.interrupt()
 
     def __call__(self, sql: str, parameters: dict[str, object]) -> list[str]:
+        bound = dict(parameters)
+        page_url = str(bound.pop("_page_url"))
+        document_id = str(bound.pop("_document_id"))
+        navigation_payload = self._load_or_regenerate(
+            document_id=document_id,
+            page_url=page_url,
+        )
         with catalogue_from_env() as catalogue:
             with self._lock:
                 self._connection = catalogue.connection
@@ -52,7 +76,25 @@ class EdgeUrlExecutor:
                 catalogue.connection.execute(
                     "SET memory_limit = ?", [get_str("ATLAS_EDGE_QUERY_MEMORY_LIMIT")]
                 )
-                reader = execute_arrow_query(catalogue, sql, parameters)
+                if "crawl_id" in bound:
+                    bound["crawl_id"] = str(bound["crawl_id"])
+                crawl_id = bound.get("crawl_id")
+                if crawl_id is None:
+                    raise ValueError("Edge SQL requires its crawl_id parameter.")
+                crawl_id = str(UUID(str(crawl_id)))
+                table = pa.ipc.open_file(pa.BufferReader(navigation_payload)).read_all()
+                table = table.append_column(
+                    "crawl_id", pa.array([crawl_id] * table.num_rows, type=pa.string())
+                )
+                catalogue.connection.register("atlas_navigation_links", table)
+                statement = parse_one(sql, dialect="duckdb")
+                for source in statement.find_all(exp.Table):
+                    if source.db.lower() == "nav" and source.name.lower() == "links":
+                        source.set("db", None)
+                        source.set("this", exp.to_identifier("atlas_navigation_links"))
+                reader = execute_arrow_query(
+                    catalogue, statement.sql(dialect="duckdb"), bound
+                )
                 index = reader.schema.get_field_index("url")
                 if index < 0:
                     raise ValueError("Edge SQL did not return its required url column.")
@@ -76,21 +118,42 @@ class EdgeUrlExecutor:
                 with self._lock:
                     self._connection = None
 
+    def _load_or_regenerate(self, *, document_id: str, page_url: str) -> bytes:
+        try:
+            return load_navigation_package(self._navigation_store, self._package)
+        except RepositoryObjectNotFound:
+            document_hash = document_id.removeprefix("sha256:")
+            html = RawHtmlRepository(self._navigation_store).read(
+                html_object_key(document_hash)
+            )
+            payload, row_count = build_navigation_package(
+                html,
+                document_id=document_id,
+                page_url=page_url,
+            )
+            rebuilt = put_navigation_package(
+                self._navigation_store,
+                name=self._package.object_name,
+                payload=payload,
+                row_count=row_count,
+            )
+            if rebuilt != self._package:
+                self._navigation_store.delete(self._package.object_name)
+                raise RuntimeError(
+                    "regenerated navigation package does not match its NATS reference"
+                )
+            return payload
+
 
 async def _process_readiness(message, runs, requests, progress, jetstream) -> None:
     wakeup = ReadinessWork.model_validate_json(message.data)
     try:
-        def load_authoritative_readiness():
-            with catalogue_from_env() as catalogue:
-                return readiness_event(catalogue, wakeup.crawl_id)
-
-        durable = await asyncio.to_thread(load_authoritative_readiness)
-        if durable is None:
-            await message.nak(delay=1)
-            return
-        event = ReadinessWork.model_validate(durable.model_dump())
         await handle_readiness(
-            runs=runs, requests=requests, progress=progress, jetstream=jetstream, event=event
+            runs=runs,
+            requests=requests,
+            progress=progress,
+            jetstream=jetstream,
+            event=wakeup,
         )
     except Exception:
         await message.nak(delay=1)
@@ -98,7 +161,7 @@ async def _process_readiness(message, runs, requests, progress, jetstream) -> No
     await message.ack()
 
 
-async def _process_edge(message, runs, requests, progress, jetstream) -> None:
+async def _process_edge(message, runs, requests, progress, jetstream, navigation_store) -> None:
     work = EdgeWork.model_validate_json(message.data)
     claim_token = uuid4()
     identity = edge_evaluation_identity(
@@ -133,7 +196,7 @@ async def _process_edge(message, runs, requests, progress, jetstream) -> None:
                 progress=progress,
                 jetstream=jetstream,
                 work=work,
-                execute_urls=EdgeUrlExecutor(),
+                execute_urls=EdgeUrlExecutor(navigation_store, work.navigation),
                 policy_resolver=lambda url: resolve_policy_snapshot(session, url),
                 claim_token=claim_token,
             )
@@ -153,22 +216,49 @@ async def _process_edge(message, runs, requests, progress, jetstream) -> None:
     await message.ack()
 
 
-async def run() -> None:
+async def run(monitor: HealthMonitor | None = None) -> None:
     stop = asyncio.Event()
     client = await connect_nats()
     jetstream = client.jetstream()
     runs, requests, _workers = await ensure_graph_storage(jetstream)
     progress = await ensure_graph_progress_storage(jetstream)
+    navigation_store = object_store_from_env()
     readiness = await jetstream.pull_subscribe(
         READINESS_SUBJECT, durable=READINESS_CONSUMER, stream=GRAPH_STREAM
     )
     edges = await jetstream.pull_subscribe(
         EDGE_SUBJECT, durable=EDGE_CONSUMER, stream=GRAPH_STREAM
     )
+    if monitor is not None:
+        monitor.subsystem_ready("navigation")
     capacity = get_int("ATLAS_CATALOG_WORKER_CONCURRENCY")
     active: set[asyncio.Task] = set()
+    cleaned_runs = set()
+    next_cleanup = 0.0
     try:
         while not stop.is_set():
+            if time.monotonic() >= next_cleanup:
+                now = datetime.now(UTC)
+                grace = get_float("ATLAS_NAVIGATION_CLEANUP_GRACE_SECONDS")
+                for graph_run in await list_graph_runs(runs):
+                    if (
+                        graph_run.id not in cleaned_runs
+                        and graph_run.completed_at is not None
+                        and (now - graph_run.completed_at).total_seconds() >= grace
+                    ):
+                        try:
+                            await asyncio.to_thread(
+                                delete_run_navigation, navigation_store, graph_run.id
+                            )
+                        except Exception:
+                            logging.warning(
+                                "navigation package cleanup failed for graph run %s",
+                                graph_run.id,
+                                exc_info=True,
+                            )
+                        else:
+                            cleaned_runs.add(graph_run.id)
+                next_cleanup = time.monotonic() + 10
             active = {task for task in active if not task.done()}
             available = capacity - len(active)
             if available <= 0:
@@ -184,9 +274,10 @@ async def run() -> None:
                     continue
                 fetched = fetched or bool(messages)
                 for message in messages:
-                    active.add(asyncio.create_task(
-                        processor(message, runs, requests, progress, jetstream)
-                    ))
+                    arguments = (message, runs, requests, progress, jetstream)
+                    if processor is _process_edge:
+                        arguments += (navigation_store,)
+                    active.add(asyncio.create_task(processor(*arguments)))
                     available -= 1
                     if available <= 0:
                         break

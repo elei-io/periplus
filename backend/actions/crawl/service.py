@@ -302,8 +302,6 @@ async def _persist_page(
             input_hash=input_hash,
             crawl_policy_id=policy.id if policy is not None else None,
             crawl_policy_revision=(policy.revision if policy is not None else None),
-            data_schema_id=None,
-            query_schema_id=None,
             warnings_json=[_json_safe(warning) for warning in page.quality_warnings],
             errors_json=[error] if error else [],
         )

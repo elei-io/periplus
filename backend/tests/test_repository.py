@@ -46,6 +46,16 @@ class ObjectStoreContract:
                 with self.assertRaises(RepositoryKeyError):
                     self.store.exists(key)
 
+    def test_prefix_deletion_is_scoped(self) -> None:
+        first = "runtime/navigation/run-a/documents/a/package.arrow"
+        second = "runtime/navigation/run-b/documents/b/package.arrow"
+        self.store.put_if_absent(first, io.BytesIO(b"a"))
+        self.store.put_if_absent(second, io.BytesIO(b"b"))
+
+        self.assertEqual(self.store.delete_prefix("runtime/navigation/run-a/"), 1)
+        self.assertFalse(self.store.exists(first))
+        self.assertTrue(self.store.exists(second))
+
 
 class FileObjectStoreTests(ObjectStoreContract, unittest.TestCase):
     def setUp(self) -> None:
@@ -119,6 +129,11 @@ class RepositoryConfigTests(unittest.TestCase):
 
         self.assertEqual(bucket, "atlas")
         client.create_bucket.assert_called_once_with(Bucket="atlas")
+        lifecycle = client.put_bucket_lifecycle_configuration.call_args.kwargs
+        self.assertEqual(
+            lifecycle["LifecycleConfiguration"]["Rules"][-1]["Filter"]["Prefix"],
+            "runtime/navigation/",
+        )
 
     @patch("repository.objects.config.boto3.client")
     def test_s3_initializer_preserves_an_existing_bucket(self, client_factory) -> None:

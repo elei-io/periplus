@@ -9,10 +9,6 @@ import { CatalogueQueriesPage } from "@/pages/catalogue/queries-page"
 import { CatalogueMaterializationPage } from "@/pages/catalogue/materialization-detail-page"
 import { CrawlPolicyDetailPage } from "@/pages/settings/crawl-policy-detail-page"
 import { CrawlPoliciesPage } from "@/pages/settings/crawl-policies-page"
-import { DataSchemaDetailPage } from "@/pages/cache/data-schema-detail-page"
-import { DataSchemasPage } from "@/pages/cache/data-schemas-page"
-import { QuerySchemaDetailPage } from "@/pages/cache/query-schema-detail-page"
-import { QuerySchemasPage } from "@/pages/cache/query-schemas-page"
 import {
   defaultNavigationItem,
   findNavigationItem,
@@ -94,24 +90,6 @@ export function App() {
 
     if (activeItem.href === "/crawls/metrics") {
       return <CrawlMetricsPage />
-    }
-
-    if (activeItem.href === "/cache/data-schemas") {
-      const schemaId = pathname.match(/^\/cache\/data-schemas\/([^/]+)$/)?.[1]
-      if (schemaId) {
-        return <DataSchemaDetailPage schemaId={decodeURIComponent(schemaId)} />
-      }
-
-      return <DataSchemasPage />
-    }
-
-    if (activeItem.href === "/cache/query-schemas") {
-      const schemaId = pathname.match(/^\/cache\/query-schemas\/([^/]+)$/)?.[1]
-      if (schemaId) {
-        return <QuerySchemaDetailPage schemaId={decodeURIComponent(schemaId)} />
-      }
-
-      return <QuerySchemasPage />
     }
 
     if (activeItem.href === "/settings/crawl-policies") {

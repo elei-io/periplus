@@ -411,7 +411,7 @@ export function EdgesCard({ graph }: { graph: CrawlGraphDetail }) {
   const [sourceId, setSourceId] = useState("")
   const [targetId, setTargetId] = useState("")
   const [sql, setSql] = useState(
-    "SELECT url\nFROM materialized.page_links\nWHERE crawl_id = $crawl_id\nLIMIT 100000"
+    "SELECT url\nFROM nav.links\nWHERE crawl_id = $crawl_id\nLIMIT 100000"
   )
 
   const nodeOptions = useMemo(

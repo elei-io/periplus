@@ -17,7 +17,6 @@ from materialization.backfill import run_backfill
 from materialization.compute import compute_scope
 from materialization.fencing import StaleMaterializationJob
 from materialization.live import run_crawl_planner, run_live
-from materialization.readiness import run_readiness_reconciliation
 from materialization.queue import (
     COMMIT_SUBJECT,
     DEAD_LETTER_SUBJECT,
@@ -86,14 +85,6 @@ async def run(
                 _supervise_cdc(
                     "cdc_crawl_planner",
                     lambda: run_crawl_planner(jetstream, stop, monitor),
-                    stop,
-                    monitor,
-                )
-            )
-            tasks.create_task(
-                _supervise_subsystem(
-                    "readiness_reconciliation",
-                    lambda: run_readiness_reconciliation(jetstream, stop, monitor),
                     stop,
                     monitor,
                 )

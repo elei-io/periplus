@@ -32,6 +32,7 @@ from dom import (
 )
 from repository.objects.config import object_store_from_env, staging_root_from_env
 from repository.objects.html import HtmlIdentity, RawHtmlRepository, StoredHtml, html_object_key
+from runtime.navigation import build_navigation_package
 
 
 class ProjectionRebuildRequired(RuntimeError):
@@ -111,6 +112,15 @@ class RepositoryIngestor:
             if known_documents is None
             else known_documents.get(crawl.document_id)
         )
+        captured_html = self.html_repository.read(object_key)
+        navigation_payload = None
+        navigation_row_count = 0
+        if crawl.graph_run_id is not None and crawl.crawl_request_id is not None:
+            navigation_payload, navigation_row_count = build_navigation_package(
+                captured_html,
+                document_id=crawl.document_id,
+                page_url=crawl.page_url,
+            )
         if existing is not None and self._projection_is_current(existing):
             self.html_repository.verify(
                 object_key,
@@ -122,9 +132,10 @@ class RepositoryIngestor:
             return PreparedIngestion(
                 document=existing,
                 crawl=crawl,
+                navigation_payload=navigation_payload,
+                navigation_row_count=navigation_row_count,
             )
 
-        captured_html = self.html_repository.read(object_key)
         identity = self.html_repository.identify(captured_html)
         self._validate_html_size(identity)
         if identity.sha256 != sha256:
@@ -173,6 +184,8 @@ class RepositoryIngestor:
             element_count=projection.element_count,
             staged_bytes=projection.size_bytes,
             replace_projection=existing is not None,
+            navigation_payload=navigation_payload,
+            navigation_row_count=navigation_row_count,
         )
 
     def commit_prepared_batch(
@@ -494,6 +507,8 @@ class PreparedIngestion:
     element_count: int = 0
     staged_bytes: int = 0
     replace_projection: bool = False
+    navigation_payload: bytes | None = None
+    navigation_row_count: int = 0
 
 
 def _blocked_by_cache_rules(

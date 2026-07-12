@@ -13,7 +13,7 @@ from control.crawl_policies.service import find_crawl_policy_for_url
 from control.crawl_graphs.schemas import EdgeDedupeMode
 
 from .graph_queue import CrawlRequest, EdgeEvaluation, EdgeWork, FrozenGraphSnapshot, GraphRun, PendingAdmission, ReadinessWork, edge_evaluation_identity, edge_evaluation_key, get_crawl_request, get_edge_evaluation, get_graph_run, list_crawl_requests, new_graph_run, normalize_request_url, publish_crawl, publish_edge, request_identity, update_crawl_request, update_edge_evaluation, update_graph_run
-from .graph_progress import add_edge_output_progress, initialize_run_progress, mark_run_progress_active, mark_run_progress_settled, transition_edge_evaluation_progress, transition_node_progress
+from .graph_progress import add_edge_output_progress, initialize_run_progress, mark_run_progress_settled, transition_edge_evaluation_progress, transition_node_progress
 
 _REQUEST_NAMESPACE = UUID("869ee36c-76ad-46f0-a1b7-9b28f4b71386")
 _TERMINAL_RUNS = {"completed", "completed_with_errors", "failed", "cancelled"}
@@ -321,55 +321,11 @@ async def handle_readiness(*, runs, requests, progress, jetstream, event: Readin
     request = await get_crawl_request(requests, event.crawl_request_id)
     if request is None:
         return
-    resumed = False
-    previous_resume_status: str | None = None
-    if (
-        event.status == "ready"
-        and request.status == "failed"
-        and request.failure_stage == "enrichment"
-    ):
-        def resume(current: CrawlRequest) -> CrawlRequest:
-            nonlocal resumed, previous_resume_status
-            if current.status != "failed" or current.failure_stage != "enrichment":
-                return current
-            resumed = True
-            previous_resume_status = current.status
-            return current.model_copy(update={
-                "status": "awaiting_materializations",
-                "error": None,
-                "failure_stage": None,
-                "updated_at": datetime.now(UTC),
-            })
-
-        request = await update_crawl_request(requests, request.id, resume)
-        if resumed:
-            await _project(transition_node_progress(
-                progress, request, previous_status=previous_resume_status
-            ))
-    elif request.status in _TERMINAL_REQUESTS:
-        return
-    if event.status == "failed":
-        ids = ", ".join(str(value) for value in event.failed_materialization_ids)
-        await settle_request(runs=runs, requests=requests, progress=progress, request_id=request.id, status="failed", error=f"Crawl enrichment failed: {ids or 'unknown materialization'}", failure_stage="enrichment")
+    if request.status in _TERMINAL_REQUESTS:
         return
     run = await get_graph_run(runs, event.graph_run_id)
     if run is None:
         return
-    if run.status == "completed_with_errors" and request.status not in _TERMINAL_REQUESTS:
-        def reopen(value: GraphRun) -> GraphRun:
-            if value.status != "completed_with_errors":
-                return value
-            return value.model_copy(update={
-                "status": "running",
-                "pending_request_count": value.pending_request_count + 1,
-                "failed_request_count": max(0, value.failed_request_count - 1),
-                "completed_at": None,
-                "error": None,
-            })
-
-        run = await update_graph_run(runs, run.id, reopen)
-        if run.status == "running":
-            await _project(mark_run_progress_active(progress, run))
     if run.status in _TERMINAL_RUNS:
         return
     outgoing = [edge for edge in run.snapshot.edges if edge.source_node_id == request.node_id]
@@ -385,7 +341,13 @@ async def handle_readiness(*, runs, requests, progress, jetstream, event: Readin
     if previous_status != request.status:
         await _project(transition_node_progress(progress, request, previous_status=previous_status))
     for edge in outgoing:
-        work = EdgeWork(graph_run_id=run.id, crawl_request_id=request.id, crawl_id=event.crawl_id, edge_id=edge.id)
+        work = EdgeWork(
+            graph_run_id=run.id,
+            crawl_request_id=request.id,
+            crawl_id=event.crawl_id,
+            edge_id=edge.id,
+            navigation=event.navigation,
+        )
         identity = edge_evaluation_identity(run.id, request.id, event.crawl_id, edge.id)
         evaluation = EdgeEvaluation(identity=identity, graph_run_id=run.id, crawl_request_id=request.id, crawl_id=event.crawl_id, edge_id=edge.id, created_at=datetime.now(UTC), updated_at=datetime.now(UTC))
         try:
@@ -459,7 +421,16 @@ async def evaluate_edge(*, runs, requests, progress, jetstream, work: EdgeWork, 
         if "$crawl_id" not in edge.sql:
             raise ValueError("Edge SQL must contain $crawl_id.")
         query = asyncio.create_task(asyncio.to_thread(
-            lambda: list(execute_urls(edge.sql, {"crawl_id": work.crawl_id}))
+            lambda: list(
+                execute_urls(
+                    edge.sql,
+                    {
+                        "crawl_id": work.crawl_id,
+                        "_page_url": request.url,
+                        "_document_id": request.document_id,
+                    },
+                )
+            )
         ))
         try:
             urls = await asyncio.wait_for(

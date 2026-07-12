@@ -8,7 +8,7 @@ from pathlib import Path
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
-from config import get_optional, get_path, get_str
+from config import get_int, get_optional, get_path, get_str
 
 from repository.exceptions import RepositoryConfigError
 from repository.objects.store import FileObjectStore, ObjectStore, S3ObjectStore
@@ -39,29 +39,60 @@ def ensure_s3_bucket_from_env() -> str:
     client, bucket = _s3_client_from_env()
     try:
         client.head_bucket(Bucket=bucket)
-        return bucket
+        exists = True
     except ClientError as exc:
         status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
         code = str(exc.response.get("Error", {}).get("Code", ""))
         if status != 404 and code not in {"404", "NoSuchBucket", "NotFound"}:
             raise
+        exists = False
 
-    region = _optional("ATLAS_REPOSITORY_S3_REGION") or _optional("AWS_REGION")
-    options: dict[str, object] = {"Bucket": bucket}
-    if region and region != "us-east-1":
-        options["CreateBucketConfiguration"] = {"LocationConstraint": region}
-    try:
-        client.create_bucket(**options)
-    except ClientError as exc:
-        status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-        code = str(exc.response.get("Error", {}).get("Code", ""))
-        if status not in {409, 412} and code not in {
-            "BucketAlreadyExists",
-            "BucketAlreadyOwnedByYou",
-        }:
-            raise
-        client.head_bucket(Bucket=bucket)
+    if not exists:
+        region = _optional("ATLAS_REPOSITORY_S3_REGION") or _optional("AWS_REGION")
+        options: dict[str, object] = {"Bucket": bucket}
+        if region and region != "us-east-1":
+            options["CreateBucketConfiguration"] = {"LocationConstraint": region}
+        try:
+            client.create_bucket(**options)
+        except ClientError as exc:
+            status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if status not in {409, 412} and code not in {
+                "BucketAlreadyExists",
+                "BucketAlreadyOwnedByYou",
+            }:
+                raise
+            client.head_bucket(Bucket=bucket)
+    _configure_navigation_lifecycle(client, bucket)
     return bucket
+
+
+def _configure_navigation_lifecycle(client, bucket: str) -> None:
+    rule_id = "atlas-runtime-navigation-expiry"
+    rules = []
+    try:
+        rules = client.get_bucket_lifecycle_configuration(Bucket=bucket).get("Rules", [])
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        if code not in {"NoSuchLifecycleConfiguration", "NoSuchLifecycle"}:
+            raise
+    rules = [rule for rule in rules if rule.get("ID") != rule_id]
+    repository_prefix = (get_optional("ATLAS_REPOSITORY_S3_PREFIX") or "").strip("/")
+    prefix = "runtime/navigation/"
+    if repository_prefix:
+        prefix = f"{repository_prefix}/{prefix}"
+    rules.append(
+        {
+            "ID": rule_id,
+            "Status": "Enabled",
+            "Filter": {"Prefix": prefix},
+            "Expiration": {"Days": get_int("ATLAS_NAVIGATION_OBJECT_RETENTION_DAYS")},
+        }
+    )
+    client.put_bucket_lifecycle_configuration(
+        Bucket=bucket,
+        LifecycleConfiguration={"Rules": rules},
+    )
 
 
 def _s3_client_from_env() -> tuple[object, str]:

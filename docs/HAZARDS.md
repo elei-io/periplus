@@ -20,9 +20,9 @@ logic. Store one authoritative record and retain only identifiers or provenance 
 flags, routes, dual reads, and fallback queues make the graph cutover optional forever. Change the
 contract directly and delete the superseded path.
 
-**Treating metrics, progress, or NATS notifications as correctness state.** Prometheus and events may
-be missing or duplicated. Current execution relies on JetStream/KV; durable ingestion and
-materialization readiness rely on authoritative repository state and DuckLake coverage.
+**Treating metrics or progress as correctness state.** Prometheus and events may be missing or
+duplicated. Claims, dedupe, ingestion results, and navigation package references live in
+revision-fenced NATS state; referenced bytes are verified against S3 / MinIO size and digest.
 
 ## Accidental workflow platform
 
@@ -50,20 +50,20 @@ destination integrations.
 ## Graph execution mistakes
 
 **Blocking a crawl worker on enrichment.** A node invocation may be logically awaiting ingestion or
-materialization, but the browser worker must be released. Durable state and readiness notifications
-resume edge evaluation.
+navigation publication, but the browser worker must be released. Durable state and readiness
+notifications resume edge evaluation; analytical materialization remains off the hot path.
 
-**Running edges before the crawl-ready fence.** An empty materialized result is not equivalent to a
-scope that has not run. Evaluate outgoing edges only after base ingestion, materialization fan-out
-planning, and durable terminal coverage for every job the crawl triggered, including explicit
-zero-row coverage.
+**Running edges before the crawl-ready fence.** Evaluate outgoing edges only after base ingestion
+and verified navigation-package publication. Verify the package byte size and SHA-256 from its NATS
+reference before registering `nav.*`.
 
-**Waiting for every catalogue materialization.** Experimental, paused, historical, or unrelated
-materializations must not block crawl graphs. The barrier contains only the finite jobs recorded by
-materialization fan-out planning for that crawl.
+**Putting navigation bytes in NATS.** NATS owns package requirement, readiness, delivery, claims,
+and deletion safety. Store Arrow bytes in S3 / MinIO and keep only their integrity and lifecycle
+metadata in NATS.
 
-**Moving the readiness finish line.** Once the materialization planner records complete fan-out for
-a crawl, later catalogue changes cannot add jobs to that readiness barrier.
+**Leaking ephemeral navigation objects.** Delete the run prefix after terminal settlement and a
+short grace period. Also configure an object-store lifecycle expiration so crash orphans cannot
+accumulate indefinitely.
 
 **Assuming exactly-once delivery.** NATS messages may be redelivered. Edge evaluation identities,
 target-node request identities, admission counters, and queue publication must be idempotent so a

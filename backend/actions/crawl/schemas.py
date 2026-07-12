@@ -3,20 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from actions.shared.cache import CacheOptions
 from actions.shared.quality.schemas import QualityWarning
-
-
-class Input(BaseModel):
-    urls: list[str] = Field(
-        min_length=1,
-        max_length=10_000,
-        description="The URLs to crawl.",
-    )
-    cache: CacheOptions | None = Field(
-        default=None,
-        description="Optional cache behavior overriding the matching CrawlPolicy.",
-    )
 
 
 class CrawlPage(BaseModel):
@@ -35,15 +22,3 @@ class CrawlPage(BaseModel):
         description="Quality warnings for the captured page content.",
     )
     error: str | None = None
-
-
-class CrawlStats(BaseModel):
-    requested_urls: int
-    succeeded: int
-    failed: int
-    duration_seconds: float
-
-
-class CrawlOutput(BaseModel):
-    stats: CrawlStats
-    pages: list[CrawlPage]

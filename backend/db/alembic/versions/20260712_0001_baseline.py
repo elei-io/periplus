@@ -116,65 +116,6 @@ def upgrade() -> None:
     op.create_index('ix_crawl_graph_edges_graph_id', 'crawl_graph_edges', ['graph_id'], unique=False)
     op.create_index('ix_crawl_graph_edges_source_node_id', 'crawl_graph_edges', ['source_node_id'], unique=False)
     op.create_index('ix_crawl_graph_edges_target_node_id', 'crawl_graph_edges', ['target_node_id'], unique=False)
-    op.create_table('data_schemas',
-    sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('identity_key', sa.Text(), nullable=False),
-    sa.Column('match', sa.Text(), nullable=False),
-    sa.Column('enabled', sa.Boolean(), nullable=False),
-    sa.Column('priority', sa.Integer(), nullable=False),
-    sa.Column('prompt', sa.Text(), nullable=False),
-    sa.Column('prompt_hash', sa.Text(), nullable=False),
-    sa.Column('schema_type', sa.Text(), nullable=False),
-    sa.Column('target_json_hash', sa.Text(), nullable=True),
-    sa.Column('domain', sa.Text(), nullable=True),
-    sa.Column('path', sa.Text(), nullable=True),
-    sa.Column('schema_json', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('schema_hash', sa.Text(), nullable=False),
-    sa.Column('generated_from_crawl_id', sa.UUID(), nullable=True),
-    sa.Column('generated_from_document_id', sa.Text(), nullable=True),
-    sa.Column('inputs_json', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('validation_status', sa.Text(), nullable=True),
-    sa.Column('failure_count', sa.Integer(), nullable=False),
-    sa.Column('last_failed_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('last_error', sa.Text(), nullable=True),
-    sa.Column('warnings_json', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('identity_key')
-    )
-    op.create_index('ix_data_schemas_domain', 'data_schemas', ['domain'], unique=False)
-    op.create_index('ix_data_schemas_enabled', 'data_schemas', ['enabled'], unique=False)
-    op.create_index('ix_data_schemas_match', 'data_schemas', ['match'], unique=False)
-    op.create_index('ix_data_schemas_prompt_hash', 'data_schemas', ['prompt_hash'], unique=False)
-    op.create_index('ix_data_schemas_schema_type', 'data_schemas', ['schema_type'], unique=False)
-    op.create_table('query_schemas',
-    sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('identity_key', sa.Text(), nullable=False),
-    sa.Column('url_match_id', sa.UUID(), nullable=True),
-    sa.Column('match', sa.Text(), nullable=False),
-    sa.Column('enabled', sa.Boolean(), nullable=False),
-    sa.Column('priority', sa.Integer(), nullable=False),
-    sa.Column('schema_type', sa.Text(), nullable=False),
-    sa.Column('domain', sa.Text(), nullable=True),
-    sa.Column('path', sa.Text(), nullable=True),
-    sa.Column('schema_json', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('params_json', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('evidence_json', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('schema_hash', sa.Text(), nullable=False),
-    sa.Column('generated_from_crawl_id', sa.UUID(), nullable=True),
-    sa.Column('generated_from_document_id', sa.Text(), nullable=True),
-    sa.Column('inputs_json', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('warnings_json', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('identity_key')
-    )
-    op.create_index('ix_query_schemas_domain', 'query_schemas', ['domain'], unique=False)
-    op.create_index('ix_query_schemas_enabled', 'query_schemas', ['enabled'], unique=False)
-    op.create_index('ix_query_schemas_match', 'query_schemas', ['match'], unique=False)
-    op.create_index('ix_query_schemas_schema_type', 'query_schemas', ['schema_type'], unique=False)
     op.create_table('url_matches',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('scheme', sa.Text(), nullable=False),
@@ -197,14 +138,6 @@ def upgrade() -> None:
     op.create_foreign_key(
         'fk_crawl_policies_url_match',
         'crawl_policies',
-        'url_matches',
-        ['url_match_id'],
-        ['id'],
-        ondelete='SET NULL',
-    )
-    op.create_foreign_key(
-        'fk_query_schemas_url_match',
-        'query_schemas',
         'url_matches',
         ['url_match_id'],
         ['id'],
@@ -282,7 +215,6 @@ def downgrade() -> None:
     op.drop_table('catalogue_materializations')
     op.drop_index('ix_catalogue_view_references_archived_at', table_name='catalogue_view_references')
     op.drop_table('catalogue_view_references')
-    op.drop_constraint('fk_query_schemas_url_match', 'query_schemas', type_='foreignkey')
     op.drop_constraint('fk_crawl_policies_url_match', 'crawl_policies', type_='foreignkey')
     op.drop_index('ix_url_matches_path_pattern', table_name='url_matches')
     op.drop_index('ix_url_matches_host', table_name='url_matches')
@@ -297,17 +229,6 @@ def downgrade() -> None:
     op.drop_index('ix_crawl_graph_nodes_graph_id', table_name='crawl_graph_nodes')
     op.drop_table('crawl_graph_nodes')
     op.drop_table('crawl_graphs')
-    op.drop_index('ix_query_schemas_schema_type', table_name='query_schemas')
-    op.drop_index('ix_query_schemas_match', table_name='query_schemas')
-    op.drop_index('ix_query_schemas_enabled', table_name='query_schemas')
-    op.drop_index('ix_query_schemas_domain', table_name='query_schemas')
-    op.drop_table('query_schemas')
-    op.drop_index('ix_data_schemas_schema_type', table_name='data_schemas')
-    op.drop_index('ix_data_schemas_prompt_hash', table_name='data_schemas')
-    op.drop_index('ix_data_schemas_match', table_name='data_schemas')
-    op.drop_index('ix_data_schemas_enabled', table_name='data_schemas')
-    op.drop_index('ix_data_schemas_domain', table_name='data_schemas')
-    op.drop_table('data_schemas')
     op.drop_index('ix_crawl_policies_url_match_id', table_name='crawl_policies')
     op.drop_index('ix_crawl_policies_match', table_name='crawl_policies')
     op.drop_index('ix_crawl_policies_enabled', table_name='crawl_policies')

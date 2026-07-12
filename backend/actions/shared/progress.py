@@ -10,7 +10,6 @@ from uuid import uuid4
 
 ProgressStatus = Literal["waiting", "started", "succeeded", "failed"]
 ProgressPhase = Literal[
-    "apply_data_schema",
     "cache",
     "calibrate",
     "calibration_candidate",
@@ -23,7 +22,6 @@ ProgressPhase = Literal[
     "generate_schema",
     "index_depth",
     "persist_result",
-    "regenerate_data_schema",
     "schema",
     "search_provider",
     "task",

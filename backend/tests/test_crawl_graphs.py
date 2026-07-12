@@ -70,7 +70,7 @@ class CrawlGraphTests(unittest.TestCase):
                 source_node_id=search.id,
                 target_node_id=result.id,
                 name="results",
-                sql="SELECT url FROM materialized.page_links WHERE crawl_id = $crawl_id LIMIT 10",
+                sql="SELECT url FROM nav.links WHERE crawl_id = $crawl_id LIMIT 10",
                 dedupe_mode=EdgeDedupeMode.document,
             ),
         )
@@ -125,7 +125,7 @@ class CrawlGraphTests(unittest.TestCase):
                     source_node_id=search.id,
                     target_node_id=other.id,
                     name="invalid",
-                    sql="SELECT url FROM t WHERE crawl_id = $crawl_id LIMIT 1",
+                    sql="SELECT url FROM nav.links WHERE crawl_id = $crawl_id LIMIT 1",
                 ),
             )
 
@@ -138,7 +138,7 @@ class CrawlGraphTests(unittest.TestCase):
                 source_node_id=search.id,
                 target_node_id=result.id,
                 name="out",
-                sql="SELECT url FROM t WHERE crawl_id = $crawl_id LIMIT 1",
+                sql="SELECT url FROM nav.links WHERE crawl_id = $crawl_id LIMIT 1",
             ),
         )
         create_edge(
@@ -148,7 +148,7 @@ class CrawlGraphTests(unittest.TestCase):
                 source_node_id=result.id,
                 target_node_id=search.id,
                 name="in",
-                sql="SELECT url FROM t WHERE crawl_id = $crawl_id LIMIT 1",
+                sql="SELECT url FROM nav.links WHERE crawl_id = $crawl_id LIMIT 1",
             ),
         )
         delete_node(self.session, graph.id, search.id)
@@ -156,13 +156,13 @@ class CrawlGraphTests(unittest.TestCase):
 
     def test_edge_sql_contract(self) -> None:
         validate_edge_sql(
-            "SELECT url FROM materialized.page_links WHERE crawl_id = $crawl_id LIMIT 10"
+            "SELECT url FROM nav.links WHERE crawl_id = $crawl_id LIMIT 10"
         )
         invalid = [
-            "DELETE FROM materialized.page_links",
-            "SELECT url FROM materialized.page_links LIMIT 10",
-            "SELECT url FROM materialized.page_links WHERE crawl_id = $crawl_id",
-            "SELECT host FROM materialized.page_links WHERE crawl_id = $crawl_id LIMIT 10",
+            "DELETE FROM nav.links",
+            "SELECT url FROM nav.links LIMIT 10",
+            "SELECT url FROM nav.links WHERE crawl_id = $crawl_id",
+            "SELECT host FROM nav.links WHERE crawl_id = $crawl_id LIMIT 10",
             "SELECT url FROM t WHERE crawl_id = $crawl_id LIMIT 0",
             "SELECT url FROM t WHERE crawl_id = $crawl_id LIMIT 100001",
             "SELECT url FROM t WHERE crawl_id = $crawl_id; SELECT 1",

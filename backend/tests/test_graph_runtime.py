@@ -13,6 +13,7 @@ from control.crawl_graphs.schemas import EdgeDedupeMode, FrozenGraphEdge, Frozen
 from runtime.graph_queue import EdgeWork, ReadinessWork, edge_evaluation_identity, get_crawl_request, get_graph_run, new_graph_run, normalize_request_url, request_identity, update_crawl_request
 from runtime.graph_runs import EdgeEvaluationFailed, admit_request, deterministic_request_id, evaluate_edge, expire_graph_run, handle_readiness, reconcile_pending_admissions, request_cancellation
 from runtime.graph_progress import EdgeProgress, edge_progress_key, initialize_run_progress
+from runtime.navigation_contract import NavigationPackage
 from workers.crawl import _process_crawl
 
 
@@ -50,6 +51,17 @@ class FakeKV:
         return list(self.values)
 
 
+def navigation_package() -> NavigationPackage:
+    return NavigationPackage(
+        object_name="runtime/navigation/test.arrow",
+        sha256="0" * 64,
+        schema_version=1,
+        recipe="recipe",
+        row_count=1,
+        byte_size=10,
+    )
+
+
 class FakeJetStream:
     def __init__(self) -> None:
         self.messages: list[tuple[str, bytes]] = []
@@ -62,7 +74,7 @@ def snapshot(*, entry: bool = True, self_edge: bool = False, dedupe_mode: EdgeDe
     graph_id = uuid4()
     source = FrozenGraphNode(id=uuid4(), name="source")
     target = source if self_edge else FrozenGraphNode(id=uuid4(), name="target")
-    edge = FrozenGraphEdge(id=uuid4(), name="links", source_node_id=source.id, target_node_id=target.id, sql="SELECT url FROM materialized.page_links WHERE crawl_id = $crawl_id LIMIT 10", dedupe_mode=dedupe_mode)
+    edge = FrozenGraphEdge(id=uuid4(), name="links", source_node_id=source.id, target_node_id=target.id, sql="SELECT url FROM nav.links WHERE crawl_id = $crawl_id LIMIT 10", dedupe_mode=dedupe_mode)
     return FrozenGraphSnapshot(graph_id=graph_id, root_node_id=source.id if entry else uuid4(), nodes=[source, target] if source != target else [source], edges=[edge])
 
 
@@ -192,7 +204,8 @@ class GraphRuntimeTests(unittest.TestCase):
         request_identity(run_id, "https://example.com/a", dedupe_mode=EdgeDedupeMode.document, source_edge_id=edge_id, source_document_id="sha256:same"),
     )
     identity = request_identity(uuid4(), "https://example.com"); self.assertEqual(deterministic_request_id(identity), deterministic_request_id(identity))
-    payload = ReadinessWork(event_id=uuid4(), crawl_id=uuid4(), graph_run_id=uuid4(), crawl_request_id=uuid4(), status="ready", occurred_at=datetime.now(UTC)); self.assertEqual(payload.failed_materialization_ids, ())
+    package = NavigationPackage(object_name="runtime/navigation/test.arrow", sha256="0" * 64, schema_version=1, recipe="recipe", row_count=1, byte_size=10)
+    payload = ReadinessWork(event_id=uuid4(), crawl_id=uuid4(), graph_run_id=uuid4(), crawl_request_id=uuid4(), navigation=package, occurred_at=datetime.now(UTC)); self.assertEqual(payload.navigation, package)
 
  def test_admission_is_idempotent_and_freezes_policy(self) -> None:
     async def scenario() -> None:
@@ -211,6 +224,53 @@ class GraphRuntimeTests(unittest.TestCase):
 
     asyncio.run(scenario())
 
+ def test_navigation_readiness_activates_edges_without_materialization_state(self) -> None:
+    async def scenario() -> None:
+        runs, requests, progress, jetstream = FakeKV(), FakeKV(), FakeKV(), FakeJetStream()
+        graph = snapshot()
+        run = new_graph_run(graph, ["https://example.com"]).model_copy(
+            update={"status": "running", "request_count": 1, "pending_request_count": 1}
+        )
+        await runs.create(run.id.hex, run.model_dump_json().encode())
+        await initialize_run_progress(progress, run)
+        from runtime.graph_queue import CrawlRequest
+
+        request = CrawlRequest(
+            id=uuid4(),
+            graph_run_id=run.id,
+            node_id=graph.root_node_id,
+            url="https://example.com/",
+            status="awaiting_navigation",
+            created_at=run.created_at,
+            updated_at=run.created_at,
+        )
+        await requests.create(request.id.hex, request.model_dump_json().encode())
+        package = navigation_package()
+
+        await handle_readiness(
+            runs=runs,
+            requests=requests,
+            progress=progress,
+            jetstream=jetstream,
+            event=ReadinessWork(
+                event_id=uuid4(),
+                crawl_id=uuid4(),
+                graph_run_id=run.id,
+                crawl_request_id=request.id,
+                navigation=package,
+                occurred_at=datetime.now(UTC),
+            ),
+        )
+
+        self.assertEqual(len(jetstream.messages), 1)
+        work = EdgeWork.model_validate_json(jetstream.messages[0][1])
+        self.assertEqual(work.navigation, package)
+        current = await get_crawl_request(requests, request.id)
+        assert current is not None
+        self.assertEqual(current.status, "evaluating_edges")
+
+    asyncio.run(scenario())
+
  def test_cancellation_settles_every_nonterminal_request(self) -> None:
     async def scenario() -> None:
         runs, requests, progress = FakeKV(), FakeKV(), FakeKV()
@@ -226,7 +286,7 @@ class GraphRuntimeTests(unittest.TestCase):
 
         for url, status in (
             ("https://example.com/a", "crawling"),
-            ("https://example.com/b", "awaiting_materializations"),
+            ("https://example.com/b", "awaiting_navigation"),
         ):
             request = CrawlRequest(
                 id=uuid4(),
@@ -340,7 +400,7 @@ class GraphRuntimeTests(unittest.TestCase):
         await initialize_run_progress(progress, run)
         source, _admitted = await admit_request(runs=runs, requests=requests, progress=progress, jetstream=jetstream, run_id=run.id, node_id=graph.nodes[0].id, url="https://example.com", policy_resolver=lambda _url: None)
         assert source is not None
-        work = EdgeWork(graph_run_id=run.id, crawl_request_id=source.id, crawl_id=uuid4(), edge_id=graph.edges[0].id)
+        work = EdgeWork(graph_run_id=run.id, crawl_request_id=source.id, crawl_id=uuid4(), edge_id=graph.edges[0].id, navigation=navigation_package())
         calls = []
         def execute(sql, parameters):
             calls.append((sql, parameters))
@@ -348,7 +408,16 @@ class GraphRuntimeTests(unittest.TestCase):
         first = await evaluate_edge(runs=runs, requests=requests, progress=progress, jetstream=jetstream, work=work, execute_urls=execute, policy_resolver=lambda _url: None)
         second = await evaluate_edge(runs=runs, requests=requests, progress=progress, jetstream=jetstream, work=work, execute_urls=execute, policy_resolver=lambda _url: None)
         assert first == second == 1
-        assert calls == [(graph.edges[0].sql, {"crawl_id": work.crawl_id})]
+        assert calls == [
+            (
+                graph.edges[0].sql,
+                {
+                    "crawl_id": work.crawl_id,
+                    "_page_url": source.url,
+                    "_document_id": source.document_id,
+                },
+            )
+        ]
         # One source publication and one target publication; redelivery adds neither.
         assert len(jetstream.messages) == 2
         edge_state = EdgeProgress.model_validate_json(
@@ -408,6 +477,7 @@ class GraphRuntimeTests(unittest.TestCase):
                         crawl_request_id=source.id,
                         crawl_id=uuid4(),
                         edge_id=graph.edges[0].id,
+                        navigation=navigation_package(),
                     ),
                     execute_urls=query,
                     policy_resolver=lambda _url: None,
@@ -448,6 +518,7 @@ class GraphRuntimeTests(unittest.TestCase):
                 work=EdgeWork(
                     graph_run_id=run.id, crawl_request_id=source.id,
                     crawl_id=source.id, edge_id=graph.edges[0].id,
+                    navigation=navigation_package(),
                 ),
                 execute_urls=lambda _sql, _parameters: ["https://target.example/same"],
                 policy_resolver=lambda _url: None,
@@ -495,59 +566,3 @@ class GraphRuntimeTests(unittest.TestCase):
     run = new_graph_run(snapshot(), ["https://example.com"], now=datetime(2026, 1, 1, tzinfo=UTC)).model_copy(update={"request_count": 10})
     with patch("runtime.graph_runs.get_int", side_effect=lambda name: {"ATLAS_GRAPH_MAX_REQUESTS_PER_RUN": 10, "ATLAS_GRAPH_MAX_RUN_SECONDS": 3600}[name]):
        self.assertIn("ATLAS_GRAPH_MAX_REQUESTS_PER_RUN=10", _ceiling_error(run, datetime(2026, 1, 1, tzinfo=UTC)) or "")
-
- def test_successful_materialization_requeue_reopens_failed_request(self) -> None:
-    async def scenario() -> None:
-        runs, requests, progress, jetstream = FakeKV(), FakeKV(), FakeKV(), FakeJetStream()
-        graph = snapshot()
-        run = new_graph_run(graph, ["https://example.com"]).model_copy(update={
-            "status": "completed_with_errors",
-            "request_count": 1,
-            "pending_request_count": 0,
-            "failed_request_count": 1,
-            "completed_at": datetime.now(UTC),
-        })
-        await runs.create(run.id.hex, run.model_dump_json().encode())
-        await initialize_run_progress(progress, run)
-        request_id = uuid4()
-        from runtime.graph_queue import CrawlRequest
-
-        request = CrawlRequest(
-            id=request_id,
-            graph_run_id=run.id,
-            node_id=graph.root_node_id,
-            url="https://example.com/",
-            document_id="sha256:document",
-            status="failed",
-            error="materialization failed",
-            failure_stage="enrichment",
-            created_at=run.created_at,
-            updated_at=run.created_at,
-        )
-        await requests.create(request.id.hex, request.model_dump_json().encode())
-        await handle_readiness(
-            runs=runs,
-            requests=requests,
-            progress=progress,
-            jetstream=jetstream,
-            event=ReadinessWork(
-                event_id=uuid4(),
-                crawl_id=request.id,
-                graph_run_id=run.id,
-                crawl_request_id=request.id,
-                status="ready",
-                occurred_at=datetime.now(UTC),
-            ),
-        )
-
-        reopened_run = await get_graph_run(runs, run.id)
-        reopened_request = await get_crawl_request(requests, request.id)
-        assert reopened_run is not None and reopened_request is not None
-        self.assertEqual(reopened_run.status, "running")
-        self.assertEqual(reopened_run.pending_request_count, 1)
-        self.assertEqual(reopened_run.failed_request_count, 0)
-        self.assertEqual(reopened_request.status, "evaluating_edges")
-        self.assertIsNone(reopened_request.failure_stage)
-        self.assertEqual(jetstream.messages[-1][0], "atlas.graph.edge")
-
-    asyncio.run(scenario())

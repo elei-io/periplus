@@ -15,6 +15,7 @@ from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError
 from pydantic import BaseModel, ConfigDict
 from control.crawl_graphs.schemas import EdgeDedupeMode, FrozenGraphEdge, FrozenGraphNode, FrozenGraphSnapshot
 from control.url_matching import normalize_url
+from runtime.navigation_contract import NavigationPackage
 
 GRAPH_STREAM = "ATLAS_GRAPH_WORK"
 CRAWL_SUBJECT = "atlas.graph.crawl"
@@ -29,7 +30,7 @@ WORKERS_BUCKET = "atlas_graph_workers"
 PROGRESS_BUCKET = "atlas_graph_progress"
 
 GraphRunStatus = Literal["queued", "running", "completed", "completed_with_errors", "failed", "cancelled"]
-CrawlRequestStatus = Literal["queued", "crawling", "awaiting_materializations", "evaluating_edges", "completed", "failed", "cancelled"]
+CrawlRequestStatus = Literal["queued", "crawling", "awaiting_navigation", "evaluating_edges", "completed", "failed", "cancelled"]
 FailureStage = Literal["admission", "acquisition", "enrichment", "edge", "lifecycle"]
 TriggerKind = Literal["manual"]
 
@@ -100,6 +101,7 @@ class EdgeWork(BaseModel):
     crawl_request_id: UUID
     crawl_id: UUID
     edge_id: UUID
+    navigation: NavigationPackage
 
 
 class EdgeEvaluation(BaseModel):
@@ -124,8 +126,7 @@ class ReadinessWork(BaseModel):
     crawl_id: UUID
     graph_run_id: UUID
     crawl_request_id: UUID
-    status: Literal["ready", "failed"]
-    failed_materialization_ids: tuple[UUID, ...] = ()
+    navigation: NavigationPackage
     occurred_at: datetime
 
 

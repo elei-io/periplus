@@ -1,7 +1,7 @@
 """Atlas catalogue hot-path worker.
 
-One process owns ingestion, deterministic materialization, readiness, and edge evidence
-publication.  The loops retain separate subscriptions but share one deployment and scaling unit.
+One process owns ingestion, asynchronous materialization, navigation readiness, and edge
+evaluation. The loops retain separate subscriptions but share one deployment and scaling unit.
 """
 
 from __future__ import annotations
@@ -37,7 +37,9 @@ async def run() -> None:
             run_materializations(ingestion_initialized, monitor),
             name="catalog-materialization",
         ),
-        asyncio.create_task(run_navigation(), name="catalog-navigation"),
+        asyncio.create_task(
+            _supervise_navigation(stop, monitor), name="catalog-navigation"
+        ),
     ]
     stop_task = asyncio.create_task(stop.wait(), name="catalog-stop")
     done, _pending = await asyncio.wait(
@@ -52,6 +54,29 @@ async def run() -> None:
     await asyncio.gather(*tasks, stop_task, return_exceptions=True)
     if error is not None:
         raise error
+
+
+async def _supervise_navigation(stop: asyncio.Event, monitor: HealthMonitor) -> None:
+    delay = 1.0
+    while not stop.is_set():
+        try:
+            await run_navigation(monitor=monitor)
+            if not stop.is_set():
+                raise RuntimeError("navigation runtime exited unexpectedly")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            monitor.subsystem_unavailable(
+                "navigation", str(exc) or type(exc).__name__
+            )
+            logging.exception(
+                "navigation runtime unavailable; retrying in %.1fs", delay
+            )
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=delay)
+            except TimeoutError:
+                pass
+            delay = min(30.0, delay * 2)
 
 
 def main() -> None:

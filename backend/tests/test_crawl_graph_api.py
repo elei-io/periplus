@@ -63,7 +63,7 @@ class CrawlGraphApiTests(unittest.TestCase):
                 "description": None,
                 "source_node_id": search.json()["id"],
                 "target_node_id": result.json()["id"],
-                "sql": "SELECT url FROM materialized.page_links WHERE crawl_id = $crawl_id LIMIT 10",
+                "sql": "SELECT url FROM nav.links WHERE crawl_id = $crawl_id LIMIT 10",
             },
         )
         self.assertEqual(edge.status_code, 201, edge.text)

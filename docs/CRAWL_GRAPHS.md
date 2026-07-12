@@ -13,9 +13,9 @@ work.
 
 The uniform execution rule is:
 
-> A graph node maps admitted URL inputs to crawl work. Once the crawl is durable and all
-> materializations it triggered have settled successfully, every outgoing edge runs scoped SQL and
-> offers its returned URLs to target nodes.
+> A graph node maps admitted URL inputs to crawl work. Once the crawl is durable and its verified
+> navigation package is referenced by NATS, every outgoing edge runs scoped SQL and offers its
+> returned URLs to target nodes.
 
 This keeps acquisition replaceable. A browser library may load a page, but it is not the downstream
 source of truth for links or navigation. Atlas retains immutable raw HTML, a versioned structural DOM
@@ -37,7 +37,8 @@ Current execution uses NATS JetStream/KV:
 ```text
 GraphRun
 CrawlRequest
-current crawl, readiness, edge-evaluation, admission, deduplication, and progress state
+current crawl, navigation-package references, readiness, edge-evaluation, admission,
+deduplication, and progress state
 ```
 
 Durable evidence uses DuckLake:
@@ -48,6 +49,12 @@ crawls with graph provenance
 elements
 materialized derived facts
 materialization scope coverage
+```
+
+Ephemeral navigation bytes use the configured repository object store:
+
+```text
+runtime/navigation/<run_id>/documents/<document_id>/<recipe_hash>.arrow
 ```
 
 There is no user-facing task or primitive hierarchy. `crawl` is the sole acquisition primitive and
@@ -105,7 +112,7 @@ receive URLs from edges and participate in cycles; being root only determines in
 
 The node does not write DuckLake directly. It maps admitted inputs to the ordinary crawl path, which
 stores immutable raw HTML and publishes ingestion work. Catalog workers own ingestion,
-materialization, and navigation-critical DuckLake publication.
+asynchronous materialization, and navigation-package publication.
 
 ### CrawlGraphEdge
 
@@ -142,7 +149,7 @@ The minimum result contract is one URL column:
 
 ```sql
 SELECT url
-FROM materialized.page_links
+FROM nav.links
 WHERE crawl_id = $crawl_id
   AND is_http
 LIMIT 10;
@@ -276,14 +283,14 @@ The crawl request may transition through states such as:
 ```text
 queued
 crawling
-awaiting_materializations
+awaiting_navigation
 evaluating_edges
 complete
 failed
 ```
 
 The invariant is that no
-browser worker sleeps while waiting for repository or materialization completion.
+browser worker sleeps while waiting for repository or navigation publication.
 
 ### One crawl-ready barrier
 
@@ -292,32 +299,22 @@ Graph execution uses one logical readiness barrier:
 ```text
 base crawl ingestion complete
         |
-materialization planner records its complete fan-out
+Arrow navigation package written and verified in S3 / MinIO
         |
-all triggered materialization jobs settle successfully
+durable NATS package reference published
         |
 crawl ready for outgoing edges
 ```
 
-The materialization planner durably establishes which materialization jobs the newly committed crawl
-triggers. The graph engine waits for that finite fan-out to settle. “All materializations complete”
-means all jobs triggered for this crawl, not every materialization in the catalogue. If planning
-produces no jobs, the crawl is ready immediately after planning completes.
+The package is page-local Arrow data exposed as `nav.*` tables. Its NATS reference contains the
+object key, SHA-256, byte size, recipe version, and row count. Edge execution verifies size and
+digest before registering the package on a dedicated DuckDB connection. The same connection may
+also read `views.*` or `materialized.*`, but those analytical sources are snapshots and may lag the
+just-finished crawl.
 
-Every triggered job records durable scope coverage, including a successful zero-row result. A
-terminal failure is explicit; edges must never interpret a missing or failed scope as an empty
-result. A later materialization cannot join an already completed planning fan-out and move the
-finish line.
-
-The graph runtime receives one logical crawl-ready notification. It does not track per-edge
-materialization dependency lists. NATS provides wake-up latency, while DuckLake scope coverage is the
-authoritative readiness proof and supports reconciliation after a lost notification.
-
-Materialization failures use the materialization system's bounded retry and recovery path. If any
-triggered job fails terminally, the crawl request fails and its outgoing edges do not run. Other
-branches continue. A run with no remaining work and one or more failed requests ends as
-`completed_with_errors`; requeuing the failed materialization can resume readiness without
-reacquiring the page.
+Materialization planning and evaluation continue asynchronously after ingestion. Their failures are
+observable and retryable but cannot fail navigation or hold a crawl request at the readiness fence.
+Raw HTML is the permanent regeneration authority if an ephemeral package is missing.
 
 ### Edge activation
 
@@ -395,7 +392,7 @@ Example result edge:
 
 ```sql
 SELECT url
-FROM materialized.page_links
+FROM nav.links
 WHERE crawl_id = $crawl_id
   AND is_http
   AND NOT is_internal
@@ -407,7 +404,7 @@ Example self-edge:
 
 ```sql
 SELECT url
-FROM materialized.page_links
+FROM nav.links
 WHERE crawl_id = $crawl_id
   AND is_same_page
   AND is_query_variant
@@ -692,7 +689,7 @@ effective_policy_snapshot_json
 source_crawl_id nullable
 source_edge_id nullable
 parent_request_id nullable
-status: queued | crawling | awaiting_materializations |
+status: queued | crawling | awaiting_navigation |
         evaluating_edges | completed | failed | cancelled
 created_at
 updated_at
@@ -740,7 +737,7 @@ source_edge_id UUID nullable
 There are no task-ID, task-revision, primitive, or compatibility provenance columns after the
 cutover.
 
-### Materialization fan-out and readiness
+### Navigation readiness and asynchronous materialization
 
 DuckLake stores one authoritative fan-out record per crawl:
 
@@ -764,13 +761,9 @@ crawl_materialization_fanout_members
 - error VARCHAR nullable
 ```
 
-The planner freezes fan-out membership before publishing scope work. Membership rows are the
-authoritative identities used to reconcile and republish planned jobs after a crash; aggregate
-counts are a bounded readiness summary. The repository writer updates membership, counts, and
-materialization scope coverage in the same durable commit path. A crawl with
-`triggered_count = 0` is ready when planning completes. A crawl with work is ready when
-`settled_count = triggered_count` and `failed_count = 0`. Any terminal failure produces an
-enrichment-failed notification instead of activating edges.
+The planner freezes fan-out membership before publishing analytical scope work. Membership rows
+remain the authoritative identities for asynchronous materialization recovery and observability;
+they are not graph readiness state.
 
 The readiness work payload is:
 
@@ -780,14 +773,21 @@ The readiness work payload is:
   "crawl_id": "uuid",
   "graph_run_id": "uuid",
   "crawl_request_id": "uuid",
-  "status": "ready | failed",
-  "failed_materialization_ids": ["uuid"],
+  "navigation": {
+    "object_name": "runtime/navigation/<run>/documents/<document>/<recipe>.arrow",
+    "sha256": "hex",
+    "byte_size": 1234,
+    "schema_version": 1,
+    "recipe": "hex",
+    "row_count": 12
+  },
   "occurred_at": "timestamp"
 }
 ```
 
-`event_id` and the edge-evaluation identity make redelivery idempotent. NATS wakes the runtime;
-DuckLake fan-out and coverage remain authoritative for reconciliation.
+The repository ingestion result stores the same package reference in NATS before work is
+acknowledged. If readiness publication fails, redelivery republishes from that durable state.
+`event_id` and the edge-evaluation identity make redelivery idempotent.
 
 ## Cutover rule
 

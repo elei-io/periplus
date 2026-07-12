@@ -10,11 +10,9 @@ from api.routers import (
     catalogue_views,
     crawl_graphs,
     crawl_policies,
-    data_schemas,
     graph_runs,
     catalogue_materializations,
     operational_metrics,
-    query_schemas,
     repository_operations,
 )
 
@@ -38,10 +36,8 @@ app = FastAPI(title="Atlas API", lifespan=lifespan)
 app.include_router(catalogue.router)
 app.include_router(catalogue_queries.router)
 app.include_router(catalogue_views.router)
-app.include_router(data_schemas.router)
 app.include_router(catalogue_materializations.router)
 app.include_router(operational_metrics.router)
-app.include_router(query_schemas.router)
 app.include_router(repository_operations.router)
 app.include_router(crawl_graphs.router)
 app.include_router(graph_runs.trigger_router)

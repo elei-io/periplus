@@ -159,7 +159,7 @@ async def _process_crawl(message, runs, requests, progress, crawler, repository_
                 return current
             return current.model_copy(
                 update={
-                    "status": "awaiting_materializations",
+                    "status": "awaiting_navigation",
                     "document_id": page.document_id,
                     "claim_token": None,
                     "claim_expires_at": None,

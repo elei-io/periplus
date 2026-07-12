@@ -53,8 +53,6 @@ export const catalogueTables = {
     "input_hash",
     "crawl_policy_id",
     "crawl_policy_revision",
-    "data_schema_id",
-    "query_schema_id",
     "warnings_json",
     "errors_json",
   ],

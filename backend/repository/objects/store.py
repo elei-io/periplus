@@ -33,6 +33,9 @@ class ObjectStore(Protocol):
     def delete(self, key: str) -> bool:
         """Delete key and return whether it previously existed."""
 
+    def delete_prefix(self, prefix: str) -> int:
+        """Delete every object below a normalized runtime prefix."""
+
 
 class FileObjectStore:
     """Atomic content-addressed object storage rooted at a local directory."""
@@ -87,6 +90,21 @@ class FileObjectStore:
         except FileNotFoundError:
             return False
         return True
+
+    def delete_prefix(self, prefix: str) -> int:
+        root = self._path(prefix.rstrip("/"))
+        if not root.exists():
+            return 0
+        deleted = 0
+        for path in root.rglob("*"):
+            if path.is_file():
+                path.unlink()
+                deleted += 1
+        for path in sorted(root.rglob("*"), reverse=True):
+            if path.is_dir():
+                path.rmdir()
+        root.rmdir()
+        return deleted
 
     def _path(self, key: str) -> Path:
         return self.root.joinpath(*_key_parts(key))
@@ -159,6 +177,27 @@ class S3ObjectStore:
         if existed:
             self.client.delete_object(Bucket=self.bucket, Key=self._object_key(key))
         return existed
+
+    def delete_prefix(self, prefix: str) -> int:
+        object_prefix = self._object_key(prefix.rstrip("/")) + "/"
+        deleted = 0
+        continuation = None
+        while True:
+            options = {"Bucket": self.bucket, "Prefix": object_prefix}
+            if continuation is not None:
+                options["ContinuationToken"] = continuation
+            response = self.client.list_objects_v2(**options)
+            objects = [{"Key": item["Key"]} for item in response.get("Contents", [])]
+            if objects:
+                self.client.delete_objects(
+                    Bucket=self.bucket,
+                    Delete={"Objects": objects, "Quiet": True},
+                )
+                deleted += len(objects)
+            if not response.get("IsTruncated"):
+                break
+            continuation = response["NextContinuationToken"]
+        return deleted
 
     def _object_key(self, key: str) -> str:
         relative = "/".join(_key_parts(key))

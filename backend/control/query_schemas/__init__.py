@@ -1,1 +1,0 @@
-"""Editable query-parameter schemas."""
