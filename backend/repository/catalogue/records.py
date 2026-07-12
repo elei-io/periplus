@@ -110,14 +110,6 @@ class ElementRecord(CatalogueRecord):
     text_tail: str
 
 
-class LinkRecord(CatalogueRecord):
-    document_id: str
-    element_index: int
-    href: str
-    text: str | None = None
-    title: str | None = None
-
-
 class CatalogueWriteResult(CatalogueRecord):
     document_id: str | None
     crawl_id: UUID

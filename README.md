@@ -8,12 +8,16 @@ The project is intentionally small: one page-acquisition path, one repository bo
 clear owner for every kind of state. Atlas favors bounded local work and explicit operational
 limits over speculative distributed machinery.
 
-Its primary actions are:
+Atlas is organized around crawl graphs:
 
-- `crawl` — acquire and retain pages.
-- `index` — perform a bounded breadth-first walk.
-- `search` — find relevant pages.
-- `extract` — produce structured data or query-parameter schemas from acquired pages.
+- a graph groups user metadata, nodes, and edges;
+- a node accepts URL inputs and maps admitted inputs to the single `crawl` acquisition primitive;
+- an edge runs bounded, crawl-scoped SQL against DuckLake and passes returned URLs to another node;
+  and
+- self-edges express bounded recursion such as pagination or site walking.
+
+DuckLake remains the inspection and analysis surface. Users query retained crawl evidence and build
+queries, views, and materializations without requiring a separate result-rendering abstraction.
 
 ## Quick start
 
@@ -38,15 +42,12 @@ Run the API without Compose:
 make api
 ```
 
-Use the CLI against a running API:
+The current CLI remains available while the graph API and CLI replace action-specific commands:
 
 ```sh
 cd backend
 uv run atlas --help
 uv run atlas crawl https://example.com
-uv run atlas index https://example.com --max-depth 1
-uv run atlas schema https://example.com --prompt "Extract article cards."
-uv run atlas extract https://example.com --prompt "Extract the main heading."
 ```
 
 Useful development commands:
@@ -64,6 +65,7 @@ Configuration is documented alongside its defaults in [`.env.example`](.env.exam
 
 - [Vision](docs/VISION.md) — what Atlas is for, and what it is not.
 - [Architecture](docs/ARCHITECTURE.md) — components, state ownership, and execution paths.
+- [Crawl graphs](docs/CRAWL_GRAPHS.md) — graph entities, runtime semantics, messaging, and readiness.
 - [Catalogue SQL](docs/CATALOGUE_SQL.md) — analytical tables and DOM-style query helpers.
 - [Hazards](docs/HAZARDS.md) — mistakes and complexity traps to avoid.
 - [Agent guide](AGENTS.md) — concise working rules for coding agents.

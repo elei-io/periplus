@@ -365,21 +365,3 @@ async def search(
         ),
     )
     return SearchOutput(results=results)
-
-
-def search_sync(
-    query: str,
-    max_pages: int = 1,
-    provider: SearchProvider = "duckduckgo",
-    progress_reporter: ProgressReporter | None = None,
-    cache: CacheOptions | dict[str, object] | None = None,
-) -> SearchOutput:
-    return asyncio.run(
-        search(
-            query=query,
-            max_pages=max_pages,
-            provider=provider,
-            progress_reporter=progress_reporter,
-            cache=cache,
-        )
-    )

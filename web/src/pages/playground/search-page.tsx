@@ -21,7 +21,7 @@ export function SearchPage() {
           title="Try a web search"
           description="Choose a live search provider, run a query, and inspect what Atlas finds."
           taskNote="Every run is saved as a task"
-          taskHref="/scheduled-work/tasks?primitive=search"
+          taskHref="/graphs"
         />
         <SearchForm
           idPrefix="search-playground"

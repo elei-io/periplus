@@ -1,4 +1,3 @@
-import asyncio
 import json
 import time
 from hashlib import sha256
@@ -292,28 +291,4 @@ async def schema(
         schema_id=schema_id,
         schema_type=schema_type,
         extraction_schema=generated_schema,
-    )
-
-
-def schema_sync(
-    url: str,
-    prompt: str,
-    target_json_example: str | None = None,
-    schema_type: SchemaType = "css",
-    schema_id: str | None = None,
-    html: str | None = None,
-    progress_reporter: ProgressReporter | None = None,
-    cache: CacheOptions | dict[str, object] | None = None,
-) -> SchemaOutput:
-    return asyncio.run(
-        schema(
-            url=url,
-            prompt=prompt,
-            target_json_example=target_json_example,
-            schema_type=schema_type,
-            schema_id=schema_id,
-            html=html,
-            progress_reporter=progress_reporter,
-            cache=cache,
-        )
     )

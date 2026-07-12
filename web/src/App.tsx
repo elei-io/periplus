@@ -6,7 +6,7 @@ import { ExtractPage } from "@/pages/playground/extract-page"
 import { IndexPage } from "@/pages/playground/index-page"
 import { CrawlPage } from "@/pages/playground/crawl-page"
 import { SearchPage } from "@/pages/playground/search-page"
-import { TasksPage } from "@/pages/admin/tasks-page"
+import { GraphsPage } from "@/pages/admin/graphs-page"
 import { CatalogueSqlPage } from "@/pages/catalogue/sql-page"
 import { CatalogueViewsPage } from "@/pages/catalogue/views-page"
 import { CatalogueQueriesPage } from "@/pages/catalogue/queries-page"
@@ -107,8 +107,8 @@ export function App() {
       return <CalibratePage />
     }
 
-    if (activeItem.href === "/scheduled-work/tasks") {
-      return <TasksPage />
+    if (activeItem.href === "/graphs") {
+      return <GraphsPage />
     }
 
     if (activeItem.href === "/cache/data-schemas") {

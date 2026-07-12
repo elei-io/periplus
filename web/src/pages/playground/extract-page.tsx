@@ -26,7 +26,7 @@ export function ExtractPage() {
           title="Turn a page into data"
           description="Describe the records you want and watch Atlas turn a live page into structured results."
           taskNote="Every run is saved as a task"
-          taskHref="/scheduled-work/tasks?primitive=extract"
+          taskHref="/graphs"
         />
         <ExtractForm
           idPrefix="extract-playground"

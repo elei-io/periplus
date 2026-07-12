@@ -139,7 +139,7 @@ class TaskRunProgressTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(envelope["type"], "failed")
         self.assertEqual(envelope["data"], {"status": "failed", "error": "boom"})
 
-    async def test_missing_terminal_message_falls_back_to_postgres(self) -> None:
+    async def test_missing_terminal_message_falls_back_to_current_run_state(self) -> None:
         run_id = uuid4()
         running = SimpleNamespace(id=run_id, status="running", error=None, attempt=3)
         succeeded = SimpleNamespace(id=run_id, status="succeeded", error=None, attempt=3)

@@ -125,7 +125,3 @@ async def index(
         external_links=result_count - internal_count,
         sample_links=samples,
     )
-
-
-def index_sync(**kwargs: object) -> IndexOutput:
-    return asyncio.run(index(**kwargs))

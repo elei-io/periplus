@@ -20,7 +20,6 @@ from api.routers import (
     repository_operations,
     schema,
     search,
-    tasks,
     task_runs,
 )
 
@@ -56,5 +55,4 @@ app.include_router(schema.router)
 app.include_router(crawl.router)
 app.include_router(crawl_policies.router)
 app.include_router(search.router)
-app.include_router(tasks.router)
 app.include_router(task_runs.router)

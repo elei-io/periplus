@@ -128,7 +128,6 @@ def _crawl_payload(result: CrawlResult) -> dict[str, Any]:
         }
     )
 
-
 async def _crawl_url(
     crawler: AsyncWebCrawler,
     url: str,
@@ -1200,22 +1199,4 @@ async def crawl(
             duration_seconds=time.perf_counter() - start_time,
         ),
         pages=pages,
-    )
-
-
-def crawl_sync(
-    urls: list[str],
-    mode: CrawlMode | None = None,
-    wait: CrawlWait | None = None,
-    progress_reporter: ProgressReporter | None = None,
-    cache: CacheOptions | dict[str, Any] | None = None,
-) -> CrawlOutput:
-    return asyncio.run(
-        crawl(
-            urls=urls,
-            mode=mode,
-            wait=wait,
-            progress_reporter=progress_reporter,
-            cache=cache,
-        )
     )

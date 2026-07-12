@@ -23,7 +23,11 @@ class CatalogueQuery(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     current_revision_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("catalogue_query_revisions.id"),
+        ForeignKey(
+            "catalogue_query_revisions.id",
+            name="fk_catalogue_queries_current_revision",
+            use_alter=True,
+        ),
         nullable=True,
     )
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

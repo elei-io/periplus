@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Iterator
 from uuid import UUID
 
@@ -18,9 +18,8 @@ from repository.catalogue.records import (
     CrawlRecord,
     DocumentRecord,
     ElementRecord,
-    LinkRecord,
 )
-from dom import ElementRow, GroupedLinkPayload, anchors_from_elements, links_from_elements
+from dom import ElementRow, GroupedLinkPayload, links_from_elements
 
 
 @dataclass(frozen=True, slots=True)
@@ -523,20 +522,6 @@ class CatalogueService:
                     text_tail=str(row["text_tail"]),
                 )
 
-    def get_links(self, document_id: str) -> list[LinkRecord]:
-        """Return raw anchors with complete descendant text in document order."""
-
-        return [
-            LinkRecord(
-                document_id=document_id,
-                element_index=anchor.element_index,
-                href=anchor.href,
-                text=anchor.text,
-                title=anchor.title,
-            )
-            for anchor in anchors_from_elements(self.iter_elements(document_id))
-        ]
-
     def get_projected_links(
         self,
         document_id: str,
@@ -546,14 +531,6 @@ class CatalogueService:
         """Return the canonical link payload shared by fresh and cached pages."""
 
         return links_from_elements(self.iter_elements(document_id), page_url=page_url)
-
-    def count_elements(self, document_id: str) -> int:
-        value = self.catalogue.lake.sql_scalar(
-            f"SELECT count(*) FROM {self._table('elements')} "
-            "WHERE document_id = $document_id",
-            document_id=document_id,
-        )
-        return int(value or 0)
 
     def _lookup_batch_crawls(
         self,
@@ -635,23 +612,6 @@ class CatalogueService:
             for row in cursor.fetchall()
         ]
 
-    def _insert_document(self, document: DocumentRecord) -> None:
-        self._append("documents", [document.model_dump(mode="python")])
-
-    def _insert_crawl(self, crawl: CrawlRecord) -> None:
-        self._append("crawls", [_crawl_values(crawl)])
-
-    def _insert_elements(
-        self, document_id: str, elements: Sequence[ElementRecord]
-    ) -> None:
-        if not elements:
-            return
-        rows = [
-            {"document_id": document_id, **element.model_dump(mode="python")}
-            for element in elements
-        ]
-        self._append("elements", rows)
-
     def _append(self, table_name: str, rows: list[dict[str, object]]) -> None:
         self.catalogue.lake.table.append(
             table_name,
@@ -675,41 +635,6 @@ class CatalogueService:
             timeout=120,
         ):
             yield
-
-    @staticmethod
-    def _validate_batch(
-        document: DocumentRecord,
-        crawl: CrawlRecord,
-        elements: Sequence[ElementRecord],
-    ) -> None:
-        _validate_document_identity(document)
-        if crawl.document_id != document.document_id:
-            raise CatalogueValidationError("crawl.document_id must match document.document_id")
-        object_key = PurePosixPath(document.html_object_key)
-        if not object_key.parts or object_key.is_absolute() or ".." in object_key.parts:
-            raise CatalogueValidationError("document.html_object_key must be a relative safe key")
-        CatalogueService._validate_elements(document, elements)
-
-    @staticmethod
-    def _validate_elements(
-        document: DocumentRecord,
-        elements: Sequence[ElementRecord],
-    ) -> None:
-        if document.element_count != len(elements):
-            raise CatalogueValidationError("document.element_count must match the element batch")
-        for expected_index, element in enumerate(elements):
-            if element.element_index != expected_index:
-                raise CatalogueValidationError(
-                    "elements must have contiguous zero-based document-order indexes"
-                )
-            if element.parent_index is not None and element.parent_index >= element.element_index:
-                raise CatalogueValidationError(
-                    "an element parent must precede the element in document order"
-                )
-            if element.subtree_end_index < element.element_index:
-                raise CatalogueValidationError(
-                    "an element subtree must end at or after the element"
-                )
 
 def _document_from_row(row: dict[str, Any]) -> DocumentRecord:
     return DocumentRecord.model_validate(row)

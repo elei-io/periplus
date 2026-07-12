@@ -1,6 +1,6 @@
 import {
   BracesIcon,
-  ClipboardListIcon,
+  GitForkIcon,
   DatabaseIcon,
   FileSearchIcon,
   FileCode2Icon,
@@ -88,15 +88,15 @@ export const navigationGroups: NavigationGroup[] = [
     ],
   },
   {
-    name: "Scheduled Work",
-    slug: "scheduled-work",
+    name: "Graphs",
+    slug: "graphs",
     items: [
       {
-        name: "Tasks",
-        href: "/scheduled-work/tasks",
-        icon: ClipboardListIcon,
-        title: "Task Admin",
-        description: "Create, schedule, filter, and archive task definitions.",
+        name: "Crawl Graphs",
+        href: "/graphs",
+        icon: GitForkIcon,
+        title: "Crawl Graphs",
+        description: "Compose crawl nodes with SQL-defined edges.",
       },
     ],
   },

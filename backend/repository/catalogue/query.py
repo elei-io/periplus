@@ -168,7 +168,7 @@ def execute_arrow_query(catalogue: Catalogue, sql: str) -> pa.RecordBatchReader:
         for part in (catalogue.config.alias, catalogue.config.schema)
     )
     catalogue.connection.execute(f"USE {namespace}")
-    return catalogue.connection.execute(sql).fetch_record_batch(rows_per_batch=65_536)
+    return catalogue.connection.execute(sql).to_arrow_reader(batch_size=65_536)
 
 
 def stream_arrow_reader(reader: pa.RecordBatchReader) -> Iterator[bytes]:

@@ -81,6 +81,15 @@ def _load_cdc(connection, extension_path: Path) -> None:
         raise RuntimeError(
             f"DuckLake CDC version mismatch: expected {expected!r}, got {actual!r}"
         )
+    actual_revision = str(
+        connection.execute("SELECT cdc_build_revision()").fetchone()[0]
+    )
+    expected_revision = get_str("ATLAS_DUCKLAKE_CDC_BUILD_REVISION")
+    if actual_revision != expected_revision:
+        raise RuntimeError(
+            "DuckLake CDC build revision mismatch: "
+            f"expected {expected_revision!r}, got {actual_revision!r}"
+        )
 
 
 if __name__ == "__main__":

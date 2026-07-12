@@ -28,7 +28,12 @@ class CrawlPolicy(Base):
     domain_group: Mapped[str] = mapped_column(Text, default="unclassified")
     url_match_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("url_matches.id", use_alter=True, ondelete="SET NULL"),
+        ForeignKey(
+            "url_matches.id",
+            name="fk_crawl_policies_url_match",
+            use_alter=True,
+            ondelete="SET NULL",
+        ),
         nullable=True,
     )
     match: Mapped[str] = mapped_column(Text)

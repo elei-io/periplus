@@ -61,8 +61,10 @@ the published release; version control retains the history.
   entries and send fully qualified scan/DML targets, or allow one attached catalogue to be exposed
   as the endpoint root. A client must be able to read/write `remote.atlas.documents` with bound
   parameters when it maps to `ducklake.atlas.documents` on the server.
-- **Atlas status:** blocked. Views, aliases, dynamic SQL, and custom RPC functions are rejected as
-  compatibility shims. The Compose service is a working reproduction environment.
+- **Upstream:** [Quack PR #213](https://github.com/duckdb/duckdb-quack/pull/213).
+- **Atlas status:** blocked until the change is merged and deployed. Views, aliases, dynamic SQL,
+  and custom RPC functions are rejected as compatibility shims. The Compose service is a working
+  reproduction environment. `remote.atlas.documents` is not production-ready before adoption.
 
 ### Remote connection contract for `ducklake-cdc-client`
 
@@ -74,27 +76,22 @@ the published release; version control retains the history.
 - **Smallest useful upstream contract:** document and test the structural connection/lake protocol
   accepted by `CDCClient`, including remote adapters and the requirement that a consumer's calls
   remain pinned to one logical Quack connection for lease ownership.
-- **Atlas status:** not blocked for a prototype. Compose loads the local Linux arm64 1.5.4 artifact;
-  a published artifact is still required for a reproducible production image. The Mach-O artifact
-  remains host-test-only.
-
-### Pin-install contract for `ducklake-cdc`
-
-- **Atlas caller:** the materialization worker image and its durable CDC cursor.
-- **Evidence:** `INSTALL ducklake_cdc FROM community` began returning build
-  `ducklake_cdc 723dcf8` while Atlas's image/runtime contract expected `f5d2e37`; the worker correctly
-  refused to consume with an unreviewed extension build, but a rebuild cannot reproduce the older
-  artifact from the same install command.
-- **Smallest useful upstream contract:** a documented immutable release/version install URL (or a
-  semver-selectable community artifact) plus a stable semantic version returned alongside the build
-  hash.
-- **Atlas status:** not blocked; Atlas verifies the currently reviewed published build at startup,
-  but the Dockerfile's community install is not reproducible across future releases.
+- **Atlas status:** adopted for the CDC path. Compose builds the matching immutable Linux artifact
+  from `ducklake-cdc` v0.5.3 into each image architecture. Atlas keeps each consumer on its existing
+  logical Quack connection because leases are connection-scoped.
 
 ## In progress
 
-No items in progress.
+### Typed bound parameters in Quack remote queries
+
+- **Atlas caller:** every remote catalogue operation with application values.
+- **Upstream:** [Quack PR #214](https://github.com/duckdb/duckdb-quack/pull/214).
+- **Atlas status:** blocked until the change is merged and deployed. Atlas must not substitute SQL
+  literals as a workaround.
 
 ## Released, awaiting Atlas adoption
 
-No releases awaiting adoption.
+No releases awaiting adoption. Atlas adopted `ducklake-cdc` v0.5.3 from its immutable release
+assets, verifies the published SHA-256 during the image build, and validates both `cdc_version()`
+and `cdc_build_revision()` at Quack startup. Community installation remains disabled until
+[community-extensions PR #2229](https://github.com/duckdb/community-extensions/pull/2229) is merged.

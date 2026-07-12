@@ -100,6 +100,29 @@ WHERE e.tag = 'a'
   AND has_attribute(e.attributes, 'href');
 ```
 
+## Crawl graph edges
+
+The crawl-graph target model uses catalogue SQL to derive subsequent URL inputs from durable crawl
+evidence. Edge queries are evaluated once per ready source crawl and bind `$crawl_id`; they do not
+scan a node's unbounded history to decide what follows one page.
+
+```sql
+SELECT url
+FROM materialized.page_links
+WHERE crawl_id = $crawl_id
+  AND is_http
+  AND NOT is_internal
+ORDER BY element_index
+LIMIT 10;
+```
+
+SQL `LIMIT` expresses the intended number of candidates. Catalogue execution still applies hard
+row, byte, memory, and timeout limits. Returned URLs become independently claimable crawl requests;
+URL matching selects their crawl policy, and deployment hard ceilings protect against runaway graph
+runs. See [Crawl Graphs](CRAWL_GRAPHS.md) for readiness, recursion, messaging, and state ownership.
+Crawl-scoped materialization fan-out and graph execution remain target contracts until the cutover
+described there is implemented.
+
 ## Physical layout
 
 `crawls` is partitioned by year, month, and day of `captured_at`, matching common site/path/time

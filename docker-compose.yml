@@ -9,8 +9,6 @@ services:
       - "127.0.0.1:9494:9494"
     expose:
       - "9495"
-    volumes:
-      - ${DUCKLAKE_CDC_EXTENSION_PATH:-/Users/ekku/Code/quack/ducklake-cdc-extension/build/local/v1.5.4/linux_arm64/ducklake_cdc.duckdb_extension}:/opt/atlas/extensions/ducklake_cdc.duckdb_extension:ro
     environment:
       ATLAS_CATALOGUE_CATALOG: postgres
       ATLAS_CATALOGUE_CATALOG_DSN: "host=atlas-postgres port=5432 dbname=${POSTGRES_CATALOGUE_DB:-atlas_catalogue} user=${POSTGRES_USER:-atlas} password=${POSTGRES_PASSWORD:-atlas}"
@@ -38,8 +36,9 @@ services:
       ATLAS_QUACK_TOKEN: ${ATLAS_QUACK_TOKEN:-atlas-local-quack}
       ATLAS_QUACK_HEALTH_HOST: 0.0.0.0
       ATLAS_QUACK_HEALTH_PORT: 9495
-      ATLAS_QUACK_CDC_EXTENSION_PATH: /opt/atlas/extensions/ducklake_cdc.duckdb_extension
-      ATLAS_DUCKLAKE_CDC_VERSION: ${ATLAS_DUCKLAKE_CDC_VERSION:-ducklake_cdc 5104e8a}
+      ATLAS_QUACK_CDC_EXTENSION_PATH: /opt/duckdb/extensions/ducklake_cdc.duckdb_extension
+      ATLAS_DUCKLAKE_CDC_VERSION: ${ATLAS_DUCKLAKE_CDC_VERSION:-ducklake_cdc 0.5.3}
+      ATLAS_DUCKLAKE_CDC_BUILD_REVISION: ${ATLAS_DUCKLAKE_CDC_BUILD_REVISION:-3d41ff7}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9495/healthz', timeout=2).read()"]
       interval: 5s
@@ -313,7 +312,7 @@ services:
       ATLAS_MATERIALIZATION_MAX_DELIVER: ${ATLAS_MATERIALIZATION_MAX_DELIVER:-5}
       ATLAS_MATERIALIZATION_WORKER_HEALTH_HOST: 0.0.0.0
       ATLAS_MATERIALIZATION_WORKER_HEALTH_PORT: 9093
-      ATLAS_DUCKLAKE_CDC_VERSION: ${ATLAS_DUCKLAKE_CDC_VERSION:-ducklake_cdc 5104e8a}
+      ATLAS_DUCKLAKE_CDC_VERSION: ${ATLAS_DUCKLAKE_CDC_VERSION:-ducklake_cdc 0.5.3}
       NATS_URL: nats://atlas-nats:4222
       ATLAS_LOG_LEVEL: ${ATLAS_LOG_LEVEL:-INFO}
     depends_on:

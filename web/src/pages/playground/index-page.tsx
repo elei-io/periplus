@@ -26,7 +26,7 @@ export function IndexPage() {
           title="Discover a site"
           description="Start from a page and see which links Atlas can follow. Tune depth and filters when you need boundaries."
           taskNote="Every run is saved as a task"
-          taskHref="/scheduled-work/tasks?primitive=index"
+          taskHref="/graphs"
         />
         <IndexForm
           idPrefix="index-playground"

@@ -375,29 +375,3 @@ async def extract(
         query_params=query_params,
         warnings=warnings,
     )
-
-
-def extract_sync(
-    url: str,
-    prompt: str | None = None,
-    extract_data: bool = True,
-    extract_query_params: bool = True,
-    target_json_example: str | None = None,
-    schema_type: SchemaType = "css",
-    match: str | None = None,
-    progress_reporter: ProgressReporter | None = None,
-    cache: CacheOptions | dict[str, object] | None = None,
-) -> ExtractOutput:
-    return asyncio.run(
-        extract(
-            url=url,
-            prompt=prompt,
-            extract_data=extract_data,
-            extract_query_params=extract_query_params,
-            target_json_example=target_json_example,
-            schema_type=schema_type,
-            match=match,
-            progress_reporter=progress_reporter,
-            cache=cache,
-        )
-    )

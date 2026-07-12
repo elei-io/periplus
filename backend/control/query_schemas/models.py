@@ -28,7 +28,12 @@ class QuerySchema(Base):
     identity_key: Mapped[str] = mapped_column(Text, unique=True)
     url_match_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("url_matches.id", use_alter=True, ondelete="SET NULL"),
+        ForeignKey(
+            "url_matches.id",
+            name="fk_query_schemas_url_match",
+            use_alter=True,
+            ondelete="SET NULL",
+        ),
         nullable=True,
     )
     match: Mapped[str] = mapped_column(Text)

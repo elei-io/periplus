@@ -14,7 +14,6 @@ from repository.catalogue.records import (
     CrawlRecord,
     DocumentRecord,
     ElementRecord,
-    LinkRecord,
 )
 from repository.catalogue.service import CatalogueBatchEntry, CatalogueService
 
@@ -40,7 +39,6 @@ __all__ = [
     "CrawlRecord",
     "DocumentRecord",
     "ElementRecord",
-    "LinkRecord",
     "catalogue_config_from_env",
     "catalogue_from_env",
 ]

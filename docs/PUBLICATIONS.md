@@ -1,8 +1,8 @@
 # Catalogue Definitions, Materialization, and Publication
 
 Status: accepted target design. Queries, revisions, views, the one-materialization control-plane,
-and document-scoped incremental query/view materialization are implemented. Crawl scope, advanced
-scope adapters, and publications remain pending.
+and document-scoped incremental query/view materialization are implemented. Crawl scope, automatic
+crawl-enrichment readiness, advanced scope adapters, and publications remain pending.
 
 Atlas turns retained web evidence into tabular data. This document defines the layers between SQL
 exploration, reusable definitions, durable derived data, and external consumption.
@@ -346,13 +346,17 @@ Atlas owns:
 Atlas does not own:
 
 - destination credentials or connectors;
-- downstream transformation graphs;
+- downstream warehouse or data-transformation graphs;
 - warehouse-specific merge behavior;
 - sink retries or external exactly-once side effects; or
 - a general workflow orchestration platform.
 
 External tools may consume publications, but they remain responsible for moving data into destination
 systems.
+
+Atlas crawl graphs are a separate internal acquisition model. Their SQL edges read retained crawl
+evidence and derive URL inputs for further crawl nodes; they are not publication consumers or
+general downstream transformation graphs.
 
 ## Required invariants
 
@@ -370,25 +374,3 @@ systems.
 - Dematerialization fences queued work before dropping the durable table.
 - A publication references an existing materialization and never creates another data copy.
 - Publication data remains replayable independently of NATS notification delivery.
-
-## Materialization cutoff
-
-The materialization naming and ownership cutoff is complete:
-
-1. The control-plane model and API use catalogue materializations.
-2. Materializations attach to stable query IDs or stable view-reference IDs, with unique constraints
-   and an exactly-one-source check.
-3. Durable-data status and controls live in query and view surfaces; there is no primary standalone
-   Materialized Views navigation item.
-4. “Materialize” is idempotent and destructive removal is explicitly dematerialization.
-5. Query materializations bind an immutable revision and view materializations bind an exact
-   DuckLake definition boundary.
-6. Source definitions cannot be archived, detached, or dropped until their durable data has been
-   dematerialized.
-
-Document-column view scope mappings are implemented. Crawl scope, advanced scope adapters,
-publication contracts, and external CDC bootstrap/replay remain separate implementation milestones.
-
-The simplest end-to-end proof is one versioned query or managed view, one bounded materialization,
-one historical backfill, continuous live maintenance, and one external CDC consumer that can
-bootstrap and replay without creating another Atlas table.
