@@ -7,6 +7,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from actions.shared.cache import CacheOptions
 
 
+class CrawlPolicyConfig(BaseModel):
+    """Currently executable acquisition settings frozen into crawl work."""
+
+    model_config = ConfigDict(extra="allow")
+    engine: Literal["crawl4ai"] = "crawl4ai"
+    mode: Literal["static", "dynamic", "app"] = "static"
+    wait: Literal["none", "stable", "network", "fixed"] = "none"
+    run_config_overrides: dict[str, Any] = Field(default_factory=dict)
+    max_concurrency: int | None = Field(default=None, ge=1)
+    cache: CacheOptions | None = None
+    cache_block_rules: dict[str, Any] = Field(default_factory=dict)
+
+
 class UrlMatchSnapshot(BaseModel):
     """The immutable URL-matching fields used by a queued task run."""
 
@@ -71,6 +84,6 @@ class CrawlPolicyUpdateRequest(BaseModel):
     @field_validator("config")
     @classmethod
     def validate_cache_config(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
-        if value is not None and "cache" in value:
-            CacheOptions.model_validate(value["cache"])
+        if value is not None:
+            CrawlPolicyConfig.model_validate(value)
         return value

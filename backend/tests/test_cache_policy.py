@@ -5,9 +5,28 @@ import unittest
 from unittest.mock import patch
 
 from actions.shared.cache import CacheOptions, resolve_cache_policy
+from control.crawl_policies.schemas import CrawlPolicyConfig
 
 
 class CachePolicyTests(unittest.TestCase):
+    def test_crawl_policy_transport_is_typed_before_it_is_frozen(self) -> None:
+        policy = CrawlPolicyConfig.model_validate({
+            "engine": "crawl4ai",
+            "mode": "dynamic",
+            "wait": "network",
+            "max_concurrency": 2,
+            "cache": {"mode": "prefer", "max_age_seconds": 30},
+        })
+        self.assertEqual(policy.mode, "dynamic")
+        self.assertEqual(policy.cache, CacheOptions(mode="prefer", max_age_seconds=30))
+        for invalid in (
+            {"engine": "unknown"},
+            {"mode": "javascript"},
+            {"max_concurrency": 0},
+        ):
+            with self.assertRaises(ValueError):
+                CrawlPolicyConfig.model_validate(invalid)
+
     def test_defaults_are_finite_and_prefer_reuse(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             resolved = resolve_cache_policy(crawl_policy_config=None, request=None)

@@ -52,7 +52,7 @@ schema, or per table. A table-specific value takes precedence over connection an
 ```sql
 CALL atlas.set_option(
   'data_inlining_row_limit',
-  16000,
+  100,
   schema => 'main',
   table_name => 'elements'
 );
@@ -302,19 +302,13 @@ DuckDB connection. Never infer success from the globally latest snapshot; record
 
 ## Table-specific data inlining
 
-Inlining is a primary small-write strategy, not an excuse to place unbounded analytical data in
-Postgres. The setting is based on rows per insert, while DOM rows contain variable-width text and
-attributes. Threshold selection must therefore consider both row counts and measured bytes.
-
-Initial table configuration is frozen as follows. Later changes are tuning, not contract changes:
+Inlining is disabled after reproducible Linux arm64/Postgres crashes in
+`PostgresMetadataManager::TransformInlinedData` while reading both `elements` and `crawls`.
+Previously inlined rows are flushed explicitly before retesting or compaction.
 
 | Table class | Candidate policy |
 | --- | --- |
-| `crawls`, coverage, fan-out tables | `data_inlining_row_limit = 1000` |
-| `documents` | `data_inlining_row_limit = 1000`; raw HTML remains in object storage |
-| `elements` | `data_inlining_row_limit = 16000`, approximately 2–5 typical projections |
-| `materialized.page_links` | `data_inlining_row_limit = 8000` |
-| User materialization tables | `data_inlining_row_limit = 10` unless their definition later carries a measured system override |
+| All Atlas and materialized tables | `data_inlining_row_limit = 0` |
 
 During the benchmark, validate the frozen elements threshold by collecting:
 
@@ -758,8 +752,8 @@ ATLAS_DUCKLAKE_MAX_RETRY_COUNT=10
 ATLAS_DUCKLAKE_RETRY_WAIT_MS=100
 ATLAS_DUCKLAKE_RETRY_BACKOFF=1.5
 
-ATLAS_CATALOG_INLINE_METADATA_ROWS=1000
-ATLAS_CATALOG_INLINE_ELEMENTS_ROWS=16000
+ATLAS_CATALOG_INLINE_METADATA_ROWS=100
+ATLAS_CATALOG_INLINE_ELEMENTS_ROWS=100
 ATLAS_CATALOG_INLINE_PAGE_LINKS_ROWS=8000
 ATLAS_CATALOG_INLINE_FLUSH_BYTES=268435456
 ATLAS_CATALOG_INLINE_FLUSH_AGE_SECONDS=900

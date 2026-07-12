@@ -170,7 +170,6 @@ dependencies = [
     { name = "alembic" },
     { name = "boto3" },
     { name = "crawl4ai" },
-    { name = "croniter" },
     { name = "duckdb" },
     { name = "ducklake-cdc-client" },
     { name = "ducklake-client" },
@@ -195,9 +194,8 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.18" },
     { name = "boto3", specifier = ">=1.42" },
     { name = "crawl4ai", specifier = ">=0.9.0" },
-    { name = "croniter", specifier = ">=6.0" },
     { name = "duckdb", specifier = "==1.5.4" },
-    { name = "ducklake-cdc-client", specifier = ">=0.5.1" },
+    { name = "ducklake-cdc-client", specifier = ">=0.6.0" },
     { name = "ducklake-client", specifier = ">=0.8.1" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.139.0" },
     { name = "html5lib", specifier = ">=1.1" },
@@ -463,18 +461,6 @@ wheels = [
 ]
 
 [[package]]
-name = "croniter"
-version = "6.2.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "python-dateutil" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/03/35/96ad0a71eb0b27ab4476a7ed23facd0713d82da9c911edc8af7f34a62d6a/croniter-6.2.3.tar.gz", hash = "sha256:fb129986ef7e2c44e3f4c9f503da83ad914d2afa48f40a43ee3dca4b5c41d476", size = 166174, upload-time = "2026-07-02T14:34:22.166Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/5c/dd/6466498a8b69754cffbd7237ce4c66446ca5ffcf53fb397d437666f056d2/croniter-6.2.3-py3-none-any.whl", hash = "sha256:137a97001b4d52fb71c10b750e303db79e6e42d40fff8ff77126102176c9f786", size = 46446, upload-time = "2026-07-02T14:34:20.889Z" },
-]
-
-[[package]]
 name = "cryptography"
 version = "49.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -577,15 +563,16 @@ wheels = [
 
 [[package]]
 name = "ducklake-cdc-client"
-version = "0.5.1"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "duckdb" },
     { name = "ducklake-client" },
     { name = "pytz" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6e/98/e903d015d728d7f05ab39f1c3165315c5427bf36601e5e31f37d8aaf3f44/ducklake_cdc_client-0.5.1.tar.gz", hash = "sha256:ce96026cdb50c8cdf2b7283d10f25e673162a9f1a2ca180de9852a80e4fdac4c", size = 40110, upload-time = "2026-05-06T16:52:43.265Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/03/6c/301ac04b3c6c04f215c5ca4410640685f9cc7187203736ef0dcb80b60a9e/ducklake_cdc_client-0.6.0.tar.gz", hash = "sha256:1d9a3c8237b707d28448c29ce84805da036748a2b9d8b53d78aa466a5af2c479", size = 47440, upload-time = "2026-07-12T18:44:01.095Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0e/ba/fa6ccc91a3fcdfdcc1043a5d29ef57fb494b558c48fd9fc2edc39db7b2b2/ducklake_cdc_client-0.5.1-py3-none-any.whl", hash = "sha256:fe9ecf5cd20b09cd2313c2f65785184124ab4f6b448fdb516e675231d9b444bd", size = 37495, upload-time = "2026-05-06T16:52:41.989Z" },
+    { url = "https://files.pythonhosted.org/packages/92/ed/59fc7f21548a03ca2fbd86292197ecfe31934af3d0405bd7843e854a9de1/ducklake_cdc_client-0.6.0-py3-none-any.whl", hash = "sha256:8d4d75cb5dc5879446b3f203e02ce75d9721f5b2c571b97460d3a04cd33ea54d", size = 41714, upload-time = "2026-07-12T18:44:00.181Z" },
 ]
 
 [[package]]

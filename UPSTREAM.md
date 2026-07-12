@@ -96,7 +96,8 @@ the published release; version control retains the history.
 
 ## Released, awaiting Atlas adoption
 
-No releases awaiting adoption. Atlas adopted `ducklake-cdc` v0.5.3 from its immutable release
-assets, verifies the published SHA-256 during the image build, and validates both `cdc_version()`
-and `cdc_build_revision()` at Quack startup. Community installation remains disabled until
+No releases awaiting adoption. Atlas adopted `ducklake-cdc-client` v0.6.0 for typed retryable lease
+failures and bounded cancellation-aware close/release, and `ducklake-cdc` v0.5.3 from its immutable
+release assets. The image verifies the published SHA-256 and Atlas validates both `cdc_version()`
+and `cdc_build_revision()` at startup. Community installation remains disabled until
 [community-extensions PR #2229](https://github.com/duckdb/community-extensions/pull/2229) is merged.

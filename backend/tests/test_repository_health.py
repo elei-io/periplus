@@ -53,6 +53,17 @@ class RepositoryHealthTests(unittest.TestCase):
             monitor.heartbeat()
             self.assertEqual(monitor.status(), (False, "event loop heartbeat is stale"))
 
+    def test_health_identifies_unavailable_subsystem(self) -> None:
+        monitor = HealthMonitor()
+        monitor.dependencies_ready()
+        monitor.subsystem_ready("ingestion")
+        monitor.subsystem_unavailable("cdc_crawl_planner", "lease contention")
+
+        self.assertEqual(
+            monitor.status(),
+            (False, "cdc_crawl_planner: lease contention"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

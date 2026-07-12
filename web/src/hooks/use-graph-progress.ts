@@ -17,7 +17,6 @@ export type NodeProgress = {
   admitted: number
   queued: number
   crawling: number
-  awaiting_ingestion: number
   awaiting_materializations: number
   evaluating_edges: number
   completed: number

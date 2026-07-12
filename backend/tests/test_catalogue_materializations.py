@@ -26,6 +26,7 @@ from control.catalogue_queries.service import (
 )
 from materialization.commit import commit_scope
 from materialization.compute import _write_bounded_arrow, compute_scope
+from materialization.definitions import publish_scope
 from materialization.fencing import StaleMaterializationJob
 from materialization.queue import MaterializationCommitJob, MaterializationScopeJob
 from repository.catalogue import Catalogue, CatalogueConfig
@@ -39,6 +40,31 @@ from repository.objects.store import FileObjectStore
 
 
 class CatalogueMaterializationTests(unittest.TestCase):
+    def test_scope_publication_uses_the_frozen_operation_id(self) -> None:
+        async def scenario() -> None:
+            definition = SimpleNamespace(
+                id=uuid4(),
+                definition_revision_id=uuid4(),
+                active_query_revision_id=None,
+                name="page_links",
+                scope_kind="crawl",
+                scope_column="crawl_id",
+            )
+            jetstream = MagicMock()
+            jetstream.publish = unittest.mock.AsyncMock()
+
+            await publish_scope(jetstream, definition, str(uuid4()), "live")
+
+            published = jetstream.publish.await_args
+            payload = MaterializationScopeJob.model_validate_json(published.args[1])
+            self.assertEqual(
+                published.kwargs["headers"]["Nats-Msg-Id"], payload.operation_id
+            )
+
+        import asyncio
+
+        asyncio.run(scenario())
+
     def test_scoped_view_query_uses_crawl_parameter(self) -> None:
         view = SimpleNamespace(
             qualified_name="views.page_links",

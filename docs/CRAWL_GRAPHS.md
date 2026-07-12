@@ -276,14 +276,13 @@ The crawl request may transition through states such as:
 ```text
 queued
 crawling
-awaiting_ingestion
-awaiting_enrichment
+awaiting_materializations
 evaluating_edges
 complete
 failed
 ```
 
-These names are illustrative until the runtime schema is implemented. The invariant is that no
+The invariant is that no
 browser worker sleeps while waiting for repository or materialization completion.
 
 ### One crawl-ready barrier
@@ -668,7 +667,7 @@ KV buckets:
 ```text
 id
 graph_id
-trigger_kind: manual | scheduled
+trigger_kind: manual
 status: queued | running | completed | completed_with_errors | failed | cancelled
 snapshot
 trigger_urls
@@ -693,7 +692,7 @@ effective_policy_snapshot_json
 source_crawl_id nullable
 source_edge_id nullable
 parent_request_id nullable
-status: queued | crawling | awaiting_ingestion | awaiting_materializations |
+status: queued | crawling | awaiting_materializations |
         evaluating_edges | completed | failed | cancelled
 created_at
 updated_at

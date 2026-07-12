@@ -35,7 +35,7 @@ class CatalogueConfig:
     schema: str = "main"
     duckdb: DuckDBConfig = field(default_factory=DuckDBConfig)
     attach: DuckLakeAttachConfig = field(
-        default_factory=lambda: DuckLakeAttachConfig(data_inlining_row_limit=10)
+        default_factory=lambda: DuckLakeAttachConfig(data_inlining_row_limit=0)
     )
 
     def __post_init__(self) -> None:
@@ -51,8 +51,12 @@ def catalogue_config_from_env() -> CatalogueConfig:
     storage_kind = get_str("ATLAS_REPOSITORY_STORAGE").lower()
     storage = _storage_from_env(root)
     override_data_path = _optional_bool("ATLAS_CATALOGUE_OVERRIDE_DATA_PATH")
+    cdc_extension = get_optional("ATLAS_DUCKLAKE_CDC_EXTENSION")
     duckdb = DuckDBConfig(
         database=get_str("ATLAS_CATALOGUE_DUCKDB_DATABASE"),
+        config={"allow_unsigned_extensions": True} if cdc_extension else {},
+        extensions=(cdc_extension,) if cdc_extension else (),
+        install_extensions=not bool(cdc_extension),
         threads=_optional_int("ATLAS_CATALOGUE_DUCKDB_THREADS"),
         memory_limit=_optional("ATLAS_CATALOGUE_DUCKDB_MEMORY_LIMIT"),
         max_temp_directory_size=_optional("ATLAS_CATALOGUE_DUCKDB_MAX_TEMP_SIZE"),
@@ -67,7 +71,7 @@ def catalogue_config_from_env() -> CatalogueConfig:
         attach=DuckLakeAttachConfig(
             data_inlining_row_limit=_nonnegative_int(
                 "ATLAS_CATALOGUE_DATA_INLINING_ROW_LIMIT",
-                default=10,
+                default=0,
             ),
             override_data_path=(
                 storage_kind == "disk"

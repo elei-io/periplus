@@ -17,6 +17,7 @@ class HealthMonitor:
     _last_heartbeat: float = field(default_factory=time.monotonic)
     _dependencies_ready: bool = False
     _dependency_error: str | None = "dependencies have not been checked"
+    _subsystems: dict[str, tuple[bool, str | None]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def heartbeat(self) -> None:
@@ -33,15 +34,34 @@ class HealthMonitor:
             self._dependencies_ready = False
             self._dependency_error = error
 
+    def subsystem_ready(self, name: str) -> None:
+        with self._lock:
+            self._subsystems[name] = (True, None)
+
+    def subsystem_unavailable(self, name: str, error: str) -> None:
+        with self._lock:
+            self._subsystems[name] = (False, error)
+
     def status(self) -> tuple[bool, str]:
         with self._lock:
             heartbeat_age = time.monotonic() - self._last_heartbeat
             dependencies_ready = self._dependencies_ready
             dependency_error = self._dependency_error
+            unavailable = {
+                name: detail
+                for name, (ready, detail) in self._subsystems.items()
+                if not ready
+            }
         if heartbeat_age > self.heartbeat_timeout_seconds:
             return False, "event loop heartbeat is stale"
         if not dependencies_ready:
             return False, dependency_error or "dependencies are unavailable"
+        if unavailable:
+            detail = "; ".join(
+                f"{name}: {error or 'unavailable'}"
+                for name, error in sorted(unavailable.items())
+            )
+            return False, detail
         return True, "ready"
 
 

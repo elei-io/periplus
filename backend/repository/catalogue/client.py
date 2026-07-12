@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from types import TracebackType
 from typing import TYPE_CHECKING
+from tempfile import TemporaryDirectory
 from urllib.parse import urljoin
 
 from ducklake_client import DuckLake, DuckLakeError, PostgresCatalog, SQLType
@@ -29,8 +30,14 @@ if TYPE_CHECKING:
 class Catalogue:
     """Thin Atlas boundary over the published ``ducklake-client`` package."""
 
-    def __init__(self, config: CatalogueConfig) -> None:
+    def __init__(
+        self,
+        config: CatalogueConfig,
+        *,
+        temporary_directory: TemporaryDirectory[str] | None = None,
+    ) -> None:
         self.config = config
+        self._temporary_directory = temporary_directory
         self._scalar_functions_registered = False
         self.lake = DuckLake(
             catalog=config.catalog,
@@ -117,18 +124,15 @@ class Catalogue:
         )
 
     def _configure_inlining(self) -> None:
-        """Persist hot-ingestion table thresholds in DuckLake metadata."""
+        """Disable metadata inlining for every Atlas-owned physical table."""
 
-        for table_name, row_limit in (
-            ("documents", 1000),
-            ("crawls", 1000),
-            ("elements", 16000),
-        ):
-            self.connection.execute(
-                f"CALL {_quote_identifier(self.config.alias)}.set_option("
-                "'data_inlining_row_limit', ?, schema => ?, table_name => ?)",
-                [row_limit, self.config.schema, table_name],
-            )
+        for schema_name in (self.config.schema, "materialized"):
+            for table in self.lake.table.list(schema_name=schema_name):
+                self.connection.execute(
+                    f"CALL {_quote_identifier(self.config.alias)}.set_option("
+                    "'data_inlining_row_limit', 0, schema => ?, table_name => ?)",
+                    [schema_name, table.table_name],
+                )
 
     def _migrate_schema(self) -> None:
         """Apply small, idempotent DuckLake schema upgrades owned by Atlas."""
@@ -333,7 +337,12 @@ class Catalogue:
         )
 
     def close(self) -> None:
-        self.lake.close()
+        try:
+            self.lake.close()
+        finally:
+            if self._temporary_directory is not None:
+                self._temporary_directory.cleanup()
+                self._temporary_directory = None
 
     def __enter__(self) -> Catalogue:
         _ = self.connection

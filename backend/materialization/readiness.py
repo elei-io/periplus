@@ -82,7 +82,7 @@ async def reconcile_readiness(
     return published
 
 
-async def run_readiness_reconciliation(jetstream, stop) -> None:
+async def run_readiness_reconciliation(jetstream, stop, monitor=None) -> None:
     """Recover lost readiness wakeups from authoritative terminal fan-outs."""
 
     import asyncio
@@ -92,6 +92,8 @@ async def run_readiness_reconciliation(jetstream, stop) -> None:
     while not stop.is_set():
         offset = 0
         with catalogue_from_env() as catalogue:
+            if monitor is not None:
+                monitor.subsystem_ready("readiness_reconciliation")
             while not stop.is_set():
                 count = await reconcile_readiness(
                     jetstream, catalogue, limit=100, offset=offset

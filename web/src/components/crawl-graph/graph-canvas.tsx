@@ -288,8 +288,8 @@ function CrawlNodeCard({ data }: NodeProps<CrawlNode>) {
   const [name, setName] = useState(node.name)
   const [description, setDescription] = useState(node.description ?? "")
   const working = Boolean(progress && (
-    progress.queued + progress.crawling + progress.awaiting_ingestion +
-    progress.awaiting_materializations + progress.evaluating_edges > 0
+    progress.queued + progress.crawling + progress.awaiting_materializations +
+    progress.evaluating_edges > 0
   ))
   return (
     <>
@@ -358,7 +358,6 @@ function activityLabel(status: string) {
   return {
     queued: "Queued",
     crawling: "Crawling",
-    awaiting_ingestion: "Ingesting",
     awaiting_materializations: "Materializing",
     evaluating_edges: "Following links",
     completed: "Crawled",

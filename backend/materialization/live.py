@@ -3,10 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import duckdb
 from ducklake_cdc_client import CDCClient, DMLConsumer
 
-from config import get_int, get_str
+from config import get_int, get_optional, get_str
 from control.catalogue_materializations.models import CatalogueMaterialization
 from datetime import UTC, datetime
 
@@ -41,27 +40,16 @@ async def run_live(
             for definition in definitions:
                 key = (str(definition.id), str(definition.definition_revision_id))
                 if key not in consumers:
-                    try:
-                        consumers[key] = await asyncio.to_thread(
-                            _open_consumer, definition
-                        )
-                    except duckdb.Error as exc:
-                        if "Resource deadlock avoided" not in str(exc):
-                            raise
-                        logging.warning(
-                            "CDC catalogue lock is still being released; retrying"
-                        )
-                        await _wait(stop, 2)
-                        break
+                    consumers[key] = await _run_blocking(_open_consumer, definition)
                 _, consumer = consumers[key]
-                batch = await asyncio.to_thread(
+                batch = await _run_blocking(
                     consumer.listen,
                     timeout_ms=1000,
                     max_snapshots=100,
                     poll_min_ms=1000,
                 )
                 if batch is None:
-                    window = await asyncio.to_thread(consumer.window, max_snapshots=100)
+                    window = await _run_blocking(consumer.window, max_snapshots=100)
                     if window.terminal:
                         raise RuntimeError(
                             f"CDC consumer {consumer.name!r} reached a schema boundary "
@@ -79,9 +67,9 @@ async def run_live(
                 }
                 for scope_id in scope_ids:
                     await publish_scope(jetstream, definition, scope_id, "live")
-                await asyncio.to_thread(batch.commit)
+                await _run_blocking(batch.commit)
             else:
-                monitor.dependencies_ready()
+                monitor.subsystem_ready("cdc_live")
                 if not definitions:
                     await _wait(stop, 2)
                 continue
@@ -96,13 +84,7 @@ def _open_consumer(definition: CatalogueMaterialization) -> tuple[Catalogue, DML
         raise RuntimeError(f"materialization {definition.id} has no activation snapshot")
     catalogue = catalogue_from_env()
     try:
-        client = CDCClient(catalogue.lake, install_extension=False)
-        actual = client.version()
-        expected = get_str("ATLAS_DUCKLAKE_CDC_VERSION")
-        if actual != expected:
-            raise RuntimeError(
-                f"DuckLake CDC version mismatch: expected {expected!r}, got {actual!r}"
-            )
+        client = _cdc_client(catalogue)
         name = f"atlas-materialization-{definition.id.hex}-{definition.definition_revision_id.hex}"
         _drop_obsolete_consumers(catalogue, definition.id.hex, name)
         consumer = DMLConsumer(
@@ -144,11 +126,7 @@ def _close_consumer(
     catalogue: Catalogue, consumer: DMLConsumer, *, drop: bool
 ) -> None:
     name = consumer.name
-    try:
-        consumer.client.cdc_consumer_force_release(name)
-    except Exception:
-        logging.warning("failed to release CDC consumer %s", name, exc_info=True)
-    consumer.close()
+    consumer.close(timeout=5.0, cancel=False, release=True)
     if drop:
         catalogue.connection.execute(
             "SELECT * FROM cdc_consumer_drop(?, ?)",
@@ -163,13 +141,15 @@ async def _wait(stop: asyncio.Event, seconds: float) -> None:
         pass
 
 
-async def run_crawl_planner(jetstream, stop: asyncio.Event) -> None:
+async def run_crawl_planner(
+    jetstream, stop: asyncio.Event, monitor: HealthMonitor | None = None
+) -> None:
     """Freeze crawl-scoped materialization membership before publishing scope work."""
 
     catalogue = catalogue_from_env()
     consumer = None
     try:
-        client = CDCClient(catalogue.lake, install_extension=False)
+        client = _cdc_client(catalogue)
         start_at = catalogue.latest_snapshot()
         if start_at is None:
             raise RuntimeError("DuckLake has no snapshot for crawl materialization planning")
@@ -182,15 +162,34 @@ async def run_crawl_planner(jetstream, stop: asyncio.Event) -> None:
             on_exists="use",
             client=client,
         ).open()
+        if monitor is not None:
+            monitor.subsystem_ready("cdc_crawl_planner")
         while not stop.is_set():
-            await _reconcile_unplanned_crawls(jetstream, catalogue)
-            batch = await asyncio.to_thread(
+            await _reconcile_unplanned_crawls(jetstream)
+            batch = await _run_blocking(
                 consumer.listen,
                 timeout_ms=1000,
                 max_snapshots=100,
                 poll_min_ms=1000,
             )
             if batch is None:
+                window = await _run_blocking(consumer.window, max_snapshots=100)
+                if window.terminal and window.terminal_at_snapshot is not None:
+                    boundary = window.terminal_at_snapshot
+                    _close_consumer(catalogue, consumer, drop=True)
+                    consumer = DMLConsumer(
+                        catalogue.lake,
+                        "atlas-crawl-materialization-planner",
+                        table=f"{catalogue.config.schema}.crawls",
+                        mode="changes",
+                        start_at=boundary,
+                        on_exists="error",
+                        client=client,
+                    ).open()
+                    logging.info(
+                        "advanced crawl materialization planner across schema boundary %s",
+                        boundary,
+                    )
                 continue
             crawl_scopes = {
                 (str(change.values["crawl_id"]), change.values.get("document_id"))
@@ -212,14 +211,34 @@ async def run_crawl_planner(jetstream, stop: asyncio.Event) -> None:
                     plan.model_dump_json().encode(),
                     headers={"Nats-Msg-Id": f"crawl-fanout-{crawl_id}"},
                 )
-            await asyncio.to_thread(batch.commit)
+            await _run_blocking(batch.commit)
     finally:
         if consumer is not None:
             _close_consumer(catalogue, consumer, drop=False)
         catalogue.close()
 
 
-async def _reconcile_unplanned_crawls(jetstream, catalogue) -> int:
+def _cdc_client(catalogue: Catalogue) -> CDCClient:
+    """Load the image-pinned CDC extension on this DuckDB connection."""
+
+    if not get_optional("ATLAS_DUCKLAKE_CDC_EXTENSION"):
+        catalogue.connection.execute("LOAD ducklake_cdc")
+    client = CDCClient(catalogue.lake, install_extension=False)
+    actual = client.version()
+    expected = get_str("ATLAS_DUCKLAKE_CDC_VERSION")
+    if actual != expected:
+        raise RuntimeError(
+            f"DuckLake CDC version mismatch: expected {expected!r}, got {actual!r}"
+        )
+    return client
+
+
+async def _reconcile_unplanned_crawls(jetstream) -> int:
+    with catalogue_from_env() as catalogue:
+        return await _reconcile_unplanned_crawls_with_catalogue(jetstream, catalogue)
+
+
+async def _reconcile_unplanned_crawls_with_catalogue(jetstream, catalogue) -> int:
     table = lambda name: ".".join(
         '"' + part.replace('"', '""') + '"'
         for part in (catalogue.config.alias, catalogue.config.schema, name)
@@ -245,6 +264,17 @@ async def _reconcile_unplanned_crawls(jetstream, catalogue) -> int:
             headers={"Nats-Msg-Id": f"crawl-fanout-{crawl_id}"},
         )
     return len(rows)
+
+
+async def _run_blocking(function, *args, **kwargs):
+    """Do not close a DuckDB connection until its worker-thread call has returned."""
+
+    task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await task
+        raise
 
 
 def _crawl_triggered_scopes(definitions, *, crawl_id: str, document_id):

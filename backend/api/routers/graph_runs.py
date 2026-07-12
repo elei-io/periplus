@@ -46,7 +46,7 @@ class GraphRunSummary(BaseModel):
     graph_id: UUID
     graph_name: str | None
     status: Literal["queued", "running", "completed", "completed_with_errors", "failed", "cancelled"]
-    trigger_kind: Literal["manual", "scheduled"]
+    trigger_kind: Literal["manual"]
     trigger_urls: tuple[str, ...]
     request_count: int
     pending_request_count: int

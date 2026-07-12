@@ -1,3 +1,5 @@
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Annotated, NoReturn
 from uuid import UUID
 
@@ -31,12 +33,19 @@ from repository.catalogue.materializations import (
     MaterializationStore,
 )
 from repository.catalogue.query import CatalogueQueryError
+from repository.catalogue.operations import operation_lock
 
 router = APIRouter(tags=["catalogue-materializations"])
 
 
 def _catalogue() -> Catalogue:
     return catalogue_from_env()
+
+
+@contextmanager
+def _catalogue_mutation(operation_id: str) -> Iterator[Catalogue]:
+    with operation_lock(operation_id), _catalogue() as catalogue:
+        yield catalogue
 
 
 @router.get(
@@ -76,7 +85,7 @@ def materialize_query(
     session: Annotated[Session, Depends(get_session)],
 ) -> CatalogueMaterializationRecord:
     try:
-        with _catalogue() as catalogue:
+        with _catalogue_mutation(f"materialize-query:{query_id}") as catalogue:
             return put_for_query(
                 session,
                 MaterializationStore(catalogue),
@@ -97,7 +106,7 @@ def materialize_view(
     session: Annotated[Session, Depends(get_session)],
 ) -> CatalogueMaterializationRecord:
     try:
-        with _catalogue() as catalogue:
+        with _catalogue_mutation(f"materialize-view:{view_reference_id}") as catalogue:
             return put_for_view(
                 session,
                 MaterializationStore(catalogue),
@@ -121,7 +130,7 @@ def rebuild_(
     if model is None:
         raise HTTPException(status_code=404, detail="Catalogue materialization not found.")
     try:
-        with _catalogue() as catalogue:
+        with _catalogue_mutation(f"materialization-rebuild:{materialization_id}") as catalogue:
             return rebuild(
                 session,
                 MaterializationStore(catalogue),
@@ -146,7 +155,7 @@ def maintenance(
     if model is None:
         raise HTTPException(status_code=404, detail="Catalogue materialization not found.")
     try:
-        with _catalogue() as catalogue:
+        with _catalogue_mutation(f"materialization-maintenance:{materialization_id}") as catalogue:
             return update_maintenance(
                 session,
                 MaterializationStore(catalogue),
@@ -170,7 +179,7 @@ def dematerialize(
     if model is None:
         raise HTTPException(status_code=404, detail="Catalogue materialization not found.")
     try:
-        with _catalogue() as catalogue:
+        with _catalogue_mutation(f"materialization-dematerialize:{materialization_id}") as catalogue:
             return request_dematerialization(
                 session,
                 MaterializationStore(catalogue),

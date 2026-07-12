@@ -65,7 +65,6 @@ class NodeProgress(BaseModel):
     admitted: int
     queued: int
     crawling: int
-    awaiting_ingestion: int
     awaiting_materializations: int
     evaluating_edges: int
     completed: int
@@ -110,7 +109,6 @@ async def initialize_run_progress(bucket, run: GraphRun, *, mark_ready: bool = T
             admitted=0,
             queued=0,
             crawling=0,
-            awaiting_ingestion=0,
             awaiting_materializations=0,
             evaluating_edges=0,
             completed=0,
@@ -188,7 +186,7 @@ async def transition_node_progress(
 ) -> NodeProgress:
     key = node_progress_key(request.graph_run_id, request.node_id)
     status_fields = {
-        "queued", "crawling", "awaiting_ingestion", "awaiting_materializations",
+        "queued", "crawling", "awaiting_materializations",
         "evaluating_edges", "completed", "failed", "cancelled",
     }
     if request.status not in status_fields or (previous_status is not None and previous_status not in status_fields):
@@ -280,6 +278,25 @@ async def mark_run_progress_settled(bucket, run: GraphRun) -> None:
         )
 
 
+async def mark_run_progress_active(bucket, run: GraphRun) -> None:
+    """Clear a prior settled projection when recoverable work is resumed."""
+
+    for node in run.snapshot.nodes:
+        await _mutate(
+            bucket,
+            node_progress_key(run.id, node.id),
+            NodeProgress,
+            lambda value: value.model_copy(update={"settled": False}),
+        )
+    for edge in run.snapshot.edges:
+        await _mutate(
+            bucket,
+            edge_progress_key(run.id, edge.id),
+            EdgeProgress,
+            lambda value: value.model_copy(update={"settled": False}),
+        )
+
+
 async def node_progress(requests, run: GraphRun, node_id: UUID) -> NodeProgress:
     snapshot = await _run_snapshot(requests, run.id)
     values = [value for value in snapshot.requests if value.node_id == node_id]
@@ -295,7 +312,6 @@ async def node_progress(requests, run: GraphRun, node_id: UUID) -> NodeProgress:
         admitted=len(values),
         queued=counts["queued"],
         crawling=counts["crawling"],
-        awaiting_ingestion=counts["awaiting_ingestion"],
         awaiting_materializations=counts["awaiting_materializations"],
         evaluating_edges=counts["evaluating_edges"],
         completed=counts["completed"],

@@ -11,20 +11,32 @@ import asyncio
 import logging
 import signal
 
-from config import get_str
+from config import get_float, get_str
 from materialization.executor import run as run_materializations
 from repository.ingestion.worker import run as run_ingestion
 from runtime.catalog_navigation import run as run_navigation
+from repository.ingestion.health import HealthMonitor
 
 
 async def run() -> None:
     stop = asyncio.Event()
+    ingestion_initialized = asyncio.Event()
+    monitor = HealthMonitor(
+        heartbeat_timeout_seconds=get_float(
+            "ATLAS_CATALOG_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
+        )
+    )
     loop = asyncio.get_running_loop()
     for value in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(value, stop.set)
     tasks = [
-        asyncio.create_task(run_ingestion(), name="catalog-ingestion"),
-        asyncio.create_task(run_materializations(), name="catalog-materialization"),
+        asyncio.create_task(
+            run_ingestion(ingestion_initialized, monitor), name="catalog-ingestion"
+        ),
+        asyncio.create_task(
+            run_materializations(ingestion_initialized, monitor),
+            name="catalog-materialization",
+        ),
         asyncio.create_task(run_navigation(), name="catalog-navigation"),
     ]
     stop_task = asyncio.create_task(stop.wait(), name="catalog-stop")

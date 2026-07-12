@@ -13,7 +13,7 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.errors import BucketNotFoundError, KeyDeletedError, KeyNotFoundError
 
 from repository.catalogue import CatalogueConflictError, CatalogueValidationError
-from observability import repository_metrics
+from observability import materialization_metrics, repository_metrics
 from prometheus_client import start_http_server
 from config import get_bool, get_float, get_int, get_str
 from control.catalogue_materializations.models import CatalogueMaterialization
@@ -56,11 +56,14 @@ from repository.ingestion.queue import (
 )
 from repository.service import repository_ingestor_from_env
 from repository.catalogue.materializations import MaterializationStore
+from repository.catalogue.operations import operation_lock, operation_locks
 from sqlalchemy import select
 from runtime.maintenance_queue import MAINTENANCE_LEASE_BUCKET
 
 
-async def run() -> None:
+async def run(
+    initialized: asyncio.Event | None = None, monitor: HealthMonitor | None = None
+) -> None:
     stop = asyncio.Event()
     config = IngestionWorkerConfig.from_env()
     client = await connect_repository_nats()
@@ -95,22 +98,38 @@ async def run() -> None:
             get_int("ATLAS_CATALOG_WORKER_METRICS_PORT"),
             addr=get_str("ATLAS_METRICS_HOST"),
         )
-    health_monitor = HealthMonitor(
+    health_monitor = monitor or HealthMonitor(
         heartbeat_timeout_seconds=float(
             get_str("ATLAS_CATALOG_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS")
         )
     )
     health_monitor.dependencies_ready()
+    health_monitor.subsystem_ready("ingestion")
+    health_monitor.subsystem_ready("materialization_commit")
     health_server, _health_thread = start_health_server(
         address=get_str("ATLAS_CATALOG_WORKER_HEALTH_HOST"),
         port=get_int("ATLAS_CATALOG_WORKER_HEALTH_PORT"),
         monitor=health_monitor,
     )
+    if initialized is not None:
+        initialized.set()
     health_heartbeat_task = asyncio.create_task(_health_heartbeat(health_monitor))
     dependency_probe_task = asyncio.create_task(
         _dependency_probe(client, health_ingestor, health_monitor)
     )
     heartbeat_task = None
+    catalogue_write_lock = asyncio.Lock()
+    materialization_commit_task = asyncio.create_task(
+        _consume_materialization_commits(
+            jetstream,
+            materialization_subscription,
+            ingestor.catalogue,
+            catalogue_write_lock,
+            maintenance_leases,
+            stop,
+        ),
+        name="catalog-materialization-commits",
+    )
     try:
         while not stop.is_set():
             if await _maintenance_active(maintenance_leases):
@@ -118,9 +137,6 @@ async def run() -> None:
                 continue
             await asyncio.to_thread(
                 _dematerialize_requested_materialization, ingestor.catalogue
-            )
-            await _commit_materialization_if_ready(
-                jetstream, materialization_subscription, ingestor.catalogue
             )
             if time.monotonic() >= next_queue_snapshot:
                 try:
@@ -186,6 +202,7 @@ async def run() -> None:
                     list(jobs),
                     list(accepted_messages),
                     list(prepared),
+                    catalogue_write_lock,
                 )
                 jobs.clear()
                 accepted_messages.clear()
@@ -244,6 +261,8 @@ async def run() -> None:
             await _cancel_task(heartbeat_task)
             heartbeat_task = None
     finally:
+        stop.set()
+        await _cancel_task(materialization_commit_task)
         await _cancel_task(heartbeat_task)
         await _cancel_task(health_heartbeat_task)
         await _cancel_task(dependency_probe_task)
@@ -291,7 +310,8 @@ async def _commit_materialization_if_ready(jetstream, subscription, catalogue) -
             logging.exception("discarding invalid materialization commit job")
             await message.term()
             await _cancel_task(heartbeat)
-            continue
+
+
         if plan is not None:
             try:
                 await _commit_fanout_plan(jetstream, catalogue, plan)
@@ -305,9 +325,11 @@ async def _commit_materialization_if_ready(jetstream, subscription, catalogue) -
             continue
         if failure is not None:
             try:
-                recorded = await asyncio.to_thread(
-                    record_scope_failure, catalogue, failure
-                )
+                def record_failure_fenced():
+                    with operation_lock(failure.scope.operation_id):
+                        return record_scope_failure(catalogue, failure)
+
+                recorded = await asyncio.to_thread(record_failure_fenced)
                 if recorded:
                     await _settle_crawl_fanouts(jetstream, catalogue, failure.scope)
             except Exception:
@@ -319,9 +341,19 @@ async def _commit_materialization_if_ready(jetstream, subscription, catalogue) -
                 await _cancel_task(heartbeat)
             continue
         assert job is not None
+        commit_started = time.perf_counter()
         try:
-            await asyncio.to_thread(commit_scope, catalogue, job)
+            def commit_scope_fenced():
+                with operation_lock(job.scope.operation_id):
+                    return commit_scope(catalogue, job)
+
+            await asyncio.to_thread(commit_scope_fenced)
         except Exception as exc:
+            materialization_metrics.operation(
+                phase="commit",
+                outcome="failed",
+                duration_seconds=time.perf_counter() - commit_started,
+            )
             logging.exception(
                 "materialization commit failed for operation %s",
                 job.scope.operation_id,
@@ -360,10 +392,48 @@ async def _commit_materialization_if_ready(jetstream, subscription, catalogue) -
             else:
                 await message.term()
         else:
+            materialization_metrics.operation(
+                phase="commit",
+                outcome="succeeded",
+                duration_seconds=time.perf_counter() - commit_started,
+            )
             await _settle_crawl_fanouts(jetstream, catalogue, job.scope)
             await message.ack()
         finally:
             await _cancel_task(heartbeat)
+
+
+async def _consume_materialization_commits(
+    jetstream,
+    subscription,
+    catalogue,
+    catalogue_write_lock: asyncio.Lock,
+    maintenance_leases,
+    stop: asyncio.Event,
+) -> None:
+    """Drain materialization publication independently of repository queue polling."""
+
+    next_queue_snapshot = 0.0
+    while not stop.is_set():
+        if await _maintenance_active(maintenance_leases):
+            await asyncio.sleep(0.25)
+            continue
+        if time.monotonic() >= next_queue_snapshot:
+            try:
+                info = await jetstream.consumer_info(COMMIT_STREAM, COMMIT_DURABLE)
+                materialization_metrics.queue_state(
+                    phase="commit",
+                    pending=info.num_pending,
+                    ack_pending=info.num_ack_pending,
+                )
+            except Exception:
+                logging.warning(
+                    "materialization commit queue metrics unavailable",
+                    exc_info=True,
+                )
+            next_queue_snapshot = time.monotonic() + 5
+        async with catalogue_write_lock:
+            await _commit_materialization_if_ready(jetstream, subscription, catalogue)
 
 
 async def _settle_crawl_fanouts(jetstream, catalogue, scope) -> None:
@@ -397,11 +467,14 @@ async def _commit_fanout_plan(jetstream, catalogue, plan) -> None:
         )
         for scope in plan.scopes
     ]
-    fanout = await asyncio.to_thread(
-        CrawlMaterializationFanoutStore(catalogue).plan,
-        plan.crawl_id,
-        members=members,
-    )
+    def plan_fenced():
+        with operation_lock(f"crawl-fanout-{plan.crawl_id}"):
+            return CrawlMaterializationFanoutStore(catalogue).plan(
+                plan.crawl_id,
+                members=members,
+            )
+
+    fanout = await asyncio.to_thread(plan_fenced)
     for scope in plan.scopes:
         await jetstream.publish(
             SCOPE_LIVE_SUBJECT,
@@ -471,6 +544,7 @@ async def _commit_batch_isolated(
     jobs,
     messages,
     prepared,
+    catalogue_write_lock: asyncio.Lock,
 ) -> None:
     """Commit valid jobs while recursively isolating deterministic poison entries."""
 
@@ -478,11 +552,15 @@ async def _commit_batch_isolated(
     element_rows = sum(value.element_count for value in prepared)
     staged_bytes = sum(value.staged_bytes for value in prepared)
     try:
-        results = await asyncio.to_thread(
-            ingestor.commit_prepared_batch,
-            prepared,
-            cleanup_on_error=False,
-        )
+        def commit_fenced():
+            with operation_locks(job.request_id for job in jobs):
+                return ingestor.commit_prepared_batch(
+                    prepared,
+                    cleanup_on_error=False,
+                )
+
+        async with catalogue_write_lock:
+            results = await asyncio.to_thread(commit_fenced)
     except Exception as exc:
         repository_metrics.batch(
             outcome="failed",
@@ -506,6 +584,7 @@ async def _commit_batch_isolated(
                 jobs[:midpoint],
                 messages[:midpoint],
                 prepared[:midpoint],
+                catalogue_write_lock,
             )
             await _commit_batch_isolated(
                 client,
@@ -514,6 +593,7 @@ async def _commit_batch_isolated(
                 jobs[midpoint:],
                 messages[midpoint:],
                 prepared[midpoint:],
+                catalogue_write_lock,
             )
             return
 

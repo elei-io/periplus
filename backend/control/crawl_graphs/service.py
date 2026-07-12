@@ -126,6 +126,7 @@ def create_node(session: Session, graph_id: UUID, request: CrawlGraphNodeCreate)
 
 
 def update_node(session: Session, graph_id: UUID, node_id: UUID, request: CrawlGraphNodeUpdate) -> CrawlGraphNodeRecord:
+    get_graph(session, graph_id, lock=True)
     node = _get_node(session, graph_id, node_id, lock=True)
     _require_unused(node.used_at, "node")
     node.name = _clean(request.name)
@@ -150,8 +151,8 @@ def update_node_position(
 
 
 def delete_node(session: Session, graph_id: UUID, node_id: UUID) -> None:
-    node = _get_node(session, graph_id, node_id, lock=True)
     graph = get_graph(session, graph_id, lock=True)
+    node = _get_node(session, graph_id, node_id, lock=True)
     if graph.root_node_id == node_id:
         graph.root_node_id = None
     # Explicit deletion makes connected-edge semantics identical on SQLite and Postgres.
@@ -166,7 +167,7 @@ def delete_node(session: Session, graph_id: UUID, node_id: UUID) -> None:
 
 
 def create_edge(session: Session, graph_id: UUID, request: CrawlGraphEdgeCreate) -> CrawlGraphEdgeRecord:
-    get_graph(session, graph_id)
+    get_graph(session, graph_id, lock=True)
     _require_endpoints(session, graph_id, request.source_node_id, request.target_node_id)
     validate_edge_sql(request.sql)
     edge = CrawlGraphEdge(
@@ -184,6 +185,7 @@ def create_edge(session: Session, graph_id: UUID, request: CrawlGraphEdgeCreate)
 
 
 def update_edge(session: Session, graph_id: UUID, edge_id: UUID, request: CrawlGraphEdgeUpdate) -> CrawlGraphEdgeRecord:
+    get_graph(session, graph_id, lock=True)
     edge = _get_edge(session, graph_id, edge_id, lock=True)
     _require_unused(edge.used_at, "edge")
     _require_endpoints(session, graph_id, request.source_node_id, request.target_node_id)
@@ -199,6 +201,7 @@ def update_edge(session: Session, graph_id: UUID, edge_id: UUID, request: CrawlG
 
 
 def delete_edge(session: Session, graph_id: UUID, edge_id: UUID) -> None:
+    get_graph(session, graph_id, lock=True)
     session.delete(_get_edge(session, graph_id, edge_id, lock=True))
     session.flush()
 

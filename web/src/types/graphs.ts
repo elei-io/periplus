@@ -66,7 +66,7 @@ export type GraphRunRecord = {
   graph_id: string
   graph_name?: string | null
   status: GraphRunStatus
-  trigger_kind: "manual" | "scheduled"
+  trigger_kind: "manual"
   trigger_urls: string[]
   request_count: number
   pending_request_count: number

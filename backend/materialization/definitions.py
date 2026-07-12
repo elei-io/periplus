@@ -67,5 +67,5 @@ async def publish_scope(
     await jetstream.publish(
         SCOPE_LIVE_SUBJECT if source == "live" else SCOPE_BACKFILL_SUBJECT,
         job.model_dump_json().encode(),
-        headers={"Nats-Msg-Id": operation_id},
+        headers={"Nats-Msg-Id": job.operation_id},
     )

@@ -95,7 +95,7 @@ def record_scope_failure(catalogue: Catalogue, job: MaterializationFailureJob) -
             .where(CatalogueMaterialization.id == scope.materialization_id)
             .with_for_update()
         )
-        if not scope_job_is_current(definition, scope):
+        if not scope_job_is_current(definition, scope) and job.reason != "stale":
             return False
         coverage = _qualified(
             catalogue, catalogue.config.schema, "materialization_scope_results"

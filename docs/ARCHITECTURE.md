@@ -3,7 +3,7 @@
 Atlas has one acquisition path and one graph-driven way to compose subsequent acquisition:
 
 ```text
-API / CLI / schedule
+API
         |
         +-- graph trigger --> GraphRun in JetStream/KV
                                  |
@@ -58,10 +58,10 @@ DuckDB/DuckLake connection.
 
 | Owner | Authoritative state | Must not own |
 | --- | --- | --- |
-| Postgres `atlas` | Editable crawl graphs, graph nodes and edges, schedules, crawl policies, URL matches, schemas, and catalogue definitions | Graph execution, queued crawl requests, crawl history, HTML, DOM elements |
+| Postgres `atlas` | Editable crawl graphs, graph nodes and edges, crawl policies, URL matches, schemas, and catalogue definitions | Graph execution, queued crawl requests, crawl history, HTML, DOM elements |
 | NATS JetStream/KV | Graph runs, crawl requests, admission and deduplication state, work delivery, workers, progress, ingestion state, and edge-evaluation state | Irreplaceable long-term analytics |
 | Repository objects | Immutable content-addressed raw HTML and bounded temporary staging objects | Mutable metadata |
-| DuckLake | Documents, crawl attempts, graph provenance, versioned DOM elements, materialized derived facts, and durable materialization coverage | Scheduling, graph topology, or current execution state |
+| DuckLake | Documents, crawl attempts, graph provenance, versioned DOM elements, materialized derived facts, and durable materialization coverage | Graph topology or current execution state |
 | Prometheus | Operational counters, gauges, and histograms | Correctness-critical state |
 
 Postgres may retain stable definition metadata, but that does not make a graph run a Postgres
@@ -106,8 +106,9 @@ retry; redelivery resolves durable identity before repeating a write.
 
 Terminal ingestion failures enter a file-backed dead-letter stream. Explicit repository commands
 inspect and requeue them. The maintenance worker runs bounded, threshold-driven DuckLake small-file
-compaction independently of ingestion. Tiny DuckLake writes use the documented metadata inlining
-limit and are flushed before compaction. Compaction output is bounded by DuckLake's
+compaction independently of ingestion. Metadata inlining is disabled after reproducible
+Postgres-backed inline-reader crashes; maintenance still flushes previously inlined rows before
+compaction. Compaction output is bounded by DuckLake's
 `max_compacted_files`; superseded files are reclaimed only after the configured read-safety grace
 period. Snapshot expiration, orphan deletion, and other retention-changing maintenance remain
 explicit operations, never hidden side effects of reads or crawls.

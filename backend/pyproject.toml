@@ -7,7 +7,6 @@ requires-python = ">=3.14"
 dependencies = [
     "alembic>=1.18",
     "crawl4ai>=0.9.0",
-    "croniter>=6.0",
     "fastapi[standard]>=0.139.0",
     "httpx>=0.28",
     "nats-py>=2.11",
@@ -24,7 +23,7 @@ dependencies = [
     "html5lib>=1.1",
     "pyarrow>=21",
     "sqlglot>=27",
-    "ducklake-cdc-client>=0.5.1",
+    "ducklake-cdc-client>=0.6.0",
     "duckdb==1.5.4",
 ]
 

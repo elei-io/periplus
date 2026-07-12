@@ -24,7 +24,7 @@ from actions.shared.quality.schemas import QualityWarning
 from actions.shared.quality.service import run_quality_checks
 from repository.catalogue import CrawlRecord
 from dom import links_from_html
-from control.crawl_policies.schemas import CrawlPolicySnapshot
+from control.crawl_policies.schemas import CrawlPolicyConfig, CrawlPolicySnapshot
 from runtime.crawl_capacity import capacity_lease
 from observability import crawl_metrics
 from repository import (
@@ -553,23 +553,17 @@ def _repository_crawl_payload(
     return payload
 
 
-def _cache_block_rules_from_config(config: dict[str, Any]) -> dict[str, Any]:
-    cache_block_rules = config.get("cache_block_rules")
-    return cache_block_rules if isinstance(cache_block_rules, dict) else {}
-
-
 def _transport_from_policy(
     policy: CrawlPolicySnapshot,
 ) -> tuple[CrawlMode, CrawlWait, dict[str, Any], dict[str, Any]]:
-    config = policy.config or {}
-    mode = config.get("mode") or "static"
-    wait = config.get("wait") or "none"
-    run_config_overrides = config.get("run_config_overrides") or {}
+    config = CrawlPolicyConfig.model_validate(policy.config or {})
+    if config.engine != "crawl4ai":
+        raise ValueError(f"Unsupported crawl engine: {config.engine}")
     return (
-        mode,
-        wait,
-        run_config_overrides,
-        _cache_block_rules_from_config(config),
+        config.mode,
+        config.wait,
+        config.run_config_overrides,
+        config.cache_block_rules,
     )
 
 

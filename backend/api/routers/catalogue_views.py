@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from collections.abc import Iterator
 from typing import Annotated, NoReturn
 from uuid import UUID
 
@@ -28,6 +30,7 @@ from control.catalogue_views.service import (
 from db.session import get_session
 from repository.catalogue import Catalogue, catalogue_from_env
 from repository.catalogue.query import CatalogueQueryError
+from repository.catalogue.operations import operation_lock
 from repository.catalogue.views import CatalogueViewConflictError, CatalogueViewError, CatalogueViewStore
 
 router = APIRouter(prefix="/catalogue/views", tags=["catalogue-views"])
@@ -35,6 +38,12 @@ router = APIRouter(prefix="/catalogue/views", tags=["catalogue-views"])
 
 def _catalogue() -> Catalogue:
     return catalogue_from_env()
+
+
+@contextmanager
+def _catalogue_mutation(operation_id: str) -> Iterator[Catalogue]:
+    with operation_lock(operation_id), _catalogue() as catalogue:
+        yield catalogue
 
 
 @router.get("/", response_model=CatalogueViewListResponse)
@@ -55,7 +64,7 @@ def get(reference_id: UUID, session: Annotated[Session, Depends(get_session)]) -
 @router.post("/", response_model=CatalogueViewRecord, status_code=201)
 def create(payload: CatalogueViewCreate, session: Annotated[Session, Depends(get_session)]) -> CatalogueViewRecord:
     try:
-        with _catalogue() as catalogue:
+        with _catalogue_mutation(f"catalogue-view-create:{payload.name}") as catalogue:
             return create_reference(
                 session,
                 CatalogueViewStore(catalogue),
@@ -72,7 +81,7 @@ def create(payload: CatalogueViewCreate, session: Annotated[Session, Depends(get
 @router.post("/adopt", response_model=CatalogueViewRecord, status_code=201)
 def adopt(payload: CatalogueViewAdopt, session: Annotated[Session, Depends(get_session)]) -> CatalogueViewRecord:
     try:
-        with _catalogue() as catalogue:
+        with _catalogue_mutation(f"catalogue-view-adopt:{payload.ducklake_view_uuid}") as catalogue:
             return adopt_reference(
                 session,
                 CatalogueViewStore(catalogue),
@@ -90,7 +99,7 @@ def update(reference_id: UUID, payload: CatalogueViewUpdate, session: Annotated[
     if reference is None:
         raise HTTPException(status_code=404, detail="Catalogue view reference not found.")
     try:
-        with _catalogue() as catalogue:
+        with _catalogue_mutation(f"catalogue-view-update:{reference_id}") as catalogue:
             return update_reference(
                 session,
                 CatalogueViewStore(catalogue),
@@ -116,7 +125,7 @@ def recover_source_change_(
     if reference is None:
         raise HTTPException(status_code=404, detail="Catalogue view reference not found.")
     try:
-        with _catalogue() as catalogue:
+        with _catalogue_mutation(f"catalogue-view-recover:{reference_id}") as catalogue:
             return recover_source_change(
                 session,
                 CatalogueViewStore(catalogue),
@@ -147,7 +156,7 @@ def drop(
     if reference is None:
         raise HTTPException(status_code=404, detail="Catalogue view reference not found.")
     try:
-        with _catalogue() as catalogue:
+        with _catalogue_mutation(f"catalogue-view-drop:{reference_id}") as catalogue:
             drop_referenced_view(
                 session,
                 CatalogueViewStore(catalogue),

@@ -17,6 +17,7 @@ from prometheus_client import start_http_server
 
 from repository.ingestion.health import HealthMonitor, start_health_server
 from repository.maintenance import MaintenanceConfig, cleanup_staging, compact
+from repository.catalogue.operations import maintenance_lock
 from runtime.graph_queue import connect_nats
 from runtime.maintenance_queue import (
     MAINTENANCE_CONSUMER,
@@ -115,7 +116,11 @@ async def _process(message, *, worker_id: str, operations, leases, config: Maint
     heartbeat = asyncio.create_task(_heartbeat_lease(leases, revision, lease, heartbeat_stop))
     try:
         if job.kind in {"compact", "flush"}:
-            await asyncio.to_thread(compact, config)
+            def compact_fenced() -> None:
+                with maintenance_lock():
+                    compact(config)
+
+            await asyncio.to_thread(compact_fenced)
         elif job.kind == "cleanup":
             await asyncio.to_thread(cleanup_staging, config)
         else:

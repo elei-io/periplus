@@ -42,7 +42,7 @@ class CatalogueConfigTests(unittest.TestCase):
         self.assertIsInstance(config.storage, DiskStorage)
         self.assertEqual(config.alias, "atlas")
         self.assertEqual(config.schema, "main")
-        self.assertEqual(config.attach.data_inlining_row_limit, 10)
+        self.assertEqual(config.attach.data_inlining_row_limit, 0)
         self.assertTrue(config.attach.override_data_path)
 
     def test_s3_configuration_maps_credentials_and_endpoint(self) -> None:

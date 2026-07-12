@@ -17,12 +17,21 @@ def utc_now() -> datetime:
 
 class CrawlGraph(Base):
     __tablename__ = "crawl_graphs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["id", "root_node_id"],
+            ["crawl_graph_nodes.graph_id", "crawl_graph_nodes.id"],
+            name="fk_crawl_graphs_root_node",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     root_node_id: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("crawl_graph_nodes.id", ondelete="SET NULL"), nullable=True
+        PG_UUID(as_uuid=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     nodes: Mapped[list[CrawlGraphNode]] = relationship(

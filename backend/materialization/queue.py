@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from config import get_int
+from config import get_float, get_int
 from nats.js.api import (
     AckPolicy,
     ConsumerConfig,
@@ -62,6 +62,7 @@ class MaterializationFailureJob(BaseModel):
 
     kind: Literal["failure"] = "failure"
     scope: MaterializationScopeJob
+    reason: Literal["execution", "stale"] = "execution"
     error: str
     started_at: datetime
     completed_at: datetime
@@ -170,7 +171,7 @@ async def _ensure_consumer(
         durable_name=durable,
         ack_policy=AckPolicy.EXPLICIT,
         filter_subject=subject,
-        ack_wait=600,
+        ack_wait=get_float("ATLAS_MATERIALIZATION_ACK_WAIT_SECONDS"),
         max_deliver=max_deliver,
         max_ack_pending=100,
     )
@@ -179,5 +180,8 @@ async def _ensure_consumer(
     actual = info.config
     if actual.filter_subject != subject or actual.ack_policy != AckPolicy.EXPLICIT:
         raise RuntimeError(f"JetStream consumer {durable} has incompatible configuration")
-    if actual.max_deliver != max_deliver or actual.ack_wait != 600:
+    if (
+        actual.max_deliver != max_deliver
+        or actual.ack_wait != get_float("ATLAS_MATERIALIZATION_ACK_WAIT_SECONDS")
+    ):
         raise RuntimeError(f"JetStream consumer {durable} has incompatible delivery limits")

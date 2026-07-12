@@ -6,7 +6,6 @@ import hashlib
 import asyncio
 from datetime import UTC, datetime
 from typing import Literal
-from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import nats
@@ -15,6 +14,7 @@ from nats.js.api import AckPolicy, ConsumerConfig, KeyValueConfig, RetentionPoli
 from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError, NoKeysError, NotFoundError
 from pydantic import BaseModel, ConfigDict
 from control.crawl_graphs.schemas import EdgeDedupeMode, FrozenGraphEdge, FrozenGraphNode, FrozenGraphSnapshot
+from control.url_matching import normalize_url
 
 GRAPH_STREAM = "ATLAS_GRAPH_WORK"
 CRAWL_SUBJECT = "atlas.graph.crawl"
@@ -29,8 +29,24 @@ WORKERS_BUCKET = "atlas_graph_workers"
 PROGRESS_BUCKET = "atlas_graph_progress"
 
 GraphRunStatus = Literal["queued", "running", "completed", "completed_with_errors", "failed", "cancelled"]
-CrawlRequestStatus = Literal["queued", "crawling", "awaiting_ingestion", "awaiting_materializations", "evaluating_edges", "completed", "failed", "cancelled"]
-TriggerKind = Literal["manual", "scheduled"]
+CrawlRequestStatus = Literal["queued", "crawling", "awaiting_materializations", "evaluating_edges", "completed", "failed", "cancelled"]
+FailureStage = Literal["admission", "acquisition", "enrichment", "edge", "lifecycle"]
+TriggerKind = Literal["manual"]
+
+
+class PendingAdmission(BaseModel):
+    """Frozen request creation/publication intent stored with the run reservation."""
+
+    model_config = ConfigDict(frozen=True)
+    request_id: UUID
+    identity: str
+    node_id: UUID
+    url: str
+    effective_policy_snapshot_json: dict | None = None
+    source_crawl_id: UUID | None = None
+    source_edge_id: UUID | None = None
+    parent_request_id: UUID | None = None
+    created_at: datetime
 
 
 class GraphRun(BaseModel):
@@ -42,6 +58,7 @@ class GraphRun(BaseModel):
     snapshot: FrozenGraphSnapshot
     trigger_urls: tuple[str, ...]
     seen_request_identities: tuple[str, ...] = ()
+    pending_admissions: tuple[PendingAdmission, ...] = ()
     request_count: int = 0
     pending_request_count: int = 0
     failed_request_count: int = 0
@@ -64,9 +81,12 @@ class CrawlRequest(BaseModel):
     source_edge_id: UUID | None = None
     parent_request_id: UUID | None = None
     status: CrawlRequestStatus = "queued"
+    claim_token: UUID | None = None
+    claim_expires_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     error: str | None = None
+    failure_stage: FailureStage | None = None
 
 
 class CrawlWork(BaseModel):
@@ -90,6 +110,8 @@ class EdgeEvaluation(BaseModel):
     crawl_id: UUID
     edge_id: UUID
     status: Literal["pending", "running", "completed", "failed"] = "pending"
+    claim_token: UUID | None = None
+    claim_expires_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     output_count: int = 0
@@ -118,15 +140,10 @@ class WorkerState(BaseModel):
 
 
 def normalize_request_url(url: str) -> str:
-    parsed = urlsplit(url.strip())
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
-        raise ValueError(f"Crawl URL must be absolute HTTP(S): {url}")
-    scheme = parsed.scheme.lower()
-    host = parsed.hostname.lower()
-    port = parsed.port
-    netloc = host if port is None or (scheme, port) in {("http", 80), ("https", 443)} else f"{host}:{port}"
-    path = parsed.path or "/"
-    return urlunsplit((scheme, netloc, path, parsed.query, ""))
+    try:
+        return normalize_url(url)
+    except ValueError as exc:
+        raise ValueError(f"Crawl URL must be absolute HTTP(S): {url}") from exc
 
 
 def request_identity(
