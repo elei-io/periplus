@@ -26,22 +26,20 @@ class DeploymentTests(TestCase):
         deployment.ensure_catalogue_database()
         connect.assert_not_called()
 
-    @patch("deployment.seed_materializations")
     @patch("deployment.bootstrap_catalogue")
     @patch("deployment.migrate_control_database")
     @patch("deployment.ensure_catalogue_database")
-    def test_setup_order(self, ensure_database, migrate, bootstrap, seed) -> None:
+    def test_setup_order(self, ensure_database, migrate, bootstrap) -> None:
         manager = MagicMock()
         manager.attach_mock(ensure_database, "ensure")
         manager.attach_mock(migrate, "migrate")
         manager.attach_mock(bootstrap, "bootstrap")
-        manager.attach_mock(seed, "seed")
 
         deployment.main([])
 
         self.assertEqual(
             manager.mock_calls,
-            [call.ensure(), call.migrate(), call.bootstrap(), call.seed()],
+            [call.ensure(), call.migrate(), call.bootstrap()],
         )
 
     @patch("deployment.command.upgrade")

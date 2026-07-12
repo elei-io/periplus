@@ -14,7 +14,7 @@ from api.routers import (
     data_schemas,
     extract,
     index,
-    materialized_views,
+    catalogue_materializations,
     operational_metrics,
     query_schemas,
     repository_operations,
@@ -48,7 +48,7 @@ app.include_router(catalogue_views.router)
 app.include_router(data_schemas.router)
 app.include_router(extract.router)
 app.include_router(index.router)
-app.include_router(materialized_views.router)
+app.include_router(catalogue_materializations.router)
 app.include_router(operational_metrics.router)
 app.include_router(query_schemas.router)
 app.include_router(repository_operations.router)

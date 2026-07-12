@@ -17,7 +17,7 @@ from repository.catalogue import CatalogueConflictError, CatalogueValidationErro
 from observability import repository_metrics
 from prometheus_client import start_http_server
 from config import get_bool, get_float, get_int, get_str
-from control.materialized_views.models import MaterializedView
+from control.catalogue_materializations.models import CatalogueMaterialization
 from control.catalogue_views.models import CatalogueViewReference
 from control.catalogue_queries.models import CatalogueQuery, CatalogueQueryRevision
 from db.session import session_scope
@@ -52,7 +52,7 @@ from repository.ingestion.queue import (
     store_ingestion_response,
 )
 from repository.service import repository_ingestor_from_env
-from repository.catalogue.materialized_views import MaterializedViewStore
+from repository.catalogue.materializations import MaterializationStore
 from sqlalchemy import select
 
 
@@ -166,7 +166,7 @@ async def run() -> None:
     try:
         while not stop.is_set():
             await asyncio.to_thread(
-                _delete_requested_materialization, ingestor.catalogue
+                _dematerialize_requested_materialization, ingestor.catalogue
             )
             await _commit_materialization_if_ready(
                 jetstream, materialization_subscription, ingestor.catalogue
@@ -404,15 +404,15 @@ async def _commit_materialization_if_ready(jetstream, subscription, catalogue) -
             await _cancel_task(heartbeat)
 
 
-def _delete_requested_materialization(catalogue) -> None:
+def _dematerialize_requested_materialization(catalogue) -> None:
     with session_scope() as session:
         model = session.scalar(
-            select(MaterializedView)
+            select(CatalogueMaterialization)
             .where(
-                MaterializedView.archived_at.is_(None),
-                MaterializedView.deletion_requested_at.is_not(None),
+                CatalogueMaterialization.archived_at.is_(None),
+                CatalogueMaterialization.dematerialization_requested_at.is_not(None),
             )
-            .order_by(MaterializedView.deletion_requested_at)
+            .order_by(CatalogueMaterialization.dematerialization_requested_at)
             .limit(1)
             .with_for_update(skip_locked=True)
         )
@@ -423,10 +423,10 @@ def _delete_requested_materialization(catalogue) -> None:
             for table in catalogue.lake.table.list(schema_name="materialized")
         )
         if present:
-            MaterializedViewStore(catalogue).drop_managed(
+            MaterializationStore(catalogue).drop_managed(
                 name=model.name,
                 expected_uuid=model.ducklake_table_uuid,
-                materialized_view_id=model.id,
+                materialization_id=model.id,
             )
         model.archived_at = datetime.now(UTC)
         session.flush()

@@ -45,7 +45,9 @@ export type IndexOutput = {
   failed_pages: number
   discovered_links: number
   result_links: number
-  links: IndexLink[]
+  internal_links: number
+  external_links: number
+  sample_links: IndexLink[]
 }
 
 export type IndexStreamEvent =

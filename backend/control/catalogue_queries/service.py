@@ -10,6 +10,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from repository.catalogue.query import classify_select
+from repository.catalogue.materializations import MaterializationStore
+
+from control.catalogue_materializations.models import CatalogueMaterialization
+from control.catalogue_materializations.schemas import CatalogueMaterializationSummary
+from control.catalogue_materializations.service import summary as materialization_summary
 
 from .models import CatalogueQuery, CatalogueQueryRevision
 from .schemas import (
@@ -43,14 +48,71 @@ def create_query(
     return detail(query)
 
 
-def list_queries(session: Session, *, archived: bool = False) -> list[CatalogueQueryRecord]:
+def list_queries(
+    session: Session,
+    store: MaterializationStore,
+    *,
+    archived: bool = False,
+) -> list[CatalogueQueryRecord]:
     statement = select(CatalogueQuery).order_by(CatalogueQuery.updated_at.desc())
     statement = statement.where(
         CatalogueQuery.archived_at.is_not(None)
         if archived
         else CatalogueQuery.archived_at.is_(None)
     )
-    return [record(query) for query in session.scalars(statement)]
+    queries = list(session.scalars(statement))
+    query_ids = [query.id for query in queries]
+    materializations = (
+        list(
+            session.scalars(
+                select(CatalogueMaterialization).where(
+                    CatalogueMaterialization.query_id.in_(query_ids),
+                    CatalogueMaterialization.archived_at.is_(None),
+                )
+            )
+        )
+        if query_ids
+        else []
+    )
+    by_query = {
+        item.query_id: item for item in materializations if item.query_id is not None
+    }
+    revision_ids = [
+        item.active_query_revision_id
+        for item in materializations
+        if item.active_query_revision_id is not None
+    ]
+    revisions = (
+        {
+            revision.id: revision
+            for revision in session.scalars(
+                select(CatalogueQueryRevision).where(
+                    CatalogueQueryRevision.id.in_(revision_ids)
+                )
+            )
+        }
+        if revision_ids
+        else {}
+    )
+    records = []
+    for query in queries:
+        materialization = by_query.get(query.id)
+        summary = None
+        if materialization is not None:
+            active_revision = revisions.get(materialization.active_query_revision_id)
+            summary = materialization_summary(
+                store,
+                materialization,
+                active_query_revision=(
+                    active_revision.revision if active_revision is not None else None
+                ),
+                definition_is_current=(
+                    materialization.active_query_revision_id
+                    == query.current_revision_id
+                ),
+            )
+        records.append(record(query, materialization=summary))
+    return records
 
 
 def get_query(session: Session, query_id: UUID) -> CatalogueQuery | None:
@@ -65,6 +127,36 @@ def get_revision(
             CatalogueQueryRevision.id == revision_id,
             CatalogueQueryRevision.query_id == query_id,
         )
+    )
+
+
+def get_materialization_summary(
+    session: Session,
+    store: MaterializationStore,
+    query: CatalogueQuery,
+) -> CatalogueMaterializationSummary | None:
+    materialization = session.scalar(
+        select(CatalogueMaterialization).where(
+            CatalogueMaterialization.query_id == query.id,
+            CatalogueMaterialization.archived_at.is_(None),
+        )
+    )
+    if materialization is None:
+        return None
+    active_revision = (
+        session.get(CatalogueQueryRevision, materialization.active_query_revision_id)
+        if materialization.active_query_revision_id is not None
+        else None
+    )
+    return materialization_summary(
+        store,
+        materialization,
+        active_query_revision=(
+            active_revision.revision if active_revision is not None else None
+        ),
+        definition_is_current=(
+            materialization.active_query_revision_id == query.current_revision_id
+        ),
     )
 
 
@@ -124,6 +216,16 @@ def restore_revision(
 
 
 def archive_query(session: Session, query: CatalogueQuery) -> None:
+    materialization = session.scalar(
+        select(CatalogueMaterialization).where(
+            CatalogueMaterialization.query_id == query.id,
+            CatalogueMaterialization.archived_at.is_(None),
+        )
+    )
+    if materialization is not None:
+        raise CatalogueQueryConflictError(
+            "Dematerialize this query before archiving it."
+        )
     query.archived_at = datetime.now(UTC)
     session.flush()
 
@@ -134,7 +236,11 @@ def restore_query(session: Session, query: CatalogueQuery) -> CatalogueQueryDeta
     return detail(query)
 
 
-def record(query: CatalogueQuery) -> CatalogueQueryRecord:
+def record(
+    query: CatalogueQuery,
+    *,
+    materialization: CatalogueMaterializationSummary | None = None,
+) -> CatalogueQueryRecord:
     current = _current_revision(query)
     return CatalogueQueryRecord(
         id=query.id,
@@ -146,12 +252,17 @@ def record(query: CatalogueQuery) -> CatalogueQueryRecord:
         archived_at=query.archived_at,
         created_at=query.created_at,
         updated_at=query.updated_at,
+        materialization=materialization,
     )
 
 
-def detail(query: CatalogueQuery) -> CatalogueQueryDetail:
+def detail(
+    query: CatalogueQuery,
+    *,
+    materialization: CatalogueMaterializationSummary | None = None,
+) -> CatalogueQueryDetail:
     return CatalogueQueryDetail(
-        **record(query).model_dump(),
+        **record(query, materialization=materialization).model_dump(),
         revisions=[revision_record(item) for item in reversed(query.revisions)],
     )
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from queue import Empty, Queue
 
-from repository.catalogue import Catalogue, catalogue_config_from_env
+from repository.catalogue import Catalogue, catalogue_from_env
 
 
 class CatalogueReadPoolExhausted(RuntimeError):
@@ -32,7 +32,7 @@ class CatalogueReadPool:
         self.size = size
         self.threads = threads
         self.wait_timeout_seconds = wait_timeout_seconds
-        self._factory = factory or (lambda: Catalogue(catalogue_config_from_env()))
+        self._factory = factory or catalogue_from_env
         self._available: Queue[Catalogue] = Queue(maxsize=size)
         self._catalogues: list[Catalogue] = []
 

@@ -4,13 +4,12 @@ import asyncio
 import logging
 
 import duckdb
-from ducklake_cdc_client import DMLConsumer
+from ducklake_cdc_client import CDCClient, DMLConsumer
 
 from config import get_int, get_str
-from control.materialized_views.models import MaterializedView
+from control.catalogue_materializations.models import CatalogueMaterialization
 from materialization.definitions import active_definitions, publish_scope
-from repository.catalogue.client import Catalogue
-from repository.catalogue.config import catalogue_config_from_env
+from repository.catalogue import Catalogue, catalogue_from_env
 from repository.ingestion.health import HealthMonitor
 
 
@@ -84,19 +83,19 @@ async def run_live(
             catalogue.close()
 
 
-def _open_consumer(definition: MaterializedView) -> tuple[Catalogue, DMLConsumer]:
+def _open_consumer(definition: CatalogueMaterialization) -> tuple[Catalogue, DMLConsumer]:
     if definition.activation_snapshot is None:
         raise RuntimeError(f"materialization {definition.id} has no activation snapshot")
-    catalogue = Catalogue(catalogue_config_from_env())
+    catalogue = catalogue_from_env()
     try:
-        catalogue.connection.execute("LOAD ducklake_cdc")
-        actual = str(catalogue.connection.execute("SELECT cdc_version()").fetchone()[0])
+        client = CDCClient(catalogue.lake, install_extension=False)
+        actual = client.version()
         expected = get_str("ATLAS_DUCKLAKE_CDC_VERSION")
         if actual != expected:
             raise RuntimeError(
                 f"DuckLake CDC version mismatch: expected {expected!r}, got {actual!r}"
             )
-        name = f"atlas-mv-{definition.id.hex}-{definition.definition_revision_id.hex}"
+        name = f"atlas-materialization-{definition.id.hex}-{definition.definition_revision_id.hex}"
         _drop_obsolete_consumers(catalogue, definition.id.hex, name)
         consumer = DMLConsumer(
             catalogue.lake,
@@ -105,6 +104,7 @@ def _open_consumer(definition: MaterializedView) -> tuple[Catalogue, DMLConsumer
             mode="changes",
             start_at=definition.activation_snapshot,
             on_exists="use",
+            client=client,
         ).open()
         return catalogue, consumer
     except Exception:
@@ -113,9 +113,9 @@ def _open_consumer(definition: MaterializedView) -> tuple[Catalogue, DMLConsumer
 
 
 def _drop_obsolete_consumers(
-    catalogue: Catalogue, materialized_view_hex: str, current_name: str
+    catalogue: Catalogue, materialization_hex: str, current_name: str
 ) -> None:
-    prefix = f"atlas-mv-{materialized_view_hex}-"
+    prefix = f"atlas-materialization-{materialization_hex}-"
     rows = catalogue.connection.execute(
         "SELECT consumer_name, owner_token FROM cdc_list_consumers(?)",
         [catalogue.config.alias],

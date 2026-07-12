@@ -12,6 +12,7 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from config import get_float, get_int, get_str
 from materialization.backfill import run_backfill
 from materialization.compute import compute_scope
+from materialization.fencing import StaleMaterializationJob
 from materialization.live import run_live
 from materialization.queue import (
     COMMIT_SUBJECT,
@@ -89,6 +90,9 @@ async def _consume_scopes(
                     commit.model_dump_json().encode(),
                     headers={"Nats-Msg-Id": job.operation_id},
                 )
+                await message.ack()
+            except StaleMaterializationJob:
+                logging.info("discarding stale materialization scope job")
                 await message.ack()
             except Exception as exc:
                 logging.exception("materialization scope computation failed")

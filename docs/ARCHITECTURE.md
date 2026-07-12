@@ -20,10 +20,14 @@ FastAPI -- definitions --------------------------> Postgres
                                                                   |
                                                          repository worker
                                                                   |
+                                                               Quack
+                                                                  |
                                                               DuckLake
 
-Saved-query materializations add one supervised planner/evaluator beside this path. DuckLake CDC
-discovers changed document scopes and historical activation scans page through bounded scope IDs.
+Catalogue materializations add one supervised planner/evaluator beside this path. A saved query or
+DuckLake view may have at most one attached materialization; materialization is a capability of that
+definition, not a separate catalogue product or a source of duplicate outputs. DuckLake CDC discovers
+changed document or crawl scopes and historical activation scans page through bounded scope IDs.
 Both publish JetStream work. Evaluation streams a bounded Arrow object through the configured
 repository object store; only the repository worker verifies and commits it to DuckLake.
 ```
@@ -34,7 +38,7 @@ Prometheus receives operational metrics. It is not part of the correctness path.
 
 | Owner | Authoritative state | Must not own |
 | --- | --- | --- |
-| Postgres `atlas` | Editable tasks, schedules, URL matches, crawl policies, and reusable schemas | Task execution, crawl history, HTML, DOM elements |
+| Postgres `atlas` | Editable tasks, schedules, URL matches, crawl policies, reusable schemas, catalogue definitions, and their optional materialization records | Task execution, crawl history, HTML, DOM elements |
 | NATS JetStream/KV | Work delivery, current run state, worker presence, progress, ingestion results, and dead letters | Irreplaceable long-term analytics |
 | Repository objects | Immutable content-addressed raw HTML | Mutable metadata |
 | DuckLake | Documents, crawl attempts, and versioned DOM elements | Scheduling or current execution state |
@@ -120,10 +124,11 @@ requires evidence that the current primitive is insufficient.
 - `backend/api/` and `backend/cli/` adapt external requests and remain thin.
 - `backend/db/` owns Postgres infrastructure and migrations.
 
-Docker Compose runs one idempotent `atlas-setup` job after Postgres is healthy. It creates the
-separate catalogue database, applies Alembic migrations, and bootstraps DuckLake before the API or
-workers start. Disk is the default repository backend; the optional S3 profile uses a separate
-MinIO bucket-initialization job because external S3 provisioning is operator-owned.
+Docker Compose runs one idempotent `atlas-setup` job after Postgres and MinIO are healthy. It
+creates the separate catalogue database, applies Alembic migrations, and bootstraps DuckLake. One
+stateful Quack service then owns the long-lived DuckDB/DuckLake connection; API and worker processes
+use it as clients. Compose uses S3-compatible storage because worker-local paths cannot cross that
+boundary. External S3 provisioning remains operator-owned outside local development.
 
 ## Exact contracts
 

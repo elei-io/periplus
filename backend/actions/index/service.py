@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 from fnmatch import fnmatch
 from itertools import chain
 from urllib.parse import urldefrag, urljoin, urlparse
@@ -35,6 +36,20 @@ def _included(url: str, include: list[str], exclude: list[str]) -> bool:
     return (not include or any(fnmatch(url, pattern) for pattern in include)) and not any(fnmatch(url, pattern) for pattern in exclude)
 
 
+def _summarize_links(
+    links: list[IndexLink], *, sample_seed: str
+) -> tuple[int, int, list[IndexLink]]:
+    result_count = len(links)
+    internal_count = sum(link.internal for link in links)
+    sample_size = get_int("ATLAS_INDEX_SAMPLE_SIZE")
+    samples = (
+        links
+        if result_count <= sample_size
+        else random.Random(sample_seed).sample(links, sample_size)
+    )
+    return result_count, internal_count, samples
+
+
 async def index(
     url: str, max_depth: int = 1, dedupe: bool = False,
     include_crawl: list[str] | None = None, exclude_crawl: list[str] | None = None,
@@ -45,7 +60,10 @@ async def index(
 ) -> IndexOutput:
     start = _normalize(url, url)
     if max_depth < 0 or urlparse(start).scheme not in {"http", "https"}:
-        return IndexOutput(pages=0, failed_pages=0, discovered_links=0, result_links=0)
+        return IndexOutput(
+            pages=0, failed_pages=0, discovered_links=0, result_links=0,
+            internal_links=0, external_links=0,
+        )
 
     frontier: dict[str, int] = {start: 0}
     visited: set[str] = set()
@@ -95,9 +113,18 @@ async def index(
 
     if dedupe:
         links = list({link.url: link for link in links}.values())
-    result_count = len(links)
-    limit = get_int("ATLAS_INDEX_RESULT_LIMIT")
-    return IndexOutput(pages=len(visited), failed_pages=failed, discovered_links=discovered, result_links=result_count, links=links[:limit])
+    result_count, internal_count, samples = _summarize_links(
+        links, sample_seed=start
+    )
+    return IndexOutput(
+        pages=len(visited),
+        failed_pages=failed,
+        discovered_links=discovered,
+        result_links=result_count,
+        internal_links=internal_count,
+        external_links=result_count - internal_count,
+        sample_links=samples,
+    )
 
 
 def index_sync(**kwargs: object) -> IndexOutput:

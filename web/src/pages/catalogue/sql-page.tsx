@@ -14,6 +14,7 @@ import {
 import { CatalogueResultsTable } from "@/components/catalogue/catalogue-results-table"
 import { catalogueTables } from "@/components/catalogue/catalogue-schema"
 import { SqlEditor } from "@/components/catalogue/sql-editor"
+import { formatSql } from "@/components/catalogue/sql-format"
 import { SaveViewDialog } from "@/components/catalogue/save-view-dialog"
 import { SaveQueryDialog } from "@/components/catalogue/save-query-dialog"
 import { MaterializeQueryDialog } from "@/components/catalogue/materialize-query-dialog"
@@ -23,7 +24,7 @@ import { useCatalogueQuery } from "@/hooks/use-catalogue-query"
 import { useCatalogueLint } from "@/hooks/use-catalogue-lint"
 import { useCatalogueViews } from "@/hooks/use-catalogue-views"
 import { useSavedQuery } from "@/hooks/use-saved-queries"
-import { useMaterializedViews } from "@/hooks/use-materialized-views"
+import { useCatalogueMaterializations } from "@/hooks/use-catalogue-materializations"
 import {
   Tooltip,
   TooltipContent,
@@ -65,13 +66,15 @@ export function CatalogueSqlPage() {
   const catalogueQuery = useCatalogueQuery()
   const catalogueLint = useCatalogueLint(query)
   const catalogueViews = useCatalogueViews()
-  const materializedViews = useMaterializedViews()
+  const materializations = useCatalogueMaterializations()
 
   useEffect(() => {
     if (!savedQuery.data) return
     const revision = requestedRevision
       ? savedQuery.data.revisions.find((item) => item.revision === requestedRevision)
       : null
+    // Loading a requested immutable revision is an intentional external-state synchronization.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setQuery(revision?.sql ?? savedQuery.data.sql)
   }, [savedQuery.data, requestedRevision])
 
@@ -116,6 +119,7 @@ export function CatalogueSqlPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Button size="sm" variant="ghost" onClick={() => setQuery(formatSql(query))} disabled={!query.trim()}><SparklesIcon />Format SQL</Button>
             <Button
               size="sm"
               variant="outline"
@@ -168,7 +172,7 @@ export function CatalogueSqlPage() {
           views={(catalogueViews.data?.items ?? []).filter(
             (view) => view.available
           )}
-          materializedViews={materializedViews.data?.items ?? []}
+          materializations={materializations.data?.items ?? []}
         />
         {catalogueLint.data && catalogueLint.data.diagnostics.length > 0 && (
           <div className="space-y-1.5 border-t border-amber-500/20 bg-amber-500/5 px-4 py-2.5">

@@ -15,20 +15,23 @@ import {
 
 type SqlEditorProps = {
   value: string
-  onChange: (value: string) => void
-  onRun: () => void
+  onChange?: (value: string) => void
+  onRun?: () => void
+  readOnly?: boolean
+  height?: string
+  ariaLabel?: string
   views?: Array<{ view_name: string; columns: string[] }>
-  materializedViews?: Array<{ name: string; columns: Array<{ name: string }> }>
+  materializations?: Array<{ name: string; columns: Array<{ name: string }> }>
 }
 
-export function SqlEditor({ value, onChange, onRun, views = [], materializedViews = [] }: SqlEditorProps) {
+export function SqlEditor({ value, onChange = () => undefined, onRun, readOnly = false, height = "clamp(240px, 38vh, 360px)", ariaLabel = "Catalogue SQL editor", views = [], materializations = [] }: SqlEditorProps) {
   const sqlLanguage = useMemo(() => {
     const tables = catalogueTables
     const viewTables = Object.fromEntries(
       views.map((view) => [view.view_name, view.columns])
     )
     const materializedTables = Object.fromEntries(
-      materializedViews.map((view) => [view.name, view.columns.map((column) => column.name)])
+      materializations.map((view) => [view.name, view.columns.map((column) => column.name)])
     )
     const catalogueSchema = {
       ...tables,
@@ -43,7 +46,7 @@ export function SqlEditor({ value, onChange, onRun, views = [], materializedView
       schema: catalogueSchema,
       upperCaseKeywords: true,
     })
-  }, [views, materializedViews])
+  }, [views, materializations])
 
   const extensions = useMemo(
     () => [
@@ -60,14 +63,15 @@ export function SqlEditor({ value, onChange, onRun, views = [], materializedView
 
   return (
     <CodeMirror
-      aria-label="Catalogue SQL editor"
+      aria-label={ariaLabel}
       value={value}
-      height="clamp(240px, 38vh, 360px)"
+      height={height}
       theme="none"
       extensions={extensions}
+      editable={!readOnly}
       onChange={onChange}
       onKeyDown={(event) => {
-        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        if (onRun && (event.metaKey || event.ctrlKey) && event.key === "Enter") {
           event.preventDefault()
           onRun()
         }
@@ -80,7 +84,7 @@ export function SqlEditor({ value, onChange, onRun, views = [], materializedView
         indentOnInput: true,
         bracketMatching: true,
         closeBrackets: true,
-        autocompletion: true,
+        autocompletion: !readOnly,
         highlightSelectionMatches: false,
         highlightActiveLine: true,
         highlightActiveLineGutter: true,

@@ -5,7 +5,7 @@ import asyncio
 from sqlalchemy import update
 
 from config import get_int
-from control.materialized_views.models import MaterializedView
+from control.catalogue_materializations.models import CatalogueMaterialization
 from db.session import session_scope
 from materialization.definitions import active_definitions, publish_scope
 from materialization.queue import (
@@ -14,8 +14,7 @@ from materialization.queue import (
     SCOPE_BACKFILL_DURABLE,
     SCOPE_STREAM,
 )
-from repository.catalogue.client import Catalogue
-from repository.catalogue.config import catalogue_config_from_env
+from repository.catalogue import Catalogue, catalogue_from_env
 
 
 async def run_backfill(jetstream, stop: asyncio.Event) -> None:
@@ -62,10 +61,10 @@ async def _wait_for_queues(jetstream, stop: asyncio.Event) -> None:
 
 
 def _missing_document_scope_page(
-    definition: MaterializedView, cursor: str | None
+    definition: CatalogueMaterialization, cursor: str | None
 ) -> list[str]:
     limit = get_int("ATLAS_MATERIALIZATION_BACKFILL_PAGE_SIZE")
-    with Catalogue(catalogue_config_from_env()) as catalogue:
+    with catalogue_from_env() as catalogue:
         documents = _qualified(catalogue, "documents")
         coverage = _qualified(catalogue, "materialization_scope_results")
         rows = catalogue.connection.execute(
@@ -93,8 +92,8 @@ def _missing_document_scope_page(
         return [str(row[0]) for row in rows]
 
 
-def _backfill_terminal(definition: MaterializedView) -> bool:
-    with Catalogue(catalogue_config_from_env()) as catalogue:
+def _backfill_terminal(definition: CatalogueMaterialization) -> bool:
+    with catalogue_from_env() as catalogue:
         documents = _qualified(catalogue, "documents")
         coverage = _qualified(catalogue, "materialization_scope_results")
         total = catalogue.connection.execute(
@@ -110,13 +109,13 @@ def _backfill_terminal(definition: MaterializedView) -> bool:
         return int(completed) >= int(total)
 
 
-def _finish_backfill(definition: MaterializedView) -> None:
+def _finish_backfill(definition: CatalogueMaterialization) -> None:
     with session_scope() as session:
         session.execute(
-            update(MaterializedView)
+            update(CatalogueMaterialization)
             .where(
-                MaterializedView.id == definition.id,
-                MaterializedView.definition_revision_id
+                CatalogueMaterialization.id == definition.id,
+                CatalogueMaterialization.definition_revision_id
                 == definition.definition_revision_id,
             )
             .values(backfill_enabled=False)

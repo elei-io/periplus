@@ -6,7 +6,7 @@ from typing import Literal
 
 from sqlalchemy import select
 
-from control.materialized_views.models import MaterializedView
+from control.catalogue_materializations.models import CatalogueMaterialization
 from db.session import session_scope
 from materialization.queue import (
     SCOPE_BACKFILL_SUBJECT,
@@ -17,17 +17,18 @@ from materialization.queue import (
 
 def active_definitions(
     *, live: bool = False, backfill: bool = False
-) -> list[MaterializedView]:
+) -> list[CatalogueMaterialization]:
     with session_scope() as session:
-        statement = select(MaterializedView).where(
-            MaterializedView.archived_at.is_(None),
-            MaterializedView.deletion_requested_at.is_(None),
-            MaterializedView.refresh_mode == "scope_incremental",
+        statement = select(CatalogueMaterialization).where(
+            CatalogueMaterialization.archived_at.is_(None),
+            CatalogueMaterialization.dematerialization_requested_at.is_(None),
+            CatalogueMaterialization.source_state == "current",
+            CatalogueMaterialization.refresh_mode == "scope_incremental",
         )
         if live:
-            statement = statement.where(MaterializedView.live_enabled.is_(True))
+            statement = statement.where(CatalogueMaterialization.live_enabled.is_(True))
         if backfill:
-            statement = statement.where(MaterializedView.backfill_enabled.is_(True))
+            statement = statement.where(CatalogueMaterialization.backfill_enabled.is_(True))
         items = list(session.scalars(statement))
         for item in items:
             session.expunge(item)
@@ -36,7 +37,7 @@ def active_definitions(
 
 async def publish_scope(
     jetstream,
-    definition: MaterializedView,
+    definition: CatalogueMaterialization,
     scope_id: str,
     source: Literal["live", "backfill"],
 ) -> None:
@@ -44,10 +45,11 @@ async def publish_scope(
         f"{definition.definition_revision_id}:document:{scope_id}".encode()
     ).hexdigest()
     job = MaterializationScopeJob(
-        materialized_view_id=definition.id,
+        materialization_id=definition.id,
         definition_revision_id=definition.definition_revision_id,
-        query_revision_id=definition.query_revision_id,
+        query_revision_id=definition.active_query_revision_id,
         target_table=definition.name,
+        scope_kind=definition.scope_kind,
         scope_column=definition.scope_column or "document_id",
         scope_id=scope_id,
         operation_id=operation_id,

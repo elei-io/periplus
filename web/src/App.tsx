@@ -10,7 +10,7 @@ import { TasksPage } from "@/pages/admin/tasks-page"
 import { CatalogueSqlPage } from "@/pages/catalogue/sql-page"
 import { CatalogueViewsPage } from "@/pages/catalogue/views-page"
 import { CatalogueQueriesPage } from "@/pages/catalogue/queries-page"
-import { MaterializedViewsPage } from "@/pages/catalogue/materialized-views-page"
+import { CatalogueMaterializationPage } from "@/pages/catalogue/materialization-detail-page"
 import { CrawlPolicyDetailPage } from "@/pages/settings/crawl-policy-detail-page"
 import { CrawlPoliciesPage } from "@/pages/settings/crawl-policies-page"
 import { DataSchemaDetailPage } from "@/pages/cache/data-schema-detail-page"
@@ -53,6 +53,7 @@ export function App() {
       ) ?? navigationGroups[0]
     )
   }, [activeItem.href])
+  const isMaterializationRoute = /^\/catalogue\/materializations\/[^/]+$/.test(pathname)
 
   const handleNavigate = useCallback(
     (href: string) => {
@@ -67,20 +68,23 @@ export function App() {
   )
 
   const page = (() => {
+    const materializationId = pathname.match(/^\/catalogue\/materializations\/([^/]+)$/)?.[1]
+    if (materializationId) {
+      return <CatalogueMaterializationPage materializationId={decodeURIComponent(materializationId)} />
+    }
+
     if (activeItem.href === "/catalogue/sql") {
       return <CatalogueSqlPage />
     }
 
     if (activeItem.href === "/catalogue/views") {
-      return <CatalogueViewsPage />
+      const viewId = pathname.match(/^\/catalogue\/views\/([^/]+)$/)?.[1]
+      return <CatalogueViewsPage viewId={viewId ? decodeURIComponent(viewId) : undefined} />
     }
 
     if (activeItem.href === "/catalogue/queries") {
-      return <CatalogueQueriesPage />
-    }
-
-    if (activeItem.href === "/catalogue/materialized-views") {
-      return <MaterializedViewsPage />
+      const queryId = pathname.match(/^\/catalogue\/queries\/([^/]+)$/)?.[1]
+      return <CatalogueQueriesPage queryId={queryId ? decodeURIComponent(queryId) : undefined} />
     }
 
     if (activeItem.href === "/playground/index") {
@@ -147,20 +151,20 @@ export function App() {
 
   return (
     <SidebarProvider>
-      <AppSidebar pathname={activeItem.href} onNavigate={handleNavigate} />
+      <AppSidebar pathname={isMaterializationRoute ? "" : activeItem.href} onNavigate={handleNavigate} />
       <SidebarInset className="h-svh min-h-0 overflow-hidden">
         <header className="relative z-10 flex h-14 shrink-0 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur-xl">
           <SidebarTrigger />
           <div className="flex min-w-0 flex-col">
             <span className="truncate text-sm font-medium">
-              {activeItem.title ?? activeItem.name}
+              {isMaterializationRoute ? "Catalogue Materialization" : activeItem.title ?? activeItem.name}
             </span>
             <span className="text-xs text-muted-foreground">
-              {activeItem.description ?? activeGroup.name}
+              {isMaterializationRoute ? "Durable data attached to a query or view." : activeItem.description ?? activeGroup.name}
             </span>
           </div>
         </header>
-        <div className="app-surface relative flex min-w-0 flex-1 overflow-hidden p-4 lg:p-6">
+        <div className="app-surface relative flex min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 lg:p-6">
           <div className="app-surface-grain pointer-events-none absolute inset-0" />
           <div className="relative z-10 flex min-w-0 flex-1">{page}</div>
         </div>

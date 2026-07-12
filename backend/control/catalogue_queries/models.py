@@ -42,6 +42,7 @@ class CatalogueQueryRevision(Base):
     __tablename__ = "catalogue_query_revisions"
     __table_args__ = (
         UniqueConstraint("query_id", "revision", name="uq_catalogue_query_revision_number"),
+        UniqueConstraint("query_id", "id", name="uq_catalogue_query_revision_identity"),
         Index("ix_catalogue_query_revisions_query_id", "query_id"),
     )
 

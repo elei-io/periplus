@@ -55,4 +55,6 @@ class IndexOutput(BaseModel):
     failed_pages: int
     discovered_links: int
     result_links: int
-    links: list[IndexLink] = Field(default_factory=list)
+    internal_links: int
+    external_links: int
+    sample_links: list[IndexLink] = Field(default_factory=list)

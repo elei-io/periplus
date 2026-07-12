@@ -16,6 +16,7 @@ export function useCatalogueViews() {
   return useQuery({
     queryKey: key,
     queryFn: () => json<CatalogueViewList>("/catalogue/views/"),
+    refetchInterval: (query) => query.state.data?.items.some((item) => item.materialization?.status === "dematerializing" || item.materialization?.status === "backfilling") ? 2_000 : false,
   })
 }
 

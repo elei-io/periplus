@@ -9,12 +9,15 @@ import tempfile
 import pyarrow as pa
 
 from config import get_int
+from control.catalogue_materializations.models import CatalogueMaterialization
 from control.catalogue_queries.models import CatalogueQueryRevision
 from db.session import session_scope
+from materialization.fencing import StaleMaterializationJob, require_current_scope_job
 from materialization.queue import MaterializationCommitJob, MaterializationScopeJob
-from repository.catalogue.client import Catalogue
-from repository.catalogue.config import catalogue_config_from_env
+from repository.catalogue import Catalogue, catalogue_from_env
+from repository.catalogue.materializations import scoped_view_query
 from repository.catalogue.query import classify_select
+from repository.catalogue.views import CatalogueViewStore
 from repository.objects.config import object_store_from_env, staging_root_from_env
 
 
@@ -23,11 +26,22 @@ def compute_scope(job: MaterializationScopeJob) -> MaterializationCommitJob:
 
     started_at = datetime.now(UTC)
     with session_scope() as session:
-        revision = session.get(CatalogueQueryRevision, job.query_revision_id)
-        if revision is None:
-            raise RuntimeError(f"query revision {job.query_revision_id} was not found")
-        sql = revision.sql
-    classify_select(sql)
+        materialization = require_current_scope_job(
+            session.get(CatalogueMaterialization, job.materialization_id), job
+        )
+        if job.query_revision_id is not None:
+            revision = session.get(CatalogueQueryRevision, job.query_revision_id)
+            if revision is None or revision.query_id != materialization.query_id:
+                raise StaleMaterializationJob(
+                    f"query revision {job.query_revision_id} is no longer attached"
+                )
+            query_sql = revision.sql
+            bound_view_uuid = None
+        else:
+            if materialization.bound_ducklake_view_uuid is None:
+                raise StaleMaterializationJob("view materialization has no bound source")
+            query_sql = None
+            bound_view_uuid = materialization.bound_ducklake_view_uuid
 
     maximum_rows = get_int("ATLAS_MATERIALIZATION_MAX_OUTPUT_ROWS")
     maximum_bytes = get_int("ATLAS_MATERIALIZATION_MAX_OUTPUT_BYTES")
@@ -35,7 +49,20 @@ def compute_scope(job: MaterializationScopeJob) -> MaterializationCommitJob:
     row_count = 0
     output_bytes = 0
     try:
-        with Catalogue(catalogue_config_from_env()) as catalogue:
+        with catalogue_from_env() as catalogue:
+            if query_sql is not None:
+                sql = query_sql
+            else:
+                assert bound_view_uuid is not None
+                view = CatalogueViewStore(catalogue).get(bound_view_uuid)
+                if view is None:
+                    raise StaleMaterializationJob(
+                        f"bound view {bound_view_uuid} is no longer current"
+                    )
+                sql = scoped_view_query(
+                    catalogue, view, scope_column=job.scope_column
+                )
+            classify_select(sql)
             catalogue.connection.execute("SET memory_limit = '512MB'")
             catalogue.connection.execute(
                 f'USE "{catalogue.config.alias}"."{catalogue.config.schema}"'

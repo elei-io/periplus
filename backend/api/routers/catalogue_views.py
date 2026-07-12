@@ -22,11 +22,11 @@ from control.catalogue_views.service import (
     get_record,
     get_reference,
     list_records,
+    recover_source_change,
     update_reference,
 )
 from db.session import get_session
-from repository.catalogue import Catalogue
-from repository.catalogue.config import catalogue_config_from_env
+from repository.catalogue import Catalogue, catalogue_from_env
 from repository.catalogue.query import CatalogueQueryError
 from repository.catalogue.views import CatalogueViewConflictError, CatalogueViewError, CatalogueViewStore
 
@@ -34,7 +34,7 @@ router = APIRouter(prefix="/catalogue/views", tags=["catalogue-views"])
 
 
 def _catalogue() -> Catalogue:
-    return Catalogue(catalogue_config_from_env())
+    return catalogue_from_env()
 
 
 @router.get("/", response_model=CatalogueViewListResponse)
@@ -104,12 +104,37 @@ def update(reference_id: UUID, payload: CatalogueViewUpdate, session: Annotated[
         _raise_mutation_error(exc)
 
 
+@router.post(
+    "/{reference_id}/recover-source-change",
+    response_model=CatalogueViewRecord,
+)
+def recover_source_change_(
+    reference_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+) -> CatalogueViewRecord:
+    reference = get_reference(session, reference_id)
+    if reference is None:
+        raise HTTPException(status_code=404, detail="Catalogue view reference not found.")
+    try:
+        with _catalogue() as catalogue:
+            return recover_source_change(
+                session,
+                CatalogueViewStore(catalogue),
+                reference,
+            )
+    except (CatalogueViewError, duckdb.Error) as exc:
+        _raise_mutation_error(exc)
+
+
 @router.delete("/{reference_id}/reference", status_code=204)
 def detach(reference_id: UUID, session: Annotated[Session, Depends(get_session)]) -> None:
     reference = get_reference(session, reference_id)
     if reference is None:
         raise HTTPException(status_code=404, detail="Catalogue view reference not found.")
-    detach_reference(session, reference)
+    try:
+        detach_reference(session, reference)
+    except CatalogueViewConflictError as exc:
+        _raise_mutation_error(exc)
 
 
 @router.delete("/{reference_id}/object", status_code=204)

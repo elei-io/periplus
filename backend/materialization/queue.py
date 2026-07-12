@@ -31,10 +31,11 @@ DEAD_LETTER_SUBJECT = "atlas.materialization.dead_letter"
 class MaterializationScopeJob(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    materialized_view_id: UUID
+    materialization_id: UUID
     definition_revision_id: UUID
-    query_revision_id: UUID
+    query_revision_id: UUID | None
     target_table: str
+    scope_kind: Literal["document"]
     scope_column: str
     scope_id: str
     operation_id: str

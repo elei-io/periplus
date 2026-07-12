@@ -3,6 +3,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from control.catalogue_materializations.schemas import CatalogueMaterializationSummary
+
 
 class CatalogueViewCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -31,13 +33,6 @@ class CatalogueViewAdopt(BaseModel):
     description: str | None = Field(default=None, max_length=2_000)
 
 
-class AttachedMaterializedView(BaseModel):
-    id: UUID
-    name: str
-    display_name: str
-    refresh_mode: str
-
-
 class CatalogueViewRecord(BaseModel):
     id: UUID | None
     ducklake_view_uuid: UUID
@@ -48,12 +43,13 @@ class CatalogueViewRecord(BaseModel):
     description: str | None
     sql: str
     columns: list[str]
+    column_types: list[str]
     managed: bool
     available: bool
     created_at: datetime | None = None
     updated_at: datetime | None = None
     created_from_query_revision_id: UUID | None = None
-    attached_materialized_views: list[AttachedMaterializedView] = Field(default_factory=list)
+    materialization: CatalogueMaterializationSummary | None = None
 
 
 class CatalogueViewListResponse(BaseModel):

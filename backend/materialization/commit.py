@@ -9,11 +9,13 @@ import tempfile
 from typing import Literal
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 from sqlalchemy import select
 
 from config import get_int
-from control.materialized_views.models import MaterializedView
+from control.catalogue_materializations.models import CatalogueMaterialization
 from db.session import session_scope
+from materialization.fencing import scope_job_is_current
 from materialization.queue import MaterializationCommitJob, MaterializationFailureJob
 from repository.catalogue.client import Catalogue
 from repository.objects.config import object_store_from_env, staging_root_from_env
@@ -26,15 +28,15 @@ def commit_scope(catalogue: Catalogue, job: MaterializationCommitJob) -> CommitO
     """Atomically replace one active definition scope and record coverage."""
 
     scope = job.scope
-    _validate_identifiers(scope.target_table, scope.scope_column)
+    _validate_identifiers(scope.target_table)
     store = object_store_from_env()
     with session_scope() as session:
         definition = session.scalar(
-            select(MaterializedView)
-            .where(MaterializedView.id == scope.materialized_view_id)
+            select(CatalogueMaterialization)
+            .where(CatalogueMaterialization.id == scope.materialization_id)
             .with_for_update()
         )
-        if not _is_active_revision(definition, scope.definition_revision_id):
+        if not scope_job_is_current(definition, scope):
             store.delete(job.staging_key)
             return "stale"
 
@@ -84,11 +86,11 @@ def record_scope_failure(catalogue: Catalogue, job: MaterializationFailureJob) -
     scope = job.scope
     with session_scope() as session:
         definition = session.scalar(
-            select(MaterializedView)
-            .where(MaterializedView.id == scope.materialized_view_id)
+            select(CatalogueMaterialization)
+            .where(CatalogueMaterialization.id == scope.materialization_id)
             .with_for_update()
         )
-        if not _is_active_revision(definition, scope.definition_revision_id):
+        if not scope_job_is_current(definition, scope):
             return False
         coverage = _qualified(
             catalogue, catalogue.config.schema, "materialization_scope_results"
@@ -111,13 +113,13 @@ def record_scope_failure(catalogue: Catalogue, job: MaterializationFailureJob) -
             catalogue.connection.execute(
                 f"""
                 INSERT INTO {coverage} (
-                    materialized_view_id, definition_revision_id, scope_kind,
+                    materialization_id, definition_revision_id, scope_kind,
                     scope_id, operation_id, row_count, output_bytes, status,
                     error, started_at, completed_at, partition_value
                 ) VALUES (?, ?, 'document', ?, ?, 0, 0, 'failed', ?, ?, ?, NULL)
                 """,
                 [
-                    scope.materialized_view_id,
+                    scope.materialization_id,
                     scope.definition_revision_id,
                     scope.scope_id,
                     scope.operation_id,
@@ -131,26 +133,32 @@ def record_scope_failure(catalogue: Catalogue, job: MaterializationFailureJob) -
 
 def _commit_table(
     catalogue: Catalogue,
-    definition: MaterializedView,
+    definition: CatalogueMaterialization,
     job: MaterializationCommitJob,
     table: pa.Table,
     coverage: str,
 ) -> None:
     scope = job.scope
     connection = catalogue.connection
-    relation_name = f"atlas_materialization_{scope.operation_id[:16]}"
-    connection.register(relation_name, table)
     target = _qualified(catalogue, "materialized", scope.target_table)
     columns = ", ".join(_quote_identifier(value) for value in table.column_names)
     partition_value = _partition_value(table, definition.partition_column)
     previous_partition = connection.execute(
         f"SELECT partition_value FROM {coverage} "
-        "WHERE materialized_view_id = ? AND scope_kind = 'document' "
+        "WHERE materialization_id = ? AND scope_kind = 'document' "
         "AND scope_id = ? AND status = 'succeeded' "
         "AND partition_value IS NOT NULL ORDER BY completed_at DESC LIMIT 1",
-        [scope.materialized_view_id, scope.scope_id],
+        [scope.materialization_id, scope.scope_id],
     ).fetchone()
     delete_partition = previous_partition[0] if previous_partition else partition_value
+    descriptor, parquet_value = tempfile.mkstemp(
+        dir=staging_root_from_env(),
+        prefix=f"{scope.operation_id}.",
+        suffix=".parquet",
+    )
+    os.close(descriptor)
+    parquet_path = Path(parquet_value)
+    pq.write_table(table, parquet_path)
     try:
         with catalogue.lake.transaction():
             delete_sql = (
@@ -169,7 +177,8 @@ def _commit_table(
             if table.num_rows:
                 connection.execute(
                     f"INSERT INTO {target} ({columns}) "
-                    f"SELECT {columns} FROM {_quote_identifier(relation_name)}"
+                    f"SELECT {columns} FROM read_parquet(?)",
+                    [str(parquet_path)],
                 )
             connection.execute(
                 f"DELETE FROM {coverage} "
@@ -180,13 +189,13 @@ def _commit_table(
             connection.execute(
                 f"""
                 INSERT INTO {coverage} (
-                    materialized_view_id, definition_revision_id, scope_kind,
+                    materialization_id, definition_revision_id, scope_kind,
                     scope_id, operation_id, row_count, output_bytes, status,
                     error, started_at, completed_at, partition_value
                 ) VALUES (?, ?, 'document', ?, ?, ?, ?, 'succeeded', NULL, ?, ?, ?)
                 """,
                 [
-                    scope.materialized_view_id,
+                    scope.materialization_id,
                     scope.definition_revision_id,
                     scope.scope_id,
                     scope.operation_id,
@@ -201,7 +210,7 @@ def _commit_table(
                 author="Atlas materialization",
                 message=f"Updated {scope.target_table} document scope",
                 extra={
-                    "materialized_view_id": str(scope.materialized_view_id),
+                    "materialization_id": str(scope.materialization_id),
                     "definition_revision_id": str(scope.definition_revision_id),
                     "operation_id": scope.operation_id,
                     "scope_id": scope.scope_id,
@@ -209,7 +218,7 @@ def _commit_table(
                 },
             )
     finally:
-        connection.unregister(relation_name)
+        parquet_path.unlink(missing_ok=True)
 
 
 def _download_staging(job: MaterializationCommitJob) -> Path:
@@ -255,22 +264,9 @@ def _partition_value(table: pa.Table, column: str | None) -> date | None:
     return value
 
 
-def _is_active_revision(
-    definition: MaterializedView | None, definition_revision_id
-) -> bool:
-    return bool(
-        definition is not None
-        and definition.archived_at is None
-        and definition.deletion_requested_at is None
-        and definition.refresh_mode == "scope_incremental"
-        and definition.definition_revision_id == definition_revision_id
-    )
-
-
-def _validate_identifiers(table: str, column: str) -> None:
-    for value in (table, column):
-        if not _SAFE_IDENTIFIER.fullmatch(value):
-            raise ValueError(f"unsafe materialization identifier: {value!r}")
+def _validate_identifiers(table: str) -> None:
+    if not _SAFE_IDENTIFIER.fullmatch(table):
+        raise ValueError(f"unsafe materialization identifier: {table!r}")
 
 
 def _qualified(catalogue: Catalogue, schema: str, table: str) -> str:

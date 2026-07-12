@@ -6,8 +6,6 @@ from dataclasses import dataclass
 import re
 from uuid import UUID
 
-from ducklake_client import PostgresCatalog
-
 from repository.catalogue.client import Catalogue
 from repository.catalogue.query import classify_select
 
@@ -34,6 +32,7 @@ class DuckLakeView:
     view_name: str
     sql: str
     columns: tuple[str, ...]
+    column_types: tuple[str, ...] = ()
 
     @property
     def qualified_name(self) -> str:
@@ -46,11 +45,7 @@ class CatalogueViewStore:
 
     def list(self) -> list[DuckLakeView]:
         metadata = _quote_identifier(f"__ducklake_metadata_{self.catalogue.config.alias}")
-        metadata_schema = _quote_identifier(
-            "public"
-            if isinstance(self.catalogue.config.catalog, PostgresCatalog)
-            else "main"
-        )
+        metadata_schema = _quote_identifier(self.catalogue.metadata_schema)
         rows = self.catalogue.connection.execute(
             f"""
             SELECT v.view_uuid, s.schema_name, v.view_name, v.sql
@@ -62,30 +57,33 @@ class CatalogueViewStore:
             """,
             [VIEW_SCHEMA],
         ).fetchall()
-        column_rows = self.catalogue.connection.execute(
-            """
-            SELECT table_name, column_name
-            FROM duckdb_columns()
-            WHERE database_name = ? AND schema_name = ?
-            ORDER BY table_name, column_index
-            """,
-            [self.catalogue.config.alias, VIEW_SCHEMA],
-        ).fetchall()
-        columns: dict[str, list[str]] = {}
-        for view_name, column_name in column_rows:
-            columns.setdefault(str(view_name), []).append(str(column_name))
-        return [
-            DuckLakeView(
-                view_uuid=UUID(str(row[0])),
-                schema_name=str(row[1]),
-                view_name=str(row[2]),
-                sql=str(row[3]).replace(
-                    "{DUCKLAKE_CATALOG}", self.catalogue.config.alias
-                ),
-                columns=tuple(columns.get(str(row[2]), [])),
+        # DuckLake stores the view SQL, and unqualified names inside it resolve using
+        # the caller's current schema. Bind from Atlas main on every fresh connection.
+        self._use_main()
+        views: list[DuckLakeView] = []
+        for row in rows:
+            schema_name = str(row[1])
+            view_name = str(row[2])
+            qualified = ".".join(
+                _quote_identifier(value)
+                for value in (self.catalogue.config.alias, schema_name, view_name)
             )
-            for row in rows
-        ]
+            cursor = self.catalogue.connection.execute(
+                f"SELECT * FROM {qualified} LIMIT 0"
+            )
+            views.append(
+                DuckLakeView(
+                    view_uuid=UUID(str(row[0])),
+                    schema_name=schema_name,
+                    view_name=view_name,
+                    sql=str(row[3]).replace(
+                        "{DUCKLAKE_CATALOG}", self.catalogue.config.alias
+                    ),
+                    columns=tuple(str(column[0]) for column in cursor.description),
+                    column_types=tuple(str(column[1]) for column in cursor.description),
+                )
+            )
+        return views
 
     def get(self, view_uuid: UUID) -> DuckLakeView | None:
         return next((view for view in self.list() if view.view_uuid == view_uuid), None)

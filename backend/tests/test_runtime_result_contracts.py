@@ -47,7 +47,9 @@ class RuntimeResultContractTests(IsolatedAsyncioTestCase):
             failed_pages=0,
             discovered_links=1,
             result_links=1,
-            links=[
+            internal_links=1,
+            external_links=0,
+            sample_links=[
                 IndexLink(
                     source_url="https://example.com",
                     url="https://example.com/about",
@@ -67,4 +69,3 @@ class RuntimeResultContractTests(IsolatedAsyncioTestCase):
 
         self.assertEqual(execution.output_json, output.model_dump(mode="json"))
         self.assertEqual(execution.warnings, [])
-

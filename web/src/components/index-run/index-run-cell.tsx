@@ -107,7 +107,7 @@ export function IndexRunCell({ run, density }: IndexRunCellProps) {
     depthProgressEvent,
     "discovered_links"
   )
-  const savedLinkCount = resultQuery.data?.links.length ?? null
+  const savedLinkCount = resultQuery.data?.result_links ?? null
   const linkCount = liveLinkCount ?? savedLinkCount
   const elapsedFrom = run.started_at ?? run.queued_at
   const elapsedTo = run.finished_at ? new Date(run.finished_at).getTime() : now
@@ -246,7 +246,7 @@ export function IndexRunCell({ run, density }: IndexRunCellProps) {
               {resultQuery.error.message}
             </p>
           ) : (
-            <IndexResults links={resultQuery.data?.links ?? []} />
+            <IndexResults result={resultQuery.data} />
           )}
         </div>
       </CollapsibleContent>

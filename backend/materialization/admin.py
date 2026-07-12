@@ -3,8 +3,9 @@ from __future__ import annotations
 from nats.js.errors import NotFoundError
 from pydantic import BaseModel, ConfigDict
 
-from control.materialized_views.models import MaterializedView
+from control.catalogue_materializations.models import CatalogueMaterialization
 from db.session import session_scope
+from materialization.fencing import scope_job_is_current
 from materialization.queue import (
     DEAD_LETTER_STREAM,
     SCOPE_BACKFILL_SUBJECT,
@@ -64,13 +65,11 @@ async def requeue_dead_letter(sequence: int) -> MaterializationDeadLetterRecord:
         raw = await jetstream.get_msg(DEAD_LETTER_STREAM, seq=sequence)
         entry = MaterializationDeadLetter.model_validate_json(raw.data)
         with session_scope() as session:
-            definition = session.get(MaterializedView, entry.job.materialized_view_id)
+            definition = session.get(CatalogueMaterialization, entry.job.materialization_id)
             if (
                 definition is None
                 or definition.archived_at is not None
-                or definition.deletion_requested_at is not None
-                or definition.definition_revision_id
-                != entry.job.definition_revision_id
+                or not scope_job_is_current(definition, entry.job)
             ):
                 raise RuntimeError(
                     "The dead letter belongs to an inactive materialization revision."

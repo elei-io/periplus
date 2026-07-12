@@ -20,7 +20,7 @@ from repository.catalogue import (
     CatalogueWriteResult,
     CrawlRecord,
     DocumentRecord,
-    catalogue_config_from_env,
+    catalogue_from_env,
 )
 from dom import (
     DOM_SCHEMA_VERSION,
@@ -470,7 +470,7 @@ class RepositoryIngestor:
 def repository_ingestor_from_env() -> RepositoryIngestor:
     return RepositoryIngestor(
         html_repository=RawHtmlRepository(object_store_from_env()),
-        catalogue=Catalogue(catalogue_config_from_env()),
+        catalogue=catalogue_from_env(),
         staging_root=staging_root_from_env(),
         limits=RepositoryLimits.from_env(),
     )

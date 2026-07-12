@@ -16,6 +16,7 @@ from control.catalogue_queries.service import (
     archive_query,
     create_query,
     detail,
+    get_materialization_summary,
     get_query,
     get_revision,
     list_queries,
@@ -25,8 +26,14 @@ from control.catalogue_queries.service import (
 )
 from db.session import get_session
 from repository.catalogue.query import CatalogueQueryError
+from repository.catalogue import Catalogue, catalogue_from_env
+from repository.catalogue.materializations import MaterializationStore
 
 router = APIRouter(prefix="/catalogue/queries", tags=["catalogue-queries"])
+
+
+def _catalogue() -> Catalogue:
+    return catalogue_from_env()
 
 
 @router.get("/", response_model=CatalogueQueryListResponse)
@@ -34,7 +41,10 @@ def list_(
     session: Annotated[Session, Depends(get_session)],
     archived: Annotated[bool, Query()] = False,
 ) -> CatalogueQueryListResponse:
-    items = list_queries(session, archived=archived)
+    with _catalogue() as catalogue:
+        items = list_queries(
+            session, MaterializationStore(catalogue), archived=archived
+        )
     return CatalogueQueryListResponse(items=items, total=len(items))
 
 
@@ -56,7 +66,11 @@ def get(
     query = get_query(session, query_id)
     if query is None:
         raise HTTPException(status_code=404, detail="Saved query not found.")
-    return detail(query)
+    with _catalogue() as catalogue:
+        summary = get_materialization_summary(
+            session, MaterializationStore(catalogue), query
+        )
+    return detail(query, materialization=summary)
 
 
 @router.put("/{query_id}", response_model=CatalogueQueryDetail)
@@ -69,7 +83,7 @@ def update(
     if query is None:
         raise HTTPException(status_code=404, detail="Saved query not found.")
     try:
-        return update_query(
+        updated = update_query(
             session,
             query,
             expected_revision_id=payload.expected_current_revision_id,
@@ -77,6 +91,14 @@ def update(
             name=payload.name,
             description=payload.description,
             change_note=payload.change_note,
+        )
+        with _catalogue() as catalogue:
+            summary = get_materialization_summary(
+                session, MaterializationStore(catalogue), query
+            )
+        return CatalogueQueryDetail(
+            **updated.model_dump(exclude={"materialization"}),
+            materialization=summary,
         )
     except CatalogueQueryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -96,12 +118,20 @@ def restore_revision_(
     if query is None or revision is None:
         raise HTTPException(status_code=404, detail="Saved query revision not found.")
     try:
-        return restore_revision(
+        restored = restore_revision(
             session,
             query,
             revision,
             expected_revision_id=payload.expected_current_revision_id,
             change_note=payload.change_note,
+        )
+        with _catalogue() as catalogue:
+            summary = get_materialization_summary(
+                session, MaterializationStore(catalogue), query
+            )
+        return CatalogueQueryDetail(
+            **restored.model_dump(exclude={"materialization"}),
+            materialization=summary,
         )
     except CatalogueQueryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -114,7 +144,10 @@ def archive(
     query = get_query(session, query_id)
     if query is None:
         raise HTTPException(status_code=404, detail="Saved query not found.")
-    archive_query(session, query)
+    try:
+        archive_query(session, query)
+    except CatalogueQueryConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/{query_id}/restore", response_model=CatalogueQueryDetail)

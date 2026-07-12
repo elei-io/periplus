@@ -15,10 +15,10 @@ COPY backend/pyproject.toml backend/uv.lock ./
 
 RUN UV_PROJECT_ENVIRONMENT=/opt/atlas-venv uv sync --frozen --no-install-project
 
-# Catalogue attachment must not depend on extension downloads during pod startup.
-RUN /opt/atlas-venv/bin/python -c "import duckdb; connection = duckdb.connect(); [connection.install_extension(name) for name in ('ducklake', 'parquet', 'postgres', 'httpfs', 'sqlite')]; connection.close()"
-
-RUN /opt/atlas-venv/bin/python -c "import duckdb; connection = duckdb.connect(); connection.execute('INSTALL ducklake_cdc FROM community'); connection.execute('LOAD ducklake_cdc'); actual = connection.execute('SELECT cdc_version()').fetchone()[0]; assert actual == 'ducklake_cdc 723dcf8', actual; connection.close()"
+# Application images need only the Quack transport. Stateful setup builds opt
+# into the attachment extensions explicitly below through a build argument.
+ARG ATLAS_DUCKDB_EXTENSIONS=quack
+RUN ATLAS_DUCKDB_EXTENSIONS="${ATLAS_DUCKDB_EXTENSIONS}" /opt/atlas-venv/bin/python -c "import os, duckdb; connection = duckdb.connect(); [connection.install_extension(name) for name in os.environ['ATLAS_DUCKDB_EXTENSIONS'].split(',') if name]; connection.close()"
 
 RUN /opt/atlas-venv/bin/playwright install --with-deps chromium
 

@@ -26,6 +26,26 @@ class WorkerOnlyApiTests(unittest.TestCase):
         self.assertIn("post", paths["/task-runs/{run_id}/cancel"])
         self.assertIn("get", paths["/task-runs/operations/summary"])
 
+    def test_catalogue_materialization_api_has_no_superseded_routes(self) -> None:
+        paths = app.openapi()["paths"]
+        self.assertIn("get", paths["/catalogue/materializations/{materialization_id}"])
+        self.assertIn(
+            "patch",
+            paths["/catalogue/materializations/{materialization_id}/maintenance"],
+        )
+        self.assertIn(
+            "post", paths["/catalogue/materializations/{materialization_id}/rebuild"]
+        )
+        self.assertIn("delete", paths["/catalogue/materializations/{materialization_id}"])
+        self.assertIn("put", paths["/catalogue/queries/{query_id}/materialization"])
+        self.assertIn(
+            "put", paths["/catalogue/views/{view_reference_id}/materialization"]
+        )
+        self.assertIn(
+            "post", paths["/catalogue/views/{reference_id}/recover-source-change"]
+        )
+        self.assertFalse(any(path.startswith("/materialized-views") for path in paths))
+
     def test_cli_config_walks_to_nearest_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

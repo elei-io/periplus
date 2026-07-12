@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
+import { formatSql } from "@/components/catalogue/sql-format"
+import { SqlEditor } from "@/components/catalogue/sql-editor"
 import {
   Dialog,
   DialogContent,
@@ -20,22 +22,21 @@ export function SaveViewDialog({ open, onOpenChange, sql, queryRevisionId }: { o
   const [description, setDescription] = useState("")
   const create = useCreateCatalogueView()
 
-  useEffect(() => {
-    if (!open) return
+  function reset() {
     setName("")
     setDisplayName("")
     setDescription("")
-  }, [open])
+  }
 
   function submit() {
     create.mutate(
       { name, display_name: displayName || undefined, description: description || undefined, sql, created_from_query_revision_id: queryRevisionId },
-      { onSuccess: () => onOpenChange(false) }
+      { onSuccess: () => { reset(); onOpenChange(false) } }
     )
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen) reset(); onOpenChange(nextOpen) }}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Save as view</DialogTitle>
@@ -54,8 +55,9 @@ export function SaveViewDialog({ open, onOpenChange, sql, queryRevisionId }: { o
             <Label htmlFor="view-description">Description</Label>
             <Textarea id="view-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="What this view is useful for" />
           </div>
-          <div className="rounded-md border bg-muted/30 p-2 font-mono text-[10px] text-muted-foreground">
-            {sql.slice(0, 500)}{sql.length > 500 ? "…" : ""}
+          <div className="overflow-hidden rounded-xl border bg-card">
+            <div className="border-b bg-muted/20 px-3 py-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">View SQL · read only</div>
+            <SqlEditor value={formatSql(sql)} readOnly height="150px" ariaLabel="Read-only SQL for the new view" />
           </div>
         </div>
         <DialogFooter showCloseButton>

@@ -1,4 +1,4 @@
-"""Explicit full-refresh materialized-view operations."""
+"""Physical DuckLake operations for catalogue materializations."""
 
 from __future__ import annotations
 
@@ -6,25 +6,24 @@ from dataclasses import dataclass
 import re
 from uuid import UUID
 
-from ducklake_client import PostgresCatalog
-
 from repository.catalogue.client import Catalogue
 from repository.catalogue.query import classify_select
+from repository.catalogue.views import DuckLakeView
 
 MATERIALIZED_SCHEMA = "materialized"
 _SAFE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 
 
-class MaterializedViewError(ValueError):
+class MaterializationError(ValueError):
     pass
 
 
-class MaterializedViewConflictError(MaterializedViewError):
+class MaterializationConflictError(MaterializationError):
     pass
 
 
 @dataclass(frozen=True, slots=True)
-class MaterializedTable:
+class MaterializationTable:
     table_uuid: UUID
     name: str
     row_count: int
@@ -34,22 +33,22 @@ class MaterializedTable:
     partitioning: tuple[str, ...]
 
 
-class MaterializedViewStore:
+class MaterializationStore:
     def __init__(self, catalogue: Catalogue) -> None:
         self.catalogue = catalogue
 
-    def create(self, *, name: str, sql: str) -> MaterializedTable:
+    def create(self, *, name: str, sql: str) -> MaterializationTable:
         _validate_name(name)
         classify_select(sql)
         if any(item.table_name == name for item in self.catalogue.lake.table.list(schema_name=MATERIALIZED_SCHEMA)):
-            raise MaterializedViewConflictError(f"Table {MATERIALIZED_SCHEMA}.{name} already exists.")
+            raise MaterializationConflictError(f"Table {MATERIALIZED_SCHEMA}.{name} already exists.")
         self._use_main()
         self.catalogue.connection.execute(f"CREATE TABLE {_qualified(self.catalogue, name)} AS {sql}")
         return self.inspect(name)
 
     def create_empty_scoped(
         self, *, name: str, sql: str, parameters: dict[str, object]
-    ) -> MaterializedTable:
+    ) -> MaterializationTable:
         """Create only the result schema; scoped jobs populate rows later."""
 
         _validate_name(name)
@@ -60,7 +59,7 @@ class MaterializedViewStore:
                 schema_name=MATERIALIZED_SCHEMA
             )
         ):
-            raise MaterializedViewConflictError(
+            raise MaterializationConflictError(
                 f"Table {MATERIALIZED_SCHEMA}.{name} already exists."
             )
         self._use_main()
@@ -72,28 +71,49 @@ class MaterializedViewStore:
         )
         return self.inspect(name)
 
-    def refresh(self, *, name: str, expected_uuid: UUID, sql: str) -> MaterializedTable:
+    def refresh(self, *, name: str, expected_uuid: UUID, sql: str) -> MaterializationTable:
         current = self.inspect(name)
         if current.table_uuid != expected_uuid:
-            raise MaterializedViewConflictError("The materialized table changed; refresh the page before retrying.")
+            raise MaterializationConflictError("The materialized table changed; refresh the page before retrying.")
         classify_select(sql)
         self._use_main()
         self.catalogue.connection.execute(f"CREATE OR REPLACE TABLE {_qualified(self.catalogue, name)} AS {sql}")
         return self.inspect(name)
 
+    def validate_scoped_schema(
+        self, *, name: str, sql: str, parameters: dict[str, object]
+    ) -> None:
+        """Reject an online scoped rebuild before changing its active definition."""
+
+        current = self.inspect(name)
+        classify_select(sql)
+        self._use_main()
+        query = sql.strip().removesuffix(";")
+        cursor = self.catalogue.connection.execute(
+            f"SELECT * FROM ({query}) AS scoped_result WHERE false",
+            parameters,
+        )
+        proposed = tuple((str(item[0]), str(item[1])) for item in cursor.description)
+        existing = tuple((column, data_type) for column, data_type, _ in current.columns)
+        if proposed != existing:
+            raise MaterializationError(
+                "The new query revision changes the durable schema. "
+                "Dematerialize and create it again to accept that schema change."
+            )
+
     def drop(self, *, name: str, expected_uuid: UUID) -> None:
         current = self.inspect(name)
         if current.table_uuid != expected_uuid:
-            raise MaterializedViewConflictError("The materialized table changed; refresh the page before dropping it.")
+            raise MaterializationConflictError("The materialized table changed; refresh the page before dropping it.")
         self.catalogue.connection.execute(f"DROP TABLE {_qualified(self.catalogue, name)}")
 
     def drop_managed(
-        self, *, name: str, expected_uuid: UUID, materialized_view_id: UUID
+        self, *, name: str, expected_uuid: UUID, materialization_id: UUID
     ) -> None:
         current = self.inspect(name)
         if current.table_uuid != expected_uuid:
-            raise MaterializedViewConflictError(
-                "The materialized table changed; deletion has been stopped."
+            raise MaterializationConflictError(
+                "The materialized table changed; dematerialization has been stopped."
             )
         coverage = ".".join(
             f'"{part}"'
@@ -105,14 +125,14 @@ class MaterializedViewStore:
         )
         with self.catalogue.lake.transaction():
             self.catalogue.connection.execute(
-                f"DELETE FROM {coverage} WHERE materialized_view_id = ?",
-                [materialized_view_id],
+                f"DELETE FROM {coverage} WHERE materialization_id = ?",
+                [materialization_id],
             )
             self.catalogue.connection.execute(
                 f"DROP TABLE {_qualified(self.catalogue, name)}"
             )
 
-    def set_daily_partition(self, *, name: str, column: str) -> MaterializedTable:
+    def set_daily_partition(self, *, name: str, column: str) -> MaterializationTable:
         _validate_name(name)
         _validate_name(column)
         current = self.inspect(name)
@@ -121,11 +141,11 @@ class MaterializedViewStore:
             None,
         )
         if data_type is None:
-            raise MaterializedViewError(
+            raise MaterializationError(
                 f"Partition column {column!r} is not present in the result."
             )
         if "DATE" not in data_type and "TIMESTAMP" not in data_type:
-            raise MaterializedViewError(
+            raise MaterializationError(
                 "Daily partitioning requires a DATE or TIMESTAMP result column."
             )
         self.catalogue.connection.execute(
@@ -135,7 +155,7 @@ class MaterializedViewStore:
         )
         return self.inspect(name)
 
-    def inspect(self, name: str) -> MaterializedTable:
+    def inspect(self, name: str) -> MaterializationTable:
         try:
             info = self.catalogue.lake.table.info(
                 name,
@@ -145,11 +165,9 @@ class MaterializedViewStore:
                 include_snapshots=False,
             )
         except Exception as exc:
-            raise MaterializedViewConflictError(f"Materialized table {name} is unavailable.") from exc
+            raise MaterializationConflictError(f"Materialized table {name} is unavailable.") from exc
         metadata_catalog = f'"__ducklake_metadata_{self.catalogue.config.alias}"'
-        metadata_schema = "public" if isinstance(
-            self.catalogue.config.catalog, PostgresCatalog
-        ) else "main"
+        metadata_schema = _quote_identifier(self.catalogue.metadata_schema)
         identity = self.catalogue.connection.execute(
             f"""
             SELECT t.table_uuid
@@ -161,7 +179,7 @@ class MaterializedViewStore:
             [name, MATERIALIZED_SCHEMA],
         ).fetchone()
         if identity is None:
-            raise MaterializedViewConflictError(f"Materialized table {name} has no DuckLake identity.")
+            raise MaterializationConflictError(f"Materialized table {name} has no DuckLake identity.")
         file_stats = self.catalogue.connection.execute(
             f"""
             SELECT count(*), coalesce(sum(f.file_size_bytes), 0)
@@ -194,7 +212,7 @@ class MaterializedViewStore:
             """,
             [MATERIALIZED_SCHEMA, name],
         ).fetchall()
-        return MaterializedTable(
+        return MaterializationTable(
             table_uuid=UUID(str(identity[0])),
             name=name,
             row_count=int(info.row_count or 0),
@@ -210,9 +228,28 @@ class MaterializedViewStore:
         )
 
 
+def scoped_view_query(
+    catalogue: Catalogue, view: DuckLakeView, *, scope_column: str
+) -> str:
+    """Wrap a view in one safely bound materialization scope."""
+
+    if scope_column not in view.columns:
+        raise MaterializationError(
+            f"Scope column {scope_column!r} is not an output of {view.qualified_name}."
+        )
+    qualified_view = ".".join(
+        _quote_identifier(value)
+        for value in (catalogue.config.alias, view.schema_name, view.view_name)
+    )
+    return (
+        f"SELECT * FROM {qualified_view} "
+        f"WHERE {_quote_identifier(scope_column)} = $document_id"
+    )
+
+
 def _validate_name(value: str) -> None:
     if not _SAFE_NAME.fullmatch(value):
-        raise MaterializedViewError("Name must use lower-case letters, numbers, and underscores.")
+        raise MaterializationError("Name must use lower-case letters, numbers, and underscores.")
 
 
 def _qualified(catalogue: Catalogue, name: str) -> str:

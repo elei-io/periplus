@@ -7,7 +7,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING
 from urllib.parse import urljoin
 
-from ducklake_client import DuckLake, DuckLakeError, SQLType
+from ducklake_client import DuckLake, DuckLakeError, PostgresCatalog, SQLType
 
 from repository.catalogue.config import CatalogueConfig
 from repository.catalogue.exceptions import CatalogueSchemaError
@@ -50,6 +50,12 @@ class Catalogue:
             )
             self._scalar_functions_registered = True
         return connection
+
+    @property
+    def metadata_schema(self) -> str:
+        """Schema containing the attached DuckLake metadata tables."""
+
+        return "public" if isinstance(self.config.catalog, PostgresCatalog) else "main"
 
     def bootstrap(self) -> None:
         """Create or migrate the catalogue and reject incompatible tables."""
@@ -115,6 +121,28 @@ class Catalogue:
             include_row_count=False,
             include_snapshots=False,
         )
+        coverage_names = {column.name for column in coverage.columns}
+        if "materialized_view_id" in coverage_names and "materialization_id" not in coverage_names:
+            table = ".".join(
+                _quote_identifier(value)
+                for value in (
+                    self.config.alias,
+                    self.config.schema,
+                    "materialization_scope_results",
+                )
+            )
+            with self.lake.transaction():
+                self.connection.execute(
+                    f"ALTER TABLE {table} RENAME COLUMN "
+                    "materialized_view_id TO materialization_id"
+                )
+            coverage = self.lake.table.info(
+                "materialization_scope_results",
+                schema_name=self.config.schema,
+                include_summary=False,
+                include_row_count=False,
+                include_snapshots=False,
+            )
         if not any(column.name == "partition_value" for column in coverage.columns):
             table = ".".join(
                 _quote_identifier(value)

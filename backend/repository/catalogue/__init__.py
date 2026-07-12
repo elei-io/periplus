@@ -18,6 +18,14 @@ from repository.catalogue.records import (
 )
 from repository.catalogue.service import CatalogueBatchEntry, CatalogueService
 
+
+def catalogue_from_env():
+    """Open Atlas's required remote Quack catalogue boundary."""
+
+    from repository.catalogue.quack import quack_catalogue_from_env
+
+    return quack_catalogue_from_env()
+
 __all__ = [
     "Catalogue",
     "CatalogueBatchEntry",
@@ -34,4 +42,5 @@ __all__ = [
     "ElementRecord",
     "LinkRecord",
     "catalogue_config_from_env",
+    "catalogue_from_env",
 ]

@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
+import { ActivityIcon, DatabaseZapIcon, RefreshCwIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -11,9 +12,10 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import { useCreateMaterializedView } from "@/hooks/use-materialized-views"
+import { useCreateCatalogueMaterialization } from "@/hooks/use-catalogue-materializations"
 import { useCreateSavedQuery, useUpdateSavedQuery } from "@/hooks/use-saved-queries"
 import type {
   CatalogueViewRecord,
@@ -35,39 +37,56 @@ export function MaterializeQueryDialog({
   onOpenChange: (open: boolean) => void
   source: MaterializationSource
 }) {
-  const [name, setName] = useState("")
-  const [displayName, setDisplayName] = useState("")
-  const [description, setDescription] = useState("")
-  const [sourceName, setSourceName] = useState("")
-  const [mode, setMode] = useState<"full" | "scope_incremental">("full")
-  const [scopeColumn, setScopeColumn] = useState("document_id")
+  const inheritedName = source.kind === "view" ? source.view.view_name : ""
+  const inheritedDisplayName = source.kind === "view" ? source.view.display_name : ""
+  const inheritedDescription = source.kind === "view" ? source.view.description ?? "" : ""
+  const inferredScopeColumn = source.kind === "view"
+    ? source.view.columns.find((column) => column.toLowerCase() === "document_id") ?? ""
+    : "document_id"
+  const [name, setName] = useState(inheritedName)
+  const [displayName, setDisplayName] = useState(inheritedDisplayName)
+  const [description, setDescription] = useState(inheritedDescription)
+  const [sourceName, setSourceName] = useState(source.kind === "sql" ? source.query?.name ?? "" : "")
+  const [mode, setMode] = useState<"full" | "scope_incremental">(
+    source.kind === "view" && inferredScopeColumn ? "scope_incremental" : "full"
+  )
+  const [scopeColumn, setScopeColumn] = useState(inferredScopeColumn)
   const [partitionColumn, setPartitionColumn] = useState("")
   const [live, setLive] = useState(true)
   const [backfill, setBackfill] = useState(true)
   const [rate, setRate] = useState(60)
-  const createMaterialized = useCreateMaterializedView()
+  const createMaterialization = useCreateCatalogueMaterialization()
   const createQuery = useCreateSavedQuery()
   const updateQuery = useUpdateSavedQuery()
   const viewSource = source.kind === "view"
+  const partitionCandidates = source.kind === "view"
+    ? source.view.columns.filter((_, index) => {
+        const type = source.view.column_types[index]?.toUpperCase() ?? ""
+        return type.includes("DATE") || type.includes("TIMESTAMP")
+      })
+    : []
 
-  useEffect(() => {
-    if (!open) return
-    setName("")
-    setDisplayName("")
-    setDescription("")
+  function reset() {
+    setName(inheritedName)
+    setDisplayName(inheritedDisplayName)
+    setDescription(inheritedDescription)
     setSourceName(source.kind === "sql" ? source.query?.name ?? "" : "")
-    setMode("full")
-    setScopeColumn("document_id")
+    setMode(source.kind === "view" && inferredScopeColumn ? "scope_incremental" : "full")
+    setScopeColumn(inferredScopeColumn)
     setPartitionColumn("")
     setLive(true)
     setBackfill(true)
     setRate(60)
-  }, [open, source])
+  }
 
   async function submit() {
     try {
       let queryRevisionId: string | undefined
-      if (source.kind === "query") queryRevisionId = source.revision.id
+      let queryId: string | undefined
+      if (source.kind === "query") {
+        queryId = source.revision.query_id
+        queryRevisionId = source.revision.id
+      }
       if (source.kind === "sql") {
         if (source.query === null) {
           const saved = await createQuery.mutateAsync({
@@ -76,6 +95,7 @@ export function MaterializeQueryDialog({
             sql: source.sql,
             change_note: "Created while materializing",
           })
+          queryId = saved.id
           queryRevisionId = saved.current_revision_id
         } else if (source.query.sql.trim() !== source.sql.trim()) {
           const saved = await updateQuery.mutateAsync({
@@ -85,17 +105,25 @@ export function MaterializeQueryDialog({
             description: source.query.description ?? undefined,
             change_note: "Revision created while materializing",
           })
+          queryId = saved.id
           queryRevisionId = saved.current_revision_id
         } else {
+          queryId = source.query.id
           queryRevisionId = source.query.current_revision_id
         }
       }
-      await createMaterialized.mutateAsync({
+      await createMaterialization.mutateAsync({
+        source:
+          source.kind === "view"
+            ? { kind: "view", view_reference_id: source.view.id! }
+            : {
+                kind: "query",
+                query_id: queryId!,
+                active_query_revision_id: queryRevisionId,
+              },
         name,
         display_name: displayName || undefined,
         description: description || undefined,
-        query_revision_id: queryRevisionId,
-        source_view_uuid: source.kind === "view" ? source.view.ducklake_view_uuid : undefined,
         refresh_mode: mode,
         scope_kind: mode === "scope_incremental" ? "document" : undefined,
         scope_column: mode === "scope_incremental" ? scopeColumn : undefined,
@@ -104,15 +132,19 @@ export function MaterializeQueryDialog({
         backfill_scopes_per_minute: rate,
         partition_column: partitionColumn || undefined,
       })
+      reset()
       onOpenChange(false)
-      window.location.href = "/catalogue/materialized-views"
+      const sourceHref = source.kind === "view"
+        ? `/catalogue/views/${source.view.id ?? source.view.ducklake_view_uuid}`
+        : `/catalogue/queries/${queryId}`
+      window.location.href = `${sourceHref}#durable-data`
     } catch {
       // Mutations surface the actionable API error through their shared toast handlers.
     }
   }
 
   const pending =
-    createMaterialized.isPending || createQuery.isPending || updateQuery.isPending
+    createMaterialization.isPending || createQuery.isPending || updateQuery.isPending
   const sourceLabel =
     source.kind === "query"
       ? source.label
@@ -121,15 +153,16 @@ export function MaterializeQueryDialog({
         : source.query?.name ?? "Current workbench SQL"
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Create materialized view</DialogTitle>
+    <Dialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen) reset(); onOpenChange(nextOpen) }}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto p-0 sm:max-w-2xl">
+        <DialogHeader className="border-b bg-gradient-to-r from-primary/10 to-transparent p-5">
+          <div className="mb-1 flex size-9 items-center justify-center rounded-xl bg-primary/10 text-primary"><DatabaseZapIcon className="size-4" /></div>
+          <DialogTitle className="text-base">Create durable data</DialogTitle>
           <DialogDescription>
             Promote {sourceLabel} into a durable DuckLake table.
           </DialogDescription>
         </DialogHeader>
-        <div className="grid gap-5">
+        <div className="grid gap-5 px-5">
           {source.kind === "sql" && source.query === null && (
             <div className="grid gap-1.5">
               <Label>Saved source query name</Label>
@@ -143,7 +176,7 @@ export function MaterializeQueryDialog({
               </p>
             </div>
           )}
-          <div className="grid gap-3 sm:grid-cols-2">
+          {!viewSource && <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-1.5">
               <Label>Table name</Label>
               <Input
@@ -162,36 +195,37 @@ export function MaterializeQueryDialog({
                 placeholder="Document links"
               />
             </div>
-          </div>
-          <div className="grid gap-1.5">
+          </div>}
+          {!viewSource && <div className="grid gap-1.5">
             <Label>Description</Label>
             <Textarea value={description} onChange={(event) => setDescription(event.target.value)} />
-          </div>
+          </div>}
+          {viewSource && (
+            <div className="rounded-xl border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+              Atlas will create <code>materialized.{name}</code> and inherit the view’s display name and description.
+            </div>
+          )}
           <div className="grid gap-2">
             <Label>Maintenance</Label>
             <div className="grid gap-2 sm:grid-cols-2">
               <ModeButton
+                icon={RefreshCwIcon}
                 selected={mode === "full"}
                 onClick={() => setMode("full")}
                 title="Full refresh"
                 description="Rebuild explicitly from the complete source."
               />
               <ModeButton
+                icon={ActivityIcon}
                 selected={mode === "scope_incremental"}
                 onClick={() => setMode("scope_incremental")}
                 title="Live + backfill"
                 description="Evaluate one bounded scope at a time."
-                disabled={viewSource}
               />
             </div>
-            {viewSource && (
-              <p className="text-xs text-muted-foreground">
-                Views can be fully materialized. Incremental maintenance requires a parameterized saved query.
-              </p>
-            )}
           </div>
           {mode === "scope_incremental" && (
-            <div className="grid gap-4 rounded-lg border bg-muted/20 p-4">
+            <div className="grid gap-4 rounded-2xl border bg-muted/20 p-4 shadow-inner">
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="grid gap-1.5">
                   <Label>Scope</Label>
@@ -199,11 +233,22 @@ export function MaterializeQueryDialog({
                 </div>
                 <div className="grid gap-1.5">
                   <Label>Result scope column</Label>
-                  <Input value={scopeColumn} onChange={(event) => setScopeColumn(event.target.value)} />
+                  {viewSource ? (
+                    <Select value={scopeColumn || null} onValueChange={(value) => setScopeColumn(value ?? "")}>
+                      <SelectTrigger className="w-full" aria-label="Result scope column">
+                        <span>{scopeColumn || "Choose a view output"}</span>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {source.view.columns.map((column) => <SelectItem key={column} value={column}>{column}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  ) : <Input value={scopeColumn} onChange={(event) => setScopeColumn(event.target.value)} />}
                 </div>
               </div>
               <p className="text-xs text-muted-foreground">
-                The query must accept <code>$document_id</code> and return {scopeColumn} in every row.
+                {viewSource
+                  ? <>Atlas filters this output to one <code>document_id</code> at a time and atomically replaces its rows.</>
+                  : <>The query must accept <code>$document_id</code> and return {scopeColumn} in every row.</>}
               </p>
               <ToggleRow
                 label="Live maintenance"
@@ -231,17 +276,23 @@ export function MaterializeQueryDialog({
           )}
           <div className="grid gap-1.5">
             <Label>Daily partition column (optional)</Label>
-            <Input
-              value={partitionColumn}
-              onChange={(event) => setPartitionColumn(event.target.value)}
-              placeholder="captured_at"
-            />
+            {viewSource ? (
+              <Select value={partitionColumn || "__none__"} onValueChange={(value) => setPartitionColumn(value === "__none__" || value === null ? "" : value)}>
+                <SelectTrigger className="w-full" aria-label="Daily partition column">
+                  <span>{partitionColumn || "No partitioning"}</span>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">No partitioning</SelectItem>
+                  {partitionCandidates.map((column) => <SelectItem key={column} value={column}>{column}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            ) : <Input value={partitionColumn} onChange={(event) => setPartitionColumn(event.target.value)} placeholder="captured_at" />}
             <p className="text-xs text-muted-foreground">
               A DATE or TIMESTAMP output column; Atlas partitions it by year, month, and day.
             </p>
           </div>
         </div>
-        <DialogFooter showCloseButton>
+        <DialogFooter showCloseButton className="sticky bottom-0 border-t bg-popover/95 p-4 backdrop-blur-xl">
           <Button
             onClick={() => void submit()}
             disabled={
@@ -251,7 +302,7 @@ export function MaterializeQueryDialog({
               (mode === "scope_incremental" && !scopeColumn.trim())
             }
           >
-            {pending ? "Creating…" : "Create materialized view"}
+            {pending ? "Creating…" : "Materialize"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -260,12 +311,14 @@ export function MaterializeQueryDialog({
 }
 
 function ModeButton({
+  icon: Icon,
   selected,
   onClick,
   title,
   description,
   disabled = false,
 }: {
+  icon: typeof RefreshCwIcon
   selected: boolean
   onClick: () => void
   title: string
@@ -277,8 +330,9 @@ function ModeButton({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className={`rounded-lg border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${selected ? "border-primary bg-primary/10" : "hover:bg-muted"}`}
+      className={`rounded-2xl border p-4 text-left transition-all disabled:cursor-not-allowed disabled:opacity-50 ${selected ? "border-primary/40 bg-primary/10 shadow-sm" : "hover:-translate-y-0.5 hover:bg-muted/40 hover:shadow-sm"}`}
     >
+      <span className={`mb-3 flex size-8 items-center justify-center rounded-xl ${selected ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}><Icon className="size-3.5" /></span>
       <span className="block text-sm font-medium">{title}</span>
       <span className="mt-1 block text-xs text-muted-foreground">{description}</span>
     </button>

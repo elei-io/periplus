@@ -2,7 +2,6 @@ import {
   BracesIcon,
   ClipboardListIcon,
   DatabaseIcon,
-  DatabaseZapIcon,
   FileSearchIcon,
   FileCode2Icon,
   FlaskConicalIcon,
@@ -41,13 +40,6 @@ export const navigationGroups: NavigationGroup[] = [
         icon: ViewIcon,
         title: "Catalogue Views",
         description: "Inspect and edit persistent DuckLake views.",
-      },
-      {
-        name: "Materialized Views",
-        href: "/catalogue/materialized-views",
-        icon: DatabaseZapIcon,
-        title: "Materialized Views",
-        description: "Durable Atlas-managed query results.",
       },
     ],
   },
@@ -148,6 +140,16 @@ export const navigationGroups: NavigationGroup[] = [
 export const defaultNavigationItem = navigationGroups[0].items[0]
 
 export function findNavigationItem(pathname: string) {
+  for (const href of [
+    "/catalogue/queries",
+    "/catalogue/views",
+  ]) {
+    if (pathname.startsWith(`${href}/`)) {
+      return navigationGroups
+        .flatMap((group) => group.items)
+        .find((item) => item.href === href)
+    }
+  }
   if (pathname.startsWith("/cache/data-schemas/")) {
     return navigationGroups
       .flatMap((group) => group.items)
