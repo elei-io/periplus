@@ -105,13 +105,14 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 with catalogue.lake.transaction():
                     catalogue.connection.execute(
                         "INSERT INTO atlas.main.crawls ("
-                        "crawl_id, document_id, run_id, task_id, task_revision, "
-                        "primitive, requested_url, normalized_url, final_url, page_url, "
+                        "crawl_id, document_id, graph_id, graph_run_id, graph_node_id, "
+                        "crawl_request_id, source_crawl_id, source_edge_id, "
+                        "requested_url, normalized_url, final_url, page_url, "
                         "url_scheme, url_host, url_port, url_registrable_domain, "
                         "url_path, url_query, captured_at, status_code, duration_ms, "
                         "input_json, input_hash, crawl_policy_id, crawl_policy_revision, "
                         "data_schema_id, query_schema_id, warnings_json, errors_json"
-                        ") SELECT uuid(), NULL, uuid(), uuid(), 1, 'crawl', 'https://x', "
+                        ") SELECT uuid(), NULL, uuid(), uuid(), uuid(), uuid(), NULL, NULL, 'https://x', "
                         "'https://x/', NULL, 'https://x/', 'https', 'x', 443, 'x', '/', "
                         "'', now(), NULL, NULL, '{}', 'hash', NULL, NULL, NULL, NULL, "
                         "'[]', '[\"expected failure\"]'"
@@ -419,10 +420,12 @@ class CatalogueBootstrapTests(unittest.TestCase):
         crawl = CrawlRecord(
             crawl_id=UUID(int=1),
             document_id=None,
-            run_id=UUID(int=2),
-            task_id=UUID(int=3),
-            task_revision=1,
-            primitive="crawl",
+            graph_id=UUID(int=2),
+            graph_run_id=UUID(int=3),
+            graph_node_id=UUID(int=4),
+            crawl_request_id=UUID(int=5),
+            source_crawl_id=UUID(int=6),
+            source_edge_id=UUID(int=7),
             requested_url="https://docs.example.co.jp/start",
             normalized_url="https://docs.example.co.jp/start",
             final_url="https://www.example.co.jp:8443/guides/sql?q=ducklake",

@@ -49,13 +49,18 @@ def commit_scope(catalogue: Catalogue, job: MaterializationCommitJob) -> CommitO
             SELECT 1
             FROM {coverage}
             WHERE definition_revision_id = ?
-              AND scope_kind = 'document'
+              AND scope_kind = ?
               AND scope_id = ?
               AND operation_id = ?
               AND status = 'succeeded'
             LIMIT 1
             """,
-            [scope.definition_revision_id, scope.scope_id, scope.operation_id],
+            [
+                scope.definition_revision_id,
+                scope.scope_kind,
+                scope.scope_id,
+                scope.operation_id,
+            ],
         ).fetchone()
         if already_committed is not None:
             store.delete(job.staging_key)
@@ -97,18 +102,18 @@ def record_scope_failure(catalogue: Catalogue, job: MaterializationFailureJob) -
         )
         succeeded = catalogue.connection.execute(
             f"SELECT 1 FROM {coverage} WHERE definition_revision_id = ? "
-            "AND scope_kind = 'document' AND scope_id = ? "
+            "AND scope_kind = ? AND scope_id = ? "
             "AND status = 'succeeded' LIMIT 1",
-            [scope.definition_revision_id, scope.scope_id],
+            [scope.definition_revision_id, scope.scope_kind, scope.scope_id],
         ).fetchone()
         if succeeded is not None:
             return False
         with catalogue.lake.transaction():
             catalogue.connection.execute(
                 f"DELETE FROM {coverage} "
-                "WHERE definition_revision_id = ? AND scope_kind = 'document' "
+                "WHERE definition_revision_id = ? AND scope_kind = ? "
                 "AND scope_id = ?",
-                [scope.definition_revision_id, scope.scope_id],
+                [scope.definition_revision_id, scope.scope_kind, scope.scope_id],
             )
             catalogue.connection.execute(
                 f"""
@@ -116,11 +121,12 @@ def record_scope_failure(catalogue: Catalogue, job: MaterializationFailureJob) -
                     materialization_id, definition_revision_id, scope_kind,
                     scope_id, operation_id, row_count, output_bytes, status,
                     error, started_at, completed_at, partition_value
-                ) VALUES (?, ?, 'document', ?, ?, 0, 0, 'failed', ?, ?, ?, NULL)
+                ) VALUES (?, ?, ?, ?, ?, 0, 0, 'failed', ?, ?, ?, NULL)
                 """,
                 [
                     scope.materialization_id,
                     scope.definition_revision_id,
+                    scope.scope_kind,
                     scope.scope_id,
                     scope.operation_id,
                     job.error[:4000],
@@ -145,10 +151,10 @@ def _commit_table(
     partition_value = _partition_value(table, definition.partition_column)
     previous_partition = connection.execute(
         f"SELECT partition_value FROM {coverage} "
-        "WHERE materialization_id = ? AND scope_kind = 'document' "
+        "WHERE materialization_id = ? AND scope_kind = ? "
         "AND scope_id = ? AND status = 'succeeded' "
         "AND partition_value IS NOT NULL ORDER BY completed_at DESC LIMIT 1",
-        [scope.materialization_id, scope.scope_id],
+        [scope.materialization_id, scope.scope_kind, scope.scope_id],
     ).fetchone()
     delete_partition = previous_partition[0] if previous_partition else partition_value
     descriptor, parquet_value = tempfile.mkstemp(
@@ -182,9 +188,9 @@ def _commit_table(
                 )
             connection.execute(
                 f"DELETE FROM {coverage} "
-                "WHERE definition_revision_id = ? AND scope_kind = 'document' "
+                "WHERE definition_revision_id = ? AND scope_kind = ? "
                 "AND scope_id = ?",
-                [scope.definition_revision_id, scope.scope_id],
+                [scope.definition_revision_id, scope.scope_kind, scope.scope_id],
             )
             connection.execute(
                 f"""
@@ -192,11 +198,12 @@ def _commit_table(
                     materialization_id, definition_revision_id, scope_kind,
                     scope_id, operation_id, row_count, output_bytes, status,
                     error, started_at, completed_at, partition_value
-                ) VALUES (?, ?, 'document', ?, ?, ?, ?, 'succeeded', NULL, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'succeeded', NULL, ?, ?, ?)
                 """,
                 [
                     scope.materialization_id,
                     scope.definition_revision_id,
+                    scope.scope_kind,
                     scope.scope_id,
                     scope.operation_id,
                     job.row_count,

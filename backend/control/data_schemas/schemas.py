@@ -23,7 +23,6 @@ class DataSchemaRecord(BaseModel):
     schema_hash: str
     generated_from_crawl_id: UUID | None = None
     generated_from_document_id: str | None = None
-    generated_by_task_run_id: UUID | None = None
     inputs_json: dict[str, Any]
     validation_status: str | None = None
     failure_count: int
@@ -50,7 +49,6 @@ class DataSchemaListRecord(BaseModel):
     failure_count: int
     last_failed_at: datetime | None = None
     last_error: str | None = None
-    task_run_count: int = 0
     warning_count: int = 0
     created_at: datetime
     updated_at: datetime
@@ -67,16 +65,10 @@ class DataSchemaListResponse(BaseModel):
 class DataSchemaSummary(BaseModel):
     total_schemas: int = 0
     enabled_schemas: int = 0
-    used_schemas: int = 0
-    total_schema_uses: int = 0
-    reused_schema_uses: int = 0
-    reuse_rate: float = 0
-    avg_uses_per_used_schema: float = 0
     failing_schemas: int = 0
 
 
 class DataSchemaDetailRecord(DataSchemaRecord):
-    task_run_count: int = 0
     warning_count: int = 0
 
 

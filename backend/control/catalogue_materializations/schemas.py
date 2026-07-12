@@ -12,7 +12,7 @@ class CatalogueMaterializationCreate(BaseModel):
     display_name: str | None = Field(default=None, max_length=200)
     description: str | None = Field(default=None, max_length=2_000)
     refresh_mode: Literal["full", "scope_incremental"] = "full"
-    scope_kind: Literal["document"] | None = None
+    scope_kind: Literal["document", "crawl"] | None = None
     scope_column: str | None = Field(default=None, max_length=255)
     live_enabled: bool = False
     backfill_enabled: bool = False

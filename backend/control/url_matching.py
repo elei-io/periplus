@@ -43,14 +43,6 @@ class UrlMatch(Base):
     query_policy: Mapped[str] = mapped_column(Text, default="ignore")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     priority: Mapped[int] = mapped_column(Integer, default=0)
-    created_by_task_run_id: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True),
-        nullable=True,
-    )
-    updated_by_task_run_id: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True),
-        nullable=True,
-    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now
     )
@@ -106,7 +98,6 @@ def _resolve_url_match(
     *,
     path_pattern: str,
     match_type: str,
-    task_run_id: UUID | None,
 ) -> UrlMatch:
     parsed = urlparse(normalize_url(value))
     scheme = parsed.scheme.lower()
@@ -122,8 +113,6 @@ def _resolve_url_match(
         )
     )
     if existing is not None:
-        existing.updated_by_task_run_id = task_run_id
-        session.flush()
         return existing
 
     url_match = UrlMatch(
@@ -133,8 +122,6 @@ def _resolve_url_match(
         path_pattern=path_pattern,
         match_type=match_type,
         query_policy=query_policy,
-        created_by_task_run_id=task_run_id,
-        updated_by_task_run_id=task_run_id,
     )
     session.add(url_match)
     session.flush()
@@ -144,8 +131,6 @@ def _resolve_url_match(
 def resolve_url_match_for_url(
     session: Session,
     value: str,
-    *,
-    task_run_id: UUID | None = None,
 ) -> UrlMatch:
     path = urlparse(normalize_url(value)).path or "/"
     return _resolve_url_match(
@@ -153,20 +138,16 @@ def resolve_url_match_for_url(
         value,
         path_pattern=path,
         match_type="exact",
-        task_run_id=task_run_id,
     )
 
 
 def resolve_domain_url_match_for_url(
     session: Session,
     value: str,
-    *,
-    task_run_id: UUID | None = None,
 ) -> UrlMatch:
     return _resolve_url_match(
         session,
         value,
         path_pattern="/*",
         match_type="glob",
-        task_run_id=task_run_id,
     )

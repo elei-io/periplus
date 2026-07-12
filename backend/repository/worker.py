@@ -22,14 +22,18 @@ from control.catalogue_views.models import CatalogueViewReference
 from control.catalogue_queries.models import CatalogueQuery, CatalogueQueryRevision
 from db.session import session_scope
 from materialization.commit import commit_scope, record_scope_failure
+from materialization.readiness import publish_readiness, readiness_event
+from repository.catalogue.fanout import CrawlMaterializationFanoutStore
 from materialization.queue import (
     COMMIT_DURABLE,
     COMMIT_STREAM,
     COMMIT_SUBJECT,
+    SCOPE_LIVE_SUBJECT,
     DEAD_LETTER_SUBJECT,
     MaterializationDeadLetter,
     MaterializationCommitJob,
     MaterializationFailureJob,
+    CrawlMaterializationFanoutPlanJob,
     ensure_streams as ensure_materialization_streams,
 )
 from repository.ingestion.health import HealthMonitor, start_health_server
@@ -335,20 +339,41 @@ async def _commit_materialization_if_ready(jetstream, subscription, catalogue) -
         heartbeat = asyncio.create_task(_heartbeat_messages([message]))
         try:
             payload = json.loads(message.data)
-            if payload.get("kind") == "failure":
+            if payload.get("kind") == "fanout_plan":
+                plan = CrawlMaterializationFanoutPlanJob.model_validate(payload)
+                failure = None
+                job = None
+            elif payload.get("kind") == "failure":
                 failure = MaterializationFailureJob.model_validate(payload)
                 job = None
+                plan = None
             else:
                 job = MaterializationCommitJob.model_validate(payload)
                 failure = None
+                plan = None
         except Exception:
             logging.exception("discarding invalid materialization commit job")
             await message.term()
             await _cancel_task(heartbeat)
             continue
+        if plan is not None:
+            try:
+                await _commit_fanout_plan(jetstream, catalogue, plan)
+            except Exception:
+                logging.exception("failed to persist crawl materialization fan-out plan")
+                await message.nak(delay=30)
+            else:
+                await message.ack()
+            finally:
+                await _cancel_task(heartbeat)
+            continue
         if failure is not None:
             try:
-                await asyncio.to_thread(record_scope_failure, catalogue, failure)
+                recorded = await asyncio.to_thread(
+                    record_scope_failure, catalogue, failure
+                )
+                if recorded:
+                    await _settle_crawl_fanouts(jetstream, catalogue, failure.scope)
             except Exception:
                 logging.exception("failed to persist materialization scope failure")
                 await message.nak(delay=30)
@@ -399,9 +424,58 @@ async def _commit_materialization_if_ready(jetstream, subscription, catalogue) -
             else:
                 await message.term()
         else:
+            await _settle_crawl_fanouts(jetstream, catalogue, job.scope)
             await message.ack()
         finally:
             await _cancel_task(heartbeat)
+
+
+async def _settle_crawl_fanouts(jetstream, catalogue, scope) -> None:
+    store = CrawlMaterializationFanoutStore(catalogue)
+    crawl_ids = await asyncio.to_thread(
+        store.crawls_for_scope,
+        materialization_id=scope.materialization_id,
+        definition_revision_id=scope.definition_revision_id,
+        scope_kind=scope.scope_kind,
+        scope_id=scope.scope_id,
+    )
+    for crawl_id in crawl_ids:
+        fanout = await asyncio.to_thread(store.refresh, crawl_id)
+        if fanout.completed_at is None:
+            continue
+        event = await asyncio.to_thread(readiness_event, catalogue, crawl_id)
+        if event is not None:
+            await publish_readiness(jetstream, event)
+
+
+async def _commit_fanout_plan(jetstream, catalogue, plan) -> None:
+    from repository.catalogue.records import CrawlMaterializationFanoutMember
+
+    members = [
+        CrawlMaterializationFanoutMember(
+            crawl_id=plan.crawl_id,
+            materialization_id=scope.materialization_id,
+            definition_revision_id=scope.definition_revision_id,
+            scope_kind=scope.scope_kind,
+            scope_id=scope.scope_id,
+        )
+        for scope in plan.scopes
+    ]
+    fanout = await asyncio.to_thread(
+        CrawlMaterializationFanoutStore(catalogue).plan,
+        plan.crawl_id,
+        members=members,
+    )
+    for scope in plan.scopes:
+        await jetstream.publish(
+            SCOPE_LIVE_SUBJECT,
+            scope.model_dump_json().encode(),
+            headers={"Nats-Msg-Id": scope.operation_id},
+        )
+    if fanout.completed_at is not None:
+        event = await asyncio.to_thread(readiness_event, catalogue, plan.crawl_id)
+        if event is not None:
+            await publish_readiness(jetstream, event)
 
 
 def _dematerialize_requested_materialization(catalogue) -> None:

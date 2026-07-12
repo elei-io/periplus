@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { ArrowLeftIcon, ArrowRightIcon, BracesIcon, Columns3Icon, DatabaseIcon, DatabaseZapIcon, RefreshCwIcon, SparklesIcon, Trash2Icon, TriangleAlertIcon, UnlinkIcon } from "lucide-react"
+import { ArrowLeftIcon, ArrowRightIcon, BracesIcon, Columns3Icon, DatabaseIcon, DatabaseZapIcon, RefreshCwIcon, ShieldCheckIcon, SparklesIcon, Trash2Icon, TriangleAlertIcon, UnlinkIcon } from "lucide-react"
 
 import { MaterializeQueryDialog } from "@/components/catalogue/materialize-query-dialog"
 import { CatalogueEmptyState, CatalogueHero, CataloguePanel } from "@/components/catalogue/catalogue-workspace"
@@ -58,14 +58,14 @@ export function CatalogueViewsPage({ viewId }: { viewId?: string }) {
               {views.map((view) => {
                 const href = `/catalogue/views/${view.id ?? view.ducklake_view_uuid}`
                 return (
-                  <TableRow key={view.ducklake_view_uuid} className="group">
+                  <TableRow key={view.ducklake_view_uuid} className={view.provisioned_by === "system" ? "group bg-primary/[0.035]" : "group"}>
                     <TableCell className="max-w-sm py-3 pl-4">
                       <a href={href} className="flex min-w-0 items-center gap-3 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
-                        <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary"><BracesIcon className="size-3.5" /></span>
+                        <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">{view.provisioned_by === "system" ? <ShieldCheckIcon className="size-3.5" /> : <BracesIcon className="size-3.5" />}</span>
                         <span className="min-w-0"><span className="block truncate font-medium group-hover:text-primary">{view.display_name}</span><span className="block truncate font-mono text-[10px] text-muted-foreground">{view.qualified_name}</span></span>
                       </a>
                     </TableCell>
-                    <TableCell><Badge variant={view.managed ? "secondary" : "outline"}>{view.managed ? "Managed" : "Unowned"}</Badge></TableCell>
+                    <TableCell><Badge variant={view.provisioned_by === "system" ? "default" : view.managed ? "secondary" : "outline"}>{view.provisioned_by === "system" ? "System" : view.managed ? "User" : "Unowned"}</Badge></TableCell>
                     <TableCell className="text-right font-mono tabular-nums">{view.columns.length}</TableCell>
                     <TableCell><Badge variant={view.materialization ? "secondary" : "outline"}>{view.materialization ? "Materialized" : "On read"}</Badge></TableCell>
                     <TableCell>{view.materialization ? <MaterializationStatus status={view.materialization.status} /> : <span className="text-muted-foreground">Virtual</span>}</TableCell>
@@ -166,8 +166,8 @@ function ViewDetail({ view }: { view: CatalogueViewRecord }) {
 }
 
 function ViewStatus({ view }: { view: CatalogueViewRecord }) {
-  const label = view.available ? view.managed ? "Managed" : "Unowned" : "Unavailable"
-  const explanation = view.available ? view.managed ? "Atlas manages this DuckLake view." : "Adopt this DuckLake view to manage it in Atlas." : "The referenced DuckLake view is missing."
+  const label = view.available ? view.provisioned_by === "system" ? "System" : view.managed ? "User" : "Unowned" : "Unavailable"
+  const explanation = view.available ? view.provisioned_by === "system" ? "Atlas provides this view as a reusable system primitive." : view.managed ? "A user manages this DuckLake view in Atlas." : "Adopt this DuckLake view to manage it in Atlas." : "The referenced DuckLake view is missing."
   return <Tooltip><TooltipTrigger render={<Badge variant={view.available ? "secondary" : "destructive"} />}>{label}</TooltipTrigger><TooltipContent>{explanation}</TooltipContent></Tooltip>
 }
 

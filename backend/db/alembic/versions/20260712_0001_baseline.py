@@ -68,6 +68,54 @@ def upgrade() -> None:
     op.create_index('ix_crawl_policies_enabled', 'crawl_policies', ['enabled'], unique=False)
     op.create_index('ix_crawl_policies_match', 'crawl_policies', ['match'], unique=False)
     op.create_index('ix_crawl_policies_url_match_id', 'crawl_policies', ['url_match_id'], unique=False)
+    op.create_table('crawl_graphs',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('name', sa.Text(), nullable=False),
+    sa.Column('description', sa.Text(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_table('crawl_graph_nodes',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('graph_id', sa.UUID(), nullable=False),
+    sa.Column('name', sa.Text(), nullable=False),
+    sa.Column('description', sa.Text(), nullable=True),
+    sa.Column('used_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(['graph_id'], ['crawl_graphs.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('graph_id', 'id', name='uq_crawl_graph_nodes_graph_identity'),
+    sa.UniqueConstraint('graph_id', 'name', name='uq_crawl_graph_nodes_graph_name')
+    )
+    op.create_index('ix_crawl_graph_nodes_graph_id', 'crawl_graph_nodes', ['graph_id'], unique=False)
+    op.add_column('crawl_graphs', sa.Column('root_node_id', sa.UUID(), nullable=True))
+    op.create_foreign_key(
+        'fk_crawl_graphs_root_node',
+        'crawl_graphs',
+        'crawl_graph_nodes',
+        ['root_node_id'],
+        ['id'],
+        ondelete='SET NULL',
+    )
+    op.create_table('crawl_graph_edges',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('graph_id', sa.UUID(), nullable=False),
+    sa.Column('source_node_id', sa.UUID(), nullable=False),
+    sa.Column('target_node_id', sa.UUID(), nullable=False),
+    sa.Column('name', sa.Text(), nullable=False),
+    sa.Column('description', sa.Text(), nullable=True),
+    sa.Column('sql', sa.Text(), nullable=False),
+    sa.Column('used_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(['graph_id'], ['crawl_graphs.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['graph_id', 'source_node_id'], ['crawl_graph_nodes.graph_id', 'crawl_graph_nodes.id'], name='fk_crawl_graph_edges_source_node', ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['graph_id', 'target_node_id'], ['crawl_graph_nodes.graph_id', 'crawl_graph_nodes.id'], name='fk_crawl_graph_edges_target_node', ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('graph_id', 'name', name='uq_crawl_graph_edges_graph_name')
+    )
+    op.create_index('ix_crawl_graph_edges_graph_id', 'crawl_graph_edges', ['graph_id'], unique=False)
+    op.create_index('ix_crawl_graph_edges_source_node_id', 'crawl_graph_edges', ['source_node_id'], unique=False)
+    op.create_index('ix_crawl_graph_edges_target_node_id', 'crawl_graph_edges', ['target_node_id'], unique=False)
     op.create_table('data_schemas',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('identity_key', sa.Text(), nullable=False),
@@ -84,7 +132,6 @@ def upgrade() -> None:
     sa.Column('schema_hash', sa.Text(), nullable=False),
     sa.Column('generated_from_crawl_id', sa.UUID(), nullable=True),
     sa.Column('generated_from_document_id', sa.Text(), nullable=True),
-    sa.Column('generated_by_task_run_id', sa.UUID(), nullable=True),
     sa.Column('inputs_json', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
     sa.Column('validation_status', sa.Text(), nullable=True),
     sa.Column('failure_count', sa.Integer(), nullable=False),
@@ -117,7 +164,6 @@ def upgrade() -> None:
     sa.Column('schema_hash', sa.Text(), nullable=False),
     sa.Column('generated_from_crawl_id', sa.UUID(), nullable=True),
     sa.Column('generated_from_document_id', sa.Text(), nullable=True),
-    sa.Column('generated_by_task_run_id', sa.UUID(), nullable=True),
     sa.Column('inputs_json', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
     sa.Column('warnings_json', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
@@ -129,26 +175,6 @@ def upgrade() -> None:
     op.create_index('ix_query_schemas_enabled', 'query_schemas', ['enabled'], unique=False)
     op.create_index('ix_query_schemas_match', 'query_schemas', ['match'], unique=False)
     op.create_index('ix_query_schemas_schema_type', 'query_schemas', ['schema_type'], unique=False)
-    op.create_table('tasks',
-    sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('name', sa.Text(), nullable=False),
-    sa.Column('primitive', sa.Text(), nullable=False),
-    sa.Column('input_json', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('revision', sa.Integer(), nullable=False),
-    sa.Column('schedule_json', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-    sa.Column('identity_key', sa.Text(), nullable=True),
-    sa.Column('archived_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('archived_reason', sa.Text(), nullable=True),
-    sa.Column('last_run_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('next_run_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('identity_key')
-    )
-    op.create_index('ix_tasks_archived_at', 'tasks', ['archived_at'], unique=False)
-    op.create_index('ix_tasks_next_run_at', 'tasks', ['next_run_at'], unique=False)
-    op.create_index('ix_tasks_primitive', 'tasks', ['primitive'], unique=False)
     op.create_table('url_matches',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('scheme', sa.Text(), nullable=False),
@@ -159,8 +185,6 @@ def upgrade() -> None:
     sa.Column('query_policy', sa.Text(), nullable=False),
     sa.Column('enabled', sa.Boolean(), nullable=False),
     sa.Column('priority', sa.Integer(), nullable=False),
-    sa.Column('created_by_task_run_id', sa.UUID(), nullable=True),
-    sa.Column('updated_by_task_run_id', sa.UUID(), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.PrimaryKeyConstraint('id'),
@@ -193,12 +217,14 @@ def upgrade() -> None:
     sa.Column('view_name', sa.Text(), nullable=False),
     sa.Column('display_name', sa.Text(), nullable=False),
     sa.Column('description', sa.Text(), nullable=True),
+    sa.Column('provisioned_by', sa.Text(), server_default=sa.text("'user'"), nullable=False),
     sa.Column('created_from_query_revision_id', sa.UUID(), nullable=True),
     sa.Column('archived_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['created_from_query_revision_id'], ['catalogue_query_revisions.id'], ondelete='SET NULL'),
     sa.PrimaryKeyConstraint('id'),
+    sa.CheckConstraint("provisioned_by IN ('user', 'system')", name='ck_catalogue_view_references_provisioned_by'),
     sa.UniqueConstraint('ducklake_view_uuid'),
     sa.UniqueConstraint('schema_name', 'view_name', name='uq_catalogue_view_reference_name')
     )
@@ -228,9 +254,9 @@ def upgrade() -> None:
     sa.Column('dematerialization_requested_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.CheckConstraint("(refresh_mode = 'full' AND scope_kind IS NULL AND scope_column IS NULL AND activation_snapshot IS NULL AND NOT live_enabled AND NOT backfill_enabled) OR (refresh_mode = 'scope_incremental' AND scope_kind = 'document' AND scope_column IS NOT NULL AND activation_snapshot IS NOT NULL)", name='ck_catalogue_materializations_mode_state'),
+    sa.CheckConstraint("(refresh_mode = 'full' AND scope_kind IS NULL AND scope_column IS NULL AND activation_snapshot IS NULL AND NOT live_enabled AND NOT backfill_enabled) OR (refresh_mode = 'scope_incremental' AND scope_kind IN ('document', 'crawl') AND scope_column IS NOT NULL AND activation_snapshot IS NOT NULL)", name='ck_catalogue_materializations_mode_state'),
     sa.CheckConstraint("refresh_mode IN ('full', 'scope_incremental')", name='ck_catalogue_materializations_refresh_mode'),
-    sa.CheckConstraint("scope_kind IS NULL OR scope_kind = 'document'", name='ck_catalogue_materializations_document_scope'),
+    sa.CheckConstraint("scope_kind IS NULL OR scope_kind IN ('document', 'crawl')", name='ck_catalogue_materializations_scope'),
     sa.CheckConstraint("source_state IN ('current', 'source_changing', 'source_changed')", name='ck_catalogue_materializations_source_state'),
     sa.CheckConstraint('(query_id IS NOT NULL AND active_query_revision_id IS NOT NULL AND view_reference_id IS NULL AND bound_ducklake_view_uuid IS NULL) OR (query_id IS NULL AND active_query_revision_id IS NULL AND view_reference_id IS NOT NULL AND bound_ducklake_view_uuid IS NOT NULL)', name='ck_catalogue_materializations_source_shape'),
     sa.CheckConstraint('(query_id IS NOT NULL) <> (view_reference_id IS NOT NULL)', name='ck_catalogue_materializations_one_source'),
@@ -263,10 +289,14 @@ def downgrade() -> None:
     op.drop_index('ix_url_matches_enabled', table_name='url_matches')
     op.drop_index('ix_url_matches_domain', table_name='url_matches')
     op.drop_table('url_matches')
-    op.drop_index('ix_tasks_primitive', table_name='tasks')
-    op.drop_index('ix_tasks_next_run_at', table_name='tasks')
-    op.drop_index('ix_tasks_archived_at', table_name='tasks')
-    op.drop_table('tasks')
+    op.drop_index('ix_crawl_graph_edges_target_node_id', table_name='crawl_graph_edges')
+    op.drop_index('ix_crawl_graph_edges_source_node_id', table_name='crawl_graph_edges')
+    op.drop_index('ix_crawl_graph_edges_graph_id', table_name='crawl_graph_edges')
+    op.drop_table('crawl_graph_edges')
+    op.drop_constraint('fk_crawl_graphs_root_node', 'crawl_graphs', type_='foreignkey')
+    op.drop_index('ix_crawl_graph_nodes_graph_id', table_name='crawl_graph_nodes')
+    op.drop_table('crawl_graph_nodes')
+    op.drop_table('crawl_graphs')
     op.drop_index('ix_query_schemas_schema_type', table_name='query_schemas')
     op.drop_index('ix_query_schemas_match', table_name='query_schemas')
     op.drop_index('ix_query_schemas_enabled', table_name='query_schemas')

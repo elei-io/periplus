@@ -35,7 +35,6 @@ def _detail_record(schema) -> QuerySchemaDetailRecord:
         schema_hash=schema.schema_hash,
         generated_from_crawl_id=schema.generated_from_crawl_id,
         generated_from_document_id=schema.generated_from_document_id,
-        generated_by_task_run_id=schema.generated_by_task_run_id,
         inputs_json=schema.inputs_json,
         warnings_json=schema.warnings_json,
         created_at=schema.created_at,

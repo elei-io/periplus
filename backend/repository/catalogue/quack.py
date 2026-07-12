@@ -167,6 +167,23 @@ class QuackConnection:
             return _QueuedResult()
         return self._query(rendered)
 
+    def executemany(
+        self,
+        sql: str,
+        parameter_sets: Sequence[Sequence[object] | Mapping[str, object]],
+    ):
+        """Execute one bound statement for each parameter set.
+
+        Quack's remote query escape hatch accepts SQL scripts rather than the local
+        DuckDB bulk-execution protocol. Inside an Atlas transaction, ``execute``
+        renders and queues each write into the single remote commit script.
+        """
+
+        result: object = _QueuedResult()
+        for parameters in parameter_sets:
+            result = self.execute(sql, parameters)
+        return result
+
     def _query(self, sql: str):
         return self._connection.execute(
             f"FROM {_ident(self._remote_alias)}.query(?)",

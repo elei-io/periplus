@@ -208,9 +208,9 @@ def _create(
 
     activation_snapshot = None
     if refresh_mode == "scope_incremental":
-        if scope_kind != "document" or scope_column is None:
+        if scope_kind not in {"document", "crawl"} or scope_column is None:
             raise MaterializationError(
-                "Incremental materialization currently requires document scope."
+                "Incremental materialization requires document or crawl scope."
             )
         activation_snapshot = store.catalogue.latest_snapshot()
         if activation_snapshot is None:
@@ -220,7 +220,7 @@ def _create(
             revision.sql
             if revision is not None
             else scoped_view_query(
-                store.catalogue, _require_view(source_view), scope_column=scope_column
+                store.catalogue, _require_view(source_view), scope_kind=scope_kind, scope_column=scope_column
             )
         )
         table = store.create_empty_scoped(
@@ -293,9 +293,9 @@ def rebuild(
     if revision is None and source_view is None:
         raise LookupError("Catalogue materialization source not found.")
     if model.refresh_mode == "scope_incremental":
-        if model.scope_kind != "document" or model.scope_column is None:
+        if model.scope_kind not in {"document", "crawl"} or model.scope_column is None:
             raise MaterializationError(
-                "Incremental rebuild requires a document-scoped materialization."
+                "Incremental rebuild requires a supported scoped materialization."
             )
         current = store.inspect(model.name)
         if current.table_uuid != expected_uuid:
@@ -309,6 +309,7 @@ def rebuild(
             else scoped_view_query(
                 store.catalogue,
                 _require_view(source_view),
+                scope_kind=model.scope_kind,
                 scope_column=model.scope_column,
             )
         )
@@ -492,10 +493,11 @@ def _scope_progress(
     ).fetchone()
     completed, failed, last_completed = int(row[0]), int(row[1]), row[2]
     total = None
-    if model.scope_kind == "document" and model.activation_snapshot is not None:
+    if model.scope_kind in {"document", "crawl"} and model.activation_snapshot is not None:
+        source_table = "documents" if model.scope_kind == "document" else "crawls"
         total = int(
             store.catalogue.connection.execute(
-                f"SELECT count(*) FROM {_qualified(store, store.catalogue.config.schema, 'documents')} "
+                f"SELECT count(*) FROM {_qualified(store, store.catalogue.config.schema, source_table)} "
                 "AT (VERSION => ?)",
                 [model.activation_snapshot],
             ).fetchone()[0]
@@ -524,11 +526,13 @@ def _status(
 
 
 def _seed_scope(store: MaterializationStore, scope_kind: str) -> str:
-    if scope_kind != "document":
-        raise MaterializationError("Only document-scoped materialization is supported.")
-    table = _qualified(store, store.catalogue.config.schema, "documents")
+    if scope_kind not in {"document", "crawl"}:
+        raise MaterializationError("Unsupported materialization scope.")
+    source_table = "documents" if scope_kind == "document" else "crawls"
+    identity_column = "document_id" if scope_kind == "document" else "crawl_id"
+    table = _qualified(store, store.catalogue.config.schema, source_table)
     row = store.catalogue.connection.execute(
-        f"SELECT document_id FROM {table} LIMIT 1"
+        f"SELECT {identity_column} FROM {table} LIMIT 1"
     ).fetchone()
     return str(row[0]) if row else str(uuid4())
 

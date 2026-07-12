@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import AsyncIterator
-from uuid import UUID
-
 from sqlalchemy.orm import Session
 from config import get_float, get_int
 
@@ -57,7 +55,6 @@ async def _slot(
 async def capacity_lease(
     session: Session,
     *,
-    task_run_id: UUID,
     url: str,
     policy: CrawlPolicy | CrawlPolicySnapshot | None,
     progress_reporter: ProgressReporter | None,
@@ -69,7 +66,7 @@ async def capacity_lease(
     Deployment replicas determine total capacity; no distributed lock is involved.
     """
 
-    del session, task_run_id
+    del session
     timeout = get_float("ATLAS_CRAWL_PERMIT_TIMEOUT_SECONDS")
     async with AsyncExitStack() as stack:
         if include_browser:

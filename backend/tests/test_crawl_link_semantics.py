@@ -13,8 +13,10 @@ from dom import links_from_html
 
 class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
     async def test_persisted_page_can_release_retained_html(self) -> None:
-        run_id = uuid4()
-        task_id = uuid4()
+        graph_id = uuid4()
+        graph_run_id = uuid4()
+        graph_node_id = uuid4()
+        crawl_request_id = uuid4()
         page = CrawlPage(
             url="https://example.com/",
             success=True,
@@ -42,17 +44,18 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
             patch(
                 "actions.crawl.service._run_envelope",
                 return_value=SimpleNamespace(
-                    task_id=task_id,
-                    task_revision=1,
-                    primitive="crawl",
-                    data_schema_id=None,
+                    graph_id=graph_id,
+                    graph_run_id=graph_run_id,
+                    graph_node_id=graph_node_id,
+                    crawl_request_id=crawl_request_id,
+                    source_crawl_id=None,
+                    source_edge_id=None,
                 ),
             ),
         ):
             result = await _persist_page(
                 MagicMock(),
-                task_run_id=run_id,
-                index=0,
+                crawl_request_id=crawl_request_id,
                 requested_url=page.url,
                 page=page,
                 mode="static",
@@ -66,6 +69,12 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result.html)
         pipeline.store_raw.assert_awaited_once()
         pipeline.submit_stored.assert_awaited_once()
+        record = pipeline.submit_stored.await_args.args[0]
+        self.assertEqual(record.crawl_id, crawl_request_id)
+        self.assertEqual(record.graph_id, graph_id)
+        self.assertEqual(record.graph_run_id, graph_run_id)
+        self.assertEqual(record.graph_node_id, graph_node_id)
+        self.assertEqual(record.crawl_request_id, crawl_request_id)
 
     async def test_fresh_crawl_replaces_transient_links_with_canonical_projection(self) -> None:
         html = (

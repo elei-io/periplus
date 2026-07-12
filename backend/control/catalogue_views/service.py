@@ -108,10 +108,10 @@ def get_record(session: Session, store: CatalogueViewStore, reference_id: UUID) 
     )
 
 
-def create_reference(session: Session, store: CatalogueViewStore, *, name: str, sql: str, display_name: str | None, description: str | None, created_from_query_revision_id: UUID | None = None) -> CatalogueViewRecord:
+def create_reference(session: Session, store: CatalogueViewStore, *, name: str, sql: str, display_name: str | None, description: str | None, created_from_query_revision_id: UUID | None = None, provisioned_by: str = "user") -> CatalogueViewRecord:
     view = store.create(name=name, sql=sql)
     reference = _new_or_revived_reference(
-        session, view, display_name=display_name, description=description
+        session, view, display_name=display_name, description=description, provisioned_by=provisioned_by
     )
     reference.created_from_query_revision_id = created_from_query_revision_id
     try:
@@ -121,12 +121,12 @@ def create_reference(session: Session, store: CatalogueViewStore, *, name: str, 
     return _record(view, reference)
 
 
-def adopt_reference(session: Session, store: CatalogueViewStore, *, view_uuid: UUID, display_name: str | None, description: str | None) -> CatalogueViewRecord:
+def adopt_reference(session: Session, store: CatalogueViewStore, *, view_uuid: UUID, display_name: str | None, description: str | None, provisioned_by: str = "user") -> CatalogueViewRecord:
     view = store.get(view_uuid)
     if view is None:
         raise CatalogueViewConflictError("The DuckLake view no longer exists.")
     reference = _new_or_revived_reference(
-        session, view, display_name=display_name, description=description
+        session, view, display_name=display_name, description=description, provisioned_by=provisioned_by
     )
     try:
         session.flush()
@@ -352,6 +352,7 @@ def _record(
         columns=list(view.columns),
         column_types=list(view.column_types),
         managed=reference is not None,
+        provisioned_by=reference.provisioned_by if reference else None,
         available=True,
         created_at=reference.created_at if reference else None,
         updated_at=reference.updated_at if reference else None,
@@ -376,6 +377,7 @@ def _missing_record(
         columns=[],
         column_types=[],
         managed=True,
+        provisioned_by=reference.provisioned_by,
         available=False,
         created_at=reference.created_at,
         updated_at=reference.updated_at,
@@ -401,6 +403,7 @@ def _new_or_revived_reference(
     *,
     display_name: str | None,
     description: str | None,
+    provisioned_by: str,
 ) -> CatalogueViewReference:
     reference = session.scalar(
         select(CatalogueViewReference).where(
@@ -415,6 +418,7 @@ def _new_or_revived_reference(
             view_name=view.view_name,
             display_name=(display_name or view.view_name).strip(),
             description=description,
+            provisioned_by=provisioned_by,
         )
         session.add(reference)
         return reference
@@ -423,5 +427,6 @@ def _new_or_revived_reference(
     reference.ducklake_view_uuid = view.view_uuid
     reference.display_name = (display_name or view.view_name).strip()
     reference.description = description
+    reference.provisioned_by = provisioned_by
     reference.archived_at = None
     return reference

@@ -36,6 +36,7 @@ export type CatalogueViewRecord = {
   columns: string[]
   column_types: string[]
   managed: boolean
+  provisioned_by: "user" | "system" | null
   available: boolean
   created_at: string | null
   updated_at: string | null
@@ -85,7 +86,7 @@ export type CatalogueMaterializationRecord = {
   view_uuid: string | null
   view_name: string | null
   refresh_mode: "full" | "scope_incremental"
-  scope_kind: "document" | null
+  scope_kind: "document" | "crawl" | null
   activation_snapshot: number | null
   live_enabled: boolean
   backfill_enabled: boolean

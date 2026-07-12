@@ -35,7 +35,7 @@ class MaterializationScopeJob(BaseModel):
     definition_revision_id: UUID
     query_revision_id: UUID | None
     target_table: str
-    scope_kind: Literal["document"]
+    scope_kind: Literal["document", "crawl"]
     scope_column: str
     scope_id: str
     operation_id: str
@@ -65,6 +65,15 @@ class MaterializationFailureJob(BaseModel):
     error: str
     started_at: datetime
     completed_at: datetime
+
+
+class CrawlMaterializationFanoutPlanJob(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["fanout_plan"] = "fanout_plan"
+    crawl_id: UUID
+    scopes: list[MaterializationScopeJob]
+    planned_at: datetime
 
 
 class MaterializationDeadLetter(BaseModel):

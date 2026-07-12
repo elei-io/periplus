@@ -6,7 +6,7 @@ from ducklake_client import ColumnDef
 
 from dom.schema import ELEMENT_COLUMNS
 
-CATALOGUE_SCHEMA_VERSION = 7
+CATALOGUE_SCHEMA_VERSION = 8
 
 DOCUMENT_COLUMNS: dict[str, ColumnDef] = {
     "document_id": ColumnDef("VARCHAR", nullable=False),
@@ -28,10 +28,12 @@ DOCUMENT_COLUMNS: dict[str, ColumnDef] = {
 CRAWL_COLUMNS: dict[str, ColumnDef] = {
     "crawl_id": ColumnDef("UUID", nullable=False),
     "document_id": ColumnDef("VARCHAR"),
-    "run_id": ColumnDef("UUID", nullable=False),
-    "task_id": ColumnDef("UUID", nullable=False),
-    "task_revision": ColumnDef("INTEGER", nullable=False),
-    "primitive": ColumnDef("VARCHAR", nullable=False),
+    "graph_id": ColumnDef("UUID", nullable=False),
+    "graph_run_id": ColumnDef("UUID", nullable=False),
+    "graph_node_id": ColumnDef("UUID", nullable=False),
+    "crawl_request_id": ColumnDef("UUID", nullable=False),
+    "source_crawl_id": ColumnDef("UUID"),
+    "source_edge_id": ColumnDef("UUID"),
     "requested_url": ColumnDef("VARCHAR", nullable=False),
     "normalized_url": ColumnDef("VARCHAR", nullable=False),
     "final_url": ColumnDef("VARCHAR"),
@@ -70,10 +72,32 @@ MATERIALIZATION_SCOPE_RESULT_COLUMNS: dict[str, ColumnDef] = {
     "partition_value": ColumnDef("DATE"),
 }
 
+CRAWL_MATERIALIZATION_FANOUT_COLUMNS: dict[str, ColumnDef] = {
+    "crawl_id": ColumnDef("UUID", nullable=False),
+    "planning_completed_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+    "triggered_count": ColumnDef("BIGINT", nullable=False),
+    "settled_count": ColumnDef("BIGINT", nullable=False),
+    "failed_count": ColumnDef("BIGINT", nullable=False),
+    "completed_at": ColumnDef("TIMESTAMPTZ"),
+}
+
+CRAWL_MATERIALIZATION_FANOUT_MEMBER_COLUMNS: dict[str, ColumnDef] = {
+    "crawl_id": ColumnDef("UUID", nullable=False),
+    "materialization_id": ColumnDef("UUID", nullable=False),
+    "definition_revision_id": ColumnDef("UUID", nullable=False),
+    "scope_kind": ColumnDef("VARCHAR", nullable=False),
+    "scope_id": ColumnDef("VARCHAR", nullable=False),
+    "status": ColumnDef("VARCHAR", nullable=False),
+    "settled_at": ColumnDef("TIMESTAMPTZ"),
+    "error": ColumnDef("VARCHAR"),
+}
+
 def expected_columns() -> dict[str, dict[str, ColumnDef]]:
     return {
         "documents": DOCUMENT_COLUMNS,
         "crawls": CRAWL_COLUMNS,
         "elements": ELEMENT_COLUMNS,
         "materialization_scope_results": MATERIALIZATION_SCOPE_RESULT_COLUMNS,
+        "crawl_materialization_fanouts": CRAWL_MATERIALIZATION_FANOUT_COLUMNS,
+        "crawl_materialization_fanout_members": CRAWL_MATERIALIZATION_FANOUT_MEMBER_COLUMNS,
     }

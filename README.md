@@ -42,13 +42,14 @@ Run the API without Compose:
 make api
 ```
 
-The current CLI remains available while the graph API and CLI replace action-specific commands:
+Use the CLI for configuration and repository administration:
 
 ```sh
 cd backend
 uv run atlas --help
-uv run atlas crawl https://example.com
 ```
+
+Create and trigger crawl graphs through the `/crawl-graphs` API or the Crawl Graphs web interface.
 
 Useful development commands:
 

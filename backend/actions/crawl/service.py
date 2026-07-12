@@ -2,18 +2,14 @@ import asyncio
 import hashlib
 import json
 import time
-from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from collections.abc import Awaitable, Callable
 from typing import Any
-from uuid import UUID, uuid5
-from config import get_int
-
+from uuid import UUID
 from crawl4ai import AsyncWebCrawler
 from crawl4ai.models import CrawlResult
 from pydantic import ValidationError
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from actions.shared.crawl import (
     CrawlMode,
@@ -30,7 +26,6 @@ from repository.catalogue import CrawlRecord
 from dom import links_from_html
 from control.crawl_policies.schemas import CrawlPolicySnapshot
 from runtime.crawl_capacity import capacity_lease
-from control.crawl_policies.service import find_crawl_policy_snapshot_for_url
 from observability import crawl_metrics
 from repository import (
     RepositoryCacheHit,
@@ -38,60 +33,15 @@ from repository import (
     identify_html,
     repository_ingestor_from_env,
 )
-from runtime.context import commit_task_checkpoint
-from runtime.context import current_task_execution
+from runtime.context import (
+    GraphExecutionContext,
+    commit_checkpoint,
+    current_graph_execution,
+    graph_execution_scope,
+)
 from control.url_matching import normalize_url
 
-from .schemas import CrawlOutput, CrawlPage, CrawlStats
-
-
-class _CrawlerPool:
-    def __init__(
-        self,
-        *,
-        session: Session | None = None,
-        task_run_id: UUID | None = None,
-        progress_reporter: ProgressReporter | None = None,
-    ) -> None:
-        self._session = session
-        self._task_run_id = task_run_id
-        self._progress_reporter = progress_reporter
-        self._stack = AsyncExitStack()
-        self._crawlers: dict[CrawlMode, AsyncWebCrawler] = {}
-        self._locks: dict[CrawlMode, asyncio.Lock] = {}
-
-    async def __aenter__(self) -> _CrawlerPool:
-        await self._stack.__aenter__()
-        return self
-
-    async def __aexit__(self, exc_type, exc, traceback) -> None:
-        await self._stack.__aexit__(exc_type, exc, traceback)
-
-    async def get(self, mode: CrawlMode, *, resource_url: str = "") -> AsyncWebCrawler:
-        crawler = self._crawlers.get(mode)
-        if crawler is not None:
-            return crawler
-        lock = self._locks.setdefault(mode, asyncio.Lock())
-        async with lock:
-            crawler = self._crawlers.get(mode)
-            if crawler is not None:
-                return crawler
-            if self._session is not None and self._task_run_id is not None:
-                await self._stack.enter_async_context(
-                    capacity_lease(
-                        self._session,
-                        task_run_id=self._task_run_id,
-                        url=resource_url,
-                        policy=None,
-                        progress_reporter=self._progress_reporter,
-                        include_policy=False,
-                    )
-                )
-            crawler = await self._stack.enter_async_context(
-                AsyncWebCrawler(config=browser_config_for_mode(mode))
-            )
-            self._crawlers[mode] = crawler
-            return crawler
+from .schemas import CrawlPage
 
 
 def _json_safe(value: Any) -> Any:
@@ -113,7 +63,7 @@ def _input_hash(
 
 
 def _crawl_payload(result: CrawlResult) -> dict[str, Any]:
-    """Keep only task-local acquisition state; durable structure lives in the repository."""
+    """Keep only acquisition state; durable structure lives in the repository."""
 
     return _json_safe(
         {
@@ -227,47 +177,46 @@ def _errors(page: CrawlPage, crawl: dict[str, Any] | None) -> dict[str, Any]:
 
 def _durable_crawl_id(
     *,
-    task_run_id: UUID,
-    index: int,
-    normalized_url: str,
-    input_hash: str,
+    crawl_request_id: UUID,
 ) -> UUID:
-    """Return the stable logical acquisition identity used across run retries."""
+    """Use the logical request identity for retry-stable durable acquisition."""
 
-    return uuid5(task_run_id, f"{index}\0{normalized_url}\0{input_hash}")
+    return crawl_request_id
 
 
 @dataclass(frozen=True)
 class _RunEnvelope:
-    task_id: UUID
-    task_revision: int
-    primitive: str
-    data_schema_id: UUID | None
+    graph_id: UUID
+    graph_run_id: UUID
+    graph_node_id: UUID
+    crawl_request_id: UUID
+    source_crawl_id: UUID | None
+    source_edge_id: UUID | None
 
 
 def _run_envelope(
-    session: Session,
     *,
-    task_run_id: UUID,
+    crawl_request_id: UUID,
 ) -> _RunEnvelope:
-    """Freeze the Postgres-backed run data needed by repository ingestion."""
+    """Read the graph runtime provenance needed by repository ingestion."""
 
-    execution = current_task_execution()
-    if execution is None or execution.run_id != task_run_id:
-        raise RuntimeError(f"Task run {task_run_id} has no execution context")
+    execution = current_graph_execution()
+    if execution is None or execution.crawl_request_id != crawl_request_id:
+        raise RuntimeError(f"Crawl request {crawl_request_id} has no execution context")
     return _RunEnvelope(
-        task_id=execution.task_id,
-        task_revision=execution.task_revision,
-        primitive=execution.primitive,
-        data_schema_id=execution.data_schema_id,
+        graph_id=execution.graph_id,
+        graph_run_id=execution.graph_run_id,
+        graph_node_id=execution.graph_node_id,
+        crawl_request_id=execution.crawl_request_id,
+        source_crawl_id=execution.source_crawl_id,
+        source_edge_id=execution.source_edge_id,
     )
 
 
 async def _persist_page(
     session: Session,
     *,
-    task_run_id: UUID,
-    index: int,
+    crawl_request_id: UUID,
     requested_url: str,
     page: CrawlPage,
     mode: CrawlMode,
@@ -285,10 +234,7 @@ async def _persist_page(
     finished_at = _utc_now()
     duration_ms = int(page.duration_seconds * 1000)
     crawl_id = _durable_crawl_id(
-        task_run_id=task_run_id,
-        index=index,
-        normalized_url=normalized_url,
-        input_hash=input_hash,
+        crawl_request_id=crawl_request_id,
     )
 
     async def persist_with(pipeline: RepositoryPipeline) -> CrawlPage:
@@ -296,7 +242,7 @@ async def _persist_page(
             pipeline,
             session=session,
             crawl_id=crawl_id,
-            task_run_id=task_run_id,
+            crawl_request_id=crawl_request_id,
             requested_url=requested_url,
             normalized_url=normalized_url,
             input_hash=input_hash,
@@ -307,8 +253,8 @@ async def _persist_page(
         if resumed is not None:
             return resumed
 
-        run_envelope = _run_envelope(session, task_run_id=task_run_id)
-        commit_task_checkpoint(session)
+        run_envelope = _run_envelope(crawl_request_id=crawl_request_id)
+        commit_checkpoint(session)
 
         identity = (
             await asyncio.to_thread(identify_html, page.html)
@@ -321,10 +267,12 @@ async def _persist_page(
         record = CrawlRecord(
             crawl_id=crawl_id,
             document_id=identity.document_id if identity is not None else None,
-            run_id=task_run_id,
-            task_id=run_envelope.task_id,
-            task_revision=run_envelope.task_revision,
-            primitive=run_envelope.primitive,
+            graph_id=run_envelope.graph_id,
+            graph_run_id=run_envelope.graph_run_id,
+            graph_node_id=run_envelope.graph_node_id,
+            crawl_request_id=run_envelope.crawl_request_id,
+            source_crawl_id=run_envelope.source_crawl_id,
+            source_edge_id=run_envelope.source_edge_id,
             requested_url=requested_url,
             normalized_url=normalized_url,
             final_url=crawl_payload.get("redirected_url") or page.url,
@@ -354,7 +302,7 @@ async def _persist_page(
             input_hash=input_hash,
             crawl_policy_id=policy.id if policy is not None else None,
             crawl_policy_revision=(policy.revision if policy is not None else None),
-            data_schema_id=run_envelope.data_schema_id,
+            data_schema_id=None,
             query_schema_id=None,
             warnings_json=[_json_safe(warning) for warning in page.quality_warnings],
             errors_json=[error] if error else [],
@@ -399,7 +347,6 @@ async def _repository_cached_page(
     repository_pipeline: RepositoryPipeline,
     *,
     session: Session,
-    task_run_id: UUID,
     requested_url: str,
     normalized_url: str,
     input_hash: str,
@@ -426,7 +373,7 @@ async def _repository_cached_page(
         )
         return None
 
-    commit_task_checkpoint(session)
+    commit_checkpoint(session)
 
     cached_age_seconds = max(
         0.0, (_utc_now() - hit.crawl.captured_at).total_seconds()
@@ -477,7 +424,7 @@ async def _repository_retry_page(
     *,
     session: Session,
     crawl_id: UUID,
-    task_run_id: UUID,
+    crawl_request_id: UUID,
     requested_url: str,
     normalized_url: str,
     input_hash: str,
@@ -485,7 +432,7 @@ async def _repository_retry_page(
     include_html: bool,
     include_links: bool,
 ) -> CrawlPage | None:
-    """Resume a crawl already committed by an earlier attempt of this run."""
+    """Resume a crawl already committed by an earlier request delivery."""
 
     hit = await repository_pipeline.resolve_crawl(
         crawl_id,
@@ -495,7 +442,7 @@ async def _repository_retry_page(
     if hit is None:
         return None
     if (
-        hit.crawl.run_id != task_run_id
+        hit.crawl.crawl_request_id != crawl_request_id
         or hit.crawl.normalized_url != normalized_url
         or hit.crawl.input_hash != input_hash
     ):
@@ -503,7 +450,7 @@ async def _repository_retry_page(
             f"crawl identity {crawl_id} resolved to incompatible durable provenance"
         )
 
-    commit_task_checkpoint(session)
+    commit_checkpoint(session)
 
     crawl_metrics.repository_cache(
         outcome="retry_resume",
@@ -515,7 +462,7 @@ async def _repository_retry_page(
             resource=normalized_url,
             phase="cache",
             status="succeeded",
-            message="Resumed the acquisition committed by an earlier task attempt.",
+            message="Resumed the acquisition committed by an earlier request delivery.",
             duration=0.0,
             metadata={
                 "source": "repository",
@@ -617,26 +564,6 @@ def _repository_crawl_payload(
     return payload
 
 
-def _default_max_concurrency_for_mode(mode: CrawlMode) -> int:
-    return 5 if mode == "app" else 10
-
-
-def _crawl_concurrency_per_run() -> int:
-    try:
-        return get_int("ATLAS_CRAWL_CONCURRENCY_PER_RUN")
-    except ValueError:
-        return 3
-
-
-def _max_concurrency_from_config(config: dict[str, Any], mode: CrawlMode) -> int:
-    raw_max_concurrency = config.get("max_concurrency")
-    if isinstance(raw_max_concurrency, int) and raw_max_concurrency > 0:
-        return raw_max_concurrency
-    if isinstance(raw_max_concurrency, str) and raw_max_concurrency.isdigit():
-        return max(1, int(raw_max_concurrency))
-    return _default_max_concurrency_for_mode(mode)
-
-
 def _cache_block_rules_from_config(config: dict[str, Any]) -> dict[str, Any]:
     cache_block_rules = config.get("cache_block_rules")
     return cache_block_rules if isinstance(cache_block_rules, dict) else {}
@@ -644,7 +571,7 @@ def _cache_block_rules_from_config(config: dict[str, Any]) -> dict[str, Any]:
 
 def _transport_from_policy(
     policy: CrawlPolicySnapshot,
-) -> tuple[CrawlMode, CrawlWait, dict[str, Any], int, dict[str, Any]]:
+) -> tuple[CrawlMode, CrawlWait, dict[str, Any], dict[str, Any]]:
     config = policy.config or {}
     mode = config.get("mode") or "static"
     wait = config.get("wait") or "none"
@@ -653,37 +580,27 @@ def _transport_from_policy(
         mode,
         wait,
         run_config_overrides,
-        _max_concurrency_from_config(config, mode),
         _cache_block_rules_from_config(config),
     )
 
 
-def _frozen_crawl_policy_for_url(
-    session: Session,
-    *,
-    task_run_id: UUID,
-    url: str,
-) -> CrawlPolicySnapshot | None:
-    run = current_task_execution()
-    if run is None or run.run_id != task_run_id:
-        raise RuntimeError(f"Task run {task_run_id} has no execution context")
-    return find_crawl_policy_snapshot_for_url(
-        run.crawl_policy_snapshots_json,
-        url=url,
-    )
+def _frozen_crawl_policy() -> CrawlPolicySnapshot | None:
+    execution = current_graph_execution()
+    if execution is None:
+        raise RuntimeError("Crawl acquisition has no graph execution context")
+    value = execution.effective_policy_snapshot_json
+    return CrawlPolicySnapshot.model_validate(value) if value is not None else None
 
 
-async def crawl_one_for_task(
+async def _crawl_graph_request(
     *,
     url: str,
     mode: CrawlMode | None = None,
     wait: CrawlWait | None = None,
-    index: int,
     progress_reporter: ProgressReporter | None = None,
-    session: Session | None = None,
-    task_run_id: UUID | None = None,
+    session: Session,
+    crawl_request_id: UUID,
     run_config_overrides: dict[str, Any] | None = None,
-    crawler_pool: _CrawlerPool | None = None,
     repository_pipeline: RepositoryPipeline | None = None,
     cache: CacheOptions | dict[str, Any] | None = None,
     retain_html: bool = True,
@@ -691,14 +608,8 @@ async def crawl_one_for_task(
 ) -> CrawlPage:
     cache_options = cache if isinstance(cache, CacheOptions) else CacheOptions.model_validate(cache or {})
     cache_block_rules: dict[str, Any] | None = None
-    policy = (
-        _frozen_crawl_policy_for_url(session, task_run_id=task_run_id, url=url)
-        if session is not None and task_run_id is not None
-        else None
-    )
+    policy = _frozen_crawl_policy()
     if mode is None or wait is None:
-        if session is None or task_run_id is None:
-            raise RuntimeError("policy-driven crawl requires task-run execution context")
         if policy is None:
             mode, wait, run_config_overrides = "static", "none", {}
             cache_block_rules = {}
@@ -707,15 +618,18 @@ async def crawl_one_for_task(
                 mode,
                 wait,
                 run_config_overrides,
-                _,
                 cache_block_rules,
             ) = _transport_from_policy(policy)
-        commit_task_checkpoint(session)
+        commit_checkpoint(session)
 
     cache_policy = resolve_cache_policy(
         crawl_policy_config=policy.config if policy is not None else None,
         request=cache_options,
     )
+    if not cache_policy.stores_result:
+        # Graph nodes always produce durable evidence. Preserve the policy's
+        # cache bypass intent while changing no-store into a fresh durable load.
+        cache_policy = cache_policy.model_copy(update={"mode": "refresh"})
     cache_now = _utc_now()
     fresh_after = cache_now - timedelta(seconds=cache_policy.max_age_seconds)
     if not cache_policy.reads_cache:
@@ -723,8 +637,7 @@ async def crawl_one_for_task(
     domain_group = policy.domain_group if policy is not None else "unclassified"
     acquisition_recorded = False
     acquisition_failure_duration = 0.0
-    if session is not None and task_run_id is not None:
-        commit_task_checkpoint(session)
+    commit_checkpoint(session)
 
     normalized_url = normalize_url(url)
     repository_input_hash = _input_hash(
@@ -733,16 +646,7 @@ async def crawl_one_for_task(
         wait,
         run_config_overrides,
     )
-    durable_crawl_id = (
-        _durable_crawl_id(
-            task_run_id=task_run_id,
-            index=index,
-            normalized_url=normalized_url,
-            input_hash=repository_input_hash,
-        )
-        if task_run_id is not None
-        else None
-    )
+    durable_crawl_id = _durable_crawl_id(crawl_request_id=crawl_request_id)
 
     async def stale_fallback(page: CrawlPage) -> CrawlPage:
         if (
@@ -750,15 +654,12 @@ async def crawl_one_for_task(
             or not cache_policy.reads_cache
             or cache_policy.stale_if_error_seconds is None
             or repository_pipeline is None
-            or session is None
-            or task_run_id is None
         ):
             return page
 
         stale_page = await _repository_cached_page(
             repository_pipeline,
             session=session,
-            task_run_id=task_run_id,
             requested_url=url,
             normalized_url=normalized_url,
             input_hash=repository_input_hash,
@@ -776,16 +677,13 @@ async def crawl_one_for_task(
         return stale_page if retain_html else stale_page.model_copy(update={"html": None})
 
     if (
-        session is not None
-        and task_run_id is not None
-        and repository_pipeline is not None
-        and durable_crawl_id is not None
+        repository_pipeline is not None
     ):
         resumed_page = await _repository_retry_page(
             repository_pipeline,
             session=session,
             crawl_id=durable_crawl_id,
-            task_run_id=task_run_id,
+            crawl_request_id=crawl_request_id,
             requested_url=url,
             normalized_url=normalized_url,
             input_hash=repository_input_hash,
@@ -804,16 +702,13 @@ async def crawl_one_for_task(
             return await stale_fallback(resumed_page)
 
     if (
-        session is not None
-        and task_run_id is not None
-        and repository_pipeline is not None
+        repository_pipeline is not None
         and cache_policy.reads_cache
     ):
-        commit_task_checkpoint(session)
+        commit_checkpoint(session)
         repository_page = await _repository_cached_page(
             repository_pipeline,
             session=session,
-            task_run_id=task_run_id,
             requested_url=url,
             normalized_url=normalized_url,
             input_hash=repository_input_hash,
@@ -831,17 +726,23 @@ async def crawl_one_for_task(
                 source="cache",
                 domain_group=domain_group,
             )
-            return (
-                repository_page
-                if retain_html
-                else repository_page.model_copy(update={"html": None})
+            # A graph request always creates its own crawl observation and
+            # provenance, even when immutable HTML is reused from the cache.
+            persisted_page = await _persist_page(
+                session,
+                crawl_request_id=crawl_request_id,
+                requested_url=url,
+                page=repository_page,
+                mode=mode,
+                wait=wait,
+                run_config_overrides=run_config_overrides,
+                policy=policy,
+                repository_pipeline=repository_pipeline,
+                cache_policy=cache_policy,
+                retain_html=retain_html,
+                include_links=include_links,
             )
-
-    shared_crawler = (
-        await crawler_pool.get(mode, resource_url=url)
-        if crawler_pool is not None
-        else None
-    )
+            return persisted_page
 
     async def load_with(crawler: AsyncWebCrawler) -> tuple[CrawlPage, bool]:
         page = await _crawl_url(
@@ -856,8 +757,6 @@ async def crawl_one_for_task(
         return page, False
 
     async def load_page() -> tuple[CrawlPage, bool]:
-        if shared_crawler is not None:
-            return await load_with(shared_crawler)
         async with AsyncWebCrawler(config=browser_config_for_mode(mode)) as owned_crawler:
             return await load_with(owned_crawler)
 
@@ -910,52 +809,45 @@ async def crawl_one_for_task(
         acquisition_recorded = True
         return loaded_page, used_cache
 
-    if session is not None and task_run_id is not None:
-        try:
-            async with capacity_lease(
-                session,
-                task_run_id=task_run_id,
-                url=url,
-                policy=policy,
-                progress_reporter=progress_reporter,
-                include_browser=shared_crawler is None,
-            ):
-                page, reused_cache = await measured_load_page()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            await emit_progress(
-                progress_reporter,
-                ProgressEvent(
-                    resource=url,
-                    phase="crawl",
-                    status="failed",
-                    message="Page load failed.",
-                    error=str(exc),
-                ),
-            )
-            page = CrawlPage(
-                url=url,
-                success=False,
-                duration_seconds=acquisition_failure_duration,
+    try:
+        async with capacity_lease(
+            session,
+            url=url,
+            policy=policy,
+            progress_reporter=progress_reporter,
+            include_browser=True,
+        ):
+            page, reused_cache = await measured_load_page()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        await emit_progress(
+            progress_reporter,
+            ProgressEvent(
+                resource=url,
+                phase="crawl",
+                status="failed",
+                message="Page load failed.",
                 error=str(exc),
-            )
-            reused_cache = False
-            if not acquisition_recorded:
-                crawl_metrics.crawl_failure(page=page, mode=mode, domain_group=domain_group)
-    else:
-        page, reused_cache = await measured_load_page()
+            ),
+        )
+        page = CrawlPage(
+            url=url,
+            success=False,
+            duration_seconds=acquisition_failure_duration,
+            error=str(exc),
+        )
+        reused_cache = False
+        if not acquisition_recorded:
+            crawl_metrics.crawl_failure(page=page, mode=mode, domain_group=domain_group)
 
     if (
-        session is not None
-        and task_run_id is not None
-        and not reused_cache
+        not reused_cache
         and cache_policy.stores_result
     ):
         page = await _persist_page(
             session,
-            task_run_id=task_run_id,
-            index=index,
+            crawl_request_id=crawl_request_id,
             requested_url=url,
             page=page,
             mode=mode,
@@ -979,224 +871,21 @@ async def crawl_one_for_task(
     return await stale_fallback(page)
 
 
-async def _emit_crawl_batch_checkpoint(
+async def crawl_graph_request(
     *,
-    progress_reporter: ProgressReporter | None,
-    operation_id: str,
-    pages_by_index: dict[int, CrawlPage],
-    total: int,
-    latest_page: CrawlPage,
-) -> None:
-    completed = len(pages_by_index)
-    if completed >= total:
-        return
-
-    step = 1 if total <= 20 else 5 if total <= 100 else 10
-    if completed > 3 and completed % step != 0:
-        return
-
-    succeeded = sum(1 for page in pages_by_index.values() if page.success)
-    failed = completed - succeeded
-    await emit_progress(
-        progress_reporter,
-        ProgressEvent(
-            operation_id=operation_id,
-            phase="crawl_batch",
-            status="started",
-            resource=latest_page.url,
-            current=completed,
-            total=total,
-            message=f"Crawled {completed} of {total} pages.",
-            metadata={"succeeded": succeeded, "failed": failed},
-        ),
-    )
-
-
-def repository_required_for_urls(
-    *,
-    urls: list[str],
-    cache: CacheOptions,
-    session: Session | None,
-    task_run_id: UUID | None,
-) -> bool:
-    """Return whether any URL may read or write durable repository state."""
-
-    if cache.mode == "no_store":
-        return False
-    if session is None or task_run_id is None:
-        return True
-    return any(
-        resolve_cache_policy(
-            crawl_policy_config=(
-                snapshot.config
-                if (
-                    snapshot := _frozen_crawl_policy_for_url(
-                        session, task_run_id=task_run_id, url=url
-                    )
-                ) is not None
-                else None
-            ),
-            request=cache,
-        ).mode
-        != "no_store"
-        for url in urls
-    )
-
-
-async def crawl(
-    urls: list[str],
-    mode: CrawlMode | None = None,
-    wait: CrawlWait | None = None,
+    session: Session,
+    url: str,
+    context: GraphExecutionContext,
     progress_reporter: ProgressReporter | None = None,
-    session: Session | None = None,
-    task_run_id: UUID | None = None,
-    cache: CacheOptions | dict[str, Any] | None = None,
-    page_consumer: Callable[[int, str, CrawlPage], Awaitable[None]] | None = None,
-    retain_pages: bool = True,
-    include_links: bool = True,
-    repository_pipeline: RepositoryPipeline | None = None,
-) -> CrawlOutput:
-    if (mode is None) != (wait is None):
-        raise ValueError("mode and wait must either both be provided or both be policy-driven")
+) -> CrawlPage:
+    """Acquire and durably ingest one frozen graph crawl request."""
 
-    start_time = time.perf_counter()
-    batch_operation_id = f"{task_run_id or 'crawl'}:batch"
-    await emit_progress(
-        progress_reporter,
-        ProgressEvent(
-            operation_id=batch_operation_id,
-            phase="crawl_batch",
-            status="started",
-            current=0,
-            total=len(urls),
-            message=f"Crawling {len(urls)} page{'s' if len(urls) != 1 else ''}.",
-        ),
-    )
-    pages_by_index: dict[int, CrawlPage] = {}
-    work: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
-    for item in enumerate(urls):
-        work.put_nowait(item)
-
-    if session is not None and task_run_id is not None:
-        commit_task_checkpoint(session)
-        worker_session_factory = sessionmaker(
-            bind=session.get_bind(),
-            autoflush=False,
-            expire_on_commit=False,
-        )
-    else:
-        worker_session_factory = None
-
-    async def crawl_worker(
-        crawler_pool: _CrawlerPool,
-        repository_pipeline: RepositoryPipeline | None,
-    ) -> None:
-        worker_session = worker_session_factory() if worker_session_factory is not None else None
-        try:
-            while True:
-                try:
-                    index, url = work.get_nowait()
-                except asyncio.QueueEmpty:
-                    return
-                try:
-                    page = await crawl_one_for_task(
-                        url=url,
-                        mode=mode,
-                        wait=wait,
-                        index=index,
-                        progress_reporter=progress_reporter,
-                        session=worker_session,
-                        task_run_id=task_run_id,
-                        crawler_pool=crawler_pool,
-                        repository_pipeline=repository_pipeline,
-                        cache=cache,
-                        retain_html=retain_pages,
-                        include_links=include_links,
-                    )
-                    if page_consumer is not None:
-                        await page_consumer(index, url, page)
-                    pages_by_index[index] = (
-                        page
-                        if retain_pages
-                        else page.model_copy(update={"html": None, "crawl": None})
-                    )
-                    await _emit_crawl_batch_checkpoint(
-                        progress_reporter=progress_reporter,
-                        operation_id=batch_operation_id,
-                        pages_by_index=pages_by_index,
-                        total=len(urls),
-                        latest_page=page,
-                    )
-                finally:
-                    work.task_done()
-        finally:
-            if worker_session is not None:
-                worker_session.close()
-
-    worker_count = min(len(urls), _crawl_concurrency_per_run())
-    explicit_cache = (
-        cache if isinstance(cache, CacheOptions) else CacheOptions.model_validate(cache or {})
-    )
-    repository_required = repository_required_for_urls(
-        urls=urls,
-        cache=explicit_cache,
-        session=session,
-        task_run_id=task_run_id,
-    )
-    repository_ingestor = (
-        repository_ingestor_from_env()
-        if session is not None
-        and task_run_id is not None
-        and repository_pipeline is None
-        and repository_required
-        else None
-    )
-    async with AsyncExitStack() as stack:
-        active_repository_pipeline = (
-            await stack.enter_async_context(RepositoryPipeline(repository_ingestor))
-            if repository_ingestor is not None
-            else repository_pipeline
-        )
-        crawler_pool = await stack.enter_async_context(_CrawlerPool(
-            session=session if task_run_id is not None else None,
-            task_run_id=task_run_id,
-            progress_reporter=progress_reporter,
-        ))
-        workers = [
-            asyncio.create_task(crawl_worker(crawler_pool, active_repository_pipeline))
-            for _ in range(worker_count)
-        ]
-        try:
-            await asyncio.gather(*workers)
-        except BaseException:
-            for worker in workers:
-                worker.cancel()
-            await asyncio.gather(*workers, return_exceptions=True)
-            raise
-
-    pages = [pages_by_index[index] for index in range(len(urls))]
-    succeeded = sum(1 for page in pages if page.success)
-    failed = len(pages) - succeeded
-    await emit_progress(
-        progress_reporter,
-        ProgressEvent(
-            operation_id=batch_operation_id,
-            phase="crawl_batch",
-            status="succeeded" if failed == 0 else "failed",
-            current=len(pages),
-            total=len(urls),
-            message=f"Crawled {len(pages)} pages: {succeeded} succeeded, {failed} failed.",
-            duration=time.perf_counter() - start_time,
-            metadata={"succeeded": succeeded, "failed": failed},
-            error=f"{failed} pages failed." if failed else None,
-        ),
-    )
-    return CrawlOutput(
-        stats=CrawlStats(
-            requested_urls=len(urls),
-            succeeded=succeeded,
-            failed=failed,
-            duration_seconds=time.perf_counter() - start_time,
-        ),
-        pages=pages,
-    )
+    with graph_execution_scope(context):
+        async with RepositoryPipeline(repository_ingestor_from_env()) as pipeline:
+            return await _crawl_graph_request(
+                url=url,
+                session=session,
+                crawl_request_id=context.crawl_request_id,
+                repository_pipeline=pipeline,
+                progress_reporter=progress_reporter,
+            )

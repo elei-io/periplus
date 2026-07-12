@@ -1,14 +1,10 @@
 import {
   BracesIcon,
+  ChartNoAxesCombinedIcon,
   GitForkIcon,
-  DatabaseIcon,
-  FileSearchIcon,
   FileCode2Icon,
-  FlaskConicalIcon,
   ListFilterIcon,
-  SearchIcon,
   ShieldCheckIcon,
-  SparklesIcon,
   TablePropertiesIcon,
   ViewIcon,
 } from "lucide-react"
@@ -44,59 +40,22 @@ export const navigationGroups: NavigationGroup[] = [
     ],
   },
   {
-    name: "Playground",
-    slug: "playground",
+    name: "Crawls",
+    slug: "crawls",
     items: [
       {
-        name: "Search",
-        href: "/playground/search",
-        icon: SearchIcon,
-        title: "Search Playground",
-        description:
-          "Try live search providers and inspect results as they arrive.",
-      },
-      {
-        name: "Index",
-        href: "/playground/index",
-        icon: DatabaseIcon,
-        title: "Index Playground",
-        description:
-          "Discover linked pages and watch Atlas move through a site.",
-      },
-      {
-        name: "Extract",
-        href: "/playground/extract",
-        icon: SparklesIcon,
-        title: "Extract Playground",
-        description: "Test structured extraction against live pages.",
-      },
-      {
-        name: "Crawl",
-        href: "/playground/crawl",
-        icon: FileSearchIcon,
-        title: "Crawl Playground",
-        description: "Fetch page content and inspect crawl output.",
-      },
-      {
-        name: "Calibrate",
-        href: "/playground/calibrate",
-        icon: FlaskConicalIcon,
-        title: "Crawl Policy Calibration",
-        description:
-          "Test transport templates and persist crawl policy settings.",
-      },
-    ],
-  },
-  {
-    name: "Graphs",
-    slug: "graphs",
-    items: [
-      {
-        name: "Crawl Graphs",
-        href: "/graphs",
+        name: "Graphs",
+        href: "/crawls/graphs",
         icon: GitForkIcon,
         title: "Crawl Graphs",
         description: "Compose crawl nodes with SQL-defined edges.",
+      },
+      {
+        name: "Metrics",
+        href: "/crawls/metrics",
+        icon: ChartNoAxesCombinedIcon,
+        title: "Crawl Metrics",
+        description: "Inspect graph-run throughput, progress, and failures.",
       },
     ],
   },
@@ -140,6 +99,11 @@ export const navigationGroups: NavigationGroup[] = [
 export const defaultNavigationItem = navigationGroups[0].items[0]
 
 export function findNavigationItem(pathname: string) {
+  if (pathname.startsWith("/crawls/graphs/")) {
+    return navigationGroups
+      .flatMap((group) => group.items)
+      .find((item) => item.href === "/crawls/graphs")
+  }
   for (const href of [
     "/catalogue/queries",
     "/catalogue/views",

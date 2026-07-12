@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -45,6 +46,7 @@ class CatalogueViewRecord(BaseModel):
     columns: list[str]
     column_types: list[str]
     managed: bool
+    provisioned_by: Literal["user", "system"] | None
     available: bool
     created_at: datetime | None = None
     updated_at: datetime | None = None

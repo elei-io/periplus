@@ -233,11 +233,6 @@ function MetadataCard({
           value={schema.generated_from_document_id ?? "-"}
           mono
         />
-        <MetaRow
-          label="Task run"
-          value={schema.generated_by_task_run_id ?? "-"}
-          mono
-        />
         <MetaRow label="Created" value={formatDate(schema.created_at)} />
         <MetaRow label="Updated" value={formatDate(schema.updated_at)} />
       </CardContent>

@@ -14,6 +14,8 @@ from repository.catalogue.exceptions import CatalogueSchemaError
 from repository.catalogue.schema import (
     CATALOGUE_SCHEMA_VERSION,
     CRAWL_COLUMNS,
+    CRAWL_MATERIALIZATION_FANOUT_COLUMNS,
+    CRAWL_MATERIALIZATION_FANOUT_MEMBER_COLUMNS,
     DOCUMENT_COLUMNS,
     MATERIALIZATION_SCOPE_RESULT_COLUMNS,
     expected_columns,
@@ -83,6 +85,16 @@ class Catalogue:
                 "materialization_scope_results",
                 schema_name=self.config.schema,
                 **MATERIALIZATION_SCOPE_RESULT_COLUMNS,
+            )
+            self.lake.table.create(
+                "crawl_materialization_fanouts",
+                schema_name=self.config.schema,
+                **CRAWL_MATERIALIZATION_FANOUT_COLUMNS,
+            )
+            self.lake.table.create(
+                "crawl_materialization_fanout_members",
+                schema_name=self.config.schema,
+                **CRAWL_MATERIALIZATION_FANOUT_MEMBER_COLUMNS,
             )
         self._migrate_schema()
         self._configure_layout()

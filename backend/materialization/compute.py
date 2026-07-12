@@ -60,7 +60,7 @@ def compute_scope(job: MaterializationScopeJob) -> MaterializationCommitJob:
                         f"bound view {bound_view_uuid} is no longer current"
                     )
                 sql = scoped_view_query(
-                    catalogue, view, scope_column=job.scope_column
+                    catalogue, view, scope_kind=job.scope_kind, scope_column=job.scope_column
                 )
             classify_select(sql)
             catalogue.connection.execute("SET memory_limit = '512MB'")
@@ -68,7 +68,7 @@ def compute_scope(job: MaterializationScopeJob) -> MaterializationCommitJob:
                 f'USE "{catalogue.config.alias}"."{catalogue.config.schema}"'
             )
             reader = catalogue.connection.execute(
-                sql, {"document_id": job.scope_id}
+                sql, {f"{job.scope_kind}_id": job.scope_id}
             ).fetch_record_batch(rows_per_batch=4096)
             row_count, output_bytes = _write_bounded_arrow(
                 reader,

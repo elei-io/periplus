@@ -1,12 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { AppSidebar } from "@/components/app-sidebar"
-import { CalibratePage } from "@/pages/playground/calibrate-page"
-import { ExtractPage } from "@/pages/playground/extract-page"
-import { IndexPage } from "@/pages/playground/index-page"
-import { CrawlPage } from "@/pages/playground/crawl-page"
-import { SearchPage } from "@/pages/playground/search-page"
-import { GraphsPage } from "@/pages/admin/graphs-page"
+import { CrawlGraphDetailPage, CrawlGraphsPage } from "@/pages/admin/graphs-page"
+import { CrawlMetricsPage } from "@/pages/crawls/metrics-page"
 import { CatalogueSqlPage } from "@/pages/catalogue/sql-page"
 import { CatalogueViewsPage } from "@/pages/catalogue/views-page"
 import { CatalogueQueriesPage } from "@/pages/catalogue/queries-page"
@@ -57,14 +53,15 @@ export function App() {
 
   const handleNavigate = useCallback(
     (href: string) => {
-      if (href === pathname) {
+      const targetPathname = new URL(href, window.location.origin).pathname
+      if (href === `${window.location.pathname}${window.location.search}`) {
         return
       }
 
       window.history.pushState(null, "", href)
-      setPathname(href)
+      setPathname(targetPathname)
     },
-    [pathname]
+    []
   )
 
   const page = (() => {
@@ -87,28 +84,16 @@ export function App() {
       return <CatalogueQueriesPage queryId={queryId ? decodeURIComponent(queryId) : undefined} />
     }
 
-    if (activeItem.href === "/playground/index") {
-      return <IndexPage />
+    if (activeItem.href === "/crawls/graphs") {
+      const graphId = pathname.match(/^\/crawls\/graphs\/([^/]+)$/)?.[1]
+      if (graphId) {
+        return <CrawlGraphDetailPage graphId={decodeURIComponent(graphId)} onNavigate={handleNavigate} />
+      }
+      return <CrawlGraphsPage onNavigate={handleNavigate} />
     }
 
-    if (activeItem.href === "/playground/search") {
-      return <SearchPage />
-    }
-
-    if (activeItem.href === "/playground/extract") {
-      return <ExtractPage />
-    }
-
-    if (activeItem.href === "/playground/crawl") {
-      return <CrawlPage />
-    }
-
-    if (activeItem.href === "/playground/calibrate") {
-      return <CalibratePage />
-    }
-
-    if (activeItem.href === "/graphs") {
-      return <GraphsPage />
+    if (activeItem.href === "/crawls/metrics") {
+      return <CrawlMetricsPage />
     }
 
     if (activeItem.href === "/cache/data-schemas") {

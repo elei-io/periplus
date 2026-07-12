@@ -148,7 +148,6 @@ def create_data_schema(
     target_json_example: str | None,
     match: str,
     schema_json: dict,
-    task_run_id: UUID | None = None,
     crawl_id: UUID | None = None,
     document_id: str | None = None,
     inputs_json: dict | None = None,
@@ -171,7 +170,6 @@ def create_data_schema(
             schema_type=schema_type,
             target_json_example=target_json_example,
             schema_json=schema_json,
-            task_run_id=task_run_id,
             crawl_id=crawl_id,
             document_id=document_id,
             inputs_json=inputs_json,
@@ -192,7 +190,6 @@ def create_data_schema(
         path=parsed.path or None,
         schema_json=schema_json,
         schema_hash=_json_hash(schema_json),
-        generated_by_task_run_id=task_run_id,
         generated_from_crawl_id=crawl_id,
         generated_from_document_id=document_id,
         inputs_json=inputs_json or {},
@@ -217,7 +214,6 @@ def create_data_schema(
             schema_type=schema_type,
             target_json_example=target_json_example,
             schema_json=schema_json,
-            task_run_id=task_run_id,
             crawl_id=crawl_id,
             document_id=document_id,
             inputs_json=inputs_json,
@@ -236,7 +232,6 @@ def _update_generated_data_schema(
     schema_type: str,
     target_json_example: str | None,
     schema_json: dict,
-    task_run_id: UUID | None,
     crawl_id: UUID | None,
     document_id: str | None,
     inputs_json: dict | None,
@@ -255,7 +250,6 @@ def _update_generated_data_schema(
     schema.path = path
     schema.schema_json = schema_json
     schema.schema_hash = _json_hash(schema_json)
-    schema.generated_by_task_run_id = task_run_id
     schema.generated_from_crawl_id = crawl_id
     schema.generated_from_document_id = document_id
     schema.inputs_json = {**(inputs_json or {}), "match": match}
@@ -277,7 +271,6 @@ def replace_data_schema(
     schema_type: str,
     target_json_example: str | None,
     schema_json: dict,
-    task_run_id: UUID | None = None,
     crawl_id: UUID | None = None,
     document_id: str | None = None,
     inputs_json: dict | None = None,
@@ -303,7 +296,6 @@ def replace_data_schema(
     schema.target_json_hash = _target_json_hash(target_json_example)
     schema.schema_json = schema_json
     schema.schema_hash = _json_hash(schema_json)
-    schema.generated_by_task_run_id = task_run_id
     schema.generated_from_crawl_id = crawl_id
     schema.generated_from_document_id = document_id
     schema.inputs_json = {**(inputs_json or {}), "match": match_value}
@@ -338,13 +330,6 @@ def record_data_schema_failure(
     return schema
 
 
-def record_data_schema_use(session: Session, *, task_run_id: UUID | None, schema: DataSchema) -> None:
-    # Run lifecycle rows are control-plane state and are finalized only by the executor.
-    # Schema provenance is already recorded by generated_by_task_run_id and URL matches.
-    schema.updated_at = datetime.now(UTC)
-    session.flush()
-
-
 def _sql_like_from_glob(pattern: str) -> str:
     return pattern.replace("%", r"\%").replace("_", r"\_").replace("*", "%")
 
@@ -355,10 +340,6 @@ def warning_count(schema: DataSchema) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
-
-
-def task_run_count(session: Session, schema_id: UUID) -> int:
-    return 0
 
 
 def _filtered_statement(
@@ -428,7 +409,6 @@ def list_data_schemas(
                 failure_count=schema.failure_count,
                 last_failed_at=schema.last_failed_at,
                 last_error=schema.last_error,
-                task_run_count=task_run_count(session, schema.id),
                 warning_count=warning_count(schema),
                 created_at=schema.created_at,
                 updated_at=schema.updated_at,
@@ -477,10 +457,6 @@ def data_schema_summary(
             )
         )
     )
-    use_counts = [task_run_count(session, schema.id) for schema in schemas]
-    total_schema_uses = sum(use_counts)
-    used_schemas = sum(1 for count in use_counts if count > 0)
-    reused_schema_uses = sum(max(count - 1, 0) for count in use_counts)
     failing_schemas = sum(
         1
         for schema in schemas
@@ -490,11 +466,6 @@ def data_schema_summary(
     return DataSchemaSummary(
         total_schemas=len(schemas),
         enabled_schemas=sum(1 for schema in schemas if schema.enabled),
-        used_schemas=used_schemas,
-        total_schema_uses=total_schema_uses,
-        reused_schema_uses=reused_schema_uses,
-        reuse_rate=(reused_schema_uses / total_schema_uses) if total_schema_uses else 0,
-        avg_uses_per_used_schema=(total_schema_uses / used_schemas) if used_schemas else 0,
         failing_schemas=failing_schemas,
     )
 

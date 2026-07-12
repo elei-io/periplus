@@ -39,6 +39,19 @@ from repository.objects.store import FileObjectStore
 
 
 class CatalogueMaterializationTests(unittest.TestCase):
+    def test_scoped_view_query_uses_crawl_parameter(self) -> None:
+        view = SimpleNamespace(
+            qualified_name="views.page_links",
+            schema_name="views",
+            view_name="page_links",
+            columns=("crawl_id", "url"),
+        )
+        catalogue = SimpleNamespace(config=SimpleNamespace(alias="atlas"))
+        sql = scoped_view_query(
+            catalogue, view, scope_kind="crawl", scope_column="crawl_id"
+        )
+        self.assertIn('"crawl_id" = $crawl_id', sql)
+
     def test_metadata_lookup_uses_catalogue_boundary_not_physical_config(self) -> None:
         connection = MagicMock()
         cursors = [MagicMock(), MagicMock(), MagicMock()]
@@ -428,7 +441,7 @@ class CatalogueMaterializationTests(unittest.TestCase):
                     ),
                 )
                 sql = scoped_view_query(
-                    catalogue, view, scope_column="Any document key"
+                    catalogue, view, scope_kind="document", scope_column="Any document key"
                 )
                 rows = catalogue.connection.execute(
                     sql, {"document_id": "second"}

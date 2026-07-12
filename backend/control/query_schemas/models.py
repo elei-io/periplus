@@ -51,10 +51,6 @@ class QuerySchema(Base):
         nullable=True,
     )
     generated_from_document_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    generated_by_task_run_id: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True),
-        nullable=True,
-    )
     inputs_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     warnings_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

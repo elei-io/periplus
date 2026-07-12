@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from hashlib import sha256
 from datetime import UTC, datetime
+from hashlib import sha256
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -47,14 +47,13 @@ def upsert_query_schema(
     schema_json: dict,
     params_json: list[dict],
     evidence_json: list[dict],
-    task_run_id: UUID | None,
     crawl_id: UUID | None,
     document_id: str | None,
     inputs_json: dict,
     warnings_json: dict | None = None,
 ) -> QuerySchema:
     match = default_match_for_url(url)
-    url_match = resolve_url_match_for_url(session, url, task_run_id=task_run_id)
+    url_match = resolve_url_match_for_url(session, url)
     identity_key = identity_key_for_url_match(url_match.id)
     domain, path = _url_parts(match)
     schema_hash = _json_hash({"schema": schema_json, "params": params_json})
@@ -75,7 +74,6 @@ def upsert_query_schema(
             schema_hash=schema_hash,
             generated_from_crawl_id=crawl_id,
             generated_from_document_id=document_id,
-            generated_by_task_run_id=task_run_id,
             inputs_json=inputs_json,
             warnings_json=warnings_json or {"count": 0, "warnings": []},
         )
@@ -92,7 +90,6 @@ def upsert_query_schema(
         schema.schema_hash = schema_hash
         schema.generated_from_crawl_id = crawl_id
         schema.generated_from_document_id = document_id
-        schema.generated_by_task_run_id = task_run_id
         schema.inputs_json = inputs_json
         schema.warnings_json = warnings_json or {"count": 0, "warnings": []}
     session.flush()
@@ -173,7 +170,6 @@ def list_query_schemas(
                 warning_count=warning_count(schema),
                 generated_from_crawl_id=schema.generated_from_crawl_id,
                 generated_from_document_id=schema.generated_from_document_id,
-                generated_by_task_run_id=schema.generated_by_task_run_id,
                 created_at=schema.created_at,
                 updated_at=schema.updated_at,
             )

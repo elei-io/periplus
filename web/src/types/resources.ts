@@ -25,7 +25,6 @@ export type QuerySchemaRecord = {
   warning_count: number
   generated_from_crawl_id: string | null
   generated_from_document_id: string | null
-  generated_by_task_run_id: string | null
   created_at: string
   updated_at: string
 }
@@ -70,7 +69,6 @@ export type DataSchemaRecord = {
   failure_count: number
   last_failed_at: string | null
   last_error: string | null
-  task_run_count: number
   warning_count: number
   created_at: string
   updated_at: string
@@ -83,11 +81,6 @@ export type DataSchemaListResponse = PaginatedResponse<DataSchemaRecord> & {
 export type DataSchemaSummary = {
   total_schemas: number
   enabled_schemas: number
-  used_schemas: number
-  total_schema_uses: number
-  reused_schema_uses: number
-  reuse_rate: number
-  avg_uses_per_used_schema: number
   failing_schemas: number
 }
 
@@ -96,7 +89,6 @@ export type DataSchemaDetailRecord = DataSchemaRecord & {
   schema_json: Record<string, unknown>
   generated_from_crawl_id: string | null
   generated_from_document_id: string | null
-  generated_by_task_run_id: string | null
   inputs_json: Record<string, unknown>
   warnings_json: Record<string, unknown>
 }

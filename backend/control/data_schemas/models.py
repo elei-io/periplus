@@ -43,10 +43,6 @@ class DataSchema(Base):
         nullable=True,
     )
     generated_from_document_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    generated_by_task_run_id: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True),
-        nullable=True,
-    )
     inputs_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     validation_status: Mapped[str | None] = mapped_column(Text, nullable=True)
     failure_count: Mapped[int] = mapped_column(Integer, default=0)

@@ -5,22 +5,17 @@ from fastapi import FastAPI
 from api.catalogue_pool import CatalogueReadPool
 from config import get_float, get_int
 from api.routers import (
-    calibrate,
     catalogue,
     catalogue_queries,
     catalogue_views,
-    crawl,
+    crawl_graphs,
     crawl_policies,
     data_schemas,
-    extract,
-    index,
+    graph_runs,
     catalogue_materializations,
     operational_metrics,
     query_schemas,
     repository_operations,
-    schema,
-    search,
-    task_runs,
 )
 
 
@@ -40,19 +35,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Atlas API", lifespan=lifespan)
-app.include_router(calibrate.router)
 app.include_router(catalogue.router)
 app.include_router(catalogue_queries.router)
 app.include_router(catalogue_views.router)
 app.include_router(data_schemas.router)
-app.include_router(extract.router)
-app.include_router(index.router)
 app.include_router(catalogue_materializations.router)
 app.include_router(operational_metrics.router)
 app.include_router(query_schemas.router)
 app.include_router(repository_operations.router)
-app.include_router(schema.router)
-app.include_router(crawl.router)
+app.include_router(crawl_graphs.router)
+app.include_router(graph_runs.trigger_router)
+app.include_router(graph_runs.router)
 app.include_router(crawl_policies.router)
-app.include_router(search.router)
-app.include_router(task_runs.router)

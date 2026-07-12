@@ -14,7 +14,6 @@ from control.data_schemas.service import (
     data_schema_summary,
     get_data_schema,
     list_data_schemas,
-    task_run_count,
     delete_data_schema,
     update_data_schema,
     warning_count,
@@ -24,7 +23,7 @@ from db.session import get_session
 router = APIRouter(prefix="/data-schemas", tags=["data-schemas"])
 
 
-def _detail_record(session: Session, schema) -> DataSchemaDetailRecord:
+def _detail_record(schema) -> DataSchemaDetailRecord:
     return DataSchemaDetailRecord(
         id=schema.id,
         identity_key=schema.identity_key,
@@ -41,7 +40,6 @@ def _detail_record(session: Session, schema) -> DataSchemaDetailRecord:
         schema_hash=schema.schema_hash,
         generated_from_crawl_id=schema.generated_from_crawl_id,
         generated_from_document_id=schema.generated_from_document_id,
-        generated_by_task_run_id=schema.generated_by_task_run_id,
         inputs_json=schema.inputs_json,
         validation_status=schema.validation_status,
         failure_count=schema.failure_count,
@@ -50,7 +48,6 @@ def _detail_record(session: Session, schema) -> DataSchemaDetailRecord:
         warnings_json=schema.warnings_json,
         created_at=schema.created_at,
         updated_at=schema.updated_at,
-        task_run_count=task_run_count(session, schema.id),
         warning_count=warning_count(schema),
     )
 
@@ -107,7 +104,7 @@ def get(
     if schema is None:
         raise HTTPException(status_code=404, detail="Data schema not found.")
 
-    return _detail_record(session, schema)
+    return _detail_record(schema)
 
 
 @router.patch("/{schema_id}", response_model=DataSchemaDetailRecord)
@@ -125,7 +122,7 @@ def update(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    return _detail_record(session, updated)
+    return _detail_record(updated)
 
 
 @router.delete("/{schema_id}", status_code=204)

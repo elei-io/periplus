@@ -11,20 +11,18 @@ from cli.config import api_url, init_config
 
 
 class WorkerOnlyApiTests(unittest.TestCase):
-    def test_every_action_is_post_only_and_calibrate_has_no_legacy_route(self) -> None:
+    def test_action_routes_are_removed_by_graph_cutover(self) -> None:
         paths = app.openapi()["paths"]
         for path in ("/search/", "/index/", "/crawl/", "/schema/", "/extract/", "/calibrate/"):
-            self.assertEqual(set(paths[path]), {"post"})
-            self.assertEqual(paths[path]["post"]["responses"]["202"]["description"], "Successful Response")
+            self.assertNotIn(path, paths)
         self.assertNotIn("/crawl-policies/calibrate", paths)
 
-    def test_task_run_read_endpoints_are_shared(self) -> None:
+    def test_graph_run_endpoints_replace_task_run_routes(self) -> None:
         paths = app.openapi()["paths"]
-        self.assertIn("get", paths["/task-runs/{run_id}"])
-        self.assertIn("get", paths["/task-runs/{run_id}/progress"])
-        self.assertIn("get", paths["/task-runs/{run_id}/result"])
-        self.assertIn("post", paths["/task-runs/{run_id}/cancel"])
-        self.assertIn("get", paths["/task-runs/operations/summary"])
+        self.assertIn("post", paths["/crawl-graphs/{graph_id}/runs"])
+        self.assertIn("get", paths["/graph-runs/{run_id}"])
+        self.assertIn("post", paths["/graph-runs/{run_id}/cancel"])
+        self.assertFalse(any(path.startswith("/task-runs") for path in paths))
 
     def test_catalogue_materialization_api_has_no_superseded_routes(self) -> None:
         paths = app.openapi()["paths"]

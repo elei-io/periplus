@@ -75,6 +75,9 @@ Graphs do not have graph-level revisions. A graph evolves by adding and deleting
 nodes and edges. An unused node or edge may be edited. After a component has participated in a run,
 the entire row is immutable; any change means deleting it and creating another row.
 Deletion never affects an active run because the run owns a complete frozen graph snapshot in NATS.
+Each graph has one nullable `root_node_id`. A graph with no root is a valid draft but cannot run.
+Creating the first node assigns it as root atomically; changing the root affects only future runs,
+and deleting the root returns the graph to draft state.
 
 ### CrawlGraphNode
 
@@ -85,7 +88,6 @@ id
 graph_id
 name
 description
-is_entry
 created_at
 used_at, nullable
 ```
@@ -98,9 +100,8 @@ bounded local browser concurrency.
 One node may receive many URL inputs over a graph run. A self-edge can repeatedly feed new URLs back
 to the same node. Repeated runtime invocations are not additional node definitions.
 
-When a graph is triggered, every entry node in the frozen graph receives the trigger URL inputs. `is_entry` does
-not otherwise change node behavior: an entry node may also receive URLs from edges and participate
-in cycles.
+When a graph is triggered, its frozen root node receives the trigger URL inputs. The root may also
+receive URLs from edges and participate in cycles; being root only determines initial admission.
 
 The node does not write DuckLake directly. It maps admitted inputs to the ordinary crawl path, which
 stores immutable raw HTML and publishes ingestion work. The repository worker remains the only
@@ -228,7 +229,7 @@ graph contract.
 ### Trigger and seed admission
 
 Triggering a graph creates a graph run, freezes the current executable graph, and offers every
-trigger URL to every active node whose frozen `is_entry` value is true. Each URL enters the ordinary
+trigger URL to the frozen `root_node_id`. Each URL enters the ordinary
 crawl-request path:
 
 ```text
@@ -491,7 +492,7 @@ These exclusions keep the graph model specific to composing crawl acquisition fr
 ## Scheduling and lifecycle
 
 Schedules are inputs to graphs. When a schedule fires, it supplies its configured URLs to a new run;
-the run freezes the current graph and offers those URLs to every entry node. Scheduling does not
+the run freezes the current graph and offers those URLs to its root node. Scheduling does not
 create another execution abstraction or store current work in Postgres.
 
 Unused nodes and edges may be edited. Before publishing a frozen run, triggering marks `used_at` on
@@ -508,6 +509,263 @@ not part of the graph data model.
 The platform enforces a non-user-configurable hard ceiling on CrawlRequests per GraphRun and graph-run
 wall duration. Hitting either ceiling terminates the run visibly. These are emergency runaway
 guards, not graph behavior or crawl-policy settings.
+
+## Frozen implementation contracts
+
+The cutover uses the following names and payloads. Change this section before implementations
+diverge; do not introduce aliases for alternative names.
+
+### Postgres tables
+
+```text
+crawl_graphs
+- id UUID primary key
+- name TEXT
+- description TEXT
+- position_x DOUBLE PRECISION nullable
+- position_y DOUBLE PRECISION nullable
+- root_node_id UUID nullable references crawl_graph_nodes on delete set null
+- created_at TIMESTAMPTZ
+
+crawl_graph_nodes
+- id UUID primary key
+- graph_id UUID references crawl_graphs on delete cascade
+- name TEXT
+- description TEXT
+- used_at TIMESTAMPTZ nullable
+- created_at TIMESTAMPTZ
+
+crawl_graph_edges
+- id UUID primary key
+- graph_id UUID references crawl_graphs on delete cascade
+- source_node_id UUID references crawl_graph_nodes on delete cascade
+- target_node_id UUID references crawl_graph_nodes on delete cascade
+- name TEXT
+- description TEXT
+- sql TEXT
+- used_at TIMESTAMPTZ nullable
+- created_at TIMESTAMPTZ
+```
+
+Node and edge names are unique within one graph. Both edge endpoints must belong to `graph_id`.
+Nodes and edges with non-null `used_at` reject execution-definition updates. Node position is
+display-only metadata, is excluded from frozen snapshots, and remains editable after use. Deleting
+a node deletes every connected edge. The root must belong to the graph. Graph deletion deletes its
+nodes and edges.
+
+### Frozen graph snapshot
+
+The control plane produces this complete execution value before runtime publication:
+
+```json
+{
+  "graph_id": "uuid",
+  "root_node_id": "uuid",
+  "nodes": [
+    {
+      "id": "uuid",
+      "name": "search_page"
+    }
+  ],
+  "edges": [
+    {
+      "id": "uuid",
+      "name": "next_page",
+      "source_node_id": "uuid",
+      "target_node_id": "uuid",
+      "sql": "SELECT url ... WHERE crawl_id = $crawl_id LIMIT 1"
+    }
+  ]
+}
+```
+
+Descriptions are control-plane display metadata and are not required in the runtime snapshot.
+Freezing marks every included node and edge `used_at` before the run is published.
+
+### HTTP API
+
+```text
+GET    /crawl-graphs/
+POST   /crawl-graphs/
+GET    /crawl-graphs/{graph_id}
+PUT    /crawl-graphs/{graph_id}
+DELETE /crawl-graphs/{graph_id}
+
+POST   /crawl-graphs/{graph_id}/nodes
+PUT    /crawl-graphs/{graph_id}/nodes/{node_id}
+PUT    /crawl-graphs/{graph_id}/nodes/{node_id}/position
+DELETE /crawl-graphs/{graph_id}/nodes/{node_id}
+
+POST   /crawl-graphs/{graph_id}/edges
+PUT    /crawl-graphs/{graph_id}/edges/{edge_id}
+DELETE /crawl-graphs/{graph_id}/edges/{edge_id}
+
+POST   /crawl-graphs/{graph_id}/runs
+GET    /crawl-graphs/{graph_id}/runs/active
+GET    /graph-runs/
+GET    /graph-runs/{run_id}
+POST   /graph-runs/{run_id}/cancel
+GET    /graph-runs/{run_id}/events
+```
+
+The run trigger body is exactly:
+
+```json
+{"urls": ["https://example.com/a", "https://example.com/b"]}
+```
+
+It rejects an empty list and a graph with no root node. Every URL is offered to the root node.
+
+The run event endpoint is one multiplexed `text/event-stream` response backed by current NATS
+projection state. It sends a complete snapshot of every node and edge first, then component deltas,
+an independent heartbeat while idle, and a final settled event. React components subscribe
+logically through the client run-progress store; they do not open one physical connection each.
+Node progress contains admitted request counts by current `CrawlRequest.status`. Edge progress
+contains pending, running, completed, and failed evaluation counts plus:
+
+```text
+urls_selected     rows returned by the edge SQL
+urls_admitted     durable target CrawlRequests whose source_edge_id is this edge
+urls_deduplicated max(0, urls_selected - urls_admitted)
+```
+
+Running edge evaluations checkpoint selected, admitted, and deduplicated counts every ten rows so
+large result sets advance live without writing NATS KV once per output URL. Request transitions
+update per-component projections incrementally; the UI never scans all CrawlRequests. These are
+current execution projections, not DuckLake history.
+
+### NATS ownership and names
+
+```text
+JetStream stream: ATLAS_GRAPH_WORK
+subjects:
+- atlas.graph.crawl
+- atlas.graph.edge
+- atlas.graph.readiness
+
+KV buckets:
+- atlas_graph_runs
+- atlas_crawl_requests
+- atlas_graph_workers
+- atlas_graph_progress
+```
+
+`GraphRun` current state contains:
+
+```text
+id
+graph_id
+trigger_kind: manual | scheduled
+status: queued | running | completed | completed_with_errors | failed | cancelled
+snapshot
+trigger_urls
+seen_request_identities
+request_count
+created_at
+started_at nullable
+completed_at nullable
+cancel_requested_at nullable
+error nullable
+```
+
+`CrawlRequest` current state and queue envelopes contain:
+
+```text
+id
+graph_run_id
+node_id
+url
+effective_policy_snapshot_json
+source_crawl_id nullable
+source_edge_id nullable
+parent_request_id nullable
+status: queued | crawling | awaiting_ingestion | awaiting_materializations |
+        evaluating_edges | completed | failed | cancelled
+created_at
+updated_at
+error nullable
+```
+
+The request identity is the hash of `graph_run_id`, `node_id`, and the normalized URL. Edge
+evaluation identity is the hash of `graph_run_id`, `crawl_request_id`, `crawl_id`, and `edge_id`.
+
+The deployment-only ceilings are:
+
+```text
+ATLAS_GRAPH_MAX_REQUESTS_PER_RUN=10000
+ATLAS_GRAPH_MAX_RUN_SECONDS=3600
+ATLAS_GRAPH_STREAM_REPLICAS=1
+ATLAS_GRAPH_ACK_WAIT_SECONDS=60
+ATLAS_GRAPH_STATE_MAX_BYTES=268435456
+```
+
+They are deployment environment configuration, never graph, node, edge, trigger, or crawl-policy
+fields.
+
+### Repository provenance
+
+Frozen ingestion jobs and DuckLake `crawls` rows replace task provenance with:
+
+```text
+graph_id UUID
+graph_run_id UUID
+graph_node_id UUID
+crawl_request_id UUID
+source_crawl_id UUID nullable
+source_edge_id UUID nullable
+```
+
+There are no task-ID, task-revision, primitive, or compatibility provenance columns after the
+cutover.
+
+### Materialization fan-out and readiness
+
+DuckLake stores one authoritative fan-out record per crawl:
+
+```text
+crawl_materialization_fanouts
+- crawl_id UUID
+- planning_completed_at TIMESTAMPTZ
+- triggered_count BIGINT
+- settled_count BIGINT
+- failed_count BIGINT
+- completed_at TIMESTAMPTZ nullable
+
+crawl_materialization_fanout_members
+- crawl_id UUID
+- materialization_id UUID
+- definition_revision_id UUID
+- scope_kind VARCHAR
+- scope_id VARCHAR
+- status VARCHAR: planned | settled | failed
+- settled_at TIMESTAMPTZ nullable
+- error VARCHAR nullable
+```
+
+The planner freezes fan-out membership before publishing scope work. Membership rows are the
+authoritative identities used to reconcile and republish planned jobs after a crash; aggregate
+counts are a bounded readiness summary. The repository writer updates membership, counts, and
+materialization scope coverage in the same durable commit path. A crawl with
+`triggered_count = 0` is ready when planning completes. A crawl with work is ready when
+`settled_count = triggered_count` and `failed_count = 0`. Any terminal failure produces an
+enrichment-failed notification instead of activating edges.
+
+The readiness work payload is:
+
+```json
+{
+  "event_id": "uuid",
+  "crawl_id": "uuid",
+  "graph_run_id": "uuid",
+  "crawl_request_id": "uuid",
+  "status": "ready | failed",
+  "failed_materialization_ids": ["uuid"],
+  "occurred_at": "timestamp"
+}
+```
+
+`event_id` and the edge-evaluation identity make redelivery idempotent. NATS wakes the runtime;
+DuckLake fan-out and coverage remain authoritative for reconciliation.
 
 ## Cutover rule
 

@@ -12,6 +12,8 @@ from psycopg.conninfo import conninfo_to_dict
 from psycopg.errors import DuplicateDatabase
 
 from config import get_str
+from control.catalogue_views.system import provision_system_views
+from db.session import session_scope
 from repository.catalogue import Catalogue, catalogue_config_from_env
 
 _BACKEND_ROOT = Path(__file__).resolve().parent
@@ -51,11 +53,17 @@ def bootstrap_catalogue() -> None:
         catalogue.bootstrap()
 
 
+def seed_system_catalogue() -> None:
+    with Catalogue(catalogue_config_from_env()) as catalogue, session_scope() as session:
+        provision_system_views(session, catalogue)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     argparse.ArgumentParser(description="Set up an Atlas deployment.").parse_args(argv)
     ensure_catalogue_database()
     migrate_control_database()
     bootstrap_catalogue()
+    seed_system_catalogue()
     print("Atlas setup complete.")
 
 

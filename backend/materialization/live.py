@@ -8,7 +8,10 @@ from ducklake_cdc_client import CDCClient, DMLConsumer
 
 from config import get_int, get_str
 from control.catalogue_materializations.models import CatalogueMaterialization
-from materialization.definitions import active_definitions, publish_scope
+from datetime import UTC, datetime
+
+from materialization.definitions import active_definitions, publish_scope, scope_job
+from materialization.queue import COMMIT_SUBJECT, CrawlMaterializationFanoutPlanJob
 from repository.catalogue import Catalogue, catalogue_from_env
 from repository.ingestion.health import HealthMonitor
 
@@ -19,7 +22,9 @@ async def run_live(
     consumers: dict[tuple[str, str], tuple[Catalogue, DMLConsumer]] = {}
     try:
         while not stop.is_set():
-            definitions = active_definitions(live=True)
+            definitions = [
+                item for item in active_definitions(live=True) if item.scope_kind == "document"
+            ]
             maximum = get_int("ATLAS_MATERIALIZATION_MAX_LIVE_DEFINITIONS")
             if len(definitions) > maximum:
                 raise RuntimeError(
@@ -63,14 +68,17 @@ async def run_live(
                             f"at snapshot {window.terminal_at_snapshot}"
                         )
                     continue
-                document_ids = {
-                    str(change.values["document_id"])
+                identity_column = (
+                    "document_id" if definition.scope_kind == "document" else "crawl_id"
+                )
+                scope_ids = {
+                    str(change.values[identity_column])
                     for change in batch.changes
                     if change.kind.value in {"insert", "update_postimage"}
-                    and change.values.get("document_id")
+                    and change.values.get(identity_column)
                 }
-                for document_id in document_ids:
-                    await publish_scope(jetstream, definition, document_id, "live")
+                for scope_id in scope_ids:
+                    await publish_scope(jetstream, definition, scope_id, "live")
                 await asyncio.to_thread(batch.commit)
             else:
                 monitor.dependencies_ready()
@@ -100,7 +108,11 @@ def _open_consumer(definition: CatalogueMaterialization) -> tuple[Catalogue, DML
         consumer = DMLConsumer(
             catalogue.lake,
             name,
-            table=f"{catalogue.config.schema}.documents",
+            table=(
+                f"{catalogue.config.schema}.documents"
+                if definition.scope_kind == "document"
+                else f"{catalogue.config.schema}.crawls"
+            ),
             mode="changes",
             start_at=definition.activation_snapshot,
             on_exists="use",
@@ -149,3 +161,100 @@ async def _wait(stop: asyncio.Event, seconds: float) -> None:
         await asyncio.wait_for(stop.wait(), timeout=seconds)
     except TimeoutError:
         pass
+
+
+async def run_crawl_planner(jetstream, stop: asyncio.Event) -> None:
+    """Freeze crawl-scoped materialization membership before publishing scope work."""
+
+    catalogue = catalogue_from_env()
+    consumer = None
+    try:
+        client = CDCClient(catalogue.lake, install_extension=False)
+        start_at = catalogue.latest_snapshot()
+        if start_at is None:
+            raise RuntimeError("DuckLake has no snapshot for crawl materialization planning")
+        consumer = DMLConsumer(
+            catalogue.lake,
+            "atlas-crawl-materialization-planner",
+            table=f"{catalogue.config.schema}.crawls",
+            mode="changes",
+            start_at=start_at,
+            on_exists="use",
+            client=client,
+        ).open()
+        while not stop.is_set():
+            await _reconcile_unplanned_crawls(jetstream, catalogue)
+            batch = await asyncio.to_thread(
+                consumer.listen,
+                timeout_ms=1000,
+                max_snapshots=100,
+                poll_min_ms=1000,
+            )
+            if batch is None:
+                continue
+            crawl_scopes = {
+                (str(change.values["crawl_id"]), change.values.get("document_id"))
+                for change in batch.changes
+                if change.kind.value in {"insert", "update_postimage"}
+                and change.values.get("crawl_id")
+            }
+            definitions = active_definitions(live=True)
+            for crawl_id, document_id in crawl_scopes:
+                plan = CrawlMaterializationFanoutPlanJob(
+                    crawl_id=crawl_id,
+                    scopes=_crawl_triggered_scopes(
+                        definitions, crawl_id=crawl_id, document_id=document_id
+                    ),
+                    planned_at=datetime.now(UTC),
+                )
+                await jetstream.publish(
+                    COMMIT_SUBJECT,
+                    plan.model_dump_json().encode(),
+                    headers={"Nats-Msg-Id": f"crawl-fanout-{crawl_id}"},
+                )
+            await asyncio.to_thread(batch.commit)
+    finally:
+        if consumer is not None:
+            _close_consumer(catalogue, consumer, drop=False)
+        catalogue.close()
+
+
+async def _reconcile_unplanned_crawls(jetstream, catalogue) -> int:
+    table = lambda name: ".".join(
+        '"' + part.replace('"', '""') + '"'
+        for part in (catalogue.config.alias, catalogue.config.schema, name)
+    )
+    rows = catalogue.connection.execute(
+        f"SELECT c.crawl_id, c.document_id FROM {table('crawls')} AS c LEFT JOIN "
+        f"{table('crawl_materialization_fanouts')} AS f USING (crawl_id) "
+        "WHERE f.crawl_id IS NULL ORDER BY c.captured_at LIMIT 100"
+    ).fetchall()
+    definitions = active_definitions(live=True)
+    for crawl_id_value, document_id in rows:
+        crawl_id = str(crawl_id_value)
+        plan = CrawlMaterializationFanoutPlanJob(
+            crawl_id=crawl_id,
+            scopes=_crawl_triggered_scopes(
+                definitions, crawl_id=crawl_id, document_id=document_id
+            ),
+            planned_at=datetime.now(UTC),
+        )
+        await jetstream.publish(
+            COMMIT_SUBJECT,
+            plan.model_dump_json().encode(),
+            headers={"Nats-Msg-Id": f"crawl-fanout-{crawl_id}"},
+        )
+    return len(rows)
+
+
+def _crawl_triggered_scopes(definitions, *, crawl_id: str, document_id):
+    return [
+        scope_job(
+            definition,
+            crawl_id if definition.scope_kind == "crawl" else str(document_id),
+            "live",
+        )
+        for definition in definitions
+        if definition.scope_kind == "crawl"
+        or (definition.scope_kind == "document" and document_id is not None)
+    ]

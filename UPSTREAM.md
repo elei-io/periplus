@@ -41,8 +41,13 @@ the published release; version control retains the history.
   DuckDB database *is* exposed as `remote.serving.documents` and accepts bound parameters.
 - **Smallest useful upstream contract:** a `ducklake-client` remote connection that targets a
   Quack serving schema while preserving result streaming, parameter binding, transactions, and
-  the schema/snapshot/maintenance operations needed by authorized callers. The dedicated server,
-  not an Atlas client process, owns the DuckLake attachment.
+  bulk execution (`executemany`), and the schema/snapshot/maintenance operations needed by
+  authorized callers. The dedicated server, not an Atlas client process, owns the DuckLake
+  attachment.
+- **Additional evidence:** crawl materialization fan-out planning needs to insert a frozen member
+  set atomically. Atlas's temporary `QuackConnection` bridge had to render repeated bound writes
+  into one remote transaction script because the remote connection surface has no bulk-execution
+  primitive.
 - **Atlas status:** feasible but not transparently supported. The repository worker remains the
   sole application authority requesting writes but executes them as a Quack client. Atlas should
   not add SQL literal interpolation around `remote.query(...)`.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from ipaddress import ip_address
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -38,10 +38,12 @@ class DocumentRecord(CatalogueRecord):
 class CrawlRecord(CatalogueRecord):
     crawl_id: UUID
     document_id: str | None = Field(default=None, min_length=1)
-    run_id: UUID
-    task_id: UUID
-    task_revision: int = Field(ge=1)
-    primitive: str = Field(min_length=1)
+    graph_id: UUID
+    graph_run_id: UUID
+    graph_node_id: UUID
+    crawl_request_id: UUID
+    source_crawl_id: UUID | None = None
+    source_edge_id: UUID | None = None
     requested_url: str = Field(min_length=1)
     normalized_url: str = Field(min_length=1)
     final_url: str | None = None
@@ -116,3 +118,43 @@ class CatalogueWriteResult(CatalogueRecord):
     document_created: bool
     crawl_created: bool
     repository_snapshot: int
+
+
+class CrawlMaterializationFanout(CatalogueRecord):
+    crawl_id: UUID
+    planning_completed_at: datetime
+    triggered_count: int = Field(ge=0)
+    settled_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    completed_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> CrawlMaterializationFanout:
+        if self.settled_count > self.triggered_count:
+            raise ValueError("settled_count cannot exceed triggered_count")
+        if self.failed_count > self.settled_count:
+            raise ValueError("failed_count cannot exceed settled_count")
+        if self.completed_at is not None and self.settled_count != self.triggered_count:
+            raise ValueError("completed fan-out must have settled all triggered work")
+        return self
+
+
+class CrawlMaterializationFanoutMember(CatalogueRecord):
+    crawl_id: UUID
+    materialization_id: UUID
+    definition_revision_id: UUID
+    scope_kind: Literal["document", "crawl"]
+    scope_id: str = Field(min_length=1)
+    status: Literal["planned", "settled", "failed"] = "planned"
+    settled_at: datetime | None = None
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def validate_status(self) -> CrawlMaterializationFanoutMember:
+        if self.status == "planned" and (self.settled_at is not None or self.error is not None):
+            raise ValueError("planned fan-out member cannot contain settlement state")
+        if self.status == "settled" and (self.settled_at is None or self.error is not None):
+            raise ValueError("settled fan-out member requires only settled_at")
+        if self.status == "failed" and (self.settled_at is None or self.error is None):
+            raise ValueError("failed fan-out member requires settled_at and error")
+        return self

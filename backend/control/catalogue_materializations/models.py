@@ -49,14 +49,14 @@ class CatalogueMaterialization(Base):
             name="ck_catalogue_materializations_refresh_mode",
         ),
         CheckConstraint(
-            "scope_kind IS NULL OR scope_kind = 'document'",
-            name="ck_catalogue_materializations_document_scope",
+            "scope_kind IS NULL OR scope_kind IN ('document', 'crawl')",
+            name="ck_catalogue_materializations_scope",
         ),
         CheckConstraint(
             "(refresh_mode = 'full' AND scope_kind IS NULL AND scope_column IS NULL "
             "AND activation_snapshot IS NULL AND NOT live_enabled AND NOT backfill_enabled) "
             "OR (refresh_mode = 'scope_incremental' "
-            "AND scope_kind = 'document' AND scope_column IS NOT NULL "
+            "AND scope_kind IN ('document', 'crawl') AND scope_column IS NOT NULL "
             "AND activation_snapshot IS NOT NULL)",
             name="ck_catalogue_materializations_mode_state",
         ),

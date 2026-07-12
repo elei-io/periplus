@@ -12,6 +12,8 @@ from repository.catalogue.exceptions import (
 from repository.catalogue.records import (
     CatalogueWriteResult,
     CrawlRecord,
+    CrawlMaterializationFanout,
+    CrawlMaterializationFanoutMember,
     DocumentRecord,
     ElementRecord,
 )
@@ -37,6 +39,8 @@ __all__ = [
     "CatalogueValidationError",
     "CatalogueWriteResult",
     "CrawlRecord",
+    "CrawlMaterializationFanout",
+    "CrawlMaterializationFanoutMember",
     "DocumentRecord",
     "ElementRecord",
     "catalogue_config_from_env",

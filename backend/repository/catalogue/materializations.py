@@ -229,7 +229,7 @@ class MaterializationStore:
 
 
 def scoped_view_query(
-    catalogue: Catalogue, view: DuckLakeView, *, scope_column: str
+    catalogue: Catalogue, view: DuckLakeView, *, scope_kind: str, scope_column: str
 ) -> str:
     """Wrap a view in one safely bound materialization scope."""
 
@@ -243,7 +243,7 @@ def scoped_view_query(
     )
     return (
         f"SELECT * FROM {qualified_view} "
-        f"WHERE {_quote_identifier(scope_column)} = $document_id"
+        f"WHERE {_quote_identifier(scope_column)} = ${scope_kind}_id"
     )
 
 

@@ -27,7 +27,7 @@ async def run_backfill(jetstream, stop: asyncio.Event) -> None:
             cursor: str | None = None
             while not stop.is_set():
                 scopes = await asyncio.to_thread(
-                    _missing_document_scope_page, definition, cursor
+                    _missing_scope_page, definition, cursor
                 )
                 if not scopes:
                     break
@@ -60,30 +60,33 @@ async def _wait_for_queues(jetstream, stop: asyncio.Event) -> None:
         await _wait(stop, 1)
 
 
-def _missing_document_scope_page(
+def _missing_scope_page(
     definition: CatalogueMaterialization, cursor: str | None
 ) -> list[str]:
     limit = get_int("ATLAS_MATERIALIZATION_BACKFILL_PAGE_SIZE")
     with catalogue_from_env() as catalogue:
-        documents = _qualified(catalogue, "documents")
+        source_table = "documents" if definition.scope_kind == "document" else "crawls"
+        identity = "document_id" if definition.scope_kind == "document" else "crawl_id"
+        scopes = _qualified(catalogue, source_table)
         coverage = _qualified(catalogue, "materialization_scope_results")
         rows = catalogue.connection.execute(
             f"""
-            SELECT d.document_id
-            FROM {documents} AS d AT (VERSION => ?)
+            SELECT d.{identity}
+            FROM {scopes} AS d AT (VERSION => ?)
             LEFT JOIN {coverage} AS r
               ON r.definition_revision_id = ?
-             AND r.scope_kind = 'document'
-             AND r.scope_id = d.document_id
+             AND r.scope_kind = ?
+             AND r.scope_id = CAST(d.{identity} AS VARCHAR)
              AND r.status IN ('succeeded', 'failed')
             WHERE r.scope_id IS NULL
-              AND (? IS NULL OR d.document_id > ?)
-            ORDER BY d.document_id
+              AND (? IS NULL OR CAST(d.{identity} AS VARCHAR) > ?)
+            ORDER BY d.{identity}
             LIMIT ?
             """,
             [
                 definition.activation_snapshot,
                 definition.definition_revision_id,
+                definition.scope_kind,
                 cursor,
                 cursor,
                 limit,
@@ -94,17 +97,18 @@ def _missing_document_scope_page(
 
 def _backfill_terminal(definition: CatalogueMaterialization) -> bool:
     with catalogue_from_env() as catalogue:
-        documents = _qualified(catalogue, "documents")
+        source_table = "documents" if definition.scope_kind == "document" else "crawls"
+        scopes = _qualified(catalogue, source_table)
         coverage = _qualified(catalogue, "materialization_scope_results")
         total = catalogue.connection.execute(
-            f"SELECT count(*) FROM {documents} AT (VERSION => ?)",
+            f"SELECT count(*) FROM {scopes} AT (VERSION => ?)",
             [definition.activation_snapshot],
         ).fetchone()[0]
         completed = catalogue.connection.execute(
             f"SELECT count(*) FROM {coverage} "
-            "WHERE definition_revision_id = ? AND scope_kind = 'document' "
+            "WHERE definition_revision_id = ? AND scope_kind = ? "
             "AND status IN ('succeeded', 'failed')",
-            [definition.definition_revision_id],
+            [definition.definition_revision_id, definition.scope_kind],
         ).fetchone()[0]
         return int(completed) >= int(total)
 

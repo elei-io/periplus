@@ -141,7 +141,6 @@ export function DataSchemasPage() {
             <TableHead>Type</TableHead>
             <TableHead>Priority</TableHead>
             <TableHead>Failures</TableHead>
-            <TableHead>Used</TableHead>
             <TableHead>Updated</TableHead>
           </TableRow>
         </TableHeader>
@@ -152,7 +151,7 @@ export function DataSchemasPage() {
           {!schemasQuery.isLoading && schemas.length === 0 ? (
             <TableRow>
               <TableCell
-                colSpan={7}
+                colSpan={6}
                 className="h-24 text-center text-muted-foreground"
               >
                 No data schemas match.
@@ -201,7 +200,6 @@ function DataSchemaRow({ schema }: { schema: DataSchemaRecord }) {
           {schema.failure_count}
         </Badge>
       </TableCell>
-      <TableCell>{schema.task_run_count}</TableCell>
       <TableCell>
         <div className="flex items-center gap-2">
           <Badge variant={schema.enabled ? "secondary" : "destructive"}>

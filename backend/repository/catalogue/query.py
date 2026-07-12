@@ -159,7 +159,11 @@ def _literal_limit(query: exp.Query) -> int | None:
         return None
 
 
-def execute_arrow_query(catalogue: Catalogue, sql: str) -> pa.RecordBatchReader:
+def execute_arrow_query(
+    catalogue: Catalogue,
+    sql: str,
+    parameters: dict[str, object] | None = None,
+) -> pa.RecordBatchReader:
     """Execute a validated query in the managed catalogue namespace."""
 
     classify_select(sql)
@@ -168,7 +172,12 @@ def execute_arrow_query(catalogue: Catalogue, sql: str) -> pa.RecordBatchReader:
         for part in (catalogue.config.alias, catalogue.config.schema)
     )
     catalogue.connection.execute(f"USE {namespace}")
-    return catalogue.connection.execute(sql).to_arrow_reader(batch_size=65_536)
+    cursor = (
+        catalogue.connection.execute(sql, parameters)
+        if parameters is not None
+        else catalogue.connection.execute(sql)
+    )
+    return cursor.to_arrow_reader(batch_size=65_536)
 
 
 def stream_arrow_reader(reader: pa.RecordBatchReader) -> Iterator[bytes]:

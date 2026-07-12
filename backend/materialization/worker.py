@@ -13,7 +13,8 @@ from config import get_float, get_int, get_str
 from materialization.backfill import run_backfill
 from materialization.compute import compute_scope
 from materialization.fencing import StaleMaterializationJob
-from materialization.live import run_live
+from materialization.live import run_crawl_planner, run_live
+from materialization.readiness import run_readiness_reconciliation
 from materialization.queue import (
     COMMIT_SUBJECT,
     DEAD_LETTER_SUBJECT,
@@ -67,6 +68,8 @@ async def run() -> None:
             )
             tasks.create_task(run_backfill(jetstream, stop))
             tasks.create_task(run_live(jetstream, stop, monitor))
+            tasks.create_task(run_crawl_planner(jetstream, stop))
+            tasks.create_task(run_readiness_reconciliation(jetstream, stop))
     finally:
         stop.set()
         await asyncio.to_thread(server.shutdown)

@@ -23,7 +23,6 @@ class QuerySchemaRecord(BaseModel):
     schema_hash: str
     generated_from_crawl_id: UUID | None = None
     generated_from_document_id: str | None = None
-    generated_by_task_run_id: UUID | None = None
     inputs_json: dict[str, Any]
     warnings_json: dict[str, Any]
     created_at: datetime
@@ -45,7 +44,6 @@ class QuerySchemaListRecord(BaseModel):
     warning_count: int = 0
     generated_from_crawl_id: UUID | None = None
     generated_from_document_id: str | None = None
-    generated_by_task_run_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
 
