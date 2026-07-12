@@ -119,6 +119,7 @@ target_node_id
 name
 description
 sql
+dedupe_mode: graph | crawl | document (default graph)
 created_at
 used_at, nullable
 ```
@@ -126,6 +127,16 @@ used_at, nullable
 The source and target nodes belong to the same graph. For every crawl completed by the source node,
 the edge SQL executes once with a bound `$crawl_id`. Each returned URL is a candidate input for the
 target node.
+
+Deduplication runs after SQL selection and URL normalization:
+
+- `graph` suppresses a URL already admitted anywhere in the current graph run;
+- `crawl` suppresses repeated URLs emitted by this edge for one source crawl; and
+- `document` suppresses repeated URLs emitted by this edge for crawls sharing one source document.
+
+The crawl and document scopes include the edge identity, so independent edges do not suppress one
+another. SQL `LIMIT` is applied before deduplication and may therefore yield fewer admitted requests
+than selected rows. Seed URLs use graph-wide deduplication.
 
 The minimum result contract is one URL column:
 
@@ -205,6 +216,7 @@ id
 graph_run_id
 node_id
 url
+document_id, nullable
 effective crawl policy snapshot
 source_crawl_id, nullable
 source_edge_id, nullable
@@ -237,7 +249,7 @@ candidate URL
     |
 normalize request identity
     |
-already seen for the relevant run/node scope?
+already seen for the edge's frozen deduplication scope?
     +-- yes --> reject as duplicate
     `-- no
          |
@@ -337,7 +349,7 @@ inputs for the same node:
 search_page -- pagination SQL --> search_page
 ```
 
-Request deduplication prevents exact cycles, while a deployment-level hard ceiling on requests and
+Graph-wide deduplication prevents exact cycles by default, while a deployment-level hard ceiling on requests and
 run duration prevents a malformed self-edge from producing unbounded unique URLs. There is no
 pagination-specific loop counter and no graph, node, edge, or crawl-policy work budget. Edge SQL is
 responsible for intended termination; the platform ceiling is an emergency safety boundary.
@@ -543,6 +555,7 @@ crawl_graph_edges
 - name TEXT
 - description TEXT
 - sql TEXT
+- dedupe_mode ENUM: graph | crawl | document, default graph
 - used_at TIMESTAMPTZ nullable
 - created_at TIMESTAMPTZ
 ```
@@ -573,7 +586,8 @@ The control plane produces this complete execution value before runtime publicat
       "name": "next_page",
       "source_node_id": "uuid",
       "target_node_id": "uuid",
-      "sql": "SELECT url ... WHERE crawl_id = $crawl_id LIMIT 1"
+      "sql": "SELECT url ... WHERE crawl_id = $crawl_id LIMIT 1",
+      "dedupe_mode": "graph"
     }
   ]
 }
@@ -675,6 +689,7 @@ id
 graph_run_id
 node_id
 url
+document_id nullable
 effective_policy_snapshot_json
 source_crawl_id nullable
 source_edge_id nullable
@@ -686,8 +701,17 @@ updated_at
 error nullable
 ```
 
-The request identity is the hash of `graph_run_id`, `node_id`, and the normalized URL. Edge
-evaluation identity is the hash of `graph_run_id`, `crawl_request_id`, `crawl_id`, and `edge_id`.
+Admission identities are deterministic hashes of the normalized URL and frozen deduplication scope:
+
+```text
+graph    graph_run_id + normalized_url
+crawl    graph_run_id + edge_id + source_crawl_id + normalized_url
+document graph_run_id + edge_id + source_document_id + normalized_url
+```
+
+Every admitted URL also records its graph-wide identity, allowing a later graph-scoped edge to
+recognize URLs first admitted through a narrower scope. Edge evaluation identity is the hash of
+`graph_run_id`, `crawl_request_id`, `crawl_id`, and `edge_id`.
 
 The deployment-only ceilings are:
 

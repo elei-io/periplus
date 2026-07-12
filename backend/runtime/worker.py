@@ -115,6 +115,7 @@ async def _process_crawl(message, runs, requests, progress) -> None:
             return current.model_copy(
                 update={
                     "status": "awaiting_materializations",
+                    "document_id": page.document_id,
                     "updated_at": datetime.now(UTC),
                 }
             )

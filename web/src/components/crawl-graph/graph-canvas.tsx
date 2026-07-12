@@ -40,6 +40,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select"
 import {
   useCreateCrawlGraphEdge,
   useCreateCrawlGraphNode,
@@ -51,7 +52,7 @@ import {
   useUpdateCrawlGraphNodePosition,
 } from "@/hooks/use-crawl-graphs"
 import { GraphProgressProvider, useEdgeProgress, useGraphProgressConnection, useNodeProgress } from "@/hooks/use-graph-progress"
-import type { CrawlGraphDetail, CrawlGraphEdge, CrawlGraphNode } from "@/types/graphs"
+import type { CrawlGraphDetail, CrawlGraphEdge, CrawlGraphNode, EdgeDedupeMode } from "@/types/graphs"
 
 const DEFAULT_EDGE_SQL = `SELECT url
 FROM materialized.page_links
@@ -79,7 +80,7 @@ type CrawlEdgeData = {
   runId: string | null
 }
 type CrawlFlowEdge = Edge<CrawlEdgeData, "crawlEdge">
-type EdgeValues = { name: string; description: string; sql: string }
+type EdgeValues = { name: string; description: string; sql: string; dedupe_mode: EdgeDedupeMode }
 
 const nodeTypes = { crawlNode: CrawlNodeCard }
 const edgeTypes = { crawlEdge: CrawlEdgeEditor }
@@ -129,6 +130,7 @@ function GraphCanvasContent({ graph, runId }: { graph: CrawlGraphDetail; runId: 
       source_node_id: edge.source_node_id,
       target_node_id: edge.target_node_id,
       sql: edge.sql,
+      dedupe_mode: edge.dedupe_mode,
     })
   }, [createEdge, graph.edges.length])
 
@@ -178,6 +180,7 @@ function GraphCanvasContent({ graph, runId }: { graph: CrawlGraphDetail; runId: 
       source_node_id: source,
       target_node_id: target,
       sql: DEFAULT_EDGE_SQL,
+      dedupe_mode: "graph",
     })
   }, [createEdge, graph.edges.length])
 
@@ -439,6 +442,7 @@ function EdgeEditDialog({
   const [name, setName] = useState(edge?.name ?? "")
   const [description, setDescription] = useState(edge?.description ?? "")
   const [sql, setSql] = useState(edge?.sql ?? "")
+  const [dedupeMode, setDedupeMode] = useState<EdgeDedupeMode>(edge?.dedupe_mode ?? "graph")
   if (!edge) return null
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -450,12 +454,26 @@ function EdgeEditDialog({
         <div className="space-y-3">
           <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Edge name" />
           <Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Description" />
+          <Select
+            value={dedupeMode}
+            onValueChange={(value) => value && setDedupeMode(value as EdgeDedupeMode)}
+            disabled={Boolean(edge.used_at)}
+          >
+            <SelectTrigger className="w-full" aria-label="URL deduplication scope">
+              <span>Deduplicate per {dedupeMode}</span>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="graph">Graph run</SelectItem>
+              <SelectItem value="crawl">Source crawl</SelectItem>
+              <SelectItem value="document">Source document</SelectItem>
+            </SelectContent>
+          </Select>
           <div className="overflow-hidden rounded-md border">
             <SqlEditor value={sql} onChange={setSql} readOnly={Boolean(edge.used_at)} height="240px" ariaLabel="Edge SQL" />
           </div>
         </div>
         <DialogFooter>
-          <Button disabled={Boolean(edge.used_at)} onClick={() => { onSave(edge, { name, description, sql }); onOpenChange(false) }}>
+          <Button disabled={Boolean(edge.used_at)} onClick={() => { onSave(edge, { name, description, sql, dedupe_mode: dedupeMode }); onOpenChange(false) }}>
             Save changes
           </Button>
         </DialogFooter>

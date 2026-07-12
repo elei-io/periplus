@@ -11,6 +11,7 @@ from control.crawl_graphs.schemas import (
     CrawlGraphCreate,
     CrawlGraphEdgeCreate,
     CrawlGraphEdgeUpdate,
+    EdgeDedupeMode,
     CrawlGraphNodeCreate,
     CrawlGraphNodePositionUpdate,
     CrawlGraphNodeUpdate,
@@ -70,6 +71,7 @@ class CrawlGraphTests(unittest.TestCase):
                 target_node_id=result.id,
                 name="results",
                 sql="SELECT url FROM materialized.page_links WHERE crawl_id = $crawl_id LIMIT 10",
+                dedupe_mode=EdgeDedupeMode.document,
             ),
         )
 
@@ -79,6 +81,7 @@ class CrawlGraphTests(unittest.TestCase):
         self.assertEqual(snapshot.root_node_id, search.id)
         self.assertEqual({item.id for item in snapshot.nodes}, {search.id, result.id})
         self.assertEqual(snapshot.edges[0].id, edge.id)
+        self.assertEqual(snapshot.edges[0].dedupe_mode, EdgeDedupeMode.document)
         with self.assertRaises(CrawlGraphConflictError):
             update_node(
                 self.session,

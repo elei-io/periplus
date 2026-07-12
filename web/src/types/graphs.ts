@@ -9,6 +9,8 @@ export type CrawlGraphNode = {
   created_at: string
 }
 
+export type EdgeDedupeMode = "graph" | "crawl" | "document"
+
 export type CrawlGraphEdge = {
   id: string
   graph_id: string
@@ -17,6 +19,7 @@ export type CrawlGraphEdge = {
   name: string
   description: string | null
   sql: string
+  dedupe_mode: EdgeDedupeMode
   used_at: string | null
   created_at: string
 }
@@ -61,6 +64,7 @@ export type GraphRunStatus =
 export type GraphRunRecord = {
   id: string
   graph_id: string
+  graph_name?: string | null
   status: GraphRunStatus
   trigger_kind: "manual" | "scheduled"
   trigger_urls: string[]
@@ -77,4 +81,19 @@ export type GraphRunRecord = {
 export type GraphRunListResponse = {
   items: GraphRunRecord[]
   total: number
+}
+
+export type CrawlConcurrencyLimits = {
+  worker_count: number
+  runtime_capacity: number
+  runtime_active: number
+  browser_concurrency_per_worker: number
+  browser_capacity: number
+  crawl_permit_timeout_seconds: number
+  workers: Array<{
+    worker_id: string
+    capacity: number
+    active_request_count: number
+    last_seen_at: string
+  }>
 }

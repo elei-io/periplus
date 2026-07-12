@@ -176,6 +176,7 @@ def create_edge(session: Session, graph_id: UUID, request: CrawlGraphEdgeCreate)
         name=_clean(request.name),
         description=request.description,
         sql=request.sql.strip(),
+        dedupe_mode=request.dedupe_mode,
     )
     session.add(edge)
     _flush_conflict(session, "An edge with this name already exists in the graph.")
@@ -192,6 +193,7 @@ def update_edge(session: Session, graph_id: UUID, edge_id: UUID, request: CrawlG
     edge.name = _clean(request.name)
     edge.description = request.description
     edge.sql = request.sql.strip()
+    edge.dedupe_mode = request.dedupe_mode
     _flush_conflict(session, "An edge with this name already exists in the graph.")
     return _edge_record(edge)
 
@@ -225,6 +227,7 @@ def freeze_graph(session: Session, graph_id: UUID) -> FrozenGraphSnapshot:
                 source_node_id=edge.source_node_id,
                 target_node_id=edge.target_node_id,
                 sql=edge.sql,
+                dedupe_mode=edge.dedupe_mode,
             )
             for edge in edges
         ],

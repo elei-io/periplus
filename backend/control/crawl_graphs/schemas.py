@@ -1,7 +1,14 @@
 from datetime import datetime
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class EdgeDedupeMode(StrEnum):
+    graph = "graph"
+    crawl = "crawl"
+    document = "document"
 
 
 class CrawlGraphCreate(BaseModel):
@@ -37,6 +44,7 @@ class CrawlGraphEdgeCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2_000)
     sql: str = Field(min_length=1, max_length=100_000)
+    dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph
 
 
 class CrawlGraphEdgeUpdate(CrawlGraphEdgeCreate):
@@ -86,6 +94,7 @@ class FrozenGraphEdge(BaseModel):
     source_node_id: UUID
     target_node_id: UUID
     sql: str
+    dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph
 
 
 class FrozenGraphSnapshot(BaseModel):

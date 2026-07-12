@@ -14,7 +14,7 @@ from config import get_float, get_int, get_str
 from nats.js.api import AckPolicy, ConsumerConfig, KeyValueConfig, RetentionPolicy, StorageType, StreamConfig
 from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError, NoKeysError, NotFoundError
 from pydantic import BaseModel, ConfigDict
-from control.crawl_graphs.schemas import FrozenGraphEdge, FrozenGraphNode, FrozenGraphSnapshot
+from control.crawl_graphs.schemas import EdgeDedupeMode, FrozenGraphEdge, FrozenGraphNode, FrozenGraphSnapshot
 
 GRAPH_STREAM = "ATLAS_GRAPH_WORK"
 CRAWL_SUBJECT = "atlas.graph.crawl"
@@ -58,6 +58,7 @@ class CrawlRequest(BaseModel):
     graph_run_id: UUID
     node_id: UUID
     url: str
+    document_id: str | None = None
     effective_policy_snapshot_json: dict | None = None
     source_crawl_id: UUID | None = None
     source_edge_id: UUID | None = None
@@ -128,8 +129,26 @@ def normalize_request_url(url: str) -> str:
     return urlunsplit((scheme, netloc, path, parsed.query, ""))
 
 
-def request_identity(graph_run_id: UUID, node_id: UUID, url: str) -> str:
-    value = f"{graph_run_id}:{node_id}:{normalize_request_url(url)}"
+def request_identity(
+    graph_run_id: UUID,
+    url: str,
+    *,
+    dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph,
+    source_edge_id: UUID | None = None,
+    source_crawl_id: UUID | None = None,
+    source_document_id: str | None = None,
+) -> str:
+    normalized = normalize_request_url(url)
+    if dedupe_mode == EdgeDedupeMode.graph:
+        value = f"{graph_run_id}:graph:{normalized}"
+    elif dedupe_mode == EdgeDedupeMode.crawl:
+        if source_edge_id is None or source_crawl_id is None:
+            raise ValueError("Crawl deduplication requires a source edge and crawl.")
+        value = f"{graph_run_id}:crawl:{source_edge_id}:{source_crawl_id}:{normalized}"
+    else:
+        if source_edge_id is None or source_document_id is None:
+            raise ValueError("Document deduplication requires a source edge and document.")
+        value = f"{graph_run_id}:document:{source_edge_id}:{source_document_id}:{normalized}"
     return hashlib.sha256(value.encode()).hexdigest()
 
 
@@ -252,6 +271,18 @@ async def list_graph_runs(bucket) -> list[GraphRun]:
     except (KeyNotFoundError, KeyDeletedError, NoKeysError):
         return []
     return [value for key in keys if (value := await _get(bucket, key, GraphRun)) is not None]
+
+
+async def list_worker_states(bucket) -> list[WorkerState]:
+    try:
+        keys = await bucket.keys()
+    except (KeyNotFoundError, KeyDeletedError, NoKeysError):
+        return []
+    return [
+        value
+        for key in keys
+        if (value := await _get(bucket, key, WorkerState)) is not None
+    ]
 
 
 async def list_crawl_requests(bucket, *, graph_run_id: UUID | None = None) -> list[CrawlRequest]:

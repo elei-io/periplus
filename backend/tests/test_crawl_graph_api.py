@@ -71,6 +71,7 @@ class CrawlGraphApiTests(unittest.TestCase):
         self.assertEqual(len(detail.json()["nodes"]), 2)
         self.assertEqual(detail.json()["root_node_id"], search.json()["id"])
         self.assertEqual(len(detail.json()["edges"]), 1)
+        self.assertEqual(detail.json()["edges"][0]["dedupe_mode"], "graph")
         changed_root = self.client.put(
             f"/crawl-graphs/{graph_id}",
             json={"name": "Search", "description": None, "root_node_id": result.json()["id"]},
@@ -99,6 +100,23 @@ class CrawlGraphApiTests(unittest.TestCase):
                 "source_node_id": node_id,
                 "target_node_id": node_id,
                 "sql": "SELECT url FROM t",
+            },
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_edge_dedupe_mode_is_validated(self) -> None:
+        graph_id = self.client.post("/crawl-graphs/", json={"name": "Search"}).json()["id"]
+        node_id = self.client.post(
+            f"/crawl-graphs/{graph_id}/nodes", json={"name": "search"}
+        ).json()["id"]
+        response = self.client.post(
+            f"/crawl-graphs/{graph_id}/edges",
+            json={
+                "name": "links",
+                "source_node_id": node_id,
+                "target_node_id": node_id,
+                "sql": "SELECT url FROM links WHERE crawl_id = $crawl_id LIMIT 10",
+                "dedupe_mode": "none",
             },
         )
         self.assertEqual(response.status_code, 422)

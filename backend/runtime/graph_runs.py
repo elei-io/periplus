@@ -9,6 +9,7 @@ from uuid import UUID, uuid5
 from config import get_int
 from control.crawl_policies.schemas import CrawlPolicySnapshot
 from control.crawl_policies.service import find_crawl_policy_for_url
+from control.crawl_graphs.schemas import EdgeDedupeMode
 
 from .graph_queue import CrawlRequest, EdgeEvaluation, EdgeWork, FrozenGraphSnapshot, GraphRun, ReadinessWork, edge_evaluation_identity, edge_evaluation_key, get_crawl_request, get_edge_evaluation, get_graph_run, new_graph_run, normalize_request_url, publish_crawl, publish_edge, request_identity, update_crawl_request, update_edge_evaluation, update_graph_run
 from .graph_progress import add_edge_output_progress, initialize_run_progress, mark_run_progress_settled, transition_edge_evaluation_progress, transition_node_progress
@@ -65,23 +66,35 @@ def _ceiling_error(run: GraphRun, now: datetime) -> str | None:
     return None
 
 
-async def admit_request(*, runs, requests, progress, jetstream, run_id: UUID, node_id: UUID, url: str, policy_resolver: Callable[[str], dict | None], source_crawl_id: UUID | None = None, source_edge_id: UUID | None = None, parent_request_id: UUID | None = None, now: datetime | None = None) -> tuple[CrawlRequest | None, bool]:
+async def admit_request(*, runs, requests, progress, jetstream, run_id: UUID, node_id: UUID, url: str, policy_resolver: Callable[[str], dict | None], dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph, source_crawl_id: UUID | None = None, source_document_id: str | None = None, source_edge_id: UUID | None = None, parent_request_id: UUID | None = None, now: datetime | None = None) -> tuple[CrawlRequest | None, bool]:
     now = now or datetime.now(UTC)
     normalized = normalize_request_url(url)
-    identity = request_identity(run_id, node_id, normalized)
+    identity = request_identity(
+        run_id,
+        normalized,
+        dedupe_mode=dedupe_mode,
+        source_edge_id=source_edge_id,
+        source_crawl_id=source_crawl_id,
+        source_document_id=source_document_id,
+    )
+    graph_identity = request_identity(run_id, normalized)
     request_id = deterministic_request_id(identity)
     admitted = False
 
     def reserve(run: GraphRun) -> GraphRun:
         nonlocal admitted
         admitted = False
-        if run.status in _TERMINAL_RUNS or run.cancel_requested_at is not None or identity in run.seen_request_identities:
+        dedupe_identity = graph_identity if dedupe_mode == EdgeDedupeMode.graph else identity
+        if run.status in _TERMINAL_RUNS or run.cancel_requested_at is not None or dedupe_identity in run.seen_request_identities:
             return run
         error = _ceiling_error(run, now)
         if error:
             return run.model_copy(update={"status": "failed", "completed_at": now, "error": error})
         admitted = True
-        return run.model_copy(update={"status": "running", "started_at": run.started_at or now, "seen_request_identities": (*run.seen_request_identities, identity), "request_count": run.request_count + 1, "pending_request_count": run.pending_request_count + 1})
+        identities = (identity,)
+        if graph_identity != identity and graph_identity not in run.seen_request_identities:
+            identities = (*identities, graph_identity)
+        return run.model_copy(update={"status": "running", "started_at": run.started_at or now, "seen_request_identities": (*run.seen_request_identities, *identities), "request_count": run.request_count + 1, "pending_request_count": run.pending_request_count + 1})
 
     run = await update_graph_run(runs, run_id, reserve)
     if not admitted:
@@ -238,7 +251,7 @@ async def evaluate_edge(*, runs, requests, progress, jetstream, work: EdgeWork, 
                 continue
             count += 1
             batch_selected += 1
-            _target, newly_admitted = await admit_request(runs=runs, requests=requests, progress=progress, jetstream=jetstream, run_id=run.id, node_id=edge.target_node_id, url=str(url), policy_resolver=policy_resolver, source_crawl_id=work.crawl_id, source_edge_id=edge.id, parent_request_id=request.id)
+            _target, newly_admitted = await admit_request(runs=runs, requests=requests, progress=progress, jetstream=jetstream, run_id=run.id, node_id=edge.target_node_id, url=str(url), policy_resolver=policy_resolver, dedupe_mode=edge.dedupe_mode, source_crawl_id=work.crawl_id, source_document_id=request.document_id, source_edge_id=edge.id, parent_request_id=request.id)
             batch_admitted += int(newly_admitted)
             if batch_selected == 10:
                 progress_count = count

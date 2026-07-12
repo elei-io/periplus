@@ -7,8 +7,8 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from control.crawl_graphs.schemas import FrozenGraphEdge, FrozenGraphNode, FrozenGraphSnapshot
-from runtime.graph_queue import EdgeWork, ReadinessWork, edge_evaluation_identity, new_graph_run, normalize_request_url, request_identity
+from control.crawl_graphs.schemas import EdgeDedupeMode, FrozenGraphEdge, FrozenGraphNode, FrozenGraphSnapshot
+from runtime.graph_queue import EdgeWork, ReadinessWork, edge_evaluation_identity, new_graph_run, normalize_request_url, request_identity, update_crawl_request
 from runtime.graph_runs import admit_request, deterministic_request_id, evaluate_edge
 from runtime.graph_progress import EdgeProgress, edge_progress_key, initialize_run_progress
 
@@ -52,11 +52,11 @@ class FakeJetStream:
         self.messages.append((subject, payload))
 
 
-def snapshot(*, entry: bool = True, self_edge: bool = False) -> FrozenGraphSnapshot:
+def snapshot(*, entry: bool = True, self_edge: bool = False, dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph) -> FrozenGraphSnapshot:
     graph_id = uuid4()
     source = FrozenGraphNode(id=uuid4(), name="source")
     target = source if self_edge else FrozenGraphNode(id=uuid4(), name="target")
-    edge = FrozenGraphEdge(id=uuid4(), name="links", source_node_id=source.id, target_node_id=target.id, sql="SELECT url FROM materialized.page_links WHERE crawl_id = $crawl_id LIMIT 10")
+    edge = FrozenGraphEdge(id=uuid4(), name="links", source_node_id=source.id, target_node_id=target.id, sql="SELECT url FROM materialized.page_links WHERE crawl_id = $crawl_id LIMIT 10", dedupe_mode=dedupe_mode)
     return FrozenGraphSnapshot(graph_id=graph_id, root_node_id=source.id if entry else uuid4(), nodes=[source, target] if source != target else [source], edges=[edge])
 
 
@@ -67,10 +67,17 @@ class GraphRuntimeTests(unittest.TestCase):
     with self.assertRaisesRegex(ValueError, "root node"): new_graph_run(snapshot(entry=False), ["https://example.com"])
     for url in ("relative", "ftp://example.com/a", "https:///missing-host"):
         with self.assertRaisesRegex(ValueError, "absolute HTTP"): normalize_request_url(url)
-    run_id, first, second = uuid4(), uuid4(), uuid4()
-    self.assertEqual(request_identity(run_id, first, "https://example.com/a#one"), request_identity(run_id, first, "https://EXAMPLE.com/a#two"))
-    self.assertNotEqual(request_identity(run_id, first, "https://example.com/a"), request_identity(run_id, second, "https://example.com/a"))
-    identity = request_identity(uuid4(), uuid4(), "https://example.com"); self.assertEqual(deterministic_request_id(identity), deterministic_request_id(identity))
+    run_id, edge_id, first_crawl, second_crawl = uuid4(), uuid4(), uuid4(), uuid4()
+    self.assertEqual(request_identity(run_id, "https://example.com/a#one"), request_identity(run_id, "https://EXAMPLE.com/a#two"))
+    self.assertNotEqual(
+        request_identity(run_id, "https://example.com/a", dedupe_mode=EdgeDedupeMode.crawl, source_edge_id=edge_id, source_crawl_id=first_crawl),
+        request_identity(run_id, "https://example.com/a", dedupe_mode=EdgeDedupeMode.crawl, source_edge_id=edge_id, source_crawl_id=second_crawl),
+    )
+    self.assertEqual(
+        request_identity(run_id, "https://example.com/a", dedupe_mode=EdgeDedupeMode.document, source_edge_id=edge_id, source_document_id="sha256:same"),
+        request_identity(run_id, "https://example.com/a", dedupe_mode=EdgeDedupeMode.document, source_edge_id=edge_id, source_document_id="sha256:same"),
+    )
+    identity = request_identity(uuid4(), "https://example.com"); self.assertEqual(deterministic_request_id(identity), deterministic_request_id(identity))
     payload = ReadinessWork(event_id=uuid4(), crawl_id=uuid4(), graph_run_id=uuid4(), crawl_request_id=uuid4(), status="ready", occurred_at=datetime.now(UTC)); self.assertEqual(payload.failed_materialization_ids, ())
 
  def test_admission_is_idempotent_and_freezes_policy(self) -> None:
@@ -117,6 +124,75 @@ class GraphRuntimeTests(unittest.TestCase):
         assert edge_state.urls_selected == edge_state.urls_admitted == 1
         assert edge_state.urls_deduplicated == 0
         assert edge_state.evaluations_completed == 1
+
+    asyncio.run(scenario())
+
+ def test_edge_dedupe_modes_apply_after_sql_selection(self) -> None:
+    async def run_mode(mode: EdgeDedupeMode) -> tuple[int, int]:
+        runs, requests, progress, jetstream = FakeKV(), FakeKV(), FakeKV(), FakeJetStream()
+        graph = snapshot(dedupe_mode=mode)
+        run = new_graph_run(graph, ["https://source.example/one"])
+        await runs.create(run.id.hex, run.model_dump_json().encode())
+        await initialize_run_progress(progress, run)
+        sources = []
+        for path in ("one", "two"):
+            source, admitted = await admit_request(
+                runs=runs, requests=requests, progress=progress, jetstream=jetstream,
+                run_id=run.id, node_id=graph.nodes[0].id,
+                url=f"https://source.example/{path}", policy_resolver=lambda _url: None,
+            )
+            assert source is not None and admitted
+            source = await update_crawl_request(
+                requests,
+                source.id,
+                lambda value: value.model_copy(update={"document_id": "sha256:same-document"}),
+            )
+            sources.append(source)
+        for source in sources:
+            await evaluate_edge(
+                runs=runs, requests=requests, progress=progress, jetstream=jetstream,
+                work=EdgeWork(
+                    graph_run_id=run.id, crawl_request_id=source.id,
+                    crawl_id=source.id, edge_id=graph.edges[0].id,
+                ),
+                execute_urls=lambda _sql, _parameters: ["https://target.example/same"],
+                policy_resolver=lambda _url: None,
+            )
+        state = EdgeProgress.model_validate_json(
+            (await progress.get(edge_progress_key(run.id, graph.edges[0].id))).value
+        )
+        return state.urls_admitted, state.urls_deduplicated
+
+    async def scenario() -> None:
+        self.assertEqual(await run_mode(EdgeDedupeMode.graph), (1, 1))
+        self.assertEqual(await run_mode(EdgeDedupeMode.crawl), (2, 0))
+        self.assertEqual(await run_mode(EdgeDedupeMode.document), (1, 1))
+
+    asyncio.run(scenario())
+
+ def test_graph_mode_sees_urls_admitted_by_narrower_modes(self) -> None:
+    async def scenario() -> None:
+        runs, requests, progress, jetstream = FakeKV(), FakeKV(), FakeKV(), FakeJetStream()
+        graph = snapshot()
+        run = new_graph_run(graph, ["https://source.example/"])
+        await runs.create(run.id.hex, run.model_dump_json().encode())
+        await initialize_run_progress(progress, run)
+        edge_id, crawl_id = uuid4(), uuid4()
+        first, first_admitted = await admit_request(
+            runs=runs, requests=requests, progress=progress, jetstream=jetstream,
+            run_id=run.id, node_id=graph.nodes[0].id, url="https://target.example/same",
+            policy_resolver=lambda _url: None, dedupe_mode=EdgeDedupeMode.crawl,
+            source_edge_id=edge_id, source_crawl_id=crawl_id,
+        )
+        second, second_admitted = await admit_request(
+            runs=runs, requests=requests, progress=progress, jetstream=jetstream,
+            run_id=run.id, node_id=graph.nodes[-1].id, url="https://target.example/same",
+            policy_resolver=lambda _url: None,
+        )
+        self.assertIsNotNone(first)
+        self.assertTrue(first_admitted)
+        self.assertIsNone(second)
+        self.assertFalse(second_admitted)
 
     asyncio.run(scenario())
 

@@ -9,11 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from nats.errors import TimeoutError as NatsTimeoutError
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from config import get_float, get_int
+from control.crawl_graphs.models import CrawlGraph
 from control.crawl_graphs.service import CrawlGraphNotFoundError, CrawlGraphValidationError, freeze_graph
 from db.session import get_session
-from runtime.graph_queue import GraphRun, connect_nats, ensure_graph_progress_storage, ensure_graph_storage, get_graph_run, list_graph_runs
+from runtime.graph_queue import GraphRun, connect_nats, ensure_graph_progress_storage, ensure_graph_storage, get_graph_run, list_graph_runs, list_worker_states
 from runtime.graph_runs import (
     GraphRunNotFoundError,
     create_graph_run,
@@ -41,6 +44,7 @@ class GraphRunSubmission(BaseModel):
 class GraphRunSummary(BaseModel):
     id: UUID
     graph_id: UUID
+    graph_name: str | None
     status: Literal["queued", "running", "completed", "completed_with_errors", "failed", "cancelled"]
     trigger_kind: Literal["manual", "scheduled"]
     trigger_urls: tuple[str, ...]
@@ -59,12 +63,65 @@ class GraphRunList(BaseModel):
     total: int
 
 
+class RuntimeWorkerCapacity(BaseModel):
+    worker_id: str
+    capacity: int
+    active_request_count: int
+    last_seen_at: datetime
+
+
+class CrawlConcurrencyLimits(BaseModel):
+    worker_count: int
+    runtime_capacity: int
+    runtime_active: int
+    browser_concurrency_per_worker: int
+    browser_capacity: int
+    crawl_permit_timeout_seconds: float
+    workers: list[RuntimeWorkerCapacity]
+
+
+def _run_summaries(session: Session, runs: list[GraphRun]) -> list[GraphRunSummary]:
+    graph_ids = {run.graph_id for run in runs}
+    names = dict(
+        session.execute(
+            select(CrawlGraph.id, CrawlGraph.name).where(CrawlGraph.id.in_(graph_ids))
+        ).all()
+    ) if graph_ids else {}
+    return [
+        GraphRunSummary(
+            **run.model_dump(),
+            graph_name=names.get(run.graph_id),
+        )
+        for run in runs
+    ]
+
+
 async def _storage():
     client = await connect_nats()
     jetstream = client.jetstream()
     runs, requests, _workers = await ensure_graph_storage(jetstream)
     progress = await ensure_graph_progress_storage(jetstream)
     return client, runs, requests, progress
+
+
+@router.get("/capacity", response_model=CrawlConcurrencyLimits)
+async def capacity() -> CrawlConcurrencyLimits:
+    client = await connect_nats()
+    try:
+        _runs, _requests, workers_bucket = await ensure_graph_storage(client.jetstream())
+        workers = sorted(await list_worker_states(workers_bucket), key=lambda value: value.worker_id)
+    finally:
+        await client.drain()
+    browser_per_worker = get_int("ATLAS_BROWSER_CONCURRENCY")
+    return CrawlConcurrencyLimits(
+        worker_count=len(workers),
+        runtime_capacity=sum(worker.capacity for worker in workers),
+        runtime_active=sum(worker.active_request_count for worker in workers),
+        browser_concurrency_per_worker=browser_per_worker,
+        browser_capacity=len(workers) * browser_per_worker,
+        crawl_permit_timeout_seconds=get_float("ATLAS_CRAWL_PERMIT_TIMEOUT_SECONDS"),
+        workers=[RuntimeWorkerCapacity.model_validate(worker, from_attributes=True) for worker in workers],
+    )
 
 
 @trigger_router.post("/{graph_id}/runs", response_model=GraphRunSubmission, status_code=202)
@@ -101,7 +158,10 @@ async def trigger(
 
 
 @trigger_router.get("/{graph_id}/runs/active", response_model=GraphRunList)
-async def active_graph_runs(graph_id: UUID) -> GraphRunList:
+async def active_graph_runs(
+    graph_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+) -> GraphRunList:
     client, runs, _requests, _progress = await _storage()
     try:
         items = [
@@ -113,7 +173,7 @@ async def active_graph_runs(graph_id: UUID) -> GraphRunList:
         await client.drain()
     items.sort(key=lambda run: run.created_at, reverse=True)
     return GraphRunList(
-        items=[GraphRunSummary.model_validate(run, from_attributes=True) for run in items],
+        items=_run_summaries(session, items),
         total=len(items),
     )
 
@@ -131,7 +191,9 @@ async def get(run_id: UUID) -> GraphRun:
 
 
 @router.get("/", response_model=GraphRunList)
-async def list_runs() -> GraphRunList:
+async def list_runs(
+    session: Annotated[Session, Depends(get_session)],
+) -> GraphRunList:
     client, runs, _requests, _progress = await _storage()
     try:
         items = await list_graph_runs(runs)
@@ -139,7 +201,7 @@ async def list_runs() -> GraphRunList:
         await client.drain()
     items.sort(key=lambda run: run.created_at, reverse=True)
     return GraphRunList(
-        items=[GraphRunSummary.model_validate(run, from_attributes=True) for run in items],
+        items=_run_summaries(session, items),
         total=len(items),
     )
 

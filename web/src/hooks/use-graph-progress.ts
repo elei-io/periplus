@@ -144,9 +144,13 @@ export function useEdgeProgress(runId: string | null, edgeId: string) {
 function useTransientActivity(activity: NodeActivity[]) {
   const [visible, setVisible] = useState<NodeActivity | null>(null)
   const seen = useRef(new Set<string>())
-  const timer = useRef<number | null>(null)
+  const hideTimer = useRef<number | null>(null)
+  const replaceTimer = useRef<number | null>(null)
+  const pending = useRef<NodeActivity | null>(null)
+  const lastReplacementAt = useRef(0)
   useEffect(() => () => {
-    if (timer.current !== null) window.clearTimeout(timer.current)
+    if (hideTimer.current !== null) window.clearTimeout(hideTimer.current)
+    if (replaceTimer.current !== null) window.clearTimeout(replaceTimer.current)
   }, [])
   useEffect(() => {
     const additions = activity.filter((item) => {
@@ -156,9 +160,26 @@ function useTransientActivity(activity: NodeActivity[]) {
       return true
     })
     if (additions.length === 0) return
-    setVisible(additions[0])
-    if (timer.current !== null) window.clearTimeout(timer.current)
-    timer.current = window.setTimeout(() => setVisible(null), 10_000)
-  }, [activity])
+    pending.current = additions[0]
+
+    const replace = () => {
+      const next = pending.current
+      pending.current = null
+      replaceTimer.current = null
+      if (!next) return
+      lastReplacementAt.current = performance.now()
+      setVisible(next)
+      if (hideTimer.current !== null) window.clearTimeout(hideTimer.current)
+      hideTimer.current = window.setTimeout(() => setVisible(null), 10_000)
+    }
+
+    const elapsed = performance.now() - lastReplacementAt.current
+    if (visible === null || elapsed >= 250) {
+      if (replaceTimer.current !== null) window.clearTimeout(replaceTimer.current)
+      replace()
+    } else if (replaceTimer.current === null) {
+      replaceTimer.current = window.setTimeout(replace, 250 - elapsed)
+    }
+  }, [activity, visible])
   return visible ? [visible] : []
 }

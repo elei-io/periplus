@@ -159,6 +159,7 @@ Architecture documents ownership and invariants. Code remains authoritative for 
 implemented shapes while the graph cutover is in progress:
 
 - Crawl graph target contract: [`docs/CRAWL_GRAPHS.md`](CRAWL_GRAPHS.md)
+- Two-worker cutover plan: [`docs/TWO_WORKER_ARCHITECTURE_PLAN.md`](TWO_WORKER_ARCHITECTURE_PLAN.md)
 - Configuration and defaults: [`.env.example`](../.env.example)
 - Postgres models: [`backend/control/`](../backend/control/)
 - Runtime state and queues: [`backend/runtime/`](../backend/runtime/)

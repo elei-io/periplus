@@ -7,9 +7,11 @@ import type {
   CrawlGraphEdge,
   CrawlGraphListResponse,
   CrawlGraphNode,
+  CrawlConcurrencyLimits,
   GraphRunSubmission,
   GraphRunListResponse,
   GraphRunRecord,
+  EdgeDedupeMode,
 } from "@/types/graphs"
 
 const graphsKey = ["crawl-graphs"] as const
@@ -160,24 +162,53 @@ export function useSetCrawlGraphRoot(graph: CrawlGraphDetail) {
 }
 
 export function useCreateCrawlGraphEdge(graphId: string) {
-  return useGraphMutation<
-    {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (payload: {
       name: string
       description: string
       source_node_id: string
       target_node_id: string
       sql: string
-    },
-    CrawlGraphEdge
-  >(async (payload) =>
-    jsonResponse(
+      dedupe_mode?: EdgeDedupeMode
+    }) => jsonResponse<CrawlGraphEdge>(
       await fetch(apiUrl(`/crawl-graphs/${graphId}/edges`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       })
-    )
-  )
+    ),
+    onSuccess: async (edge) => {
+      const graph = queryClient.getQueryData<CrawlGraphDetail>([...graphsKey, graphId])
+      if (graph && !hasDirectedCycle(graph.edges) && hasDirectedCycle([...graph.edges, edge])) {
+        toast.warning("This graph contains a loop", {
+          description: "Use bounded edge SQL and graph deduplication to avoid an infinite crawl.",
+          duration: 7_000,
+        })
+      }
+      await queryClient.invalidateQueries({ queryKey: graphsKey })
+    },
+    onError: (error) => toast.error(extractApiError(error)),
+  })
+}
+
+function hasDirectedCycle(edges: Pick<CrawlGraphEdge, "source_node_id" | "target_node_id">[]) {
+  const outgoing = new Map<string, string[]>()
+  for (const edge of edges) {
+    outgoing.set(edge.source_node_id, [...(outgoing.get(edge.source_node_id) ?? []), edge.target_node_id])
+  }
+  const visiting = new Set<string>()
+  const visited = new Set<string>()
+  const visit = (nodeId: string): boolean => {
+    if (visiting.has(nodeId)) return true
+    if (visited.has(nodeId)) return false
+    visiting.add(nodeId)
+    if ((outgoing.get(nodeId) ?? []).some(visit)) return true
+    visiting.delete(nodeId)
+    visited.add(nodeId)
+    return false
+  }
+  return [...outgoing.keys()].some(visit)
 }
 
 export function useDeleteCrawlGraphEdge(graphId: string) {
@@ -201,6 +232,7 @@ export function useUpdateCrawlGraphEdge(graphId: string) {
       source_node_id: string
       target_node_id: string
       sql: string
+      dedupe_mode: EdgeDedupeMode
     },
     CrawlGraphEdge
   >(async ({ id, ...payload }) =>
@@ -238,6 +270,16 @@ export function useGraphRuns() {
     refetchInterval: 5_000,
     queryFn: async () =>
       jsonResponse<GraphRunListResponse>(await fetch(apiUrl("/graph-runs/"))),
+  })
+}
+
+export function useCrawlConcurrencyLimits() {
+  return useQuery({
+    queryKey: ["graph-runs", "capacity"],
+    refetchInterval: 5_000,
+    queryFn: async () => jsonResponse<CrawlConcurrencyLimits>(
+      await fetch(apiUrl("/graph-runs/capacity"))
+    ),
   })
 }
 
