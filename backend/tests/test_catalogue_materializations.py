@@ -24,7 +24,7 @@ from control.catalogue_queries.service import (
     CatalogueQueryConflictError,
     archive_query,
 )
-from materialization.commit import commit_scope
+from materialization.commit import commit_scope, commit_scope_batch
 from materialization.compute import _write_bounded_arrow, compute_scope
 from materialization.definitions import publish_scope
 from materialization.fencing import StaleMaterializationJob
@@ -537,6 +537,29 @@ class CatalogueMaterializationTests(unittest.TestCase):
                 object_store = FileObjectStore(staging)
                 with path.open("rb") as content:
                     object_store.put_if_absent(key, content)
+                second_table = pa.table(
+                    {"document_id": ["sha256:second"], "element_index": [8]}
+                )
+                second_path = root / "operation-second.arrow"
+                with pa.OSFile(str(second_path), "wb") as sink:
+                    with pa.ipc.new_file(sink, second_table.schema) as writer:
+                        writer.write_table(second_table)
+                second_scope = scope.model_copy(
+                    update={"scope_id": "sha256:second", "operation_id": "c" * 64}
+                )
+                second_key = "staging/materializations/operation-second.arrow"
+                second_job = MaterializationCommitJob(
+                    scope=second_scope,
+                    staging_key=second_key,
+                    staging_sha256=sha256(second_path.read_bytes()).hexdigest(),
+                    row_count=1,
+                    output_bytes=second_table.nbytes,
+                    file_bytes=second_path.stat().st_size,
+                    started_at=now,
+                    completed_at=now,
+                )
+                with second_path.open("rb") as content:
+                    object_store.put_if_absent(second_key, content)
 
                 @contextmanager
                 def active_definition_scope():
@@ -572,8 +595,10 @@ class CatalogueMaterializationTests(unittest.TestCase):
                         return_value=root / "temporary",
                     ),
                 ):
-                    commit_scope(catalogue, job)
+                    outcomes = commit_scope_batch(catalogue, [job, second_job])
+                    self.assertEqual(set(outcomes.values()), {"committed"})
                     self.assertFalse(object_store.exists(key))
+                    self.assertFalse(object_store.exists(second_key))
                     commit_scope(catalogue, job)
 
                 self.assertEqual(
@@ -581,13 +606,13 @@ class CatalogueMaterializationTests(unittest.TestCase):
                         "SELECT document_id, element_index "
                         "FROM atlas.materialized.document_links"
                     ).fetchall(),
-                    [("sha256:example", 7)],
+                    [("sha256:example", 7), ("sha256:second", 8)],
                 )
                 self.assertEqual(
                     catalogue.connection.execute(
                         "SELECT count(*) FROM atlas.main.materialization_scope_results"
                     ).fetchone()[0],
-                    1,
+                    2,
                 )
 
     def test_stale_definition_cannot_commit_and_discards_staging(self) -> None:

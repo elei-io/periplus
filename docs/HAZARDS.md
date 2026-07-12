@@ -65,6 +65,10 @@ metadata in NATS.
 short grace period. Also configure an object-store lifecycle expiration so crash orphans cannot
 accumulate indefinitely.
 
+**Waiting forever for a full analytical batch.** Every repository and materialization batch needs
+an oldest-item deadline in addition to item, row, and byte thresholds. A low-volume deployment must
+eventually commit without manual flushing or a later message arriving.
+
 **Assuming exactly-once delivery.** NATS messages may be redelivered. Edge evaluation identities,
 target-node request identities, admission counters, and queue publication must be idempotent so a
 replayed readiness event cannot duplicate crawl work.

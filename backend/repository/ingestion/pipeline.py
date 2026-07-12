@@ -21,7 +21,15 @@ class IngestionWorkerConfig:
     max_items: int = 100
     max_element_rows: int = 250_000
     max_staged_bytes: int = 256 * 1024 * 1024
-    max_wait_seconds: float = 0.5
+    max_wait_seconds: float = 5.0
+
+    def __post_init__(self) -> None:
+        if self.max_items <= 0:
+            raise ValueError("ingestion batch item limit must be positive")
+        if self.max_element_rows <= 0 or self.max_staged_bytes <= 0:
+            raise ValueError("ingestion batch row and byte limits must be positive")
+        if self.max_wait_seconds <= 0:
+            raise ValueError("ingestion batch wait must be positive")
 
     @classmethod
     def from_env(cls) -> IngestionWorkerConfig:

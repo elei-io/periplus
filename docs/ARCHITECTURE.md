@@ -111,6 +111,12 @@ durable readiness. Each process uses embedded DuckDB against the shared Postgres
 DuckLake catalogue. Concurrent writers use deterministic operation identity and bounded conflict
 retry; redelivery resolves durable identity before repeating a write.
 
+Repository microbatches accumulate across JetStream deliveries and flush at the first item,
+element-row, staged-byte, or five-second oldest-item limit. Compatible materialization scopes are
+likewise grouped by target and definition revision, then appended through one Parquet file and one
+DuckLake transaction; partial groups also flush after five seconds. Timers bound low-volume latency
+while row and byte limits govern high-volume file quality.
+
 Terminal ingestion failures enter a file-backed dead-letter stream. Explicit repository commands
 inspect and requeue them. The maintenance worker runs bounded, threshold-driven DuckLake small-file
 compaction independently of ingestion. Metadata inlining is disabled after reproducible
