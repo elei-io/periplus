@@ -180,7 +180,7 @@ class CatalogueService:
                 WHERE data_file.end_snapshot IS NULL
                   AND table_info.end_snapshot IS NULL
                   AND schema_info.end_snapshot IS NULL
-                  AND schema_info.schema_name IN (?, 'materialized')
+                  AND schema_info.schema_name IN (?, '_atlas_materializations')
                   AND data_file.file_size_bytes < ?
                 GROUP BY schema_info.schema_name, table_info.table_name, data_file.partition_id
             ) AS partitions

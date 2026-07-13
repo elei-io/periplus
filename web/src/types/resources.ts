@@ -20,16 +20,17 @@ export type CrawlPolicyRecord = {
   config: Record<string, unknown>
   revision: number
   template: string | null
+  profile: string | null
   mode: string | null
   wait: string | null
-  max_concurrency: number | null
+  concurrency: number | null
   created_at: string
   updated_at: string
 }
 
 export type CrawlPolicyDetailRecord = Omit<
   CrawlPolicyRecord,
-  "template" | "mode" | "wait" | "max_concurrency"
+  "template" | "profile" | "mode" | "wait" | "concurrency"
 >
 
 export type CrawlPolicyListResponse = PaginatedResponse<CrawlPolicyRecord>

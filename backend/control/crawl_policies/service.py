@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from control.crawl_policies.models import CrawlPolicy
 from control.crawl_policies.schemas import (
+    CrawlPolicyConfig,
     CrawlPolicyListRecord,
     UrlMatchSnapshot,
 )
@@ -64,24 +65,9 @@ def _sql_like_from_glob(pattern: str) -> str:
     return pattern.replace("%", r"\%").replace("_", r"\_").replace("*", "%")
 
 
-def _config_value(policy: CrawlPolicy, name: str) -> str | int | None:
-    config = policy.config or {}
-    value = config.get(name)
-    if isinstance(value, str | int):
-        return value
-    return None
-
-
-def _config_int(policy: CrawlPolicy, name: str) -> int | None:
-    value = _config_value(policy, name)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    return None
-
-
 def _list_record(policy: CrawlPolicy) -> CrawlPolicyListRecord:
+    envelope = CrawlPolicyConfig.model_validate(policy.config or {})
+    profile_config = envelope.parsed_config()
     return CrawlPolicyListRecord(
         id=policy.id,
         metric_slug=policy.metric_slug,
@@ -91,10 +77,11 @@ def _list_record(policy: CrawlPolicy) -> CrawlPolicyListRecord:
         enabled=policy.enabled,
         config=policy.config or {},
         revision=policy.revision,
-        template=str(_config_value(policy, "template") or "") or None,
-        mode=str(_config_value(policy, "mode") or "") or None,
-        wait=str(_config_value(policy, "wait") or "") or None,
-        max_concurrency=_config_int(policy, "max_concurrency"),
+        template=str(getattr(profile_config, "template", "") or "") or None,
+        profile=envelope.profile,
+        mode=str(getattr(profile_config, "mode", "") or "") or None,
+        wait=str(getattr(profile_config, "wait", "") or "") or None,
+        concurrency=envelope.concurrency,
         created_at=policy.created_at,
         updated_at=policy.updated_at,
     )
@@ -113,9 +100,9 @@ def _filtered_statement(
     if enabled is not None:
         statement = statement.where(CrawlPolicy.enabled == enabled)
     if template:
-        statement = statement.where(CrawlPolicy.config["template"].as_string() == template)
+        statement = statement.where(CrawlPolicy.config["config"]["template"].as_string() == template)
     if mode:
-        statement = statement.where(CrawlPolicy.config["mode"].as_string() == mode)
+        statement = statement.where(CrawlPolicy.config["config"]["mode"].as_string() == mode)
     return statement
 
 

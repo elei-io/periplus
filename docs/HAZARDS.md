@@ -38,10 +38,10 @@ destination systems.
 belong in visible graph edges, including self-edges. Do not add an in-memory frontier or
 action-specific crawl loop alongside graph execution.
 
-**Treating graph execution as global browser coordination.** NATS coordinates crawl requests,
-admission, and deduplication. Browser concurrency remains bounded inside each worker, and replicas
-determine deployment-wide browser capacity. Do not add a global browser semaphore without measured
-evidence.
+**Conflating remote pressure with browser capacity.** NATS enforces each CrawlPolicy's explicit
+deployment-wide remote-acquisition ceiling. Browser concurrency remains additionally bounded inside
+each worker, and replicas determine physical browser capacity. Do not turn the policy lease into a
+global browser pool or hold it during cache lookup, ingestion, or navigation waiting.
 
 **Adding graph machinery for non-crawl workflows.** Crawl graphs solve a demonstrated acquisition
 problem. They are not justification for generic node registries, arbitrary payload processors, or
@@ -68,6 +68,16 @@ accumulate indefinitely.
 **Waiting forever for a full analytical batch.** Every repository and materialization batch needs
 an oldest-item deadline in addition to item, row, and byte thresholds. A low-volume deployment must
 eventually commit without manual flushing or a later message arriving.
+
+**Letting a background commit consumer die invisibly.** A task created beside a worker's main loop
+must report failure through readiness and be joined or polled by the owning loop. A durable
+materialization commit followed by failed fan-out settlement is not a terminal message failure:
+NAK it so the idempotent commit can be recognized and settlement retried.
+
+**Reconciling only the first page of missing work.** A periodic `LIMIT` without a keyset cursor can
+republish the same identities forever after the broker deduplication window expires. Reconciliation
+must advance through the complete bounded result set and publish each missing crawl at most once per
+planner lifecycle.
 
 **Assuming exactly-once delivery.** NATS messages may be redelivered. Edge evaluation identities,
 target-node request identities, admission counters, and queue publication must be idempotent so a
@@ -103,6 +113,10 @@ Postgres-backed DuckLake catalogue with deterministic operation identity and bou
 **Creating permanent Parquet per crawl.** Small files and application-owned layout fight DuckLake
 compaction. Use bounded temporary staging and let DuckLake own physical data files.
 
+**Holding a blocking CDC poll open in Postgres.** An embedded DuckDB/Postgres CDC listener can retain
+an idle transaction and consume a pooled metadata connection while it waits. Use non-blocking reads
+with an async delay, bound every embedded Postgres pool, and enable idle/lifetime reaping.
+
 **Reporting the globally latest snapshot as a write result.** Another connection may commit between
 the local transaction and lookup. Attribute writes with `last_committed_snapshot()` on the
 committing logical connection; reserve a global latest lookup for reads.
@@ -110,6 +124,10 @@ committing logical connection; reserve a global latest lookup for reads.
 **Blindly retrying an ambiguous remote commit.** Resolve ingestion and materialization identity from
 authoritative DuckLake state before acknowledging NATS or retrying a response whose commit outcome
 is unknown.
+
+**Writing nondeterministic bytes under an idempotent staging key.** A materialization operation ID
+names one immutable Arrow object. Managed materialization SQL must define stable row and aggregate
+ordering so physical file-layout changes cannot produce different bytes for the same logical scope.
 
 **Running DuckLake `CHECKPOINT` without a retention contract.** It bundles inlined-data flushing,
 compaction, delete rewrites, snapshot expiration, scheduled-file cleanup, and orphan deletion. Atlas

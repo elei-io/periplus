@@ -20,7 +20,13 @@ class GraphCrawlContextTests(unittest.TestCase):
             crawl_request_id=uuid4(),
             source_crawl_id=uuid4(),
             source_edge_id=uuid4(),
-            effective_policy_snapshot_json={"config": {"mode": "static"}},
+            effective_policy_snapshot_json={
+                "config": {
+                    "profile": "browser",
+                    "concurrency": 2,
+                    "config": {"mode": "static"},
+                }
+            },
         )
 
         self.assertIsNone(current_graph_execution())

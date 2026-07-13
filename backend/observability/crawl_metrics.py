@@ -3,12 +3,10 @@
 from prometheus_client import Counter, Histogram
 
 from actions.crawl.schemas import CrawlPage
-from actions.shared.crawl import CrawlMode
-
-_acquisitions = Counter("atlas_page_acquisitions_total", "Page acquisition outcomes.", ("outcome", "mode", "source", "domain_group"))
-_duration = Histogram("atlas_page_acquisition_duration_seconds", "Page acquisition duration.", ("domain_group", "mode", "outcome", "source"))
-_failures = Counter("atlas_crawl_failures_total", "Crawl failures.", ("reason", "domain_group", "mode"))
-_persisted = Counter("atlas_crawls_persisted_total", "Durable crawls created.", ("outcome", "mode", "domain_group"))
+_acquisitions = Counter("atlas_page_acquisitions_total", "Page acquisition outcomes.", ("outcome", "profile", "source", "domain_group"))
+_duration = Histogram("atlas_page_acquisition_duration_seconds", "Page acquisition duration.", ("domain_group", "profile", "outcome", "source"))
+_failures = Counter("atlas_crawl_failures_total", "Crawl failures.", ("reason", "domain_group", "profile"))
+_persisted = Counter("atlas_crawls_persisted_total", "Durable crawls created.", ("outcome", "profile", "domain_group"))
 _cache = Counter("atlas_repository_cache_lookups_total", "Repository cache outcomes.", ("outcome",))
 _cache_age = Histogram("atlas_repository_cache_entry_age_seconds", "Age of reused repository entries.", ("outcome",))
 
@@ -34,7 +32,7 @@ def failure_reason(page: CrawlPage) -> str:
     return "navigation" if error else "unknown"
 
 
-def page_acquisition(*, page: CrawlPage, duration_seconds: float, mode: CrawlMode, source: str, domain_group: str, outcome: str | None = None) -> None:
+def page_acquisition(*, page: CrawlPage, duration_seconds: float, mode: str, source: str, domain_group: str, outcome: str | None = None) -> None:
     outcome = outcome or ("succeeded" if page.success else "failed")
     _acquisitions.labels(outcome, mode, source, domain_group).inc()
     _duration.labels(domain_group, mode, outcome, source).observe(max(0.0, duration_seconds))
@@ -42,11 +40,11 @@ def page_acquisition(*, page: CrawlPage, duration_seconds: float, mode: CrawlMod
         _failures.labels(failure_reason(page), domain_group, mode).inc()
 
 
-def crawl_failure(*, page: CrawlPage, mode: CrawlMode, domain_group: str) -> None:
+def crawl_failure(*, page: CrawlPage, mode: str, domain_group: str) -> None:
     _failures.labels(failure_reason(page), domain_group, mode).inc()
 
 
-def crawl_persisted(*, page: CrawlPage, mode: CrawlMode, domain_group: str) -> None:
+def crawl_persisted(*, page: CrawlPage, mode: str, domain_group: str) -> None:
     _persisted.labels("succeeded" if page.success else "failed", mode, domain_group).inc()
 
 

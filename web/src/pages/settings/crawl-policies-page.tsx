@@ -127,7 +127,7 @@ export function CrawlPoliciesPage() {
           <TableRow>
             <TableHead>Match</TableHead>
             <TableHead>Template</TableHead>
-            <TableHead>Mode</TableHead>
+            <TableHead>Profile</TableHead>
             <TableHead>Concurrency</TableHead>
             <TableHead>Updated</TableHead>
             <TableHead className="w-28">Action</TableHead>
@@ -187,12 +187,12 @@ function CrawlPolicyRow({ policy }: { policy: CrawlPolicyRecord }) {
         <Badge variant="outline">{policy.template ?? "-"}</Badge>
       </TableCell>
       <TableCell>
-        <Badge variant="secondary">{policy.mode ?? "-"}</Badge>
+        <Badge variant="secondary">{policy.profile ?? "-"}</Badge>
         <span className="ml-2 text-xs text-muted-foreground">
-          {policy.wait ?? ""}
+          {[policy.mode, policy.wait].filter(Boolean).join(" / ")}
         </span>
       </TableCell>
-      <TableCell>{policy.max_concurrency ?? "-"}</TableCell>
+      <TableCell>{policy.concurrency ?? "-"}</TableCell>
       <TableCell>
         <div className="flex items-center gap-2">
           <Badge variant={policy.enabled ? "secondary" : "destructive"}>

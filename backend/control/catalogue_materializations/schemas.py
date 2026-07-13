@@ -5,40 +5,16 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class CatalogueMaterializationCreate(BaseModel):
+class ViewMaterializationPut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=63)
     display_name: str | None = Field(default=None, max_length=200)
     description: str | None = Field(default=None, max_length=2_000)
-    refresh_mode: Literal["full", "scope_incremental"] = "full"
-    scope_kind: Literal["document", "crawl"] | None = None
-    scope_column: str | None = Field(default=None, max_length=255)
-    live_enabled: bool = False
-    backfill_enabled: bool = False
+    scope_kind: Literal["document", "crawl"]
+    scope_column: str = Field(min_length=1, max_length=255)
     backfill_scopes_per_minute: int = Field(default=60, ge=1, le=10_000)
     partition_column: str | None = Field(default=None, max_length=63)
-
-    @model_validator(mode="after")
-    def validate_mode(self) -> "CatalogueMaterializationCreate":
-        if self.refresh_mode == "scope_incremental":
-            if self.scope_kind is None or not self.scope_column:
-                raise ValueError(
-                    "Incremental materialization requires a scope kind and column."
-                )
-        elif self.live_enabled or self.backfill_enabled:
-            raise ValueError(
-                "Only incremental materializations can enable live work or backfill."
-            )
-        return self
-
-
-class QueryMaterializationPut(CatalogueMaterializationCreate):
-    active_query_revision_id: UUID | None = None
-
-
-class ViewMaterializationPut(CatalogueMaterializationCreate):
-    pass
 
 
 class CatalogueMaterializationMaintenanceUpdate(BaseModel):
@@ -59,7 +35,6 @@ class CatalogueMaterializationRebuild(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expected_ducklake_table_uuid: UUID
-    target_query_revision_id: UUID | None = None
 
 
 class CatalogueMaterializationColumn(BaseModel):
@@ -71,14 +46,16 @@ class CatalogueMaterializationColumn(BaseModel):
 class CatalogueMaterializationSummary(BaseModel):
     id: UUID
     status: Literal[
-        "full_refresh", "live", "backfilling", "paused", "dematerializing", "degraded",
-        "source_changing", "source_changed",
+        "live", "backfilling", "paused", "dematerializing", "degraded",
+        "source_changed",
     ]
-    refresh_mode: Literal["full", "scope_incremental"]
     row_count: int
     storage_bytes: int
-    active_query_revision: int | None
     definition_is_current: bool
+    pending_live_scopes: int
+    remaining_backfill_scopes: int
+    failed_scopes: int
+    last_scope_completed_at: datetime | None
 
 
 class CatalogueMaterializationRecord(BaseModel):
@@ -87,28 +64,26 @@ class CatalogueMaterializationRecord(BaseModel):
     qualified_name: str
     display_name: str
     description: str | None
-    active_query_revision_id: UUID | None
-    query_id: UUID | None
-    query_name: str | None
-    query_revision: int | None
-    view_reference_id: UUID | None
-    view_uuid: UUID | None
-    view_name: str | None
-    refresh_mode: str
-    scope_kind: str | None
-    activation_snapshot: int | None
+    view_reference_id: UUID
+    view_uuid: UUID
+    view_name: str
+    scope_kind: Literal["document", "crawl"]
+    scope_column: str
+    activation_snapshot: int
     live_enabled: bool
     backfill_enabled: bool
     backfill_scopes_per_minute: int
     partition_column: str | None
     partitioning: list[str]
     status: Literal[
-        "full_refresh", "live", "backfilling", "paused", "dematerializing", "degraded",
-        "source_changing", "source_changed",
+        "live", "backfilling", "paused", "dematerializing", "degraded",
+        "source_changed",
     ]
-    source_state: Literal["current", "source_changing", "source_changed"]
+    source_state: Literal["current", "source_changed"]
     completed_scopes: int | None
     total_scopes: int | None
+    pending_live_scopes: int
+    remaining_backfill_scopes: int
     failed_scopes: int
     last_scope_completed_at: datetime | None
     active_file_count: int

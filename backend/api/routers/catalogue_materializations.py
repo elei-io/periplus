@@ -12,13 +12,11 @@ from control.catalogue_materializations.schemas import (
     CatalogueMaterializationMaintenanceUpdate,
     CatalogueMaterializationRebuild,
     CatalogueMaterializationRecord,
-    QueryMaterializationPut,
     ViewMaterializationPut,
 )
 from control.catalogue_materializations.service import (
     get_model,
     list_records,
-    put_for_query,
     put_for_view,
     rebuild,
     record,
@@ -76,27 +74,6 @@ def get(
 
 
 @router.put(
-    "/catalogue/queries/{query_id}/materialization",
-    response_model=CatalogueMaterializationRecord,
-)
-def materialize_query(
-    query_id: UUID,
-    payload: QueryMaterializationPut,
-    session: Annotated[Session, Depends(get_session)],
-) -> CatalogueMaterializationRecord:
-    try:
-        with _catalogue_mutation(f"materialize-query:{query_id}") as catalogue:
-            return put_for_query(
-                session,
-                MaterializationStore(catalogue),
-                query_id=query_id,
-                **payload.model_dump(),
-            )
-    except (MaterializationError, CatalogueQueryError, duckdb.Error, LookupError) as exc:
-        _raise(exc)
-
-
-@router.put(
     "/catalogue/views/{view_reference_id}/materialization",
     response_model=CatalogueMaterializationRecord,
 )
@@ -136,7 +113,6 @@ def rebuild_(
                 MaterializationStore(catalogue),
                 model,
                 expected_uuid=payload.expected_ducklake_table_uuid,
-                target_query_revision_id=payload.target_query_revision_id,
             )
     except (MaterializationError, CatalogueQueryError, duckdb.Error, LookupError) as exc:
         _raise(exc)

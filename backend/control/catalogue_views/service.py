@@ -13,6 +13,7 @@ from control.catalogue_materializations.models import CatalogueMaterialization
 from control.catalogue_materializations.schemas import CatalogueMaterializationSummary
 from control.catalogue_materializations.service import summary as materialization_summary
 from repository.catalogue.materializations import MaterializationStore
+from repository.catalogue.query import classify_select
 from repository.catalogue.views import CatalogueViewConflictError, CatalogueViewStore, DuckLakeView
 
 from .models import CatalogueViewReference
@@ -48,7 +49,6 @@ def list_records(session: Session, store: CatalogueViewStore) -> list[CatalogueV
         reference_id: materialization_summary(
             materialization_store,
             materialization,
-            active_query_revision=None,
             definition_is_current=(
                 materialization.source_state == "current"
                 and reference.ducklake_view_uuid
@@ -64,6 +64,7 @@ def list_records(session: Session, store: CatalogueViewStore) -> list[CatalogueV
             view,
             by_uuid.get(view.view_uuid),
             summaries.get(by_uuid[view.view_uuid].id) if view.view_uuid in by_uuid else None,
+            definition_sql=(by_reference[by_uuid[view.view_uuid].id].source_sql if view.view_uuid in by_uuid and by_uuid[view.view_uuid].id in by_reference else None),
         )
         for view in views
     ]
@@ -90,7 +91,6 @@ def get_record(session: Session, store: CatalogueViewStore, reference_id: UUID) 
         materialization_summary(
             MaterializationStore(store.catalogue),
             materialization,
-            active_query_revision=None,
             definition_is_current=(
                 materialization.source_state == "current"
                 and view is not None
@@ -102,7 +102,7 @@ def get_record(session: Session, store: CatalogueViewStore, reference_id: UUID) 
         else None
     )
     return (
-        _record(view, reference, summary)
+        _record(view, reference, summary, definition_sql=materialization.source_sql if materialization else None)
         if view is not None
         else _missing_record(reference, summary)
     )
@@ -154,116 +154,27 @@ def update_reference(session: Session, store: CatalogueViewStore, reference: Cat
         )
         .with_for_update()
     )
-    if materialization is not None and materialization.source_state == "source_changed":
-        raise CatalogueViewConflictError(
-            "Rebuild or dematerialize the attached materialization before editing this view again."
-        )
-    if materialization is not None and materialization.source_state == "source_changing":
-        current = _view_by_name(store, locked_reference)
-        if current is None:
-            raise CatalogueViewConflictError(
-                "The interrupted source change cannot be reconciled because the DuckLake view is missing."
-            )
-        if current.view_uuid == locked_reference.ducklake_view_uuid:
-            raise CatalogueViewConflictError(
-                "A source change is already in progress or was interrupted before DuckLake changed; "
-                "recover it before retrying the edit."
-            )
-        _finish_source_change(
-            session, locked_reference, materialization, current
-        )
-        return _record_with_materialization(session, store, current, locked_reference, materialization)
     if locked_reference.ducklake_view_uuid != expected_uuid:
         raise CatalogueViewConflictError("The view reference changed; refresh before editing.")
-
+    classify_select(sql)
     if display_name is not None:
         locked_reference.display_name = display_name.strip() or locked_reference.view_name
     locked_reference.description = description
     if materialization is not None:
         materialization.live_enabled = False
         materialization.backfill_enabled = False
-        materialization.source_state = "source_changing"
+        materialization.source_sql = sql.strip()
+        materialization.source_state = "source_changed"
         materialization.definition_revision_id = uuid4()
         session.flush()
-        # This commit is the crash-safety boundary. Producers and queued commits are fenced
-        # before the authoritative DuckLake view is replaced.
-        session.commit()
-
+        view = store.get(expected_uuid)
+        if view is None:
+            raise CatalogueViewConflictError("The materialized view is missing.")
+        return _record_with_materialization(session, store, view, locked_reference, materialization)
     view = store.replace(current_uuid=expected_uuid, sql=sql)
-    locked_reference = session.scalar(
-        select(CatalogueViewReference)
-        .where(CatalogueViewReference.id == reference.id)
-        .with_for_update()
-    )
-    if locked_reference is None:
-        raise CatalogueViewConflictError("The Atlas view reference no longer exists.")
-    materialization = session.scalar(
-        select(CatalogueMaterialization)
-        .where(
-            CatalogueMaterialization.view_reference_id == locked_reference.id,
-            CatalogueMaterialization.archived_at.is_(None),
-        )
-        .with_for_update()
-    )
-    if materialization is not None:
-        _finish_source_change(session, locked_reference, materialization, view)
-    else:
-        _update_reference_identity(locked_reference, view)
-        session.flush()
-    return _record_with_materialization(
-        session, store, view, locked_reference, materialization
-    )
-
-
-def recover_source_change(
-    session: Session,
-    store: CatalogueViewStore,
-    reference: CatalogueViewReference,
-) -> CatalogueViewRecord:
-    locked_reference = session.scalar(
-        select(CatalogueViewReference)
-        .where(
-            CatalogueViewReference.id == reference.id,
-            CatalogueViewReference.archived_at.is_(None),
-        )
-        .with_for_update()
-    )
-    if locked_reference is None:
-        raise CatalogueViewConflictError("The Atlas view reference no longer exists.")
-    materialization = session.scalar(
-        select(CatalogueMaterialization)
-        .where(
-            CatalogueMaterialization.view_reference_id == locked_reference.id,
-            CatalogueMaterialization.archived_at.is_(None),
-        )
-        .with_for_update()
-    )
-    if materialization is None or materialization.source_state != "source_changing":
-        raise CatalogueViewConflictError("This view has no interrupted source change.")
-    current = _view_by_name(store, locked_reference)
-    if current is None:
-        raise CatalogueViewConflictError(
-            "The interrupted source change cannot be reconciled because the DuckLake view is missing."
-        )
-    if current.view_uuid == locked_reference.ducklake_view_uuid:
-        materialization.source_state = "current"
-        session.flush()
-    else:
-        _finish_source_change(session, locked_reference, materialization, current)
-    return _record_with_materialization(
-        session, store, current, locked_reference, materialization
-    )
-
-
-def _finish_source_change(
-    session: Session,
-    reference: CatalogueViewReference,
-    materialization: CatalogueMaterialization,
-    view: DuckLakeView,
-) -> None:
-    _update_reference_identity(reference, view)
-    materialization.source_state = "source_changed"
+    _update_reference_identity(locked_reference, view)
     session.flush()
+    return _record(view, locked_reference)
 
 
 def _update_reference_identity(
@@ -272,20 +183,6 @@ def _update_reference_identity(
     reference.ducklake_view_uuid = view.view_uuid
     reference.schema_name = view.schema_name
     reference.view_name = view.view_name
-
-
-def _view_by_name(
-    store: CatalogueViewStore, reference: CatalogueViewReference
-) -> DuckLakeView | None:
-    return next(
-        (
-            view
-            for view in store.list()
-            if view.schema_name == reference.schema_name
-            and view.view_name == reference.view_name
-        ),
-        None,
-    )
 
 
 def _record_with_materialization(
@@ -299,7 +196,6 @@ def _record_with_materialization(
         materialization_summary(
             MaterializationStore(store.catalogue),
             materialization,
-            active_query_revision=None,
             definition_is_current=(
                 materialization.source_state == "current"
                 and view.view_uuid == materialization.bound_ducklake_view_uuid
@@ -308,7 +204,7 @@ def _record_with_materialization(
         if materialization is not None
         else None
     )
-    return _record(view, reference, summary)
+    return _record(view, reference, summary, definition_sql=materialization.source_sql if materialization else None)
 
 
 def detach_reference(session: Session, reference: CatalogueViewReference) -> None:
@@ -339,6 +235,7 @@ def _record(
     view: DuckLakeView,
     reference: CatalogueViewReference | None,
     materialization: CatalogueMaterializationSummary | None = None,
+    definition_sql: str | None = None,
 ) -> CatalogueViewRecord:
     return CatalogueViewRecord(
         id=reference.id if reference else None,
@@ -348,7 +245,7 @@ def _record(
         qualified_name=f"{view.schema_name}.{view.view_name}",
         display_name=reference.display_name if reference else view.view_name,
         description=reference.description if reference else None,
-        sql=view.sql,
+        sql=definition_sql or view.sql,
         columns=list(view.columns),
         column_types=list(view.column_types),
         managed=reference is not None,

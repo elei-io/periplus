@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 from control.crawl_graphs.schemas import EdgeDedupeMode, FrozenGraphEdge, FrozenGraphNode, FrozenGraphSnapshot
 from runtime.graph_queue import EdgeWork, ReadinessWork, edge_evaluation_identity, get_crawl_request, get_graph_run, new_graph_run, normalize_request_url, request_identity, update_crawl_request
-from runtime.graph_runs import EdgeEvaluationFailed, admit_request, deterministic_request_id, evaluate_edge, expire_graph_run, handle_readiness, reconcile_pending_admissions, request_cancellation
+from runtime.graph_runs import EdgeEvaluationFailed, admit_request, deterministic_request_id, evaluate_edge, expire_graph_run, handle_readiness, reconcile_pending_admissions, request_cancellation, settle_request
 from runtime.graph_progress import EdgeProgress, edge_progress_key, initialize_run_progress
 from runtime.navigation_contract import NavigationPackage
 from workers.crawl import _process_crawl
@@ -221,6 +221,48 @@ class GraphRuntimeTests(unittest.TestCase):
         assert first_admitted and not second_admitted
         assert first.effective_policy_snapshot_json is not None
         assert len(jetstream.messages) == 1
+        current = await get_graph_run(runs, run.id)
+        assert current is not None and current.last_progress_at is not None
+
+    asyncio.run(scenario())
+
+ def test_settlement_records_last_progress(self) -> None:
+    async def scenario() -> None:
+        runs, requests, progress = FakeKV(), FakeKV(), FakeKV()
+        graph = snapshot()
+        started = datetime(2026, 1, 1, tzinfo=UTC)
+        settled_at = started + timedelta(minutes=2)
+        run = new_graph_run(graph, ["https://example.com"], now=started).model_copy(
+            update={"status": "running", "request_count": 1, "pending_request_count": 1}
+        )
+        await runs.create(run.id.hex, run.model_dump_json().encode())
+        await initialize_run_progress(progress, run)
+        from runtime.graph_queue import CrawlRequest
+
+        request = CrawlRequest(
+            id=uuid4(),
+            graph_run_id=run.id,
+            node_id=graph.root_node_id,
+            url="https://example.com/",
+            status="awaiting_navigation",
+            created_at=started,
+            updated_at=started,
+        )
+        await requests.create(request.id.hex, request.model_dump_json().encode())
+
+        await settle_request(
+            runs=runs,
+            requests=requests,
+            progress=progress,
+            request_id=request.id,
+            status="completed",
+            now=settled_at,
+        )
+
+        current = await get_graph_run(runs, run.id)
+        assert current is not None
+        self.assertEqual(current.status, "completed")
+        self.assertEqual(current.last_progress_at, settled_at)
 
     asyncio.run(scenario())
 

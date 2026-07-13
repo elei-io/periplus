@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 import nats
 from config import get_float, get_int, get_str
 from nats.js.api import AckPolicy, ConsumerConfig, KeyValueConfig, RetentionPolicy, StorageType, StreamConfig
-from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError, NoKeysError, NotFoundError
+from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError, NotFoundError
 from pydantic import BaseModel, ConfigDict
 from control.crawl_graphs.schemas import EdgeDedupeMode, FrozenGraphEdge, FrozenGraphNode, FrozenGraphSnapshot
 from control.url_matching import normalize_url
@@ -28,6 +28,7 @@ RUNS_BUCKET = "atlas_graph_runs"
 REQUESTS_BUCKET = "atlas_crawl_requests"
 WORKERS_BUCKET = "atlas_graph_workers"
 PROGRESS_BUCKET = "atlas_graph_progress"
+CAPACITY_BUCKET = "atlas_crawl_policy_capacity"
 
 GraphRunStatus = Literal["queued", "running", "completed", "completed_with_errors", "failed", "cancelled"]
 CrawlRequestStatus = Literal["queued", "crawling", "awaiting_navigation", "evaluating_edges", "completed", "failed", "cancelled"]
@@ -65,6 +66,7 @@ class GraphRun(BaseModel):
     failed_request_count: int = 0
     created_at: datetime
     started_at: datetime | None = None
+    last_progress_at: datetime | None = None
     completed_at: datetime | None = None
     cancel_requested_at: datetime | None = None
     error: str | None = None
@@ -223,6 +225,21 @@ async def ensure_graph_progress_storage(jetstream):
             bucket=PROGRESS_BUCKET,
             description="Current per-component Atlas graph progress",
             history=1,
+            ttl=get_float("ATLAS_GRAPH_PROGRESS_TTL_SECONDS"),
+            max_bytes=get_int("ATLAS_GRAPH_STATE_MAX_BYTES"),
+            storage=StorageType.FILE,
+            replicas=get_int("ATLAS_GRAPH_STREAM_REPLICAS"),
+        ),
+    )
+
+
+async def ensure_crawl_capacity_storage(jetstream):
+    return await _bucket(
+        jetstream,
+        KeyValueConfig(
+            bucket=CAPACITY_BUCKET,
+            description="Deployment-wide CrawlPolicy acquisition leases",
+            history=1,
             max_bytes=get_int("ATLAS_GRAPH_STATE_MAX_BYTES"),
             storage=StorageType.FILE,
             replicas=get_int("ATLAS_GRAPH_STREAM_REPLICAS"),
@@ -284,18 +301,12 @@ async def update_edge_evaluation(bucket, identity: str, mutate) -> EdgeEvaluatio
 
 
 async def list_graph_runs(bucket) -> list[GraphRun]:
-    try:
-        keys = await bucket.keys()
-    except (KeyNotFoundError, KeyDeletedError, NoKeysError):
-        return []
+    keys = await _list_keys(bucket)
     return [value for key in keys if (value := await _get(bucket, key, GraphRun)) is not None]
 
 
 async def list_worker_states(bucket) -> list[WorkerState]:
-    try:
-        keys = await bucket.keys()
-    except (KeyNotFoundError, KeyDeletedError, NoKeysError):
-        return []
+    keys = await _list_keys(bucket)
     return [
         value
         for key in keys
@@ -304,10 +315,7 @@ async def list_worker_states(bucket) -> list[WorkerState]:
 
 
 async def list_crawl_requests(bucket, *, graph_run_id: UUID | None = None) -> list[CrawlRequest]:
-    try:
-        keys = await bucket.keys()
-    except (KeyNotFoundError, KeyDeletedError, NoKeysError):
-        return []
+    keys = await _list_keys(bucket)
     request_keys = [key for key in keys if not key.startswith("edge-")]
     values: list[CrawlRequest] = []
     for start in range(0, len(request_keys), 64):
@@ -322,10 +330,7 @@ async def list_crawl_requests(bucket, *, graph_run_id: UUID | None = None) -> li
 
 
 async def list_edge_evaluations(bucket, *, graph_run_id: UUID | None = None) -> list[EdgeEvaluation]:
-    try:
-        keys = await bucket.keys()
-    except (KeyNotFoundError, KeyDeletedError, NoKeysError):
-        return []
+    keys = await _list_keys(bucket)
     evaluation_keys = [key for key in keys if key.startswith("edge-")]
     values: list[EdgeEvaluation] = []
     for start in range(0, len(evaluation_keys), 64):
@@ -337,6 +342,33 @@ async def list_edge_evaluations(bucket, *, graph_run_id: UUID | None = None) -> 
             if value is not None and (graph_run_id is None or value.graph_run_id == graph_run_id)
         )
     return values
+
+
+async def _list_keys(bucket) -> list[str]:
+    """List current KV keys without retaining an inactive watcher consumer."""
+
+    # Lightweight in-memory stores used by domain tests expose only the public
+    # keys contract; real NATS KV buckets take the explicit-cleanup path below.
+    if not hasattr(bucket, "watchall"):
+        return await bucket.keys()
+    watcher = await bucket.watchall(ignore_deletes=True, meta_only=True)
+    consumer_name: str | None = None
+    try:
+        info = await watcher._sub.consumer_info()
+        consumer_name = info.name
+        keys: list[str] = []
+        async for entry in watcher:
+            if entry is None:
+                break
+            keys.append(entry.key)
+        return keys
+    finally:
+        await watcher.stop()
+        if consumer_name is not None:
+            try:
+                await bucket._js.delete_consumer(bucket._stream, consumer_name)
+            except NotFoundError:
+                pass
 
 
 async def publish_crawl(jetstream, request_id: UUID) -> None:

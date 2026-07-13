@@ -203,7 +203,7 @@ def _commit_tables(
     coverage: str,
 ) -> None:
     connection = catalogue.connection
-    target = _qualified(catalogue, "materialized", jobs[0].scope.target_table)
+    target = _qualified(catalogue, "_atlas_materializations", jobs[0].scope.target_table)
     combined = pa.concat_tables(tables) if len(tables) > 1 else tables[0]
     columns = ", ".join(_quote_identifier(value) for value in combined.column_names)
     scope_ids = [job.scope.scope_id for job in jobs]
@@ -370,7 +370,7 @@ def _commit_table(
 ) -> None:
     scope = job.scope
     connection = catalogue.connection
-    target = _qualified(catalogue, "materialized", scope.target_table)
+    target = _qualified(catalogue, "_atlas_materializations", scope.target_table)
     columns = ", ".join(_quote_identifier(value) for value in table.column_names)
     partition_value = _partition_value(table, definition.partition_column)
     previous_partition = connection.execute(

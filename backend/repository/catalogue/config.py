@@ -17,7 +17,7 @@ from ducklake_client import (
     SqliteCatalog,
     StorageConfig,
 )
-from config import get_optional, get_path, get_str
+from config import get_int, get_optional, get_path, get_str
 
 from repository.catalogue.exceptions import CatalogueConfigError
 
@@ -52,9 +52,29 @@ def catalogue_config_from_env() -> CatalogueConfig:
     storage = _storage_from_env(root)
     override_data_path = _optional_bool("ATLAS_CATALOGUE_OVERRIDE_DATA_PATH")
     cdc_extension = get_optional("ATLAS_DUCKLAKE_CDC_EXTENSION")
+    duckdb_settings = {"allow_unsigned_extensions": True} if cdc_extension else {}
+    if isinstance(catalog, PostgresCatalog):
+        duckdb_settings.update(
+            {
+                "pg_pool_acquire_mode": "wait",
+                "pg_pool_max_connections": str(
+                    get_int("ATLAS_CATALOGUE_POSTGRES_POOL_MAX_CONNECTIONS")
+                ),
+                "pg_pool_idle_timeout_millis": str(
+                    get_int("ATLAS_CATALOGUE_POSTGRES_POOL_IDLE_TIMEOUT_MS")
+                ),
+                "pg_pool_max_lifetime_millis": str(
+                    get_int("ATLAS_CATALOGUE_POSTGRES_POOL_MAX_LIFETIME_MS")
+                ),
+                "pg_pool_wait_timeout_millis": str(
+                    get_int("ATLAS_CATALOGUE_POSTGRES_POOL_WAIT_TIMEOUT_MS")
+                ),
+                "pg_pool_enable_reaper_thread": True,
+            }
+        )
     duckdb = DuckDBConfig(
         database=get_str("ATLAS_CATALOGUE_DUCKDB_DATABASE"),
-        config={"allow_unsigned_extensions": True} if cdc_extension else {},
+        config=duckdb_settings,
         extensions=(cdc_extension,) if cdc_extension else (),
         install_extensions=not bool(cdc_extension),
         threads=_optional_int("ATLAS_CATALOGUE_DUCKDB_THREADS"),

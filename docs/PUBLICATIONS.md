@@ -1,8 +1,8 @@
 # Catalogue Definitions, Materialization, and Publication
 
-Status: accepted target design. Queries, revisions, views, the one-materialization control-plane,
-and document-scoped incremental query/view materialization are implemented. Crawl scope, automatic
-crawl-enrichment readiness, advanced scope adapters, and publications remain pending.
+Status: accepted target design. Queries, revisions, views, and live document- or crawl-scoped view
+materialization are implemented. Automatic crawl-enrichment readiness, advanced scope adapters, and
+publications remain pending.
 
 Atlas turns retained web evidence into tabular data. This document defines the layers between SQL
 exploration, reusable definitions, durable derived data, and external consumption.
@@ -21,18 +21,19 @@ catalogue_materializations
 They support three user-facing concepts:
 
 ```text
-Query ── 0..1 Materialization ── Publication contract(s)
-View  ── 0..1 Materialization ── Publication contract(s)
+Query
+View ── 0..1 live Materialization ── Publication contract(s)
 ```
 
 Publication cardinality is intentionally deferred. The important invariant is that every publication
 references an existing materialization and never creates another copy of its data.
 
-Queries and views are reusable definitions. A materialization is an optional durable capability of
-one definition. A publication is an external contract over that durable result.
+Queries are reusable SQL drafts. Views are reusable catalogue definitions. Materialization is an
+optional live capability of a view, and a publication is an external contract over that durable
+result.
 
 There is no standalone “Materialized Views” product section. Users encounter materialization while
-working with a query or view.
+working with a view.
 
 ## Queries
 
@@ -41,23 +42,9 @@ A query is user-authored SQL stored by Atlas for exploration and reuse.
 - `catalogue_queries` owns the stable definition identity, name, description, and archive state.
 - `catalogue_query_revisions` contains immutable SQL revisions.
 - Editing a query creates a revision; it never mutates historical SQL.
-- A revision may be run interactively or used as the active definition of the query's one optional
-  materialization.
+- A revision may be run interactively or saved as a view.
 - Saving a query alone does not create durable derived data.
-
-Materialization belongs to the stable query identity, not permanently to one revision. The
-materialization records which immutable revision currently defines its rows.
-
-Saving a new query revision does not silently change durable data. Atlas shows the definition as
-ahead of its materialization and offers explicit choices:
-
-- **Keep current revision** leaves the materialization unchanged.
-- **Rebuild with new revision** recomputes every scope or performs a full refresh.
-- **Continue from this boundary** applies the new revision to subsequent scopes and records the
-  boundary in materialization provenance.
-
-The boundary option is valid only when Atlas can preserve one table schema and the user accepts
-that historical and subsequent scopes were produced by different definition revisions.
+- Queries cannot be materialized. A durable reusable result starts by saving the SQL as a view.
 
 ## Views
 
@@ -74,20 +61,17 @@ Replacing a view changes its DuckLake definition identity. A managed view detail
 Atlas reference ID, so ordinary edits do not invalidate navigation or dependent control-plane
 references.
 
-If a view has a materialization, Atlas warns before editing its SQL. A definition change pauses
-incremental maintenance and requires an explicit choice equivalent to query revision changes:
+If a view has a materialization, editing its SQL pauses live updates and existing-data backfill.
+Atlas keeps serving the previous durable result until the user rebuilds the materialization from the
+new definition. A schema-changing edit requires dematerializing and activating materialization again.
 
-- keep the existing durable result;
-- rebuild it from the replacement view; or
-- continue from an explicit definition boundary.
+A materialized view cannot be detached or dropped. The user must dematerialize first.
+Dematerialization removes only the durable backing table and its maintenance state; the same view
+name remains available as a virtual view.
 
-A query with durable data cannot be archived, and a source view cannot be detached or dropped.
-The user must dematerialize first. Dematerialization removes only the durable table and its
-maintenance state; the source definition remains available for a later materialization.
+## One materialization per view
 
-## One materialization per definition
-
-A query or view may have at most one materialization.
+A view may have at most one materialization.
 
 This is a product and storage invariant, not merely a UI convention. Creating a second durable copy
 from the same definition wastes storage, complicates lifecycle controls, and makes it unclear which
@@ -96,21 +80,18 @@ result should be published.
 The control-plane schema enforces:
 
 ```text
-UNIQUE(query_id)
 UNIQUE(view_reference_id)
-CHECK(exactly one of query_id or view_reference_id is present)
 ```
 
-For a query-backed materialization, `active_query_revision_id` identifies the immutable revision
-currently used to produce rows. For a view-backed materialization, the record retains the bound
-DuckLake definition UUID and snapshot boundary in addition to the stable Atlas view reference.
+The materialization retains the source SQL, stable Atlas view reference, live definition binding,
+and activation snapshot boundary.
 
 `catalogue_materializations` remains a separate table because its lifecycle is substantial. Folding
-these fields into both query and view records would duplicate behavior and create many unrelated
-nullable columns. The materialization owns:
+these fields into the view reference would mix definition identity with a substantial operational
+lifecycle. The materialization owns:
 
 - the stable physical DuckLake table identity;
-- refresh or incremental maintenance mode;
+- the document or crawl discriminator used for incremental maintenance;
 - the active definition binding and provenance boundaries;
 - scope configuration;
 - activation snapshot and durable coverage;
@@ -120,15 +101,15 @@ nullable columns. The materialization owns:
 - storage statistics; and
 - fenced dematerialization state.
 
-An attempt to materialize a definition that already has one returns or opens the existing
+An attempt to materialize a view that already has one returns or opens the existing
 materialization. Configuration changes update that attachment; they never create a second table.
 
 ## User experience
 
-The main Catalogue navigation contains SQL, Queries, and Views. Materialization is visible within
-the two definition collections.
+The main Catalogue navigation contains SQL, Queries, and Views. Materialization is visible only on
+views.
 
-Query and view lists show whether each definition is evaluated virtually or backed by durable data:
+The view list shows whether each definition is evaluated virtually or backed by durable data:
 
 | Definition | Evaluation | State | Rows | Storage |
 | --- | --- | --- | ---: | ---: |
@@ -308,7 +289,7 @@ External pipeline retries are downstream behavior and are not Atlas rematerializ
 
 | Owner | Catalogue-related state |
 | --- | --- |
-| Postgres control plane | Queries, immutable query revisions, stable view references, the optional one-to-one materialization attachment, active definition bindings, lifecycle controls, and future publication contracts |
+| Postgres control plane | Queries, immutable query revisions, stable view references, the optional one-to-one live materialization attachment, active definition bindings, lifecycle controls, and future publication contracts |
 | NATS JetStream/KV | Live and backfill scope queues, repository commit work, current worker/progress state, retries, and dead letters |
 | DuckLake | Authoritative SQL views, typed materialization tables, durable scope coverage, snapshots, row history, DDL history, and crawl evidence |
 | DuckLake CDC metadata | Durable publication consumer subscriptions, leases, cursors, and audit state |
@@ -321,8 +302,8 @@ Prometheus and progress events remain observational and never become correctness
 Atlas reserves these DuckLake schemas:
 
 - `main` contains retained web evidence and catalogue helpers;
-- `views` contains persistent user-defined DuckLake views;
-- `materialized` contains the one optional durable result attached to each query or view; and
+- `views` contains persistent user-defined DuckLake views, whether virtual or materialized;
+- `_atlas_materializations` contains private backing tables for materialized views; and
 - `published` is reserved for future publication-facing aliases or contract objects and never holds
   a second data copy.
 
@@ -337,8 +318,8 @@ Atlas reserves the `_atlas_` prefix for internal materialization and publication
 Atlas owns:
 
 - query revisions and view references;
-- the one-materialization invariant;
-- bounded full and incremental evaluation;
+- the one-live-materialization-per-view invariant;
+- bounded historical backfill and incremental evaluation;
 - live maintenance, backfills, corrections, and rebuilds;
 - durable table lifecycle, provenance, schema, and storage diagnostics; and
 - publication contracts, CDC exposure, replay, and bootstrap.
@@ -360,11 +341,10 @@ general downstream transformation graphs.
 
 ## Required invariants
 
-- A query or view has at most one active `catalogue_materialization`.
-- A materialization has exactly one stable source definition.
-- Query-backed durable rows identify the immutable query revision that produced them.
-- View-backed durable rows identify the DuckLake definition boundary that produced them.
-- A new definition revision never silently rewrites durable data.
+- A view has at most one active `catalogue_materialization`; a query has none.
+- A materialization has exactly one stable view source.
+- Materialized rows identify the DuckLake definition boundary that produced them.
+- A changed view definition never silently rewrites durable data.
 - Every incremental evaluation is demonstrably bound to one supplied scope and has explicit resource
   limits.
 - Scope replacement and coverage recording are atomic and idempotent.

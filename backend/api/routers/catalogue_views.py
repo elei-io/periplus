@@ -24,7 +24,6 @@ from control.catalogue_views.service import (
     get_record,
     get_reference,
     list_records,
-    recover_source_change,
     update_reference,
 )
 from db.session import get_session
@@ -110,28 +109,6 @@ def update(reference_id: UUID, payload: CatalogueViewUpdate, session: Annotated[
                 description=payload.description,
             )
     except (CatalogueViewError, CatalogueQueryError, duckdb.Error) as exc:
-        _raise_mutation_error(exc)
-
-
-@router.post(
-    "/{reference_id}/recover-source-change",
-    response_model=CatalogueViewRecord,
-)
-def recover_source_change_(
-    reference_id: UUID,
-    session: Annotated[Session, Depends(get_session)],
-) -> CatalogueViewRecord:
-    reference = get_reference(session, reference_id)
-    if reference is None:
-        raise HTTPException(status_code=404, detail="Catalogue view reference not found.")
-    try:
-        with _catalogue_mutation(f"catalogue-view-recover:{reference_id}") as catalogue:
-            return recover_source_change(
-                session,
-                CatalogueViewStore(catalogue),
-                reference,
-            )
-    except (CatalogueViewError, duckdb.Error) as exc:
         _raise_mutation_error(exc)
 
 

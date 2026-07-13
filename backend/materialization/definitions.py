@@ -26,10 +26,9 @@ def scope_job(
     return MaterializationScopeJob(
         materialization_id=definition.id,
         definition_revision_id=definition.definition_revision_id,
-        query_revision_id=definition.active_query_revision_id,
         target_table=definition.name,
         scope_kind=definition.scope_kind,
-        scope_column=definition.scope_column or f"{definition.scope_kind}_id",
+        scope_column=definition.scope_column,
         scope_id=scope_id,
         operation_id=operation_id,
         source=source,
@@ -45,7 +44,6 @@ def active_definitions(
             CatalogueMaterialization.archived_at.is_(None),
             CatalogueMaterialization.dematerialization_requested_at.is_(None),
             CatalogueMaterialization.source_state == "current",
-            CatalogueMaterialization.refresh_mode == "scope_incremental",
         )
         if live:
             statement = statement.where(CatalogueMaterialization.live_enabled.is_(True))

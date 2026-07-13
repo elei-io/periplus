@@ -13,9 +13,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from config import get_float, get_int
+from control.catalogue_materializations.models import CatalogueMaterialization
 from control.crawl_graphs.models import CrawlGraph
 from control.crawl_graphs.service import CrawlGraphNotFoundError, CrawlGraphValidationError, freeze_graph
 from db.session import get_session
+from repository.catalogue import Catalogue, catalogue_from_env
 from runtime.graph_queue import GraphRun, connect_nats, ensure_graph_progress_storage, ensure_graph_storage, get_graph_run, list_graph_runs, list_worker_states
 from runtime.graph_runs import (
     GraphRunNotFoundError,
@@ -53,6 +55,7 @@ class GraphRunSummary(BaseModel):
     failed_request_count: int
     created_at: datetime
     started_at: datetime | None
+    last_progress_at: datetime | None
     completed_at: datetime | None
     cancel_requested_at: datetime | None
     error: str | None
@@ -78,6 +81,17 @@ class CrawlConcurrencyLimits(BaseModel):
     browser_capacity: int
     crawl_permit_timeout_seconds: float
     workers: list[RuntimeWorkerCapacity]
+
+
+class GraphRunMaterializationLag(BaseModel):
+    run_id: UUID
+    materialization_count: int
+    pending_updates: int
+    failed_updates: int
+
+
+class GraphRunMaterializationLagList(BaseModel):
+    items: list[GraphRunMaterializationLag]
 
 
 def _run_summaries(session: Session, runs: list[GraphRun]) -> list[GraphRunSummary]:
@@ -121,6 +135,74 @@ async def capacity() -> CrawlConcurrencyLimits:
         browser_capacity=len(workers) * browser_per_worker,
         crawl_permit_timeout_seconds=get_float("ATLAS_CRAWL_PERMIT_TIMEOUT_SECONDS"),
         workers=[RuntimeWorkerCapacity.model_validate(worker, from_attributes=True) for worker in workers],
+    )
+
+
+@router.get(
+    "/materialization-lag", response_model=GraphRunMaterializationLagList
+)
+def materialization_lag(
+    session: Annotated[Session, Depends(get_session)],
+) -> GraphRunMaterializationLagList:
+    active_definitions = list(
+        session.execute(
+            select(
+                CatalogueMaterialization.id,
+                CatalogueMaterialization.definition_revision_id,
+            ).where(CatalogueMaterialization.archived_at.is_(None))
+        ).all()
+    )
+    with catalogue_from_env() as catalogue:
+        rows = _graph_run_materialization_lag_rows(catalogue, active_definitions)
+    items: list[GraphRunMaterializationLag] = []
+    for row in rows:
+        items.append(
+            GraphRunMaterializationLag(
+                run_id=UUID(str(row[0])),
+                materialization_count=int(row[1]),
+                pending_updates=int(row[2]),
+                failed_updates=int(row[3]),
+            )
+        )
+    return GraphRunMaterializationLagList(items=items)
+
+
+def _graph_run_materialization_lag_rows(
+    catalogue: Catalogue, active_definitions: list[tuple[UUID, UUID]]
+) -> list[tuple]:
+    crawls = _catalogue_table(catalogue, "crawls")
+    members = _catalogue_table(catalogue, "crawl_materialization_fanout_members")
+    active_filter = "FALSE"
+    parameters: list[object] = []
+    if active_definitions:
+        active_filter = " OR ".join(
+            "(m.materialization_id = ? AND m.definition_revision_id = ?)"
+            for _ in active_definitions
+        )
+        parameters = [value for pair in active_definitions for value in pair]
+    return catalogue.connection.execute(
+        f"""
+        SELECT c.graph_run_id,
+               count(DISTINCT m.materialization_id) AS materialization_count,
+               count(DISTINCT (m.materialization_id, m.scope_kind, m.scope_id))
+                   FILTER (WHERE m.status = 'planned') AS pending_updates,
+               count(DISTINCT (m.materialization_id, m.scope_kind, m.scope_id))
+                   FILTER (WHERE m.status = 'failed') AS failed_updates
+        FROM {crawls} AS c
+        LEFT JOIN {members} AS m
+          ON m.crawl_id = c.crawl_id
+         AND ({active_filter})
+        GROUP BY c.graph_run_id
+        ORDER BY max(c.captured_at) DESC
+        """,
+        parameters,
+    ).fetchall()
+
+
+def _catalogue_table(catalogue: Catalogue, name: str) -> str:
+    return ".".join(
+        '"' + value.replace('"', '""') + '"'
+        for value in (catalogue.config.alias, catalogue.config.schema, name)
     )
 
 

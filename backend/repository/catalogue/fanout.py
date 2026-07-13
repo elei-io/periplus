@@ -158,11 +158,21 @@ class CrawlMaterializationFanoutStore:
         scope_kind: str,
         scope_id: str,
     ) -> list[UUID]:
+        crawl_filter = ""
+        parameters: list[object] = [
+            materialization_id,
+            definition_revision_id,
+            scope_kind,
+            scope_id,
+        ]
+        if scope_kind == "crawl":
+            crawl_filter = " AND crawl_id = ?"
+            parameters.append(UUID(scope_id))
         rows = self.catalogue.connection.execute(
             f"SELECT crawl_id FROM {self._table('crawl_materialization_fanout_members')} "
             "WHERE materialization_id = ? AND definition_revision_id = ? "
-            "AND scope_kind = ? AND scope_id = ?",
-            [materialization_id, definition_revision_id, scope_kind, scope_id],
+            f"AND scope_kind = ? AND scope_id = ?{crawl_filter}",
+            parameters,
         ).fetchall()
         return [UUID(str(row[0])) for row in rows]
 

@@ -21,32 +21,27 @@ type SqlEditorProps = {
   height?: string
   ariaLabel?: string
   views?: Array<{ view_name: string; columns: string[] }>
-  materializations?: Array<{ name: string; columns: Array<{ name: string }> }>
 }
 
-export function SqlEditor({ value, onChange = () => undefined, onRun, readOnly = false, height = "clamp(240px, 38vh, 360px)", ariaLabel = "Catalogue SQL editor", views = [], materializations = [] }: SqlEditorProps) {
+export function SqlEditor({ value, onChange = () => undefined, onRun, readOnly = false, height = "clamp(240px, 38vh, 360px)", ariaLabel = "Catalogue SQL editor", views = [] }: SqlEditorProps) {
   const sqlLanguage = useMemo(() => {
     const tables = catalogueTables
     const viewTables = Object.fromEntries(
       views.map((view) => [view.view_name, view.columns])
-    )
-    const materializedTables = Object.fromEntries(
-      materializations.map((view) => [view.name, view.columns.map((column) => column.name)])
     )
     const catalogueSchema = {
       ...tables,
       ...viewTables,
       main: tables,
       views: viewTables,
-      materialized: materializedTables,
-      atlas: { main: tables, views: viewTables, materialized: materializedTables },
+      atlas: { main: tables, views: viewTables },
     }
     return sql({
       dialect: PostgreSQL,
       schema: catalogueSchema,
       upperCaseKeywords: true,
     })
-  }, [views, materializations])
+  }, [views])
 
   const extensions = useMemo(
     () => [

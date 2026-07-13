@@ -19,11 +19,10 @@ from repository.catalogue.views import (
 from control.catalogue_views.service import (
     detach_reference,
     drop_referenced_view,
-    recover_source_change,
     update_reference,
 )
 from control.catalogue_views.models import CatalogueViewReference
-from control.catalogue_views.system import PAGE_LINKS_SQL
+from control.catalogue_views.system import PAGE_LINKS_RECIPE, PAGE_LINKS_SQL
 
 
 class CatalogueViewStoreTests(unittest.TestCase):
@@ -33,6 +32,8 @@ class CatalogueViewStoreTests(unittest.TestCase):
         self.assertEqual(str(column.server_default.arg), "'user'")
 
     def test_system_page_links_definition_is_a_valid_typed_view(self) -> None:
+        self.assertIn(PAGE_LINKS_RECIPE, PAGE_LINKS_SQL)
+        self.assertNotIn("readable_text(", PAGE_LINKS_SQL)
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = CatalogueConfig(
@@ -155,9 +156,8 @@ class CatalogueMaterializationSourceChangeTests(unittest.TestCase):
 
         store.drop.assert_not_called()
 
-    def test_edit_commits_fence_before_replacing_view(self) -> None:
+    def test_edit_fences_updates_and_replaces_stored_definition(self) -> None:
         old_uuid = uuid4()
-        new_uuid = uuid4()
         old_definition = uuid4()
         reference = SimpleNamespace(
             id=uuid4(),
@@ -173,32 +173,23 @@ class CatalogueMaterializationSourceChangeTests(unittest.TestCase):
             backfill_enabled=True,
             definition_revision_id=old_definition,
             bound_ducklake_view_uuid=old_uuid,
+            source_sql="SELECT 1 AS value",
+            name="links",
         )
-        replacement = DuckLakeView(
-            view_uuid=new_uuid,
+        wrapper = DuckLakeView(
+            view_uuid=old_uuid,
             schema_name="views",
             view_name="links",
-            sql="SELECT 2 AS value",
+            sql="SELECT * FROM atlas._atlas_materializations.links",
             columns=("value",),
         )
         session = MagicMock()
         session.scalar.side_effect = [
             reference,
             materialization,
-            reference,
-            materialization,
         ]
         store = MagicMock()
-
-        def replace(**_kwargs):
-            session.commit.assert_called_once_with()
-            self.assertEqual(materialization.source_state, "source_changing")
-            self.assertFalse(materialization.live_enabled)
-            self.assertFalse(materialization.backfill_enabled)
-            self.assertNotEqual(materialization.definition_revision_id, old_definition)
-            return replacement
-
-        store.replace.side_effect = replace
+        store.get.return_value = wrapper
         expected = MagicMock()
         with patch(
             "control.catalogue_views.service._record_with_materialization",
@@ -215,79 +206,11 @@ class CatalogueMaterializationSourceChangeTests(unittest.TestCase):
             )
 
         self.assertIs(result, expected)
-        self.assertEqual(reference.ducklake_view_uuid, new_uuid)
+        self.assertEqual(reference.ducklake_view_uuid, old_uuid)
         self.assertEqual(reference.display_name, "New links")
         self.assertEqual(materialization.source_state, "source_changed")
-        self.assertEqual(materialization.bound_ducklake_view_uuid, old_uuid)
-
-    def test_failed_replace_leaves_committed_source_change_fenced(self) -> None:
-        old_uuid = uuid4()
-        reference = SimpleNamespace(
-            id=uuid4(),
-            ducklake_view_uuid=old_uuid,
-            schema_name="views",
-            view_name="links",
-            display_name="Links",
-            description=None,
-        )
-        materialization = SimpleNamespace(
-            source_state="current",
-            live_enabled=True,
-            backfill_enabled=True,
-            definition_revision_id=uuid4(),
-        )
-        session = MagicMock()
-        session.scalar.side_effect = [reference, materialization]
-        store = MagicMock()
-        store.replace.side_effect = RuntimeError("DuckLake unavailable")
-
-        with self.assertRaisesRegex(RuntimeError, "DuckLake unavailable"):
-            update_reference(
-                session,
-                store,
-                reference,
-                expected_uuid=old_uuid,
-                sql="SELECT 2",
-                display_name=None,
-                description=None,
-            )
-
-        session.commit.assert_called_once_with()
-        self.assertEqual(materialization.source_state, "source_changing")
-        self.assertFalse(materialization.live_enabled)
-        self.assertFalse(materialization.backfill_enabled)
-
-    def test_recovery_finalizes_a_replacement_completed_before_crash(self) -> None:
-        old_uuid = uuid4()
-        current = DuckLakeView(
-            view_uuid=uuid4(),
-            schema_name="views",
-            view_name="links",
-            sql="SELECT 2",
-            columns=("2",),
-        )
-        reference = SimpleNamespace(
-            id=uuid4(),
-            ducklake_view_uuid=old_uuid,
-            schema_name="views",
-            view_name="links",
-        )
-        materialization = SimpleNamespace(source_state="source_changing")
-        session = MagicMock()
-        session.scalar.side_effect = [reference, materialization]
-        store = MagicMock()
-        store.list.return_value = [current]
-        expected = MagicMock()
-        with patch(
-            "control.catalogue_views.service._record_with_materialization",
-            return_value=expected,
-        ):
-            result = recover_source_change(session, store, reference)
-
-        self.assertIs(result, expected)
-        self.assertEqual(reference.ducklake_view_uuid, current.view_uuid)
-        self.assertEqual(materialization.source_state, "source_changed")
-
+        self.assertEqual(materialization.source_sql, "SELECT 2 AS value")
+        store.replace.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

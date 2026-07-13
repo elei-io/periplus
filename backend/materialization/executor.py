@@ -263,6 +263,12 @@ async def _maintenance_active(bucket) -> bool:
         await bucket.get("global")
     except (KeyNotFoundError, KeyDeletedError):
         return False
+    except Exception:
+        logging.warning(
+            "maintenance lease state unavailable; pausing materialization work",
+            exc_info=True,
+        )
+        return True
     return True
 
 

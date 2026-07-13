@@ -22,7 +22,7 @@ _VOID_TAGS = (
     "wbr",
 )
 _RAW_TEXT_TAGS = ("script", "style")
-_READABLE_BREAK_TAGS = (
+READABLE_BREAK_TAGS = (
     "address",
     "article",
     "aside",
@@ -73,7 +73,7 @@ def install_catalogue_macros(catalogue: Catalogue) -> None:
     elements = f"{namespace}.{_quote_identifier('elements')}"
     void_tags = _sql_strings(_VOID_TAGS)
     raw_text_tags = _sql_strings(_RAW_TEXT_TAGS)
-    readable_break_tags = _sql_strings(_READABLE_BREAK_TAGS)
+    readable_break_tags = _sql_strings(READABLE_BREAK_TAGS)
 
     statements = (
         f"""

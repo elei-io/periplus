@@ -73,6 +73,7 @@ export type GraphRunRecord = {
   failed_request_count: number
   created_at: string
   started_at: string | null
+  last_progress_at: string | null
   completed_at: string | null
   cancel_requested_at: string | null
   error: string | null
@@ -96,4 +97,15 @@ export type CrawlConcurrencyLimits = {
     active_request_count: number
     last_seen_at: string
   }>
+}
+
+export type GraphRunMaterializationLag = {
+  run_id: string
+  materialization_count: number
+  pending_updates: number
+  failed_updates: number
+}
+
+export type GraphRunMaterializationLagList = {
+  items: GraphRunMaterializationLag[]
 }

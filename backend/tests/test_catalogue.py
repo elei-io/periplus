@@ -90,6 +90,17 @@ class CatalogueConfigTests(unittest.TestCase):
             config.catalog.dsn,
             "host=127.0.0.1 port=5432 dbname=atlas_catalogue user=atlas password=atlas",
         )
+        self.assertEqual(
+            config.duckdb.config,
+            {
+                "pg_pool_acquire_mode": "wait",
+                "pg_pool_max_connections": "2",
+                "pg_pool_idle_timeout_millis": "5000",
+                "pg_pool_max_lifetime_millis": "60000",
+                "pg_pool_wait_timeout_millis": "10000",
+                "pg_pool_enable_reaper_thread": True,
+            },
+        )
 
 
 class CatalogueBootstrapTests(unittest.TestCase):
@@ -154,8 +165,8 @@ class CatalogueBootstrapTests(unittest.TestCase):
                         "elements",
                         [
                             {
-                                "document_id": f"sha256:{index}",
-                                "element_index": 0,
+                                "document_id": "sha256:compaction-test",
+                                "element_index": index,
                                 "parent_index": None,
                                 "subtree_end_index": 0,
                                 "depth": 0,
@@ -213,11 +224,11 @@ class CatalogueBootstrapTests(unittest.TestCase):
             with Catalogue(config) as catalogue:
                 catalogue.bootstrap()
                 catalogue.connection.execute(
-                    "CREATE TABLE atlas.materialized.compact_me(value INTEGER)"
+                    "CREATE TABLE atlas._atlas_materializations.compact_me(value INTEGER)"
                 )
                 for index in range(4):
                     catalogue.connection.execute(
-                        "INSERT INTO atlas.materialized.compact_me VALUES (?)",
+                        "INSERT INTO atlas._atlas_materializations.compact_me VALUES (?)",
                         [index],
                     )
 
@@ -229,7 +240,7 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 )
 
         self.assertEqual(len(compacted), 1)
-        self.assertEqual(compacted[0].schema_name, "materialized")
+        self.assertEqual(compacted[0].schema_name, "_atlas_materializations")
         self.assertEqual(compacted[0].table_name, "compact_me")
         self.assertEqual(compacted[0].files_processed, 4)
         self.assertEqual(compacted[0].files_created, 1)
@@ -354,6 +365,99 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 ),
                 "MAP(VARCHAR, VARCHAR)",
             )
+
+    def test_bootstrap_rewrites_legacy_element_files_into_bucket_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                catalogue.connection.execute(
+                    """
+                    INSERT INTO atlas.main.elements VALUES
+                    ('sha256:legacy', 0, NULL, 0, 0, 'p', NULL, MAP {}, 'text', '')
+                    """
+                )
+                with catalogue.lake.transaction():
+                    catalogue.connection.execute(
+                        "CREATE TABLE atlas.main.elements_legacy AS "
+                        "SELECT * FROM atlas.main.elements"
+                    )
+                    catalogue.connection.execute("DROP TABLE atlas.main.elements")
+                    catalogue.connection.execute(
+                        "ALTER TABLE atlas.main.elements_legacy RENAME TO elements"
+                    )
+
+                catalogue.bootstrap()
+                row_count = catalogue.connection.execute(
+                    "SELECT count(*) FROM atlas.main.elements"
+                ).fetchone()[0]
+                files = catalogue.connection.execute(
+                    """
+                    SELECT count(*), count(df.partition_id)
+                    FROM __ducklake_metadata_atlas.ducklake_data_file AS df
+                    JOIN __ducklake_metadata_atlas.ducklake_table AS t
+                      ON t.table_id = df.table_id
+                    JOIN __ducklake_metadata_atlas.ducklake_schema AS s
+                      ON s.schema_id = t.schema_id
+                    WHERE s.schema_name = 'main' AND t.table_name = 'elements'
+                      AND s.end_snapshot IS NULL AND t.end_snapshot IS NULL
+                      AND df.end_snapshot IS NULL
+                    """
+                ).fetchone()
+
+            self.assertEqual(row_count, 1)
+            self.assertGreater(files[0], 0)
+            self.assertEqual(files[0], files[1])
+
+    def test_bootstrap_stages_legacy_fanout_files_before_bucket_rewrite(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                catalogue.connection.execute(
+                    "INSERT INTO atlas.main.crawl_materialization_fanouts "
+                    "VALUES (uuid(), now(), 0, 0, 0, now())"
+                )
+                with catalogue.lake.transaction():
+                    catalogue.connection.execute(
+                        "CREATE TABLE atlas.main.fanouts_legacy AS SELECT * FROM "
+                        "atlas.main.crawl_materialization_fanouts"
+                    )
+                    catalogue.connection.execute(
+                        "DROP TABLE atlas.main.crawl_materialization_fanouts"
+                    )
+                    catalogue.connection.execute(
+                        "ALTER TABLE atlas.main.fanouts_legacy RENAME TO "
+                        "crawl_materialization_fanouts"
+                    )
+
+                catalogue.bootstrap()
+                result = catalogue.connection.execute(
+                    """
+                    SELECT count(*), count(df.partition_id), sum(df.record_count)
+                    FROM __ducklake_metadata_atlas.ducklake_data_file AS df
+                    JOIN __ducklake_metadata_atlas.ducklake_table AS t
+                      ON t.table_id = df.table_id
+                    JOIN __ducklake_metadata_atlas.ducklake_schema AS s
+                      ON s.schema_id = t.schema_id
+                    WHERE s.schema_name = 'main'
+                      AND t.table_name = 'crawl_materialization_fanouts'
+                      AND s.end_snapshot IS NULL AND t.end_snapshot IS NULL
+                      AND df.end_snapshot IS NULL
+                    """
+                ).fetchone()
+
+            self.assertGreater(result[0], 0)
+            self.assertEqual(result[0], result[1])
+            self.assertEqual(result[2], 1)
 
     def test_dom_macros_are_persistent_and_follow_projected_dom_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

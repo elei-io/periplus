@@ -123,7 +123,7 @@ async def admit_request(*, runs, requests, progress, jetstream, run_id: UUID, no
         identities = (identity,)
         if graph_identity != identity and graph_identity not in run.seen_request_identities:
             identities = (*identities, graph_identity)
-        return run.model_copy(update={"status": "running", "started_at": run.started_at or now, "seen_request_identities": (*run.seen_request_identities, *identities), "pending_admissions": (*run.pending_admissions, pending), "request_count": run.request_count + 1, "pending_request_count": run.pending_request_count + 1})
+        return run.model_copy(update={"status": "running", "started_at": run.started_at or now, "last_progress_at": now, "seen_request_identities": (*run.seen_request_identities, *identities), "pending_admissions": (*run.pending_admissions, pending), "request_count": run.request_count + 1, "pending_request_count": run.pending_request_count + 1})
 
     run = await update_graph_run(runs, run_id, reserve)
     if not admitted:
@@ -309,8 +309,8 @@ async def settle_request(*, runs, requests, progress, request_id: UUID, status: 
             failures = run.failed_request_count + (1 if status == "failed" else 0)
             if pending == 0 and run.status not in _TERMINAL_RUNS:
                 final = "completed_with_errors" if failures else "completed"
-                return run.model_copy(update={"pending_request_count": pending, "failed_request_count": failures, "status": final, "completed_at": now})
-            return run.model_copy(update={"pending_request_count": pending, "failed_request_count": failures})
+                return run.model_copy(update={"pending_request_count": pending, "failed_request_count": failures, "last_progress_at": now, "status": final, "completed_at": now})
+            return run.model_copy(update={"pending_request_count": pending, "failed_request_count": failures, "last_progress_at": now})
         run = await update_graph_run(runs, request.graph_run_id, account)
         if run.status in _TERMINAL_RUNS:
             await _project(mark_run_progress_settled(progress, run))

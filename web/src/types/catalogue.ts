@@ -16,12 +16,14 @@ export type CatalogueLintResult = {
 
 export type CatalogueMaterializationSummary = {
   id: string
-  status: "full_refresh" | "live" | "backfilling" | "paused" | "dematerializing" | "degraded" | "source_changing" | "source_changed"
-  refresh_mode: "full" | "scope_incremental"
+  status: "live" | "backfilling" | "paused" | "dematerializing" | "degraded" | "source_changed"
   row_count: number
   storage_bytes: number
-  active_query_revision: number | null
   definition_is_current: boolean
+  pending_live_scopes: number
+  remaining_backfill_scopes: number
+  failed_scopes: number
+  last_scope_completed_at: string | null
 }
 
 export type CatalogueViewRecord = {
@@ -66,7 +68,6 @@ export type SavedQuery = {
   archived_at: string | null
   created_at: string
   updated_at: string
-  materialization: CatalogueMaterializationSummary | null
 }
 
 export type SavedQueryDetail = SavedQuery & { revisions: SavedQueryRevision[] }
@@ -78,25 +79,23 @@ export type CatalogueMaterializationRecord = {
   qualified_name: string
   display_name: string
   description: string | null
-  active_query_revision_id: string | null
-  query_id: string | null
-  query_name: string | null
-  query_revision: number | null
-  view_reference_id: string | null
-  view_uuid: string | null
-  view_name: string | null
-  refresh_mode: "full" | "scope_incremental"
-  scope_kind: "document" | "crawl" | null
-  activation_snapshot: number | null
+  view_reference_id: string
+  view_uuid: string
+  view_name: string
+  scope_kind: "document" | "crawl"
+  scope_column: string
+  activation_snapshot: number
   live_enabled: boolean
   backfill_enabled: boolean
   backfill_scopes_per_minute: number
   partition_column: string | null
   partitioning: string[]
-  status: "full_refresh" | "live" | "backfilling" | "paused" | "dematerializing" | "degraded" | "source_changing" | "source_changed"
-  source_state: "current" | "source_changing" | "source_changed"
+  status: "live" | "backfilling" | "paused" | "dematerializing" | "degraded" | "source_changed"
+  source_state: "current" | "source_changed"
   completed_scopes: number | null
   total_scopes: number | null
+  pending_live_scopes: number
+  remaining_backfill_scopes: number
   failed_scopes: number
   last_scope_completed_at: string | null
   active_file_count: number

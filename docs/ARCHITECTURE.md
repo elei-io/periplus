@@ -35,7 +35,7 @@ API
 
 Off the graph hot path:
 
-maintenance worker --> flush / compaction / retention / cleanup / repair --> DuckLake
+maintenance worker -- global NATS lease --> bounded compaction / cleanup --> DuckLake
 ```
 
 `crawl` is the only page-acquisition primitive. A graph node maps admitted URL inputs to crawl
@@ -50,13 +50,25 @@ do not perform external side effects. Human-readable result visualization is out
 execution; users inspect retained findings with catalogue SQL, saved queries, views, and
 materializations. The detailed contract is in [CRAWL_GRAPHS.md](CRAWL_GRAPHS.md).
 
-Catalogue materializations add one supervised planner/evaluator beside ingestion. A saved query or
-DuckLake view may have at most one attached materialization; materialization is a capability of that
-definition, not a separate catalogue product or a source of duplicate outputs. DuckLake CDC
+Catalogue materializations add one supervised planner/evaluator beside ingestion. A managed
+DuckLake view may have at most one attached materialization; materialization is a live capability
+of that view, not a separate catalogue product or a source of duplicate outputs. Saved queries
+cannot be materialized. Activation declares whether updates are keyed by document or crawl and
+which view output column is that incremental discriminator. DuckLake CDC
 discovers changed document or crawl scopes and historical activation scans page through bounded
 scope IDs. Both publish JetStream work. Evaluation streams a bounded Arrow object through the
 configured repository object store. The catalog worker verifies and commits it through its embedded
-DuckDB/DuckLake connection.
+DuckDB/DuckLake connection. Commit delivery is supervised: a failed consumer makes the worker
+unhealthy and terminates its main loop, while post-commit fan-out settlement failures NAK only the
+affected message for idempotent redelivery. Startup reconciliation keyset-pages every crawl missing
+a frozen fan-out exactly once per planner lifecycle rather than repeatedly publishing the first
+page.
+
+JetStream consumer depths are deployment-wide pipeline diagnostics because materialization stages
+share consumers. User-facing lag comes from authoritative DuckLake state instead: each view reports
+planned fan-out members for its current definition plus remaining activation backfill scopes, and
+Graph Metrics attributes live pending and failed fan-out members through `crawls.graph_run_id`,
+so each run carries its own accumulated materialization lag.
 
 ## State ownership
 
@@ -98,11 +110,12 @@ entity, messaging, recursion, and failure contract lives in [CRAWL_GRAPHS.md](CR
 
 For a captured page, the crawl worker:
 
-1. Normalizes the request and acquires the page under a bounded local permit.
-2. Hashes the raw UTF-8 HTML and stores compressed content idempotently under
+1. Normalizes the request and acquires the page under its deployment-wide CrawlPolicy permit and,
+   for browser work, a bounded worker-local browser permit.
+2. Releases remote-acquisition capacity after the remote response completes.
+3. Hashes the raw UTF-8 HTML and stores compressed content idempotently under
    `raw/html/sha256/<prefix>/<hash>.html.zst`.
-3. Publishes a frozen ingestion job containing repository-relative identity and graph provenance.
-4. Releases acquisition capacity after durable catalogue-work publication.
+4. Publishes a frozen ingestion job containing repository-relative identity and graph provenance.
 
 Catalog workers verify raw objects, build bounded page-local DOM staging, commit
 document/crawl/element microbatches, publish verified run-scoped Arrow navigation packages, execute
@@ -115,11 +128,19 @@ Repository microbatches accumulate across JetStream deliveries and flush at the 
 element-row, staged-byte, or five-second oldest-item limit. Compatible materialization scopes are
 likewise grouped by target and definition revision, then appended through one Parquet file and one
 DuckLake transaction; partial groups also flush after five seconds. Timers bound low-volume latency
-while row and byte limits govern high-volume file quality.
+while row and byte limits govern high-volume file quality. Crawl rows are partitioned by capture
+date; DOM elements are hash-bucketed by document identity; and frozen fan-out tables are
+hash-bucketed by crawl identity. Setup rewrites pre-partition files once so the new layout benefits
+retained evidence as well as new crawls. Crawl-scoped link materialization and fan-out settlement
+can therefore prune most unrelated object-store files. The managed `page_links` definition derives
+anchor text set-wise instead of invoking a descendant scan once per link.
 
-Terminal ingestion failures enter a file-backed dead-letter stream. Explicit repository commands
-inspect and requeue them. The maintenance worker runs bounded, threshold-driven DuckLake small-file
-compaction independently of ingestion. Metadata inlining is disabled after reproducible
+Terminal ingestion failures enter a size- and age-bounded file-backed dead-letter stream. Explicit
+repository commands inspect and requeue them. The maintenance worker runs bounded,
+threshold-driven DuckLake small-file compaction independently of ingestion. It schedules this work
+locally and uses one expiring NATS KV lease solely to exclude concurrent catalogue writers and
+maintenance replicas; it does not publish work to itself or retain worker/operation bookkeeping.
+Metadata inlining is disabled after reproducible
 Postgres-backed inline-reader crashes; maintenance still flushes previously inlined rows before
 compaction. Compaction output is bounded by DuckLake's
 `max_compacted_files`; superseded files are reclaimed only after the configured read-safety grace
@@ -148,15 +169,18 @@ edge SQL results, materialization scopes, browser concurrency, graph-run current
 runaway ceilings have explicit limits. Limit failures must be clear and terminal; durable state must
 not be silently truncated.
 
-Browser concurrency remains bounded per worker; replica count determines deployment-wide browser
-capacity. NATS coordinates crawl requests and graph admission, not a global browser semaphore.
+CrawlPolicy concurrency is a deployment-wide remote-pressure ceiling enforced by expiring NATS KV
+leases for the frozen policy revision. Browser concurrency is additionally bounded per worker to
+protect local CPU and memory; replica count determines the deployment's physical browser capacity.
+The policy lease is not a global browser semaphore: HTTP, browser, and external-provider work all
+use it, and only actual remote acquisition holds a lease.
 
 ## Code ownership
 
 - `backend/control/` owns editable Postgres-backed crawl graphs, policies, matches, and
   catalogue definitions.
 - `backend/runtime/` owns NATS-backed graph runs, crawl requests, admission, deduplication, progress,
-  worker delivery/current state, maintenance delivery, and crawl capacity.
+  worker delivery/current state, the global maintenance lease, and crawl capacity.
 - `backend/workers/` owns the crawl, catalog, and maintenance process lifecycles.
 - `backend/actions/` contains the current acquisition and analysis implementation during the graph
   cutover; it must not gain new navigation primitives or traversal loops.

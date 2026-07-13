@@ -10,7 +10,7 @@ from repository.catalogue.client import Catalogue
 from repository.catalogue.query import classify_select
 from repository.catalogue.views import DuckLakeView
 
-MATERIALIZED_SCHEMA = "materialized"
+MATERIALIZED_SCHEMA = "_atlas_materializations"
 _SAFE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 
 
@@ -37,15 +37,6 @@ class MaterializationStore:
     def __init__(self, catalogue: Catalogue) -> None:
         self.catalogue = catalogue
 
-    def create(self, *, name: str, sql: str) -> MaterializationTable:
-        _validate_name(name)
-        classify_select(sql)
-        if any(item.table_name == name for item in self.catalogue.lake.table.list(schema_name=MATERIALIZED_SCHEMA)):
-            raise MaterializationConflictError(f"Table {MATERIALIZED_SCHEMA}.{name} already exists.")
-        self._use_main()
-        self.catalogue.connection.execute(f"CREATE TABLE {_qualified(self.catalogue, name)} AS {sql}")
-        return self.inspect(name)
-
     def create_empty_scoped(
         self, *, name: str, sql: str, parameters: dict[str, object]
     ) -> MaterializationTable:
@@ -69,15 +60,6 @@ class MaterializationStore:
             f"SELECT * FROM ({query}) AS scoped_result WHERE false",
             parameters,
         )
-        return self.inspect(name)
-
-    def refresh(self, *, name: str, expected_uuid: UUID, sql: str) -> MaterializationTable:
-        current = self.inspect(name)
-        if current.table_uuid != expected_uuid:
-            raise MaterializationConflictError("The materialized table changed; refresh the page before retrying.")
-        classify_select(sql)
-        self._use_main()
-        self.catalogue.connection.execute(f"CREATE OR REPLACE TABLE {_qualified(self.catalogue, name)} AS {sql}")
         return self.inspect(name)
 
     def validate_scoped_schema(
@@ -243,6 +225,17 @@ def scoped_view_query(
     )
     return (
         f"SELECT * FROM {qualified_view} "
+        f"WHERE {_quote_identifier(scope_column)} = ${scope_kind}_id"
+    )
+
+
+def scoped_select(sql: str, *, scope_kind: str, scope_column: str) -> str:
+    """Bound a stored view definition by its declared output discriminator."""
+
+    classify_select(sql)
+    query = sql.strip().removesuffix(";")
+    return (
+        f"SELECT * FROM ({query}) AS atlas_view_definition "
         f"WHERE {_quote_identifier(scope_column)} = ${scope_kind}_id"
     )
 

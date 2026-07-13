@@ -53,7 +53,6 @@ class GraphRepositoryContractTests(unittest.TestCase):
         job = MaterializationScopeJob(
             materialization_id=uuid4(),
             definition_revision_id=uuid4(),
-            query_revision_id=None,
             target_table="page_links",
             scope_kind="crawl",
             scope_column="crawl_id",

@@ -10,7 +10,6 @@ from uuid import UUID
 
 import nats
 from config import get_float, get_int, get_str
-from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import (
     AckPolicy,
     ConsumerConfig,
@@ -39,7 +38,7 @@ from runtime.navigation_contract import NavigationPackage
 STREAM = "ATLAS_REPOSITORY"
 SUBJECT = "atlas.repository.ingest"
 DURABLE = "atlas-repository-writer"
-RESULTS_BUCKET = "ATLAS_REPOSITORY_RESULTS"
+RESULTS_BUCKET = "atlas_repository_results"
 DEAD_LETTER_STREAM = "ATLAS_REPOSITORY_DEAD_LETTER"
 DEAD_LETTER_SUBJECT = "atlas.repository.dead_letter"
 
@@ -48,18 +47,8 @@ class IngestionJob(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     request_id: str
-    reply_subject: str
     enqueued_at: datetime
     crawl: CrawlRecord
-
-class IngestionResponse(BaseModel):
-    """Small notification payload; durable truth lives in ``IngestionState``."""
-
-    model_config = ConfigDict(frozen=True)
-
-    request_id: str
-    result: CatalogueWriteResult | None = None
-    error: str | None = None
 
 
 class DeadLetterEntry(BaseModel):
@@ -178,6 +167,8 @@ async def ensure_dead_letter_stream(jetstream) -> None:
         retention=RetentionPolicy.LIMITS,
         storage=StorageType.FILE,
         num_replicas=replicas,
+        max_age=get_float("ATLAS_INGEST_DEAD_LETTER_TTL_SECONDS"),
+        max_bytes=get_int("ATLAS_INGEST_DEAD_LETTER_MAX_BYTES"),
     )
     try:
         info = await jetstream.stream_info(DEAD_LETTER_STREAM)
@@ -195,6 +186,14 @@ async def ensure_dead_letter_stream(jetstream) -> None:
     if info.config.num_replicas != replicas:
         raise RuntimeError(
             f"JetStream {DEAD_LETTER_STREAM} must have {replicas} replicas"
+        )
+    if info.config.max_age != config.max_age:
+        raise RuntimeError(
+            f"JetStream {DEAD_LETTER_STREAM} must retain failures for {config.max_age} seconds"
+        )
+    if info.config.max_bytes != config.max_bytes:
+        raise RuntimeError(
+            f"JetStream {DEAD_LETTER_STREAM} must be limited to {config.max_bytes} bytes"
         )
 
 
@@ -496,16 +495,6 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
     return dead_letter
 
 
-def ingestion_response(state: IngestionState) -> IngestionResponse:
-    if state.status == "pending":
-        raise ValueError("pending ingestion has no terminal response")
-    return IngestionResponse(
-        request_id=state.request_id,
-        result=state.result,
-        error=state.error,
-    )
-
-
 def result_from_ingestion_state(state: IngestionState) -> CatalogueWriteResult:
     if state.status == "failed":
         raise RuntimeError(state.error or "repository ingestion failed")
@@ -544,7 +533,7 @@ class IngestionQueueClient:
         *,
         request_id: str | None = None,
     ) -> CatalogueWriteResult:
-        """Publish/resume one operation and wait on durable state, not its inbox."""
+        """Publish or resume one operation and wait on its durable state."""
 
         request_id = request_id or crawl_ingestion_request_id(crawl.crawl_id)
         state = await self._pending_state(
@@ -570,7 +559,6 @@ class IngestionQueueClient:
             return
         job = IngestionJob(
             request_id=state.request_id,
-            reply_subject=self.client.new_inbox(),
             enqueued_at=state.enqueued_at,
             crawl=state.crawl,
         )
@@ -613,48 +601,37 @@ class IngestionQueueClient:
         self, state: IngestionState
     ) -> CatalogueWriteResult:
         self._require_connected()
-        reply_subject = self.client.new_inbox()
-        subscription = await self.client.subscribe(reply_subject)
         job = IngestionJob(
             request_id=state.request_id,
-            reply_subject=reply_subject,
             enqueued_at=state.enqueued_at,
             crawl=state.crawl,
         )
         poll_seconds = get_float("ATLAS_INGEST_RESULT_POLL_SECONDS")
-        try:
-            while True:
-                durable = await get_ingestion_state(self.results, state.request_id)
-                if durable is not None and durable.status != "pending":
+        while True:
+            durable = await get_ingestion_state(self.results, state.request_id)
+            if durable is not None and durable.status != "pending":
+                return _terminal_result(durable)
+
+            if durable is None or durable.published_at is None:
+                # PubAck proves the work stream accepted the operation. The stable
+                # message ID suppresses the only ambiguous duplicate: a producer
+                # crash after PubAck but before the CAS marker below.
+                payload = job.model_dump_json().encode()
+                _validate_envelope(payload, label="repository ingestion job")
+                await self.jetstream.publish(
+                    SUBJECT,
+                    payload,
+                    stream=STREAM,
+                    headers={"Nats-Msg-Id": state.request_id},
+                )
+                durable = await mark_ingestion_published(
+                    self.results,
+                    state.request_id,
+                )
+                if durable.status != "pending":
                     return _terminal_result(durable)
 
-                if durable is None or durable.published_at is None:
-                    # PubAck proves the work stream accepted the operation. The stable
-                    # message ID suppresses the only ambiguous duplicate: a producer
-                    # crash after PubAck but before the CAS marker below.
-                    payload = job.model_dump_json().encode()
-                    _validate_envelope(payload, label="repository ingestion job")
-                    await self.jetstream.publish(
-                        SUBJECT,
-                        payload,
-                        stream=STREAM,
-                        headers={"Nats-Msg-Id": state.request_id},
-                    )
-                    durable = await mark_ingestion_published(
-                        self.results,
-                        state.request_id,
-                    )
-                    if durable.status != "pending":
-                        return _terminal_result(durable)
-
-                try:
-                    # The inbox only wakes the poll early. Its payload is never trusted
-                    # as terminal truth, and losing it cannot lose the result.
-                    await subscription.next_msg(timeout=poll_seconds)
-                except (NatsTimeoutError, asyncio.TimeoutError):
-                    pass
-        finally:
-            await subscription.unsubscribe()
+            await asyncio.sleep(poll_seconds)
 
     def _require_connected(self) -> None:
         if self.client is None or self.jetstream is None or self.results is None:

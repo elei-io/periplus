@@ -143,10 +143,10 @@ export function CrawlPolicyDetailPage({
                   {policy.enabled ? "Enabled" : "Disabled"}
                 </Badge>
                 <Badge variant="outline">
-                  {String(policy.config.template ?? "manual")}
+                  {String(policy.config.profile ?? "http")}
                 </Badge>
                 <Badge variant="outline">
-                  {String(policy.config.mode ?? "static")}
+                  {String(objectValue(policy.config.config).mode ?? "")}
                 </Badge>
               </div>
             </div>
@@ -219,11 +219,12 @@ function ConfigEditor({ policy }: { policy: CrawlPolicyDetailRecord }) {
 
 function TemplateCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
   const updatePolicy = useUpdateCrawlPolicy(policy.id)
+  const profileConfig = objectValue(policy.config.config)
   const currentTemplate =
-    templateConfigFor(policy.config.template) ?? crawlPolicyTemplates[0]
+    templateConfigFor(profileConfig.template) ?? crawlPolicyTemplates[0]
   const initialConcurrency =
-    typeof policy.config.max_concurrency === "number"
-      ? policy.config.max_concurrency
+    typeof policy.config.concurrency === "number"
+      ? policy.config.concurrency
       : currentTemplate.maxConcurrency
   const [templateName, setTemplateName] = useState<CrawlPolicyTemplate>(
     currentTemplate.template
@@ -242,18 +243,21 @@ function TemplateCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
 
     updatePolicy.mutate({
       config: {
-        ...policy.config,
-        template: selectedTemplate.template,
-        mode: selectedTemplate.mode,
-        wait: selectedTemplate.wait,
-        max_concurrency: parsedConcurrency,
-        run_config_overrides: selectedTemplate.runConfigOverrides,
-        cache_block_rules: policy.config.cache_block_rules ?? {
-          quality_warning_codes: [],
-        },
-        selection: {
-          ...objectValue(policy.config.selection),
-          reason: "admin selected template",
+        profile: "browser",
+        concurrency: parsedConcurrency,
+        config: {
+          ...profileConfig,
+          template: selectedTemplate.template,
+          mode: selectedTemplate.mode,
+          wait: selectedTemplate.wait,
+          run_config_overrides: selectedTemplate.runConfigOverrides,
+          cache_block_rules: profileConfig.cache_block_rules ?? {
+            quality_warning_codes: [],
+          },
+          selection: {
+            ...objectValue(profileConfig.selection),
+            reason: "admin selected template",
+          },
         },
       },
     })
@@ -263,7 +267,7 @@ function TemplateCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
     <Card size="sm">
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <CardTitle>Template</CardTitle>
+          <CardTitle>Browser template</CardTitle>
           <Button
             size="sm"
             onClick={saveTemplate}
@@ -343,7 +347,7 @@ function AdminCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
   const deleteCurrentPolicy = () => {
     if (
       !window.confirm(
-        "Delete this crawl policy? Matching crawls will use the conservative static default until you calibrate a new policy."
+        "Delete this crawl policy? Matching crawls will use the default HTTP profile until you create a new policy."
       )
     ) {
       return
@@ -406,6 +410,7 @@ function AdminCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
 }
 
 function MetadataCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
+  const profileConfig = objectValue(policy.config.config)
   return (
     <Card size="sm">
       <CardHeader>
@@ -419,17 +424,18 @@ function MetadataCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
         <MetaRow label="Match" value={policy.match} />
         <MetaRow
           label="Template"
-          value={String(policy.config.template ?? "-")}
+          value={String(profileConfig.template ?? "-")}
         />
-        <MetaRow label="Mode" value={String(policy.config.mode ?? "-")} />
-        <MetaRow label="Wait" value={String(policy.config.wait ?? "-")} />
+        <MetaRow label="Profile" value={String(policy.config.profile ?? "-")} />
+        <MetaRow label="Mode" value={String(profileConfig.mode ?? "-")} />
+        <MetaRow label="Wait" value={String(profileConfig.wait ?? "-")} />
         <MetaRow
           label="Concurrency"
-          value={String(policy.config.max_concurrency ?? "-")}
+          value={String(policy.config.concurrency ?? "-")}
         />
         <MetaRow
           label="Cache Blocks"
-          value={formatCacheBlocks(policy.config.cache_block_rules)}
+          value={formatCacheBlocks(profileConfig.cache_block_rules)}
         />
         <MetaRow label="Created" value={formatDate(policy.created_at)} />
         <MetaRow label="Updated" value={formatDate(policy.updated_at)} />
@@ -438,11 +444,11 @@ function MetadataCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
   )
 }
 
-function objectValue(value: unknown) {
+function objectValue(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {}
   }
-  return value
+  return value as Record<string, unknown>
 }
 
 function formatOverrides(value: Record<string, unknown>) {

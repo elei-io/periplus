@@ -179,16 +179,23 @@ through Atlas URL matching, not attached to a graph or node. The effective polic
 
 ```text
 Acquisition
-- request/browser mode
-- waits and timeout
-- retries
-- headers or other frozen request settings
-- per-worker concurrency or rate pressure for the matching remote
+- profile: http | browser | firecrawl
+- concurrency: maximum simultaneous remote acquisitions across the Atlas deployment
+- config: profile-specific waits, timeouts, headers, provider options, and cache settings
 ```
 
-The exact policy schema remains code-owned. Two requests in the same graph may resolve different
-policies because their URLs match different remotes. Browser concurrency is enforced locally per
-worker; NATS does not introduce a global browser semaphore.
+The stable policy envelope is `{profile, concurrency, config}`. Atlas validates `config` against
+the selected profile before the policy is frozen. A missing URL match uses the explicit `http`
+default. Profile selection does not change the crawl contract: every successful profile returns
+raw HTML to the ordinary immutable-object and ingestion path. External providers perform one page
+acquisition; graph edges remain the only navigation mechanism.
+
+Two requests in the same graph may resolve different policies because their URLs match different
+remotes. NATS KV enforces policy concurrency across crawl-worker replicas with expiring,
+heartbeat-renewed leases scoped to the frozen policy revision. A lease is held only for an actual
+remote visit, not for repository cache lookup, ingestion, or navigation waiting. Browser work also
+takes a worker-local browser permit to protect that process. Exact profile configuration remains
+code-owned.
 
 ## Runtime entities
 
@@ -309,7 +316,7 @@ crawl ready for outgoing edges
 The package is page-local Arrow data exposed as `nav.*` tables. Its NATS reference contains the
 object key, SHA-256, byte size, recipe version, and row count. Edge execution verifies size and
 digest before registering the package on a dedicated DuckDB connection. The same connection may
-also read `views.*` or `materialized.*`, but those analytical sources are snapshots and may lag the
+also read `views.*`; live materialized views are asynchronous and may lag the
 just-finished crawl.
 
 Materialization planning and evaluation continue asynchronously after ingestion. Their failures are
@@ -672,6 +679,7 @@ seen_request_identities
 request_count
 created_at
 started_at nullable
+last_progress_at nullable
 completed_at nullable
 cancel_requested_at nullable
 error nullable

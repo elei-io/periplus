@@ -8,12 +8,11 @@ from typing import Any
 from uuid import UUID
 from crawl4ai import AsyncWebCrawler
 from crawl4ai.models import CrawlResult
+import httpx
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from actions.shared.crawl import (
-    CrawlMode,
-    CrawlWait,
     browser_config_for_mode,
     crawl_single_url,
     run_config_for_mode,
@@ -24,7 +23,15 @@ from actions.shared.quality.schemas import QualityWarning
 from actions.shared.quality.service import run_quality_checks
 from repository.catalogue import CrawlRecord
 from dom import links_from_html
-from control.crawl_policies.schemas import CrawlPolicyConfig, CrawlPolicySnapshot
+from config import get_int, get_optional
+from control.crawl_policies.schemas import (
+    BrowserProfileConfig,
+    CrawlPolicyConfig,
+    CrawlPolicySnapshot,
+    FirecrawlProfileConfig,
+    HttpProfileConfig,
+    ProfileConfig,
+)
 from runtime.crawl_capacity import capacity_lease
 from observability import crawl_metrics
 from repository import (
@@ -54,11 +61,14 @@ def _utc_now() -> datetime:
 
 def _input_hash(
     url: str,
-    mode: CrawlMode,
-    wait: CrawlWait,
-    run_config_overrides: dict[str, Any] | None = None,
+    profile: str,
+    config: ProfileConfig,
 ) -> str:
-    payload = {"url": url, "mode": mode, "wait": wait, "run_config_overrides": run_config_overrides or {}}
+    payload = {
+        "url": url,
+        "profile": profile,
+        "config": config.model_dump(mode="json", exclude={"cache", "cache_block_rules"}),
+    }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -79,12 +89,12 @@ def _crawl_payload(result: CrawlResult) -> dict[str, Any]:
     )
 
 async def _crawl_url(
-    crawler: AsyncWebCrawler,
+    crawler: AsyncWebCrawler | None,
+    http_client: httpx.AsyncClient,
     url: str,
-    mode: CrawlMode,
-    wait: CrawlWait,
+    profile: str,
+    config: ProfileConfig,
     progress_reporter: ProgressReporter | None,
-    run_config_overrides: dict[str, Any] | None = None,
     domain_group: str = "unclassified",
 ) -> CrawlPage:
     await emit_progress(
@@ -94,16 +104,22 @@ async def _crawl_url(
     start_time = time.perf_counter()
 
     try:
-        result = await crawl_single_url(
-            crawler=crawler,
-            url=url,
-            run_config=run_config_for_mode(mode=mode, wait=wait, **(run_config_overrides or {})),
-            mode=mode,
-            wait=wait,
-        )
-        html = result.html or ""
-        crawl = _crawl_payload(result)
-        quality_warnings = run_quality_checks(url=result.url, html=html, crawl=crawl)
+        if profile == "http":
+            page = await _acquire_http(
+                http_client, url, HttpProfileConfig.model_validate(config.model_dump())
+            )
+        elif profile == "browser":
+            if crawler is None:
+                raise RuntimeError("Browser acquisition requires a crawler")
+            page = await _acquire_browser(
+                crawler, url, BrowserProfileConfig.model_validate(config.model_dump())
+            )
+        elif profile == "firecrawl":
+            page = await _acquire_firecrawl(
+                http_client, url, FirecrawlProfileConfig.model_validate(config.model_dump())
+            )
+        else:
+            raise ValueError(f"Unsupported crawl profile: {profile}")
     except Exception as exc:
         duration = time.perf_counter() - start_time
         await emit_progress(
@@ -126,35 +142,182 @@ async def _crawl_url(
         return page
 
     duration = time.perf_counter() - start_time
+    page = page.model_copy(update={"duration_seconds": duration})
     await emit_progress(
         progress_reporter,
         ProgressEvent(
             resource=url,
             phase="crawl",
-            status="succeeded" if result.success else "failed",
+            status="succeeded" if page.success else "failed",
             message=(
-                f"Page loaded with HTTP {result.status_code}."
-                if result.success and result.status_code
+                f"Page loaded with HTTP {page.status_code}."
+                if page.success and page.status_code
                 else "Page loaded."
-                if result.success
+                if page.success
                 else "Page load failed."
             ),
-            metadata={"status_code": result.status_code} if result.status_code else {},
+            metadata={"status_code": page.status_code, "profile": profile}
+            if page.status_code
+            else {"profile": profile},
             duration=duration,
-            error=result.error_message,
+            error=page.error,
         ),
     )
-    page = CrawlPage(
+    return page
+
+
+async def _acquire_browser(
+    crawler: AsyncWebCrawler,
+    url: str,
+    config: BrowserProfileConfig,
+) -> CrawlPage:
+    result = await crawl_single_url(
+        crawler=crawler,
+        url=url,
+        run_config=run_config_for_mode(
+            mode=config.mode,
+            wait=config.wait,
+            **config.run_config_overrides,
+        ),
+        mode=config.mode,
+        wait=config.wait,
+    )
+    html = result.html or ""
+    crawl = _crawl_payload(result)
+    return CrawlPage(
         url=result.url,
         success=result.success,
         status_code=result.status_code,
-        duration_seconds=duration,
+        duration_seconds=0,
         html=html,
         crawl=crawl,
-        quality_warnings=quality_warnings,
+        quality_warnings=run_quality_checks(url=result.url, html=html, crawl=crawl),
         error=result.error_message,
     )
-    return page
+
+
+async def _acquire_http(
+    client: httpx.AsyncClient,
+    url: str,
+    config: HttpProfileConfig,
+) -> CrawlPage:
+    async with client.stream(
+        "GET",
+        url,
+        headers=config.headers,
+        timeout=config.timeout_seconds,
+        follow_redirects=config.follow_redirects,
+    ) as response:
+        limit = get_int("ATLAS_REPOSITORY_MAX_HTML_BYTES")
+        content_length = response.headers.get("content-length")
+        if content_length is not None and content_length.isdigit() and int(content_length) > limit:
+            raise ValueError(f"HTTP response exceeds Atlas HTML limit of {limit} bytes")
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in response.aiter_bytes():
+            size += len(chunk)
+            if size > limit:
+                raise ValueError(f"HTTP response exceeds Atlas HTML limit of {limit} bytes")
+            chunks.append(chunk)
+        body = b"".join(chunks)
+        encoding = response.encoding or "utf-8"
+        html = body.decode(encoding, errors="replace")
+        final_url = str(response.url)
+        success = response.is_success
+        error = None if success else f"HTTP {response.status_code}"
+        crawl = {
+            "url": final_url,
+            "success": success,
+            "status_code": response.status_code,
+            "redirected_url": final_url if final_url != url else None,
+            "error_message": error,
+        }
+        return CrawlPage(
+            url=final_url,
+            success=success,
+            status_code=response.status_code,
+            duration_seconds=0,
+            html=html,
+            crawl=crawl,
+            quality_warnings=run_quality_checks(url=final_url, html=html, crawl=crawl),
+            error=error,
+        )
+
+
+async def _acquire_firecrawl(
+    client: httpx.AsyncClient,
+    url: str,
+    config: FirecrawlProfileConfig,
+) -> CrawlPage:
+    api_key = get_optional("FIRECRAWL_API_KEY")
+    if api_key is None:
+        raise RuntimeError("FIRECRAWL_API_KEY is required for the firecrawl profile")
+    options = dict(config.provider_options)
+    for reserved in ("url", "formats"):
+        if reserved in options:
+            raise ValueError(f"Firecrawl provider_options cannot override {reserved}")
+    payload = {
+        **options,
+        "url": url,
+        "formats": ["rawHtml"],
+        "onlyMainContent": False,
+        "maxAge": 0,
+        "storeInCache": False,
+        "timeout": int(config.timeout_seconds * 1000),
+    }
+    response = await client.post(
+        f"{config.api_url.rstrip('/')}/v2/scrape",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json=payload,
+        timeout=config.timeout_seconds + 5,
+    )
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"Firecrawl returned invalid JSON with HTTP {response.status_code}") from exc
+    if not isinstance(body, dict):
+        raise RuntimeError(f"Firecrawl returned invalid JSON with HTTP {response.status_code}")
+    if not response.is_success or not body.get("success"):
+        error = body.get("error") or f"Firecrawl returned HTTP {response.status_code}"
+        return CrawlPage(
+            url=url,
+            success=False,
+            status_code=response.status_code,
+            duration_seconds=0,
+            error=str(error),
+            crawl={"url": url, "success": False, "status_code": response.status_code, "error_message": str(error)},
+        )
+    data = body.get("data") or {}
+    metadata = data.get("metadata") or {}
+    html = data.get("rawHtml")
+    if not isinstance(html, str) or not html:
+        raise RuntimeError("Firecrawl returned no rawHtml")
+    limit = get_int("ATLAS_REPOSITORY_MAX_HTML_BYTES")
+    if len(html.encode()) > limit:
+        raise ValueError(f"Firecrawl response exceeds Atlas HTML limit of {limit} bytes")
+    final_url = str(metadata.get("url") or metadata.get("sourceURL") or url)
+    status_code_value = metadata.get("statusCode")
+    status_code = status_code_value if isinstance(status_code_value, int) else 200
+    success = 200 <= status_code <= 399
+    error = None if success else str(metadata.get("error") or f"HTTP {status_code}")
+    crawl = {
+        "url": final_url,
+        "success": success,
+        "status_code": status_code,
+        "redirected_url": final_url if final_url != url else None,
+        "error_message": error,
+        "provider": "firecrawl",
+    }
+    return CrawlPage(
+        url=final_url,
+        success=success,
+        status_code=status_code,
+        duration_seconds=0,
+        html=html,
+        crawl=crawl,
+        quality_warnings=run_quality_checks(url=final_url, html=html, crawl=crawl),
+        error=error,
+    )
 
 
 async def _canonicalize_transient_links(page: CrawlPage) -> CrawlPage:
@@ -219,9 +382,8 @@ async def _persist_page(
     crawl_request_id: UUID,
     requested_url: str,
     page: CrawlPage,
-    mode: CrawlMode,
-    wait: CrawlWait,
-    run_config_overrides: dict[str, Any] | None = None,
+    profile: str,
+    profile_config: ProfileConfig,
     policy: CrawlPolicySnapshot | None = None,
     repository_pipeline: RepositoryPipeline | None = None,
     cache_policy: ResolvedCachePolicy,
@@ -229,7 +391,7 @@ async def _persist_page(
     include_links: bool,
 ) -> CrawlPage:
     normalized_url = normalize_url(requested_url)
-    input_hash = _input_hash(normalized_url, mode, wait, run_config_overrides)
+    input_hash = _input_hash(normalized_url, profile, profile_config)
     crawl_payload = page.crawl or {}
     finished_at = _utc_now()
     duration_ms = int(page.duration_seconds * 1000)
@@ -282,9 +444,12 @@ async def _persist_page(
             input_json={
                 "acquisition": {
                     "url": requested_url,
-                    "mode": mode,
-                    "wait": wait,
-                    "run_config_overrides": _json_safe(run_config_overrides or {}),
+                    "profile": profile,
+                    "config": _json_safe(
+                        profile_config.model_dump(
+                            mode="json", exclude={"cache", "cache_block_rules"}
+                        )
+                    ),
                     "cache": cache_policy.model_dump(mode="json"),
                 },
                 "crawl_policy": (
@@ -551,18 +716,11 @@ def _repository_crawl_payload(
     return payload
 
 
-def _transport_from_policy(
-    policy: CrawlPolicySnapshot,
-) -> tuple[CrawlMode, CrawlWait, dict[str, Any], dict[str, Any]]:
-    config = CrawlPolicyConfig.model_validate(policy.config or {})
-    if config.engine != "crawl4ai":
-        raise ValueError(f"Unsupported crawl engine: {config.engine}")
-    return (
-        config.mode,
-        config.wait,
-        config.run_config_overrides,
-        config.cache_block_rules,
-    )
+def _profile_from_policy(
+    policy: CrawlPolicySnapshot | None,
+) -> tuple[CrawlPolicyConfig, ProfileConfig]:
+    envelope = CrawlPolicyConfig.model_validate(policy.config if policy is not None else {})
+    return envelope, envelope.parsed_config()
 
 
 def _frozen_crawl_policy() -> CrawlPolicySnapshot | None:
@@ -576,36 +734,27 @@ def _frozen_crawl_policy() -> CrawlPolicySnapshot | None:
 async def _crawl_graph_request(
     *,
     url: str,
-    mode: CrawlMode | None = None,
-    wait: CrawlWait | None = None,
     progress_reporter: ProgressReporter | None = None,
     session: Session,
     crawl_request_id: UUID,
-    run_config_overrides: dict[str, Any] | None = None,
     repository_pipeline: RepositoryPipeline | None = None,
     crawler: AsyncWebCrawler | None = None,
+    http_client: httpx.AsyncClient | None = None,
+    capacity_bucket=None,
+    capacity_owner: UUID | None = None,
     cache: CacheOptions | dict[str, Any] | None = None,
     retain_html: bool = True,
     include_links: bool = True,
 ) -> CrawlPage:
     cache_options = cache if isinstance(cache, CacheOptions) else CacheOptions.model_validate(cache or {})
-    cache_block_rules: dict[str, Any] | None = None
     policy = _frozen_crawl_policy()
-    if mode is None or wait is None:
-        if policy is None:
-            mode, wait, run_config_overrides = "static", "none", {}
-            cache_block_rules = {}
-        else:
-            (
-                mode,
-                wait,
-                run_config_overrides,
-                cache_block_rules,
-            ) = _transport_from_policy(policy)
-        commit_checkpoint(session)
+    envelope, profile_config = _profile_from_policy(policy)
+    profile = envelope.profile
+    cache_block_rules = profile_config.cache_block_rules
+    commit_checkpoint(session)
 
     cache_policy = resolve_cache_policy(
-        crawl_policy_config=policy.config if policy is not None else None,
+        crawl_policy_config=profile_config.model_dump(mode="python"),
         request=cache_options,
     )
     if not cache_policy.stores_result:
@@ -624,9 +773,8 @@ async def _crawl_graph_request(
     normalized_url = normalize_url(url)
     repository_input_hash = _input_hash(
         normalized_url,
-        mode,
-        wait,
-        run_config_overrides,
+        profile,
+        profile_config,
     )
     durable_crawl_id = _durable_crawl_id(crawl_request_id=crawl_request_id)
 
@@ -677,7 +825,7 @@ async def _crawl_graph_request(
             crawl_metrics.page_acquisition(
                 page=resumed_page,
                 duration_seconds=0.0,
-                mode=mode,
+                mode=profile,
                 source="cache",
                 domain_group=domain_group,
             )
@@ -704,7 +852,7 @@ async def _crawl_graph_request(
             crawl_metrics.page_acquisition(
                 page=repository_page,
                 duration_seconds=0.0,
-                mode=mode,
+                mode=profile,
                 source="cache",
                 domain_group=domain_group,
             )
@@ -715,9 +863,8 @@ async def _crawl_graph_request(
                 crawl_request_id=crawl_request_id,
                 requested_url=url,
                 page=repository_page,
-                mode=mode,
-                wait=wait,
-                run_config_overrides=run_config_overrides,
+                profile=profile,
+                profile_config=profile_config,
                 policy=policy,
                 repository_pipeline=repository_pipeline,
                 cache_policy=cache_policy,
@@ -726,23 +873,40 @@ async def _crawl_graph_request(
             )
             return persisted_page
 
-    async def load_with(crawler: AsyncWebCrawler) -> tuple[CrawlPage, bool]:
+    async def load_with(
+        active_crawler: AsyncWebCrawler | None,
+        active_http_client: httpx.AsyncClient,
+    ) -> tuple[CrawlPage, bool]:
+        if profile == "browser" and active_crawler is None:
+            raise RuntimeError("Browser acquisition requires a crawler")
         page = await _crawl_url(
-            crawler=crawler,
+            crawler=active_crawler,
+            http_client=active_http_client,
             url=url,
-            mode=mode,
-            wait=wait,
+            profile=profile,
+            config=profile_config,
             progress_reporter=progress_reporter,
-            run_config_overrides=run_config_overrides,
             domain_group=domain_group,
         )
         return page, False
 
     async def load_page() -> tuple[CrawlPage, bool]:
-        if crawler is not None:
-            return await load_with(crawler)
-        async with AsyncWebCrawler(config=browser_config_for_mode(mode)) as owned_crawler:
-            return await load_with(owned_crawler)
+        if http_client is not None:
+            if profile != "browser" or crawler is not None:
+                return await load_with(crawler, http_client)
+            browser_config = BrowserProfileConfig.model_validate(profile_config.model_dump())
+            async with AsyncWebCrawler(
+                config=browser_config_for_mode(browser_config.mode)
+            ) as owned_crawler:
+                return await load_with(owned_crawler, http_client)
+        async with httpx.AsyncClient() as owned_http_client:
+            if profile != "browser" or crawler is not None:
+                return await load_with(crawler, owned_http_client)
+            browser_config = BrowserProfileConfig.model_validate(profile_config.model_dump())
+            async with AsyncWebCrawler(
+                config=browser_config_for_mode(browser_config.mode)
+            ) as owned_crawler:
+                return await load_with(owned_crawler, owned_http_client)
 
     async def measured_load_page() -> tuple[CrawlPage, bool]:
         nonlocal acquisition_failure_duration, acquisition_recorded
@@ -759,7 +923,7 @@ async def _crawl_graph_request(
             crawl_metrics.page_acquisition(
                 page=cancelled_page,
                 duration_seconds=cancelled_page.duration_seconds,
-                mode=mode,
+                mode=profile,
                 source="network",
                 domain_group=domain_group,
                 outcome="cancelled",
@@ -777,7 +941,7 @@ async def _crawl_graph_request(
             crawl_metrics.page_acquisition(
                 page=failed_page,
                 duration_seconds=failed_page.duration_seconds,
-                mode=mode,
+                mode=profile,
                 source="network",
                 domain_group=domain_group,
             )
@@ -786,7 +950,7 @@ async def _crawl_graph_request(
         crawl_metrics.page_acquisition(
             page=loaded_page,
             duration_seconds=time.perf_counter() - started_at,
-            mode=mode,
+            mode=profile,
             source="cache" if used_cache else "network",
             domain_group=domain_group,
         )
@@ -799,7 +963,9 @@ async def _crawl_graph_request(
             url=url,
             policy=policy,
             progress_reporter=progress_reporter,
-            include_browser=True,
+            include_browser=profile == "browser",
+            capacity_bucket=capacity_bucket,
+            owner=capacity_owner,
         ):
             page, reused_cache = await measured_load_page()
     except asyncio.CancelledError:
@@ -823,7 +989,7 @@ async def _crawl_graph_request(
         )
         reused_cache = False
         if not acquisition_recorded:
-            crawl_metrics.crawl_failure(page=page, mode=mode, domain_group=domain_group)
+            crawl_metrics.crawl_failure(page=page, mode=profile, domain_group=domain_group)
 
     if (
         not reused_cache
@@ -834,9 +1000,8 @@ async def _crawl_graph_request(
             crawl_request_id=crawl_request_id,
             requested_url=url,
             page=page,
-            mode=mode,
-            wait=wait,
-            run_config_overrides=run_config_overrides,
+            profile=profile,
+            profile_config=profile_config,
             policy=policy,
             repository_pipeline=repository_pipeline,
             cache_policy=cache_policy,
@@ -846,7 +1011,7 @@ async def _crawl_graph_request(
         if page.repository_crawl_created:
             crawl_metrics.crawl_persisted(
                 page=page,
-                mode=mode,
+                mode=profile,
                 domain_group=domain_group,
             )
     elif include_links and page.success and page.html is not None:
@@ -862,6 +1027,9 @@ async def crawl_graph_request(
     context: GraphExecutionContext,
     progress_reporter: ProgressReporter | None = None,
     crawler: AsyncWebCrawler | None = None,
+    http_client: httpx.AsyncClient | None = None,
+    capacity_bucket=None,
+    capacity_owner: UUID | None = None,
     repository_pipeline: RepositoryPipeline | None = None,
 ) -> CrawlPage:
     """Acquire and durably ingest one frozen graph crawl request.
@@ -879,6 +1047,9 @@ async def crawl_graph_request(
                 repository_pipeline=repository_pipeline,
                 progress_reporter=progress_reporter,
                 crawler=crawler,
+                http_client=http_client,
+                capacity_bucket=capacity_bucket,
+                capacity_owner=capacity_owner,
             )
         async with RepositoryPipeline(repository_ingestor_from_env()) as pipeline:
             return await _crawl_graph_request(
@@ -888,4 +1059,7 @@ async def crawl_graph_request(
                 repository_pipeline=pipeline,
                 progress_reporter=progress_reporter,
                 crawler=crawler,
+                http_client=http_client,
+                capacity_bucket=capacity_bucket,
+                capacity_owner=capacity_owner,
             )

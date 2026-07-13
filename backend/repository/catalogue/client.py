@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from tempfile import TemporaryDirectory
 from urllib.parse import urljoin
 
-from ducklake_client import DuckLake, DuckLakeError, PostgresCatalog, SQLType
+from ducklake_client import ColumnDef, DuckLake, DuckLakeError, PostgresCatalog, SQLType
 
 from repository.catalogue.config import CatalogueConfig
 from repository.catalogue.exceptions import CatalogueSchemaError
@@ -72,7 +72,7 @@ class Catalogue:
         with self.lake.transaction():
             self.lake.schema.create(self.config.schema)
             self.lake.schema.create("views")
-            self.lake.schema.create("materialized")
+            self.lake.schema.create("_atlas_materializations")
             self.lake.table.create(
                 "documents",
                 schema_name=self.config.schema,
@@ -105,6 +105,7 @@ class Catalogue:
             )
         self._migrate_schema()
         self._configure_layout()
+        self._migrate_layout()
         self._configure_inlining()
         from repository.catalogue.macros import install_catalogue_macros
 
@@ -114,19 +115,128 @@ class Catalogue:
     def _configure_layout(self) -> None:
         """Apply the one physical partition contract for new crawl data."""
 
-        table = ".".join(
+        crawls = ".".join(
             _quote_identifier(value)
             for value in (self.config.alias, self.config.schema, "crawls")
         )
         self.connection.execute(
-            f"ALTER TABLE {table} SET PARTITIONED BY ("
+            f"ALTER TABLE {crawls} SET PARTITIONED BY ("
             "year(captured_at), month(captured_at), day(captured_at))"
         )
+        elements = ".".join(
+            _quote_identifier(value)
+            for value in (self.config.alias, self.config.schema, "elements")
+        )
+        self.connection.execute(
+            f"ALTER TABLE {elements} SET PARTITIONED BY (bucket(16, document_id))"
+        )
+        for table_name in (
+            "crawl_materialization_fanouts",
+            "crawl_materialization_fanout_members",
+        ):
+            table = ".".join(
+                _quote_identifier(value)
+                for value in (self.config.alias, self.config.schema, table_name)
+            )
+            self.connection.execute(
+                f"ALTER TABLE {table} SET PARTITIONED BY (bucket(16, crawl_id))"
+            )
+
+    def _migrate_layout(self) -> None:
+        """Rewrite pre-partition files once so the current layout can prune them."""
+
+        self._rewrite_unpartitioned_bucket_files(
+            "elements", column="document_id", columns=ELEMENT_COLUMNS
+        )
+        self._rewrite_unpartitioned_bucket_files(
+            "crawl_materialization_fanouts",
+            column="crawl_id",
+            columns=CRAWL_MATERIALIZATION_FANOUT_COLUMNS,
+            stage_in_memory=True,
+        )
+        self._rewrite_unpartitioned_bucket_files(
+            "crawl_materialization_fanout_members",
+            column="crawl_id",
+            columns=CRAWL_MATERIALIZATION_FANOUT_MEMBER_COLUMNS,
+            stage_in_memory=True,
+        )
+
+    def _rewrite_unpartitioned_bucket_files(
+        self,
+        table_name: str,
+        *,
+        column: str,
+        columns: dict[str, ColumnDef],
+        stage_in_memory: bool = False,
+    ) -> None:
+        metadata = _quote_identifier(f"__ducklake_metadata_{self.config.alias}")
+        legacy_files = self.connection.execute(
+            f"""
+            SELECT count(*)
+            FROM {metadata}.ducklake_data_file AS df
+            JOIN {metadata}.ducklake_table AS t ON t.table_id = df.table_id
+            JOIN {metadata}.ducklake_schema AS s ON s.schema_id = t.schema_id
+            WHERE s.schema_name = ? AND t.table_name = ?
+              AND s.end_snapshot IS NULL AND t.end_snapshot IS NULL
+              AND df.end_snapshot IS NULL AND df.partition_id IS NULL
+            """,
+            [self.config.schema, table_name],
+        ).fetchone()
+        if legacy_files is None or int(legacy_files[0]) == 0:
+            return
+
+        replacement_name = f"__atlas_bucket16_{table_name}"
+        table = ".".join(
+            _quote_identifier(value)
+            for value in (self.config.alias, self.config.schema, table_name)
+        )
+        replacement = ".".join(
+            _quote_identifier(value)
+            for value in (self.config.alias, self.config.schema, replacement_name)
+        )
+        definitions = ", ".join(
+            f"{_quote_identifier(name)} {_type_sql(definition.data_type)}"
+            + ("" if definition.nullable else " NOT NULL")
+            for name, definition in columns.items()
+        )
+        source = table
+        registration = f"__atlas_repartition_source_{table_name}"
+        if stage_in_memory:
+            # Fan-out tables are small state tables but may contain hundreds of
+            # update fragments. Detach the replacement write from those files;
+            # DuckLake 1.5 can otherwise fault while dropping the source table
+            # in the same transaction that scanned its update history.
+            rows = self.connection.execute(f"SELECT * FROM {table}").to_arrow_table()
+            self.connection.register(registration, rows)
+            source = _quote_identifier(registration)
+        try:
+            with self.lake.transaction():
+                self.connection.execute(f"DROP TABLE IF EXISTS {replacement}")
+                self.connection.execute(f"CREATE TABLE {replacement} ({definitions})")
+                self.connection.execute(
+                    f"ALTER TABLE {replacement} SET PARTITIONED BY "
+                    f"(bucket(16, {_quote_identifier(column)}))"
+                )
+                self.connection.execute(
+                    f"INSERT INTO {replacement} BY NAME SELECT * FROM {source}"
+                )
+                self.connection.execute(f"DROP TABLE {table}")
+                self.connection.execute(
+                    f"ALTER TABLE {replacement} RENAME TO {_quote_identifier(table_name)}"
+                )
+                self.set_commit_message(
+                    author="Atlas setup",
+                    message=f"Repartitioned {self.config.schema}.{table_name}",
+                    extra={"partition": f"bucket(16, {column})"},
+                )
+        finally:
+            if stage_in_memory:
+                self.connection.unregister(registration)
 
     def _configure_inlining(self) -> None:
         """Disable metadata inlining for every Atlas-owned physical table."""
 
-        for schema_name in (self.config.schema, "materialized"):
+        for schema_name in (self.config.schema, "_atlas_materializations"):
             for table in self.lake.table.list(schema_name=schema_name):
                 self.connection.execute(
                     f"CALL {_quote_identifier(self.config.alias)}.set_option("
@@ -245,8 +355,9 @@ class Catalogue:
 
     def _validate_layout(self) -> None:
         metadata = _quote_identifier(f"__ducklake_metadata_{self.config.alias}")
-        rows = self.connection.execute(
-            f"""
+        def partitioning(table_name: str):
+            return self.connection.execute(
+                f"""
             SELECT pc.partition_key_index, c.column_name, pc.transform
             FROM {metadata}.ducklake_partition_info AS pi
             JOIN {metadata}.ducklake_partition_column AS pc
@@ -259,24 +370,44 @@ class Catalogue:
              AND c.column_id = pc.column_id
              AND c.end_snapshot IS NULL
             WHERE s.schema_name = ?
-              AND t.table_name = 'crawls'
+              AND t.table_name = ?
               AND pi.end_snapshot IS NULL
               AND t.end_snapshot IS NULL
               AND s.end_snapshot IS NULL
             ORDER BY pc.partition_key_index
             """,
-            [self.config.schema],
-        ).fetchall()
-        expected = [
+                [self.config.schema, table_name],
+            ).fetchall()
+
+        crawls = partitioning("crawls")
+        expected_crawls = [
             (0, "captured_at", "year"),
             (1, "captured_at", "month"),
             (2, "captured_at", "day"),
         ]
-        if rows != expected:
+        if crawls != expected_crawls:
             raise CatalogueSchemaError(
                 f"catalogue table 'crawls' must be partitioned by "
-                f"year/month/day(captured_at), got {rows!r}"
+                f"year/month/day(captured_at), got {crawls!r}"
             )
+        elements = partitioning("elements")
+        expected_elements = [(0, "document_id", "bucket(16)")]
+        if elements != expected_elements:
+            raise CatalogueSchemaError(
+                "catalogue table 'elements' must be partitioned by "
+                f"bucket(16, document_id), got {elements!r}"
+            )
+        for table_name in (
+            "crawl_materialization_fanouts",
+            "crawl_materialization_fanout_members",
+        ):
+            actual = partitioning(table_name)
+            expected = [(0, "crawl_id", "bucket(16)")]
+            if actual != expected:
+                raise CatalogueSchemaError(
+                    f"catalogue table {table_name!r} must be partitioned by "
+                    f"bucket(16, crawl_id), got {actual!r}"
+                )
 
     def _validate_macros(self) -> None:
         rows = self.connection.execute(

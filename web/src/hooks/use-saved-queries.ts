@@ -16,7 +16,6 @@ export function useSavedQueries() {
   return useQuery({
     queryKey: listKey,
     queryFn: () => json<SavedQueryList>("/catalogue/queries/"),
-    refetchInterval: (query) => query.state.data?.items.some((item) => item.materialization?.status === "dematerializing" || item.materialization?.status === "backfilling") ? 2_000 : false,
   })
 }
 
@@ -25,7 +24,6 @@ export function useSavedQuery(id: string | null) {
     queryKey: ["saved-query", id],
     queryFn: () => json<SavedQueryDetail>(`/catalogue/queries/${id}`),
     enabled: Boolean(id),
-    refetchInterval: (query) => query.state.data?.materialization?.status === "dematerializing" || query.state.data?.materialization?.status === "backfilling" ? 2_000 : false,
   })
 }
 

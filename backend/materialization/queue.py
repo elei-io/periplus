@@ -33,7 +33,6 @@ class MaterializationScopeJob(BaseModel):
 
     materialization_id: UUID
     definition_revision_id: UUID
-    query_revision_id: UUID | None
     target_table: str
     scope_kind: Literal["document", "crawl"]
     scope_column: str

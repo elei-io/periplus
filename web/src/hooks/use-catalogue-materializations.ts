@@ -7,8 +7,6 @@ import type { CatalogueMaterializationList, CatalogueMaterializationRecord } fro
 const key = ["catalogue-materializations"] as const
 
 function invalidateDefinitionSummaries(client: ReturnType<typeof useQueryClient>) {
-  void client.invalidateQueries({ queryKey: ["saved-queries"] })
-  void client.invalidateQueries({ queryKey: ["saved-query"] })
   void client.invalidateQueries({ queryKey: ["catalogue-views"] })
 }
 
@@ -19,17 +17,12 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export type CreateCatalogueMaterializationInput = {
-  source:
-    | { kind: "query"; query_id: string; active_query_revision_id?: string }
-    | { kind: "view"; view_reference_id: string }
+  view_reference_id: string
   name: string
   display_name?: string
   description?: string
-  refresh_mode: "full" | "scope_incremental"
-  scope_kind?: "document"
-  scope_column?: string
-  live_enabled?: boolean
-  backfill_enabled?: boolean
+  scope_kind: "document" | "crawl"
+  scope_column: string
   backfill_scopes_per_minute?: number
   partition_column?: string
 }
@@ -60,24 +53,16 @@ export function useCatalogueMaterialization(id: string | null | undefined) {
 export function useCreateCatalogueMaterialization() {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: ({ source, ...input }: CreateCatalogueMaterializationInput) =>
-      json<CatalogueMaterializationRecord>(
-        source.kind === "query"
-          ? `/catalogue/queries/${source.query_id}/materialization`
-          : `/catalogue/views/${source.view_reference_id}/materialization`, {
+    mutationFn: ({ view_reference_id, ...input }: CreateCatalogueMaterializationInput) =>
+      json<CatalogueMaterializationRecord>(`/catalogue/views/${view_reference_id}/materialization`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...input,
-          ...(source.kind === "query"
-            ? { active_query_revision_id: source.active_query_revision_id }
-            : {}),
-        }),
+        body: JSON.stringify(input),
       }),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: key })
       invalidateDefinitionSummaries(client)
-      toast.success("Durable data created.")
+      toast.success("View materialized.")
     },
     onError: (error) => toast.error(extractApiError(error)),
   })
@@ -86,23 +71,18 @@ export function useCreateCatalogueMaterialization() {
 export function useRebuildCatalogueMaterialization() {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: ({ materialization, targetQueryRevisionId }: { materialization: CatalogueMaterializationRecord; targetQueryRevisionId?: string }) =>
+    mutationFn: ({ materialization }: { materialization: CatalogueMaterializationRecord }) =>
       json<CatalogueMaterializationRecord>(`/catalogue/materializations/${materialization.id}/rebuild`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           expected_ducklake_table_uuid: materialization.ducklake_table_uuid,
-          target_query_revision_id: targetQueryRevisionId,
         }),
       }),
-    onSuccess: (materialization) => {
+    onSuccess: () => {
       void client.invalidateQueries({ queryKey: key })
       invalidateDefinitionSummaries(client)
-      toast.success(
-        materialization.refresh_mode === "scope_incremental"
-          ? "Durable data rebuild started."
-          : "Durable data rebuilt."
-      )
+      toast.success("Materialization rebuild started.")
     },
     onError: (error) => toast.error(extractApiError(error)),
   })

@@ -6,7 +6,6 @@ import { CrawlMetricsPage } from "@/pages/crawls/metrics-page"
 import { CatalogueSqlPage } from "@/pages/catalogue/sql-page"
 import { CatalogueViewsPage } from "@/pages/catalogue/views-page"
 import { CatalogueQueriesPage } from "@/pages/catalogue/queries-page"
-import { CatalogueMaterializationPage } from "@/pages/catalogue/materialization-detail-page"
 import { CrawlPolicyDetailPage } from "@/pages/settings/crawl-policy-detail-page"
 import { CrawlPoliciesPage } from "@/pages/settings/crawl-policies-page"
 import {
@@ -45,7 +44,6 @@ export function App() {
       ) ?? navigationGroups[0]
     )
   }, [activeItem.href])
-  const isMaterializationRoute = /^\/catalogue\/materializations\/[^/]+$/.test(pathname)
 
   const handleNavigate = useCallback(
     (href: string) => {
@@ -61,11 +59,6 @@ export function App() {
   )
 
   const page = (() => {
-    const materializationId = pathname.match(/^\/catalogue\/materializations\/([^/]+)$/)?.[1]
-    if (materializationId) {
-      return <CatalogueMaterializationPage materializationId={decodeURIComponent(materializationId)} />
-    }
-
     if (activeItem.href === "/catalogue/sql") {
       return <CatalogueSqlPage />
     }
@@ -114,16 +107,16 @@ export function App() {
 
   return (
     <SidebarProvider>
-      <AppSidebar pathname={isMaterializationRoute ? "" : activeItem.href} onNavigate={handleNavigate} />
+      <AppSidebar pathname={activeItem.href} onNavigate={handleNavigate} />
       <SidebarInset className="h-svh min-h-0 overflow-hidden">
         <header className="relative z-10 flex h-14 shrink-0 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur-xl">
           <SidebarTrigger />
           <div className="flex min-w-0 flex-col">
             <span className="truncate text-sm font-medium">
-              {isMaterializationRoute ? "Catalogue Materialization" : activeItem.title ?? activeItem.name}
+              {activeItem.title ?? activeItem.name}
             </span>
             <span className="text-xs text-muted-foreground">
-              {isMaterializationRoute ? "Durable data attached to a query or view." : activeItem.description ?? activeGroup.name}
+              {activeItem.description ?? activeGroup.name}
             </span>
           </div>
         </header>

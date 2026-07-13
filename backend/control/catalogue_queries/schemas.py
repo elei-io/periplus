@@ -3,9 +3,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from control.catalogue_materializations.schemas import CatalogueMaterializationSummary
-
-
 class CatalogueQueryCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=200)
@@ -49,7 +46,6 @@ class CatalogueQueryRecord(BaseModel):
     archived_at: datetime | None
     created_at: datetime
     updated_at: datetime
-    materialization: CatalogueMaterializationSummary | None = None
 
 
 class CatalogueQueryDetail(CatalogueQueryRecord):

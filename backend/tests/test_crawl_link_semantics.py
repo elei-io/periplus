@@ -8,6 +8,7 @@ from uuid import uuid4
 from actions.crawl.schemas import CrawlPage
 from actions.crawl.service import _canonicalize_transient_links, _crawl_url, _persist_page
 from actions.shared.cache import ResolvedCachePolicy
+from control.crawl_policies.schemas import BrowserProfileConfig, HttpProfileConfig
 from dom import links_from_html
 
 
@@ -52,8 +53,8 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
                 crawl_request_id=crawl_request_id,
                 requested_url=page.url,
                 page=page,
-                mode="static",
-                wait="none",
+                profile="http",
+                profile_config=HttpProfileConfig(),
                 repository_pipeline=pipeline,
                 cache_policy=ResolvedCachePolicy(mode="prefer", max_age_seconds=120),
                 retain_html=False,
@@ -109,9 +110,10 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
         ):
             page = await _crawl_url(
                 crawler=object(),  # type: ignore[arg-type]
+                http_client=object(),  # type: ignore[arg-type]
                 url=result.url,
-                mode="static",
-                wait="none",
+                profile="browser",
+                config=BrowserProfileConfig(),
                 progress_reporter=None,
             )
 

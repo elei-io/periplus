@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from hashlib import sha256
 
 import psycopg
@@ -27,10 +27,21 @@ _MAINTENANCE_LOCK_KEY = advisory_lock_key("atlas-catalog-maintenance")
 def operation_lock(operation_id: str) -> Iterator[None]:
     """Fence identity resolution and commit across catalog-worker processes."""
 
+    with operation_locks((operation_id,)):
+        yield
+
+
+@contextmanager
+def operation_locks(operation_ids: Iterable[str]) -> Iterator[None]:
+    """Acquire one session's locks in a stable order for an ingestion microbatch."""
+
     if get_str("ATLAS_CATALOGUE_CATALOG").lower() != "postgres":
         yield
         return
-    key = advisory_lock_key(f"atlas-catalog-operation:{operation_id}")
+    keys = [
+        advisory_lock_key(f"atlas-catalog-operation:{operation_id}")
+        for operation_id in sorted(set(operation_ids))
+    ]
     with psycopg.connect(get_str("ATLAS_CATALOGUE_CATALOG_DSN")) as connection:
         timeout_ms = int(
             get_float("ATLAS_CATALOG_OPERATION_LOCK_TIMEOUT_SECONDS") * 1000
@@ -42,24 +53,18 @@ def operation_lock(operation_id: str) -> Iterator[None]:
         connection.execute(
             "SELECT pg_advisory_lock_shared(%s)", (_MAINTENANCE_LOCK_KEY,)
         )
-        connection.execute("SELECT pg_advisory_lock(%s)", (key,))
+        acquired: list[int] = []
         try:
+            for key in keys:
+                connection.execute("SELECT pg_advisory_lock(%s)", (key,))
+                acquired.append(key)
             yield
         finally:
-            connection.execute("SELECT pg_advisory_unlock(%s)", (key,))
+            for key in reversed(acquired):
+                connection.execute("SELECT pg_advisory_unlock(%s)", (key,))
             connection.execute(
                 "SELECT pg_advisory_unlock_shared(%s)", (_MAINTENANCE_LOCK_KEY,)
             )
-
-
-@contextmanager
-def operation_locks(operation_ids: Iterable[str]) -> Iterator[None]:
-    """Acquire a stable lock order for one ingestion microbatch."""
-
-    with ExitStack() as stack:
-        for operation_id in sorted(set(operation_ids)):
-            stack.enter_context(operation_lock(operation_id))
-        yield
 
 
 @contextmanager

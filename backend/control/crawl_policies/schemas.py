@@ -2,22 +2,61 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from actions.shared.cache import CacheOptions
 
 
-class CrawlPolicyConfig(BaseModel):
-    """Currently executable acquisition settings frozen into crawl work."""
+class ProfileConfig(BaseModel):
+    """Settings shared by every acquisition profile."""
 
     model_config = ConfigDict(extra="allow")
-    engine: Literal["crawl4ai"] = "crawl4ai"
+
+    cache: CacheOptions | None = None
+    cache_block_rules: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class HttpProfileConfig(ProfileConfig):
+    timeout_seconds: float = Field(default=20, gt=0)
+    headers: dict[str, str] = Field(default_factory=dict)
+    follow_redirects: bool = True
+
+
+class BrowserProfileConfig(ProfileConfig):
     mode: Literal["static", "dynamic", "app"] = "static"
     wait: Literal["none", "stable", "network", "fixed"] = "none"
     run_config_overrides: dict[str, Any] = Field(default_factory=dict)
-    max_concurrency: int | None = Field(default=None, ge=1)
-    cache: CacheOptions | None = None
-    cache_block_rules: dict[str, Any] = Field(default_factory=dict)
+
+
+class FirecrawlProfileConfig(ProfileConfig):
+    timeout_seconds: float = Field(default=90, gt=0, le=300)
+    api_url: str = "https://api.firecrawl.dev"
+    provider_options: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+PROFILE_CONFIG_TYPES = {
+    "http": HttpProfileConfig,
+    "browser": BrowserProfileConfig,
+    "firecrawl": FirecrawlProfileConfig,
+}
+
+
+class CrawlPolicyConfig(BaseModel):
+    """Unified acquisition profile envelope frozen into crawl work."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile: Literal["http", "browser", "firecrawl"] = "http"
+    concurrency: int = Field(default=4, ge=1)
+    config: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_profile_config(self) -> CrawlPolicyConfig:
+        PROFILE_CONFIG_TYPES[self.profile].model_validate(self.config)
+        return self
+
+    def parsed_config(self) -> ProfileConfig:
+        return PROFILE_CONFIG_TYPES[self.profile].model_validate(self.config)
 
 
 class UrlMatchSnapshot(BaseModel):
@@ -63,9 +102,10 @@ class CrawlPolicyRecord(BaseModel):
 
 class CrawlPolicyListRecord(CrawlPolicyRecord):
     template: str | None = None
+    profile: str | None = None
     mode: str | None = None
     wait: str | None = None
-    max_concurrency: int | None = None
+    concurrency: int | None = None
 
 
 class CrawlPolicyListResponse(BaseModel):

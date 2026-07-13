@@ -12,6 +12,7 @@ import type {
   GraphRunListResponse,
   GraphRunRecord,
   EdgeDedupeMode,
+  GraphRunMaterializationLagList,
 } from "@/types/graphs"
 
 const graphsKey = ["crawl-graphs"] as const
@@ -279,6 +280,16 @@ export function useCrawlConcurrencyLimits() {
     refetchInterval: 5_000,
     queryFn: async () => jsonResponse<CrawlConcurrencyLimits>(
       await fetch(apiUrl("/graph-runs/capacity"))
+    ),
+  })
+}
+
+export function useGraphRunMaterializationLag() {
+  return useQuery({
+    queryKey: ["graph-runs", "materialization-lag"],
+    refetchInterval: 5_000,
+    queryFn: async () => jsonResponse<GraphRunMaterializationLagList>(
+      await fetch(apiUrl("/graph-runs/materialization-lag"))
     ),
   })
 }

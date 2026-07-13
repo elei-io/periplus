@@ -11,18 +11,21 @@ from control.crawl_policies.schemas import CrawlPolicyConfig
 class CachePolicyTests(unittest.TestCase):
     def test_crawl_policy_transport_is_typed_before_it_is_frozen(self) -> None:
         policy = CrawlPolicyConfig.model_validate({
-            "engine": "crawl4ai",
-            "mode": "dynamic",
-            "wait": "network",
-            "max_concurrency": 2,
-            "cache": {"mode": "prefer", "max_age_seconds": 30},
+            "profile": "browser",
+            "concurrency": 2,
+            "config": {
+                "mode": "dynamic",
+                "wait": "network",
+                "cache": {"mode": "prefer", "max_age_seconds": 30},
+            },
         })
-        self.assertEqual(policy.mode, "dynamic")
-        self.assertEqual(policy.cache, CacheOptions(mode="prefer", max_age_seconds=30))
+        profile = policy.parsed_config()
+        self.assertEqual(getattr(profile, "mode"), "dynamic")
+        self.assertEqual(profile.cache, CacheOptions(mode="prefer", max_age_seconds=30))
         for invalid in (
-            {"engine": "unknown"},
-            {"mode": "javascript"},
-            {"max_concurrency": 0},
+            {"profile": "unknown"},
+            {"profile": "browser", "config": {"mode": "javascript"}},
+            {"concurrency": 0},
         ):
             with self.assertRaises(ValueError):
                 CrawlPolicyConfig.model_validate(invalid)

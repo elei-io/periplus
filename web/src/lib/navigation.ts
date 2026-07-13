@@ -53,7 +53,7 @@ export const navigationGroups: NavigationGroup[] = [
         href: "/crawls/metrics",
         icon: ChartNoAxesCombinedIcon,
         title: "Crawl Metrics",
-        description: "Inspect graph-run throughput, progress, and failures.",
+        description: "See what each graph is doing and whether its data is up to date.",
       },
     ],
   },

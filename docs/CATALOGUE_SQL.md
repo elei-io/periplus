@@ -108,7 +108,7 @@ scan a node's unbounded history to decide what follows one page.
 
 ```sql
 SELECT url
-FROM materialized.page_links
+FROM views.page_links
 WHERE crawl_id = $crawl_id
   AND is_http
   AND NOT is_internal

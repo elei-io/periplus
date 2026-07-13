@@ -356,19 +356,19 @@ The physical and logical names remain frozen:
 
 ```text
 logical system view: views.page_links
-physical projection: materialized.page_links
+materialized view: views.page_links
 projection version: PAGE_LINKS_PROJECTION_VERSION = 1
 ```
 
 The projection retains the exact columns and semantics currently defined by `PAGE_LINKS_SQL` in
 `backend/control/catalogue_views/system.py`. During base ingestion, the catalog worker inserts
-`crawls`, `documents`, and `elements`, then populates `materialized.page_links` for that `crawl_id`
+`crawls`, `documents`, and `elements`, then updates the materialization backing `views.page_links` for that `crawl_id`
 in the same DuckLake transaction. A successful retry resolves the existing `crawl_id` and does not
 insert links again.
 
 Remove the `CatalogueMaterialization` row and CDC planning path for the system `page_links`
 projection. User-defined materializations remain unchanged. Existing edge SQL continues to query
-`materialized.page_links`; no compatibility view or alternate table name is introduced.
+`views.page_links`; materialization does not create a second public catalogue object.
 
 The initial cutover preserves the existing single crawl-ready barrier for all materializations in
 the crawl's frozen fan-out. Do not add optional dependency membership during this cutover. If a
@@ -385,7 +385,7 @@ The catalog worker performs base ingestion in this exact order under the operati
 6. Insert the document if its content identity is new.
 7. Insert the crawl observation and graph provenance.
 8. Insert DOM elements only when this document/recipe projection is new.
-9. Insert `materialized.page_links` for this crawl and projection version.
+9. Update the materialized rows of `views.page_links` for this crawl and projection version.
 10. Insert the complete frozen fan-out and its membership rows.
 11. Commit and record `last_committed_snapshot()` from that connection.
 12. Publish deterministic live materialization jobs for planned members.
@@ -502,16 +502,6 @@ durables:
 - atlas-catalog-edge-workers
 retention: work queue
 
-stream: ATLAS_MAINTENANCE_WORK
-subjects:
-- atlas.maintenance.flush
-- atlas.maintenance.compact
-- atlas.maintenance.cleanup
-- atlas.maintenance.retention
-- atlas.maintenance.repair
-durable: atlas-maintenance-workers
-retention: work queue
-
 KV
 - atlas_graph_runs
 - atlas_crawl_requests
@@ -519,10 +509,8 @@ KV
 - atlas_graph_edge_evaluations
 - atlas_crawl_workers
 - atlas_catalog_workers
-- atlas_maintenance_workers
 - atlas_catalog_operations
 - atlas_catalog_maintenance
-- atlas_maintenance_operations
 - atlas_catalog_pressure
 ```
 
@@ -707,13 +695,12 @@ created_at: timestamp
 ```
 
 The initial lease duration is five minutes with a 30-second heartbeat. Schema migration requires no
-active catalog workers and is performed only by `atlas-setup`. The maintenance worker acquires the
-lease and publishes the lease state; catalog workers stop claiming new work and drain their local
-operations. After the active catalogue-operation count reaches zero, or the 120-second drain limit
-expires without active commits, the maintenance worker runs one bounded operation and releases the
-lease. A failure releases by TTL. Maintenance operations are recorded in
-`atlas_maintenance_operations` by deterministic operation ID, so redelivery cannot repeat a
-completed retention or repair action.
+active catalog workers and is performed only by `atlas-setup`. The maintenance worker schedules
+bounded compaction and cleanup locally, acquires the lease, and publishes the lease state; catalog
+workers stop claiming new work and drain their local operations. After the active
+catalogue-operation count reaches zero, or the 120-second drain limit expires without active
+commits, the maintenance worker runs one bounded operation and releases the lease. A failure
+releases by TTL. There is no self-published maintenance stream or retained worker/operation state.
 
 ## Initial configuration
 
@@ -737,12 +724,10 @@ ATLAS_CATALOG_OPERATION_LOCK_TIMEOUT_SECONDS=60
 ATLAS_CATALOG_WORKER_PRESENCE_TTL_SECONDS=15
 ATLAS_CATALOG_MAX_DELIVER=5
 
-ATLAS_MAINTENANCE_WORKER_CONCURRENCY=1
-ATLAS_MAINTENANCE_WORKER_PRESENCE_TTL_SECONDS=30
+ATLAS_MAINTENANCE_LEASE_REPLICAS=1
 ATLAS_MAINTENANCE_LEASE_SECONDS=300
 ATLAS_MAINTENANCE_HEARTBEAT_SECONDS=30
 ATLAS_MAINTENANCE_CATALOG_DRAIN_SECONDS=120
-ATLAS_MAINTENANCE_MAX_DELIVER=3
 
 ATLAS_CATALOG_BATCH_MAX_OPERATIONS=4
 ATLAS_CATALOG_BATCH_MAX_BYTES=67108864
@@ -844,7 +829,7 @@ Required ownership after cutover:
 | Graph state/admission | `backend/runtime/graph_runs.py`, `graph_progress.py` | GraphRun/CrawlRequest CAS, dedupe, completion |
 | Crawl delivery | `backend/runtime/crawl_queue.py` | `ATLAS_CRAWL_WORK` and crawl worker presence |
 | Catalog delivery | `backend/runtime/catalog_queue.py` | `ATLAS_CATALOG_WORK`, envelopes, operation/pressure KV |
-| Maintenance delivery | `backend/runtime/maintenance_queue.py` | `ATLAS_MAINTENANCE_WORK`, operation and maintenance-lease KV |
+| Maintenance fencing | `backend/runtime/maintenance_queue.py` | Global expiring maintenance-lease KV |
 | Acquisition | `backend/actions/crawl/` | HTTP/browser transport and immutable acquisition result |
 | Raw objects | `backend/repository/objects/` | Content-addressed HTML |
 | Catalogue transactions | `backend/repository/catalogue/` | Embedded DuckLake attach, identity resolution, commit, maintenance |
@@ -928,7 +913,7 @@ object storage:
 - One-node graph settles one URL.
 - Self-edge with graph dedupe reaches quiescence.
 - Crawl/document dedupe scopes retain their current semantics.
-- `materialized.page_links` is queryable immediately after base ingestion commit.
+- Materialized `views.page_links` is queryable immediately after base ingestion commit.
 - Edge execution never precedes successful frozen fan-out settlement.
 - A terminal materialization failure visibly fails the source request.
 - Cancellation settles current state without new admissions.
@@ -942,7 +927,7 @@ This is a destructive greenfield cutover. The first deployment uses this exact s
 2. Build the new backend image containing all three worker entrypoints.
 3. Run `atlas-setup` to provision DuckLake tables/options and Postgres control schema.
 4. Purge/delete the superseded graph/repository/materialization work streams and runtime KV.
-5. Recreate `ATLAS_CRAWL_WORK`, `ATLAS_CATALOG_WORK`, `ATLAS_MAINTENANCE_WORK`, and the frozen KV buckets.
+5. Recreate `ATLAS_CRAWL_WORK`, `ATLAS_CATALOG_WORK`, and the frozen KV buckets.
 6. Start one catalog worker and wait for catalogue validation and healthy presence.
 7. Start one crawl worker and wait for healthy presence.
 8. Start one maintenance worker and wait for healthy presence.

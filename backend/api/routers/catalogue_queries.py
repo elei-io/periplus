@@ -16,7 +16,6 @@ from control.catalogue_queries.service import (
     archive_query,
     create_query,
     detail,
-    get_materialization_summary,
     get_query,
     get_revision,
     list_queries,
@@ -26,14 +25,8 @@ from control.catalogue_queries.service import (
 )
 from db.session import get_session
 from repository.catalogue.query import CatalogueQueryError
-from repository.catalogue import Catalogue, catalogue_from_env
-from repository.catalogue.materializations import MaterializationStore
 
 router = APIRouter(prefix="/catalogue/queries", tags=["catalogue-queries"])
-
-
-def _catalogue() -> Catalogue:
-    return catalogue_from_env()
 
 
 @router.get("/", response_model=CatalogueQueryListResponse)
@@ -41,10 +34,7 @@ def list_(
     session: Annotated[Session, Depends(get_session)],
     archived: Annotated[bool, Query()] = False,
 ) -> CatalogueQueryListResponse:
-    with _catalogue() as catalogue:
-        items = list_queries(
-            session, MaterializationStore(catalogue), archived=archived
-        )
+    items = list_queries(session, archived=archived)
     return CatalogueQueryListResponse(items=items, total=len(items))
 
 
@@ -66,11 +56,7 @@ def get(
     query = get_query(session, query_id)
     if query is None:
         raise HTTPException(status_code=404, detail="Saved query not found.")
-    with _catalogue() as catalogue:
-        summary = get_materialization_summary(
-            session, MaterializationStore(catalogue), query
-        )
-    return detail(query, materialization=summary)
+    return detail(query)
 
 
 @router.put("/{query_id}", response_model=CatalogueQueryDetail)
@@ -92,14 +78,7 @@ def update(
             description=payload.description,
             change_note=payload.change_note,
         )
-        with _catalogue() as catalogue:
-            summary = get_materialization_summary(
-                session, MaterializationStore(catalogue), query
-            )
-        return CatalogueQueryDetail(
-            **updated.model_dump(exclude={"materialization"}),
-            materialization=summary,
-        )
+        return updated
     except CatalogueQueryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except CatalogueQueryError as exc:
@@ -125,14 +104,7 @@ def restore_revision_(
             expected_revision_id=payload.expected_current_revision_id,
             change_note=payload.change_note,
         )
-        with _catalogue() as catalogue:
-            summary = get_materialization_summary(
-                session, MaterializationStore(catalogue), query
-            )
-        return CatalogueQueryDetail(
-            **restored.model_dump(exclude={"materialization"}),
-            materialization=summary,
-        )
+        return restored
     except CatalogueQueryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

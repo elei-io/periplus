@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { ArrowLeftIcon, ArrowRightIcon, BracesIcon, Columns3Icon, DatabaseIcon, DatabaseZapIcon, RefreshCwIcon, ShieldCheckIcon, SparklesIcon, Trash2Icon, TriangleAlertIcon, UnlinkIcon } from "lucide-react"
 
-import { MaterializeQueryDialog } from "@/components/catalogue/materialize-query-dialog"
+import { MaterializeViewDialog } from "@/components/catalogue/materialize-view-dialog"
+import { MaterializationSheet } from "@/components/catalogue/materialization-sheet"
 import { CatalogueEmptyState, CatalogueHero, CataloguePanel } from "@/components/catalogue/catalogue-workspace"
 import { formatSql } from "@/components/catalogue/sql-format"
 import { SqlEditor } from "@/components/catalogue/sql-editor"
@@ -13,7 +14,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useAdoptCatalogueView, useCatalogueViews, useDetachCatalogueView, useDropCatalogueView, useUpdateCatalogueView } from "@/hooks/use-catalogue-views"
 import { useCatalogueMaterialization } from "@/hooks/use-catalogue-materializations"
-import { CatalogueMaterializationDetail } from "@/pages/catalogue/materialization-detail-page"
 import type { CatalogueViewRecord } from "@/types/catalogue"
 
 export function CatalogueViewsPage({ viewId }: { viewId?: string }) {
@@ -31,7 +31,7 @@ export function CatalogueViewsPage({ viewId }: { viewId?: string }) {
 
   return (
     <div className="flex min-h-0 w-full flex-col gap-4 overflow-y-auto">
-      <CatalogueHero icon={BracesIcon} eyebrow="Live catalogue layer" title="Views" description="Browse named DuckLake relations, then open one to inspect its schema, edit its SQL, or promote it to durable data.">
+      <CatalogueHero icon={BracesIcon} eyebrow="Live catalogue layer" title="Views" description="Browse named DuckLake relations, inspect their schema, edit their SQL, or enable live materialization.">
         <Badge variant="outline" className="h-7 bg-background/40 px-3">{views.length} views</Badge>
         <Badge variant="outline" className="h-7 bg-background/40 px-3">{managed} managed</Badge>
         <Button nativeButton={false} render={<a href="/catalogue/sql" />} className="rounded-full px-4"><SparklesIcon />Create in SQL</Button>
@@ -45,12 +45,11 @@ export function CatalogueViewsPage({ viewId }: { viewId?: string }) {
                 <TableHead className="pl-4">View</TableHead>
                 <TableHead>Ownership</TableHead>
                 <TableHead className="text-right">Columns</TableHead>
-                <TableHead>Evaluation</TableHead>
-                <TableHead>State</TableHead>
+                <TableHead>Materialization</TableHead>
                 <TableHead className="text-right">Rows</TableHead>
                 <TableHead className="text-right">Storage</TableHead>
                 <TableHead>Availability</TableHead>
-                <TableHead>Updated</TableHead>
+                <TableHead>Last update</TableHead>
                 <TableHead className="w-20" />
               </TableRow>
             </TableHeader>
@@ -67,12 +66,11 @@ export function CatalogueViewsPage({ viewId }: { viewId?: string }) {
                     </TableCell>
                     <TableCell><Badge variant={view.provisioned_by === "system" ? "default" : view.managed ? "secondary" : "outline"}>{view.provisioned_by === "system" ? "System" : view.managed ? "User" : "Unowned"}</Badge></TableCell>
                     <TableCell className="text-right font-mono tabular-nums">{view.columns.length}</TableCell>
-                    <TableCell><Badge variant={view.materialization ? "secondary" : "outline"}>{view.materialization ? "Materialized" : "On read"}</Badge></TableCell>
-                    <TableCell>{view.materialization ? <MaterializationStatus status={view.materialization.status} /> : <span className="text-muted-foreground">Virtual</span>}</TableCell>
+                    <TableCell><MaterializationCell materialization={view.materialization} /></TableCell>
                     <TableCell className="text-right font-mono tabular-nums">{view.materialization?.row_count.toLocaleString() ?? "—"}</TableCell>
                     <TableCell className="text-right font-mono tabular-nums">{view.materialization ? formatBytes(view.materialization.storage_bytes) : "—"}</TableCell>
                     <TableCell><Badge variant={view.available ? "outline" : "destructive"} className={view.available ? "border-emerald-500/25 text-emerald-500" : undefined}>{view.available ? "Available" : "Missing"}</Badge></TableCell>
-                    <TableCell className="text-muted-foreground">{view.updated_at ? new Date(view.updated_at).toLocaleDateString() : "—"}</TableCell>
+                    <TableCell className="text-muted-foreground">{view.materialization?.last_scope_completed_at ? new Date(view.materialization.last_scope_completed_at).toLocaleString() : "—"}</TableCell>
                     <TableCell className="pr-4 text-right"><Button nativeButton={false} render={<a href={href} />} size="sm" variant="ghost">Open<ArrowRightIcon /></Button></TableCell>
                   </TableRow>
                 )
@@ -98,15 +96,9 @@ function ViewDetail({ view }: { view: CatalogueViewRecord }) {
   const materializationQuery = useCatalogueMaterialization(materialization?.id)
   const dirty = sql !== formatSql(view.sql) || displayName !== view.display_name || description !== (view.description ?? "")
 
-  useEffect(() => {
-    if (window.location.hash !== "#durable-data" || !materialization?.id) return
-    const frame = window.requestAnimationFrame(() => document.getElementById("durable-data")?.scrollIntoView({ behavior: "smooth", block: "start" }))
-    return () => window.cancelAnimationFrame(frame)
-  }, [materialization?.id])
-
   const save = () => {
     const definitionChanged = sql.trim() !== view.sql.trim()
-    if (definitionChanged && materialization && !window.confirm("Change the source definition used by its materialization? Existing materialized rows will not change automatically; refresh or rebuild them explicitly.")) return
+    if (definitionChanged && materialization && !window.confirm("Change the source definition used by its materialization? Existing materialized rows will not change automatically; rebuild the materialization when you are ready.")) return
     update.mutate({ view, sql, display_name: displayName, description })
   }
 
@@ -119,7 +111,8 @@ function ViewDetail({ view }: { view: CatalogueViewRecord }) {
             <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h2 className="truncate text-base font-semibold">{view.display_name}</h2><ViewStatus view={view} />{dirty && <Badge variant="outline" className="border-amber-500/30 text-amber-500">Unsaved</Badge>}</div><div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{view.qualified_name} · {view.ducklake_view_uuid}</div></div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {view.available && view.managed && (materialization ? <Button nativeButton={false} render={<a href="#durable-data" />} size="sm"><DatabaseZapIcon />Durable data</Button> : <Button size="sm" onClick={() => setMaterializeOpen(true)}><DatabaseZapIcon />Materialize</Button>)}
+            {materialization && <MaterializationSheet materialization={materializationQuery.data} status={materialization.status} />}
+            {view.available && view.managed && !materialization && <Button size="sm" onClick={() => setMaterializeOpen(true)}><DatabaseZapIcon />Materialize</Button>}
             {!view.managed && <Button size="sm" variant="outline" onClick={() => adopt.mutate(view)} disabled={adopt.isPending}>Adopt view</Button>}
             {view.managed && <Tooltip><TooltipTrigger render={<span className="inline-flex" />}><Button size="sm" variant="outline" onClick={() => detach.mutate(view)} disabled={Boolean(materialization) || detach.isPending}><UnlinkIcon />Detach</Button></TooltipTrigger><TooltipContent>{materialization ? "Dematerialize this view before detaching its Atlas reference." : "Remove only the Atlas reference; keep the DuckLake view."}</TooltipContent></Tooltip>}
             {view.managed && <Tooltip><TooltipTrigger render={<span className="inline-flex" />}><Button size="sm" variant="destructive" onClick={() => { if (window.confirm(`Permanently drop ${view.qualified_name} from DuckLake? Its Atlas reference will also be archived.`)) drop.mutate(view) }} disabled={Boolean(materialization) || drop.isPending}><Trash2Icon />Drop</Button></TooltipTrigger><TooltipContent>{materialization ? "Dematerialize this view before deleting its DuckLake object." : "Delete the DuckLake object and archive its Atlas reference."}</TooltipContent></Tooltip>}
@@ -128,9 +121,9 @@ function ViewDetail({ view }: { view: CatalogueViewRecord }) {
 
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           <div className="grid gap-4">
-            {materialization && (
+            {materialization && !materialization.definition_is_current && (
               <div className="flex gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
-                <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" /><div><div className="font-medium">This view feeds durable data</div><p className="mt-1 text-foreground/70">Changing its SQL replaces the DuckLake identity. Refresh or rebuild the attached materialization deliberately.</p><div className="mt-2 flex flex-wrap gap-1"><MaterializationStatus status={materialization.status} />{!materialization.definition_is_current && <Badge variant="outline" className="border-amber-500/30 text-amber-500">Definition changed</Badge>}</div></div>
+                <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" /><div><div className="font-medium">Materialized data uses an older definition</div><p className="mt-1 text-foreground/70">The SQL below no longer matches the stored data. Rebuild the materialization when you are ready to replace it.</p></div>
               </div>
             )}
 
@@ -144,23 +137,17 @@ function ViewDetail({ view }: { view: CatalogueViewRecord }) {
               <SqlEditor value={sql} onChange={setSql} readOnly={!view.managed || !view.available} height="320px" ariaLabel={`SQL definition for ${view.qualified_name}`} />
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex min-w-0 flex-wrap items-center gap-1.5"><Columns3Icon className="mr-1 size-3.5 text-muted-foreground" />{view.columns.map((column) => <Badge key={column} variant="outline" className="font-mono">{column}</Badge>)}{view.columns.length === 0 && <span className="text-xs text-muted-foreground">No columns available</span>}</div>
+            <div className="rounded-2xl border">
+              <div className="flex items-center justify-between border-b px-4 py-3"><div className="flex items-center gap-2 text-sm font-medium"><Columns3Icon className="size-4 text-muted-foreground" />Output columns</div><span className="text-xs text-muted-foreground">{view.columns.length} columns</span></div>
+              {view.columns.length > 0 ? <div className="grid sm:grid-cols-2 xl:grid-cols-3">{view.columns.map((column, index) => <div key={column} className="flex min-w-0 items-center justify-between gap-3 border-b px-4 py-2.5 last:border-b-0 sm:[&:nth-last-child(-n+2)]:border-b-0 xl:[&:nth-last-child(-n+3)]:border-b-0"><code className="truncate text-xs font-medium">{column}</code><span className="shrink-0 font-mono text-[10px] text-muted-foreground">{view.column_types[index] ?? "UNKNOWN"}</span></div>)}</div> : <div className="px-4 py-8 text-center text-xs text-muted-foreground">No columns available</div>}
+            </div>
+            <div className="flex justify-end">
               {view.managed && view.available && <Button onClick={save} disabled={!sql.trim() || update.isPending || !dirty}>{update.isPending ? "Saving…" : "Save changes"}</Button>}
             </div>
           </div>
         </div>
       </CataloguePanel>
-      <section id="durable-data" className="scroll-mt-20">
-        {materialization ? (
-          materializationQuery.data ? <CatalogueMaterializationDetail materialization={materializationQuery.data} /> : <CataloguePanel><CatalogueEmptyState icon={DatabaseZapIcon} title="Loading durable data…" description="Fetching maintenance, coverage, schema, and storage state." className="min-h-64" /></CataloguePanel>
-        ) : (
-          <CataloguePanel>
-            <CatalogueEmptyState icon={DatabaseZapIcon} title="Durable data" description="This view is evaluated on every read. Materialize it to maintain one durable DuckLake table for repeated access." action={view.available && view.managed ? <Button onClick={() => setMaterializeOpen(true)}><DatabaseZapIcon />Materialize view</Button> : undefined} className="min-h-64" />
-          </CataloguePanel>
-        )}
-      </section>
-      <MaterializeQueryDialog open={materializeOpen} onOpenChange={setMaterializeOpen} source={{ kind: "view", view }} />
+      <MaterializeViewDialog open={materializeOpen} onOpenChange={setMaterializeOpen} view={view} />
     </>
   )
 }
@@ -172,8 +159,13 @@ function ViewStatus({ view }: { view: CatalogueViewRecord }) {
 }
 
 function MaterializationStatus({ status }: { status: NonNullable<CatalogueViewRecord["materialization"]>["status"] }) {
-  const label = status === "full_refresh" ? "Full refresh" : status === "backfilling" ? "Backfilling" : status === "degraded" ? "Needs attention" : status === "source_changing" ? "Changing source" : status === "source_changed" ? "Source changed" : status[0].toUpperCase() + status.slice(1)
-  return <Badge variant={status === "degraded" || status === "dematerializing" || status === "source_changing" || status === "source_changed" ? "destructive" : status === "live" || status === "backfilling" ? "default" : "secondary"}>{label}</Badge>
+  const label = status === "backfilling" ? "Backfilling" : status === "degraded" ? "Needs attention" : status === "source_changed" ? "Source changed" : status[0].toUpperCase() + status.slice(1)
+  return <Badge variant={status === "degraded" || status === "dematerializing" || status === "source_changed" ? "destructive" : status === "live" || status === "backfilling" ? "default" : "secondary"}>{label}</Badge>
+}
+
+function MaterializationCell({ materialization }: { materialization: CatalogueViewRecord["materialization"] }) {
+  if (!materialization) return <div><Badge variant="outline">Virtual</Badge><div className="mt-1 text-[10px] text-muted-foreground">Evaluated on read</div></div>
+  return <div><MaterializationStatus status={materialization.status} /><div className={`mt-1 text-[10px] ${materialization.failed_scopes ? "text-destructive" : "text-muted-foreground"}`}>{materialization.pending_live_scopes.toLocaleString()} live pending · {materialization.remaining_backfill_scopes.toLocaleString()} backfill{materialization.failed_scopes ? ` · ${materialization.failed_scopes.toLocaleString()} failed` : ""}</div></div>
 }
 
 function formatBytes(value: number): string {

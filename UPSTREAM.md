@@ -29,6 +29,37 @@ the published release; version control retains the history.
 
 ## Wishlist
 
+### DuckLake crash when replacing an update-fragmented table from itself
+
+- **Atlas caller:** deployment-time repartition of retained crawl materialization fan-out state.
+- **Evidence:** DuckLake 1.5 exited with signal 11 while one transaction created a bucketed
+  replacement, ran `INSERT INTO replacement SELECT * FROM source`, dropped the source, and renamed
+  the replacement. The source contained 1,378 current rows across 597 small data/update fragments.
+  Reading the same rows to Arrow succeeds, and registering that Arrow table before the replacement
+  transaction makes the operation complete reliably.
+- **Smallest useful upstream contract:** replacing a table from a scan of its current snapshot must
+  not crash when the source has update fragments; add a regression covering scan, drop, and rename
+  in one DuckLake transaction.
+- **Atlas status:** mitigated by staging only the small fan-out state tables in memory before their
+  one-time bucket-layout rewrite. The 1.9-million-row append-only elements table continues to use a
+  direct transactional `INSERT ... SELECT` so Atlas does not introduce an unbounded memory copy.
+
+### Cancellation and transaction semantics for blocking CDC listen
+
+- **Atlas caller:** live materialization planning through `ducklake-cdc-client`.
+- **Evidence:** a catalog worker using `DMLConsumer.listen(timeout_ms=1000)` retained a PostgreSQL
+  transaction in `idle in transaction` for more than five minutes; a native stack showed
+  `WaitForNextSnapshotWithSubscriptions`. During the same run, the catalogue exhausted PostgreSQL
+  clients. The timeout bounded the Python call's intended wait but did not prevent the underlying
+  metadata transaction from remaining open.
+- **Smallest useful upstream contract:** `listen` must leave no transaction open between bounded
+  polls, with a regression test against a Postgres-backed DuckLake; alternatively document it as a
+  blocking-only primitive and provide an async/non-blocking polling helper with explicit lease
+  lifecycle semantics.
+- **Atlas status:** mitigated locally by using `read(max_snapshots=100)` plus an async one-second
+  wait and by bounding/reaping every embedded Postgres pool. The upstream behavior is still worth a
+  focused reproduction because other consumers may reasonably choose `listen`.
+
 ### Remote DuckLake connection support for `ducklake-client`
 
 - **Atlas caller:** every Atlas service when DuckDB is hosted by a dedicated stateful Quack

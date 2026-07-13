@@ -13,6 +13,7 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from prometheus_client import start_http_server
 from crawl4ai import AsyncWebCrawler
 from ducklake_client import DuckLakeError
+import httpx
 
 from actions.crawl.service import crawl_graph_request
 from actions.shared.crawl import browser_config_for_mode
@@ -28,6 +29,7 @@ from runtime.graph_queue import (
     CrawlWork,
     WorkerState,
     connect_nats,
+    ensure_crawl_capacity_storage,
     ensure_graph_storage,
     ensure_graph_progress_storage,
     get_crawl_request,
@@ -37,6 +39,33 @@ from runtime.graph_queue import (
 )
 from runtime.graph_runs import expire_graph_run, reconcile_pending_admissions, settle_request
 from runtime.graph_progress import bootstrap_run_progress, transition_node_progress
+
+
+class LazyBrowserCrawler:
+    """Start the process-owned browser only when a browser profile first needs it."""
+
+    def __init__(self) -> None:
+        self._crawler: AsyncWebCrawler | None = None
+        self._lock = asyncio.Lock()
+
+    async def _get(self) -> AsyncWebCrawler:
+        if self._crawler is not None:
+            return self._crawler
+        async with self._lock:
+            if self._crawler is None:
+                crawler = AsyncWebCrawler(config=browser_config_for_mode("app"))
+                await crawler.start()
+                self._crawler = crawler
+        return self._crawler
+
+    async def arun(self, *args, **kwargs):
+        crawler = await self._get()
+        return await crawler.arun(*args, **kwargs)
+
+    async def close(self) -> None:
+        if self._crawler is not None:
+            await self._crawler.close()
+            self._crawler = None
 
 
 async def _keep_alive(message, requests, request_id: UUID, claim_token: UUID) -> None:
@@ -58,7 +87,16 @@ async def _keep_alive(message, requests, request_id: UUID, claim_token: UUID) ->
             return
 
 
-async def _process_crawl(message, runs, requests, progress, crawler, repository_pipeline) -> None:
+async def _process_crawl(
+    message,
+    runs,
+    requests,
+    progress,
+    crawler,
+    repository_pipeline,
+    capacity=None,
+    http_client: httpx.AsyncClient | None = None,
+) -> None:
     work = CrawlWork.model_validate_json(message.data)
     request = await get_crawl_request(requests, work.crawl_request_id)
     if request is None or request.status in {"completed", "failed", "cancelled"}:
@@ -134,6 +172,9 @@ async def _process_crawl(message, runs, requests, progress, crawler, repository_
                 url=request.url,
                 context=context,
                 crawler=crawler,
+                http_client=http_client,
+                capacity_bucket=capacity,
+                capacity_owner=claim_token,
                 repository_pipeline=repository_pipeline,
             )
         if page.crawl_id != request.id:
@@ -246,6 +287,7 @@ async def run() -> None:
     jetstream = client.jetstream()
     runs, requests, workers = await ensure_graph_storage(jetstream)
     progress = await ensure_graph_progress_storage(jetstream)
+    capacity_state = await ensure_crawl_capacity_storage(jetstream)
     for active_run in await list_graph_runs(runs):
         if active_run.status in {"queued", "running"}:
             await bootstrap_run_progress(progress, requests, active_run)
@@ -261,6 +303,7 @@ async def run() -> None:
     )
     active: set[asyncio.Task] = set()
     started = datetime.now(UTC)
+    crawler = LazyBrowserCrawler()
 
     async def presence() -> None:
         while not stop.is_set():
@@ -293,8 +336,10 @@ async def run() -> None:
 
     presence_task = asyncio.create_task(presence())
     try:
-        async with AsyncWebCrawler(config=browser_config_for_mode("app")) as crawler:
-            async with RepositoryPipeline(repository_ingestor_from_env()) as repository_pipeline:
+        async with httpx.AsyncClient() as http_client:
+            async with RepositoryPipeline(
+                repository_ingestor_from_env()
+            ) as repository_pipeline:
                 while not stop.is_set():
                     active = {task for task in active if not task.done()}
                     available = capacity - len(active)
@@ -303,14 +348,25 @@ async def run() -> None:
                         continue
                     fetched = False
                     try:
-                        messages = await crawl_subscription.fetch(batch=available, timeout=0.1)
+                        messages = await crawl_subscription.fetch(
+                            batch=available, timeout=0.1
+                        )
                     except (NatsTimeoutError, asyncio.TimeoutError):
                         messages = []
                     fetched = bool(messages)
                     for message in messages:
-                        task = asyncio.create_task(_process_crawl(
-                            message, runs, requests, progress, crawler, repository_pipeline
-                        ))
+                        task = asyncio.create_task(
+                            _process_crawl(
+                                message,
+                                runs,
+                                requests,
+                                progress,
+                                crawler,
+                                repository_pipeline,
+                                capacity_state,
+                                http_client,
+                            )
+                        )
                         active.add(task)
                     if not fetched:
                         await asyncio.sleep(0.05)
@@ -318,6 +374,7 @@ async def run() -> None:
         stop.set()
         presence_task.cancel()
         await asyncio.gather(presence_task, *active, return_exceptions=True)
+        await crawler.close()
         await client.drain()
         if metrics_server is not None:
             await asyncio.to_thread(metrics_server.shutdown)

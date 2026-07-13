@@ -22,7 +22,9 @@ async def run_live(
     try:
         while not stop.is_set():
             definitions = [
-                item for item in active_definitions(live=True) if item.scope_kind == "document"
+                item
+                for item in await asyncio.to_thread(active_definitions, live=True)
+                if item.scope_kind == "document"
             ]
             maximum = get_int("ATLAS_MATERIALIZATION_MAX_LIVE_DEFINITIONS")
             if len(definitions) > maximum:
@@ -42,12 +44,7 @@ async def run_live(
                 if key not in consumers:
                     consumers[key] = await _run_blocking(_open_consumer, definition)
                 _, consumer = consumers[key]
-                batch = await _run_blocking(
-                    consumer.listen,
-                    timeout_ms=1000,
-                    max_snapshots=100,
-                    poll_min_ms=1000,
-                )
+                batch = await _run_blocking(consumer.read, max_snapshots=100)
                 if batch is None:
                     window = await _run_blocking(consumer.window, max_snapshots=100)
                     if window.terminal:
@@ -55,6 +52,7 @@ async def run_live(
                             f"CDC consumer {consumer.name!r} reached a schema boundary "
                             f"at snapshot {window.terminal_at_snapshot}"
                         )
+                    await _wait(stop, 1)
                     continue
                 identity_column = (
                     "document_id" if definition.scope_kind == "document" else "crawl_id"
@@ -164,14 +162,9 @@ async def run_crawl_planner(
         ).open()
         if monitor is not None:
             monitor.subsystem_ready("cdc_crawl_planner")
+        await _reconcile_unplanned_crawls(jetstream)
         while not stop.is_set():
-            await _reconcile_unplanned_crawls(jetstream)
-            batch = await _run_blocking(
-                consumer.listen,
-                timeout_ms=1000,
-                max_snapshots=100,
-                poll_min_ms=1000,
-            )
+            batch = await _run_blocking(consumer.read, max_snapshots=100)
             if batch is None:
                 window = await _run_blocking(consumer.window, max_snapshots=100)
                 if window.terminal and window.terminal_at_snapshot is not None:
@@ -190,6 +183,8 @@ async def run_crawl_planner(
                         "advanced crawl materialization planner across schema boundary %s",
                         boundary,
                     )
+                else:
+                    await _wait(stop, 1)
                 continue
             crawl_scopes = {
                 (str(change.values["crawl_id"]), change.values.get("document_id"))
@@ -197,7 +192,7 @@ async def run_crawl_planner(
                 if change.kind.value in {"insert", "update_postimage"}
                 and change.values.get("crawl_id")
             }
-            definitions = active_definitions(live=True)
+            definitions = await asyncio.to_thread(active_definitions, live=True)
             for crawl_id, document_id in crawl_scopes:
                 plan = CrawlMaterializationFanoutPlanJob(
                     crawl_id=crawl_id,
@@ -234,36 +229,58 @@ def _cdc_client(catalogue: Catalogue) -> CDCClient:
 
 
 async def _reconcile_unplanned_crawls(jetstream) -> int:
+    """Publish every pre-existing missing fan-out once per planner lifecycle."""
+
+    definitions = await asyncio.to_thread(active_definitions, live=True)
+    cursor = None
+    total = 0
+    page_size = 100
+    while True:
+        rows = await _run_blocking(_unplanned_crawl_page, cursor, page_size)
+        for crawl_id_value, document_id, captured_at in rows:
+            crawl_id = str(crawl_id_value)
+            plan = CrawlMaterializationFanoutPlanJob(
+                crawl_id=crawl_id,
+                scopes=_crawl_triggered_scopes(
+                    definitions, crawl_id=crawl_id, document_id=document_id
+                ),
+                planned_at=datetime.now(UTC),
+            )
+            await jetstream.publish(
+                COMMIT_SUBJECT,
+                plan.model_dump_json().encode(),
+                headers={"Nats-Msg-Id": f"crawl-fanout-{crawl_id}"},
+            )
+        total += len(rows)
+        if len(rows) < page_size:
+            return total
+        crawl_id_value, _document_id, captured_at = rows[-1]
+        cursor = (captured_at, crawl_id_value)
+
+
+def _unplanned_crawl_page(cursor, limit: int):
     with catalogue_from_env() as catalogue:
-        return await _reconcile_unplanned_crawls_with_catalogue(jetstream, catalogue)
+        return _unplanned_crawl_page_with_catalogue(catalogue, cursor, limit)
 
 
-async def _reconcile_unplanned_crawls_with_catalogue(jetstream, catalogue) -> int:
+def _unplanned_crawl_page_with_catalogue(catalogue, cursor, limit: int):
     table = lambda name: ".".join(
         '"' + part.replace('"', '""') + '"'
         for part in (catalogue.config.alias, catalogue.config.schema, name)
     )
+    captured_at = cursor[0] if cursor is not None else None
+    crawl_id = cursor[1] if cursor is not None else None
     rows = catalogue.connection.execute(
-        f"SELECT c.crawl_id, c.document_id FROM {table('crawls')} AS c LEFT JOIN "
+        f"SELECT c.crawl_id, c.document_id, c.captured_at "
+        f"FROM {table('crawls')} AS c LEFT JOIN "
         f"{table('crawl_materialization_fanouts')} AS f USING (crawl_id) "
-        "WHERE f.crawl_id IS NULL ORDER BY c.captured_at LIMIT 100"
+        "WHERE f.crawl_id IS NULL AND "
+        "(? IS NULL OR c.captured_at > ? OR "
+        "(c.captured_at = ? AND c.crawl_id > ?)) "
+        "ORDER BY c.captured_at, c.crawl_id LIMIT ?",
+        [captured_at, captured_at, captured_at, crawl_id, limit],
     ).fetchall()
-    definitions = active_definitions(live=True)
-    for crawl_id_value, document_id in rows:
-        crawl_id = str(crawl_id_value)
-        plan = CrawlMaterializationFanoutPlanJob(
-            crawl_id=crawl_id,
-            scopes=_crawl_triggered_scopes(
-                definitions, crawl_id=crawl_id, document_id=document_id
-            ),
-            planned_at=datetime.now(UTC),
-        )
-        await jetstream.publish(
-            COMMIT_SUBJECT,
-            plan.model_dump_json().encode(),
-            headers={"Nats-Msg-Id": f"crawl-fanout-{crawl_id}"},
-        )
-    return len(rows)
+    return rows
 
 
 async def _run_blocking(function, *args, **kwargs):

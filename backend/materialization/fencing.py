@@ -25,9 +25,7 @@ def scope_job_is_current(
         materialization.archived_at is None
         and materialization.dematerialization_requested_at is None
         and materialization.source_state == "current"
-        and materialization.refresh_mode == "scope_incremental"
         and materialization.definition_revision_id == job.definition_revision_id
-        and materialization.active_query_revision_id == job.query_revision_id
         and materialization.scope_kind == job.scope_kind
         and materialization.scope_column == job.scope_column
         and materialization.name == job.target_table
