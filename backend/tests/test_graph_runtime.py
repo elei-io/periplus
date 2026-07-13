@@ -14,7 +14,7 @@ from runtime.graph_queue import EdgeWork, ReadinessWork, edge_evaluation_identit
 from runtime.graph_runs import EdgeEvaluationFailed, admit_request, deterministic_request_id, evaluate_edge, expire_graph_run, handle_readiness, reconcile_pending_admissions, request_cancellation, settle_request
 from runtime.graph_progress import EdgeProgress, edge_progress_key, initialize_run_progress
 from runtime.navigation_contract import NavigationPackage
-from workers.crawl import _process_crawl
+from workers.acquisition import _process_crawl
 
 
 class FakeKV:
@@ -79,6 +79,31 @@ def snapshot(*, entry: bool = True, self_edge: bool = False, dedupe_mode: EdgeDe
 
 
 class GraphRuntimeTests(unittest.TestCase):
+ def test_invalid_acquisition_work_is_terminated(self) -> None:
+    async def scenario() -> None:
+        message = SimpleNamespace(
+            data=b"not-json",
+            term=AsyncMock(),
+            ack=AsyncMock(),
+            nak=AsyncMock(),
+        )
+
+        await _process_crawl(
+            message,
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            "http",
+        )
+
+        message.term.assert_awaited_once()
+        message.ack.assert_not_awaited()
+        message.nak.assert_not_awaited()
+
+    asyncio.run(scenario())
+
  def test_failed_acquisition_settles_after_durable_publication(self) -> None:
     async def scenario() -> None:
         runs, requests = FakeKV(), FakeKV()
@@ -94,18 +119,15 @@ class GraphRuntimeTests(unittest.TestCase):
             graph_run_id=run.id,
             node_id=graph.root_node_id,
             url="https://example.com/",
+            transport="http",
             created_at=run.created_at,
             updated_at=run.created_at,
         )
         await requests.create(request.id.hex, request.model_dump_json().encode())
 
         class Message:
-            data = CrawlWork(crawl_request_id=request.id).model_dump_json().encode()
+            data = CrawlWork(crawl_request_id=request.id, transport="http").model_dump_json().encode()
             ack = AsyncMock()
-
-        @contextmanager
-        def session():
-            yield object()
 
         failure = SimpleNamespace(
             crawl_id=request.id,
@@ -114,13 +136,12 @@ class GraphRuntimeTests(unittest.TestCase):
             document_id=None,
         )
         with (
-            patch("workers.crawl.session_scope", session),
-            patch("workers.crawl.crawl_graph_request", AsyncMock(return_value=failure)),
-            patch("workers.crawl.transition_node_progress", AsyncMock()),
-            patch("workers.crawl.settle_request", AsyncMock()) as settle,
+            patch("workers.acquisition.crawl_graph_request", AsyncMock(return_value=failure)),
+            patch("workers.acquisition.transition_node_progress", AsyncMock()),
+            patch("workers.acquisition.settle_request", AsyncMock()) as settle,
         ):
             await _process_crawl(
-                Message(), runs, requests, object(), object(), object()
+                Message(), runs, requests, object(), object(), object(), "http"
             )
 
         settle.assert_awaited_once()
@@ -143,6 +164,7 @@ class GraphRuntimeTests(unittest.TestCase):
             graph_run_id=run.id,
             node_id=graph.root_node_id,
             url="https://example.com/",
+            transport="http",
             status="crawling",
             claim_token=uuid4(),
             claim_expires_at=datetime.now(UTC) - timedelta(seconds=1),
@@ -152,13 +174,9 @@ class GraphRuntimeTests(unittest.TestCase):
         await requests.create(request.id.hex, request.model_dump_json().encode())
 
         class Message:
-            data = CrawlWork(crawl_request_id=request.id).model_dump_json().encode()
+            data = CrawlWork(crawl_request_id=request.id, transport="http").model_dump_json().encode()
             ack = AsyncMock()
             nak = AsyncMock()
-
-        @contextmanager
-        def session():
-            yield object()
 
         page = SimpleNamespace(
             crawl_id=request.id,
@@ -168,18 +186,61 @@ class GraphRuntimeTests(unittest.TestCase):
         )
         acquire = AsyncMock(return_value=page)
         with (
-            patch("workers.crawl.session_scope", session),
-            patch("workers.crawl.crawl_graph_request", acquire),
-            patch("workers.crawl.transition_node_progress", AsyncMock()),
-            patch("workers.crawl.settle_request", AsyncMock()),
+            patch("workers.acquisition.crawl_graph_request", acquire),
+            patch("workers.acquisition.transition_node_progress", AsyncMock()),
+            patch("workers.acquisition.settle_request", AsyncMock()),
         ):
             await _process_crawl(
-                Message(), runs, requests, object(), object(), object()
+                Message(), runs, requests, object(), object(), object(), "http"
             )
 
         acquire.assert_awaited_once()
         Message.ack.assert_awaited_once()
         Message.nak.assert_not_awaited()
+
+    asyncio.run(scenario())
+
+ def test_acquisition_infrastructure_failure_releases_claim_for_redelivery(self) -> None:
+    async def scenario() -> None:
+        runs, requests = FakeKV(), FakeKV()
+        graph = snapshot()
+        run = new_graph_run(graph, ["https://example.com"])
+        await runs.create(run.id.hex, run.model_dump_json().encode())
+        from runtime.graph_queue import CrawlRequest, CrawlWork
+
+        request = CrawlRequest(
+            id=uuid4(),
+            graph_run_id=run.id,
+            node_id=graph.root_node_id,
+            url="https://example.com/",
+            transport="http",
+            created_at=run.created_at,
+            updated_at=run.created_at,
+        )
+        await requests.create(request.id.hex, request.model_dump_json().encode())
+
+        class Message:
+            data = CrawlWork(crawl_request_id=request.id, transport="http").model_dump_json().encode()
+            metadata = SimpleNamespace(num_delivered=1)
+            ack = AsyncMock()
+            nak = AsyncMock()
+
+        with (
+            patch("workers.acquisition.crawl_graph_request", AsyncMock(side_effect=OSError("NATS unavailable"))),
+            patch("workers.acquisition.transition_node_progress", AsyncMock()),
+            patch("workers.acquisition.settle_request", AsyncMock()) as settle,
+        ):
+            await _process_crawl(
+                Message(), runs, requests, object(), object(), object(), "http"
+            )
+
+        current = await get_crawl_request(requests, request.id)
+        assert current is not None
+        self.assertEqual(current.status, "queued")
+        self.assertIsNone(current.claim_token)
+        Message.nak.assert_awaited_once_with(delay=1)
+        Message.ack.assert_not_awaited()
+        settle.assert_not_awaited()
 
     asyncio.run(scenario())
 
@@ -214,12 +275,28 @@ class GraphRuntimeTests(unittest.TestCase):
         await runs.create(run.id.hex, run.model_dump_json().encode())
         await initialize_run_progress(progress, run)
         node = run.snapshot.nodes[0]
-        resolver = lambda _url: {"id": str(uuid4()), "config": {"mode": "static"}}
+        resolver = lambda _url: {
+            "id": str(uuid4()),
+            "revision": 1,
+            "metric_slug": "browser-test",
+            "domain_group": "test",
+            "match": "example.com",
+            "config": {"profile": "browser", "concurrency": 1, "config": {}},
+            "matcher": {
+                "scheme": "https",
+                "host": "example.com",
+                "path_pattern": "/**",
+                "match_type": "glob",
+                "priority": 1,
+            },
+        }
         first, first_admitted = await admit_request(runs=runs, requests=requests, progress=progress, jetstream=jetstream, run_id=run.id, node_id=node.id, url="https://example.com/a#one", policy_resolver=resolver)
         second, second_admitted = await admit_request(runs=runs, requests=requests, progress=progress, jetstream=jetstream, run_id=run.id, node_id=node.id, url="https://EXAMPLE.com/a#two", policy_resolver=resolver)
         assert first is not None and second is not None and first.id == second.id
         assert first_admitted and not second_admitted
         assert first.effective_policy_snapshot_json is not None
+        assert first.transport == "browser"
+        assert jetstream.messages[0][0] == "atlas.graph.crawl.browser"
         assert len(jetstream.messages) == 1
         current = await get_graph_run(runs, run.id)
         assert current is not None and current.last_progress_at is not None
@@ -244,6 +321,7 @@ class GraphRuntimeTests(unittest.TestCase):
             graph_run_id=run.id,
             node_id=graph.root_node_id,
             url="https://example.com/",
+            transport="http",
             status="awaiting_navigation",
             created_at=started,
             updated_at=started,
@@ -282,6 +360,7 @@ class GraphRuntimeTests(unittest.TestCase):
             graph_run_id=run.id,
             node_id=graph.root_node_id,
             url="https://example.com/",
+            transport="http",
             status="awaiting_navigation",
             created_at=run.created_at,
             updated_at=run.created_at,
@@ -335,6 +414,7 @@ class GraphRuntimeTests(unittest.TestCase):
                 graph_run_id=run.id,
                 node_id=graph.root_node_id,
                 url=url,
+                transport="http",
                 status=status,
                 created_at=run.created_at,
                 updated_at=run.created_at,

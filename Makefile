@@ -1,4 +1,4 @@
-.PHONY: sync check setup catalogue-check catalogue-test-postgres repository-test-s3 api crawl-worker catalog-worker maintenance-worker cli db-revision compose-up compose-down
+.PHONY: sync check setup catalogue-check catalogue-test-postgres repository-test-s3 worker-independence-smoke worker-horizontal-smoke worker-transport-smoke api crawl-http-worker crawl-browser-worker crawl-provider-worker ingestion-worker materialization-worker maintenance-worker cli db-revision compose-up compose-down
 
 sync:
 	cd backend && uv sync
@@ -21,14 +21,32 @@ repository-test-s3:
 	docker compose up -d --wait atlas-minio
 	cd backend && ATLAS_TEST_MINIO=1 uv run python -m unittest tests.test_repository.S3ObjectStoreTests -v
 
+worker-independence-smoke:
+	cd backend && uv run python ../scripts/verify-worker-independence.py
+
+worker-horizontal-smoke:
+	cd backend && uv run python ../scripts/verify-worker-horizontal-safety.py
+
+worker-transport-smoke:
+	cd backend && uv run python ../scripts/verify-worker-transport-independence.py
+
 api:
 	cd backend && uv run fastapi dev api/app.py
 
-crawl-worker:
-	cd backend && uv run python -m workers.crawl
+crawl-http-worker:
+	cd backend && uv run python -m workers.crawl_http
 
-catalog-worker:
-	cd backend && uv run python -m workers.catalog
+crawl-browser-worker:
+	cd backend && uv run python -m workers.crawl_browser
+
+crawl-provider-worker:
+	cd backend && uv run python -m workers.crawl_provider
+
+ingestion-worker:
+	cd backend && uv run python -m workers.ingestion
+
+materialization-worker:
+	cd backend && uv run python -m workers.materialization
 
 maintenance-worker:
 	cd backend && uv run python -m workers.maintenance

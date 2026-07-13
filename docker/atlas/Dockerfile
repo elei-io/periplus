@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim AS dependencies
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -15,7 +15,7 @@ WORKDIR /app/backend
 
 COPY backend/pyproject.toml backend/uv.lock ./
 
-RUN UV_PROJECT_ENVIRONMENT=/opt/atlas-venv uv sync --frozen --no-install-project
+RUN UV_PROJECT_ENVIRONMENT=/opt/atlas-venv uv sync --frozen --no-install-project --no-dev
 
 # Install the DuckDB extensions used by the embedded DuckLake catalogue.
 ARG ATLAS_DUCKDB_EXTENSIONS=ducklake,parquet,postgres,httpfs,sqlite
@@ -35,13 +35,21 @@ RUN set -eu; \
       --output /opt/atlas/extensions/ducklake_cdc.duckdb_extension; \
     echo "${checksum}  /opt/atlas/extensions/ducklake_cdc.duckdb_extension" | sha256sum --check --strict
 
-RUN /opt/atlas-venv/bin/playwright install --with-deps chromium
+ENV PATH="/opt/atlas-venv/bin:${PATH}"
+ENV ATLAS_DUCKLAKE_CDC_EXTENSION="/opt/atlas/extensions/ducklake_cdc.duckdb_extension"
 
+FROM dependencies AS browser-dependencies
+RUN playwright install --with-deps chromium
+
+FROM dependencies AS base
 COPY backend/ ./
 
 # Install Atlas itself as a regular package. The resulting image must not depend on
 # a source bind mount, editable-package path, or the build context at runtime.
+RUN UV_PROJECT_ENVIRONMENT=/opt/atlas-venv uv sync --frozen --no-editable --no-dev
+
+FROM browser-dependencies AS browser
+COPY backend/ ./
 RUN UV_PROJECT_ENVIRONMENT=/opt/atlas-venv uv sync --frozen --no-editable
 
-ENV PATH="/opt/atlas-venv/bin:${PATH}"
-ENV ATLAS_DUCKLAKE_CDC_EXTENSION="/opt/atlas/extensions/ducklake_cdc.duckdb_extension"
+FROM base AS final

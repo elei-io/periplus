@@ -1,7 +1,7 @@
 # Catalogue Definitions, Materialization, and Publication
 
 Status: accepted target design. Queries, revisions, views, and live document- or crawl-scoped view
-materialization are implemented. Automatic crawl-enrichment readiness, advanced scope adapters, and
+materialization exist. The independent materialization-worker cutover, advanced scope adapters, and
 publications remain pending.
 
 Atlas turns retained web evidence into tabular data. This document defines the layers between SQL
@@ -95,7 +95,7 @@ lifecycle. The materialization owns:
 - the active definition binding and provenance boundaries;
 - scope configuration;
 - activation snapshot and durable coverage;
-- live and backfill controls;
+- live CDC position and activation-backfill progress;
 - partitioning and compaction metadata;
 - failure state and retry administration;
 - storage statistics; and
@@ -114,52 +114,45 @@ The view list shows whether each definition is evaluated virtually or backed by 
 | Definition | Evaluation | State | Rows | Storage |
 | --- | --- | --- | ---: | ---: |
 | Page links | Materialized | Live | 416,495 | 12.3 MB |
-| Latest crawls | Materialized | Full refresh | 385 | 197 KB |
+| Latest crawls | Materialized | Catching up | 385 | 197 KB |
 | Document text | On read | Virtual | — | — |
 
-Each query and view has a dedicated detail page. A virtual definition presents a **Materialize**
-action. A materialized definition embeds its durable-data panel on the same page, including:
+Each query and view has a dedicated detail page led by its SQL and returned columns. Queries offer a
+**Save as view** action and cannot be materialized. A virtual view presents a **Materialize** action.
+Materialization activation and status open in a bottom sheet with a light dismissible backdrop so
+operational detail does not compete with the view definition. The sheet leads with:
 
-- table identity and source definition;
-- live and backfill status;
-- activation coverage and failures;
-- rows, files, storage, and partitioning;
-- pause, resume, rate, refresh, and rebuild controls; and
+- current state and whether Atlas is caught up;
+- pending and failed scopes;
+- stored size and row count;
+- activation-backfill progress;
+- last successful settlement;
+- rebuild and retry administration when required; and
 - dematerialization.
 
 There may be a canonical internal route such as `/catalogue/materializations/:id` for deep links and
 administration, but materializations are not advertised as a separate primary catalogue resource.
 
-Materialization creation lands on the owning query or view detail page with the durable-data panel
-selected.
+Materialization activation stays on the owning view detail page and opens the materialization sheet.
 
 ## Dematerialization
 
 “Delete materialization” is presented as **Dematerialize**.
 
-Dematerialization removes the managed DuckLake table and its coverage while preserving the query or
-view definition. It is a fenced repository operation:
+Dematerialization removes the managed DuckLake table and its coverage while preserving the view
+definition. It is a fenced repository operation:
 
 1. Atlas disables live discovery and backfill.
 2. The definition is marked for dematerialization.
 3. Queued commits reject the stale definition revision.
-4. A catalog worker drops the DuckLake table and durable coverage.
+4. A materialization worker drops the DuckLake table and durable coverage.
 5. Atlas archives the materialization attachment.
 
 DuckLake snapshots may retain physical Parquet files until the configured retention window expires.
 Dematerializing and later materializing again creates a new physical table lifecycle, but there is
 never more than one active attachment for the definition.
 
-## Full and incremental maintenance
-
-A materialization has one of two maintenance modes.
-
-### Full refresh
-
-Full refresh replaces the durable result by evaluating the complete source explicitly. It is useful
-for small or naturally bounded definitions. Refresh is never hidden inside a read.
-
-### Scoped incremental
+## Live scoped materialization
 
 Scoped incremental maintenance evaluates one bounded unit at a time. The first supported scope is an
 immutable document; crawl scope follows the same model.
@@ -204,26 +197,32 @@ pushdown is desirable but is not treated as a correctness guarantee; a scope tha
 fails visibly instead of exhausting the service. Representative plan inspection and an explicit
 per-scope timeout remain hardening work.
 
+Atlas exposes no manual-refresh materialization mode. **Materialize** always means “create and keep
+this view updated live.” If Atlas cannot prove a supported document- or crawl-scoped evaluation,
+activation is disabled and names the missing discriminator or unsupported SQL construct. A manually
+refreshed snapshot would be a different product concept and is not represented as a materialization.
+
 ## Activation, live maintenance, and backfill
 
 Activation freezes a DuckLake snapshot and creates the target table. Live discovery begins strictly
 after that boundary. Historical backfill enumerates scopes visible at the activation snapshot.
 
-Live and backfill are independent controls:
+Live discovery and activation backfill are independent internal stages:
 
 - live work consumes newly committed scope changes from a durable CDC cursor;
 - backfill pages through historical scope IDs at a configurable rate;
 - live work is prioritized so a long backfill does not block freshness;
-- pausing preserves the table, cursor, activation boundary, and completed coverage; and
-- resuming continues from durable state rather than rebuilding.
+- restarting a worker preserves the table, cursor, activation boundary, and completed coverage; and
+- retry continues from durable state rather than rebuilding completed scopes.
 
 Live, backfill, correction, and replay-driven rematerialization all execute the same bounded scope
 definition. A durable coverage record marks a scope complete even when it produces zero rows.
 
 CDC discovers work; it is not the execution queue. Scope work travels through JetStream. A supervised
-catalog worker evaluates one scope and stages bounded Arrow in repository object storage. That
-worker verifies the checksum, fences the active definition, atomically replaces the scope in
-DuckLake, and records coverage.
+materialization worker evaluates one scope and may stage bounded Arrow in repository object storage.
+That worker verifies the checksum, fences the active definition, atomically replaces the scope in
+DuckLake, and records coverage. It shares no process, connection, health state, or concurrency slot
+with base ingestion.
 
 Every scope job identifies `materialization_id`, `definition_revision_id`, `scope_kind`, and
 `scope_id` together with its active query revision, target, scope column, and live/backfill source.
@@ -290,7 +289,7 @@ External pipeline retries are downstream behavior and are not Atlas rematerializ
 | Owner | Catalogue-related state |
 | --- | --- |
 | Postgres control plane | Queries, immutable query revisions, stable view references, the optional one-to-one live materialization attachment, active definition bindings, lifecycle controls, and future publication contracts |
-| NATS JetStream/KV | Live and backfill scope queues, repository commit work, current worker/progress state, retries, and dead letters |
+| NATS JetStream/KV | Live and backfill scope delivery, operation leases, current materialization-worker progress, retries, and dead letters |
 | DuckLake | Authoritative SQL views, typed materialization tables, durable scope coverage, snapshots, row history, DDL history, and crawl evidence |
 | DuckLake CDC metadata | Durable publication consumer subscriptions, leases, cursors, and audit state |
 | Repository objects | Immutable raw HTML and bounded temporary Arrow staging objects |
@@ -348,9 +347,10 @@ general downstream transformation graphs.
 - Every incremental evaluation is demonstrably bound to one supplied scope and has explicit resource
   limits.
 - Scope replacement and coverage recording are atomic and idempotent.
-- Catalog workers are the only graph hot-path DuckLake writers.
-- Pausing or restarting workers does not lose the activation boundary, CDC cursor, or completed
-  coverage.
+- Ingestion workers write base evidence and navigation-critical system projections; materialization
+  workers alone write user-materialized view scopes.
+- Materialization never gates ingestion, navigation readiness, graph edges, or graph-run completion.
+- Restarting workers does not lose the activation boundary, CDC cursor, or completed coverage.
 - Dematerialization fences queued work before dropping the durable table.
 - A publication references an existing materialization and never creates another data copy.
 - Publication data remains replayable independently of NATS notification delivery.

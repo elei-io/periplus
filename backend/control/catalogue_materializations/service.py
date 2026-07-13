@@ -333,18 +333,55 @@ def _scope_progress(
 def _pending_live_scopes(
     store: MaterializationStore, model: CatalogueMaterialization
 ) -> int:
+    crawls = _qualified(store, store.catalogue.config.schema, "crawls")
     members = _qualified(
         store, store.catalogue.config.schema, "crawl_materialization_fanout_members"
     )
+    results = _qualified(
+        store, store.catalogue.config.schema, "materialization_scope_results"
+    )
     row = store.catalogue.connection.execute(
         f"""
-        SELECT count(DISTINCT (scope_kind, scope_id))
-        FROM {members}
-        WHERE materialization_id = ?
-          AND definition_revision_id = ?
-          AND status = 'planned'
+        WITH expected AS (
+            SELECT DISTINCT CASE
+                       WHEN ? = 'crawl' THEN CAST(c.crawl_id AS VARCHAR)
+                       ELSE c.document_id
+                   END AS scope_id
+            FROM {crawls} AS c
+            WHERE ? = 'crawl' OR c.document_id IS NOT NULL
+        ),
+        member_status AS (
+            SELECT scope_id,
+                   bool_or(status = 'planned') AS pending,
+                   bool_or(status = 'failed') AS failed
+            FROM {members}
+            WHERE materialization_id = ?
+              AND definition_revision_id = ?
+            GROUP BY scope_id
+        )
+        SELECT count(*)
+        FROM expected AS e
+        LEFT JOIN member_status AS m USING (scope_id)
+        LEFT JOIN {results} AS r
+          ON r.materialization_id = ?
+         AND r.definition_revision_id = ?
+         AND r.scope_kind = ?
+         AND r.scope_id = e.scope_id
+        WHERE NOT (
+            coalesce(m.failed, false)
+            OR coalesce(r.status = 'failed', false)
+        )
+          AND (coalesce(m.pending, false) OR r.status IS NULL)
         """,
-        [model.id, model.definition_revision_id],
+        [
+            model.scope_kind,
+            model.scope_kind,
+            model.id,
+            model.definition_revision_id,
+            model.id,
+            model.definition_revision_id,
+            model.scope_kind,
+        ],
     ).fetchone()
     return int(row[0])
 

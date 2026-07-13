@@ -39,8 +39,8 @@ from repository.objects.store import FileObjectStore
 
 class CatalogueMaterializationTests(unittest.TestCase):
     def test_graph_run_lag_filters_active_materialization_revisions(self) -> None:
-        first = (uuid4(), uuid4())
-        second = (uuid4(), uuid4())
+        first = (uuid4(), uuid4(), "crawl")
+        second = (uuid4(), uuid4(), "document")
         expected = [(uuid4(), 2, 4, 1)]
         cursor = MagicMock()
         cursor.fetchall.return_value = expected
@@ -59,7 +59,62 @@ class CatalogueMaterializationTests(unittest.TestCase):
         sql, parameters = connection.execute.call_args.args
         self.assertIn("c.graph_run_id", sql)
         self.assertIn("m.status = 'planned'", sql)
+        self.assertIn("CROSS JOIN active AS a", sql)
+        self.assertIn("materialization_scope_results", sql)
         self.assertEqual(parameters, [*first, *second])
+
+    def test_crawl_with_preexisting_empty_fanout_is_visible_as_lag(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                crawl_id = uuid4()
+                graph_run_id = uuid4()
+                materialization_id = uuid4()
+                definition_revision_id = uuid4()
+                catalogue.connection.execute(
+                    """
+                    INSERT INTO atlas.main.crawls (
+                        crawl_id, document_id, graph_id, graph_run_id, graph_node_id,
+                        crawl_request_id, source_crawl_id, source_edge_id,
+                        requested_url, normalized_url, final_url, page_url,
+                        url_scheme, url_host, url_port, url_registrable_domain,
+                        url_path, url_query, captured_at, status_code, duration_ms,
+                        input_json, input_hash, crawl_policy_id, crawl_policy_revision,
+                        warnings_json, errors_json
+                    ) SELECT ?, 'sha256:phase2', uuid(), ?, uuid(), uuid(), NULL, NULL,
+                        'https://example.com/phase2', 'https://example.com/phase2',
+                        'https://example.com/phase2', 'https://example.com/phase2',
+                        'https', 'example.com', 443, 'example.com', '/phase2', '', now(),
+                        200, 1, '{}', 'phase2', NULL, NULL, '[]', '[]'
+                    """,
+                    [crawl_id, graph_run_id],
+                )
+                catalogue.connection.execute(
+                    "INSERT INTO atlas.main.crawl_materialization_fanouts "
+                    "VALUES (?, now(), 0, 0, 0, now())",
+                    [crawl_id],
+                )
+
+                rows = _graph_run_materialization_lag_rows(
+                    catalogue,
+                    [(materialization_id, definition_revision_id, "crawl")],
+                )
+                pending = _pending_live_scopes(
+                    MaterializationStore(catalogue),
+                    SimpleNamespace(
+                        id=materialization_id,
+                        definition_revision_id=definition_revision_id,
+                        scope_kind="crawl",
+                    ),
+                )
+
+        self.assertEqual(rows, [(graph_run_id, 1, 1, 0)])
+        self.assertEqual(pending, 1)
 
     def test_pending_live_scopes_are_attributed_to_current_definition(self) -> None:
         materialization_id = uuid4()
@@ -77,13 +132,28 @@ class CatalogueMaterializationTests(unittest.TestCase):
 
         result = _pending_live_scopes(
             store,
-            SimpleNamespace(id=materialization_id, definition_revision_id=revision_id),
+            SimpleNamespace(
+                id=materialization_id,
+                definition_revision_id=revision_id,
+                scope_kind="crawl",
+            ),
         )
 
         self.assertEqual(result, 7)
         sql, parameters = connection.execute.call_args.args
         self.assertIn("status = 'planned'", sql)
-        self.assertEqual(parameters, [materialization_id, revision_id])
+        self.assertEqual(
+            parameters,
+            [
+                "crawl",
+                "crawl",
+                materialization_id,
+                revision_id,
+                materialization_id,
+                revision_id,
+                "crawl",
+            ],
+        )
 
     def test_view_activation_keeps_public_name_and_hides_backing_table(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

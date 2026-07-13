@@ -27,11 +27,19 @@ dependencies = [
     "duckdb==1.5.4",
 ]
 
+[dependency-groups]
+dev = [
+    "httpx2>=2.5",
+]
+
 [project.scripts]
 atlas = "cli.app:app"
 atlas-setup = "deployment:main"
-atlas-crawl-worker = "workers.crawl:main"
-atlas-catalog-worker = "workers.catalog:main"
+atlas-crawl-http-worker = "workers.crawl_http:main"
+atlas-crawl-browser-worker = "workers.crawl_browser:main"
+atlas-crawl-provider-worker = "workers.crawl_provider:main"
+atlas-ingestion-worker = "workers.ingestion:main"
+atlas-materialization-worker = "workers.materialization:main"
 atlas-maintenance-worker = "workers.maintenance:main"
 
 [build-system]

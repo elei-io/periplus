@@ -268,7 +268,7 @@ async def _policy_slot(
 
 @asynccontextmanager
 async def capacity_lease(
-    session: Session,
+    session: Session | None,
     *,
     url: str,
     policy: CrawlPolicy | CrawlPolicySnapshot | None,

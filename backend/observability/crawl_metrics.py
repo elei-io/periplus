@@ -1,6 +1,6 @@
 """Direct Prometheus metrics for page acquisition."""
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 from actions.crawl.schemas import CrawlPage
 _acquisitions = Counter("atlas_page_acquisitions_total", "Page acquisition outcomes.", ("outcome", "profile", "source", "domain_group"))
@@ -9,6 +9,21 @@ _failures = Counter("atlas_crawl_failures_total", "Crawl failures.", ("reason", 
 _persisted = Counter("atlas_crawls_persisted_total", "Durable crawls created.", ("outcome", "profile", "domain_group"))
 _cache = Counter("atlas_repository_cache_lookups_total", "Repository cache outcomes.", ("outcome",))
 _cache_age = Histogram("atlas_repository_cache_entry_age_seconds", "Age of reused repository entries.", ("outcome",))
+_queue_pending = Gauge(
+    "atlas_acquisition_jobs_pending",
+    "Acquisition requests queued or actively claimed.",
+    ("transport",),
+)
+_queue_oldest_age = Gauge(
+    "atlas_acquisition_oldest_pending_age_seconds",
+    "Age of the oldest acquisition request.",
+    ("transport",),
+)
+
+
+def queue_state(*, transport: str, pending: int, oldest_age_seconds: float) -> None:
+    _queue_pending.labels(transport).set(max(0, pending))
+    _queue_oldest_age.labels(transport).set(max(0.0, oldest_age_seconds))
 
 
 def failure_reason(page: CrawlPage) -> str:

@@ -12,7 +12,7 @@ from control.crawl_policies.schemas import CrawlPolicySnapshot
 from control.crawl_policies.service import find_crawl_policy_for_url
 from control.crawl_graphs.schemas import EdgeDedupeMode
 
-from .graph_queue import CrawlRequest, EdgeEvaluation, EdgeWork, FrozenGraphSnapshot, GraphRun, PendingAdmission, ReadinessWork, edge_evaluation_identity, edge_evaluation_key, get_crawl_request, get_edge_evaluation, get_graph_run, list_crawl_requests, new_graph_run, normalize_request_url, publish_crawl, publish_edge, request_identity, update_crawl_request, update_edge_evaluation, update_graph_run
+from .graph_queue import CrawlRequest, EdgeEvaluation, EdgeWork, FrozenGraphSnapshot, GraphRun, PendingAdmission, ReadinessWork, crawl_transport_from_policy, edge_evaluation_identity, edge_evaluation_key, get_crawl_request, get_edge_evaluation, get_graph_run, list_crawl_requests, new_graph_run, normalize_request_url, publish_crawl, publish_edge, request_identity, update_crawl_request, update_edge_evaluation, update_graph_run
 from .graph_progress import add_edge_output_progress, initialize_run_progress, mark_run_progress_settled, transition_edge_evaluation_progress, transition_node_progress
 
 _REQUEST_NAMESPACE = UUID("869ee36c-76ad-46f0-a1b7-9b28f4b71386")
@@ -97,12 +97,14 @@ async def admit_request(*, runs, requests, progress, jetstream, run_id: UUID, no
     )
     graph_identity = request_identity(run_id, normalized)
     request_id = deterministic_request_id(identity)
+    policy_snapshot_json = policy_resolver(normalized)
     pending = PendingAdmission(
         request_id=request_id,
         identity=identity,
         node_id=node_id,
         url=normalized,
-        effective_policy_snapshot_json=policy_resolver(normalized),
+        transport=crawl_transport_from_policy(policy_snapshot_json),
+        effective_policy_snapshot_json=policy_snapshot_json,
         source_crawl_id=source_crawl_id,
         source_edge_id=source_edge_id,
         parent_request_id=parent_request_id,
@@ -164,6 +166,7 @@ async def _deliver_pending_admission(*, runs, requests, progress, jetstream, run
             graph_run_id=run_id,
             node_id=pending.node_id,
             url=pending.url,
+            transport=pending.transport,
             effective_policy_snapshot_json=pending.effective_policy_snapshot_json,
             source_crawl_id=pending.source_crawl_id,
             source_edge_id=pending.source_edge_id,
@@ -179,7 +182,7 @@ async def _deliver_pending_admission(*, runs, requests, progress, jetstream, run
             if existing is None:
                 raise
             request = existing
-    await publish_crawl(jetstream, request.id)
+    await publish_crawl(jetstream, request)
 
     def clear(value: GraphRun) -> GraphRun:
         remaining = tuple(

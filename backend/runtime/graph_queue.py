@@ -14,14 +14,19 @@ from nats.js.api import AckPolicy, ConsumerConfig, KeyValueConfig, RetentionPoli
 from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError, NotFoundError
 from pydantic import BaseModel, ConfigDict
 from control.crawl_graphs.schemas import EdgeDedupeMode, FrozenGraphEdge, FrozenGraphNode, FrozenGraphSnapshot
+from control.crawl_policies.schemas import CrawlPolicyConfig, CrawlPolicySnapshot
 from control.url_matching import normalize_url
 from runtime.navigation_contract import NavigationPackage
 
 GRAPH_STREAM = "ATLAS_GRAPH_WORK"
-CRAWL_SUBJECT = "atlas.graph.crawl"
+CRAWL_HTTP_SUBJECT = "atlas.graph.crawl.http"
+CRAWL_BROWSER_SUBJECT = "atlas.graph.crawl.browser"
+CRAWL_FIRECRAWL_SUBJECT = "atlas.graph.crawl.provider.firecrawl"
 EDGE_SUBJECT = "atlas.graph.edge"
 READINESS_SUBJECT = "atlas.graph.readiness"
-CRAWL_CONSUMER = "atlas-graph-crawl-workers"
+CRAWL_HTTP_CONSUMER = "atlas-graph-crawl-http-workers"
+CRAWL_BROWSER_CONSUMER = "atlas-graph-crawl-browser-workers"
+CRAWL_FIRECRAWL_CONSUMER = "atlas-graph-crawl-firecrawl-workers"
 EDGE_CONSUMER = "atlas-graph-edge-workers"
 READINESS_CONSUMER = "atlas-graph-readiness-workers"
 RUNS_BUCKET = "atlas_graph_runs"
@@ -34,6 +39,18 @@ GraphRunStatus = Literal["queued", "running", "completed", "completed_with_error
 CrawlRequestStatus = Literal["queued", "crawling", "awaiting_navigation", "evaluating_edges", "completed", "failed", "cancelled"]
 FailureStage = Literal["admission", "acquisition", "enrichment", "edge", "lifecycle"]
 TriggerKind = Literal["manual"]
+CrawlTransport = Literal["http", "browser", "firecrawl"]
+
+CRAWL_SUBJECTS: dict[CrawlTransport, str] = {
+    "http": CRAWL_HTTP_SUBJECT,
+    "browser": CRAWL_BROWSER_SUBJECT,
+    "firecrawl": CRAWL_FIRECRAWL_SUBJECT,
+}
+CRAWL_CONSUMERS: dict[CrawlTransport, str] = {
+    "http": CRAWL_HTTP_CONSUMER,
+    "browser": CRAWL_BROWSER_CONSUMER,
+    "firecrawl": CRAWL_FIRECRAWL_CONSUMER,
+}
 
 
 class PendingAdmission(BaseModel):
@@ -44,6 +61,7 @@ class PendingAdmission(BaseModel):
     identity: str
     node_id: UUID
     url: str
+    transport: CrawlTransport
     effective_policy_snapshot_json: dict | None = None
     source_crawl_id: UUID | None = None
     source_edge_id: UUID | None = None
@@ -78,6 +96,7 @@ class CrawlRequest(BaseModel):
     graph_run_id: UUID
     node_id: UUID
     url: str
+    transport: CrawlTransport
     document_id: str | None = None
     effective_policy_snapshot_json: dict | None = None
     source_crawl_id: UUID | None = None
@@ -95,6 +114,7 @@ class CrawlRequest(BaseModel):
 class CrawlWork(BaseModel):
     model_config = ConfigDict(frozen=True)
     crawl_request_id: UUID
+    transport: CrawlTransport
 
 
 class EdgeWork(BaseModel):
@@ -135,6 +155,7 @@ class ReadinessWork(BaseModel):
 class WorkerState(BaseModel):
     model_config = ConfigDict(frozen=True)
     worker_id: str
+    transport: CrawlTransport
     started_at: datetime
     last_seen_at: datetime
     capacity: int
@@ -202,15 +223,69 @@ async def _bucket(jetstream, config: KeyValueConfig):
 
 async def ensure_graph_storage(jetstream):
     replicas = get_int("ATLAS_GRAPH_STREAM_REPLICAS")
-    stream = StreamConfig(name=GRAPH_STREAM, subjects=[CRAWL_SUBJECT, EDGE_SUBJECT, READINESS_SUBJECT], retention=RetentionPolicy.WORK_QUEUE, storage=StorageType.FILE, num_replicas=replicas)
+    subjects = [*CRAWL_SUBJECTS.values(), EDGE_SUBJECT, READINESS_SUBJECT]
+    stream = StreamConfig(name=GRAPH_STREAM, subjects=subjects, retention=RetentionPolicy.WORK_QUEUE, storage=StorageType.FILE, num_replicas=replicas)
     try:
-        await jetstream.stream_info(GRAPH_STREAM)
+        info = await jetstream.stream_info(GRAPH_STREAM)
     except NotFoundError:
         await jetstream.add_stream(config=stream)
+    else:
+        if (
+            set(info.config.subjects) != set(subjects)
+            or info.config.retention != RetentionPolicy.WORK_QUEUE
+            or info.config.storage != StorageType.FILE
+            or info.config.num_replicas != replicas
+        ):
+            raise RuntimeError(
+                f"JetStream {GRAPH_STREAM} has the superseded graph-work contract; "
+                "reset disposable NATS state before starting Atlas"
+            )
     ack_wait = get_float("ATLAS_GRAPH_ACK_WAIT_SECONDS")
-    pending = get_int("ATLAS_CRAWL_WORKER_CONCURRENCY")
-    for durable, subject in ((CRAWL_CONSUMER, CRAWL_SUBJECT), (EDGE_CONSUMER, EDGE_SUBJECT), (READINESS_CONSUMER, READINESS_SUBJECT)):
-        await jetstream.add_consumer(GRAPH_STREAM, config=ConsumerConfig(durable_name=durable, ack_policy=AckPolicy.EXPLICIT, ack_wait=ack_wait, filter_subject=subject, max_ack_pending=pending, max_deliver=-1))
+    consumers = (
+        (
+            CRAWL_HTTP_CONSUMER,
+            CRAWL_HTTP_SUBJECT,
+            get_int("ATLAS_CRAWL_HTTP_MAX_ACK_PENDING"),
+        ),
+        (
+            CRAWL_BROWSER_CONSUMER,
+            CRAWL_BROWSER_SUBJECT,
+            get_int("ATLAS_CRAWL_BROWSER_MAX_ACK_PENDING"),
+        ),
+        (
+            CRAWL_FIRECRAWL_CONSUMER,
+            CRAWL_FIRECRAWL_SUBJECT,
+            get_int("ATLAS_CRAWL_PROVIDER_MAX_ACK_PENDING"),
+        ),
+        (EDGE_CONSUMER, EDGE_SUBJECT, get_int("ATLAS_INGESTION_WORKER_CONCURRENCY")),
+        (
+            READINESS_CONSUMER,
+            READINESS_SUBJECT,
+            get_int("ATLAS_INGESTION_WORKER_CONCURRENCY"),
+        ),
+    )
+    for durable, subject, pending in consumers:
+        expected = ConsumerConfig(
+            durable_name=durable,
+            ack_policy=AckPolicy.EXPLICIT,
+            ack_wait=ack_wait,
+            filter_subject=subject,
+            max_ack_pending=pending,
+            max_deliver=-1,
+        )
+        await jetstream.add_consumer(GRAPH_STREAM, config=expected)
+        actual = (await jetstream.consumer_info(GRAPH_STREAM, durable)).config
+        if (
+            actual.ack_policy != AckPolicy.EXPLICIT
+            or actual.ack_wait != ack_wait
+            or actual.filter_subject != subject
+            or actual.max_ack_pending != pending
+            or actual.max_deliver != -1
+        ):
+            raise RuntimeError(
+                f"JetStream consumer {durable} has the superseded graph-work contract; "
+                "reset disposable NATS state before starting Atlas"
+            )
     state_bytes = get_int("ATLAS_GRAPH_STATE_MAX_BYTES")
     runs = await _bucket(jetstream, KeyValueConfig(bucket=RUNS_BUCKET, description="Current Atlas graph-run state", history=1, max_bytes=state_bytes, storage=StorageType.FILE, replicas=replicas))
     requests = await _bucket(jetstream, KeyValueConfig(bucket=REQUESTS_BUCKET, description="Current Atlas crawl-request state", history=1, max_bytes=state_bytes, storage=StorageType.FILE, replicas=replicas))
@@ -371,8 +446,24 @@ async def _list_keys(bucket) -> list[str]:
                 pass
 
 
-async def publish_crawl(jetstream, request_id: UUID) -> None:
-    await jetstream.publish(CRAWL_SUBJECT, CrawlWork(crawl_request_id=request_id).model_dump_json().encode(), stream=GRAPH_STREAM, headers={"Nats-Msg-Id": request_id.hex})
+def crawl_transport_from_policy(
+    policy_snapshot_json: dict | None,
+) -> CrawlTransport:
+    if policy_snapshot_json is None:
+        return "http"
+    snapshot = CrawlPolicySnapshot.model_validate(policy_snapshot_json)
+    return CrawlPolicyConfig.model_validate(snapshot.config).profile
+
+
+async def publish_crawl(jetstream, request: CrawlRequest) -> None:
+    subject = CRAWL_SUBJECTS[request.transport]
+    work = CrawlWork(crawl_request_id=request.id, transport=request.transport)
+    await jetstream.publish(
+        subject,
+        work.model_dump_json().encode(),
+        stream=GRAPH_STREAM,
+        headers={"Nats-Msg-Id": request.id.hex},
+    )
 
 
 async def publish_edge(jetstream, work: EdgeWork) -> None:

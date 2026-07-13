@@ -17,12 +17,24 @@ _ack_pending = Gauge(
     "Delivered materialization jobs awaiting acknowledgement.",
     ("phase",),
 )
+_oldest_pending_age = Gauge(
+    "atlas_materialization_oldest_pending_age_seconds",
+    "Lower-bound age of a materialization queue that has not made progress.",
+    ("phase",),
+)
 
 
 def operation(*, phase: str, outcome: str, duration_seconds: float) -> None:
     _duration.labels(phase, outcome).observe(max(0.0, duration_seconds))
 
 
-def queue_state(*, phase: str, pending: int, ack_pending: int) -> None:
+def queue_state(
+    *,
+    phase: str,
+    pending: int,
+    ack_pending: int,
+    oldest_pending_age_seconds: float = 0.0,
+) -> None:
     _pending.labels(phase).set(pending)
     _ack_pending.labels(phase).set(ack_pending)
+    _oldest_pending_age.labels(phase).set(max(0.0, oldest_pending_age_seconds))

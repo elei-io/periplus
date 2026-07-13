@@ -111,8 +111,9 @@ When a graph is triggered, its frozen root node receives the trigger URL inputs.
 receive URLs from edges and participate in cycles; being root only determines initial admission.
 
 The node does not write DuckLake directly. It maps admitted inputs to the ordinary crawl path, which
-stores immutable raw HTML and publishes ingestion work. Catalog workers own ingestion,
-asynchronous materialization, and navigation-package publication.
+stores immutable raw HTML and publishes ingestion work. Ingestion workers own base evidence,
+navigation-critical system projections, navigation-package publication, and outgoing edges.
+Materialization workers independently maintain user-created live materialized views.
 
 ### CrawlGraphEdge
 
@@ -191,11 +192,12 @@ raw HTML to the ordinary immutable-object and ingestion path. External providers
 acquisition; graph edges remain the only navigation mechanism.
 
 Two requests in the same graph may resolve different policies because their URLs match different
-remotes. NATS KV enforces policy concurrency across crawl-worker replicas with expiring,
-heartbeat-renewed leases scoped to the frozen policy revision. A lease is held only for an actual
-remote visit, not for repository cache lookup, ingestion, or navigation waiting. Browser work also
-takes a worker-local browser permit to protect that process. Exact profile configuration remains
-code-owned.
+remotes. The frozen profile routes work to a transport-specific NATS subject before publication, so
+HTTP, browser, and external-provider acquisition deployments scale independently. NATS KV enforces
+policy concurrency across all acquisition replicas with expiring, heartbeat-renewed leases scoped
+to the frozen policy revision. A lease is held only for an actual remote visit, not for repository
+cache lookup, ingestion, or navigation waiting. Browser work also takes a browser-worker-local
+permit to protect that Chromium process. Exact profile configuration remains code-owned.
 
 ## Runtime entities
 
@@ -281,9 +283,15 @@ configuration.
 
 ### Acquisition and ingestion
 
-A crawl worker claims one crawl request, acquires the page through the shared crawl path, writes
-immutable raw HTML through the repository object boundary, and publishes a frozen ingestion job.
-Catalog workers validate staging and commit the DuckLake crawl/document/element evidence.
+An acquisition worker claims one crawl request from its transport-specific subject, acquires the
+page through the shared crawl path, writes immutable raw HTML through the repository object
+boundary, and publishes a frozen ingestion job. It never opens DuckLake or waits for downstream
+processing.
+
+An ingestion worker validates the raw object, commits DuckLake crawl/document/element evidence and
+navigation-critical system projections, publishes the verified navigation package, evaluates
+outgoing edges, and admits their returned URLs. User materialization runs in separate workers and
+cannot change the crawl request's terminal state.
 
 The crawl request may transition through states such as:
 
@@ -296,8 +304,8 @@ complete
 failed
 ```
 
-The invariant is that no
-browser worker sleeps while waiting for repository or navigation publication.
+The invariant is that no acquisition worker sleeps while waiting for ingestion, navigation
+publication, edge evaluation, or materialization.
 
 ### One crawl-ready barrier
 
@@ -319,9 +327,10 @@ digest before registering the package on a dedicated DuckDB connection. The same
 also read `views.*`; live materialized views are asynchronous and may lag the
 just-finished crawl.
 
-Materialization planning and evaluation continue asynchronously after ingestion. Their failures are
-observable and retryable but cannot fail navigation or hold a crawl request at the readiness fence.
-Raw HTML is the permanent regeneration authority if an ephemeral package is missing.
+Ingestion may publish materialization scope notifications after its base commit, but separate
+materialization workers plan, evaluate, and commit those scopes. Their failures are observable and
+retryable but cannot fail navigation, hold a crawl request at the readiness fence, or keep a graph
+run active. Raw HTML is the permanent regeneration authority if an ephemeral package is missing.
 
 ### Edge activation
 
@@ -433,21 +442,21 @@ Graph trigger
     |
 admit seed CrawlRequests
     |
-runtime acquisition
+transport-routed acquisition
     |
 repository ingestion job
     |
 durable DuckLake base scope
     |
-materialization fan-out planning and commit
-    |
-durable terminal coverage for every triggered job
-    |
-crawl-ready notification
+verified navigation readiness
     |
 outgoing edge evaluation jobs
     |
 admit target-node CrawlRequests
+
+Independent branch after base ingestion or CDC discovery:
+
+materialization scope -> materialization worker -> durable live-view coverage
 ```
 
 Delivery is at-least-once. Correctness therefore requires deterministic identities or equivalent KV
@@ -465,8 +474,8 @@ current state and recoverable queue publication. Redelivery after a crash must f
 request identities rather than create duplicates.
 
 NATS messages are notifications and work delivery, not permanent analytical history. DuckLake
-retains crawl and graph provenance. Materialization coverage remains authoritative for enrichment
-readiness even if the crawl-ready notification is lost or duplicated.
+retains crawl and graph provenance. Navigation readiness is independent from user materialization
+coverage; that coverage remains authoritative only for view freshness and recovery.
 
 ## Provenance
 
@@ -655,9 +664,18 @@ current execution projections, not DuckLake history.
 ```text
 JetStream stream: ATLAS_GRAPH_WORK
 subjects:
-- atlas.graph.crawl
+- atlas.graph.crawl.http
+- atlas.graph.crawl.browser
+- atlas.graph.crawl.provider.firecrawl
 - atlas.graph.edge
 - atlas.graph.readiness
+
+durable consumers:
+- atlas-graph-crawl-http-workers
+- atlas-graph-crawl-browser-workers
+- atlas-graph-crawl-firecrawl-workers
+- atlas-graph-edge-workers
+- atlas-graph-readiness-workers
 
 KV buckets:
 - atlas_graph_runs
@@ -692,6 +710,7 @@ id
 graph_run_id
 node_id
 url
+transport: http | browser | firecrawl
 document_id nullable
 effective_policy_snapshot_json
 source_crawl_id nullable

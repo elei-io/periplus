@@ -1,30 +1,30 @@
-"""Atlas crawl hot-path worker."""
+"""Transport-specific Atlas acquisition worker runtime."""
 
 from __future__ import annotations
 
-import argparse
 import asyncio
+import logging
 import os
 import signal
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from nats.errors import TimeoutError as NatsTimeoutError
 from prometheus_client import start_http_server
-from crawl4ai import AsyncWebCrawler
-from ducklake_client import DuckLakeError
 import httpx
 
 from actions.crawl.service import crawl_graph_request
-from actions.shared.crawl import browser_config_for_mode
 from config import get_bool, get_float, get_int, get_optional, get_str
-from db.session import session_scope
-from repository import RepositoryPipeline, repository_ingestor_from_env
+from observability import crawl_metrics
+from repository.ingestion.acquisition import AcquisitionPipeline
+from repository.ingestion.health import HealthMonitor, start_health_server
 from runtime.context import GraphExecutionContext
 from runtime.graph_queue import (
-    CRAWL_CONSUMER,
-    CRAWL_SUBJECT,
+    CRAWL_CONSUMERS,
+    CRAWL_SUBJECTS,
     GRAPH_STREAM,
+    CrawlTransport,
     CrawlRequest,
     CrawlWork,
     WorkerState,
@@ -34,6 +34,7 @@ from runtime.graph_queue import (
     ensure_graph_progress_storage,
     get_crawl_request,
     get_graph_run,
+    list_crawl_requests,
     list_graph_runs,
     update_crawl_request,
 )
@@ -41,31 +42,8 @@ from runtime.graph_runs import expire_graph_run, reconcile_pending_admissions, s
 from runtime.graph_progress import bootstrap_run_progress, transition_node_progress
 
 
-class LazyBrowserCrawler:
-    """Start the process-owned browser only when a browser profile first needs it."""
-
-    def __init__(self) -> None:
-        self._crawler: AsyncWebCrawler | None = None
-        self._lock = asyncio.Lock()
-
-    async def _get(self) -> AsyncWebCrawler:
-        if self._crawler is not None:
-            return self._crawler
-        async with self._lock:
-            if self._crawler is None:
-                crawler = AsyncWebCrawler(config=browser_config_for_mode("app"))
-                await crawler.start()
-                self._crawler = crawler
-        return self._crawler
-
-    async def arun(self, *args, **kwargs):
-        crawler = await self._get()
-        return await crawler.arun(*args, **kwargs)
-
-    async def close(self) -> None:
-        if self._crawler is not None:
-            await self._crawler.close()
-            self._crawler = None
+class BrowserCrawler(Protocol):
+    async def arun(self, *args, **kwargs): ...
 
 
 async def _keep_alive(message, requests, request_id: UUID, claim_token: UUID) -> None:
@@ -94,13 +72,31 @@ async def _process_crawl(
     progress,
     crawler,
     repository_pipeline,
+    transport: CrawlTransport,
     capacity=None,
     http_client: httpx.AsyncClient | None = None,
 ) -> None:
-    work = CrawlWork.model_validate_json(message.data)
+    try:
+        work = CrawlWork.model_validate_json(message.data)
+    except Exception:
+        logging.exception("discarding invalid acquisition work")
+        await message.term()
+        return
+    if work.transport != transport:
+        await message.term()
+        logging.error(
+            f"{transport} worker received {work.transport} acquisition work"
+        )
+        return
     request = await get_crawl_request(requests, work.crawl_request_id)
     if request is None or request.status in {"completed", "failed", "cancelled"}:
         await message.ack()
+        return
+    if request.transport != transport:
+        await message.term()
+        logging.error(
+            f"crawl request {request.id} is frozen for {request.transport}, not {transport}"
+        )
         return
     claimed = False
     now = datetime.now(UTC)
@@ -156,6 +152,7 @@ async def _process_crawl(
     heartbeat = asyncio.create_task(
         _keep_alive(message, requests, request.id, claim_token)
     )
+    acquisition = None
     try:
         context = GraphExecutionContext(
             graph_id=run.graph_id,
@@ -166,9 +163,9 @@ async def _process_crawl(
             source_crawl_id=request.source_crawl_id,
             source_edge_id=request.source_edge_id,
         )
-        with session_scope() as session:
-            page = await crawl_graph_request(
-                session=session,
+        acquisition = asyncio.create_task(
+            crawl_graph_request(
+                session=None,
                 url=request.url,
                 context=context,
                 crawler=crawler,
@@ -177,6 +174,20 @@ async def _process_crawl(
                 capacity_owner=claim_token,
                 repository_pipeline=repository_pipeline,
             )
+        )
+        done, _pending = await asyncio.wait(
+            (acquisition, heartbeat), return_when=asyncio.FIRST_COMPLETED
+        )
+        if heartbeat in done:
+            acquisition.cancel()
+            await asyncio.gather(acquisition, return_exceptions=True)
+            if heartbeat.cancelled():
+                raise RuntimeError("acquisition claim heartbeat was cancelled")
+            heartbeat_error = heartbeat.exception()
+            if heartbeat_error is not None:
+                raise RuntimeError("acquisition claim heartbeat failed") from heartbeat_error
+            raise RuntimeError("acquisition claim ownership was lost")
+        page = await acquisition
         if page.crawl_id != request.id:
             raise RuntimeError(
                 f"crawl request {request.id} returned unexpected crawl id {page.crawl_id}"
@@ -195,7 +206,7 @@ async def _process_crawl(
             await message.ack()
             return
 
-        def await_materializations(current: CrawlRequest) -> CrawlRequest:
+        def await_navigation(current: CrawlRequest) -> CrawlRequest:
             if current.status != "crawling" or current.claim_token != claim_token:
                 return current
             return current.model_copy(
@@ -209,7 +220,7 @@ async def _process_crawl(
             )
 
         previous_status = request.status
-        request = await update_crawl_request(requests, request.id, await_materializations)
+        request = await update_crawl_request(requests, request.id, await_navigation)
         if previous_status != request.status:
             try:
                 await transition_node_progress(progress, request, previous_status=previous_status)
@@ -217,7 +228,10 @@ async def _process_crawl(
                 pass
         await message.ack()
     except Exception as exc:
-        if _is_transient_catalogue_failure(exc):
+        delivery_count = int(
+            getattr(getattr(message, "metadata", None), "num_delivered", 1)
+        )
+        if delivery_count < get_int("ATLAS_CRAWL_MAX_DELIVER"):
             def release_claim(current: CrawlRequest) -> CrawlRequest:
                 if current.status != "crawling" or current.claim_token != claim_token:
                     return current
@@ -238,7 +252,7 @@ async def _process_crawl(
                     )
                 except Exception:
                     pass
-            await message.nak(delay=1)
+            await message.nak(delay=min(30, 2 ** max(0, delivery_count - 1)))
             return
         await settle_request(
             runs=runs,
@@ -252,34 +266,43 @@ async def _process_crawl(
         )
         await message.ack()
     finally:
+        if acquisition is not None and not acquisition.done():
+            acquisition.cancel()
+            await asyncio.gather(acquisition, return_exceptions=True)
         heartbeat.cancel()
         await asyncio.gather(heartbeat, return_exceptions=True)
 
-
-def _is_transient_catalogue_failure(exc: BaseException) -> bool:
-    current: BaseException | None = exc
-    while current is not None:
-        if isinstance(current, DuckLakeError):
-            return True
-        message = str(current)
-        if "DuckLake sql_dicts failed" in message or "INTERNAL Error" in message:
-            return True
-        current = current.__cause__ or current.__context__
-    return False
+def _worker_setting(transport: CrawlTransport, suffix: str) -> str:
+    prefix = {
+        "http": "ATLAS_CRAWL_HTTP_WORKER",
+        "browser": "ATLAS_CRAWL_BROWSER_WORKER",
+        "firecrawl": "ATLAS_CRAWL_PROVIDER_WORKER",
+    }[transport]
+    return f"{prefix}_{suffix}"
 
 
-async def run() -> None:
+async def run(
+    transport: CrawlTransport,
+    *,
+    crawler: BrowserCrawler | None = None,
+) -> None:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set)
+    for received_signal in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(received_signal, stop.set)
 
-    worker_id = get_optional("ATLAS_CRAWL_WORKER_ID") or f"{os.uname().nodename}:{os.getpid()}"
-    capacity = get_int("ATLAS_CRAWL_WORKER_CONCURRENCY")
+    if transport == "browser" and crawler is None:
+        raise ValueError("browser acquisition requires a process-owned crawler")
+    if transport != "browser" and crawler is not None:
+        raise ValueError(f"{transport} acquisition cannot own a browser crawler")
+    worker_id = get_optional(_worker_setting(transport, "ID")) or (
+        f"{transport}:{os.uname().nodename}:{os.getpid()}"
+    )
+    capacity = get_int(_worker_setting(transport, "CONCURRENCY"))
     metrics_server = None
     if get_bool("ATLAS_METRICS_ENABLED"):
         metrics_server, _metrics_thread = start_http_server(
-            get_int("ATLAS_CRAWL_WORKER_METRICS_PORT"),
+            get_int(_worker_setting(transport, "METRICS_PORT")),
             addr=get_str("ATLAS_METRICS_HOST"),
         )
 
@@ -299,14 +322,28 @@ async def run() -> None:
                 run=active_run,
             )
     crawl_subscription = await jetstream.pull_subscribe(
-        CRAWL_SUBJECT, durable=CRAWL_CONSUMER, stream=GRAPH_STREAM
+        CRAWL_SUBJECTS[transport],
+        durable=CRAWL_CONSUMERS[transport],
+        stream=GRAPH_STREAM,
     )
     active: set[asyncio.Task] = set()
     started = datetime.now(UTC)
-    crawler = LazyBrowserCrawler()
+    monitor = HealthMonitor(
+        heartbeat_timeout_seconds=get_float(
+            "ATLAS_ACQUISITION_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
+        )
+    )
+    monitor.dependencies_ready()
+    monitor.subsystem_ready("acquisition")
+    health_server, _health_thread = start_health_server(
+        address=get_str("ATLAS_ACQUISITION_WORKER_HEALTH_HOST"),
+        port=get_int("ATLAS_ACQUISITION_WORKER_HEALTH_PORT"),
+        monitor=monitor,
+    )
 
     async def presence() -> None:
         while not stop.is_set():
+            monitor.heartbeat()
             for active_run in await list_graph_runs(runs):
                 if active_run.status in {"queued", "running"}:
                     active_run = await expire_graph_run(
@@ -325,23 +362,79 @@ async def run() -> None:
                         )
             state = WorkerState(
                 worker_id=worker_id,
+                transport=transport,
                 started_at=started,
                 last_seen_at=datetime.now(UTC),
                 capacity=capacity,
                 active_request_count=len(active),
                 stopping=False,
             )
-            await workers.put(worker_id.replace(":", "-"), state.model_dump_json().encode())
+            await workers.put(
+                worker_id.replace(":", "-"), state.model_dump_json().encode()
+            )
+            all_transport_requests = [
+                item
+                for item in await list_crawl_requests(requests)
+                if item.transport == transport
+            ]
+            requests_for_transport = [
+                item
+                for item in all_transport_requests
+                if item.status in {"queued", "crawling"}
+            ]
+            now = datetime.now(UTC)
+            oldest_age = (
+                max(
+                    0.0,
+                    (
+                        now
+                        - min(item.created_at for item in requests_for_transport)
+                    ).total_seconds(),
+                )
+                if requests_for_transport
+                else 0.0
+            )
+            completed_acquisitions = [
+                item
+                for item in all_transport_requests
+                if item.status not in {"queued", "crawling"}
+            ]
+            marker = (
+                len(completed_acquisitions),
+                max(
+                    (item.updated_at for item in completed_acquisitions),
+                    default=started,
+                ).isoformat(),
+            )
+            monitor.queue_observed(
+                f"{transport}_acquisition",
+                pending=len(requests_for_transport),
+                progress_marker=marker,
+                stalled_after_seconds=get_float("ATLAS_WORKER_QUEUE_STALL_SECONDS"),
+            )
+            crawl_metrics.queue_state(
+                transport=transport,
+                pending=len(requests_for_transport),
+                oldest_age_seconds=oldest_age,
+            )
             await asyncio.sleep(5)
 
     presence_task = asyncio.create_task(presence())
     try:
         async with httpx.AsyncClient() as http_client:
-            async with RepositoryPipeline(
-                repository_ingestor_from_env()
-            ) as repository_pipeline:
+            async with AcquisitionPipeline() as repository_pipeline:
                 while not stop.is_set():
-                    active = {task for task in active if not task.done()}
+                    completed = {task for task in active if task.done()}
+                    for task in completed:
+                        if task.cancelled():
+                            continue
+                        error = task.exception()
+                        if error is not None:
+                            logging.error(
+                                "acquisition task exited unexpectedly",
+                                exc_info=(type(error), error, error.__traceback__),
+                            )
+                    active.difference_update(completed)
                     available = capacity - len(active)
                     if available <= 0:
                         await asyncio.sleep(0.05)
@@ -363,6 +456,7 @@ async def run() -> None:
                                 progress,
                                 crawler,
                                 repository_pipeline,
+                                transport,
                                 capacity_state,
                                 http_client,
                             )
@@ -374,17 +468,9 @@ async def run() -> None:
         stop.set()
         presence_task.cancel()
         await asyncio.gather(presence_task, *active, return_exceptions=True)
-        await crawler.close()
         await client.drain()
+        await asyncio.to_thread(health_server.shutdown)
+        health_server.server_close()
         if metrics_server is not None:
             await asyncio.to_thread(metrics_server.shutdown)
             metrics_server.server_close()
-
-
-def main() -> None:
-    argparse.ArgumentParser(description="Run the Atlas crawl worker.").parse_args()
-    asyncio.run(run())
-
-
-if __name__ == "__main__":
-    main()

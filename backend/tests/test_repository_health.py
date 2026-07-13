@@ -64,6 +64,31 @@ class RepositoryHealthTests(unittest.TestCase):
             (False, "cdc_crawl_planner: lease contention"),
         )
 
+    def test_health_fails_when_owned_queue_stops_advancing(self) -> None:
+        monitor = HealthMonitor(heartbeat_timeout_seconds=30)
+        monitor.dependencies_ready()
+        with patch(
+            "repository.ingestion.health.time.monotonic",
+            side_effect=[10.0, 10.0, 12.0, 12.0, 12.0, 12.0],
+        ):
+            monitor.heartbeat()
+            monitor.queue_observed(
+                "ingestion",
+                pending=3,
+                progress_marker=(4, 2),
+                stalled_after_seconds=1,
+            )
+            monitor.queue_observed(
+                "ingestion",
+                pending=3,
+                progress_marker=(4, 2),
+                stalled_after_seconds=1,
+            )
+            ready, detail = monitor.status()
+
+        self.assertFalse(ready)
+        self.assertIn("ingestion: 3 work items without progress", detail)
+
 
 if __name__ == "__main__":
     unittest.main()

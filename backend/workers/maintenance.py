@@ -43,7 +43,12 @@ async def _heartbeat_lease(
 
 
 async def _run_operation(
-    *, kind: MaintenanceKind, worker_id: str, leases, config: MaintenanceConfig
+    *,
+    kind: MaintenanceKind,
+    worker_id: str,
+    leases,
+    config: MaintenanceConfig,
+    monitor: HealthMonitor | None = None,
 ) -> None:
     now = datetime.now(UTC)
     lease = MaintenanceLease(
@@ -62,20 +67,41 @@ async def _run_operation(
     heartbeat = asyncio.create_task(
         _heartbeat_lease(leases, revision, lease, heartbeat_stop)
     )
+    operation = None
     try:
-        if kind == "compact":
-            def compact_fenced() -> None:
-                with maintenance_lock():
+        def operation_fenced() -> None:
+            with maintenance_lock():
+                if kind == "compact":
                     compact(config)
+                else:
+                    cleanup_staging(config)
 
-            await asyncio.to_thread(compact_fenced)
-        else:
-            await asyncio.to_thread(cleanup_staging, config)
+        operation = asyncio.create_task(asyncio.to_thread(operation_fenced))
+        done, _pending = await asyncio.wait(
+            (operation, heartbeat), return_when=asyncio.FIRST_COMPLETED
+        )
+        if heartbeat in done:
+            error = heartbeat.exception()
+            if monitor is not None:
+                monitor.subsystem_unavailable(
+                    "maintenance_lease",
+                    str(error) if error is not None else "maintenance lease was lost",
+                )
+            # DuckDB's blocking maintenance call is not cancellable from another
+            # thread. The PostgreSQL maintenance fence prevents a replacement
+            # worker from overlapping it while this bounded call drains.
+            await operation
+            raise RuntimeError("maintenance lease was lost") from error
+        await operation
+        if monitor is not None:
+            monitor.subsystem_ready("maintenance_lease")
     except Exception:
         logging.exception("maintenance operation %s failed", kind)
     finally:
         heartbeat_stop.set()
         await asyncio.gather(heartbeat, return_exceptions=True)
+        if operation is not None and not operation.done():
+            await operation
         try:
             entry = await leases.get("global")
             current = MaintenanceLease.model_validate_json(entry.value)
@@ -100,6 +126,7 @@ async def run() -> None:
         )
     )
     monitor.dependencies_ready()
+    monitor.subsystem_ready("maintenance_lease")
     health_server, _ = start_health_server(
         address=get_str("ATLAS_MAINTENANCE_WORKER_HEALTH_HOST"),
         port=get_int("ATLAS_MAINTENANCE_WORKER_HEALTH_PORT"),
@@ -124,10 +151,18 @@ async def run() -> None:
     try:
         while not stop.is_set():
             await _run_operation(
-                kind="compact", worker_id=worker_id, leases=leases, config=config
+                kind="compact",
+                worker_id=worker_id,
+                leases=leases,
+                config=config,
+                monitor=monitor,
             )
             await _run_operation(
-                kind="cleanup", worker_id=worker_id, leases=leases, config=config
+                kind="cleanup",
+                worker_id=worker_id,
+                leases=leases,
+                config=config,
+                monitor=monitor,
             )
             try:
                 await asyncio.wait_for(stop.wait(), timeout=config.interval_seconds)

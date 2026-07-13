@@ -1,10 +1,12 @@
 """Current crawl-graph run API."""
 
 import json
+import time
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
+import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from nats.errors import TimeoutError as NatsTimeoutError
@@ -12,13 +14,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from api.catalogue_pool import CatalogueReadPool, CatalogueReadPoolExhausted
 from config import get_float, get_int
 from control.catalogue_materializations.models import CatalogueMaterialization
 from control.crawl_graphs.models import CrawlGraph
 from control.crawl_graphs.service import CrawlGraphNotFoundError, CrawlGraphValidationError, freeze_graph
 from db.session import get_session
-from repository.catalogue import Catalogue, catalogue_from_env
-from runtime.graph_queue import GraphRun, connect_nats, ensure_graph_progress_storage, ensure_graph_storage, get_graph_run, list_graph_runs, list_worker_states
+from repository.catalogue import Catalogue
+from runtime.graph_queue import CrawlTransport, GraphRun, connect_nats, ensure_graph_progress_storage, ensure_graph_storage, get_graph_run, list_graph_runs, list_worker_states
 from runtime.graph_runs import (
     GraphRunNotFoundError,
     create_graph_run,
@@ -68,19 +71,27 @@ class GraphRunList(BaseModel):
 
 class RuntimeWorkerCapacity(BaseModel):
     worker_id: str
+    transport: CrawlTransport
     capacity: int
     active_request_count: int
     last_seen_at: datetime
+
+
+class TransportCapacity(BaseModel):
+    transport: CrawlTransport
+    worker_count: int
+    capacity: int
+    active: int
 
 
 class CrawlConcurrencyLimits(BaseModel):
     worker_count: int
     runtime_capacity: int
     runtime_active: int
-    browser_concurrency_per_worker: int
     browser_capacity: int
     crawl_permit_timeout_seconds: float
     workers: list[RuntimeWorkerCapacity]
+    transports: list[TransportCapacity]
 
 
 class GraphRunMaterializationLag(BaseModel):
@@ -126,15 +137,28 @@ async def capacity() -> CrawlConcurrencyLimits:
         workers = sorted(await list_worker_states(workers_bucket), key=lambda value: value.worker_id)
     finally:
         await client.drain()
-    browser_per_worker = get_int("ATLAS_BROWSER_CONCURRENCY")
+    transports = [
+        TransportCapacity(
+            transport=transport,
+            worker_count=sum(worker.transport == transport for worker in workers),
+            capacity=sum(worker.capacity for worker in workers if worker.transport == transport),
+            active=sum(
+                worker.active_request_count
+                for worker in workers
+                if worker.transport == transport
+            ),
+        )
+        for transport in ("http", "browser", "firecrawl")
+    ]
+    browser = next(item for item in transports if item.transport == "browser")
     return CrawlConcurrencyLimits(
         worker_count=len(workers),
         runtime_capacity=sum(worker.capacity for worker in workers),
         runtime_active=sum(worker.active_request_count for worker in workers),
-        browser_concurrency_per_worker=browser_per_worker,
-        browser_capacity=len(workers) * browser_per_worker,
+        browser_capacity=browser.capacity,
         crawl_permit_timeout_seconds=get_float("ATLAS_CRAWL_PERMIT_TIMEOUT_SECONDS"),
         workers=[RuntimeWorkerCapacity.model_validate(worker, from_attributes=True) for worker in workers],
+        transports=transports,
     )
 
 
@@ -142,6 +166,7 @@ async def capacity() -> CrawlConcurrencyLimits:
     "/materialization-lag", response_model=GraphRunMaterializationLagList
 )
 def materialization_lag(
+    request: Request,
     session: Annotated[Session, Depends(get_session)],
 ) -> GraphRunMaterializationLagList:
     active_definitions = list(
@@ -149,11 +174,37 @@ def materialization_lag(
             select(
                 CatalogueMaterialization.id,
                 CatalogueMaterialization.definition_revision_id,
-            ).where(CatalogueMaterialization.archived_at.is_(None))
+                CatalogueMaterialization.scope_kind,
+            ).where(
+                CatalogueMaterialization.archived_at.is_(None),
+                CatalogueMaterialization.dematerialization_requested_at.is_(None),
+                CatalogueMaterialization.source_state == "current",
+                CatalogueMaterialization.live_enabled.is_(True),
+            )
         ).all()
     )
-    with catalogue_from_env() as catalogue:
-        rows = _graph_run_materialization_lag_rows(catalogue, active_definitions)
+    pool: CatalogueReadPool = request.app.state.catalogue_read_pool
+    try:
+        catalogue = pool.acquire()
+    except CatalogueReadPoolExhausted as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    try:
+        attempts = get_int("ATLAS_CATALOGUE_READ_MAX_ATTEMPTS")
+        for attempt in range(1, attempts + 1):
+            try:
+                rows = _graph_run_materialization_lag_rows(
+                    catalogue, active_definitions
+                )
+                break
+            except duckdb.IOException as exc:
+                if attempt == attempts:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Materialization lag is temporarily unavailable.",
+                    ) from exc
+                time.sleep(get_float("ATLAS_CATALOGUE_READ_RETRY_SECONDS"))
+    finally:
+        pool.release(catalogue)
     items: list[GraphRunMaterializationLag] = []
     for row in rows:
         items.append(
@@ -168,32 +219,101 @@ def materialization_lag(
 
 
 def _graph_run_materialization_lag_rows(
-    catalogue: Catalogue, active_definitions: list[tuple[UUID, UUID]]
+    catalogue: Catalogue, active_definitions: list[tuple[UUID, UUID, str]]
 ) -> list[tuple]:
     crawls = _catalogue_table(catalogue, "crawls")
     members = _catalogue_table(catalogue, "crawl_materialization_fanout_members")
-    active_filter = "FALSE"
-    parameters: list[object] = []
-    if active_definitions:
-        active_filter = " OR ".join(
-            "(m.materialization_id = ? AND m.definition_revision_id = ?)"
-            for _ in active_definitions
-        )
-        parameters = [value for pair in active_definitions for value in pair]
+    results = _catalogue_table(catalogue, "materialization_scope_results")
+    if not active_definitions:
+        return catalogue.connection.execute(
+            f"""
+            SELECT graph_run_id, 0, 0, 0
+            FROM {crawls}
+            GROUP BY graph_run_id
+            ORDER BY max(captured_at) DESC
+            """
+        ).fetchall()
+    active_values = ", ".join("(?, ?, ?)" for _ in active_definitions)
+    parameters: list[object] = [
+        value for definition in active_definitions for value in definition
+    ]
     return catalogue.connection.execute(
         f"""
-        SELECT c.graph_run_id,
-               count(DISTINCT m.materialization_id) AS materialization_count,
-               count(DISTINCT (m.materialization_id, m.scope_kind, m.scope_id))
-                   FILTER (WHERE m.status = 'planned') AS pending_updates,
-               count(DISTINCT (m.materialization_id, m.scope_kind, m.scope_id))
-                   FILTER (WHERE m.status = 'failed') AS failed_updates
-        FROM {crawls} AS c
-        LEFT JOIN {members} AS m
-          ON m.crawl_id = c.crawl_id
-         AND ({active_filter})
-        GROUP BY c.graph_run_id
-        ORDER BY max(c.captured_at) DESC
+        WITH active(materialization_id, definition_revision_id, scope_kind) AS (
+            VALUES {active_values}
+        ),
+        expected_scopes AS (
+            SELECT DISTINCT c.graph_run_id,
+                   a.materialization_id,
+                   a.definition_revision_id,
+                   a.scope_kind,
+                   CASE WHEN a.scope_kind = 'crawl'
+                        THEN CAST(c.crawl_id AS VARCHAR)
+                        ELSE c.document_id
+                   END AS scope_id
+            FROM {crawls} AS c
+            CROSS JOIN active AS a
+            WHERE a.scope_kind = 'crawl' OR c.document_id IS NOT NULL
+        ),
+        member_status AS (
+            SELECT c.graph_run_id,
+                   m.materialization_id,
+                   m.definition_revision_id,
+                   m.scope_kind,
+                   m.scope_id,
+                   bool_or(m.status = 'planned') AS pending,
+                   bool_or(m.status = 'failed') AS failed
+            FROM {crawls} AS c
+            JOIN {members} AS m USING (crawl_id)
+            JOIN active AS a
+              ON a.materialization_id = m.materialization_id
+             AND a.definition_revision_id = m.definition_revision_id
+            GROUP BY c.graph_run_id, m.materialization_id,
+                     m.definition_revision_id, m.scope_kind, m.scope_id
+        ),
+        scope_state AS (
+            SELECT e.*,
+                   coalesce(m.pending, false) AS member_pending,
+                   coalesce(m.failed, false) AS member_failed,
+                   r.status AS result_status
+            FROM expected_scopes AS e
+            LEFT JOIN member_status AS m
+              ON m.graph_run_id = e.graph_run_id
+             AND m.materialization_id = e.materialization_id
+             AND m.definition_revision_id = e.definition_revision_id
+             AND m.scope_kind = e.scope_kind
+             AND m.scope_id = e.scope_id
+            LEFT JOIN {results} AS r
+              ON r.materialization_id = e.materialization_id
+             AND r.definition_revision_id = e.definition_revision_id
+             AND r.scope_kind = e.scope_kind
+             AND r.scope_id = e.scope_id
+        ),
+        run_summary AS (
+            SELECT graph_run_id,
+                   count(DISTINCT materialization_id) AS materialization_count,
+                   count(*) FILTER (
+                       WHERE NOT (
+                           member_failed
+                           OR coalesce(result_status = 'failed', false)
+                       )
+                         AND (member_pending OR result_status IS NULL)
+                   ) AS pending_updates,
+                   count(*) FILTER (
+                       WHERE member_failed OR result_status = 'failed'
+                   ) AS failed_updates
+            FROM scope_state
+            GROUP BY graph_run_id
+        )
+        SELECT s.graph_run_id, s.materialization_count,
+               s.pending_updates, s.failed_updates
+        FROM run_summary AS s
+        JOIN (
+            SELECT graph_run_id, max(captured_at) AS last_captured_at
+            FROM {crawls}
+            GROUP BY graph_run_id
+        ) AS r USING (graph_run_id)
+        ORDER BY r.last_captured_at DESC
         """,
         parameters,
     ).fetchall()

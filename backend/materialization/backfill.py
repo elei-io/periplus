@@ -15,6 +15,7 @@ from materialization.queue import (
     SCOPE_STREAM,
 )
 from repository.catalogue import Catalogue, catalogue_from_env
+from runtime.catalogue_lane import run_catalogue_operation
 
 
 async def run_backfill(jetstream, stop: asyncio.Event) -> None:
@@ -26,7 +27,7 @@ async def run_backfill(jetstream, stop: asyncio.Event) -> None:
         for definition in definitions:
             cursor: str | None = None
             while not stop.is_set():
-                scopes = await asyncio.to_thread(
+                scopes = await run_catalogue_operation(
                     _missing_scope_page, definition, cursor
                 )
                 if not scopes:
@@ -39,7 +40,7 @@ async def run_backfill(jetstream, stop: asyncio.Event) -> None:
                     cursor = scope_id
                     await _wait(stop, delay)
             await _wait_for_queues(jetstream, stop)
-            if await asyncio.to_thread(_backfill_terminal, definition):
+            if await run_catalogue_operation(_backfill_terminal, definition):
                 _finish_backfill(definition)
         await _wait(stop, 5)
 

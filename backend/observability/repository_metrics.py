@@ -10,6 +10,10 @@ _batch_items = Histogram("atlas_repository_ingestion_batch_items", "Items per re
 _pending = Gauge("atlas_repository_ingestion_jobs_pending", "Repository jobs waiting in JetStream.")
 _ack_pending = Gauge("atlas_repository_ingestion_jobs_ack_pending", "Delivered repository jobs awaiting acknowledgement.")
 _redelivered = Gauge("atlas_repository_ingestion_jobs_redelivered", "Redelivered repository jobs.")
+_oldest_pending_age = Gauge(
+    "atlas_repository_ingestion_oldest_pending_age_seconds",
+    "Lower-bound age of an ingestion queue that has not made progress.",
+)
 _compactions = Counter("atlas_repository_compactions_total", "Repository compaction checks.", ("outcome",))
 _compaction_files = Counter("atlas_repository_compaction_files_total", "Repository files involved in compaction.", ("kind",))
 
@@ -34,10 +38,17 @@ def batch(*, outcome: str, duration_seconds: float, items: int, element_rows: in
     _batch_items.observe(items)
 
 
-def queue_state(*, pending: int, ack_pending: int, redelivered: int) -> None:
+def queue_state(
+    *,
+    pending: int,
+    ack_pending: int,
+    redelivered: int,
+    oldest_pending_age_seconds: float = 0.0,
+) -> None:
     _pending.set(pending)
     _ack_pending.set(ack_pending)
     _redelivered.set(redelivered)
+    _oldest_pending_age.set(max(0.0, oldest_pending_age_seconds))
 
 
 def compaction(

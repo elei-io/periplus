@@ -1,10 +1,9 @@
-"""Catalogue ingestion loop owned by the catalog worker process."""
+"""DuckLake ingestion loop owned by the ingestion worker process."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import time
 from datetime import UTC, datetime
@@ -18,28 +17,9 @@ from repository.catalogue import (
     CrawlRecord,
     DocumentRecord,
 )
-from observability import materialization_metrics, repository_metrics
+from observability import repository_metrics
 from prometheus_client import start_http_server
 from config import get_bool, get_float, get_int, get_str
-from control.catalogue_materializations.models import CatalogueMaterialization
-from control.catalogue_views.models import CatalogueViewReference
-from control.catalogue_queries.models import CatalogueQuery, CatalogueQueryRevision
-from db.session import session_scope
-from materialization.commit import commit_scope, commit_scope_batch, record_scope_failure
-from repository.catalogue.fanout import CrawlMaterializationFanoutStore
-from repository.catalogue.views import CatalogueViewStore
-from materialization.queue import (
-    COMMIT_DURABLE,
-    COMMIT_STREAM,
-    COMMIT_SUBJECT,
-    SCOPE_LIVE_SUBJECT,
-    DEAD_LETTER_SUBJECT,
-    MaterializationDeadLetter,
-    MaterializationCommitJob,
-    MaterializationFailureJob,
-    CrawlMaterializationFanoutPlanJob,
-    ensure_streams as ensure_materialization_streams,
-)
 from repository.ingestion.health import HealthMonitor, start_health_server
 from repository.ingestion.pipeline import IngestionWorkerConfig
 from repository.ingestion.queue import (
@@ -58,11 +38,13 @@ from repository.ingestion.queue import (
     publish_dead_letter,
     store_ingestion_response,
 )
+from repository.catalogue.operations import (
+    operation_locks as catalogue_operation_locks,
+    run_with_catalogue_retry,
+)
 from repository.service import repository_ingestor_from_env
-from repository.catalogue.materializations import MaterializationStore
-from repository.catalogue.operations import operation_lock, operation_locks
-from sqlalchemy import select
 from runtime.maintenance_queue import MAINTENANCE_LEASE_BUCKET
+from runtime.catalogue_lane import catalogue_operation_lane
 from runtime.graph_queue import (
     READINESS_SUBJECT,
     ReadinessWork,
@@ -76,6 +58,12 @@ from runtime.navigation import (
     put_navigation_package,
 )
 from runtime.navigation_contract import NavigationPackage
+from runtime.operation_leases import (
+    OperationLeaseLost,
+    OperationLeaseUnavailable,
+    ensure_operation_lease_storage,
+    operation_leases,
+)
 
 
 async def _publish_navigation_readiness(
@@ -129,20 +117,15 @@ async def run(
         maintenance_leases = await jetstream.key_value(MAINTENANCE_LEASE_BUCKET)
     except BucketNotFoundError:
         maintenance_leases = None
-    await ensure_materialization_streams(jetstream)
     await ensure_repository_stream(jetstream)
     await ensure_dead_letter_stream(jetstream)
     results_store = await ensure_ingestion_results(jetstream)
+    operation_lease_store = await ensure_operation_lease_storage(jetstream)
     await ensure_repository_consumer(jetstream)
     subscription = await jetstream.pull_subscribe(
         SUBJECT,
         durable=DURABLE,
         stream=STREAM,
-    )
-    materialization_subscription = await jetstream.pull_subscribe(
-        COMMIT_SUBJECT,
-        durable=COMMIT_DURABLE,
-        stream=COMMIT_STREAM,
     )
     ingestor = repository_ingestor_from_env()
     navigation_store = ingestor.html_repository.store
@@ -153,49 +136,36 @@ async def run(
     metrics_server = None
     if get_bool("ATLAS_METRICS_ENABLED"):
         metrics_server, _metrics_thread = start_http_server(
-            get_int("ATLAS_CATALOG_WORKER_METRICS_PORT"),
+            get_int("ATLAS_INGESTION_WORKER_METRICS_PORT"),
             addr=get_str("ATLAS_METRICS_HOST"),
         )
     health_monitor = monitor or HealthMonitor(
         heartbeat_timeout_seconds=float(
-            get_str("ATLAS_CATALOG_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS")
+            get_str("ATLAS_INGESTION_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS")
         )
     )
     health_monitor.dependencies_ready()
     health_monitor.subsystem_ready("ingestion")
-    health_monitor.subsystem_ready("materialization_commit")
     health_server, _health_thread = start_health_server(
-        address=get_str("ATLAS_CATALOG_WORKER_HEALTH_HOST"),
-        port=get_int("ATLAS_CATALOG_WORKER_HEALTH_PORT"),
+        address=get_str("ATLAS_INGESTION_WORKER_HEALTH_HOST"),
+        port=get_int("ATLAS_INGESTION_WORKER_HEALTH_PORT"),
         monitor=health_monitor,
     )
     if initialized is not None:
         initialized.set()
     health_heartbeat_task = asyncio.create_task(_health_heartbeat(health_monitor))
     dependency_probe_task = asyncio.create_task(
-        _dependency_probe(client, health_ingestor, health_monitor)
-    )
-    heartbeat_task = None
-    # DuckDB connections are not safe for overlapping operations. Ingestion reads
-    # and materialization commits share this embedded connection, so serialize
-    # every connection use while leaving object reads and DOM parsing concurrent.
-    catalogue_connection_lock = asyncio.Lock()
-    materialization_commit_task = asyncio.create_task(
-        _consume_materialization_commits(
-            jetstream,
-            materialization_subscription,
-            ingestor.catalogue,
-            catalogue_connection_lock,
-            maintenance_leases,
-            stop,
-        ),
-        name="catalog-materialization-commits",
-    )
-    materialization_commit_task.add_done_callback(
-        lambda task: _report_subsystem_task_exit(
-            task, health_monitor, "materialization_commit"
+        _dependency_probe(
+            client,
+            health_ingestor,
+            health_monitor,
+            catalogue_operation_lane(),
         )
     )
+    heartbeat_task = None
+    # Keep all access to this embedded connection explicit and serialized. Object
+    # reads and DOM parsing occur outside the lock.
+    catalogue_connection_lock = catalogue_operation_lane()
     jobs: list[IngestionJob] = []
     prepared = []
     accepted_messages = []
@@ -214,6 +184,7 @@ async def run(
             list(prepared),
             catalogue_connection_lock,
             navigation_store,
+            operation_lease_store,
         )
         jobs.clear()
         accepted_messages.clear()
@@ -225,9 +196,6 @@ async def run(
 
     try:
         while not stop.is_set():
-            _raise_if_subsystem_task_exited(
-                materialization_commit_task, "materialization commit consumer"
-            )
             if await _maintenance_active(maintenance_leases):
                 await asyncio.sleep(0.25)
                 continue
@@ -238,17 +206,28 @@ async def run(
             ):
                 await flush_prepared()
                 continue
-            async with catalogue_connection_lock:
-                await asyncio.to_thread(
-                    _dematerialize_requested_materialization, ingestor.catalogue
-                )
             if time.monotonic() >= next_queue_snapshot:
                 try:
                     info = await jetstream.consumer_info(STREAM, DURABLE)
+                    pending = int(info.num_pending or 0) + int(
+                        info.num_ack_pending or 0
+                    )
+                    queue_age = health_monitor.queue_observed(
+                        "ingestion",
+                        pending=pending,
+                        progress_marker=(
+                            getattr(info.delivered, "stream_seq", 0),
+                            getattr(info.ack_floor, "stream_seq", 0),
+                        ),
+                        stalled_after_seconds=get_float(
+                            "ATLAS_WORKER_QUEUE_STALL_SECONDS"
+                        ),
+                    )
                     repository_metrics.queue_state(
                         pending=info.num_pending,
                         ack_pending=info.num_ack_pending,
                         redelivered=info.num_redelivered,
+                        oldest_pending_age_seconds=queue_age,
                     )
                 except Exception:
                     logging.warning(
@@ -381,7 +360,6 @@ async def run(
                     await flush_prepared()
     finally:
         stop.set()
-        await _cancel_task(materialization_commit_task)
         await _cancel_task(heartbeat_task)
         await _cancel_task(health_heartbeat_task)
         await _cancel_task(dependency_probe_task)
@@ -396,480 +374,12 @@ async def run(
 
 
 def main() -> None:
-    argparse.ArgumentParser(description="Run the Atlas catalog ingestion loop.").parse_args()
+    argparse.ArgumentParser(description="Run the Atlas ingestion loop.").parse_args()
     logging.basicConfig(
         level=get_str("ATLAS_LOG_LEVEL"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     asyncio.run(run())
-
-
-async def _commit_materialization_if_ready(jetstream, subscription, catalogue) -> None:
-    try:
-        messages = await subscription.fetch(batch=1, timeout=0.01)
-    except (NatsTimeoutError, asyncio.TimeoutError):
-        return
-    for message in messages:
-        heartbeat = asyncio.create_task(_heartbeat_messages([message]))
-        try:
-            payload = json.loads(message.data)
-            if payload.get("kind") == "fanout_plan":
-                plan = CrawlMaterializationFanoutPlanJob.model_validate(payload)
-                failure = None
-                job = None
-            elif payload.get("kind") == "failure":
-                failure = MaterializationFailureJob.model_validate(payload)
-                job = None
-                plan = None
-            else:
-                job = MaterializationCommitJob.model_validate(payload)
-                failure = None
-                plan = None
-        except Exception:
-            logging.exception("discarding invalid materialization commit job")
-            await message.term()
-            await _cancel_task(heartbeat)
-
-
-        if plan is not None:
-            try:
-                await _commit_fanout_plan(jetstream, catalogue, plan)
-            except Exception:
-                logging.exception("failed to persist crawl materialization fan-out plan")
-                await message.nak(delay=30)
-            else:
-                await message.ack()
-            finally:
-                await _cancel_task(heartbeat)
-            continue
-        if failure is not None:
-            try:
-                def record_failure_fenced():
-                    with operation_lock(failure.scope.operation_id):
-                        return record_scope_failure(catalogue, failure)
-
-                recorded = await asyncio.to_thread(record_failure_fenced)
-                if recorded:
-                    await _settle_crawl_fanouts(jetstream, catalogue, failure.scope)
-            except Exception:
-                logging.exception("failed to persist materialization scope failure")
-                await message.nak(delay=30)
-            else:
-                await message.ack()
-            finally:
-                await _cancel_task(heartbeat)
-            continue
-        assert job is not None
-        commit_started = time.perf_counter()
-        try:
-            def commit_scope_fenced():
-                with operation_lock(job.scope.operation_id):
-                    return commit_scope(catalogue, job)
-
-            await asyncio.to_thread(commit_scope_fenced)
-        except Exception as exc:
-            materialization_metrics.operation(
-                phase="commit",
-                outcome="failed",
-                duration_seconds=time.perf_counter() - commit_started,
-            )
-            logging.exception(
-                "materialization commit failed for operation %s",
-                job.scope.operation_id,
-            )
-            deliveries = message.metadata.num_delivered
-            maximum = get_int("ATLAS_MATERIALIZATION_MAX_DELIVER")
-            if deliveries < maximum:
-                await message.nak(delay=5)
-                continue
-            failure = MaterializationFailureJob(
-                scope=job.scope,
-                error=str(exc),
-                started_at=job.started_at,
-                completed_at=datetime.now(UTC),
-            )
-            dead_letter = MaterializationDeadLetter(
-                job=job.scope,
-                stage="commit",
-                error=str(exc),
-                delivery_count=deliveries,
-                failed_at=datetime.now(UTC),
-                staging_key=job.staging_key,
-            )
-            try:
-                await asyncio.to_thread(record_scope_failure, catalogue, failure)
-                await jetstream.publish(
-                    DEAD_LETTER_SUBJECT,
-                    dead_letter.model_dump_json().encode(),
-                    headers={
-                        "Nats-Msg-Id": f"{job.scope.operation_id}-commit-dead"
-                    },
-                )
-            except Exception:
-                logging.exception("failed to persist materialization dead letter")
-                await message.nak(delay=30)
-            else:
-                await message.term()
-        else:
-            materialization_metrics.operation(
-                phase="commit",
-                outcome="succeeded",
-                duration_seconds=time.perf_counter() - commit_started,
-            )
-            await _settle_crawl_fanouts(jetstream, catalogue, job.scope)
-            await message.ack()
-        finally:
-            await _cancel_task(heartbeat)
-
-
-async def _consume_materialization_commits(
-    jetstream,
-    subscription,
-    catalogue,
-    catalogue_connection_lock: asyncio.Lock,
-    maintenance_leases,
-    stop: asyncio.Event,
-) -> None:
-    """Batch compatible analytical appends with a bounded oldest-item deadline."""
-
-    max_items = get_int("ATLAS_MATERIALIZATION_COMMIT_BATCH_ITEMS")
-    max_bytes = get_int("ATLAS_MATERIALIZATION_COMMIT_BATCH_BYTES")
-    max_wait = get_float("ATLAS_MATERIALIZATION_COMMIT_BATCH_WAIT_SECONDS")
-    if max_items <= 0 or max_bytes <= 0 or max_wait <= 0:
-        raise ValueError("materialization commit batch limits must be positive")
-    buffers: dict[tuple, list[tuple[object, MaterializationCommitJob, asyncio.Task]]] = {}
-    started: dict[tuple, float] = {}
-    next_queue_snapshot = 0.0
-    try:
-        while not stop.is_set():
-            if await _maintenance_active(maintenance_leases):
-                await asyncio.sleep(0.25)
-                continue
-            now = time.monotonic()
-            due = [
-                key
-                for key, entries in buffers.items()
-                if _materialization_batch_due(
-                    entries,
-                    started_at=started[key],
-                    now=now,
-                    max_items=max_items,
-                    max_bytes=max_bytes,
-                    max_wait=max_wait,
-                )
-            ]
-            for key in due:
-                entries = buffers.pop(key)
-                started.pop(key, None)
-                await _commit_materialization_entries(
-                    jetstream,
-                    catalogue,
-                    entries,
-                    catalogue_connection_lock,
-                )
-            if due:
-                continue
-            if time.monotonic() >= next_queue_snapshot:
-                try:
-                    info = await jetstream.consumer_info(COMMIT_STREAM, COMMIT_DURABLE)
-                    materialization_metrics.queue_state(
-                        phase="commit",
-                        pending=info.num_pending,
-                        ack_pending=info.num_ack_pending,
-                    )
-                except Exception:
-                    logging.warning(
-                        "materialization commit queue metrics unavailable",
-                        exc_info=True,
-                    )
-                next_queue_snapshot = time.monotonic() + 5
-            timeout = 1.0
-            if started:
-                timeout = max(
-                    0.001,
-                    min(started_at + max_wait for started_at in started.values())
-                    - time.monotonic(),
-                )
-            try:
-                messages = await subscription.fetch(batch=max_items, timeout=timeout)
-            except (NatsTimeoutError, asyncio.TimeoutError):
-                continue
-            for message in messages:
-                heartbeat = asyncio.create_task(_heartbeat_messages([message]))
-                try:
-                    payload = json.loads(message.data)
-                    kind = payload.get("kind")
-                    if kind == "fanout_plan":
-                        plan = CrawlMaterializationFanoutPlanJob.model_validate(payload)
-                        try:
-                            async with catalogue_connection_lock:
-                                await _commit_fanout_plan(jetstream, catalogue, plan)
-                        except Exception:
-                            logging.exception(
-                                "failed to persist crawl materialization fan-out plan"
-                            )
-                            await message.nak(delay=30)
-                        else:
-                            await message.ack()
-                        await _cancel_task(heartbeat)
-                        continue
-                    if kind == "failure":
-                        failure = MaterializationFailureJob.model_validate(payload)
-                        try:
-                            async with catalogue_connection_lock:
-                                recorded = await asyncio.to_thread(
-                                    record_scope_failure, catalogue, failure
-                                )
-                                if recorded:
-                                    await _settle_crawl_fanouts(
-                                        jetstream, catalogue, failure.scope
-                                    )
-                        except Exception:
-                            logging.exception(
-                                "failed to persist materialization scope failure"
-                            )
-                            await message.nak(delay=30)
-                        else:
-                            await message.ack()
-                        await _cancel_task(heartbeat)
-                        continue
-                    job = MaterializationCommitJob.model_validate(payload)
-                except Exception:
-                    logging.exception("discarding invalid materialization commit job")
-                    await message.term()
-                    await _cancel_task(heartbeat)
-                    continue
-                key = (
-                    job.scope.materialization_id,
-                    job.scope.definition_revision_id,
-                    job.scope.target_table,
-                    job.scope.scope_kind,
-                    job.scope.scope_column,
-                    job.scope.source,
-                )
-                entries = buffers.setdefault(key, [])
-                if any(value.scope.scope_id == job.scope.scope_id for _, value, _ in entries):
-                    await _commit_materialization_entries(
-                        jetstream,
-                        catalogue,
-                        buffers.pop(key),
-                        catalogue_connection_lock,
-                    )
-                    started.pop(key, None)
-                    entries = buffers.setdefault(key, [])
-                entries.append((message, job, heartbeat))
-                started.setdefault(key, time.monotonic())
-    finally:
-        for entries in buffers.values():
-            for _message, _job, heartbeat in entries:
-                await _cancel_task(heartbeat)
-
-
-def _materialization_batch_due(
-    entries,
-    *,
-    started_at: float,
-    now: float,
-    max_items: int,
-    max_bytes: int,
-    max_wait: float,
-) -> bool:
-    return bool(entries) and (
-        len(entries) >= max_items
-        or sum(job.file_bytes for _message, job, _heartbeat in entries) >= max_bytes
-        or now - started_at >= max_wait
-    )
-
-
-async def _commit_materialization_entries(
-    jetstream,
-    catalogue,
-    entries,
-    catalogue_connection_lock: asyncio.Lock,
-) -> None:
-    """Commit a compatible batch, recursively isolating a bad staged scope."""
-
-    if not entries:
-        return
-    jobs = [job for _message, job, _heartbeat in entries]
-    started_at = time.perf_counter()
-    try:
-        def commit_fenced():
-            with operation_locks(job.scope.operation_id for job in jobs):
-                return commit_scope_batch(catalogue, jobs)
-
-        async with catalogue_connection_lock:
-            await asyncio.to_thread(commit_fenced)
-    except Exception as exc:
-        if len(entries) > 1:
-            midpoint = len(entries) // 2
-            await _commit_materialization_entries(
-                jetstream,
-                catalogue,
-                entries[:midpoint],
-                catalogue_connection_lock,
-            )
-            await _commit_materialization_entries(
-                jetstream,
-                catalogue,
-                entries[midpoint:],
-                catalogue_connection_lock,
-            )
-            return
-        message, job, heartbeat = entries[0]
-        materialization_metrics.operation(
-            phase="commit",
-            outcome="failed",
-            duration_seconds=time.perf_counter() - started_at,
-        )
-        logging.exception(
-            "materialization commit failed for operation %s", job.scope.operation_id
-        )
-        deliveries = message.metadata.num_delivered
-        maximum = get_int("ATLAS_MATERIALIZATION_MAX_DELIVER")
-        if deliveries < maximum:
-            await message.nak(delay=5)
-        else:
-            failure = MaterializationFailureJob(
-                scope=job.scope,
-                error=str(exc),
-                started_at=job.started_at,
-                completed_at=datetime.now(UTC),
-            )
-            dead_letter = MaterializationDeadLetter(
-                job=job.scope,
-                stage="commit",
-                error=str(exc),
-                delivery_count=deliveries,
-                failed_at=datetime.now(UTC),
-                staging_key=job.staging_key,
-            )
-            try:
-                async with catalogue_connection_lock:
-                    await asyncio.to_thread(
-                        record_scope_failure, catalogue, failure
-                    )
-                await jetstream.publish(
-                    DEAD_LETTER_SUBJECT,
-                    dead_letter.model_dump_json().encode(),
-                    headers={
-                        "Nats-Msg-Id": f"{job.scope.operation_id}-commit-dead"
-                    },
-                )
-            except Exception:
-                logging.exception("failed to persist materialization dead letter")
-                await message.nak(delay=30)
-            else:
-                await message.term()
-        await _cancel_task(heartbeat)
-        return
-    materialization_metrics.operation(
-        phase="commit",
-        outcome="succeeded",
-        duration_seconds=time.perf_counter() - started_at,
-    )
-    for message, job, heartbeat in entries:
-        try:
-            async with catalogue_connection_lock:
-                await _settle_crawl_fanouts(jetstream, catalogue, job.scope)
-            await message.ack()
-        except Exception:
-            # The append is already durable and fenced by operation_id. A
-            # redelivery resolves that identity before retrying settlement.
-            logging.exception(
-                "materialization committed but crawl fan-out settlement failed for "
-                "operation %s",
-                job.scope.operation_id,
-            )
-            try:
-                await message.nak(delay=5)
-            except Exception:
-                logging.exception(
-                    "failed to request materialization settlement redelivery for "
-                    "operation %s",
-                    job.scope.operation_id,
-                )
-        finally:
-            await _cancel_task(heartbeat)
-
-
-async def _settle_crawl_fanouts(jetstream, catalogue, scope) -> None:
-    store = CrawlMaterializationFanoutStore(catalogue)
-    crawl_ids = await asyncio.to_thread(
-        store.crawls_for_scope,
-        materialization_id=scope.materialization_id,
-        definition_revision_id=scope.definition_revision_id,
-        scope_kind=scope.scope_kind,
-        scope_id=scope.scope_id,
-    )
-    for crawl_id in crawl_ids:
-        await asyncio.to_thread(store.refresh, crawl_id)
-
-
-async def _commit_fanout_plan(jetstream, catalogue, plan) -> None:
-    from repository.catalogue.records import CrawlMaterializationFanoutMember
-
-    members = [
-        CrawlMaterializationFanoutMember(
-            crawl_id=plan.crawl_id,
-            materialization_id=scope.materialization_id,
-            definition_revision_id=scope.definition_revision_id,
-            scope_kind=scope.scope_kind,
-            scope_id=scope.scope_id,
-        )
-        for scope in plan.scopes
-    ]
-    def plan_fenced():
-        with operation_lock(f"crawl-fanout-{plan.crawl_id}"):
-            return CrawlMaterializationFanoutStore(catalogue).plan(
-                plan.crawl_id,
-                members=members,
-            )
-
-    fanout = await asyncio.to_thread(plan_fenced)
-    for scope in plan.scopes:
-        await jetstream.publish(
-            SCOPE_LIVE_SUBJECT,
-            scope.model_dump_json().encode(),
-            headers={"Nats-Msg-Id": scope.operation_id},
-        )
-
-
-def _dematerialize_requested_materialization(catalogue) -> None:
-    with session_scope() as session:
-        model = session.scalar(
-            select(CatalogueMaterialization)
-            .where(
-                CatalogueMaterialization.archived_at.is_(None),
-                CatalogueMaterialization.dematerialization_requested_at.is_not(None),
-            )
-            .order_by(CatalogueMaterialization.dematerialization_requested_at)
-            .limit(1)
-            .with_for_update(skip_locked=True)
-        )
-        if model is None:
-            return
-        reference = session.get(CatalogueViewReference, model.view_reference_id)
-        if reference is None:
-            raise RuntimeError("Materialized view reference is missing during dematerialization")
-        view_store = CatalogueViewStore(catalogue)
-        current = view_store.get(reference.ducklake_view_uuid)
-        if current is None:
-            raise RuntimeError("Materialized view is missing during dematerialization")
-        restored = view_store.replace(current_uuid=current.view_uuid, sql=model.source_sql)
-        reference.ducklake_view_uuid = restored.view_uuid
-        present = any(
-            table.table_name == model.name
-            for table in catalogue.lake.table.list(schema_name="_atlas_materializations")
-        )
-        if present:
-            MaterializationStore(catalogue).drop_managed(
-                name=model.name,
-                expected_uuid=model.ducklake_table_uuid,
-                materialization_id=model.id,
-            )
-        model.archived_at = datetime.now(UTC)
-        session.flush()
 
 
 def _would_exceed_batch(prepared, value, *, config: IngestionWorkerConfig) -> bool:
@@ -903,6 +413,7 @@ async def _commit_batch_isolated(
     prepared,
     catalogue_connection_lock: asyncio.Lock,
     navigation_store,
+    operation_lease_store,
 ) -> None:
     """Commit valid jobs while recursively isolating deterministic poison entries."""
 
@@ -911,14 +422,36 @@ async def _commit_batch_isolated(
     staged_bytes = sum(value.staged_bytes for value in prepared)
     try:
         def commit_fenced():
-            with operation_locks(job.request_id for job in jobs):
-                return ingestor.commit_prepared_batch(
-                    prepared,
-                    cleanup_on_error=False,
-                )
+            def attempt():
+                with catalogue_operation_locks(job.request_id for job in jobs):
+                    return ingestor.commit_prepared_batch(
+                        prepared,
+                        cleanup_on_error=False,
+                    )
 
-        async with catalogue_connection_lock:
-            results = await asyncio.to_thread(commit_fenced)
+            return run_with_catalogue_retry(
+                attempt, description="repository ingestion commit"
+            )
+
+        async with operation_leases(
+            operation_lease_store,
+            (job.request_id for job in jobs),
+            phase="ingestion-commit",
+        ):
+            async with catalogue_connection_lock:
+                results = await asyncio.to_thread(commit_fenced)
+    except (OperationLeaseUnavailable, OperationLeaseLost):
+        repository_metrics.batch(
+            outcome="contended",
+            duration_seconds=time.perf_counter() - commit_started,
+            items=len(prepared),
+            element_rows=element_rows,
+            staged_bytes=staged_bytes,
+        )
+        await asyncio.to_thread(ingestor.discard_prepared, prepared)
+        for message in messages:
+            await message.nak(delay=1)
+        return
     except Exception as exc:
         repository_metrics.batch(
             outcome="failed",
@@ -944,6 +477,7 @@ async def _commit_batch_isolated(
                 prepared[:midpoint],
                 catalogue_connection_lock,
                 navigation_store,
+                operation_lease_store,
             )
             await _commit_batch_isolated(
                 client,
@@ -954,6 +488,7 @@ async def _commit_batch_isolated(
                 prepared[midpoint:],
                 catalogue_connection_lock,
                 navigation_store,
+                operation_lease_store,
             )
             return
 
@@ -1234,9 +769,14 @@ async def _maintenance_active(bucket) -> bool:
     return True
 
 
-async def _dependency_probe(client, ingestor, monitor: HealthMonitor) -> None:
-    interval = get_float("ATLAS_CATALOG_WORKER_HEALTH_PROBE_INTERVAL_SECONDS")
-    timeout = get_float("ATLAS_CATALOG_WORKER_HEALTH_PROBE_TIMEOUT_SECONDS")
+async def _dependency_probe(
+    client,
+    ingestor,
+    monitor: HealthMonitor,
+    catalogue_connection_lock: asyncio.Lock,
+) -> None:
+    interval = get_float("ATLAS_INGESTION_WORKER_HEALTH_PROBE_INTERVAL_SECONDS")
+    timeout = get_float("ATLAS_INGESTION_WORKER_HEALTH_PROBE_TIMEOUT_SECONDS")
     if interval <= 0 or timeout <= 0:
         monitor.dependencies_unavailable(
             "repository health probe intervals must be greater than zero"
@@ -1245,10 +785,9 @@ async def _dependency_probe(client, ingestor, monitor: HealthMonitor) -> None:
     while True:
         try:
             await asyncio.wait_for(client.flush(), timeout=timeout)
-            await asyncio.wait_for(
-                asyncio.to_thread(ingestor.validate),
-                timeout=timeout,
-            )
+            async with asyncio.timeout(timeout):
+                async with catalogue_connection_lock:
+                    await asyncio.to_thread(ingestor.validate)
         except Exception as exc:
             monitor.dependencies_unavailable(str(exc) or type(exc).__name__)
         else:
@@ -1261,31 +800,6 @@ async def _cancel_task(task) -> None:
         return
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
-
-
-def _report_subsystem_task_exit(
-    task: asyncio.Task, monitor: HealthMonitor, subsystem: str
-) -> None:
-    if task.cancelled():
-        return
-    error = task.exception()
-    detail = (
-        str(error) or type(error).__name__
-        if error is not None
-        else "subsystem exited unexpectedly"
-    )
-    monitor.subsystem_unavailable(subsystem, detail)
-
-
-def _raise_if_subsystem_task_exited(task: asyncio.Task, description: str) -> None:
-    if not task.done():
-        return
-    if task.cancelled():
-        raise RuntimeError(f"{description} was cancelled unexpectedly")
-    error = task.exception()
-    if error is None:
-        raise RuntimeError(f"{description} exited unexpectedly")
-    raise RuntimeError(f"{description} failed") from error
 
 
 if __name__ == "__main__":

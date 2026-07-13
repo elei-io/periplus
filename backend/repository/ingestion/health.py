@@ -18,6 +18,7 @@ class HealthMonitor:
     _dependencies_ready: bool = False
     _dependency_error: str | None = "dependencies have not been checked"
     _subsystems: dict[str, tuple[bool, str | None]] = field(default_factory=dict)
+    _queues: dict[str, tuple[int, object, float, float]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def heartbeat(self) -> None:
@@ -42,6 +43,35 @@ class HealthMonitor:
         with self._lock:
             self._subsystems[name] = (False, error)
 
+    def queue_observed(
+        self,
+        name: str,
+        *,
+        pending: int,
+        progress_marker: object,
+        stalled_after_seconds: float,
+    ) -> float:
+        """Record owned-queue progress and return its current stalled age."""
+
+        now = time.monotonic()
+        with self._lock:
+            previous = self._queues.get(name)
+            last_progress = now
+            if (
+                pending > 0
+                and previous is not None
+                and previous[0] > 0
+                and previous[1] == progress_marker
+            ):
+                last_progress = previous[2]
+            self._queues[name] = (
+                max(0, pending),
+                progress_marker,
+                last_progress,
+                stalled_after_seconds,
+            )
+        return 0.0 if pending <= 0 else max(0.0, now - last_progress)
+
     def status(self) -> tuple[bool, str]:
         with self._lock:
             heartbeat_age = time.monotonic() - self._last_heartbeat
@@ -52,6 +82,11 @@ class HealthMonitor:
                 for name, (ready, detail) in self._subsystems.items()
                 if not ready
             }
+            stalled = {
+                name: (pending, time.monotonic() - last_progress)
+                for name, (pending, _marker, last_progress, threshold) in self._queues.items()
+                if pending > 0 and time.monotonic() - last_progress > threshold
+            }
         if heartbeat_age > self.heartbeat_timeout_seconds:
             return False, "event loop heartbeat is stale"
         if not dependencies_ready:
@@ -60,6 +95,12 @@ class HealthMonitor:
             detail = "; ".join(
                 f"{name}: {error or 'unavailable'}"
                 for name, error in sorted(unavailable.items())
+            )
+            return False, detail
+        if stalled:
+            detail = "; ".join(
+                f"{name}: {pending} work items without progress for {age:.0f}s"
+                for name, (pending, age) in sorted(stalled.items())
             )
             return False, detail
         return True, "ready"

@@ -5,12 +5,17 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from hashlib import sha256
+import logging
+import time
+from typing import Callable, TypeVar
 
+import duckdb
 import psycopg
 
-from config import get_float, get_str
+from config import get_float, get_int, get_str
 
 _MAINTENANCE_LOCK_KEY: int
+_T = TypeVar("_T")
 
 
 def advisory_lock_key(operation_id: str) -> int:
@@ -25,7 +30,7 @@ _MAINTENANCE_LOCK_KEY = advisory_lock_key("atlas-catalog-maintenance")
 
 @contextmanager
 def operation_lock(operation_id: str) -> Iterator[None]:
-    """Fence identity resolution and commit across catalog-worker processes."""
+    """Fence identity resolution and commit across DuckLake writer processes."""
 
     with operation_locks((operation_id,)):
         yield
@@ -84,3 +89,38 @@ def maintenance_lock() -> Iterator[None]:
             connection.execute(
                 "SELECT pg_advisory_unlock(%s)", (_MAINTENANCE_LOCK_KEY,)
             )
+
+
+def run_with_catalogue_retry(
+    operation: Callable[[], _T], *, description: str
+) -> _T:
+    """Retry only typed catalogue transaction conflicts with bounded backoff."""
+
+    attempts = get_int("ATLAS_CATALOG_OPERATION_MAX_ATTEMPTS")
+    delay = get_float("ATLAS_CATALOG_OPERATION_RETRY_INITIAL_SECONDS")
+    maximum_delay = get_float("ATLAS_CATALOG_OPERATION_RETRY_MAX_SECONDS")
+    if attempts <= 0 or delay < 0 or maximum_delay < 0:
+        raise ValueError("catalogue operation retry settings are invalid")
+    retryable = (
+        duckdb.TransactionException,
+        psycopg.errors.DeadlockDetected,
+        psycopg.errors.LockNotAvailable,
+        psycopg.errors.SerializationFailure,
+    )
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except retryable:
+            if attempt >= attempts:
+                raise
+            logging.warning(
+                "%s conflicted; retrying attempt %d/%d in %.3fs",
+                description,
+                attempt + 1,
+                attempts,
+                delay,
+                exc_info=True,
+            )
+            time.sleep(delay)
+            delay = min(maximum_delay, max(delay * 2, 0.001))
+    raise AssertionError("unreachable")

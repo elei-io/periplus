@@ -1,13 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react"
 
 import { AppSidebar } from "@/components/app-sidebar"
-import { CrawlGraphDetailPage, CrawlGraphsPage } from "@/pages/admin/graphs-page"
-import { CrawlMetricsPage } from "@/pages/crawls/metrics-page"
-import { CatalogueSqlPage } from "@/pages/catalogue/sql-page"
-import { CatalogueViewsPage } from "@/pages/catalogue/views-page"
-import { CatalogueQueriesPage } from "@/pages/catalogue/queries-page"
-import { CrawlPolicyDetailPage } from "@/pages/settings/crawl-policy-detail-page"
-import { CrawlPoliciesPage } from "@/pages/settings/crawl-policies-page"
 import {
   defaultNavigationItem,
   findNavigationItem,
@@ -18,6 +11,58 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar"
+
+const CatalogueSqlPage = lazy(() =>
+  import("@/pages/catalogue/sql-page").then((module) => ({
+    default: module.CatalogueSqlPage,
+  }))
+)
+const CatalogueViewsPage = lazy(() =>
+  import("@/pages/catalogue/views-page").then((module) => ({
+    default: module.CatalogueViewsPage,
+  }))
+)
+const CatalogueQueriesPage = lazy(() =>
+  import("@/pages/catalogue/queries-page").then((module) => ({
+    default: module.CatalogueQueriesPage,
+  }))
+)
+const CrawlGraphsPage = lazy(() =>
+  import("@/pages/admin/graphs-page").then((module) => ({
+    default: module.CrawlGraphsPage,
+  }))
+)
+const CrawlGraphDetailPage = lazy(() =>
+  import("@/pages/admin/graphs-page").then((module) => ({
+    default: module.CrawlGraphDetailPage,
+  }))
+)
+const CrawlMetricsPage = lazy(() =>
+  import("@/pages/crawls/metrics-page").then((module) => ({
+    default: module.CrawlMetricsPage,
+  }))
+)
+const CrawlPoliciesPage = lazy(() =>
+  import("@/pages/settings/crawl-policies-page").then((module) => ({
+    default: module.CrawlPoliciesPage,
+  }))
+)
+const CrawlPolicyDetailPage = lazy(() =>
+  import("@/pages/settings/crawl-policy-detail-page").then((module) => ({
+    default: module.CrawlPolicyDetailPage,
+  }))
+)
+
+function PageFallback() {
+  return (
+    <div
+      className="flex flex-1 items-center justify-center text-sm text-muted-foreground"
+      role="status"
+    >
+      Loading…
+    </div>
+  )
+}
 
 function getCurrentPathname() {
   return window.location.pathname
@@ -122,7 +167,9 @@ export function App() {
         </header>
         <div className="app-surface relative flex min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 lg:p-6">
           <div className="app-surface-grain pointer-events-none absolute inset-0" />
-          <div className="relative z-10 flex min-w-0 flex-1">{page}</div>
+          <div className="relative z-10 flex min-w-0 flex-1">
+            <Suspense fallback={<PageFallback />}>{page}</Suspense>
+          </div>
         </div>
       </SidebarInset>
     </SidebarProvider>

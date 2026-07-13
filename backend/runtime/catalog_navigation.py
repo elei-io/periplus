@@ -28,6 +28,7 @@ from runtime.navigation import (
     put_navigation_package,
 )
 from runtime.navigation_contract import NavigationPackage
+from runtime.catalogue_lane import catalogue_operation_lane
 from runtime.graph_queue import (
     EDGE_CONSUMER,
     EDGE_SUBJECT,
@@ -146,7 +147,12 @@ class EdgeUrlExecutor:
 
 
 async def _process_readiness(message, runs, requests, progress, jetstream) -> None:
-    wakeup = ReadinessWork.model_validate_json(message.data)
+    try:
+        wakeup = ReadinessWork.model_validate_json(message.data)
+    except Exception:
+        logging.exception("discarding invalid navigation-readiness work")
+        await message.term()
+        return
     try:
         await handle_readiness(
             runs=runs,
@@ -161,8 +167,21 @@ async def _process_readiness(message, runs, requests, progress, jetstream) -> No
     await message.ack()
 
 
-async def _process_edge(message, runs, requests, progress, jetstream, navigation_store) -> None:
-    work = EdgeWork.model_validate_json(message.data)
+async def _process_edge(
+    message,
+    runs,
+    requests,
+    progress,
+    jetstream,
+    navigation_store,
+    catalogue_operation_lock: asyncio.Lock,
+) -> None:
+    try:
+        work = EdgeWork.model_validate_json(message.data)
+    except Exception:
+        logging.exception("discarding invalid edge-evaluation work")
+        await message.term()
+        return
     claim_token = uuid4()
     identity = edge_evaluation_identity(
         work.graph_run_id, work.crawl_request_id, work.crawl_id, work.edge_id
@@ -189,17 +208,18 @@ async def _process_edge(message, runs, requests, progress, jetstream, navigation
 
     heartbeat = asyncio.create_task(keep_alive())
     try:
-        with session_scope() as session:
-            await evaluate_edge(
-                runs=runs,
-                requests=requests,
-                progress=progress,
-                jetstream=jetstream,
-                work=work,
-                execute_urls=EdgeUrlExecutor(navigation_store, work.navigation),
-                policy_resolver=lambda url: resolve_policy_snapshot(session, url),
-                claim_token=claim_token,
-            )
+        async with catalogue_operation_lock:
+            with session_scope() as session:
+                await evaluate_edge(
+                    runs=runs,
+                    requests=requests,
+                    progress=progress,
+                    jetstream=jetstream,
+                    work=work,
+                    execute_urls=EdgeUrlExecutor(navigation_store, work.navigation),
+                    policy_resolver=lambda url: resolve_policy_snapshot(session, url),
+                    claim_token=claim_token,
+                )
     except EdgeEvaluationBusy:
         await message.nak(delay=1)
         return
@@ -231,7 +251,8 @@ async def run(monitor: HealthMonitor | None = None) -> None:
     )
     if monitor is not None:
         monitor.subsystem_ready("navigation")
-    capacity = get_int("ATLAS_CATALOG_WORKER_CONCURRENCY")
+    capacity = get_int("ATLAS_INGESTION_WORKER_CONCURRENCY")
+    catalogue_operation_lock = catalogue_operation_lane()
     active: set[asyncio.Task] = set()
     cleaned_runs = set()
     next_cleanup = 0.0
@@ -259,7 +280,21 @@ async def run(monitor: HealthMonitor | None = None) -> None:
                         else:
                             cleaned_runs.add(graph_run.id)
                 next_cleanup = time.monotonic() + 10
-            active = {task for task in active if not task.done()}
+            completed = {task for task in active if task.done()}
+            for task in completed:
+                if task.cancelled():
+                    continue
+                error = task.exception()
+                if error is not None:
+                    logging.error(
+                        "navigation task exited unexpectedly",
+                        exc_info=(type(error), error, error.__traceback__),
+                    )
+                    if monitor is not None:
+                        monitor.subsystem_unavailable(
+                            "navigation", str(error) or type(error).__name__
+                        )
+            active.difference_update(completed)
             available = capacity - len(active)
             if available <= 0:
                 await asyncio.sleep(0.05)
@@ -276,7 +311,7 @@ async def run(monitor: HealthMonitor | None = None) -> None:
                 for message in messages:
                     arguments = (message, runs, requests, progress, jetstream)
                     if processor is _process_edge:
-                        arguments += (navigation_store,)
+                        arguments += (navigation_store, catalogue_operation_lock)
                     active.add(asyncio.create_task(processor(*arguments)))
                     available -= 1
                     if available <= 0:

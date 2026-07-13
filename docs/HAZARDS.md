@@ -40,8 +40,18 @@ action-specific crawl loop alongside graph execution.
 
 **Conflating remote pressure with browser capacity.** NATS enforces each CrawlPolicy's explicit
 deployment-wide remote-acquisition ceiling. Browser concurrency remains additionally bounded inside
-each worker, and replicas determine physical browser capacity. Do not turn the policy lease into a
-global browser pool or hold it during cache lookup, ingestion, or navigation waiting.
+each browser worker, and browser replicas determine physical browser capacity independently from
+HTTP acquisition. Do not turn the policy lease into a global browser pool or hold it during cache
+lookup, ingestion, or navigation waiting.
+
+**Routing every transport through one crawl subject.** A shared durable consumer cannot be scaled by
+transport without claiming and rejecting work after reading its body. Freeze the transport before
+publication and route HTTP, browser, and external-provider requests to distinct subjects with the
+same raw-HTML output contract.
+
+**Introducing a central browser RPC service without evidence.** It adds another session, timeout,
+payload-transfer, and failure boundary. Separate browser acquisition as its own queue consumer and
+deployment first. A remote browser protocol requires a measured need beyond independent scaling.
 
 **Adding graph machinery for non-crawl workflows.** Crawl graphs solve a demonstrated acquisition
 problem. They are not justification for generic node registries, arbitrary payload processors, or
@@ -49,9 +59,18 @@ destination integrations.
 
 ## Graph execution mistakes
 
-**Blocking a crawl worker on enrichment.** A node invocation may be logically awaiting ingestion or
-navigation publication, but the browser worker must be released. Durable state and readiness
-notifications resume edge evaluation; analytical materialization remains off the hot path.
+**Blocking an acquisition worker on downstream processing.** A node invocation may be logically
+awaiting ingestion or navigation publication, but the HTTP client or browser worker must be
+released after raw HTML and the frozen ingestion job are durable. Ingestion resumes graph
+evaluation; user materialization remains off the graph path.
+
+**Putting ingestion in an acquisition worker.** DOM projection and DuckLake work consume CPU,
+memory, and commit time while expensive browser capacity sits idle. Acquisition workers never open
+DuckLake and never wait for base evidence to commit.
+
+**Making graph completion depend on user materialization.** Base ingestion and verified navigation
+readiness are the graph fence. Materialization may lag or fail independently and must affect view
+freshness metrics rather than crawl-request or graph-run terminal state.
 
 **Running edges before the crawl-ready fence.** Evaluate outgoing edges only after base ingestion
 and verified navigation-package publication. Verify the package byte size and SHA-256 from its NATS
@@ -69,10 +88,10 @@ accumulate indefinitely.
 an oldest-item deadline in addition to item, row, and byte thresholds. A low-volume deployment must
 eventually commit without manual flushing or a later message arriving.
 
-**Letting a background commit consumer die invisibly.** A task created beside a worker's main loop
-must report failure through readiness and be joined or polled by the owning loop. A durable
-materialization commit followed by failed fan-out settlement is not a terminal message failure:
-NAK it so the idempotent commit can be recognized and settlement retried.
+**Letting a background consumer die invisibly.** A task created beside a worker's main loop must
+report failure through readiness and be joined or polled by the owning loop. A durable commit
+followed by failed settlement is not a terminal message failure: NAK it so the idempotent commit can
+be recognized and settlement retried.
 
 **Reconciling only the first page of missing work.** A periodic `LIMIT` without a keyset cursor can
 republish the same identities forever after the broker deduplication window expires. Reconciliation
@@ -102,13 +121,23 @@ silently mutate already queued work.
 
 ## Storage mistakes
 
-**Letting crawl or maintenance workers perform hot-path catalogue publication.** Catalog workers are
-the only graph-execution processes that ingest, materialize, and evaluate edges. Maintenance uses a
-separate queue and global lease so storage upkeep cannot consume catalog throughput.
+**Letting acquisition or maintenance workers perform hot-path catalogue publication.** Ingestion
+workers own base evidence, system projections, navigation, and edges. Materialization workers own
+user-view scope commits. Maintenance uses a separate lease so upkeep consumes neither capacity.
+
+**Combining ingestion and materialization in one process.** The workflows then share connection,
+memory, scheduling, health, and failure boundaries. Materialization backlog can starve graph-critical
+ingestion even if separate coroutines or queues are used. Deploy them independently and never share
+their DuckDB connections.
+
+**Sharing a DuckDB connection between concurrent tasks.** A connection is owned by one execution
+lane until its query result has been fully consumed or closed. Ingestion and materialization each
+use process-owned connections; horizontal replicas provide concurrency.
 
 **Reintroducing a central remote DuckDB session.** It couples unrelated writes and makes one compute
-process the throughput and failure boundary. Catalog workers use embedded DuckDB against the shared
-Postgres-backed DuckLake catalogue with deterministic operation identity and bounded retries.
+process the throughput and failure boundary. Ingestion and materialization workers use embedded
+DuckDB against the shared PostgreSQL-backed DuckLake catalogue with deterministic operation
+identity, advisory fencing, and bounded retries.
 
 **Creating permanent Parquet per crawl.** Small files and application-owned layout fight DuckLake
 compaction. Use bounded temporary staging and let DuckLake own physical data files.

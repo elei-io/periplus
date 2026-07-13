@@ -2,20 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-from repository.ingestion.worker import (
+from materialization.writer import (
     _commit_materialization_entries,
-    _dead_letter_or_retry,
     _materialization_batch_due,
+)
+from repository.ingestion.worker import (
+    _dead_letter_or_retry,
     _settle_graph_ingestion_failure,
 )
 
 
-class CatalogWorkerSchedulingTests(unittest.TestCase):
+class MaterializationWriterSchedulingTests(unittest.TestCase):
     def test_partial_materialization_batch_flushes_at_deadline(self) -> None:
         entries = [(object(), SimpleNamespace(file_bytes=10), object())]
         self.assertFalse(
@@ -40,7 +42,7 @@ class CatalogWorkerSchedulingTests(unittest.TestCase):
         )
 
 
-class CatalogWorkerSettlementTests(unittest.IsolatedAsyncioTestCase):
+class WorkerSettlementTests(unittest.IsolatedAsyncioTestCase):
     async def test_terminal_ingestion_failure_settles_runtime_request(self) -> None:
         jetstream = object()
         client = SimpleNamespace(jetstream=lambda: jetstream)
@@ -134,17 +136,26 @@ class CatalogWorkerSettlementTests(unittest.IsolatedAsyncioTestCase):
         )
         heartbeat = asyncio.create_task(asyncio.sleep(60))
 
+        @asynccontextmanager
+        async def lease(*_args, **_kwargs):
+            yield
+
         with (
             patch(
-                "repository.ingestion.worker.commit_scope_batch",
+                "materialization.writer.commit_scope_batch",
                 return_value={"operation": "committed"},
             ),
             patch(
-                "repository.ingestion.worker.operation_locks",
+                "materialization.writer.catalogue_operation_locks",
                 return_value=nullcontext(),
             ),
+            patch("materialization.writer.operation_leases", new=lease),
             patch(
-                "repository.ingestion.worker._settle_crawl_fanouts",
+                "materialization.writer.run_with_catalogue_retry",
+                side_effect=lambda operation, **_kwargs: operation(),
+            ),
+            patch(
+                "materialization.writer._settle_crawl_fanouts",
                 new=AsyncMock(side_effect=OSError("MinIO unavailable")),
             ),
         ):
@@ -153,6 +164,7 @@ class CatalogWorkerSettlementTests(unittest.IsolatedAsyncioTestCase):
                 SimpleNamespace(),
                 [(message, job, heartbeat)],
                 asyncio.Lock(),
+                SimpleNamespace(),
             )
 
         message.ack.assert_not_awaited()
@@ -192,6 +204,10 @@ class CatalogWorkerSettlementTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
+        @asynccontextmanager
+        async def lease(*_args, **_kwargs):
+            yield
+
         async def ingestion_read() -> None:
             await first_started.wait()
             async with lock:
@@ -199,21 +215,30 @@ class CatalogWorkerSettlementTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "repository.ingestion.worker.commit_scope_batch",
+                "materialization.writer.commit_scope_batch",
                 return_value={"operations": "committed"},
             ),
             patch(
-                "repository.ingestion.worker.operation_locks",
+                "materialization.writer.catalogue_operation_locks",
                 return_value=nullcontext(),
             ),
+            patch("materialization.writer.operation_leases", new=lease),
             patch(
-                "repository.ingestion.worker._settle_crawl_fanouts",
+                "materialization.writer.run_with_catalogue_retry",
+                side_effect=lambda operation, **_kwargs: operation(),
+            ),
+            patch(
+                "materialization.writer._settle_crawl_fanouts",
                 new=settle,
             ),
         ):
             commit = asyncio.create_task(
                 _commit_materialization_entries(
-                    SimpleNamespace(), SimpleNamespace(), entries, lock
+                    SimpleNamespace(),
+                    SimpleNamespace(),
+                    entries,
+                    lock,
+                    SimpleNamespace(),
                 )
             )
             contender = asyncio.create_task(ingestion_read())

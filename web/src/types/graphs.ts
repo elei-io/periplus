@@ -88,14 +88,20 @@ export type CrawlConcurrencyLimits = {
   worker_count: number
   runtime_capacity: number
   runtime_active: number
-  browser_concurrency_per_worker: number
   browser_capacity: number
   crawl_permit_timeout_seconds: number
   workers: Array<{
     worker_id: string
+    transport: "http" | "browser" | "firecrawl"
     capacity: number
     active_request_count: number
     last_seen_at: string
+  }>
+  transports: Array<{
+    transport: "http" | "browser" | "firecrawl"
+    worker_count: number
+    capacity: number
+    active: number
   }>
 }
 

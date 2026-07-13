@@ -32,6 +32,13 @@ from materialization.queue import (
 )
 from repository.ingestion.health import HealthMonitor
 from runtime.maintenance_queue import MAINTENANCE_LEASE_BUCKET
+from runtime.catalogue_lane import run_catalogue_operation
+from runtime.operation_leases import (
+    OperationLeaseLost,
+    OperationLeaseUnavailable,
+    ensure_operation_lease_storage,
+    operation_leases,
+)
 
 
 async def run(
@@ -47,6 +54,7 @@ async def run(
     except BucketNotFoundError:
         maintenance_leases = None
     await ensure_streams(jetstream)
+    operation_lease_store = await ensure_operation_lease_storage(jetstream)
     live_subscription = await jetstream.pull_subscribe(
         SCOPE_LIVE_SUBJECT, durable=SCOPE_LIVE_DURABLE, stream=SCOPE_STREAM
     )
@@ -57,7 +65,7 @@ async def run(
     )
     monitor = monitor or HealthMonitor(
         heartbeat_timeout_seconds=get_float(
-            "ATLAS_CATALOG_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
+            "ATLAS_MATERIALIZATION_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
         )
     )
     monitor.subsystem_ready("materialization_compute")
@@ -71,25 +79,53 @@ async def run(
                     backfill_subscription,
                     stop,
                     maintenance_leases,
-                    concurrency=max(1, get_int("ATLAS_CATALOG_WORKER_CONCURRENCY")),
+                    operation_lease_store,
+                    concurrency=max(
+                        1, get_int("ATLAS_MATERIALIZATION_WORKER_CONCURRENCY")
+                    ),
                 ),
                 name="materialization-compute",
             )
-            tasks.create_task(run_backfill(jetstream, stop))
             tasks.create_task(
-                _supervise_cdc(
-                    "cdc_live", lambda: run_live(jetstream, stop, monitor), stop, monitor
-                )
-            )
-            tasks.create_task(
-                _supervise_cdc(
-                    "cdc_crawl_planner",
-                    lambda: run_crawl_planner(jetstream, stop, monitor),
+                _run_leased_subsystem(
+                    "backfill",
+                    lambda: _supervise_subsystem(
+                        "backfill", lambda: run_backfill(jetstream, stop), stop, monitor
+                    ),
+                    operation_lease_store,
                     stop,
                     monitor,
                 )
             )
-            tasks.create_task(_observe_scope_queue(jetstream, stop))
+            tasks.create_task(
+                _run_leased_subsystem(
+                    "cdc_live",
+                    lambda: _supervise_cdc(
+                        "cdc_live",
+                        lambda: run_live(jetstream, stop, monitor),
+                        stop,
+                        monitor,
+                    ),
+                    operation_lease_store,
+                    stop,
+                    monitor,
+                )
+            )
+            tasks.create_task(
+                _run_leased_subsystem(
+                    "cdc_crawl_planner",
+                    lambda: _supervise_cdc(
+                        "cdc_crawl_planner",
+                        lambda: run_crawl_planner(jetstream, stop, monitor),
+                        stop,
+                        monitor,
+                    ),
+                    operation_lease_store,
+                    stop,
+                    monitor,
+                )
+            )
+            tasks.create_task(_observe_scope_queue(jetstream, stop, monitor))
     finally:
         stop.set()
         await client.close()
@@ -101,13 +137,24 @@ async def _consume_scopes(
     backfill_subscription,
     stop: asyncio.Event,
     maintenance_leases,
+    operation_lease_store,
     *,
     concurrency: int,
 ) -> None:
     active: set[asyncio.Task] = set()
     try:
         while not stop.is_set():
-            active = {task for task in active if not task.done()}
+            completed = {task for task in active if task.done()}
+            for task in completed:
+                if task.cancelled():
+                    continue
+                error = task.exception()
+                if error is not None:
+                    logging.error(
+                        "materialization compute task exited unexpectedly",
+                        exc_info=(type(error), error, error.__traceback__),
+                    )
+            active.difference_update(completed)
             available = concurrency - len(active)
             if available <= 0:
                 await asyncio.sleep(0.01)
@@ -119,24 +166,33 @@ async def _consume_scopes(
                 live_subscription, backfill_subscription, batch=available
             )
             for message in messages:
-                active.add(asyncio.create_task(_compute_message(jetstream, message)))
+                active.add(
+                    asyncio.create_task(
+                        _compute_message(jetstream, message, operation_lease_store)
+                    )
+                )
     finally:
         await asyncio.gather(*active, return_exceptions=True)
 
 
-async def _compute_message(jetstream, message) -> None:
+async def _compute_message(jetstream, message, operation_lease_store) -> None:
     started_at = datetime.now(UTC)
     compute_started = time.perf_counter()
     outcome = "failed"
     heartbeat = asyncio.create_task(_ack_heartbeat(message))
     try:
         job = MaterializationScopeJob.model_validate_json(message.data)
-        commit = await asyncio.to_thread(compute_scope, job)
-        await jetstream.publish(
-            COMMIT_SUBJECT,
-            commit.model_dump_json().encode(),
-            headers={"Nats-Msg-Id": job.operation_id},
-        )
+        async with operation_leases(
+            operation_lease_store,
+            (job.operation_id,),
+            phase="materialization-compute",
+        ):
+            commit = await run_catalogue_operation(compute_scope, job)
+            await jetstream.publish(
+                COMMIT_SUBJECT,
+                commit.model_dump_json().encode(),
+                headers={"Nats-Msg-Id": job.operation_id},
+            )
         await message.ack()
         outcome = "succeeded"
     except StaleMaterializationJob as exc:
@@ -155,6 +211,9 @@ async def _compute_message(jetstream, message) -> None:
         )
         await message.ack()
         outcome = "stale"
+    except (OperationLeaseUnavailable, OperationLeaseLost):
+        outcome = "contended"
+        await message.nak(delay=1)
     except Exception as exc:
         outcome = "failed"
         logging.exception("materialization scope computation failed")
@@ -179,17 +238,42 @@ async def _fetch_prefer_live(live_subscription, backfill_subscription, *, batch:
             return []
 
 
-async def _observe_scope_queue(jetstream, stop: asyncio.Event) -> None:
+async def _observe_scope_queue(
+    jetstream, stop: asyncio.Event, monitor: HealthMonitor
+) -> None:
     while not stop.is_set():
-        try:
-            info = await jetstream.consumer_info(SCOPE_STREAM, SCOPE_LIVE_DURABLE)
-            materialization_metrics.queue_state(
-                phase="compute",
-                pending=info.num_pending,
-                ack_pending=info.num_ack_pending,
-            )
-        except Exception:
-            logging.warning("materialization scope queue metrics unavailable", exc_info=True)
+        for phase, durable in (
+            ("compute_live", SCOPE_LIVE_DURABLE),
+            ("compute_backfill", SCOPE_BACKFILL_DURABLE),
+        ):
+            try:
+                info = await jetstream.consumer_info(SCOPE_STREAM, durable)
+                pending = int(info.num_pending or 0) + int(
+                    info.num_ack_pending or 0
+                )
+                queue_age = monitor.queue_observed(
+                    f"materialization_{phase}",
+                    pending=pending,
+                    progress_marker=(
+                        getattr(info.delivered, "stream_seq", 0),
+                        getattr(info.ack_floor, "stream_seq", 0),
+                    ),
+                    stalled_after_seconds=get_float(
+                        "ATLAS_WORKER_QUEUE_STALL_SECONDS"
+                    ),
+                )
+                materialization_metrics.queue_state(
+                    phase=phase,
+                    pending=info.num_pending,
+                    ack_pending=info.num_ack_pending,
+                    oldest_pending_age_seconds=queue_age,
+                )
+            except Exception:
+                logging.warning(
+                    "%s materialization scope queue metrics unavailable",
+                    phase,
+                    exc_info=True,
+                )
         try:
             await asyncio.wait_for(stop.wait(), timeout=5)
         except TimeoutError:
@@ -216,6 +300,62 @@ async def _supervise_subsystem(
             delay = min(30.0, delay * 2)
         else:
             return
+
+
+async def _run_leased_subsystem(
+    name,
+    operation,
+    operation_lease_store,
+    stop: asyncio.Event,
+    monitor: HealthMonitor,
+) -> None:
+    """Elect one scheduler per subsystem while every replica consumes scope work."""
+
+    while not stop.is_set():
+        operation_task = None
+        lost_task = None
+        stop_task = None
+        try:
+            async with operation_leases(
+                operation_lease_store,
+                (name,),
+                phase="materialization-scheduler",
+                acquire_timeout=0.25,
+            ) as guard:
+                monitor.subsystem_ready(name)
+                operation_task = asyncio.create_task(operation())
+                lost_task = asyncio.create_task(guard.wait_lost())
+                stop_task = asyncio.create_task(stop.wait())
+                done, _pending = await asyncio.wait(
+                    (operation_task, lost_task, stop_task),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if operation_task in done:
+                    await operation_task
+                    if not stop.is_set():
+                        raise RuntimeError(f"{name} exited unexpectedly")
+                elif lost_task in done:
+                    logging.warning("%s scheduler lease was lost; handing off", name)
+                return_if_stopping = stop_task in done
+                operation_task.cancel()
+                await asyncio.gather(operation_task, return_exceptions=True)
+                if return_if_stopping:
+                    return
+        except OperationLeaseUnavailable:
+            # A passive replica is healthy and continues consuming compute work.
+            monitor.subsystem_ready(name)
+            await _wait(stop, 1)
+        except OperationLeaseLost:
+            monitor.subsystem_unavailable(name, "scheduler lease was lost")
+            await _wait(stop, 1)
+        finally:
+            for task in (operation_task, lost_task, stop_task):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(task for task in (lost_task, stop_task) if task is not None),
+                return_exceptions=True,
+            )
 
 
 async def _supervise_cdc(

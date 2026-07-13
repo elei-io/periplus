@@ -4,10 +4,8 @@ import json
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
-from crawl4ai import AsyncWebCrawler
-from crawl4ai.models import CrawlResult
 import httpx
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -49,6 +47,12 @@ from runtime.context import (
 from control.url_matching import normalize_url
 
 from .schemas import CrawlPage
+
+if TYPE_CHECKING:
+    from crawl4ai import AsyncWebCrawler
+    from crawl4ai.models import CrawlResult
+else:
+    AsyncWebCrawler = CrawlResult = Any
 
 
 def _json_safe(value: Any) -> Any:
@@ -657,7 +661,11 @@ def _crawl_page_from_repository_hit(
         status_code=hit.crawl.status_code,
         duration_seconds=duration_seconds,
         crawl_id=hit.crawl.crawl_id,
-        document_id=(hit.document.document_id if hit.document is not None else None),
+        document_id=(
+            hit.document.document_id
+            if hit.document is not None
+            else hit.crawl.document_id
+        ),
         repository_snapshot=hit.repository_snapshot,
         repository_crawl_created=False,
         html=hit.html,
@@ -895,7 +903,9 @@ async def _crawl_graph_request(
             if profile != "browser" or crawler is not None:
                 return await load_with(crawler, http_client)
             browser_config = BrowserProfileConfig.model_validate(profile_config.model_dump())
-            async with AsyncWebCrawler(
+            from crawl4ai import AsyncWebCrawler as OwnedWebCrawler
+
+            async with OwnedWebCrawler(
                 config=browser_config_for_mode(browser_config.mode)
             ) as owned_crawler:
                 return await load_with(owned_crawler, http_client)
@@ -903,7 +913,9 @@ async def _crawl_graph_request(
             if profile != "browser" or crawler is not None:
                 return await load_with(crawler, owned_http_client)
             browser_config = BrowserProfileConfig.model_validate(profile_config.model_dump())
-            async with AsyncWebCrawler(
+            from crawl4ai import AsyncWebCrawler as OwnedWebCrawler
+
+            async with OwnedWebCrawler(
                 config=browser_config_for_mode(browser_config.mode)
             ) as owned_crawler:
                 return await load_with(owned_crawler, owned_http_client)

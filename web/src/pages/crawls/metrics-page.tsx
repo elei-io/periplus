@@ -76,6 +76,10 @@ function SystemCapacity({
 }) {
   const fetches = concurrency?.runtime_active ?? 0
   const capacity = concurrency?.runtime_capacity ?? 0
+  const http = concurrency?.transports.find((item) => item.transport === "http")
+  const browser = concurrency?.transports.find(
+    (item) => item.transport === "browser",
+  )
 
   return (
     <Card>
@@ -93,18 +97,14 @@ function SystemCapacity({
             detail="Pages currently held by crawl workers"
           />
           <Limit
-            label="Browser capacity"
-            value={concurrency?.browser_capacity ?? "—"}
-            detail={
-              concurrency
-                ? `${concurrency.browser_concurrency_per_worker} per worker`
-                : "Deployment limit"
-            }
+            label="HTTP capacity"
+            value={http ? `${http.active} / ${http.capacity}` : "—"}
+            detail={http ? `${http.worker_count} workers online` : "Direct fetch pool"}
           />
           <Limit
-            label="Crawl workers"
-            value={concurrency?.worker_count ?? "—"}
-            detail="Workers reporting as online"
+            label="Browser capacity"
+            value={browser ? `${browser.active} / ${browser.capacity}` : "—"}
+            detail={browser ? `${browser.worker_count} workers online` : "Browser pool"}
           />
           <Limit
             label="Fetch wait timeout"

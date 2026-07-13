@@ -4,7 +4,8 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
 [docs/CRAWL_GRAPHS.md](docs/CRAWL_GRAPHS.md) before changing graph execution, crawling,
 repository storage, DOM generation, NATS, or DuckLake. Read
 [docs/HAZARDS.md](docs/HAZARDS.md) before adding a service, queue, persistence path, compatibility
-layer, or abstraction.
+layer, or abstraction. Read [docs/WORKER_ARCHITECTURE.md](docs/WORKER_ARCHITECTURE.md) before
+changing worker ownership, queue routing, embedded DuckDB use, or deployment scaling.
 
 ## Non-negotiable boundaries
 
@@ -21,10 +22,20 @@ layer, or abstraction.
 - Raw HTML is immutable, content-addressed, and stored through `backend/repository/`.
 - `crawl` is the only page-acquisition primitive. Graph nodes map admitted URL inputs to crawl work;
   scoped SQL edges derive URL inputs for subsequent nodes from durable crawl evidence.
-- Crawl workers publish frozen ingestion jobs; only catalog workers perform hot-path DuckLake
-  writes. The maintenance worker performs leased off-path upkeep.
+- Acquisition workers only acquire one page, store immutable raw HTML, and publish frozen ingestion
+  jobs. They never open DuckLake or wait for downstream work.
+- HTTP, browser, and external-provider acquisition are separate queue and deployment scaling
+  dimensions with one shared raw-HTML output contract.
+- Ingestion workers own base crawl/DOM/system-projection writes, navigation readiness, and outgoing
+  edge evaluation. They never wait for user materialization.
+- Materialization workers independently own CDC discovery, backfill, bounded scope evaluation,
+  live-view commits, coverage, dematerialization, and lag settlement.
+- Each ingestion or materialization process owns its embedded DuckDB connection and initially runs
+  one catalogue operation at a time. Horizontal replicas provide concurrency.
+- The maintenance worker performs leased off-path upkeep and consumes no hot-path worker capacity.
 - DuckLake owns analytical Parquet layout and compaction. Do not create permanent per-crawl files.
-- Browser concurrency is bounded per worker; replica count determines deployment-wide capacity.
+- Browser workers own one long-lived Chromium runtime with bounded local page concurrency; browser
+  replicas determine physical browser capacity independently from HTTP acquisition.
 - API and CLI code validate and adapt. Graph execution belongs in runtime, acquisition belongs in
   crawl, derived navigation belongs in bounded catalogue SQL, and durable writes belong behind the
   repository boundary.
@@ -37,7 +48,8 @@ layer, or abstraction.
   catalogue definitions.
 - `backend/runtime/` — NATS-backed graph runs, crawl requests, queues, progress, workers, admission,
   deduplication, maintenance delivery, and crawl capacity.
-- `backend/workers/` — crawl, catalog, and maintenance process entrypoints.
+- `backend/workers/` — transport-specific acquisition, ingestion, materialization, and maintenance
+  process entrypoints.
 - `backend/repository/objects/` — immutable content-addressed raw HTML.
 - `backend/repository/ingestion/` — repository queue, pipeline, writer, health, and recovery.
 - `backend/repository/catalogue/` — private DuckLake implementation.
@@ -48,9 +60,10 @@ layer, or abstraction.
 - `web/` — React frontend.
 
 Keep editable graph and policy definitions under `control/`, current graph execution under
-`runtime/`, acquisition behavior in the shared crawl path, and generic Postgres infrastructure
-under `backend/db/`. Do not add a task, action primitive, or action-specific traversal loop when a
-node and scoped SQL edge express the behavior.
+`runtime/`, acquisition behavior in the shared crawl path, ingestion/navigation under the
+ingestion worker, user materialization under the materialization worker, and generic Postgres
+infrastructure under `backend/db/`. Do not add a task, action primitive, or action-specific
+traversal loop when a node and scoped SQL edge express the behavior.
 
 ## Workflow
 

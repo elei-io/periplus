@@ -30,8 +30,9 @@ def current_graph_execution() -> GraphExecutionContext | None:
     return _current.get()
 
 
-def commit_checkpoint(session: Session) -> None:
-    session.commit()
+def commit_checkpoint(session: Session | None) -> None:
+    if session is not None:
+        session.commit()
 
 
 @contextmanager

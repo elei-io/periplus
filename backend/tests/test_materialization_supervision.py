@@ -19,7 +19,7 @@ from materialization.live import (
     _run_blocking,
 )
 from repository.ingestion.health import HealthMonitor
-from repository.ingestion.worker import (
+from materialization.writer import (
     _maintenance_active as writer_maintenance_active,
     _raise_if_subsystem_task_exited,
     _report_subsystem_task_exit,

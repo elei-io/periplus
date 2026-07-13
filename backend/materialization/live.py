@@ -13,6 +13,7 @@ from materialization.definitions import active_definitions, publish_scope, scope
 from materialization.queue import COMMIT_SUBJECT, CrawlMaterializationFanoutPlanJob
 from repository.catalogue import Catalogue, catalogue_from_env
 from repository.ingestion.health import HealthMonitor
+from runtime.catalogue_lane import run_catalogue_operation
 
 
 async def run_live(
@@ -37,8 +38,8 @@ async def run_live(
             }
             for key in set(consumers) - active_keys:
                 catalogue, consumer = consumers.pop(key)
-                _close_consumer(catalogue, consumer, drop=True)
-                catalogue.close()
+                await _run_blocking(_close_consumer, catalogue, consumer, drop=True)
+                await _run_blocking(catalogue.close)
             for definition in definitions:
                 key = (str(definition.id), str(definition.definition_revision_id))
                 if key not in consumers:
@@ -73,8 +74,8 @@ async def run_live(
                 continue
     finally:
         for catalogue, consumer in consumers.values():
-            _close_consumer(catalogue, consumer, drop=False)
-            catalogue.close()
+            await _run_blocking(_close_consumer, catalogue, consumer, drop=False)
+            await _run_blocking(catalogue.close)
 
 
 def _open_consumer(definition: CatalogueMaterialization) -> tuple[Catalogue, DMLConsumer]:
@@ -144,22 +145,20 @@ async def run_crawl_planner(
 ) -> None:
     """Freeze crawl-scoped materialization membership before publishing scope work."""
 
-    catalogue = catalogue_from_env()
+    catalogue = await _run_blocking(catalogue_from_env)
     consumer = None
     try:
-        client = _cdc_client(catalogue)
-        start_at = catalogue.latest_snapshot()
+        client = await _run_blocking(_cdc_client, catalogue)
+        start_at = await _run_blocking(catalogue.latest_snapshot)
         if start_at is None:
             raise RuntimeError("DuckLake has no snapshot for crawl materialization planning")
-        consumer = DMLConsumer(
-            catalogue.lake,
-            "atlas-crawl-materialization-planner",
-            table=f"{catalogue.config.schema}.crawls",
-            mode="changes",
-            start_at=start_at,
-            on_exists="use",
-            client=client,
-        ).open()
+        consumer = await _run_blocking(
+            _open_crawl_planner_consumer,
+            catalogue,
+            client,
+            start_at,
+            "use",
+        )
         if monitor is not None:
             monitor.subsystem_ready("cdc_crawl_planner")
         await _reconcile_unplanned_crawls(jetstream)
@@ -169,16 +168,16 @@ async def run_crawl_planner(
                 window = await _run_blocking(consumer.window, max_snapshots=100)
                 if window.terminal and window.terminal_at_snapshot is not None:
                     boundary = window.terminal_at_snapshot
-                    _close_consumer(catalogue, consumer, drop=True)
-                    consumer = DMLConsumer(
-                        catalogue.lake,
-                        "atlas-crawl-materialization-planner",
-                        table=f"{catalogue.config.schema}.crawls",
-                        mode="changes",
-                        start_at=boundary,
-                        on_exists="error",
-                        client=client,
-                    ).open()
+                    await _run_blocking(
+                        _close_consumer, catalogue, consumer, drop=True
+                    )
+                    consumer = await _run_blocking(
+                        _open_crawl_planner_consumer,
+                        catalogue,
+                        client,
+                        boundary,
+                        "error",
+                    )
                     logging.info(
                         "advanced crawl materialization planner across schema boundary %s",
                         boundary,
@@ -209,8 +208,22 @@ async def run_crawl_planner(
             await _run_blocking(batch.commit)
     finally:
         if consumer is not None:
-            _close_consumer(catalogue, consumer, drop=False)
-        catalogue.close()
+            await _run_blocking(_close_consumer, catalogue, consumer, drop=False)
+        await _run_blocking(catalogue.close)
+
+
+def _open_crawl_planner_consumer(
+    catalogue: Catalogue, client: CDCClient, start_at: int, on_exists: str
+) -> DMLConsumer:
+    return DMLConsumer(
+        catalogue.lake,
+        "atlas-crawl-materialization-planner",
+        table=f"{catalogue.config.schema}.crawls",
+        mode="changes",
+        start_at=start_at,
+        on_exists=on_exists,
+        client=client,
+    ).open()
 
 
 def _cdc_client(catalogue: Catalogue) -> CDCClient:
@@ -286,12 +299,7 @@ def _unplanned_crawl_page_with_catalogue(catalogue, cursor, limit: int):
 async def _run_blocking(function, *args, **kwargs):
     """Do not close a DuckDB connection until its worker-thread call has returned."""
 
-    task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        await task
-        raise
+    return await run_catalogue_operation(function, *args, **kwargs)
 
 
 def _crawl_triggered_scopes(definitions, *, crawl_id: str, document_id):
