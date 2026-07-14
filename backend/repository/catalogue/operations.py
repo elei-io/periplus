@@ -13,7 +13,12 @@ import duckdb
 from ducklake_client import DuckLakeFenceError, FenceSpec
 import psycopg
 
-from config import get_float, get_int
+from config.performance import (
+    CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS,
+    CATALOGUE_OPERATION_MAX_ATTEMPTS,
+    CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS,
+    CATALOGUE_OPERATION_RETRY_MAX_SECONDS,
+)
 from repository.catalogue.client import Catalogue
 
 _T = TypeVar("_T")
@@ -44,7 +49,7 @@ def operation_locks(
     with catalogue.lake.fence_set(
         *fences,
         namespace="atlas",
-        timeout=get_float("ATLAS_CATALOG_OPERATION_LOCK_TIMEOUT_SECONDS"),
+        timeout=CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS,
     ):
         yield
 
@@ -72,7 +77,7 @@ def repository_commit_lock(
     with catalogue.lake.fence_set(
         *fences,
         namespace="atlas",
-        timeout=get_float("ATLAS_CATALOG_OPERATION_LOCK_TIMEOUT_SECONDS"),
+        timeout=CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS,
     ):
         yield
 
@@ -84,7 +89,7 @@ def maintenance_lock(catalogue: Catalogue) -> Iterator[None]:
     with catalogue.lake.fence_set(
         FenceSpec.exclusive(_MAINTENANCE_IDENTITY),
         namespace="atlas",
-        timeout=get_float("ATLAS_CATALOG_OPERATION_LOCK_TIMEOUT_SECONDS"),
+        timeout=CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS,
     ):
         yield
 
@@ -100,9 +105,9 @@ def run_with_catalogue_retry(
 ) -> _T:
     """Retry only typed catalogue transaction conflicts with bounded backoff."""
 
-    attempts = get_int("ATLAS_CATALOG_OPERATION_MAX_ATTEMPTS")
-    delay = get_float("ATLAS_CATALOG_OPERATION_RETRY_INITIAL_SECONDS")
-    maximum_delay = get_float("ATLAS_CATALOG_OPERATION_RETRY_MAX_SECONDS")
+    attempts = CATALOGUE_OPERATION_MAX_ATTEMPTS
+    delay = CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS
+    maximum_delay = CATALOGUE_OPERATION_RETRY_MAX_SECONDS
     if attempts <= 0 or delay < 0 or maximum_delay < 0:
         raise ValueError("catalogue operation retry settings are invalid")
     retryable = (

@@ -18,6 +18,14 @@ from ducklake_client import (
     StorageConfig,
 )
 from config import get_int, get_optional, get_path, get_str
+from config.performance import (
+    CATALOGUE_POSTGRES_POOL_IDLE_TIMEOUT_MS,
+    CATALOGUE_POSTGRES_POOL_MAX_CONNECTIONS,
+    CATALOGUE_POSTGRES_POOL_MAX_LIFETIME_MS,
+    CATALOGUE_POSTGRES_POOL_WAIT_TIMEOUT_MS,
+    duckdb_memory_limit,
+    duckdb_threads,
+)
 
 from repository.catalogue.exceptions import CatalogueConfigError
 
@@ -56,26 +64,18 @@ def catalogue_config_from_env() -> CatalogueConfig:
         duckdb_settings.update(
             {
                 "pg_pool_acquire_mode": "wait",
-                "pg_pool_max_connections": str(
-                    get_int("ATLAS_CATALOGUE_POSTGRES_POOL_MAX_CONNECTIONS")
-                ),
-                "pg_pool_idle_timeout_millis": str(
-                    get_int("ATLAS_CATALOGUE_POSTGRES_POOL_IDLE_TIMEOUT_MS")
-                ),
-                "pg_pool_max_lifetime_millis": str(
-                    get_int("ATLAS_CATALOGUE_POSTGRES_POOL_MAX_LIFETIME_MS")
-                ),
-                "pg_pool_wait_timeout_millis": str(
-                    get_int("ATLAS_CATALOGUE_POSTGRES_POOL_WAIT_TIMEOUT_MS")
-                ),
+                "pg_pool_max_connections": str(CATALOGUE_POSTGRES_POOL_MAX_CONNECTIONS),
+                "pg_pool_idle_timeout_millis": str(CATALOGUE_POSTGRES_POOL_IDLE_TIMEOUT_MS),
+                "pg_pool_max_lifetime_millis": str(CATALOGUE_POSTGRES_POOL_MAX_LIFETIME_MS),
+                "pg_pool_wait_timeout_millis": str(CATALOGUE_POSTGRES_POOL_WAIT_TIMEOUT_MS),
                 "pg_pool_enable_reaper_thread": True,
             }
         )
     duckdb = DuckDBConfig(
         database=get_str("ATLAS_CATALOGUE_DUCKDB_DATABASE"),
         config=duckdb_settings,
-        threads=_optional_int("ATLAS_CATALOGUE_DUCKDB_THREADS"),
-        memory_limit=_optional("ATLAS_CATALOGUE_DUCKDB_MEMORY_LIMIT"),
+        threads=duckdb_threads(),
+        memory_limit=duckdb_memory_limit(),
         max_temp_directory_size=_optional("ATLAS_CATALOGUE_DUCKDB_MAX_TEMP_SIZE"),
         temp_directory=_optional("ATLAS_CATALOGUE_DUCKDB_TEMP_DIRECTORY"),
     )

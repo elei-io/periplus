@@ -4,7 +4,6 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
 
 from nats.js.errors import KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError
 
@@ -73,22 +72,8 @@ class ResourceGovernorTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.limits = ResourceLimits(
             catalogue=3,
-            catalogue_critical_reserve=1,
-            catalogue_noncritical_reserve=1,
-            catalogue_backfill_max=1,
-            object_read=4,
-            object_write=2,
+            object_io=2,
         )
-        self.config = patch(
-            "runtime.resource_governor.get_float",
-            side_effect=lambda name: {
-                "ATLAS_RESOURCE_LEASE_SECONDS": 30.0,
-                "ATLAS_RESOURCE_HEARTBEAT_SECONDS": 5.0,
-                "ATLAS_RESOURCE_ACQUIRE_TIMEOUT_SECONDS": 0.0,
-            }[name],
-        )
-        self.config.start()
-        self.addCleanup(self.config.stop)
 
     async def test_bundle_is_atomic_when_one_resource_is_full(self) -> None:
         bucket = FakeBucket()

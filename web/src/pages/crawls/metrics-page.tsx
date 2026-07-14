@@ -435,6 +435,9 @@ function ResourceHeadroom({
       ].filter(([, count]) => Number(count) > 0).map(([label, count]) => `${count} ${label}`)
     : []
   const catalogueNote = [
+    concurrency?.tuning
+      ? `${concurrency.tuning.effective_catalogue_concurrency} executor lanes · ${concurrency.tuning.catalogue_max_concurrency} hard ceiling`
+      : "",
     catalogueOwners.join(" · "),
     catalogue?.waiting
       ? `${catalogue.waiting} waiting · oldest ${formatAge(catalogue.oldest_wait_seconds * 1_000)}`
@@ -479,7 +482,7 @@ function ResourceHeadroom({
           note={`${materializationExecutors?.worker_count ?? 0} healthy replicas`}
         />
         <HeadroomRow
-          label="Catalogue permits"
+          label="Catalogue load"
           used={catalogue?.used ?? 0}
           capacity={catalogue?.capacity ?? 0}
           note={catalogueNote || "No catalogue work admitted"}
@@ -488,6 +491,7 @@ function ResourceHeadroom({
           label="Object storage"
           used={storageUsed}
           capacity={storageCapacity}
+          note={concurrency?.tuning ? `${concurrency.tuning.object_io_max_concurrency} shared I/O ceiling per direction` : undefined}
         />
       </CardContent>
     </Card>

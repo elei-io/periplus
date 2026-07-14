@@ -781,18 +781,16 @@ Every admitted URL also records its graph-wide identity, allowing a later graph-
 recognize URLs first admitted through a narrower scope. Edge evaluation identity is the hash of
 `graph_run_id`, `crawl_request_id`, `crawl_id`, and `edge_id`.
 
-The deployment-only ceilings are:
+The optional deployment-only runaway ceilings are:
 
 ```text
 ATLAS_GRAPH_MAX_REQUESTS_PER_RUN=10000
 ATLAS_GRAPH_MAX_RUN_SECONDS=3600
-ATLAS_GRAPH_STREAM_REPLICAS=1
-ATLAS_GRAPH_ACK_WAIT_SECONDS=60
-ATLAS_GRAPH_STATE_MAX_BYTES=268435456
 ```
 
-They are deployment environment configuration, never graph, node, edge, trigger, or crawl-policy
-fields.
+They are safety configuration, never graph, node, edge, trigger, or crawl-policy fields. Durable
+consumer delivery and acknowledgement sizing is code-owned and deliberately generous enough for
+replicas to add capacity without changing queue settings.
 
 ### Repository provenance
 

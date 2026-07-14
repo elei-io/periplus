@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
 
 from nats.js.errors import (
     KeyDeletedError,
@@ -54,18 +53,6 @@ class FakeBucket:
 
 
 class OperationLeaseTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        self.config = patch(
-            "runtime.operation_leases.get_float",
-            side_effect=lambda name: {
-                "ATLAS_CATALOG_OPERATION_LEASE_SECONDS": 30.0,
-                "ATLAS_CATALOG_OPERATION_HEARTBEAT_SECONDS": 5.0,
-                "ATLAS_CATALOG_OPERATION_ACQUIRE_TIMEOUT_SECONDS": 0.0,
-            }[name],
-        )
-        self.config.start()
-        self.addCleanup(self.config.stop)
-
     async def test_active_operation_cannot_be_claimed_by_a_second_worker(self) -> None:
         bucket = FakeBucket()
         async with operation_leases(

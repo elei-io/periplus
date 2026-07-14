@@ -10,6 +10,7 @@ from uuid import UUID
 
 import nats
 from config import get_float, get_int, get_str
+from config.performance import INGESTION_ACK_WAIT_SECONDS, INGESTION_CONSUMER_MAX_ACK_PENDING
 from nats.js.api import (
     AckPolicy,
     ConsumerConfig,
@@ -199,7 +200,7 @@ def repository_consumer_config() -> ConsumerConfig:
         ack_policy=AckPolicy.EXPLICIT,
         ack_wait=ack_wait_seconds(),
         filter_subject=SUBJECT,
-        max_ack_pending=get_int("ATLAS_INGEST_MAX_ACK_PENDING"),
+        max_ack_pending=INGESTION_CONSUMER_MAX_ACK_PENDING,
         # The application terminates a message only after a terminal result is durable.
         # Unlimited server delivery prevents a KV outage at the attempt boundary from
         # silently stranding a message without either work or a durable failure state.
@@ -236,7 +237,7 @@ def max_delivery_attempts() -> int:
 
 
 def ack_wait_seconds() -> float:
-    return get_float("ATLAS_INGEST_ACK_WAIT_SECONDS")
+    return INGESTION_ACK_WAIT_SECONDS
 
 
 async def get_ingestion_state(results, request_id: str) -> IngestionState | None:

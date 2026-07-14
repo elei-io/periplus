@@ -15,6 +15,7 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from prometheus_client import start_http_server
 
 from config import get_bool, get_float, get_int, get_str
+from config.performance import MATERIALIZATION_ACK_WAIT_SECONDS
 from materialization.backfill import run_backfill
 from materialization.commit import commit_scope, record_scope_failure
 from materialization.compute import compute_scope
@@ -700,7 +701,7 @@ async def _heartbeat(monitor: HealthMonitor, stop: asyncio.Event) -> None:
 
 async def _ack_heartbeat(message) -> None:
     interval = max(
-        1.0, min(30.0, get_float("ATLAS_MATERIALIZATION_ACK_WAIT_SECONDS") / 3)
+        1.0, min(30.0, MATERIALIZATION_ACK_WAIT_SECONDS / 3)
     )
     while True:
         await asyncio.sleep(interval)

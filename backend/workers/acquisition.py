@@ -16,6 +16,12 @@ import httpx
 
 from actions.crawl.service import RetryableAcquisitionError, crawl_graph_request
 from config import get_bool, get_float, get_int, get_optional, get_str
+from config.performance import (
+    BROWSER_ACQUISITION_LANES,
+    GRAPH_ACK_WAIT_SECONDS,
+    HTTP_ACQUISITION_LANES,
+    PROVIDER_ACQUISITION_LANES,
+)
 from control.crawl_policies.schemas import DEFAULT_HTTP_USER_AGENT
 from observability import crawl_metrics
 from repository.ingestion.acquisition import AcquisitionPipeline
@@ -77,12 +83,12 @@ def http_client_for_worker(capacity: int) -> httpx.AsyncClient:
 
 
 async def _keep_alive(message, requests, request_id: UUID, claim_token: UUID) -> None:
-    interval = max(1.0, get_float("ATLAS_GRAPH_ACK_WAIT_SECONDS") / 3)
+    interval = max(1.0, GRAPH_ACK_WAIT_SECONDS / 3)
     while True:
         await asyncio.sleep(interval)
         await message.in_progress()
         expires_at = datetime.now(UTC) + timedelta(
-            seconds=get_float("ATLAS_GRAPH_ACK_WAIT_SECONDS") * 2
+            seconds=GRAPH_ACK_WAIT_SECONDS * 2
         )
 
         def refresh(current: CrawlRequest) -> CrawlRequest:
@@ -149,7 +155,7 @@ async def _process_crawl(
             "status": "crawling",
             "claim_token": claim_token,
             "claim_expires_at": now + timedelta(
-                seconds=get_float("ATLAS_GRAPH_ACK_WAIT_SECONDS") * 2
+                seconds=GRAPH_ACK_WAIT_SECONDS * 2
             ),
             "updated_at": now,
         })
@@ -413,7 +419,11 @@ async def run(
     worker_id = get_optional(_worker_setting(transport, "ID")) or (
         f"{transport}:{os.uname().nodename}:{os.getpid()}"
     )
-    capacity = get_int(_worker_setting(transport, "CONCURRENCY"))
+    capacity = {
+        "http": HTTP_ACQUISITION_LANES,
+        "browser": BROWSER_ACQUISITION_LANES,
+        "firecrawl": PROVIDER_ACQUISITION_LANES,
+    }[transport]
     object_request(
         "acquisition-startup-validation",
         direction="write",

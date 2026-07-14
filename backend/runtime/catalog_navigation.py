@@ -14,6 +14,7 @@ from sqlglot import exp, parse_one
 from nats.errors import TimeoutError as NatsTimeoutError
 
 from config import get_float, get_int, get_str
+from config.performance import CATALOGUE_EXECUTOR_LANES, GRAPH_ACK_WAIT_SECONDS
 from db.session import session_scope
 from repository.catalogue import catalogue_from_env
 from repository.ingestion.health import HealthMonitor
@@ -198,12 +199,12 @@ async def _process_edge(
     )
 
     async def keep_alive() -> None:
-        interval = max(1.0, get_float("ATLAS_GRAPH_ACK_WAIT_SECONDS") / 3)
+        interval = max(1.0, GRAPH_ACK_WAIT_SECONDS / 3)
         while True:
             await asyncio.sleep(interval)
             await message.in_progress()
             expires_at = datetime.now(UTC) + timedelta(
-                seconds=get_float("ATLAS_GRAPH_ACK_WAIT_SECONDS") * 2
+                seconds=GRAPH_ACK_WAIT_SECONDS * 2
             )
             try:
                 current = await update_edge_evaluation(
@@ -274,7 +275,7 @@ async def run(monitor: HealthMonitor | None = None) -> None:
     )
     if monitor is not None:
         monitor.subsystem_ready("navigation")
-    capacity = get_int("ATLAS_INGESTION_WORKER_CONCURRENCY")
+    capacity = CATALOGUE_EXECUTOR_LANES
     catalogue_operation_lock = catalogue_operation_lane()
     active: set[asyncio.Task] = set()
     cleaned_runs = set()

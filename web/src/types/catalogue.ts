@@ -39,6 +39,7 @@ export type CatalogueMetadataFunction = {
   return_type: string | null
   parameters: CatalogueMetadataFunctionParameter[]
   varargs: string | null
+  result_columns: CatalogueMetadataColumn[]
 }
 
 export type CatalogueMetadata = {

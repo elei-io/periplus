@@ -17,6 +17,13 @@ import { createCatalogueCompletionExtensions } from "@/components/catalogue/cata
 import { SaveQueryDialog } from "@/components/catalogue/save-query-dialog"
 import { SaveTableMacroDialog } from "@/components/catalogue/save-table-macro-dialog"
 import { SaveViewDialog } from "@/components/catalogue/save-view-dialog"
+import {
+  isWorkbenchCommandLike,
+  parseWorkbenchCommand,
+  runWorkbenchCommand,
+  workbenchCommandSuggestion,
+  WORKBENCH_COMMANDS,
+} from "@/components/catalogue/workbench-commands"
 import { Button } from "@/components/ui/button"
 import {
   Select,
@@ -44,7 +51,9 @@ type TranscriptEntry = {
   sql: string
   status: "running" | "success" | "error"
   result?: CatalogueQueryResult
-  output?: "help" | "welcome"
+  output?: "help" | "welcome" | "message"
+  message?: string
+  expanded?: boolean
   error?: string
   durationMs?: number
 }
@@ -58,21 +67,6 @@ type SaveTarget = {
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 const RUNNING_INDICATOR_DELAY_MS = 200
-const TERMINAL_COMMANDS = [
-  { command: "\\?", description: "Show available meta-commands" },
-  { command: "\\dt", description: "List catalogue tables and views" },
-  { command: "clear", description: "Clear the transcript" },
-] as const
-const LIST_TABLES_SQL = `
-SELECT
-  table_schema AS schema,
-  table_name AS name,
-  CASE table_type WHEN 'BASE TABLE' THEN 'table' ELSE lower(table_type) END AS kind
-FROM information_schema.tables
-WHERE table_catalog = 'atlas'
-  AND table_schema NOT IN ('information_schema', 'pg_catalog')
-ORDER BY table_schema, table_name;
-`
 
 function TerminalSpinner() {
   const [frame, setFrame] = useState(0)
@@ -149,7 +143,6 @@ const workbenchPromptTheme = Prec.highest(
       display: "block",
       width: "0.62em",
     },
-    ".cm-placeholder": { color: "var(--muted-foreground)" },
     ".cm-selectionBackground": {
       backgroundColor: "var(--sql-selection) !important",
     },
@@ -213,25 +206,139 @@ function formatCell(value: unknown) {
   return String(value)
 }
 
+function jsonValue(value: unknown): unknown {
+  if (typeof value === "bigint") return value.toString()
+  if (value instanceof Uint8Array) return Array.from(value)
+  if (Array.isArray(value)) return value.map(jsonValue)
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, jsonValue(item)])
+    )
+  }
+  return value ?? null
+}
+
+function uniqueColumnNames(columns: string[]) {
+  const counts = new Map<string, number>()
+  return columns.map((column) => {
+    const count = (counts.get(column) ?? 0) + 1
+    counts.set(column, count)
+    return count === 1 ? column : `${column}_${count}`
+  })
+}
+
+function resultAsJson(result: CatalogueQueryResult) {
+  const columns = uniqueColumnNames(result.columns)
+  return JSON.stringify(
+    result.rows.map((row) =>
+      Object.fromEntries(
+        columns.map((column, index) => [column, jsonValue(row[index])])
+      )
+    ),
+    null,
+    2
+  )
+}
+
+function csvCell(value: unknown) {
+  const normalized =
+    value === null || value === undefined
+      ? ""
+      : typeof value === "object"
+        ? JSON.stringify(jsonValue(value))
+        : String(value)
+  return `"${normalized.replaceAll('"', '""')}"`
+}
+
+function resultAsCsv(result: CatalogueQueryResult) {
+  return [
+    result.columns.map(csvCell).join(","),
+    ...result.rows.map((row) => row.map(csvCell).join(",")),
+  ].join("\r\n")
+}
+
+type ResultExportFormat = "csv" | "json"
+
+function serializeResult(result: CatalogueQueryResult, format: ResultExportFormat) {
+  return format === "csv" ? resultAsCsv(result) : resultAsJson(result)
+}
+
+function ResultExportActions({ result }: { result: CatalogueQueryResult }) {
+  async function copy(format: ResultExportFormat) {
+    try {
+      await navigator.clipboard.writeText(serializeResult(result, format))
+      toast.success(`${format.toUpperCase()} copied.`)
+    } catch (error) {
+      toast.error(extractApiError(error))
+    }
+  }
+
+  function download(format: ResultExportFormat) {
+    try {
+      const contents = serializeResult(result, format)
+      const blob = new Blob([contents], {
+        type:
+          format === "csv"
+            ? "text/csv;charset=utf-8"
+            : "application/json;charset=utf-8",
+      })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = `atlas-results-${new Date().toISOString().replaceAll(":", "-")}.${format}`
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      toast.error(extractApiError(error))
+    }
+  }
+
+  return (
+    <div className="flex justify-end gap-1 font-sans">
+      <Select
+        value={null}
+        onValueChange={(value) =>
+          value && void copy(value as ResultExportFormat)
+        }
+      >
+        <SelectTrigger
+          size="sm"
+          aria-label="Copy table result"
+          title="Copy table result"
+          className="h-6 border-transparent bg-transparent px-1.5 hover:bg-muted/60 dark:bg-transparent dark:hover:bg-muted/40"
+        >
+          <CopyIcon />
+        </SelectTrigger>
+        <SelectContent align="end" alignItemWithTrigger={false}>
+          <SelectItem value="csv">Copy as CSV</SelectItem>
+          <SelectItem value="json">Copy as JSON</SelectItem>
+        </SelectContent>
+      </Select>
+      <Select
+        value={null}
+        onValueChange={(value) =>
+          value && download(value as ResultExportFormat)
+        }
+      >
+        <SelectTrigger
+          size="sm"
+          aria-label="Download table result"
+          title="Download table result"
+          className="h-6 border-transparent bg-transparent px-1.5 hover:bg-muted/60 dark:bg-transparent dark:hover:bg-muted/40"
+        >
+          <SaveIcon />
+        </SelectTrigger>
+        <SelectContent align="end" alignItemWithTrigger={false}>
+          <SelectItem value="csv">Download as CSV</SelectItem>
+          <SelectItem value="json">Download as JSON</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+  )
+}
+
 function isClearCommand(value: string) {
   return normalizeCommand(value) === "clear"
-}
-
-function terminalCommand(value: string): "\\?" | "\\dt" | null {
-  const command = value.trim().toLowerCase()
-  return command === "\\?" || command === "\\dt" ? command : null
-}
-
-function isCommandLike(value: string) {
-  const input = value.trimStart()
-  return input.startsWith("\\") || input.startsWith("/")
-}
-
-function commandSuggestion(value: string): "\\?" | "\\dt" | null {
-  const command = value.trim().toLowerCase()
-  if (command === "/?") return "\\?"
-  if (command === "/dt") return "\\dt"
-  return null
 }
 
 function normalizeCommand(value: string) {
@@ -244,8 +351,19 @@ function isTerminatedSql(value: string) {
 
 function isLintableSql(value: string) {
   return (
-    Boolean(value.trim()) && !isClearCommand(value) && !isCommandLike(value)
+    Boolean(value.trim()) &&
+    !isClearCommand(value) &&
+    normalizeCommand(value) !== "help" &&
+    !isWorkbenchCommandLike(value)
   )
+}
+
+function isMetaCommand(value: string) {
+  return normalizeCommand(value) === "help" || isWorkbenchCommandLike(value)
+}
+
+function runsOnEnter(value: string) {
+  return isClearCommand(value) || isMetaCommand(value) || isTerminatedSql(value)
 }
 
 const MIN_COLUMN_WIDTH = 120
@@ -254,9 +372,9 @@ const INITIAL_COLUMN_WIDTH = 180
 function HelpOutput() {
   return (
     <dl className="mt-2 space-y-1 font-mono text-xs">
-      {TERMINAL_COMMANDS.map(({ command, description }) => (
+      {WORKBENCH_COMMANDS.map(({ command, description }) => (
         <div key={command} className="flex gap-4">
-          <dt className="w-14 shrink-0 text-primary">{command}</dt>
+          <dt className="w-28 shrink-0 text-primary">{command}</dt>
           <dd className="text-muted-foreground">{description}</dd>
         </div>
       ))}
@@ -264,12 +382,25 @@ function HelpOutput() {
   )
 }
 
-function WelcomeOutput() {
+function WelcomeOutput({ schemaVersion }: { schemaVersion?: number }) {
   return (
-    <div className="space-y-1 font-mono text-xs">
-      <p className="text-foreground/80">Atlas catalogue ready.</p>
+    <div className="space-y-3 font-mono text-xs">
+      <pre className="leading-5 text-foreground/80">
+        {[
+          "     ___  ________  ___   _____",
+          "    / _ |/_  __/ / / _ | / ___/",
+          "   / __ | / / / /_/ __ |(__  )",
+          "  /_/ |_|/_/ /___/_/ |_/____/",
+          "",
+          "  --------------------------------",
+        ].join("\n")}
+      </pre>
+      <div className="space-y-1 text-muted-foreground">
+        <p className="text-foreground/80">SQL over the internet.</p>
+        <p>Query crawled pages, documents, and DOM data.</p>
+      </div>
       <p className="text-muted-foreground">
-        End SQL with <span className="text-foreground/70">;</span> to run ·{" "}
+        Atlas schema v{schemaVersion ?? "—"} · type{" "}
         <span className="text-primary">\?</span> for help
       </p>
     </div>
@@ -301,10 +432,10 @@ function TranscriptActions({
         <SelectTrigger
           size="sm"
           aria-label="Save command"
-          className="h-6 border-transparent bg-transparent px-2 font-sans text-[10px] hover:bg-muted/60 dark:bg-transparent dark:hover:bg-muted/40"
+          title="Save query"
+          className="h-6 border-transparent bg-transparent px-1.5 font-sans hover:bg-muted/60 dark:bg-transparent dark:hover:bg-muted/40"
         >
           <SaveIcon />
-          <span>Save</span>
         </SelectTrigger>
         <SelectContent align="start" alignItemWithTrigger={false}>
           <SelectItem value="view">
@@ -325,11 +456,12 @@ function TranscriptActions({
         type="button"
         variant="ghost"
         size="xs"
-        className="h-6 px-2 font-sans text-[10px]"
+        aria-label="Copy SQL"
+        title="Copy SQL"
+        className="h-6 px-1.5 font-sans"
         onClick={() => void copy()}
       >
         <CopyIcon />
-        Copy
       </Button>
     </div>
   )
@@ -381,12 +513,61 @@ function FooterLintDiagnostics({
   )
 }
 
-function ResultTable({
+function ExpandedResult({
   result,
   durationMs,
 }: {
   result: CatalogueQueryResult
   durationMs?: number
+}) {
+  return (
+    <div className="mt-3 max-w-full font-mono text-xs">
+      <div className="max-h-[min(42vh,24rem)] overflow-auto border-y border-border/80">
+        {result.rows.map((row, rowIndex) => (
+          <div
+            key={rowIndex}
+            className="border-b border-border/80 last:border-b-0"
+          >
+            <div className="bg-muted/30 px-3 py-1 text-[10px] text-muted-foreground">
+              record {rowIndex + 1}
+            </div>
+            {result.columns.map((column, columnIndex) => (
+              <div
+                key={`${column}-${columnIndex}`}
+                className="grid grid-cols-[minmax(8rem,16rem)_minmax(0,1fr)] even:bg-muted/[0.06]"
+              >
+                <div className="border-r border-border/80 px-3 py-1.5">
+                  <span className="block truncate text-foreground/75">
+                    {column}
+                  </span>
+                  <span className="block truncate text-[9px] text-muted-foreground/70">
+                    {result.columnTypes[columnIndex] ?? "unknown"}
+                  </span>
+                </div>
+                <div className="px-3 py-1.5 break-words whitespace-pre-wrap text-foreground/85">
+                  {formatCell(row[columnIndex])}
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+      <p className="mt-2 text-[10px] text-muted-foreground">
+        {result.rows.length} {result.rows.length === 1 ? "row" : "rows"}
+        {durationMs !== undefined && ` · ${formatDuration(durationMs)}`}
+      </p>
+    </div>
+  )
+}
+
+function ResultTable({
+  result,
+  durationMs,
+  expanded = false,
+}: {
+  result: CatalogueQueryResult
+  durationMs?: number
+  expanded?: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [containerWidth, setContainerWidth] = useState(0)
@@ -432,11 +613,21 @@ function ResultTable({
     columnWidths.reduce((total, value) => total + value, 0)
   )
 
+  if (expanded && result.rows.length > 0) {
+    return (
+      <div className="mt-3 max-w-full">
+        <ResultExportActions result={result} />
+        <ExpandedResult result={result} durationMs={durationMs} />
+      </div>
+    )
+  }
+
   return (
     <div className="mt-3 max-w-full">
+      <ResultExportActions result={result} />
       <div
         ref={containerRef}
-        className="max-h-[min(42vh,24rem)] w-full overflow-auto"
+        className="mt-1 max-h-[min(42vh,24rem)] w-full overflow-auto"
       >
         <table
           className="table-fixed border-separate border-spacing-0 bg-muted/[0.04] font-mono text-xs"
@@ -484,7 +675,7 @@ function ResultTable({
                       event.currentTarget.releasePointerCapture(event.pointerId)
                       setResize(null)
                     }}
-                    onKeyDown={(event) => {
+                    onKeyDownCapture={(event) => {
                       if (
                         event.key !== "ArrowLeft" &&
                         event.key !== "ArrowRight"
@@ -545,6 +736,7 @@ export function CatalogueWorkbenchPage() {
   ])
   const [history, setHistory] = useState<string[]>([])
   const [historyIndex, setHistoryIndex] = useState<number | null>(null)
+  const [expandedOutput, setExpandedOutput] = useState(false)
   const [saveTarget, setSaveTarget] = useState<SaveTarget | null>(null)
   const historyDraftRef = useRef("")
   const editorRef = useRef<EditorView | null>(null)
@@ -627,7 +819,7 @@ export function CatalogueWorkbenchPage() {
   function execute() {
     const sql = input.trim()
     if (!sql) return
-    const command = terminalCommand(sql)
+    const command = parseWorkbenchCommand(sql)
 
     if (isClearCommand(sql)) {
       setTranscript([])
@@ -637,12 +829,55 @@ export function CatalogueWorkbenchPage() {
       return
     }
 
-    if (command === "\\?") {
+    if (command) {
       const id = crypto.randomUUID()
-      setTranscript((entries) => [
-        ...entries,
-        { id, sql, status: "success", output: "help" },
-      ])
+      const outcome = runWorkbenchCommand(command, {
+        metadata: catalogueMetadata.data,
+        status: catalogueStatus.data,
+        history,
+      })
+      let entry: TranscriptEntry
+
+      switch (outcome.kind) {
+        case "help":
+          entry = { id, sql, status: "success", output: "help" }
+          break
+        case "result":
+          entry = {
+            id,
+            sql,
+            status: "success",
+            result: outcome.result,
+            expanded: expandedOutput,
+          }
+          break
+        case "message":
+          entry = {
+            id,
+            sql,
+            status: "success",
+            output: "message",
+            message: outcome.message,
+          }
+          break
+        case "toggle-expanded": {
+          const next = !expandedOutput
+          setExpandedOutput(next)
+          entry = {
+            id,
+            sql,
+            status: "success",
+            output: "message",
+            message: `Expanded result display is ${next ? "on" : "off"}.`,
+          }
+          break
+        }
+        case "error":
+          entry = { id, sql, status: "error", error: outcome.error }
+          break
+      }
+
+      setTranscript((entries) => [...entries, entry])
       setHistory((entries) =>
         entries.at(-1) === sql ? entries : [...entries, sql]
       )
@@ -652,9 +887,9 @@ export function CatalogueWorkbenchPage() {
       return
     }
 
-    if (isCommandLike(sql) && command === null) {
+    if (isWorkbenchCommandLike(sql)) {
       const id = crypto.randomUUID()
-      const suggestion = commandSuggestion(sql)
+      const suggestion = workbenchCommandSuggestion(sql)
       setTranscript((entries) => [
         ...entries,
         {
@@ -675,12 +910,15 @@ export function CatalogueWorkbenchPage() {
       return
     }
 
-    if (!isTerminatedSql(sql) && command !== "\\dt") return
+    if (!isTerminatedSql(sql)) return
     if (catalogueQuery.isPending) return
 
     const id = crypto.randomUUID()
     const startedAt = performance.now()
-    setTranscript((entries) => [...entries, { id, sql, status: "running" }])
+    setTranscript((entries) => [
+      ...entries,
+      { id, sql, status: "running", expanded: expandedOutput },
+    ])
     setHistory((entries) =>
       entries.at(-1) === sql ? entries : [...entries, sql]
     )
@@ -689,7 +927,7 @@ export function CatalogueWorkbenchPage() {
     historyDraftRef.current = ""
 
     catalogueQuery.mutate(
-      { sql: command === "\\dt" ? LIST_TABLES_SQL : sql, mode: "run" },
+      { sql, mode: "run" },
       {
         onSuccess: (result) =>
           setTranscript((entries) =>
@@ -740,15 +978,21 @@ export function CatalogueWorkbenchPage() {
                         <DelayedRunningIndicator compact />
                       )}
                     </pre>
-                    <TranscriptActions
-                      sql={entry.sql}
-                      onSave={(kind, sql) => setSaveTarget({ kind, sql })}
-                    />
+                    {!isMetaCommand(entry.sql) && (
+                      <TranscriptActions
+                        sql={entry.sql}
+                        onSave={(kind, sql) => setSaveTarget({ kind, sql })}
+                      />
+                    )}
                   </div>
                 )}
                 <div className="pt-1">
                   {entry.status === "success" && entry.output === "welcome" && (
-                    <WelcomeOutput />
+                    <WelcomeOutput
+                      schemaVersion={
+                        catalogueStatus.data?.catalogue_schema_version
+                      }
+                    />
                   )}
                   {entry.status === "error" && (
                     <p className="text-xs text-red-700 dark:text-red-300/80">
@@ -758,10 +1002,16 @@ export function CatalogueWorkbenchPage() {
                   {entry.status === "success" && entry.output === "help" && (
                     <HelpOutput />
                   )}
+                  {entry.status === "success" && entry.output === "message" && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {entry.message}
+                    </p>
+                  )}
                   {entry.status === "success" && entry.result && (
                     <ResultTable
                       result={entry.result}
                       durationMs={entry.durationMs}
+                      expanded={entry.expanded}
                     />
                   )}
                 </div>
@@ -777,7 +1027,6 @@ export function CatalogueWorkbenchPage() {
                     aria-label="SQL prompt"
                     value={input}
                     theme="none"
-                    placeholder="Start typing SQL…"
                     extensions={editorExtensions}
                     basicSetup={{
                       lineNumbers: false,
@@ -826,13 +1075,17 @@ export function CatalogueWorkbenchPage() {
                         navigateHistory("down")
                         return
                       }
+                      const selection = editorRef.current?.state.selection.main
+                      const submitsAtCursor =
+                        selection?.empty &&
+                        selection.head === editorRef.current?.state.doc.length
                       if (
                         event.key === "Enter" &&
-                        (isClearCommand(input) ||
-                          isCommandLike(input) ||
-                          isTerminatedSql(input))
+                        submitsAtCursor &&
+                        runsOnEnter(input)
                       ) {
                         event.preventDefault()
+                        event.nativeEvent.stopImmediatePropagation()
                         execute()
                       }
                     }}
@@ -873,7 +1126,6 @@ export function CatalogueWorkbenchPage() {
           <span className="hidden md:inline">
             DuckLake {catalogueStatus.data?.ducklake_version ?? "—"}
           </span>
-          <span>API {formatDuration(catalogueStatus.data?.apiLatencyMs)}</span>
         </div>
       </footer>
 

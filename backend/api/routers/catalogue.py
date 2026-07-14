@@ -50,6 +50,7 @@ class CatalogueStatusResponse(BaseModel):
     active_file_count: int
     active_storage_bytes: int
     ducklake_version: str | None
+    catalogue_schema_version: int
 
 
 class CatalogueMetadataColumnResponse(BaseModel):
@@ -80,6 +81,7 @@ class CatalogueMetadataFunctionResponse(BaseModel):
     return_type: str | None
     parameters: list[CatalogueMetadataFunctionParameterResponse]
     varargs: str | None
+    result_columns: list[CatalogueMetadataColumnResponse]
 
 
 class CatalogueMetadataResponse(BaseModel):
@@ -119,6 +121,7 @@ def catalogue_status(request: Request) -> CatalogueStatusResponse:
         active_file_count=status.active_file_count,
         active_storage_bytes=status.active_storage_bytes,
         ducklake_version=status.ducklake_version,
+        catalogue_schema_version=status.catalogue_schema_version,
     )
 
 
@@ -172,6 +175,14 @@ def catalogue_metadata(request: Request) -> CatalogueMetadataResponse:
                     for parameter in function.parameters
                 ],
                 varargs=function.varargs,
+                result_columns=[
+                    CatalogueMetadataColumnResponse(
+                        name=column.name,
+                        data_type=column.data_type,
+                        nullable=column.nullable,
+                    )
+                    for column in function.result_columns
+                ],
             )
             for function in metadata.functions
         ],

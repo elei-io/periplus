@@ -135,7 +135,7 @@ async def run(
     initialized: asyncio.Event | None = None, monitor: HealthMonitor | None = None
 ) -> None:
     stop = asyncio.Event()
-    config = IngestionWorkerConfig.from_env()
+    config = IngestionWorkerConfig.defaults()
     catalogue_request(
         "ingestion-startup-validation",
         service_class="critical",

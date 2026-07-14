@@ -149,6 +149,19 @@ export type CrawlConcurrencyLimits = {
     capacity: number
     active: number
   }>
+  tuning: {
+    catalogue_max_concurrency: number
+    effective_catalogue_concurrency: number
+    object_io_max_concurrency: number
+    http_lanes_per_replica: number
+    browser_lanes_per_replica: number
+    provider_lanes_per_replica: number
+    catalogue_lanes_per_replica: number
+    graph_consumer_delivery_ceiling: number
+    duckdb_threads_per_executor: number
+    duckdb_memory_limit_per_executor: string
+    catalogue_read_pool_size: number
+  }
 }
 
 export type GraphRunMaterializationLag = {

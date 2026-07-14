@@ -14,7 +14,15 @@ import math
 from typing import Literal
 from uuid import uuid4
 
-from config import get_float, get_int
+from config.performance import (
+    OBJECT_IO_UNIT_BYTES,
+    RESOURCE_ACQUIRE_TIMEOUT_SECONDS,
+    RESOURCE_HEARTBEAT_SECONDS,
+    RESOURCE_LEASE_SECONDS,
+    RESOURCE_STATE_REPLICAS,
+    catalogue_max_concurrency,
+    object_io_max_concurrency,
+)
 from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import (
     BadRequestError,
@@ -130,42 +138,33 @@ class ResourceLimits(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     catalogue: int = Field(ge=1)
-    catalogue_critical_reserve: int = Field(ge=0)
-    catalogue_noncritical_reserve: int = Field(ge=0)
-    catalogue_backfill_max: int = Field(ge=0)
-    object_read: int = Field(ge=1)
-    object_write: int = Field(ge=1)
+    object_io: int = Field(ge=1)
 
-    @model_validator(mode="after")
-    def validate_catalogue_shares(self) -> ResourceLimits:
-        if self.catalogue_critical_reserve > self.catalogue:
-            raise ValueError("critical catalogue reserve cannot exceed capacity")
-        if self.catalogue_noncritical_reserve > self.catalogue:
-            raise ValueError("noncritical catalogue reserve cannot exceed capacity")
-        if (
-            self.catalogue_critical_reserve + self.catalogue_noncritical_reserve
-            > self.catalogue
-        ):
-            raise ValueError("catalogue class reserves cannot exceed capacity")
-        if self.catalogue_backfill_max > self.catalogue:
-            raise ValueError("backfill catalogue maximum cannot exceed capacity")
-        return self
+    @property
+    def catalogue_critical_reserve(self) -> int:
+        return 1 if self.catalogue >= 2 else 0
+
+    @property
+    def catalogue_noncritical_reserve(self) -> int:
+        return 1 if self.catalogue >= 2 else 0
+
+    @property
+    def catalogue_backfill_max(self) -> int:
+        return max(1, self.catalogue // 4)
+
+    @property
+    def object_read(self) -> int:
+        return self.object_io
+
+    @property
+    def object_write(self) -> int:
+        return self.object_io
 
     @classmethod
     def from_env(cls) -> ResourceLimits:
         return cls(
-            catalogue=get_int("ATLAS_RESOURCE_CATALOGUE_CAPACITY"),
-            catalogue_critical_reserve=get_int(
-                "ATLAS_RESOURCE_CATALOGUE_CRITICAL_RESERVE", minimum=0
-            ),
-            catalogue_noncritical_reserve=get_int(
-                "ATLAS_RESOURCE_CATALOGUE_NONCRITICAL_RESERVE", minimum=0
-            ),
-            catalogue_backfill_max=get_int(
-                "ATLAS_RESOURCE_CATALOGUE_BACKFILL_MAX", minimum=0
-            ),
-            object_read=get_int("ATLAS_RESOURCE_OBJECT_READ_CAPACITY"),
-            object_write=get_int("ATLAS_RESOURCE_OBJECT_WRITE_CAPACITY"),
+            catalogue=catalogue_max_concurrency(),
+            object_io=object_io_max_concurrency(),
         )
 
     def capacity(self, need: ResourceNeed) -> int:
@@ -211,9 +210,9 @@ async def ensure_resource_governor_storage(jetstream):
             bucket=RESOURCE_GRANT_BUCKET,
             description="Expiring Atlas shared-resource grants",
             history=1,
-            ttl=get_float("ATLAS_RESOURCE_LEASE_SECONDS") * 2,
+            ttl=RESOURCE_LEASE_SECONDS * 2,
             storage=StorageType.FILE,
-            replicas=get_int("ATLAS_RESOURCE_LEASE_REPLICAS"),
+            replicas=RESOURCE_STATE_REPLICAS,
         )
         try:
             bucket = await jetstream.create_key_value(config=config)
@@ -226,8 +225,8 @@ async def ensure_resource_governor_storage(jetstream):
 async def _validate_bucket(bucket) -> None:
     status = await bucket.status()
     config = status.stream_info.config
-    expected_ttl = get_float("ATLAS_RESOURCE_LEASE_SECONDS") * 2
-    expected_replicas = get_int("ATLAS_RESOURCE_LEASE_REPLICAS")
+    expected_ttl = RESOURCE_LEASE_SECONDS * 2
+    expected_replicas = RESOURCE_STATE_REPLICAS
     mismatches: list[str] = []
     if config.storage != StorageType.FILE:
         mismatches.append("file storage")
@@ -446,8 +445,8 @@ async def _try_acquire(
     grants = _active_grants(state, now=now)
     waiters = _active_waiters(state, now=now)
     current = next((grant for grant in grants if grant.token == token), None)
-    lease_seconds = get_float("ATLAS_RESOURCE_LEASE_SECONDS")
-    heartbeat_seconds = get_float("ATLAS_RESOURCE_HEARTBEAT_SECONDS")
+    lease_seconds = RESOURCE_LEASE_SECONDS
+    heartbeat_seconds = RESOURCE_HEARTBEAT_SECONDS
     if current is not None:
         renewed = current.model_copy(
             update={
@@ -541,15 +540,12 @@ async def resource_permits(
     """Atomically lease a resource bundle and renew it until the operation exits."""
 
     limits = limits or ResourceLimits.from_env()
-    lease_seconds = get_float("ATLAS_RESOURCE_LEASE_SECONDS")
-    heartbeat_seconds = get_float("ATLAS_RESOURCE_HEARTBEAT_SECONDS")
+    lease_seconds = RESOURCE_LEASE_SECONDS
+    heartbeat_seconds = RESOURCE_HEARTBEAT_SECONDS
     if heartbeat_seconds >= lease_seconds:
-        raise ValueError(
-            "ATLAS_RESOURCE_HEARTBEAT_SECONDS must be shorter than "
-            "ATLAS_RESOURCE_LEASE_SECONDS"
-        )
+        raise ValueError("resource heartbeat must be shorter than its lease")
     timeout = (
-        get_float("ATLAS_RESOURCE_ACQUIRE_TIMEOUT_SECONDS")
+        RESOURCE_ACQUIRE_TIMEOUT_SECONDS
         if acquire_timeout is None
         else acquire_timeout
     )
@@ -710,8 +706,7 @@ def object_units(byte_count: int) -> int:
 
     if byte_count < 0:
         raise ValueError("object byte count cannot be negative")
-    unit_bytes = get_int("ATLAS_RESOURCE_OBJECT_UNIT_BYTES")
-    return max(1, math.ceil(byte_count / unit_bytes))
+    return max(1, math.ceil(byte_count / OBJECT_IO_UNIT_BYTES))
 
 
 def object_request(

@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 import logging
 from typing import Literal
 
-from config import get_float, get_int
+from config import get_float
+from config.performance import RESOURCE_STATE_REPLICAS
 from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import (
     BadRequestError,
@@ -44,7 +45,7 @@ async def ensure_catalogue_worker_storage(jetstream):
         history=1,
         ttl=get_float("ATLAS_CATALOGUE_WORKER_PRESENCE_TTL_SECONDS"),
         storage=StorageType.FILE,
-        replicas=get_int("ATLAS_RESOURCE_LEASE_REPLICAS"),
+        replicas=RESOURCE_STATE_REPLICAS,
     )
     try:
         bucket = await jetstream.key_value(CATALOGUE_WORKERS_BUCKET)

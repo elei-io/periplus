@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from repository.catalogue.client import Catalogue
+from repository.catalogue.schema import CATALOGUE_SCHEMA_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -10,6 +11,7 @@ class CatalogueStatus:
     active_file_count: int
     active_storage_bytes: int
     ducklake_version: str | None
+    catalogue_schema_version: int
 
 
 def read_catalogue_status(catalogue: Catalogue) -> CatalogueStatus:
@@ -46,6 +48,7 @@ def read_catalogue_status(catalogue: Catalogue) -> CatalogueStatus:
         active_file_count=int(file_stats[0] if file_stats else 0),
         active_storage_bytes=int(file_stats[1] if file_stats else 0),
         ducklake_version=str(version[0]) if version and version[0] else None,
+        catalogue_schema_version=CATALOGUE_SCHEMA_VERSION,
     )
 
 

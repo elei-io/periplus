@@ -25,7 +25,7 @@ class CatalogueOperationLockTests(unittest.TestCase):
     def test_operation_locks_are_one_independent_fence_set(self) -> None:
         catalogue = self._catalogue()
 
-        with patch("repository.catalogue.operations.get_float", return_value=30.0):
+        with patch("repository.catalogue.operations.CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS", 30.0):
             with operation_locks(catalogue, ("second", "first", "first")):
                 pass
 
@@ -42,7 +42,7 @@ class CatalogueOperationLockTests(unittest.TestCase):
         crawl_ids = [UUID(int=value) for value in range(1, 101)]
         content_ids = [f"sha256:{value:064x}" for value in range(100)]
 
-        with patch("repository.catalogue.operations.get_float", return_value=30.0):
+        with patch("repository.catalogue.operations.CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS", 30.0):
             with repository_commit_lock(
                 catalogue,
                 crawl_ids=crawl_ids,
@@ -66,7 +66,7 @@ class CatalogueOperationLockTests(unittest.TestCase):
     def test_maintenance_uses_the_exclusive_barrier(self) -> None:
         catalogue = self._catalogue()
 
-        with patch("repository.catalogue.operations.get_float", return_value=30.0):
+        with patch("repository.catalogue.operations.CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS", 30.0):
             with maintenance_lock(catalogue):
                 pass
 
@@ -95,13 +95,13 @@ class CatalogueOperationLockTests(unittest.TestCase):
             return "committed"
 
         with (
-            patch("repository.catalogue.operations.get_int", return_value=5),
             patch(
-                "repository.catalogue.operations.get_float",
-                side_effect=lambda name: {
-                    "ATLAS_CATALOG_OPERATION_RETRY_INITIAL_SECONDS": 0.1,
-                    "ATLAS_CATALOG_OPERATION_RETRY_MAX_SECONDS": 0.25,
-                }[name],
+                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
+                0.1,
+            ),
+            patch(
+                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
+                0.25,
             ),
             patch("repository.catalogue.operations.time.sleep") as sleep,
         ):
@@ -116,8 +116,9 @@ class CatalogueOperationLockTests(unittest.TestCase):
             side_effect=duckdb.TransactionException("still conflicting")
         )
         with (
-            patch("repository.catalogue.operations.get_int", return_value=3),
-            patch("repository.catalogue.operations.get_float", return_value=0),
+            patch("repository.catalogue.operations.CATALOGUE_OPERATION_MAX_ATTEMPTS", 3),
+            patch("repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS", 0),
+            patch("repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS", 0),
             patch("repository.catalogue.operations.time.sleep"),
             self.assertRaises(duckdb.TransactionException),
         ):

@@ -9,7 +9,12 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from uuid import uuid4
 
-from config import get_float, get_int
+from config.performance import (
+    CATALOGUE_OPERATION_ACQUIRE_TIMEOUT_SECONDS,
+    CATALOGUE_OPERATION_HEARTBEAT_SECONDS,
+    CATALOGUE_OPERATION_LEASE_REPLICAS,
+    CATALOGUE_OPERATION_LEASE_SECONDS,
+)
 from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import (
     BadRequestError,
@@ -73,9 +78,9 @@ async def ensure_operation_lease_storage(jetstream):
             bucket=OPERATION_LEASE_BUCKET,
             description="Expiring Atlas catalogue operation leases",
             history=1,
-            ttl=get_float("ATLAS_CATALOG_OPERATION_LEASE_SECONDS"),
+            ttl=CATALOGUE_OPERATION_LEASE_SECONDS,
             storage=StorageType.FILE,
-            replicas=get_int("ATLAS_CATALOG_OPERATION_LEASE_REPLICAS"),
+            replicas=CATALOGUE_OPERATION_LEASE_REPLICAS,
         )
         try:
             bucket = await jetstream.create_key_value(config=config)
@@ -88,8 +93,8 @@ async def ensure_operation_lease_storage(jetstream):
 async def _validate_bucket(bucket) -> None:
     status = await bucket.status()
     config = status.stream_info.config
-    expected_ttl = get_float("ATLAS_CATALOG_OPERATION_LEASE_SECONDS")
-    expected_replicas = get_int("ATLAS_CATALOG_OPERATION_LEASE_REPLICAS")
+    expected_ttl = CATALOGUE_OPERATION_LEASE_SECONDS
+    expected_replicas = CATALOGUE_OPERATION_LEASE_REPLICAS
     mismatches: list[str] = []
     if config.storage != StorageType.FILE:
         mismatches.append("file storage")
@@ -115,7 +120,7 @@ async def _try_acquire(bucket, *, phase: str, operation_id: str, owner: str) -> 
         acquired_at=now,
         heartbeat_at=now,
         expires_at=now
-        + timedelta(seconds=get_float("ATLAS_CATALOG_OPERATION_LEASE_SECONDS")),
+        + timedelta(seconds=CATALOGUE_OPERATION_LEASE_SECONDS),
     )
     try:
         entry = await bucket.get(key)
@@ -172,15 +177,12 @@ async def operation_leases(
     if not identities:
         yield OperationLeaseGuard(asyncio.Event())
         return
-    lease_seconds = get_float("ATLAS_CATALOG_OPERATION_LEASE_SECONDS")
-    heartbeat_seconds = get_float("ATLAS_CATALOG_OPERATION_HEARTBEAT_SECONDS")
+    lease_seconds = CATALOGUE_OPERATION_LEASE_SECONDS
+    heartbeat_seconds = CATALOGUE_OPERATION_HEARTBEAT_SECONDS
     if heartbeat_seconds >= lease_seconds:
-        raise ValueError(
-            "ATLAS_CATALOG_OPERATION_HEARTBEAT_SECONDS must be shorter than "
-            "ATLAS_CATALOG_OPERATION_LEASE_SECONDS"
-        )
+        raise ValueError("catalogue operation heartbeat must be shorter than its lease")
     timeout = (
-        get_float("ATLAS_CATALOG_OPERATION_ACQUIRE_TIMEOUT_SECONDS")
+        CATALOGUE_OPERATION_ACQUIRE_TIMEOUT_SECONDS
         if acquire_timeout is None
         else acquire_timeout
     )

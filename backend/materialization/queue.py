@@ -5,6 +5,7 @@ from typing import Literal
 from uuid import UUID
 
 from config import get_float, get_int
+from config.performance import MATERIALIZATION_ACK_WAIT_SECONDS, RESOURCE_STATE_REPLICAS
 from nats.js.api import (
     AckPolicy,
     ConsumerConfig,
@@ -100,7 +101,7 @@ async def ensure_materialization_attempts(jetstream):
         ttl=get_float("ATLAS_MATERIALIZATION_ATTEMPT_TTL_SECONDS"),
         max_bytes=get_int("ATLAS_MATERIALIZATION_ATTEMPT_MAX_BYTES"),
         storage=StorageType.FILE,
-        replicas=get_int("ATLAS_RESOURCE_LEASE_REPLICAS"),
+        replicas=RESOURCE_STATE_REPLICAS,
     )
     try:
         bucket = await jetstream.key_value(ATTEMPTS_BUCKET)
@@ -185,7 +186,7 @@ async def _ensure_consumer(
         durable_name=durable,
         ack_policy=AckPolicy.EXPLICIT,
         filter_subject=subject,
-        ack_wait=get_float("ATLAS_MATERIALIZATION_ACK_WAIT_SECONDS"),
+        ack_wait=MATERIALIZATION_ACK_WAIT_SECONDS,
         # Application code distinguishes retryable contention from terminal
         # scope failure and dead-letters only after durable failure coverage.
         max_deliver=-1,
@@ -198,6 +199,6 @@ async def _ensure_consumer(
         raise RuntimeError(f"JetStream consumer {durable} has incompatible configuration")
     if (
         actual.max_deliver != -1
-        or actual.ack_wait != get_float("ATLAS_MATERIALIZATION_ACK_WAIT_SECONDS")
+        or actual.ack_wait != MATERIALIZATION_ACK_WAIT_SECONDS
     ):
         raise RuntimeError(f"JetStream consumer {durable} has incompatible delivery limits")

@@ -6,6 +6,7 @@ type CatalogueStatusResponse = {
   active_file_count: number
   active_storage_bytes: number
   ducklake_version: string | null
+  catalogue_schema_version: number
 }
 
 export type CatalogueStatus = CatalogueStatusResponse & {

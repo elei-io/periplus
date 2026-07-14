@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4, uuid5
 
 from config import get_float, get_int
+from config.performance import GRAPH_ACK_WAIT_SECONDS
 from control.crawl_policies.schemas import CrawlPolicySnapshot
 from control.crawl_policies.service import (
     find_crawl_policy_for_url,
@@ -538,7 +539,7 @@ async def evaluate_edge(*, runs, requests, progress, jetstream, work: EdgeWork, 
             "status": "running",
             "claim_token": claim_token,
             "claim_expires_at": now + timedelta(
-                seconds=get_float("ATLAS_GRAPH_ACK_WAIT_SECONDS") * 2
+                seconds=GRAPH_ACK_WAIT_SECONDS * 2
             ),
             "updated_at": now,
         })

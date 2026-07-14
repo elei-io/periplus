@@ -3,7 +3,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from api.catalogue_pool import CatalogueReadPool
-from config import get_float, get_int
+from config.performance import (
+    CATALOGUE_READ_POOL_WAIT_SECONDS,
+    catalogue_read_pool_size,
+    catalogue_read_threads,
+)
 from api.routers import (
     catalogue,
     catalogue_queries,
@@ -21,9 +25,9 @@ from api.routers import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     pool = CatalogueReadPool(
-        get_int("ATLAS_CATALOGUE_READ_POOL_SIZE"),
-        threads=get_int("ATLAS_CATALOGUE_READ_THREADS"),
-        wait_timeout_seconds=get_float("ATLAS_CATALOGUE_READ_POOL_WAIT_SECONDS"),
+        catalogue_read_pool_size(),
+        threads=catalogue_read_threads(),
+        wait_timeout_seconds=CATALOGUE_READ_POOL_WAIT_SECONDS,
     )
     pool.open()
     app.state.catalogue_read_pool = pool

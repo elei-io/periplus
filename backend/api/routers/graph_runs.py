@@ -18,6 +18,20 @@ from sqlalchemy.orm import Session
 
 from api.catalogue_pool import CatalogueReadPool, CatalogueReadPoolExhausted
 from config import get_float, get_int
+from config.performance import (
+    BROWSER_ACQUISITION_LANES,
+    CATALOGUE_READ_MAX_ATTEMPTS,
+    CATALOGUE_READ_RETRY_SECONDS,
+    GRAPH_CONSUMER_MAX_ACK_PENDING,
+    HTTP_ACQUISITION_LANES,
+    PROVIDER_ACQUISITION_LANES,
+    RESOURCE_ACQUIRE_TIMEOUT_SECONDS,
+    catalogue_max_concurrency,
+    catalogue_read_pool_size,
+    duckdb_memory_limit,
+    duckdb_threads,
+    object_io_max_concurrency,
+)
 from control.catalogue_materializations.models import CatalogueMaterialization
 from control.crawl_graphs.models import CrawlGraph
 from control.crawl_graphs.service import CrawlGraphNotFoundError, CrawlGraphValidationError, freeze_graph
@@ -123,6 +137,21 @@ class CrawlConcurrencyLimits(BaseModel):
     workers: list[RuntimeWorkerCapacity]
     transports: list[TransportCapacity]
     catalogue_executors: list[CatalogueExecutorCapacity]
+    tuning: RuntimeSizing
+
+
+class RuntimeSizing(BaseModel):
+    catalogue_max_concurrency: int
+    effective_catalogue_concurrency: int
+    object_io_max_concurrency: int
+    http_lanes_per_replica: int
+    browser_lanes_per_replica: int
+    provider_lanes_per_replica: int
+    catalogue_lanes_per_replica: int
+    graph_consumer_delivery_ceiling: int
+    duckdb_threads_per_executor: int
+    duckdb_memory_limit_per_executor: str
+    catalogue_read_pool_size: int
 
 
 class GraphRunMaterializationLag(BaseModel):
@@ -290,18 +319,32 @@ async def capacity() -> CrawlConcurrencyLimits:
         )
         for capability in ("ingestion", "materialization")
     ]
+    executor_capacity = sum(item.capacity for item in catalogue_executors)
     return CrawlConcurrencyLimits(
         worker_count=len(workers),
         runtime_capacity=sum(worker.capacity for worker in workers),
         runtime_active=sum(worker.active_request_count for worker in workers),
         browser_capacity=browser.capacity,
-        resource_acquire_timeout_seconds=get_float(
-            "ATLAS_RESOURCE_ACQUIRE_TIMEOUT_SECONDS"
-        ),
+        resource_acquire_timeout_seconds=RESOURCE_ACQUIRE_TIMEOUT_SECONDS,
         resources=resources,
         workers=[RuntimeWorkerCapacity.model_validate(worker, from_attributes=True) for worker in workers],
         transports=transports,
         catalogue_executors=catalogue_executors,
+        tuning=RuntimeSizing(
+            catalogue_max_concurrency=catalogue_max_concurrency(),
+            effective_catalogue_concurrency=min(
+                catalogue_max_concurrency(), executor_capacity
+            ),
+            object_io_max_concurrency=object_io_max_concurrency(),
+            http_lanes_per_replica=HTTP_ACQUISITION_LANES,
+            browser_lanes_per_replica=BROWSER_ACQUISITION_LANES,
+            provider_lanes_per_replica=PROVIDER_ACQUISITION_LANES,
+            catalogue_lanes_per_replica=1,
+            graph_consumer_delivery_ceiling=GRAPH_CONSUMER_MAX_ACK_PENDING,
+            duckdb_threads_per_executor=duckdb_threads(),
+            duckdb_memory_limit_per_executor=duckdb_memory_limit(),
+            catalogue_read_pool_size=catalogue_read_pool_size(),
+        ),
     )
 
 
@@ -332,7 +375,7 @@ def materialization_lag(
     except CatalogueReadPoolExhausted as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     try:
-        attempts = get_int("ATLAS_CATALOGUE_READ_MAX_ATTEMPTS")
+        attempts = CATALOGUE_READ_MAX_ATTEMPTS
         for attempt in range(1, attempts + 1):
             try:
                 rows = _graph_run_materialization_lag_rows(
@@ -345,7 +388,7 @@ def materialization_lag(
                         status_code=503,
                         detail="Materialization lag is temporarily unavailable.",
                     ) from exc
-                time.sleep(get_float("ATLAS_CATALOGUE_READ_RETRY_SECONDS"))
+                time.sleep(CATALOGUE_READ_RETRY_SECONDS)
     finally:
         pool.release(catalogue)
     items: list[GraphRunMaterializationLag] = []

@@ -7,7 +7,12 @@ import time
 from dataclasses import dataclass
 from types import TracebackType
 from uuid import UUID
-from config import get_float, get_int
+from config.performance import (
+    INGEST_BATCH_MAX_BYTES,
+    INGEST_BATCH_MAX_ELEMENT_ROWS,
+    INGEST_BATCH_MAX_ITEMS,
+    INGEST_BATCH_MAX_WAIT_SECONDS,
+)
 
 from repository.catalogue import CatalogueWriteResult, CrawlRecord
 from observability import repository_metrics
@@ -33,12 +38,12 @@ class IngestionWorkerConfig:
             raise ValueError("ingestion batch wait must be positive")
 
     @classmethod
-    def from_env(cls) -> IngestionWorkerConfig:
+    def defaults(cls) -> IngestionWorkerConfig:
         return cls(
-            max_items=get_int("ATLAS_INGEST_BATCH_ITEMS"),
-            max_element_rows=get_int("ATLAS_INGEST_BATCH_ELEMENT_ROWS"),
-            max_staged_bytes=get_int("ATLAS_INGEST_BATCH_BYTES"),
-            max_wait_seconds=get_float("ATLAS_INGEST_BATCH_WAIT_SECONDS"),
+            max_items=INGEST_BATCH_MAX_ITEMS,
+            max_element_rows=INGEST_BATCH_MAX_ELEMENT_ROWS,
+            max_staged_bytes=INGEST_BATCH_MAX_BYTES,
+            max_wait_seconds=INGEST_BATCH_MAX_WAIT_SECONDS,
         )
 
 

@@ -44,11 +44,19 @@ const DuckDBDialect = SQLDialect.define({
 
 const terminalCompletions: Completion[] = [
   { label: "\\?", type: "keyword", detail: "command · show help" },
+  { label: "\\d", type: "keyword", detail: "command · describe relation" },
   {
     label: "\\dt",
     type: "keyword",
-    detail: "command · list tables and views",
+    detail: "command · list tables",
   },
+  { label: "\\dv", type: "keyword", detail: "command · list views" },
+  { label: "\\dm", type: "keyword", detail: "command · list table macros" },
+  { label: "\\df", type: "keyword", detail: "command · list functions" },
+  { label: "\\history", type: "keyword", detail: "command · show history" },
+  { label: "\\x", type: "keyword", detail: "command · expanded display" },
+  { label: "\\status", type: "keyword", detail: "command · show status" },
+  { label: "help", type: "keyword", detail: "command · show help" },
   { label: "clear", type: "keyword", detail: "command · clear transcript" },
 ]
 
@@ -122,6 +130,14 @@ const relationReferencePattern = new RegExp(
   String.raw`\b(?:FROM|JOIN)\s+(${identifierPart}(?:\s*\.\s*${identifierPart}){0,2})(?:\s+(?:AS\s+)?(${identifierPart}))?`,
   "gi"
 )
+const macroReferenceStartPattern = new RegExp(
+  String.raw`\b(?:FROM|JOIN)\s+(${identifierPart}(?:\s*\.\s*${identifierPart}){0,2})\s*\(`,
+  "gi"
+)
+const aliasAfterCallPattern = new RegExp(
+  String.raw`^\s+(?:AS\s+)?(${identifierPart})`,
+  "i"
+)
 const aliasStopWords = new Set([
   "AND",
   "CROSS",
@@ -169,7 +185,7 @@ export function createCatalogueCompletionSource(
   metadata: CatalogueMetadata | undefined
 ): CompletionSource {
   return (context) => {
-    const terminal = completeTerminalCommand(context)
+    const terminal = completeTerminalCommand(context, metadata)
     if (terminal) return terminal
     if (!isSqlCode(context)) return null
 
@@ -373,7 +389,61 @@ function referencedRelations(sqlText: string, metadata: CatalogueMetadata) {
     relations.set(alias.toLocaleLowerCase(), relation)
     relations.set(relation.name.toLocaleLowerCase(), relation)
   }
+
+  macroReferenceStartPattern.lastIndex = 0
+  for (
+    let match = macroReferenceStartPattern.exec(masked);
+    match;
+    match = macroReferenceStartPattern.exec(masked)
+  ) {
+    const openingParenthesis = macroReferenceStartPattern.lastIndex - 1
+    const closingParenthesis = matchingParenthesis(masked, openingParenthesis)
+    if (closingParenthesis === null) continue
+
+    const parts = match[1].split(".").map(normalizeIdentifier)
+    const name = parts.at(-1)
+    const schema = parts.length > 1 ? parts.at(-2) : metadata.default_schema
+    const macro = metadata.functions.find(
+      (item) =>
+        item.kind === "table_macro" &&
+        item.name.toLocaleLowerCase() === name?.toLocaleLowerCase() &&
+        item.schema_name.toLocaleLowerCase() === schema?.toLocaleLowerCase()
+    )
+    if (!macro || macro.result_columns.length === 0) continue
+
+    const possibleAlias = aliasAfterCallPattern.exec(
+      masked.slice(closingParenthesis + 1)
+    )?.[1]
+    const normalizedAlias = possibleAlias
+      ? normalizeIdentifier(possibleAlias)
+      : undefined
+    const alias =
+      normalizedAlias &&
+      !aliasStopWords.has(normalizedAlias.toLocaleUpperCase())
+        ? normalizedAlias
+        : macro.name
+    const relation: CatalogueMetadataRelation = {
+      catalog_name: macro.catalog_name,
+      schema_name: macro.schema_name,
+      name: macro.name,
+      kind: "table",
+      columns: macro.result_columns,
+    }
+    relations.set(alias.toLocaleLowerCase(), relation)
+    relations.set(macro.name.toLocaleLowerCase(), relation)
+  }
   return relations
+}
+
+function matchingParenthesis(value: string, openingIndex: number) {
+  let depth = 0
+  for (let index = openingIndex; index < value.length; index += 1) {
+    if (value[index] === "(") depth += 1
+    if (value[index] !== ")") continue
+    depth -= 1
+    if (depth === 0) return index
+  }
+  return null
 }
 
 function normalizeIdentifier(value: string) {
@@ -466,11 +536,36 @@ function uniqueCompletions(options: Completion[]) {
 }
 
 function completeTerminalCommand(
-  context: CompletionContext
+  context: CompletionContext,
+  metadata: CatalogueMetadata | undefined
 ): CompletionResult | null {
   const line = context.state.doc.lineAt(context.pos)
   const before = context.state.sliceDoc(line.from, context.pos)
-  const match = /^\s*(\\[\w?]*|cl\w*)$/i.exec(before)
+  const describeMatch = /^\s*\\d\s+([\w$.]+)$/i.exec(before)
+  if (describeMatch && metadata) {
+    const prefix = describeMatch[1]
+    const options = metadata.relations
+      .map((relation): Completion => ({
+        label:
+          relation.schema_name === metadata.default_schema
+            ? relation.name
+            : `${relation.schema_name}.${relation.name}`,
+        type: relation.kind === "view" ? "interface" : "class",
+        detail: `${relation.kind} · ${relation.schema_name}`,
+      }))
+      .filter((option) =>
+        option.label.toLocaleLowerCase().startsWith(prefix.toLocaleLowerCase())
+      )
+    if (options.length === 0) return null
+    return {
+      from: context.pos - prefix.length,
+      options: options.slice(0, 1),
+      filter: false,
+      validFor: /^[\w$.]*$/,
+    }
+  }
+
+  const match = /^\s*(\\[\w?]*|(?:cl|he)\w*)$/i.exec(before)
   if (!match) return null
 
   const options = terminalCompletions.filter((option) =>
@@ -481,7 +576,7 @@ function completeTerminalCommand(
     from: context.pos - match[1].length,
     options,
     filter: false,
-    validFor: match[1].startsWith("\\") ? /^\\[\w?]*$/ : /^cl\w*$/i,
+    validFor: match[1].startsWith("\\") ? /^\\[\w?]*$/ : /^(?:cl|he)\w*$/i,
   }
 }
 
@@ -550,7 +645,10 @@ function ghostTextDecorations(view: EditorView): DecorationSet {
   if (!completion || !selection.empty) return Decoration.none
 
   const before = view.state.sliceDoc(0, selection.head)
-  const prefix = /[A-Za-z_][\w$]*$/.exec(before)?.[0] ?? ""
+  const terminalPrefix =
+    /^\s*(?:\\d\s+([\w$.]+)|(\\[\w?]+|(?:cl|he)\w+))$/i.exec(before)
+  const commandPrefix = terminalPrefix?.[1] ?? terminalPrefix?.[2]
+  const prefix = commandPrefix ?? /[A-Za-z_][\w$]*$/.exec(before)?.[0] ?? ""
   const qualifier = qualifierBefore(before, selection.head - prefix.length)
   if (!prefix && !qualifier) return Decoration.none
   const display = completion.displayLabel ?? completion.label

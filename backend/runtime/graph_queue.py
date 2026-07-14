@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 import nats
 from config import get_float, get_int, get_str
+from config.performance import GRAPH_ACK_WAIT_SECONDS, GRAPH_CONSUMER_MAX_ACK_PENDING
 from nats.js.api import AckPolicy, ConsumerConfig, KeyValueConfig, RetentionPolicy, StorageType, StreamConfig
 from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError, NotFoundError
 from pydantic import BaseModel, ConfigDict, Field
@@ -268,28 +269,28 @@ async def ensure_graph_storage(jetstream):
                 f"JetStream {GRAPH_STREAM} has the superseded graph-work contract; "
                 "reset disposable NATS state before starting Atlas"
             )
-    ack_wait = get_float("ATLAS_GRAPH_ACK_WAIT_SECONDS")
+    ack_wait = GRAPH_ACK_WAIT_SECONDS
     consumers = (
         (
             CRAWL_HTTP_CONSUMER,
             CRAWL_HTTP_SUBJECT,
-            get_int("ATLAS_CRAWL_HTTP_MAX_ACK_PENDING"),
+            GRAPH_CONSUMER_MAX_ACK_PENDING,
         ),
         (
             CRAWL_BROWSER_CONSUMER,
             CRAWL_BROWSER_SUBJECT,
-            get_int("ATLAS_CRAWL_BROWSER_MAX_ACK_PENDING"),
+            GRAPH_CONSUMER_MAX_ACK_PENDING,
         ),
         (
             CRAWL_FIRECRAWL_CONSUMER,
             CRAWL_FIRECRAWL_SUBJECT,
-            get_int("ATLAS_CRAWL_PROVIDER_MAX_ACK_PENDING"),
+            GRAPH_CONSUMER_MAX_ACK_PENDING,
         ),
-        (EDGE_CONSUMER, EDGE_SUBJECT, get_int("ATLAS_INGESTION_WORKER_CONCURRENCY")),
+        (EDGE_CONSUMER, EDGE_SUBJECT, GRAPH_CONSUMER_MAX_ACK_PENDING),
         (
             READINESS_CONSUMER,
             READINESS_SUBJECT,
-            get_int("ATLAS_INGESTION_WORKER_CONCURRENCY"),
+            GRAPH_CONSUMER_MAX_ACK_PENDING,
         ),
     )
     for durable, subject, pending in consumers:

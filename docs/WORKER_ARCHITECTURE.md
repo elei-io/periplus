@@ -12,6 +12,35 @@ Workers provide execution capacity. The Resource Governor protects remote sites,
 object storage across every replica and workload. Adding replicas can reduce a worker shortage, but
 cannot silently raise a shared-resource ceiling.
 
+## Operator scaling contract
+
+Routine scaling has one control per workload: its replica count. HTTP, browser, provider,
+ingestion, and materialization replicas may be changed independently; maintenance remains a
+singleton. Each catalogue-owning replica contributes one execution lane. Local acquisition lanes,
+JetStream delivery ceilings, acknowledgement timing, leases, retry backoff, ingestion microbatch
+bounds, DuckDB threads and memory, and API read-pool sizing are code-owned or derived from the
+container CPU/memory limit.
+
+Only two optional environment settings tune deployment-wide shared-infrastructure pressure:
+
+| Setting | Default | Meaning |
+| --- | ---: | --- |
+| `ATLAS_CATALOGUE_MAX_CONCURRENCY` | 64 | Hard upper bound for simultaneous DuckLake work across all executor replicas |
+| `ATLAS_OBJECT_IO_MAX_CONCURRENCY` | 64 | Hard upper bound per object-read and object-write direction |
+
+The effective catalogue concurrency is therefore
+`min(healthy ingestion + materialization lanes, catalogue maximum)`. The maximum is intentionally
+high enough that adding replicas is the normal scaling path; lower it only when the shared
+DuckLake metadata/data platform needs protection. `ATLAS_GRAPH_MAX_REQUESTS_PER_RUN` and
+`ATLAS_GRAPH_MAX_RUN_SECONDS` are optional runaway safety ceilings, not throughput tuning.
+Per-website concurrency remains an editable CrawlPolicy concern.
+
+Service-class fairness is derived from the catalogue maximum: critical and noncritical work each
+recover one lane while waiting, backfill may use at most `max(1, capacity / 4)` lanes, idle shares
+are borrowed, and maintenance becomes exclusive after current hot work drains. The capacity API
+reports both operator maxima and derived runtime sizing so the dashboard explains the effective
+values without asking operators to reproduce the formulas.
+
 ## Product invariant
 
 The graph-critical path remains:
@@ -136,8 +165,9 @@ nested HTML does not depend on the Python recursion limit.
 
 S3 / MinIO is not a mutex. Object-store permits represent weighted operations or expected bytes.
 Known byte sizes are used where available; bounded operation-class estimates are used otherwise.
-Metrics compare estimates with actual bytes and latency. Atlas starts with static budgets and does
-not add a self-tuning feedback controller before production measurements justify one.
+Metrics compare estimates with actual bytes and latency. Atlas derives weighted units and local
+executor sizing from bounded operation classes and container resources; it does not add a feedback
+controller before production measurements justify one.
 An object budget must be at least as large as the biggest admitted bounded operation; startup/work
 fails configuration validation instead of waiting forever for an impossible grant.
 
@@ -156,7 +186,7 @@ Priority policy is code-owned and intentionally small:
 3. `backfill` — historical materialization coverage;
 4. `maintenance` — compaction, cleanup, and bounded repair.
 
-The initial algorithm reserves catalogue shares in both directions so graph-critical work and user
+The algorithm reserves catalogue shares in both directions so graph-critical work and user
 materialization cannot starve each other, caps concurrent backfill, and grants maintenance the full
 catalogue capacity only after hot grants drain. Reservations are minimum shares under contention,
 not hard ceilings: idle units are borrowed until an expiring waiter for the reserved class appears.
@@ -165,10 +195,10 @@ does not increment processing attempts, enter reconciliation, or publish dead le
 central pending-request scheduler, weighted-fair queue, or adaptive controller until measured
 starvation or unfairness requires one.
 
-Users do not author scheduling algorithms. Typed deployment configuration supplies safety
-capacities, minimum critical/noncritical shares, and the backfill ceiling. Per-remote CrawlPolicy
-limits remain editable control-plane policy. Changing worker replicas does not raise a shared
-safety ceiling, but every replica adds a usable execution lane until that ceiling is reached.
+Users do not author scheduling algorithms. Code derives the minimum critical/noncritical shares and
+backfill ceiling from the one catalogue maximum. Per-remote CrawlPolicy limits remain editable
+control-plane policy. Changing worker replicas does not raise a shared safety ceiling, but every
+replica adds a usable execution lane until that ceiling is reached.
 
 ## Queue surface
 

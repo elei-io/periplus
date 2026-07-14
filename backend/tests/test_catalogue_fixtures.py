@@ -20,6 +20,58 @@ from repository.catalogue.views import CatalogueViewStore
 
 
 class CatalogueFixtureTests(unittest.TestCase):
+    def test_bundled_fixtures_compile_against_the_catalogue(self) -> None:
+        fixtures = Path(__file__).parents[2] / "fixtures"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            engine = create_engine("sqlite://")
+            Base.metadata.create_all(
+                engine,
+                tables=[
+                    CatalogueQuery.__table__,
+                    CatalogueQueryRevision.__table__,
+                    CatalogueViewReference.__table__,
+                    CatalogueMaterialization.__table__,
+                    CatalogueTableMacroDefinition.__table__,
+                ],
+            )
+            session = Session(engine, expire_on_commit=False)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            try:
+                with Catalogue(config) as catalogue:
+                    catalogue.bootstrap()
+                    seed_catalogue_fixtures(session, catalogue, fixtures)
+                    self.assertEqual(
+                        [
+                            macro.macro_name
+                            for macro in CatalogueTableMacroStore(catalogue).list()
+                        ],
+                        [
+                            "record_candidates",
+                            "record_field_candidates",
+                            "selector_stats",
+                            "selector_stats_history",
+                        ],
+                    )
+                    self.assertEqual(
+                        catalogue.connection.execute(
+                            "SELECT * FROM atlas.macros.record_candidates('%')"
+                        ).fetchall(),
+                        [],
+                    )
+                    self.assertEqual(
+                        catalogue.connection.execute(
+                            "SELECT * FROM atlas.macros.record_field_candidates('%', 'x > y')"
+                        ).fetchall(),
+                        [],
+                    )
+            finally:
+                session.close()
+                engine.dispose()
+
     def test_seeds_all_definition_kinds_idempotently(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

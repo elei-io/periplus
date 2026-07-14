@@ -6,6 +6,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from itertools import zip_longest
 
+import duckdb
+
 from repository.catalogue.client import Catalogue
 
 MAX_METADATA_RELATIONS = 5_000
@@ -49,6 +51,7 @@ class CatalogueFunctionMetadata:
     return_type: str | None
     parameters: tuple[CatalogueFunctionParameterMetadata, ...]
     varargs: str | None
+    result_columns: tuple[CatalogueColumnMetadata, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +144,18 @@ def read_catalogue_metadata(catalogue: Catalogue) -> CatalogueMetadata:
         )
         for row in relation_rows
     )
-    functions = tuple(_function_metadata(row) for row in function_rows)
+    namespace = ".".join(
+        _quote_identifier(value)
+        for value in (catalogue.config.alias, catalogue.config.schema)
+    )
+    catalogue.connection.execute(f"USE {namespace}")
+    functions = tuple(
+        _function_metadata(
+            row,
+            result_columns=_table_macro_result_columns(catalogue, row),
+        )
+        for row in function_rows
+    )
 
     return CatalogueMetadata(
         catalog_name=catalog_name,
@@ -151,7 +165,11 @@ def read_catalogue_metadata(catalogue: Catalogue) -> CatalogueMetadata:
     )
 
 
-def _function_metadata(row: tuple[object, ...]) -> CatalogueFunctionMetadata:
+def _function_metadata(
+    row: tuple[object, ...],
+    *,
+    result_columns: tuple[CatalogueColumnMetadata, ...] = (),
+) -> CatalogueFunctionMetadata:
     names = tuple(str(value) for value in (row[6] or ()))
     types = tuple(str(value) if value is not None else None for value in (row[7] or ()))
     parameters = tuple(
@@ -168,7 +186,40 @@ def _function_metadata(row: tuple[object, ...]) -> CatalogueFunctionMetadata:
         return_type=str(row[5]) if row[5] is not None else None,
         parameters=parameters,
         varargs=str(row[8]) if row[8] is not None else None,
+        result_columns=result_columns,
     )
+
+
+def _table_macro_result_columns(
+    catalogue: Catalogue, row: tuple[object, ...]
+) -> tuple[CatalogueColumnMetadata, ...]:
+    if str(row[0]) != catalogue.config.alias or str(row[3]) != "table_macro":
+        return ()
+
+    qualified_name = ".".join(
+        _quote_identifier(str(value)) for value in (row[0], row[1], row[2])
+    )
+    arguments = ", ".join("NULL" for _ in (row[6] or ()))
+    try:
+        described = catalogue.connection.execute(
+            f"DESCRIBE SELECT * FROM {qualified_name}({arguments})"
+        ).fetchall()
+    except duckdb.Error:
+        # Some table macros derive their schema from runtime SQL or parameter values.
+        return ()
+
+    return tuple(
+        CatalogueColumnMetadata(
+            name=str(column[0]),
+            data_type=str(column[1]),
+            nullable=str(column[2]).upper() == "YES",
+        )
+        for column in described
+    )
+
+
+def _quote_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
 
 
 def _require_within_limit(rows: list[tuple], limit: int, noun: str) -> None:

@@ -24,6 +24,7 @@ from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progre
 from repository.catalogue import CrawlRecord
 from dom import links_from_html
 from config import get_int, get_optional
+from config.performance import BROWSER_ACQUISITION_LANES
 from control.crawl_policies.schemas import (
     BrowserProfileConfig,
     CrawlPolicySnapshot,
@@ -80,21 +81,16 @@ else:
     AsyncWebCrawler = CrawlResult = Any
 
 
-_browser_capacity: tuple[int, asyncio.Semaphore] | None = None
+_browser_semaphore = asyncio.Semaphore(BROWSER_ACQUISITION_LANES)
 
 
 @asynccontextmanager
 async def _browser_slot():
-    global _browser_capacity
-    capacity = get_int("ATLAS_BROWSER_CONCURRENCY")
-    if _browser_capacity is None or _browser_capacity[0] != capacity:
-        _browser_capacity = (capacity, asyncio.Semaphore(capacity))
-    semaphore = _browser_capacity[1]
-    await semaphore.acquire()
+    await _browser_semaphore.acquire()
     try:
         yield
     finally:
-        semaphore.release()
+        _browser_semaphore.release()
 
 
 def _json_safe(value: Any) -> Any:

@@ -29,6 +29,7 @@ from repository.catalogue.query import (
     stream_arrow_reader,
 )
 from repository.catalogue.metadata import read_catalogue_metadata
+from repository.catalogue.schema import CATALOGUE_SCHEMA_VERSION
 from repository.catalogue.status import read_catalogue_status
 
 
@@ -152,9 +153,10 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
                     "CREATE VIEW atlas.views.recent_documents AS "
                     "SELECT document_id, created_at FROM atlas.main.documents"
                 )
+                catalogue.connection.execute("USE atlas.main")
                 catalogue.connection.execute(
                     "CREATE MACRO atlas.macros.sample_documents(limit_rows) AS TABLE "
-                    "SELECT * FROM atlas.main.documents LIMIT limit_rows"
+                    "SELECT * FROM documents LIMIT limit_rows"
                 )
                 metadata = read_catalogue_metadata(catalogue)
 
@@ -182,6 +184,13 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
             [parameter.name for parameter in table_macro.parameters],
             ["limit_rows"],
         )
+        self.assertEqual(
+            [(column.name, column.data_type) for column in table_macro.result_columns],
+            [
+                (column.name, column.data_type)
+                for column in relations[("main", "documents")].columns
+            ],
+        )
 
     def test_catalogue_status_reports_active_storage_and_ducklake_version(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -197,6 +206,7 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
         self.assertEqual(status.active_file_count, 0)
         self.assertEqual(status.active_storage_bytes, 0)
         self.assertTrue(status.ducklake_version)
+        self.assertEqual(status.catalogue_schema_version, CATALOGUE_SCHEMA_VERSION)
 
     def test_explain_does_not_execute_but_explain_analyze_does(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -391,12 +401,14 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
         read_status.return_value.active_file_count = 4
         read_status.return_value.active_storage_bytes = 1_024
         read_status.return_value.ducklake_version = "1.3.0"
+        read_status.return_value.catalogue_schema_version = CATALOGUE_SCHEMA_VERSION
 
         response = catalogue_status(request)
 
         self.assertEqual(response.active_file_count, 4)
         self.assertEqual(response.active_storage_bytes, 1_024)
         self.assertEqual(response.ducklake_version, "1.3.0")
+        self.assertEqual(response.catalogue_schema_version, CATALOGUE_SCHEMA_VERSION)
         pool.release.assert_called_once_with(catalogue)
 
     @patch("api.routers.catalogue.read_catalogue_metadata")
