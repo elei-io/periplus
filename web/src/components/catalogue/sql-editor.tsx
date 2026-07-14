@@ -146,7 +146,7 @@ export function SqlEditor({
         }
       }}
       basicSetup={{
-        lineNumbers: true,
+        lineNumbers: false,
         foldGutter: false,
         dropCursor: false,
         allowMultipleSelections: false,

@@ -46,7 +46,8 @@ acquire -> retain immutable content -> ingest base evidence -> HTML navigation o
 
 User materialization is asynchronous. A slow or failed materialization deployment may make a view
 stale, but cannot hold a browser, delay base ingestion, block outgoing edges, or keep a graph run
-active. Navigation-critical system projections such as `page_links` are produced by ingestion.
+active. Ingestion publishes a verified, page-local navigation package independently of every
+user-owned catalogue view and materialization.
 
 ## State ownership
 
@@ -56,7 +57,7 @@ active. Navigation-critical system projections such as `page_links` are produced
 | NATS JetStream | Durable current work, graph delivery, retries, dead letters, and at-least-once queue state | Irreplaceable analytical history or large payload bytes |
 | NATS KV | Graph runs, requests, admission, deduplication, progress, worker presence, operation leases, and expiring resource grants | Materialization completion or other analytical truth |
 | Repository objects | Immutable content-addressed raw HTML and artifacts, bounded navigation packages, and deterministic temporary staging | Mutable workflow or scheduling truth |
-| DuckLake | Documents, artifacts, crawls, graph provenance, DOM, system projections, materialized rows, snapshots, and authoritative scope coverage | Editable graph topology or current queue state |
+| DuckLake | Documents, artifacts, crawls, graph provenance, DOM, materialized rows, snapshots, and authoritative scope coverage | Editable graph topology or current queue state |
 | Resource Governor | Current resource-allocation decisions | Work delivery, workflow completion, or commit correctness |
 | Prometheus | Counters, gauges, histograms, and capacity evidence | Correctness-critical state |
 
@@ -127,7 +128,7 @@ for transports that can preserve the original main-response bytes; initially tha
 ## Ingestion and graph continuation
 
 Ingestion is graph-critical catalogue work. For HTML it verifies raw HTML, builds bounded page-local
-DOM and system projections, commits base evidence, publishes a verified navigation package, and
+DOM and the navigation payload, commits base evidence, publishes a verified navigation package, and
 evaluates outgoing bounded SQL edges. For an artifact it verifies the immutable bytes, commits the
 artifact and crawl observation, and marks the request terminal without DOM or outgoing edges.
 

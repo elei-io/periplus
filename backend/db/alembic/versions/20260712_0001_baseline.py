@@ -145,14 +145,12 @@ def upgrade() -> None:
     sa.Column('view_name', sa.Text(), nullable=False),
     sa.Column('display_name', sa.Text(), nullable=False),
     sa.Column('description', sa.Text(), nullable=True),
-    sa.Column('provisioned_by', sa.Text(), server_default=sa.text("'user'"), nullable=False),
     sa.Column('created_from_query_revision_id', sa.UUID(), nullable=True),
     sa.Column('archived_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['created_from_query_revision_id'], ['catalogue_query_revisions.id'], ondelete='SET NULL'),
     sa.PrimaryKeyConstraint('id'),
-    sa.CheckConstraint("provisioned_by IN ('user', 'system')", name='ck_catalogue_view_references_provisioned_by'),
     sa.UniqueConstraint('ducklake_view_uuid'),
     sa.UniqueConstraint('schema_name', 'view_name', name='uq_catalogue_view_reference_name')
     )

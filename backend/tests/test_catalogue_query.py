@@ -10,13 +10,14 @@ import pyarrow as pa
 from ducklake_client import DiskStorage, DuckDBCatalog
 from fastapi import HTTPException
 
-from api.routers.catalogue import CatalogueSqlRequest, sql_query
+from api.routers.catalogue import CatalogueQueryMode, CatalogueSqlRequest, sql_query
 from api.catalogue_pool import CatalogueReadPool, CatalogueReadPoolExhausted
 from repository.catalogue import Catalogue, CatalogueConfig
 from repository.catalogue.query import (
     CatalogueQueryError,
     classify_select,
     execute_arrow_query,
+    explain_arrow_query,
     lint_select,
     stream_arrow_reader,
 )
@@ -118,6 +119,29 @@ class CatalogueQueryLintTests(unittest.TestCase):
 
 
 class CatalogueQueryExecutionTests(unittest.TestCase):
+    def test_explain_does_not_execute_but_explain_analyze_does(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                planned = explain_arrow_query(
+                    catalogue,
+                    "SELECT error('query executed')",
+                ).read_all()
+                with self.assertRaisesRegex(duckdb.Error, "query executed"):
+                    explain_arrow_query(
+                        catalogue,
+                        "SELECT error('query executed')",
+                        analyze=True,
+                    )
+
+        self.assertEqual(planned.column_names, ["explain_key", "explain_value"])
+        self.assertEqual(planned.num_rows, 1)
+
     def test_unqualified_managed_tables_resolve_in_catalogue_namespace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -213,6 +237,31 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
             "Catalog Error: Table with name missing does not exist!",
         )
         pool.release.assert_called_once_with(catalogue)
+
+    @patch("api.routers.catalogue.explain_arrow_query")
+    def test_api_dispatches_explain_modes(self, explain_query: MagicMock) -> None:
+        request = MagicMock()
+        catalogue = request.app.state.catalogue_read_pool.acquire.return_value
+        explain_query.return_value = MagicMock()
+
+        sql_query(
+            CatalogueSqlRequest(sql="SELECT 1", mode=CatalogueQueryMode.EXPLAIN),
+            request,
+        )
+        explain_query.assert_called_once_with(catalogue, "SELECT 1", analyze=False)
+
+        explain_query.reset_mock()
+        sql_query(
+            CatalogueSqlRequest(
+                sql="SELECT 1",
+                mode=CatalogueQueryMode.EXPLAIN_ANALYZE,
+            ),
+            request,
+        )
+        explain_query.assert_called_once_with(catalogue, "SELECT 1", analyze=True)
+
+    def test_request_defaults_to_run_mode(self) -> None:
+        self.assertEqual(CatalogueSqlRequest(sql="SELECT 1").mode, CatalogueQueryMode.RUN)
 
     @patch("api.routers.catalogue.execute_arrow_query")
     def test_css_rewrite_errors_are_returned_before_streaming_starts(

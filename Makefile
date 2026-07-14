@@ -1,4 +1,4 @@
-.PHONY: sync check setup catalogue-check catalogue-test-postgres repository-test-s3 worker-independence-smoke worker-horizontal-smoke worker-transport-smoke api crawl-http-worker crawl-browser-worker crawl-provider-worker ingestion-worker materialization-worker maintenance-worker cli db-revision compose-up compose-down
+.PHONY: sync check setup catalogue-check catalogue-benchmark catalogue-test-postgres repository-test-s3 worker-independence-smoke worker-horizontal-smoke worker-transport-smoke docs-diagrams api crawl-http-worker crawl-browser-worker crawl-provider-worker ingestion-worker materialization-worker maintenance-worker cli db-revision compose-up compose-down
 
 sync:
 	cd backend && uv sync
@@ -12,6 +12,9 @@ setup:
 
 catalogue-check:
 	cd backend && uv run python -m repository.catalogue check
+
+catalogue-benchmark:
+	cd backend && uv run python -m repository.catalogue benchmark
 
 catalogue-test-postgres:
 	docker compose up -d --wait atlas-postgres
@@ -29,6 +32,9 @@ worker-horizontal-smoke:
 
 worker-transport-smoke:
 	cd backend && uv run python ../scripts/verify-worker-transport-independence.py
+
+docs-diagrams:
+	./scripts/render-doc-diagrams.sh
 
 api:
 	cd backend && uv run fastapi dev api/app.py

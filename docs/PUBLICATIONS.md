@@ -113,7 +113,7 @@ The view list shows whether each definition is evaluated virtually or backed by 
 
 | Definition | Evaluation | State | Rows | Storage |
 | --- | --- | --- | ---: | ---: |
-| Page links | Materialized | Live | 416,495 | 12.3 MB |
+| Product prices | Materialized | Live | 416,495 | 12.3 MB |
 | Latest crawls | Materialized | Catching up | 385 | 197 KB |
 | Document text | On read | Virtual | — | — |
 
@@ -171,7 +171,7 @@ The simple contract uses a user-selected result column. Its physical name does n
 
 ```sql
 SELECT *
-FROM views.page_links
+FROM views.product_prices
 WHERE any_document_column = $document_id;
 ```
 
@@ -188,7 +188,7 @@ validated scope adapter. Atlas evaluates a wrapper such as:
 
 ```sql
 SELECT *
-FROM views.page_links
+FROM views.product_prices
 WHERE document_key = $document_id;
 ```
 
@@ -362,8 +362,8 @@ general downstream transformation graphs.
 - Scope replacement and coverage recording are atomic and idempotent.
 - One scope message owns evaluation through coverage; there is no fan-out settlement or separate
   materialization commit-delivery contract.
-- Ingestion workers write base evidence and navigation-critical system projections; materialization
-  workers alone write user-materialized view scopes.
+- Ingestion workers write base evidence and publish the independent navigation package;
+  materialization workers alone write user-materialized view scopes.
 - Materialization never gates ingestion, navigation readiness, graph edges, or graph-run completion.
 - Restarting workers does not lose the activation boundary, CDC cursor, or completed coverage.
 - Dematerialization fences queued work before dropping the durable table.

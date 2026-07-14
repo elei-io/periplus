@@ -3,6 +3,11 @@
 Atlas exposes the managed DuckLake schema as the default SQL namespace. Query `documents`,
 `crawls`, and `elements` directly; the `atlas.main` prefix is optional.
 
+The SQL workbench sends every request in one explicit mode. **Run** executes the query and returns
+its rows, **Explain** returns DuckDB's JSON plan without executing the query, and **Explain analyze**
+executes it and returns the measured JSON plan. Run is the default; changing modes never rewrites
+the SQL saved by the user.
+
 ## Content and crawl identity
 
 `documents` contains unique, content-addressed captured HTML. `elements` contains one parsed DOM
@@ -102,19 +107,23 @@ WHERE e.tag = 'a'
 
 ## Crawl graph edges
 
-The crawl-graph target model uses catalogue SQL to derive subsequent URL inputs from durable crawl
-evidence. Edge queries are evaluated once per ready source crawl and bind `$crawl_id`; they do not
-scan a node's unbounded history to decide what follows one page.
+The crawl-graph target model uses bounded SQL over a verified navigation package derived from
+durable raw HTML. Edge queries are evaluated once per ready source crawl and bind `$crawl_id`; they
+do not scan a node's unbounded history to decide what follows one page.
 
 ```sql
 SELECT url
-FROM views.page_links
+FROM page.links
 WHERE crawl_id = $crawl_id
   AND is_http
   AND NOT is_internal
 ORDER BY element_index
 LIMIT 10;
 ```
+
+`page.links` is an ephemeral relation derived from the current source page. It exists only while
+evaluating that page's outgoing graph edges and is independent of every user-owned `views.*`
+definition.
 
 SQL `LIMIT` expresses the intended number of candidates. Catalogue execution still applies hard
 row, byte, memory, and timeout limits. Returned URLs become independently claimable crawl requests;
@@ -129,3 +138,10 @@ replace global DuckLake or object-store admission.
 queries. Deduplicated `documents` and `elements` are not date-partitioned because one document can
 be observed by crawls on multiple dates. `elements` is not partitioned by tag so complete
 document-order projections remain physically cohesive.
+
+Run `make catalogue-benchmark` against an existing catalogue before changing that layout. The
+benchmark covers day-bounded crawl reads, document-scoped CSS selection, a day-bounded
+crawl-to-elements join, and bounded readable-text extraction. It reports the first execution,
+repeated warm timings, result size, and a warm `EXPLAIN ANALYZE` profile with scan and intermediate
+cardinality metrics. The first execution is not described as a cold-cache measurement because the
+embedded process cannot reliably evict operating-system and object-store caches.

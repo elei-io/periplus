@@ -115,9 +115,8 @@ receive URLs from edges and participate in cycles; being root only determines in
 
 The node does not write DuckLake directly. It maps admitted inputs to the ordinary crawl path, which
 stores immutable HTML or explicitly allowed direct-response artifact bytes and publishes ingestion
-work. Ingestion workers own base evidence, HTML navigation-critical system projections,
-navigation-package publication, and outgoing edges. Artifact crawls are successful terminal
-observations and do not activate outgoing edges.
+work. Ingestion workers own base evidence, navigation-package publication, and outgoing edges.
+Artifact crawls are successful terminal observations and do not activate outgoing edges.
 Materialization workers independently maintain user-created live materialized views.
 
 ### CrawlGraphEdge
@@ -155,7 +154,7 @@ The minimum result contract is one URL column:
 
 ```sql
 SELECT url
-FROM nav.links
+FROM page.links
 WHERE crawl_id = $crawl_id
   AND is_http
 LIMIT 10;
@@ -304,8 +303,8 @@ bytes through the repository boundary, and publishes a frozen ingestion job. It 
 DuckLake or waits for downstream processing.
 
 An ingestion worker validates the raw object and requests the `critical` catalogue/object-store
-resource bundle. HTML commits crawl/document/element evidence and navigation-critical projections,
-then publishes a verified navigation package and evaluates outgoing edges. An artifact commits its
+resource bundle. HTML commits crawl/document/element evidence, then publishes a verified navigation
+package and evaluates outgoing edges. An artifact commits its
 canonical artifact row and crawl observation, then settles without DOM or outgoing edges. User
 materialization runs in separate workers and cannot change the crawl request's terminal state.
 
@@ -339,11 +338,12 @@ crawl ready for outgoing edges
 
 Artifact ingestion crosses the same barrier with no navigation package and settles terminally.
 
-The package is page-local Arrow data exposed as `nav.*` tables. Its NATS reference contains the
-object key, SHA-256, byte size, recipe version, and row count. Edge execution verifies size and
-digest before registering the package on a dedicated DuckDB connection. The same connection may
-also read `views.*`; live materialized views are asynchronous and may lag the
-just-finished crawl.
+The package is page-local Arrow data exposed as `page.links`. The `page.*` namespace means ephemeral
+relations derived from the current source page and available only while evaluating its outgoing
+edges. The package's NATS reference contains the object key, SHA-256, byte size, recipe version, and
+row count. Edge execution verifies size and digest before registering it on a dedicated DuckDB
+connection. `views.*` remains user territory; no Atlas runtime or correctness path depends on a view
+or its materialization state.
 
 After the base crawl commit, CDC and activation backfill may discover deterministic materialization
 scopes. A separate materialization worker owns one scope from evaluation through authoritative
@@ -428,7 +428,7 @@ Example result edge:
 
 ```sql
 SELECT url
-FROM nav.links
+FROM page.links
 WHERE crawl_id = $crawl_id
   AND is_http
   AND NOT is_internal
@@ -440,7 +440,7 @@ Example self-edge:
 
 ```sql
 SELECT url
-FROM nav.links
+FROM page.links
 WHERE crawl_id = $crawl_id
   AND is_same_page
   AND is_query_variant

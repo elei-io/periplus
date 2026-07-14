@@ -1,8 +1,6 @@
 import type { ComponentType, ReactNode } from "react"
 import {
-  ArrowDownIcon,
   ArrowRightIcon,
-  ChevronRightIcon,
   CircleGaugeIcon,
   DatabaseIcon,
   FileArchiveIcon,
@@ -16,8 +14,10 @@ import {
   ServerCogIcon,
 } from "lucide-react"
 
+import catalogueSchemaDiagram from "@/assets/catalogue-schema.svg"
 import { SqlEditor } from "@/components/catalogue/sql-editor"
 import { Button } from "@/components/ui/button"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Table,
   TableBody,
@@ -153,82 +153,86 @@ ORDER BY captured_at DESC;`}
       <DocsSection
         id="schemas"
         title="Table reference"
-        lead="The groups below describe the stable public shape without turning the page into an undifferentiated column dump. Expand a table when you need its exact fields."
+        lead="Choose a table, then scan its fields by concern. Each view shows the complete public shape without mixing unrelated columns."
       >
-        <div className="overflow-hidden rounded-lg border bg-card/25">
-          <SchemaDisclosure
-            name="crawls"
-            summary="Acquisition, URL, response, graph and policy provenance"
-            groups={[
-              [
-                "Identity",
-                "crawl_id, document_id, artifact_id, crawl_request_id",
+        <SchemaReference
+          tables={[
+            {
+              name: "crawls",
+              summary:
+                "Acquisition, URL, response, graph and policy provenance",
+              groups: [
+                [
+                  "Identity",
+                  "crawl_id, document_id, artifact_id, crawl_request_id",
+                ],
+                [
+                  "Graph provenance",
+                  "graph_id, graph_run_id, graph_node_id, source_crawl_id, source_edge_id",
+                ],
+                [
+                  "URL",
+                  "requested_url, normalized_url, final_url, page_url, url_scheme, url_host, url_port, url_registrable_domain, url_path, url_query",
+                ],
+                [
+                  "Response",
+                  "captured_at, status_code, duration_ms, response_media_type, response_filename, outcome",
+                ],
+                [
+                  "Acquisition",
+                  "profile, crawl_profile_id, crawl_profile_slug, remote_concurrency, config_hash, config_json, crawl_policy_id",
+                ],
+                [
+                  "Failure",
+                  "failure_code, failure_stage, failure_retryable, failure_detail",
+                ],
+                [
+                  "Trials",
+                  "purpose, trial_id, trial_sampler_version, trial_sample_rate, trial_candidate_strategy, trial_candidate_profile_id, trial_candidate_profile_slug, trial_candidate_profile_config_hash",
+                ],
               ],
-              [
-                "Graph provenance",
-                "graph_id, graph_run_id, graph_node_id, source_crawl_id, source_edge_id",
+            },
+            {
+              name: "documents",
+              summary:
+                "Content identity, parser provenance and page-quality observations",
+              groups: [
+                [
+                  "Identity and storage",
+                  "document_id, html_sha256, html_object_key, html_content_type, html_encoding, html_size_bytes, html_compressed_size_bytes, compression",
+                ],
+                [
+                  "Parser",
+                  "dom_schema_version, parser_name, parser_version, parser_options_hash, element_count",
+                ],
+                [
+                  "Quality",
+                  "quality_schema_version, html_character_count, visible_text_chars, script_count, app_marker_count, lazy_marker_count, interaction_marker_count, button_count, form_count, input_count, anchor_count, quality_flags_json",
+                ],
+                ["Time", "created_at"],
               ],
-              [
-                "URL",
-                "requested_url, normalized_url, final_url, page_url, url_scheme, url_host, url_port, url_registrable_domain, url_path, url_query",
+            },
+            {
+              name: "elements",
+              summary: "Versioned structural DOM projection in document order",
+              groups: [
+                ["Identity", "document_id, element_index"],
+                ["Tree position", "parent_index, subtree_end_index, depth"],
+                ["Structure", "tag, namespace_uri, attributes"],
+                ["Text", "text_direct, text_tail"],
               ],
-              [
-                "Response",
-                "captured_at, status_code, duration_ms, response_media_type, response_filename, outcome",
+            },
+            {
+              name: "artifacts",
+              summary: "Immutable, content-addressed non-HTML files",
+              groups: [
+                ["Identity", "artifact_id, sha256"],
+                ["Storage", "object_key, size_bytes"],
+                ["Time", "created_at"],
               ],
-              [
-                "Acquisition",
-                "profile, crawl_profile_id, crawl_profile_slug, remote_concurrency, config_hash, config_json, crawl_policy_id",
-              ],
-              [
-                "Failure",
-                "failure_code, failure_stage, failure_retryable, failure_detail",
-              ],
-              [
-                "Trials",
-                "purpose, trial_id, trial_sampler_version, trial_sample_rate, trial_candidate_strategy, trial_candidate_profile_id, trial_candidate_profile_slug, trial_candidate_profile_config_hash",
-              ],
-            ]}
-          />
-          <SchemaDisclosure
-            name="documents"
-            summary="Content identity, parser provenance and page-quality observations"
-            groups={[
-              [
-                "Identity and storage",
-                "document_id, html_sha256, html_object_key, html_content_type, html_encoding, html_size_bytes, html_compressed_size_bytes, compression",
-              ],
-              [
-                "Parser",
-                "dom_schema_version, parser_name, parser_version, parser_options_hash, element_count",
-              ],
-              [
-                "Quality",
-                "quality_schema_version, html_character_count, visible_text_chars, script_count, app_marker_count, lazy_marker_count, interaction_marker_count, button_count, form_count, input_count, anchor_count, quality_flags_json",
-              ],
-              ["Time", "created_at"],
-            ]}
-          />
-          <SchemaDisclosure
-            name="elements"
-            summary="Versioned structural DOM projection in document order"
-            groups={[
-              ["Identity", "document_id, element_index"],
-              ["Tree position", "parent_index, subtree_end_index, depth"],
-              ["Structure", "tag, namespace_uri, attributes"],
-              ["Text", "text_direct, text_tail"],
-            ]}
-          />
-          <SchemaDisclosure
-            name="artifacts"
-            summary="Immutable, content-addressed non-HTML files"
-            groups={[
-              ["Identity", "artifact_id, sha256"],
-              ["Storage", "object_key, size_bytes"],
-              ["Time", "created_at"],
-            ]}
-          />
-        </div>
+            },
+          ]}
+        />
       </DocsSection>
 
       <DocsSection
@@ -440,7 +444,7 @@ export function CrawlGraphsDocsPage({ onNavigate }: DocsPageProps) {
         <CodeExample
           title="Select external result links"
           code={`SELECT url
-FROM nav.links
+FROM page.links
 WHERE crawl_id = $crawl_id
   AND is_http
   AND NOT is_internal
@@ -834,75 +838,19 @@ function DocsSection({
 function CatalogueRelationshipDiagram() {
   return (
     <figure>
-      <div className="rounded-lg border bg-card/15 p-4 sm:p-6">
-        <div className="mx-auto max-w-md">
-          <p className="mb-2 text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
-            One acquisition observation
-          </p>
-          <DiagramEntity
-            icon={Globe2Icon}
-            name="crawls"
-            detail="one row for every attempted page acquisition"
-          />
-        </div>
-
-        <div className="my-4 flex items-center gap-3 text-[10px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
-          <span className="h-px flex-1 bg-border" /> retains exactly one kind of
-          content <span className="h-px flex-1 bg-border" />
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="rounded-md border bg-background/18 p-4">
-            <RelationshipLabel field="document_id" label="HTML response" />
-            <DiagramEntity
-              icon={FileTextIcon}
-              name="documents"
-              detail="deduplicated HTML content"
-            />
-            <div className="my-3 flex items-center justify-center gap-2 text-[10px] text-muted-foreground">
-              <ArrowDownIcon className="size-4" />
-              <span>one document projects to many rows</span>
-            </div>
-            <DiagramEntity
-              icon={Layers3Icon}
-              name="elements"
-              detail="structural DOM projection"
-            />
-          </div>
-
-          <div className="rounded-md border bg-background/18 p-4">
-            <RelationshipLabel field="artifact_id" label="File response" />
-            <DiagramEntity
-              icon={FileArchiveIcon}
-              name="artifacts"
-              detail="deduplicated retained bytes"
-            />
-            <div className="mt-3 border-l-2 border-border pl-3">
-              <p className="text-xs font-medium">Terminal content</p>
-              <p className="mt-1 text-[11px] leading-4.5 text-muted-foreground">
-                Artifacts have no DOM projection and do not activate outgoing
-                graph edges.
-              </p>
-            </div>
-          </div>
-        </div>
+      <div className="overflow-hidden rounded-lg border bg-card/15 p-2 sm:p-3">
+        <img
+          src={catalogueSchemaDiagram}
+          alt="Entity relationship diagram connecting crawls to documents, elements and artifacts through their join columns"
+          className="block w-full"
+        />
       </div>
       <figcaption className="mt-2 text-xs text-muted-foreground">
-        Many crawl observations may reference the same document or artifact. A
-        failed acquisition references neither.
+        Relationships connect the actual join columns. Nullable document and
+        artifact references are mutually exclusive for successful crawls; a
+        failed acquisition has neither.
       </figcaption>
     </figure>
-  )
-}
-
-function RelationshipLabel({ field, label }: { field: string; label: string }) {
-  return (
-    <div className="mb-3 flex items-center justify-between gap-3">
-      <span className="font-mono text-[11px] font-medium text-primary">
-        {field}
-      </span>
-      <span className="text-[10px] text-muted-foreground">{label}</span>
-    </div>
   )
 }
 
@@ -1233,39 +1181,52 @@ function ReferenceTable({
   )
 }
 
-function SchemaDisclosure({
-  name,
-  summary,
-  groups,
+function SchemaReference({
+  tables,
 }: {
-  name: string
-  summary: string
-  groups: [string, string][]
+  tables: {
+    name: string
+    summary: string
+    groups: [string, string][]
+  }[]
 }) {
   return (
-    <details className="group border-b last:border-b-0 open:bg-muted/4">
-      <summary className="flex cursor-pointer list-none items-center gap-4 px-4 py-4 transition-colors group-open:bg-muted/8 marker:hidden hover:bg-muted/8">
-        <ChevronRightIcon className="size-3.5 shrink-0 text-foreground/55 transition-transform group-open:rotate-90" />
-        <code className="w-28 shrink-0 text-[13px] font-semibold text-foreground">
-          {name}
-        </code>
-        <span className="text-[13px] text-foreground/70">{summary}</span>
-      </summary>
-      <div className="px-4 pb-4 sm:pl-12">
-        <dl className="divide-y overflow-hidden rounded-md border bg-background/16">
-          {groups.map(([label, columns]) => (
-            <div key={label} className="grid sm:grid-cols-[10rem_1fr]">
-              <dt className="bg-muted/10 px-4 py-3 text-[10px] font-semibold tracking-[0.1em] text-foreground/62 uppercase">
-                {label}
-              </dt>
-              <dd className="px-4 py-3 font-mono text-xs leading-5.5 text-foreground/86">
-                {columns}
-              </dd>
-            </div>
+    <Tabs
+      defaultValue={tables[0]?.name}
+      className="overflow-hidden rounded-lg border bg-card/35"
+    >
+      <div className="overflow-x-auto bg-muted/8">
+        <TabsList className="px-2">
+          {tables.map(({ name }) => (
+            <TabsTrigger key={name} value={name}>
+              {name}
+            </TabsTrigger>
           ))}
-        </dl>
+        </TabsList>
       </div>
-    </details>
+      {tables.map(({ name, summary, groups }) => (
+        <TabsContent key={name} value={name}>
+          <p className="border-b px-5 py-4 text-[13px] leading-5 text-foreground/78">
+            {summary}
+          </p>
+          <dl className="divide-y">
+            {groups.map(([label, columns]) => (
+              <div
+                key={label}
+                className="grid gap-1 px-5 py-4 even:bg-muted/4 sm:grid-cols-[10rem_1fr] sm:gap-6"
+              >
+                <dt className="text-[10px] font-semibold tracking-[0.1em] text-foreground/72 uppercase">
+                  {label}
+                </dt>
+                <dd className="font-mono text-[13px] leading-6 text-foreground/92">
+                  {columns}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </TabsContent>
+      ))}
+    </Tabs>
   )
 }
 

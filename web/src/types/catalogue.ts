@@ -1,3 +1,10 @@
+export type CatalogueQueryMode = "run" | "explain" | "explain_analyze"
+
+export type CatalogueQueryRequest = {
+  sql: string
+  mode: CatalogueQueryMode
+}
+
 export type CatalogueQueryResult = {
   columns: string[]
   columnTypes: string[]
@@ -38,7 +45,6 @@ export type CatalogueViewRecord = {
   columns: string[]
   column_types: string[]
   managed: boolean
-  provisioned_by: "user" | "system" | null
   available: boolean
   created_at: string | null
   updated_at: string | null

@@ -64,6 +64,7 @@ Useful development commands:
 make check                  # compile backend modules and run unit tests
 make setup                  # create databases, migrate, and bootstrap the catalogue
 make catalogue-check        # validate the DuckLake catalogue
+make catalogue-benchmark    # benchmark service reads and partition/DOM SQL paths
 make compose-down           # stop the local stack
 ```
 

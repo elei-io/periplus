@@ -108,7 +108,7 @@ freshness metrics rather than crawl-request or graph-run terminal state.
 
 **Running edges before the crawl-ready fence.** Evaluate outgoing edges only after base ingestion
 and verified navigation-package publication. Verify the package byte size and SHA-256 from its NATS
-reference before registering `nav.*`.
+reference before registering `page.links`.
 
 **Putting navigation bytes in NATS.** NATS owns package requirement, readiness, delivery, claims,
 and deletion safety. Store Arrow bytes in S3 / MinIO and keep only their integrity and lifecycle
@@ -156,9 +156,9 @@ silently mutate already queued work.
 ## Storage mistakes
 
 **Letting acquisition or maintenance workers perform hot-path catalogue publication.** Ingestion
-workers own base evidence, system projections, navigation, and edges. Materialization workers own
-user-view scope commits. Maintenance receives an exclusive background permit only after hot
-catalogue grants drain.
+workers own base evidence, navigation-package publication, and edges. Materialization workers own
+user-view scope commits. Maintenance receives an exclusive background permit only after hot catalogue
+grants drain.
 
 **Combining ingestion and materialization in one process.** The workflows then share connection,
 memory, scheduling, health, and failure boundaries. Materialization backlog can starve graph-critical

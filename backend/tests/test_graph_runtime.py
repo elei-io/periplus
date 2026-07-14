@@ -106,7 +106,7 @@ def snapshot(*, entry: bool = True, self_edge: bool = False, dedupe_mode: EdgeDe
     graph_id = uuid4()
     source = FrozenGraphNode(id=uuid4(), name="source")
     target = source if self_edge else FrozenGraphNode(id=uuid4(), name="target")
-    edge = FrozenGraphEdge(id=uuid4(), name="links", source_node_id=source.id, target_node_id=target.id, sql="SELECT url FROM nav.links WHERE crawl_id = $crawl_id LIMIT 10", dedupe_mode=dedupe_mode)
+    edge = FrozenGraphEdge(id=uuid4(), name="links", source_node_id=source.id, target_node_id=target.id, sql="SELECT url FROM page.links WHERE crawl_id = $crawl_id LIMIT 10", dedupe_mode=dedupe_mode)
     return FrozenGraphSnapshot(graph_id=graph_id, root_node_id=source.id if entry else uuid4(), nodes=[source, target] if source != target else [source], edges=[edge])
 
 

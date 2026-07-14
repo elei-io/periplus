@@ -235,9 +235,9 @@ Ingestion is `critical` catalogue work. One frozen job:
 
 1. resolves any already-committed deterministic identity;
 2. verifies immutable raw HTML or artifact bytes;
-3. builds page-local DOM staging and navigation-critical system projections for HTML only;
+3. builds page-local DOM staging and the bounded navigation payload for HTML only;
 4. requests an atomic catalogue/object-store permit bundle;
-5. commits crawl, document, element, projection, and provenance evidence;
+5. commits crawl, document, element, and provenance evidence;
 6. writes and verifies the bounded navigation package for HTML;
 7. publishes crawl readiness;
 8. evaluates outgoing bounded SQL edges for HTML, while artifacts settle terminally; and

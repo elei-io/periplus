@@ -23,7 +23,7 @@ export const navigationGroups: NavigationGroup[] = [
         href: "/catalogue/sql",
         icon: TablePropertiesIcon,
         title: "Catalogue SQL",
-        description: "Run read-only SQL and inspect Arrow results.",
+        description: "Run or explain read-only SQL and inspect its results.",
       },
       {
         name: "Queries",

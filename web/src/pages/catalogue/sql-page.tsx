@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react"
 import {
+  ActivityIcon,
   Clock3Icon,
   DatabaseIcon,
+  ListTreeIcon,
   PlayIcon,
   Rows3Icon,
   SparklesIcon,
@@ -11,6 +13,7 @@ import {
 } from "lucide-react"
 
 import { CatalogueResultsTable } from "@/components/catalogue/catalogue-results-table"
+import { CatalogueExplainPlan } from "@/components/catalogue/catalogue-explain-plan"
 import { catalogueTables } from "@/components/catalogue/catalogue-schema"
 import { SqlEditor } from "@/components/catalogue/sql-editor"
 import { SqlReferenceSheet } from "@/components/catalogue/sql-reference-sheet"
@@ -19,6 +22,12 @@ import { SaveViewDialog } from "@/components/catalogue/save-view-dialog"
 import { SaveQueryDialog } from "@/components/catalogue/save-query-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+} from "@/components/ui/select"
 import { useCatalogueQuery } from "@/hooks/use-catalogue-query"
 import { useCatalogueLint } from "@/hooks/use-catalogue-lint"
 import { useCatalogueViews } from "@/hooks/use-catalogue-views"
@@ -28,8 +37,21 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import type { CatalogueQueryMode } from "@/types/catalogue"
 
 const initialSql = `SELECT *\nFROM documents\nLIMIT 100;`
+
+const queryModeLabels: Record<CatalogueQueryMode, string> = {
+  run: "Run",
+  explain: "Explain",
+  explain_analyze: "Explain analyze",
+}
+
+const queryModeActions: Record<CatalogueQueryMode, string> = {
+  run: "Run query",
+  explain: "Explain query",
+  explain_analyze: "Analyze query",
+}
 
 const examples = [
   {
@@ -56,12 +78,14 @@ export function CatalogueSqlPage() {
   )
   const savedQuery = useSavedQuery(savedQueryId)
   const [query, setQuery] = useState(initialSql)
+  const [queryMode, setQueryMode] = useState<CatalogueQueryMode>("run")
+  const [executedMode, setExecutedMode] = useState<CatalogueQueryMode | null>(null)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [elapsed, setElapsed] = useState<number | null>(null)
   const [saveViewOpen, setSaveViewOpen] = useState(false)
   const [saveQueryOpen, setSaveQueryOpen] = useState(false)
   const catalogueQuery = useCatalogueQuery()
-  const catalogueLint = useCatalogueLint(query)
+  const catalogueLint = useCatalogueLint(query, queryMode)
   const catalogueViews = useCatalogueViews()
 
   useEffect(() => {
@@ -78,12 +102,16 @@ export function CatalogueSqlPage() {
     if (!query.trim() || catalogueQuery.isPending) return
     const started = performance.now()
     setStartedAt(started)
-    catalogueQuery.mutate(query, {
-      onSettled: () => {
-        setElapsed(performance.now() - started)
-        setStartedAt(null)
-      },
-    })
+    catalogueQuery.mutate(
+      { sql: query, mode: queryMode },
+      {
+        onSuccess: () => setExecutedMode(queryMode),
+        onSettled: () => {
+          setElapsed(performance.now() - started)
+          setStartedAt(null)
+        },
+      }
+    )
   }
 
   return (
@@ -140,6 +168,32 @@ export function CatalogueSqlPage() {
             >
               ⌘ ↵
             </Badge>
+            <Select
+              value={queryMode}
+              onValueChange={(value) =>
+                value && setQueryMode(value as CatalogueQueryMode)
+              }
+              disabled={catalogueQuery.isPending}
+            >
+              <SelectTrigger
+                size="sm"
+                className="min-w-32"
+                aria-label="Query mode"
+              >
+                <span>{queryModeLabels[queryMode]}</span>
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="run">
+                  <PlayIcon /> Run
+                </SelectItem>
+                <SelectItem value="explain">
+                  <ListTreeIcon /> Explain
+                </SelectItem>
+                <SelectItem value="explain_analyze">
+                  <ActivityIcon /> Explain analyze
+                </SelectItem>
+              </SelectContent>
+            </Select>
             <Button
               size="sm"
               onClick={execute}
@@ -147,10 +201,16 @@ export function CatalogueSqlPage() {
             >
               {catalogueQuery.isPending ? (
                 <SparklesIcon className="animate-pulse" />
+              ) : queryMode === "explain" ? (
+                <ListTreeIcon />
+              ) : queryMode === "explain_analyze" ? (
+                <ActivityIcon />
               ) : (
                 <PlayIcon />
               )}{" "}
-              {catalogueQuery.isPending ? "Running…" : "Run query"}
+              {catalogueQuery.isPending
+                ? `${queryModeLabels[queryMode]}…`
+                : queryModeActions[queryMode]}
             </Button>
           </div>
         </div>
@@ -215,11 +275,22 @@ export function CatalogueSqlPage() {
         <div className="flex min-h-5 items-center gap-3 text-[11px] text-muted-foreground">
           {catalogueQuery.data ? (
             <>
-              <span className="flex items-center gap-1.5">
-                <Rows3Icon className="size-3" />
-                {catalogueQuery.data.rows.length.toLocaleString()} rows
-              </span>
-              <span>{catalogueQuery.data.columns.length} columns</span>
+              {executedMode === "run" ? (
+                <span className="flex items-center gap-1.5">
+                  <Rows3Icon className="size-3" />
+                  {catalogueQuery.data.rows.length.toLocaleString()} rows
+                </span>
+              ) : (
+                <span>{executedMode === "explain_analyze" ? "Execution profile" : "Query plan"}</span>
+              )}
+              {executedMode && (
+                <Badge variant="outline" className="h-5 text-[9px]">
+                  {queryModeLabels[executedMode]}
+                </Badge>
+              )}
+              {executedMode === "run" ? (
+                <span>{catalogueQuery.data.columns.length} columns</span>
+              ) : null}
               {elapsed !== null && (
                 <span className="flex items-center gap-1.5">
                   <Clock3Icon className="size-3" />
@@ -230,18 +301,27 @@ export function CatalogueSqlPage() {
               )}
             </>
           ) : (
-            <span>Run a query to inspect catalogue rows.</span>
+            <span>Run or explain a query to inspect its results.</span>
           )}
           {startedAt !== null && (
-            <span className="animate-pulse">Executing query…</span>
+            <span className="animate-pulse">
+              {queryMode === "run" ? "Executing" : "Planning"} query…
+            </span>
           )}
         </div>
-        {catalogueQuery.data && (
+        {catalogueQuery.data && executedMode === "run" && (
           <CatalogueResultsTable
             key={catalogueQuery.data.columns.join("\u0000")}
             result={catalogueQuery.data}
           />
         )}
+        {catalogueQuery.data && executedMode && executedMode !== "run" ? (
+          <CatalogueExplainPlan
+            key={`${executedMode}-${catalogueQuery.data.rows.length}`}
+            result={catalogueQuery.data}
+            mode={executedMode}
+          />
+        ) : null}
         {!catalogueQuery.data && (
           <div className="grid gap-3 pt-2 lg:grid-cols-2">
             {(["documents", "elements"] as const).map((table) => (

@@ -12,7 +12,6 @@ from psycopg.conninfo import conninfo_to_dict
 from psycopg.errors import DuplicateDatabase
 
 from config import get_str
-from control.catalogue_views.system import provision_system_views
 from control.crawl_policies.service import ensure_default_crawl_policy
 from db.session import session_scope
 from repository.catalogue import Catalogue, catalogue_config_from_env
@@ -54,11 +53,6 @@ def bootstrap_catalogue() -> None:
         catalogue.bootstrap()
 
 
-def seed_system_catalogue() -> None:
-    with Catalogue(catalogue_config_from_env()) as catalogue, session_scope() as session:
-        provision_system_views(session, catalogue)
-
-
 def seed_system_control_plane() -> None:
     with session_scope() as session:
         ensure_default_crawl_policy(session)
@@ -70,7 +64,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     migrate_control_database()
     seed_system_control_plane()
     bootstrap_catalogue()
-    seed_system_catalogue()
     print("Atlas setup complete.")
 
 

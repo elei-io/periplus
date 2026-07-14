@@ -99,7 +99,7 @@ class EdgeUrlExecutor:
                 catalogue.connection.register("atlas_navigation_links", table)
                 statement = parse_one(sql, dialect="duckdb")
                 for source in statement.find_all(exp.Table):
-                    if source.db.lower() == "nav" and source.name.lower() == "links":
+                    if source.db.lower() == "page" and source.name.lower() == "links":
                         source.set("db", None)
                         source.set("this", exp.to_identifier("atlas_navigation_links"))
                 reader = execute_arrow_query(

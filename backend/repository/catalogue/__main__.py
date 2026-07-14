@@ -23,6 +23,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=100,
         help="Number of existing document/crawl identities to benchmark.",
     )
+    parser.add_argument(
+        "--query-repetitions",
+        type=int,
+        default=3,
+        help="Warm repetitions for each representative SQL workload.",
+    )
     arguments = parser.parse_args(argv)
 
     with Catalogue(catalogue_config_from_env()) as catalogue:
@@ -34,7 +40,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("Atlas catalogue is valid.")
         else:
             catalogue.validate_schema()
-            print_hot_path_benchmark(catalogue, samples=arguments.samples)
+            print_hot_path_benchmark(
+                catalogue,
+                samples=arguments.samples,
+                query_repetitions=arguments.query_repetitions,
+            )
     return 0
 
 

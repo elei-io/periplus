@@ -55,7 +55,7 @@ import { GraphProgressProvider, useEdgeProgress, useGraphProgressConnection, use
 import type { CrawlGraphDetail, CrawlGraphEdge, CrawlGraphNode, EdgeDedupeMode } from "@/types/graphs"
 
 const DEFAULT_EDGE_SQL = `SELECT url
-FROM nav.links
+FROM page.links
 WHERE crawl_id = $crawl_id
 LIMIT 100000`
 

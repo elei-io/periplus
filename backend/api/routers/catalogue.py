@@ -1,5 +1,7 @@
 """Low-level analytical access to the DuckLake catalogue."""
 
+from enum import StrEnum
+
 import duckdb
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, Request
@@ -10,6 +12,7 @@ from repository.catalogue.query import (
     CatalogueQueryError,
     classify_select,
     execute_arrow_query,
+    explain_arrow_query,
     lint_select,
     stream_arrow_reader,
 )
@@ -17,8 +20,15 @@ from repository.catalogue.query import (
 router = APIRouter(prefix="/catalogue", tags=["catalogue"])
 
 
+class CatalogueQueryMode(StrEnum):
+    RUN = "run"
+    EXPLAIN = "explain"
+    EXPLAIN_ANALYZE = "explain_analyze"
+
+
 class CatalogueSqlRequest(BaseModel):
     sql: str = Field(min_length=1, max_length=100_000)
+    mode: CatalogueQueryMode = CatalogueQueryMode.RUN
 
 
 class CatalogueLintDiagnosticResponse(BaseModel):
@@ -58,7 +68,14 @@ def sql_query(payload: CatalogueSqlRequest, request: Request) -> StreamingRespon
     except CatalogueReadPoolExhausted as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     try:
-        reader = execute_arrow_query(catalogue, payload.sql)
+        if payload.mode == CatalogueQueryMode.RUN:
+            reader = execute_arrow_query(catalogue, payload.sql)
+        else:
+            reader = explain_arrow_query(
+                catalogue,
+                payload.sql,
+                analyze=payload.mode == CatalogueQueryMode.EXPLAIN_ANALYZE,
+            )
     except (CatalogueQueryError, duckdb.Error) as exc:
         pool.release(catalogue)
         raise HTTPException(status_code=422, detail=str(exc)) from exc

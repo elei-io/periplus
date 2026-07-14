@@ -53,10 +53,6 @@ export const sqlEditorTheme = Prec.highest(
       border: "none",
       padding: "16px 0 28px",
     },
-    ".cm-lineNumbers .cm-gutterElement": {
-      padding: "0 4px 0 14px",
-      minWidth: "34px",
-    },
     ".cm-activeLine": { backgroundColor: "var(--sql-active-line)" },
     ".cm-activeLineGutter": {
       backgroundColor: "var(--sql-active-line)",

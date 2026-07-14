@@ -26,6 +26,13 @@ class CatalogueLintDiagnostic:
     message: str
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedCatalogueQuery:
+    sql: str
+    bindings: dict[str, object]
+    namespace: str
+
+
 _DOM_HELPERS = frozenset({"inner_html", "readable_text", "text_content"})
 _DOM_SQL_SPECIAL_FORMS = frozenset(
     {"css_select", "get_attribute", "has_attribute", *_DOM_HELPERS}
@@ -208,6 +215,44 @@ def execute_arrow_query(
 ) -> pa.RecordBatchReader:
     """Execute a validated query in the managed catalogue namespace."""
 
+    prepared = prepare_catalogue_query(catalogue, sql, parameters)
+    catalogue.connection.execute(f"USE {prepared.namespace}")
+    cursor = (
+        catalogue.connection.execute(prepared.sql, prepared.bindings)
+        if prepared.bindings
+        else catalogue.connection.execute(prepared.sql)
+    )
+    return cursor.to_arrow_reader(batch_size=65_536)
+
+
+def explain_arrow_query(
+    catalogue: Catalogue,
+    sql: str,
+    parameters: dict[str, object] | None = None,
+    *,
+    analyze: bool = False,
+) -> pa.RecordBatchReader:
+    """Return DuckDB's JSON plan, optionally with execution measurements."""
+
+    prepared = prepare_catalogue_query(catalogue, sql, parameters)
+    catalogue.connection.execute(f"USE {prepared.namespace}")
+    modifier = "ANALYZE, FORMAT JSON" if analyze else "FORMAT JSON"
+    explain_sql = f"EXPLAIN ({modifier}) {prepared.sql}"
+    cursor = (
+        catalogue.connection.execute(explain_sql, prepared.bindings)
+        if prepared.bindings
+        else catalogue.connection.execute(explain_sql)
+    )
+    return cursor.to_arrow_reader(batch_size=65_536)
+
+
+def prepare_catalogue_query(
+    catalogue: Catalogue,
+    sql: str,
+    parameters: dict[str, object] | None = None,
+) -> PreparedCatalogueQuery:
+    """Validate and rewrite public catalogue SQL without executing it."""
+
     rewritten = _rewrite_select(sql)
     bindings = dict(parameters or {})
     bindings.update(rewritten.parameters)
@@ -219,13 +264,11 @@ def execute_arrow_query(
         _quote_identifier(part)
         for part in (catalogue.config.alias, catalogue.config.schema)
     )
-    catalogue.connection.execute(f"USE {namespace}")
-    cursor = (
-        catalogue.connection.execute(rewritten.sql, bindings)
-        if bindings
-        else catalogue.connection.execute(rewritten.sql)
+    return PreparedCatalogueQuery(
+        sql=rewritten.sql,
+        bindings=bindings,
+        namespace=namespace,
     )
-    return cursor.to_arrow_reader(batch_size=65_536)
 
 
 def _rewrite_select(sql: str) -> RewrittenSelectorSql:

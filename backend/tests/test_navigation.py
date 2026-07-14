@@ -96,7 +96,7 @@ class NavigationPackageTests(unittest.TestCase):
                 patch("runtime.catalog_navigation.execute_arrow_query", execute),
             ):
                 urls = EdgeUrlExecutor(store, package)(
-                    "SELECT url FROM nav.links WHERE crawl_id = $crawl_id",
+                    "SELECT url FROM page.links WHERE crawl_id = $crawl_id",
                     {
                         "crawl_id": crawl_id,
                         "_page_url": "https://example.com/start",
