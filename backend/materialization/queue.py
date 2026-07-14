@@ -80,7 +80,7 @@ class MaterializationDeadLetter(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     job: MaterializationScopeJob
-    stage: Literal["compute", "commit"]
+    stage: Literal["compute", "commit", "settlement"]
     error: str
     delivery_count: int
     failed_at: datetime

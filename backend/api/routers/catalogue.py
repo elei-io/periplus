@@ -59,7 +59,7 @@ def sql_query(payload: CatalogueSqlRequest, request: Request) -> StreamingRespon
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     try:
         reader = execute_arrow_query(catalogue, payload.sql)
-    except duckdb.Error as exc:
+    except (CatalogueQueryError, duckdb.Error) as exc:
         pool.release(catalogue)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception:

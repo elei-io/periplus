@@ -16,7 +16,7 @@ from observability import materialization_metrics
 from materialization.backfill import run_backfill
 from materialization.compute import compute_scope
 from materialization.fencing import StaleMaterializationJob
-from materialization.live import run_crawl_planner, run_live
+from materialization.live import run_crawl_planner
 from materialization.queue import (
     COMMIT_SUBJECT,
     DEAD_LETTER_SUBJECT,
@@ -91,20 +91,6 @@ async def run(
                     "backfill",
                     lambda: _supervise_subsystem(
                         "backfill", lambda: run_backfill(jetstream, stop), stop, monitor
-                    ),
-                    operation_lease_store,
-                    stop,
-                    monitor,
-                )
-            )
-            tasks.create_task(
-                _run_leased_subsystem(
-                    "cdc_live",
-                    lambda: _supervise_cdc(
-                        "cdc_live",
-                        lambda: run_live(jetstream, stop, monitor),
-                        stop,
-                        monitor,
                     ),
                     operation_lease_store,
                     stop,

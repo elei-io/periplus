@@ -32,10 +32,13 @@ from runtime.graph_queue import (
     ensure_crawl_capacity_storage,
     ensure_graph_storage,
     ensure_graph_progress_storage,
+    ensure_policy_trial_budget_storage,
     get_crawl_request,
     get_graph_run,
     list_crawl_requests,
     list_graph_runs,
+    reconcile_policy_trial_budget,
+    settle_sample_request,
     update_crawl_request,
 )
 from runtime.graph_runs import expire_graph_run, reconcile_pending_admissions, settle_request
@@ -75,6 +78,7 @@ async def _process_crawl(
     transport: CrawlTransport,
     capacity=None,
     http_client: httpx.AsyncClient | None = None,
+    jetstream=None,
 ) -> None:
     try:
         work = CrawlWork.model_validate_json(message.data)
@@ -130,13 +134,36 @@ async def _process_crawl(
         else:
             await message.ack()
         return
-    if previous_status != request.status:
+    if request.purpose == "use" and previous_status != request.status:
         try:
             await transition_node_progress(progress, request, previous_status=previous_status)
         except Exception:
             pass
     run = await get_graph_run(runs, request.graph_run_id)
-    if run is None or run.status in {"failed", "cancelled", "completed", "completed_with_errors"}:
+    if run is None:
+        if request.purpose == "sample":
+            await settle_sample_request(
+                jetstream,
+                requests,
+                request.id,
+                status="failed",
+                error="Originating graph run is unavailable.",
+                failure_stage="lifecycle",
+                expected_claim_token=claim_token,
+            )
+        else:
+            await settle_request(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                request_id=request.id,
+                status="cancelled",
+                error="Graph run is no longer active.",
+                expected_claim_token=claim_token,
+            )
+        await message.ack()
+        return
+    if request.purpose == "use" and run.status in {"failed", "cancelled", "completed", "completed_with_errors"}:
         await settle_request(
             runs=runs,
             requests=requests,
@@ -160,6 +187,8 @@ async def _process_crawl(
             graph_node_id=request.node_id,
             crawl_request_id=request.id,
             effective_policy_snapshot_json=request.effective_policy_snapshot_json,
+            purpose=request.purpose,
+            trial=(request.trial.model_dump(mode="json") if request.trial else None),
             source_crawl_id=request.source_crawl_id,
             source_edge_id=request.source_edge_id,
         )
@@ -193,16 +222,27 @@ async def _process_crawl(
                 f"crawl request {request.id} returned unexpected crawl id {page.crawl_id}"
             )
         if not page.success:
-            await settle_request(
-                runs=runs,
-                requests=requests,
-                progress=progress,
-                request_id=request.id,
-                status="failed",
-                error=page.error or "Page acquisition failed.",
-                expected_claim_token=claim_token,
-                failure_stage="acquisition",
-            )
+            if request.purpose == "sample":
+                await settle_sample_request(
+                    jetstream,
+                    requests,
+                    request.id,
+                    status="failed",
+                    error=page.error or "Page acquisition failed.",
+                    expected_claim_token=claim_token,
+                    failure_stage="acquisition",
+                )
+            else:
+                await settle_request(
+                    runs=runs,
+                    requests=requests,
+                    progress=progress,
+                    request_id=request.id,
+                    status="failed",
+                    error=page.error or "Page acquisition failed.",
+                    expected_claim_token=claim_token,
+                    failure_stage="acquisition",
+                )
             await message.ack()
             return
 
@@ -211,7 +251,11 @@ async def _process_crawl(
                 return current
             return current.model_copy(
                 update={
-                    "status": "awaiting_navigation",
+                    "status": (
+                        "awaiting_ingestion"
+                        if current.purpose == "sample"
+                        else "awaiting_navigation"
+                    ),
                     "document_id": page.document_id,
                     "claim_token": None,
                     "claim_expires_at": None,
@@ -221,7 +265,7 @@ async def _process_crawl(
 
         previous_status = request.status
         request = await update_crawl_request(requests, request.id, await_navigation)
-        if previous_status != request.status:
+        if request.purpose == "use" and previous_status != request.status:
             try:
                 await transition_node_progress(progress, request, previous_status=previous_status)
             except Exception:
@@ -245,7 +289,7 @@ async def _process_crawl(
                 )
 
             current = await update_crawl_request(requests, request.id, release_claim)
-            if current.status == "queued":
+            if request.purpose == "use" and current.status == "queued":
                 try:
                     await transition_node_progress(
                         progress, current, previous_status="crawling"
@@ -254,16 +298,27 @@ async def _process_crawl(
                     pass
             await message.nak(delay=min(30, 2 ** max(0, delivery_count - 1)))
             return
-        await settle_request(
-            runs=runs,
-            requests=requests,
-            progress=progress,
-            request_id=request.id,
-            status="failed",
-            error=str(exc),
-            expected_claim_token=claim_token,
-            failure_stage="acquisition",
-        )
+        if request.purpose == "sample":
+            await settle_sample_request(
+                jetstream,
+                requests,
+                request.id,
+                status="failed",
+                error=str(exc),
+                expected_claim_token=claim_token,
+                failure_stage="acquisition",
+            )
+        else:
+            await settle_request(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                request_id=request.id,
+                status="failed",
+                error=str(exc),
+                expected_claim_token=claim_token,
+                failure_stage="acquisition",
+            )
         await message.ack()
     finally:
         if acquisition is not None and not acquisition.done():
@@ -311,6 +366,8 @@ async def run(
     runs, requests, workers = await ensure_graph_storage(jetstream)
     progress = await ensure_graph_progress_storage(jetstream)
     capacity_state = await ensure_crawl_capacity_storage(jetstream)
+    trial_budget = await ensure_policy_trial_budget_storage(jetstream)
+    await reconcile_policy_trial_budget(trial_budget, runs, requests)
     for active_run in await list_graph_runs(runs):
         if active_run.status in {"queued", "running"}:
             await bootstrap_run_progress(progress, requests, active_run)
@@ -459,6 +516,7 @@ async def run(
                                 transport,
                                 capacity_state,
                                 http_client,
+                                jetstream,
                             )
                         )
                         active.add(task)

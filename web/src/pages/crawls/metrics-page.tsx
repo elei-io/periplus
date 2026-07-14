@@ -126,7 +126,7 @@ function SystemCapacity({
             {limitedPolicies.map((policy) => (
               <a
                 key={policy.id}
-                href={`/settings/crawl-policies/${policy.id}`}
+                href={`/crawl-policies/${policy.id}`}
                 className="grid gap-1 rounded-md border p-3 text-sm transition-colors hover:bg-muted/50 sm:grid-cols-[minmax(10rem,1fr)_minmax(14rem,2fr)_auto] sm:items-center"
               >
                 <span className="truncate font-medium">

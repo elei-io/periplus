@@ -13,7 +13,7 @@ from repository.catalogue.views import CatalogueViewStore
 from .models import CatalogueViewReference
 from .service import adopt_reference, create_reference, update_reference
 
-PAGE_LINKS_RECIPE = "page-links-v3-setwise-deterministic"
+PAGE_LINKS_RECIPE = "page-links-v4-use-crawls-only"
 _READABLE_BREAK_TAGS_SQL = ", ".join(
     "'" + value.replace("'", "''") + "'" for value in READABLE_BREAK_TAGS
 )
@@ -34,6 +34,7 @@ WITH recipe AS (
     nullif(get_attribute(e.attributes, 'target'), '') AS target
   FROM main.crawls c JOIN main.elements e USING (document_id) CROSS JOIN recipe
   WHERE recipe.version = '{PAGE_LINKS_RECIPE}'
+    AND c.purpose = 'use'
     AND e.tag = 'a' AND has_attribute(e.attributes, 'href')
 ), anchor_fragments AS (
   SELECT l.crawl_id, l.element_index,

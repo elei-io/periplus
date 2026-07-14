@@ -199,6 +199,11 @@ to the frozen policy revision. A lease is held only for an actual remote visit, 
 cache lookup, ingestion, or navigation waiting. Browser work also takes a browser-worker-local
 permit to protect that Chromium process. Exact profile configuration remains code-owned.
 
+Atlas may sample a bounded share of use requests and run one shadow acquisition with a different
+frozen policy. Samples reuse the normal transport and repository implementations but never become
+graph work, advance edges, gate graph completion, or mutate policy matching. The paired DuckLake
+evidence contract is defined in [TRIALS.md](TRIALS.md).
+
 ## Runtime entities
 
 ### GraphRun
@@ -682,7 +687,12 @@ KV buckets:
 - atlas_crawl_requests
 - atlas_graph_workers
 - atlas_graph_progress
+- atlas_policy_trial_budget
 ```
+
+`atlas_policy_trial_budget` is the atomic bounded set of active shadow sample request identities.
+It prevents a traffic spike from exceeding `ATLAS_POLICY_TRIAL_MAX_IN_FLIGHT`; the durable crawl
+evidence remains in DuckLake rather than this operational KV projection.
 
 `GraphRun` current state contains:
 
@@ -762,7 +772,9 @@ source_edge_id UUID nullable
 ```
 
 There are no task-ID, task-revision, primitive, or compatibility provenance columns after the
-cutover.
+cutover. Each row is exactly one acquisition and also stores its frozen `profile`, ranked
+`template`, `config_json`, `config_hash`, and typed acquisition outcome. Canonical document-quality
+measurements live once on `documents`; they are not copied into every crawl observation.
 
 ### Navigation readiness and asynchronous materialization
 

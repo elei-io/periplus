@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import tempfile
 import unittest
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from ducklake_client import (
     ColumnDef,
@@ -22,6 +23,7 @@ from repository.catalogue import Catalogue, CatalogueConfig, CatalogueConfigErro
 from repository.catalogue import CrawlRecord
 from repository.catalogue.service import CatalogueService
 from repository.catalogue.schema import CRAWL_COLUMNS, expected_columns
+from repository import FileObjectStore, RawHtmlRepository, RepositoryIngestor
 from dom import encode_html
 
 
@@ -104,6 +106,75 @@ class CatalogueConfigTests(unittest.TestCase):
 
 
 class CatalogueBootstrapTests(unittest.TestCase):
+    def test_ingestion_persists_typed_outcome_and_document_quality(self) -> None:
+        html = (
+            '<html><body><div id="root">Atlas</div><a href="/docs">Docs</a>'
+            '<button class="load-more">Load more</button><form><input></form>'
+            + "<script></script>" * 12
+            + "</body></html>"
+        )
+        digest = hashlib.sha256(html.encode()).hexdigest()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            catalogue = Catalogue(
+                CatalogueConfig(
+                    catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                    storage=DiskStorage(root / "lake"),
+                )
+            )
+            catalogue.bootstrap()
+            ingestor = RepositoryIngestor(
+                html_repository=RawHtmlRepository(FileObjectStore(root / "objects")),
+                catalogue=catalogue,
+                staging_root=root / "staging",
+            )
+            ingestor.store_raw(html)
+            crawl = CrawlRecord(
+                crawl_id=uuid4(),
+                document_id=f"sha256:{digest}",
+                graph_id=uuid4(),
+                graph_run_id=uuid4(),
+                graph_node_id=uuid4(),
+                crawl_request_id=uuid4(),
+                requested_url="https://example.com/",
+                normalized_url="https://example.com/",
+                final_url="https://example.com/",
+                captured_at=datetime(2026, 7, 14, tzinfo=UTC),
+                status_code=200,
+                duration_ms=12,
+                profile="http",
+                template="http_fast",
+                config_hash="a" * 64,
+                config_json={"profile": "http"},
+                outcome="success",
+            )
+            prepared = ingestor.prepare_from_raw(crawl=crawl)
+            ingestor.commit_prepared_batch([prepared])
+            stored_crawl = ingestor.catalogue_service.get_crawl(crawl.crawl_id)
+            document = ingestor.catalogue_service.get_document(crawl.document_id)
+            catalogue.connection.execute(
+                "UPDATE atlas.main.documents SET parser_version = 'stale' "
+                "WHERE document_id = ?",
+                [crawl.document_id],
+            )
+            rebuilt = ingestor.prepare_from_raw(crawl=crawl)
+            self.assertTrue(rebuilt.replace_projection)
+            ingestor.commit_prepared_batch([rebuilt])
+            rebuilt_document = ingestor.catalogue_service.get_document(crawl.document_id)
+            ingestor.close()
+
+        self.assertEqual(stored_crawl, crawl)
+        self.assertIsNotNone(document)
+        assert document is not None
+        self.assertEqual(document.quality_schema_version, 1)
+        self.assertEqual(document.script_count, 12)
+        self.assertEqual(document.anchor_count, 1)
+        self.assertEqual(
+            document.quality_flags_json,
+            ("app_shell", "lazy_load", "interaction_required"),
+        )
+        self.assertEqual(rebuilt_document, document)
+
     def test_current_connection_snapshot_and_commit_metadata_are_available(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -117,16 +188,18 @@ class CatalogueBootstrapTests(unittest.TestCase):
                     catalogue.connection.execute(
                         "INSERT INTO atlas.main.crawls ("
                         "crawl_id, document_id, graph_id, graph_run_id, graph_node_id, "
-                        "crawl_request_id, source_crawl_id, source_edge_id, "
+                        "crawl_request_id, purpose, trial_id, source_crawl_id, source_edge_id, "
                         "requested_url, normalized_url, final_url, page_url, "
                         "url_scheme, url_host, url_port, url_registrable_domain, "
                         "url_path, url_query, captured_at, status_code, duration_ms, "
-                        "input_json, input_hash, crawl_policy_id, crawl_policy_revision, "
-                        "warnings_json, errors_json"
-                        ") SELECT uuid(), NULL, uuid(), uuid(), uuid(), uuid(), NULL, NULL, 'https://x', "
+                        "profile, template, config_hash, config_json, crawl_policy_id, "
+                        "crawl_policy_revision, outcome, failure_code, failure_stage, "
+                        "failure_retryable, failure_detail"
+                        ") SELECT uuid(), NULL, uuid(), uuid(), uuid(), uuid(), 'use', NULL, NULL, NULL, 'https://x', "
                         "'https://x/', NULL, 'https://x/', 'https', 'x', 443, 'x', '/', "
-                        "'', now(), NULL, NULL, '{}', 'hash', NULL, NULL, "
-                        "'[]', '[\"expected failure\"]'"
+                        "'', now(), NULL, NULL, 'http', 'http_fast', repeat('a', 64), "
+                        "'{}', NULL, NULL, 'failed', 'expected_failure', 'request', "
+                        "false, 'expected failure'"
                     )
                     catalogue.set_commit_message(
                         author="Atlas test",
@@ -538,9 +611,15 @@ class CatalogueBootstrapTests(unittest.TestCase):
             normalized_url="https://docs.example.co.jp/start",
             final_url="https://www.example.co.jp:8443/guides/sql?q=ducklake",
             captured_at=datetime(2026, 7, 11, tzinfo=UTC),
-            input_json={},
-            input_hash="input:test",
-            errors_json=[{"message": "failed"}],
+            profile="http",
+            template="http_fast",
+            config_json={},
+            config_hash="a" * 64,
+            outcome="failed",
+            failure_code="expected_failure",
+            failure_stage="request",
+            failure_retryable=False,
+            failure_detail="failed",
         )
 
         self.assertEqual(crawl.page_url, crawl.final_url)

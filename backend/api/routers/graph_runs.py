@@ -222,13 +222,13 @@ def _graph_run_materialization_lag_rows(
     catalogue: Catalogue, active_definitions: list[tuple[UUID, UUID, str]]
 ) -> list[tuple]:
     crawls = _catalogue_table(catalogue, "crawls")
-    members = _catalogue_table(catalogue, "crawl_materialization_fanout_members")
     results = _catalogue_table(catalogue, "materialization_scope_results")
     if not active_definitions:
         return catalogue.connection.execute(
             f"""
             SELECT graph_run_id, 0, 0, 0
             FROM {crawls}
+            WHERE purpose = 'use'
             GROUP BY graph_run_id
             ORDER BY max(captured_at) DESC
             """
@@ -253,36 +253,13 @@ def _graph_run_materialization_lag_rows(
                    END AS scope_id
             FROM {crawls} AS c
             CROSS JOIN active AS a
-            WHERE a.scope_kind = 'crawl' OR c.document_id IS NOT NULL
-        ),
-        member_status AS (
-            SELECT c.graph_run_id,
-                   m.materialization_id,
-                   m.definition_revision_id,
-                   m.scope_kind,
-                   m.scope_id,
-                   bool_or(m.status = 'planned') AS pending,
-                   bool_or(m.status = 'failed') AS failed
-            FROM {crawls} AS c
-            JOIN {members} AS m USING (crawl_id)
-            JOIN active AS a
-              ON a.materialization_id = m.materialization_id
-             AND a.definition_revision_id = m.definition_revision_id
-            GROUP BY c.graph_run_id, m.materialization_id,
-                     m.definition_revision_id, m.scope_kind, m.scope_id
+            WHERE c.purpose = 'use'
+              AND (a.scope_kind = 'crawl' OR c.document_id IS NOT NULL)
         ),
         scope_state AS (
             SELECT e.*,
-                   coalesce(m.pending, false) AS member_pending,
-                   coalesce(m.failed, false) AS member_failed,
                    r.status AS result_status
             FROM expected_scopes AS e
-            LEFT JOIN member_status AS m
-              ON m.graph_run_id = e.graph_run_id
-             AND m.materialization_id = e.materialization_id
-             AND m.definition_revision_id = e.definition_revision_id
-             AND m.scope_kind = e.scope_kind
-             AND m.scope_id = e.scope_id
             LEFT JOIN {results} AS r
               ON r.materialization_id = e.materialization_id
              AND r.definition_revision_id = e.definition_revision_id
@@ -293,14 +270,10 @@ def _graph_run_materialization_lag_rows(
             SELECT graph_run_id,
                    count(DISTINCT materialization_id) AS materialization_count,
                    count(*) FILTER (
-                       WHERE NOT (
-                           member_failed
-                           OR coalesce(result_status = 'failed', false)
-                       )
-                         AND (member_pending OR result_status IS NULL)
+                       WHERE result_status IS NULL
                    ) AS pending_updates,
                    count(*) FILTER (
-                       WHERE member_failed OR result_status = 'failed'
+                       WHERE result_status = 'failed'
                    ) AS failed_updates
             FROM scope_state
             GROUP BY graph_run_id
@@ -311,6 +284,7 @@ def _graph_run_materialization_lag_rows(
         JOIN (
             SELECT graph_run_id, max(captured_at) AS last_captured_at
             FROM {crawls}
+            WHERE purpose = 'use'
             GROUP BY graph_run_id
         ) AS r USING (graph_run_id)
         ORDER BY r.last_captured_at DESC

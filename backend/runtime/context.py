@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -17,6 +18,8 @@ class GraphExecutionContext:
     graph_node_id: UUID
     crawl_request_id: UUID
     effective_policy_snapshot_json: dict | None
+    purpose: Literal["use", "sample"] = "use"
+    trial: dict | None = None
     source_crawl_id: UUID | None = None
     source_edge_id: UUID | None = None
 

@@ -52,6 +52,11 @@ const CrawlPolicyDetailPage = lazy(() =>
     default: module.CrawlPolicyDetailPage,
   }))
 )
+const PolicyTrialsPage = lazy(() =>
+  import("@/pages/settings/policy-trials-page").then((module) => ({
+    default: module.PolicyTrialsPage,
+  }))
+)
 
 function PageFallback() {
   return (
@@ -130,9 +135,13 @@ export function App() {
       return <CrawlMetricsPage />
     }
 
-    if (activeItem.href === "/settings/crawl-policies") {
+    if (activeItem.href === "/crawl-policies/trials") {
+      return <PolicyTrialsPage />
+    }
+
+    if (activeItem.href === "/crawl-policies") {
       const policyId = pathname.match(
-        /^\/settings\/crawl-policies\/([^/]+)$/
+        /^\/crawl-policies\/([^/]+)$/
       )?.[1]
       if (policyId) {
         return <CrawlPolicyDetailPage policyId={decodeURIComponent(policyId)} />

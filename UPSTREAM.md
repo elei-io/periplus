@@ -29,6 +29,19 @@ the published release; version control retains the history.
 
 ## Wishlist
 
+### Native nested/list types in typed schema definitions
+
+- **Atlas caller:** compact document-quality flag codes in the canonical DuckLake `documents`
+  table.
+- **Evidence:** `ColumnDef("VARCHAR[]", nullable=False)` is rejected by the published
+  `ducklake-client` type validator even though DuckDB and DuckLake support list columns. The
+  validator currently accepts scalar types only.
+- **Smallest useful upstream contract:** allow recursively validated DuckDB list/array types in
+  `ColumnDef`, including schema creation and validation tests for `VARCHAR[]`.
+- **Atlas status:** not blocked. Atlas temporarily stores the small code vector as JSON once per
+  content-addressed document; after a published release it can use a native list without an
+  application wrapper.
+
 ### DuckLake crash when replacing an update-fragmented table from itself
 
 - **Atlas caller:** deployment-time repartition of retained crawl materialization fan-out state.
@@ -36,13 +49,18 @@ the published release; version control retains the history.
   replacement, ran `INSERT INTO replacement SELECT * FROM source`, dropped the source, and renamed
   the replacement. The source contained 1,378 current rows across 597 small data/update fragments.
   Reading the same rows to Arrow succeeds, and registering that Arrow table before the replacement
-  transaction makes the operation complete reliably.
+  transaction makes the operation complete reliably. A second production-shaped reproduction
+  segfaulted inside the DuckLake extension on a keyed `UPDATE` of the same fragmented fan-out
+  header table; Python's fault handler identified `CrawlMaterializationFanoutStore.refresh()` at
+  the update statement, with no concurrent operation on that embedded connection.
 - **Smallest useful upstream contract:** replacing a table from a scan of its current snapshot must
   not crash when the source has update fragments; add a regression covering scan, drop, and rename
   in one DuckLake transaction.
 - **Atlas status:** mitigated by staging only the small fan-out state tables in memory before their
-  one-time bucket-layout rewrite. The 1.9-million-row append-only elements table continues to use a
-  direct transactional `INSERT ... SELECT` so Atlas does not introduce an unbounded memory copy.
+  one-time bucket-layout rewrite and by treating frozen fan-out rows as immutable. Settlement is
+  now derived from authoritative scope-result coverage instead of issuing hot updates. The
+  1.9-million-row append-only elements table continues to use a direct transactional
+  `INSERT ... SELECT` so Atlas does not introduce an unbounded memory copy.
 
 ### Cancellation and transaction semantics for blocking CDC listen
 

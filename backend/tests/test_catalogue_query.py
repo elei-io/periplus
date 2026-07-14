@@ -81,6 +81,41 @@ class CatalogueQueryLintTests(unittest.TestCase):
     def test_incomplete_sql_has_no_transient_lint_diagnostics(self) -> None:
         self.assertEqual(lint_select("SELECT * FROM"), [])
 
+    def test_reports_invalid_css_select_before_execution(self) -> None:
+        diagnostics = lint_select(
+            "SELECT * FROM elements e WHERE e.document_id='doc' "
+            "AND css_select(':hover')"
+        )
+        self.assertEqual([item.code for item in diagnostics], ["invalid_css_select"])
+        self.assertEqual(diagnostics[0].severity, "error")
+
+    def test_unbounded_structural_css_is_advisory_but_row_local_css_is_not(self) -> None:
+        self.assertEqual(
+            lint_select(
+                "SELECT * FROM elements WHERE css_select('a') LIMIT 100"
+            ),
+            [],
+        )
+        diagnostics = lint_select(
+            "SELECT * FROM elements WHERE css_select('article > a') LIMIT 100"
+        )
+        self.assertEqual(
+            [item.code for item in diagnostics],
+            ["unbounded_structural_css"],
+        )
+        self.assertEqual(diagnostics[0].severity, "warning")
+
+        self.assertNotIn(
+            "unbounded_structural_css",
+            [
+                item.code
+                for item in lint_select(
+                    "SELECT * FROM elements e WHERE e.document_id='doc' "
+                    "AND css_select('article > a') LIMIT 100"
+                )
+            ],
+        )
+
 
 class CatalogueQueryExecutionTests(unittest.TestCase):
     def test_unqualified_managed_tables_resolve_in_catalogue_namespace(self) -> None:
@@ -106,6 +141,57 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
         result = pa.ipc.open_stream(payload).read_all()
         self.assertEqual(result.to_pylist(), [{"element_count": 0}])
 
+    def test_css_select_is_rewritten_at_the_catalogue_execution_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                reader = execute_arrow_query(
+                    catalogue,
+                    """
+                    SELECT count(*) AS matches
+                    FROM elements e
+                    WHERE e.document_id = $document_id
+                      AND css_select('article > a[href]')
+                    """,
+                    {"document_id": "missing"},
+                )
+                payload = b"".join(stream_arrow_reader(reader))
+
+        result = pa.ipc.open_stream(payload).read_all()
+        self.assertEqual(result.to_pylist(), [{"matches": 0}])
+
+    def test_unbounded_row_local_css_runs_through_the_api_execution_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                reader = execute_arrow_query(
+                    catalogue,
+                    "SELECT get_attribute('href'), readable_text() "
+                    "FROM elements WHERE css_select('a') LIMIT 100",
+                )
+                payload = b"".join(stream_arrow_reader(reader))
+
+        self.assertEqual(pa.ipc.open_stream(payload).read_all().num_rows, 0)
+
+    def test_invalid_css_select_is_a_catalogue_query_error(self) -> None:
+        catalogue = MagicMock(spec=Catalogue)
+        with self.assertRaisesRegex(CatalogueQueryError, "browser state"):
+            execute_arrow_query(
+                catalogue,
+                "SELECT * FROM elements e WHERE e.document_id='doc' "
+                "AND css_select(':hover')",
+            )
+
     @patch("api.routers.catalogue.execute_arrow_query")
     def test_duckdb_errors_are_returned_before_streaming_starts(
         self,
@@ -126,6 +212,31 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
             raised.exception.detail,
             "Catalog Error: Table with name missing does not exist!",
         )
+        pool.release.assert_called_once_with(catalogue)
+
+    @patch("api.routers.catalogue.execute_arrow_query")
+    def test_css_rewrite_errors_are_returned_before_streaming_starts(
+        self,
+        execute_query: MagicMock,
+    ) -> None:
+        request = MagicMock()
+        pool = request.app.state.catalogue_read_pool
+        catalogue = pool.acquire.return_value
+        execute_query.side_effect = CatalogueQueryError(
+            "pseudo-class :hover depends on browser runtime state"
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            sql_query(
+                CatalogueSqlRequest(
+                    sql="SELECT * FROM elements e WHERE e.document_id='doc' "
+                    "AND css_select(':hover')"
+                ),
+                request,
+            )
+
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertIn(":hover", raised.exception.detail)
         pool.release.assert_called_once_with(catalogue)
 
     def test_pool_wait_timeout_is_returned_as_service_unavailable(self) -> None:

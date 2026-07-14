@@ -320,11 +320,23 @@ def _scope_progress(
     ).fetchone()
     completed, failed, last_completed = int(row[0]), int(row[1]), row[2]
     source_table = "documents" if model.scope_kind == "document" else "crawls"
+    source = _qualified(store, store.catalogue.config.schema, source_table)
+    use_filter = (
+        " WHERE EXISTS (SELECT 1 FROM "
+        f"{_qualified(store, store.catalogue.config.schema, 'crawls')} AS c "
+        "AT (VERSION => ?) "
+        "WHERE c.document_id = s.document_id AND c.purpose = 'use')"
+        if model.scope_kind == "document"
+        else " WHERE s.purpose = 'use'"
+    )
     total = int(
         store.catalogue.connection.execute(
-            f"SELECT count(*) FROM {_qualified(store, store.catalogue.config.schema, source_table)} "
-            "AT (VERSION => ?)",
-            [model.activation_snapshot],
+            f"SELECT count(*) FROM {source} AS s AT (VERSION => ?){use_filter}",
+            (
+                [model.activation_snapshot, model.activation_snapshot]
+                if model.scope_kind == "document"
+                else [model.activation_snapshot]
+            ),
         ).fetchone()[0]
     )
     return completed, failed, last_completed, total
@@ -334,9 +346,6 @@ def _pending_live_scopes(
     store: MaterializationStore, model: CatalogueMaterialization
 ) -> int:
     crawls = _qualified(store, store.catalogue.config.schema, "crawls")
-    members = _qualified(
-        store, store.catalogue.config.schema, "crawl_materialization_fanout_members"
-    )
     results = _qualified(
         store, store.catalogue.config.schema, "materialization_scope_results"
     )
@@ -348,36 +357,21 @@ def _pending_live_scopes(
                        ELSE c.document_id
                    END AS scope_id
             FROM {crawls} AS c
-            WHERE ? = 'crawl' OR c.document_id IS NOT NULL
-        ),
-        member_status AS (
-            SELECT scope_id,
-                   bool_or(status = 'planned') AS pending,
-                   bool_or(status = 'failed') AS failed
-            FROM {members}
-            WHERE materialization_id = ?
-              AND definition_revision_id = ?
-            GROUP BY scope_id
+            WHERE c.purpose = 'use'
+              AND (? = 'crawl' OR c.document_id IS NOT NULL)
         )
         SELECT count(*)
         FROM expected AS e
-        LEFT JOIN member_status AS m USING (scope_id)
         LEFT JOIN {results} AS r
           ON r.materialization_id = ?
          AND r.definition_revision_id = ?
          AND r.scope_kind = ?
          AND r.scope_id = e.scope_id
-        WHERE NOT (
-            coalesce(m.failed, false)
-            OR coalesce(r.status = 'failed', false)
-        )
-          AND (coalesce(m.pending, false) OR r.status IS NULL)
+        WHERE r.status IS NULL
         """,
         [
             model.scope_kind,
             model.scope_kind,
-            model.id,
-            model.definition_revision_id,
             model.id,
             model.definition_revision_id,
             model.scope_kind,
@@ -406,8 +400,15 @@ def _seed_scope(store: MaterializationStore, scope_kind: str) -> str:
     source_table = "documents" if scope_kind == "document" else "crawls"
     identity_column = "document_id" if scope_kind == "document" else "crawl_id"
     table = _qualified(store, store.catalogue.config.schema, source_table)
+    where = (
+        "purpose = 'use'"
+        if scope_kind == "crawl"
+        else "EXISTS (SELECT 1 FROM "
+        f"{_qualified(store, store.catalogue.config.schema, 'crawls')} AS c "
+        f"WHERE c.document_id = {table}.document_id AND c.purpose = 'use')"
+    )
     row = store.catalogue.connection.execute(
-        f"SELECT {identity_column} FROM {table} LIMIT 1"
+        f"SELECT {identity_column} FROM {table} WHERE {where} LIMIT 1"
     ).fetchone()
     return str(row[0]) if row else str(uuid4())
 

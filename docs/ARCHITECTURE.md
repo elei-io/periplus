@@ -39,6 +39,7 @@ maintenance worker -- global lease --> bounded compaction / cleanup --> DuckLake
 ```
 
 The detailed deployment contract is [WORKER_ARCHITECTURE.md](WORKER_ARCHITECTURE.md).
+Crawl-policy sampling and paired evidence are defined in [TRIALS.md](TRIALS.md).
 
 ## Critical-path invariant
 
@@ -174,9 +175,9 @@ Redelivery resolves durable identity before repeating a write.
 ## Reads and cache
 
 Acquisition reads through the repository boundary. A cache hit requires matching normalized URL and
-input hash, acceptable age and quality, a verified raw object, and a current DOM parser recipe.
-Missing evidence is a miss. A stale structural projection is rebuilt from raw HTML through the same
-ingestion path.
+frozen `config_hash`, acceptable age and document-quality flags, a verified raw object, and current
+DOM and quality recipes. Missing evidence is a miss. A stale structural or quality projection is
+rebuilt from raw HTML through the same ingestion path.
 
 Public point reads use document content IDs and crawl UUIDs. Local paths and physical Parquet paths
 are implementation details.
@@ -217,6 +218,7 @@ connection paths must be deleted rather than retained as compatibility behavior.
 - Worker and scaling contract: [WORKER_ARCHITECTURE.md](WORKER_ARCHITECTURE.md)
 - Crawl graph contract: [CRAWL_GRAPHS.md](CRAWL_GRAPHS.md)
 - View and materialization contract: [PUBLICATIONS.md](PUBLICATIONS.md)
+- Crawl-policy trial contract: [TRIALS.md](TRIALS.md)
 - Configuration and defaults: [`.env.example`](../.env.example)
 - PostgreSQL models: [`backend/control/`](../backend/control/)
 - Runtime state and queues: [`backend/runtime/`](../backend/runtime/)

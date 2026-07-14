@@ -7,7 +7,6 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 import httpx
-from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from actions.shared.crawl import (
@@ -17,8 +16,6 @@ from actions.shared.crawl import (
 )
 from actions.shared.cache import CacheOptions, ResolvedCachePolicy, resolve_cache_policy
 from actions.shared.progress import ProgressReporter, ProgressEvent, emit_progress
-from actions.shared.quality.schemas import QualityWarning
-from actions.shared.quality.service import run_quality_checks
 from repository.catalogue import CrawlRecord
 from dom import links_from_html
 from config import get_int, get_optional
@@ -30,6 +27,7 @@ from control.crawl_policies.schemas import (
     HttpProfileConfig,
     ProfileConfig,
 )
+from control.crawl_policies.templates import template_for_config
 from runtime.crawl_capacity import capacity_lease
 from observability import crawl_metrics
 from repository import (
@@ -63,17 +61,37 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _input_hash(
-    url: str,
+def _frozen_config(
     profile: str,
+    concurrency: int,
     config: ProfileConfig,
-) -> str:
-    payload = {
-        "url": url,
-        "profile": profile,
-        "config": config.model_dump(mode="json", exclude={"cache", "cache_block_rules"}),
-    }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    cache_policy: ResolvedCachePolicy,
+) -> dict[str, Any]:
+    profile_values = config.model_dump(mode="json")
+    profile_values["cache"] = cache_policy.model_dump(mode="json")
+    return CrawlPolicyConfig(
+        profile=profile,
+        concurrency=concurrency,
+        config=profile_values,
+    ).model_dump(mode="json")
+
+
+def _config_hash(config: dict[str, Any]) -> str:
+    payload = json.dumps(config, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _exception_failure(exc: Exception, profile: str) -> tuple[str, str, bool]:
+    detail = str(exc).lower()
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+        return "timeout", "request", True
+    if "exceeds atlas html limit" in detail:
+        return "response_too_large", "capture", False
+    if profile == "browser":
+        return "browser_navigation", "navigation", True
+    if profile == "firecrawl":
+        return "provider_failure", "provider", True
+    return "acquisition_exception", "request", True
 
 
 def _crawl_payload(result: CrawlResult) -> dict[str, Any]:
@@ -137,11 +155,15 @@ async def _crawl_url(
                 error=str(exc),
             ),
         )
+        failure_code, failure_stage, retryable = _exception_failure(exc, profile)
         page = CrawlPage(
             url=url,
             success=False,
             duration_seconds=duration,
             error=str(exc),
+            failure_code=failure_code,
+            failure_stage=failure_stage,
+            failure_retryable=retryable,
         )
         return page
 
@@ -186,17 +208,30 @@ async def _acquire_browser(
         mode=config.mode,
         wait=config.wait,
     )
-    html = result.html or ""
-    crawl = _crawl_payload(result)
+    html = result.html or None
+    error = str(result.error_message or "").strip() or None
+    success = bool(result.success) or (
+        html is not None
+        and result.status_code is not None
+        and 200 <= result.status_code <= 399
+        and error is None
+    )
+    crawl = {
+        **_crawl_payload(result),
+        "success": success,
+        "error_message": error,
+    }
     return CrawlPage(
         url=result.url,
-        success=result.success,
+        success=success,
         status_code=result.status_code,
         duration_seconds=0,
         html=html,
         crawl=crawl,
-        quality_warnings=run_quality_checks(url=result.url, html=html, crawl=crawl),
-        error=result.error_message,
+        error=error,
+        failure_code="browser_navigation" if not success else None,
+        failure_stage="navigation" if not success else None,
+        failure_retryable=True if not success else None,
     )
 
 
@@ -225,7 +260,7 @@ async def _acquire_http(
             chunks.append(chunk)
         body = b"".join(chunks)
         encoding = response.encoding or "utf-8"
-        html = body.decode(encoding, errors="replace")
+        html = body.decode(encoding, errors="replace") or None
         final_url = str(response.url)
         success = response.is_success
         error = None if success else f"HTTP {response.status_code}"
@@ -243,8 +278,14 @@ async def _acquire_http(
             duration_seconds=0,
             html=html,
             crawl=crawl,
-            quality_warnings=run_quality_checks(url=final_url, html=html, crawl=crawl),
             error=error,
+            failure_code="http_status" if not success else None,
+            failure_stage="request" if not success else None,
+            failure_retryable=(
+                response.status_code in {408, 425, 429} or response.status_code >= 500
+            )
+            if not success
+            else None,
         )
 
 
@@ -290,6 +331,11 @@ async def _acquire_firecrawl(
             duration_seconds=0,
             error=str(error),
             crawl={"url": url, "success": False, "status_code": response.status_code, "error_message": str(error)},
+            failure_code="provider_failure",
+            failure_stage="provider",
+            failure_retryable=(
+                response.status_code in {408, 425, 429} or response.status_code >= 500
+            ),
         )
     data = body.get("data") or {}
     metadata = data.get("metadata") or {}
@@ -319,8 +365,12 @@ async def _acquire_firecrawl(
         duration_seconds=0,
         html=html,
         crawl=crawl,
-        quality_warnings=run_quality_checks(url=final_url, html=html, crawl=crawl),
         error=error,
+        failure_code="provider_failure" if not success else None,
+        failure_stage="provider" if not success else None,
+        failure_retryable=(status_code in {408, 425, 429} or status_code >= 500)
+        if not success
+        else None,
     )
 
 
@@ -337,9 +387,34 @@ async def _canonicalize_transient_links(page: CrawlPage) -> CrawlPage:
     return page.model_copy(update={"crawl": {**page.crawl, "links": links}})
 
 
-def _errors(page: CrawlPage, crawl: dict[str, Any] | None) -> dict[str, Any]:
-    error = page.error or (crawl or {}).get("error_message")
-    return {"message": error} if error else {}
+def _failure_values(
+    page: CrawlPage,
+    crawl: dict[str, Any] | None,
+    *,
+    profile: str,
+    has_document: bool,
+) -> tuple[str, str | None, str | None, bool | None, str | None]:
+    raw_detail = page.error or (crawl or {}).get("error_message")
+    detail = str(raw_detail).strip() if raw_detail is not None else None
+    detail = detail or None
+    if not has_document and detail is None:
+        return "failed", "missing_html", "capture", False, "Acquisition produced no captured HTML."
+    if not page.success and detail is None:
+        detail = "Acquisition did not report success."
+    if detail is None:
+        return "success", None, None, None, None
+    code = page.failure_code
+    stage = page.failure_stage
+    retryable = page.failure_retryable
+    if code is None or stage is None or retryable is None:
+        code, stage, retryable = _exception_failure(RuntimeError(str(detail)), profile)
+    return (
+        "partial" if has_document else "failed",
+        code,
+        stage,
+        retryable,
+        str(detail)[:2048],
+    )
 
 
 def _durable_crawl_id(
@@ -357,6 +432,8 @@ class _RunEnvelope:
     graph_run_id: UUID
     graph_node_id: UUID
     crawl_request_id: UUID
+    purpose: str
+    trial: dict | None
     source_crawl_id: UUID | None
     source_edge_id: UUID | None
 
@@ -375,6 +452,8 @@ def _run_envelope(
         graph_run_id=execution.graph_run_id,
         graph_node_id=execution.graph_node_id,
         crawl_request_id=execution.crawl_request_id,
+        purpose=execution.purpose,
+        trial=execution.trial,
         source_crawl_id=execution.source_crawl_id,
         source_edge_id=execution.source_edge_id,
     )
@@ -387,6 +466,7 @@ async def _persist_page(
     requested_url: str,
     page: CrawlPage,
     profile: str,
+    concurrency: int,
     profile_config: ProfileConfig,
     policy: CrawlPolicySnapshot | None = None,
     repository_pipeline: RepositoryPipeline | None = None,
@@ -395,7 +475,10 @@ async def _persist_page(
     include_links: bool,
 ) -> CrawlPage:
     normalized_url = normalize_url(requested_url)
-    input_hash = _input_hash(normalized_url, profile, profile_config)
+    config_json = _frozen_config(
+        profile, concurrency, profile_config, cache_policy
+    )
+    config_hash = _config_hash(config_json)
     crawl_payload = page.crawl or {}
     finished_at = _utc_now()
     duration_ms = int(page.duration_seconds * 1000)
@@ -411,7 +494,7 @@ async def _persist_page(
             crawl_request_id=crawl_request_id,
             requested_url=requested_url,
             normalized_url=normalized_url,
-            input_hash=input_hash,
+            config_hash=config_hash,
             progress_reporter=None,
             include_html=retain_html,
             include_links=include_links,
@@ -427,9 +510,15 @@ async def _persist_page(
             if page.html is not None
             else None
         )
-        error = _errors(page, crawl_payload)
-        if identity is None and not error:
-            error = {"message": "Acquisition produced no captured HTML."}
+        outcome, failure_code, failure_stage, failure_retryable, failure_detail = (
+            _failure_values(
+                page,
+                crawl_payload,
+                profile=profile,
+                has_document=identity is not None,
+            )
+        )
+        trial = run_envelope.trial or {}
         record = CrawlRecord(
             crawl_id=crawl_id,
             document_id=identity.document_id if identity is not None else None,
@@ -437,6 +526,12 @@ async def _persist_page(
             graph_run_id=run_envelope.graph_run_id,
             graph_node_id=run_envelope.graph_node_id,
             crawl_request_id=run_envelope.crawl_request_id,
+            purpose=run_envelope.purpose,
+            trial_id=(
+                UUID(str(run_envelope.trial["trial_id"]))
+                if run_envelope.trial is not None
+                else None
+            ),
             source_crawl_id=run_envelope.source_crawl_id,
             source_edge_id=run_envelope.source_edge_id,
             requested_url=requested_url,
@@ -445,34 +540,28 @@ async def _persist_page(
             captured_at=finished_at,
             status_code=page.status_code,
             duration_ms=duration_ms,
-            input_json={
-                "acquisition": {
-                    "url": requested_url,
-                    "profile": profile,
-                    "config": _json_safe(
-                        profile_config.model_dump(
-                            mode="json", exclude={"cache", "cache_block_rules"}
-                        )
-                    ),
-                    "cache": cache_policy.model_dump(mode="json"),
-                },
-                "crawl_policy": (
-                    {
-                        "id": str(policy.id),
-                        "revision": policy.revision,
-                        "match": policy.match,
-                        "domain_group": policy.domain_group,
-                        "config": _json_safe(policy.config or {}),
-                    }
-                    if policy is not None
-                    else None
-                ),
-            },
-            input_hash=input_hash,
-            crawl_policy_id=policy.id if policy is not None else None,
-            crawl_policy_revision=(policy.revision if policy is not None else None),
-            warnings_json=[_json_safe(warning) for warning in page.quality_warnings],
-            errors_json=[error] if error else [],
+            profile=profile,
+            template=template_for_config(config_json).name,
+            config_json=config_json,
+            config_hash=config_hash,
+            crawl_policy_id=(
+                policy.id if policy is not None and policy.origin == "editable" else None
+            ),
+            crawl_policy_revision=(
+                policy.revision
+                if policy is not None and policy.origin == "editable"
+                else None
+            ),
+            outcome=outcome,
+            failure_code=failure_code,
+            failure_stage=failure_stage,
+            failure_retryable=failure_retryable,
+            failure_detail=failure_detail,
+            trial_sampler_version=trial.get("sampler_version"),
+            trial_sample_rate=trial.get("sample_share"),
+            trial_candidate_strategy=trial.get("candidate_strategy"),
+            trial_candidate_template=trial.get("candidate_template"),
+            trial_template_registry_version=trial.get("template_registry_version"),
         )
         result_page = page
         if page.html is not None:
@@ -505,7 +594,7 @@ async def _repository_cached_page(
     session: Session,
     requested_url: str,
     normalized_url: str,
-    input_hash: str,
+    config_hash: str,
     cache_block_rules: dict[str, Any] | None,
     progress_reporter: ProgressReporter | None,
     captured_after: datetime | None,
@@ -516,7 +605,7 @@ async def _repository_cached_page(
 ) -> CrawlPage | None:
     hit = await repository_pipeline.resolve_cached_page(
         normalized_url=normalized_url,
-        input_hash=input_hash,
+        config_hash=config_hash,
         cache_block_rules=cache_block_rules,
         captured_after=captured_after,
         captured_before=captured_before,
@@ -583,7 +672,7 @@ async def _repository_retry_page(
     crawl_request_id: UUID,
     requested_url: str,
     normalized_url: str,
-    input_hash: str,
+    config_hash: str,
     progress_reporter: ProgressReporter | None,
     include_html: bool,
     include_links: bool,
@@ -600,7 +689,7 @@ async def _repository_retry_page(
     if (
         hit.crawl.crawl_request_id != crawl_request_id
         or hit.crawl.normalized_url != normalized_url
-        or hit.crawl.input_hash != input_hash
+        or hit.crawl.config_hash != config_hash
     ):
         raise RuntimeError(
             f"crawl identity {crawl_id} resolved to incompatible durable provenance"
@@ -670,28 +759,15 @@ def _crawl_page_from_repository_hit(
         repository_crawl_created=False,
         html=hit.html,
         crawl=payload,
-        quality_warnings=_quality_warnings_from_crawl(hit.crawl),
         error=error,
+        failure_code=hit.crawl.failure_code,
+        failure_stage=hit.crawl.failure_stage,
+        failure_retryable=hit.crawl.failure_retryable,
     )
 
 
 def _first_crawl_error(crawl: CrawlRecord) -> str | None:
-    for value in crawl.errors_json:
-        if isinstance(value, dict) and value.get("message"):
-            return str(value["message"])
-        if isinstance(value, str) and value:
-            return value
-    return None
-
-
-def _quality_warnings_from_crawl(crawl: CrawlRecord) -> list[QualityWarning]:
-    warnings: list[QualityWarning] = []
-    for value in crawl.warnings_json:
-        try:
-            warnings.append(QualityWarning.model_validate(value))
-        except ValidationError:
-            continue
-    return warnings
+    return crawl.failure_detail
 
 
 def _repository_crawl_payload(
@@ -779,11 +855,12 @@ async def _crawl_graph_request(
     commit_checkpoint(session)
 
     normalized_url = normalize_url(url)
-    repository_input_hash = _input_hash(
-        normalized_url,
+    repository_config_hash = _config_hash(_frozen_config(
         profile,
+        envelope.concurrency,
         profile_config,
-    )
+        cache_policy,
+    ))
     durable_crawl_id = _durable_crawl_id(crawl_request_id=crawl_request_id)
 
     async def stale_fallback(page: CrawlPage) -> CrawlPage:
@@ -800,7 +877,7 @@ async def _crawl_graph_request(
             session=session,
             requested_url=url,
             normalized_url=normalized_url,
-            input_hash=repository_input_hash,
+            config_hash=repository_config_hash,
             cache_block_rules=cache_block_rules,
             progress_reporter=progress_reporter,
             captured_after=cache_now
@@ -824,7 +901,7 @@ async def _crawl_graph_request(
             crawl_request_id=crawl_request_id,
             requested_url=url,
             normalized_url=normalized_url,
-            input_hash=repository_input_hash,
+            config_hash=repository_config_hash,
             progress_reporter=progress_reporter,
             include_html=retain_html,
             include_links=include_links,
@@ -849,7 +926,7 @@ async def _crawl_graph_request(
             session=session,
             requested_url=url,
             normalized_url=normalized_url,
-            input_hash=repository_input_hash,
+            config_hash=repository_config_hash,
             cache_block_rules=cache_block_rules,
             progress_reporter=progress_reporter,
             captured_after=fresh_after,
@@ -872,6 +949,7 @@ async def _crawl_graph_request(
                 requested_url=url,
                 page=repository_page,
                 profile=profile,
+                concurrency=envelope.concurrency,
                 profile_config=profile_config,
                 policy=policy,
                 repository_pipeline=repository_pipeline,
@@ -1013,6 +1091,7 @@ async def _crawl_graph_request(
             requested_url=url,
             page=page,
             profile=profile,
+            concurrency=envelope.concurrency,
             profile_config=profile_config,
             policy=policy,
             repository_pipeline=repository_pipeline,

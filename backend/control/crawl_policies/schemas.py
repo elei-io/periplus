@@ -78,6 +78,7 @@ class CrawlPolicySnapshot(BaseModel):
 
     id: UUID
     revision: int
+    origin: Literal["editable", "system_trial"] = "editable"
     metric_slug: str
     domain_group: str
     match: str
@@ -110,6 +111,78 @@ class CrawlPolicyListRecord(CrawlPolicyRecord):
 
 class CrawlPolicyListResponse(BaseModel):
     items: list[CrawlPolicyListRecord]
+    total: int
+    limit: int
+    offset: int
+
+
+class PolicyTrialComparisonRecord(BaseModel):
+    scheme: Literal["http", "https"]
+    host: str
+    port: int
+    registrable_domain: str
+    use_template: str
+    candidate_template: str
+    selected_trials: int
+    completed_pairs: int
+    recovered_crawls: int
+    sample_failures: int
+    identical_documents: int
+    median_html_delta_percent: float | None
+    median_visible_text_delta_percent: float | None
+    median_element_delta_percent: float | None
+    mean_use_visible_text_chars: float | None
+    mean_sample_visible_text_chars: float | None
+    use_visible_text_stddev: float | None
+    sample_visible_text_stddev: float | None
+    use_visible_text_cv: float | None
+    sample_visible_text_cv: float | None
+    use_distinct_document_ratio: float | None
+    sample_distinct_document_ratio: float | None
+    median_use_quality_flag_count: float | None
+    median_sample_quality_flag_count: float | None
+    use_acquisition_failure_count: int
+    sample_acquisition_failure_count: int
+    median_duration_delta_ms: float | None
+    last_trial_at: datetime
+    current_policy_id: UUID | None
+    current_template: str
+    applied: bool
+    verdict: Literal[
+        "awaiting_sample",
+        "insufficient_evidence",
+        "promising",
+        "no_clear_gain",
+        "regressed",
+        "inconclusive",
+    ]
+    verdict_reason: str
+
+
+class PolicyTrialApplyRequest(BaseModel):
+    scheme: Literal["http", "https"]
+    host: str = Field(min_length=1)
+    port: int = Field(ge=1, le=65535)
+    template: str = Field(min_length=1)
+
+
+class PolicyTrialSummaryRecord(BaseModel):
+    sampling_active: bool
+    configured_sample_rate: float
+    observed_sample_rate: float
+    max_in_flight: int
+    use_crawls: int
+    selected_trials: int
+    sample_crawls: int
+    completed_pairs: int
+    awaiting_samples: int
+    pairs_with_failure: int
+    last_trial_at: datetime | None
+
+
+class PolicyTrialReportResponse(BaseModel):
+    summary: PolicyTrialSummaryRecord
+    items: list[PolicyTrialComparisonRecord]
     total: int
     limit: int
     offset: int

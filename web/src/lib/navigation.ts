@@ -1,5 +1,6 @@
 import {
   ChartNoAxesCombinedIcon,
+  FlaskConicalIcon,
   GitForkIcon,
   FileCode2Icon,
   ShieldCheckIcon,
@@ -58,16 +59,23 @@ export const navigationGroups: NavigationGroup[] = [
     ],
   },
   {
-    name: "Settings",
-    slug: "settings",
+    name: "Policies",
+    slug: "policies",
     items: [
       {
         name: "Crawl Policies",
-        href: "/settings/crawl-policies",
+        href: "/crawl-policies",
         icon: ShieldCheckIcon,
         title: "Crawl Policies",
         description:
           "Inspect, edit, invalidate, and delete crawl transport policies.",
+      },
+      {
+        name: "Policy Trials",
+        href: "/crawl-policies/trials",
+        icon: FlaskConicalIcon,
+        title: "Policy Trials",
+        description: "Compare ordinary crawls with sampled policy alternatives.",
       },
     ],
   },
@@ -91,10 +99,13 @@ export function findNavigationItem(pathname: string) {
         .find((item) => item.href === href)
     }
   }
-  if (pathname.startsWith("/settings/crawl-policies/")) {
+  if (
+    pathname.startsWith("/crawl-policies/") &&
+    pathname !== "/crawl-policies/trials"
+  ) {
     return navigationGroups
       .flatMap((group) => group.items)
-      .find((item) => item.href === "/settings/crawl-policies")
+      .find((item) => item.href === "/crawl-policies")
   }
   return navigationGroups
     .flatMap((group) => group.items)

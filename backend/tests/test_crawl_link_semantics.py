@@ -13,6 +13,74 @@ from dom import links_from_html
 
 
 class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_sample_records_typed_outcome_and_sampling_provenance(self) -> None:
+        graph_id, graph_run_id, graph_node_id, crawl_request_id, trial_id = (
+            uuid4() for _ in range(5)
+        )
+        page = CrawlPage(
+            url="https://example.com/",
+            success=False,
+            status_code=503,
+            duration_seconds=0.2,
+            error="HTTP 503",
+            failure_code="http_status",
+            failure_stage="request",
+            failure_retryable=True,
+        )
+        pipeline = SimpleNamespace(
+            store_raw=AsyncMock(),
+            enqueue_stored=AsyncMock(),
+        )
+        trial = {
+            "trial_id": str(trial_id),
+            "sampler_version": 2,
+            "sample_share": 0.01,
+            "candidate_strategy": "next_more_expensive_template",
+            "candidate_template": "static_fast",
+            "template_registry_version": 1,
+        }
+        with (
+            patch(
+                "actions.crawl.service._repository_retry_page",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "actions.crawl.service._run_envelope",
+                return_value=SimpleNamespace(
+                    graph_id=graph_id,
+                    graph_run_id=graph_run_id,
+                    graph_node_id=graph_node_id,
+                    crawl_request_id=crawl_request_id,
+                    purpose="sample",
+                    trial=trial,
+                    source_crawl_id=None,
+                    source_edge_id=None,
+                ),
+            ),
+        ):
+            await _persist_page(
+                MagicMock(),
+                crawl_request_id=crawl_request_id,
+                requested_url=page.url,
+                page=page,
+                profile="http",
+                concurrency=4,
+                profile_config=HttpProfileConfig(),
+                repository_pipeline=pipeline,
+                cache_policy=ResolvedCachePolicy(mode="refresh", max_age_seconds=120),
+                retain_html=False,
+                include_links=False,
+            )
+
+        pipeline.store_raw.assert_not_awaited()
+        record = pipeline.enqueue_stored.await_args.args[0]
+        self.assertEqual(record.outcome, "failed")
+        self.assertEqual(record.failure_code, "http_status")
+        self.assertTrue(record.failure_retryable)
+        self.assertEqual(record.trial_id, trial_id)
+        self.assertEqual(record.trial_sample_rate, 0.01)
+        self.assertEqual(record.trial_candidate_template, "static_fast")
+
     async def test_persisted_page_can_release_retained_html(self) -> None:
         graph_id = uuid4()
         graph_run_id = uuid4()
@@ -43,6 +111,8 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
                     graph_run_id=graph_run_id,
                     graph_node_id=graph_node_id,
                     crawl_request_id=crawl_request_id,
+                    purpose="use",
+                    trial=None,
                     source_crawl_id=None,
                     source_edge_id=None,
                 ),
@@ -54,6 +124,7 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
                 requested_url=page.url,
                 page=page,
                 profile="http",
+                concurrency=4,
                 profile_config=HttpProfileConfig(),
                 repository_pipeline=pipeline,
                 cache_policy=ResolvedCachePolicy(mode="prefer", max_age_seconds=120),
@@ -70,6 +141,10 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.graph_run_id, graph_run_id)
         self.assertEqual(record.graph_node_id, graph_node_id)
         self.assertEqual(record.crawl_request_id, crawl_request_id)
+        self.assertEqual(record.profile, "http")
+        self.assertEqual(record.template, "http_fast")
+        self.assertEqual(record.outcome, "success")
+        self.assertEqual(len(record.config_hash), 64)
 
     async def test_fresh_crawl_replaces_transient_links_with_canonical_projection(self) -> None:
         html = (
@@ -79,7 +154,7 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
         )
         result = SimpleNamespace(
             url="https://example.com/start",
-            success=True,
+            success=False,
             status_code=200,
             redirected_url=None,
             redirected_status_code=None,
@@ -90,7 +165,7 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
             downloaded_files=None,
             js_execution_result=None,
             extracted_content=None,
-            error_message=None,
+            error_message="",
             session_id=None,
             network_requests=None,
             console_messages=None,
@@ -119,6 +194,9 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
 
         page = await _canonicalize_transient_links(page)
         assert page.crawl is not None
+        self.assertTrue(page.success)
+        self.assertIsNone(page.error)
+        self.assertIsNone(page.failure_code)
         self.assertEqual(
             page.crawl["links"],
             links_from_html(html, page_url=result.url),

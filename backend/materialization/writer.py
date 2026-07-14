@@ -32,7 +32,10 @@ from materialization.queue import (
     ensure_streams,
 )
 from observability import materialization_metrics
-from repository.catalogue.fanout import CrawlMaterializationFanoutStore
+from repository.catalogue.fanout import (
+    CrawlMaterializationFanoutStore,
+    MissingCrawlMaterializationFanout,
+)
 from repository.catalogue.materializations import MaterializationStore
 from repository.catalogue.operations import (
     operation_lock,
@@ -483,22 +486,58 @@ async def _commit_materialization_entries(
                 operation_lease_store,
             )
             await message.ack()
-        except Exception:
+        except Exception as exc:
             logging.exception(
                 "materialization committed but crawl fan-out settlement failed for "
                 "operation %s",
                 job.scope.operation_id,
             )
-            try:
-                await message.nak(delay=5)
-            except Exception:
-                logging.exception(
-                    "failed to request materialization settlement redelivery for "
-                    "operation %s",
-                    job.scope.operation_id,
-                )
+            await _retry_or_dead_letter_settlement(
+                jetstream, message, job, error=exc
+            )
         finally:
             await _cancel_task(heartbeat)
+
+
+async def _retry_or_dead_letter_settlement(
+    jetstream, message, job: MaterializationCommitJob, *, error: Exception
+) -> None:
+    deliveries = message.metadata.num_delivered
+    maximum = get_int("ATLAS_MATERIALIZATION_MAX_DELIVER")
+    if deliveries < maximum:
+        try:
+            await message.nak(delay=5)
+        except Exception:
+            logging.exception(
+                "failed to request materialization settlement redelivery for "
+                "operation %s",
+                job.scope.operation_id,
+            )
+        return
+    dead_letter = MaterializationDeadLetter(
+        job=job.scope,
+        stage="settlement",
+        error=str(error),
+        delivery_count=deliveries,
+        failed_at=datetime.now(UTC),
+        staging_key=job.staging_key,
+    )
+    try:
+        await jetstream.publish(
+            DEAD_LETTER_SUBJECT,
+            dead_letter.model_dump_json().encode(),
+            headers={
+                "Nats-Msg-Id": f"{job.scope.operation_id}-settlement-dead"
+            },
+        )
+    except Exception:
+        logging.exception(
+            "failed to persist materialization settlement dead letter for operation %s",
+            job.scope.operation_id,
+        )
+        await message.nak(delay=30)
+    else:
+        await message.term()
 
 
 async def _settle_crawl_fanouts(
@@ -523,11 +562,18 @@ async def _settle_crawl_fanouts(
             phase="materialization-fanout-settlement",
         ):
             async with catalogue_connection_lock:
-                await asyncio.to_thread(
-                    _refresh_crawl_fanout_fenced,
-                    catalogue,
-                    crawl_id,
-                )
+                try:
+                    await asyncio.to_thread(
+                        _refresh_crawl_fanout_fenced,
+                        catalogue,
+                        crawl_id,
+                    )
+                except MissingCrawlMaterializationFanout:
+                    logging.info(
+                        "materialization scope settled before crawl %s fan-out plan; "
+                        "planner reconciliation will settle it",
+                        crawl_id,
+                    )
 
 
 def _refresh_crawl_fanout_fenced(catalogue, crawl_id):
@@ -557,10 +603,12 @@ async def _commit_fanout_plan(jetstream, catalogue, plan) -> None:
     def plan_fenced():
         def attempt():
             with operation_lock(f"crawl-fanout-{plan.crawl_id}"):
-                return CrawlMaterializationFanoutStore(catalogue).plan(
+                store = CrawlMaterializationFanoutStore(catalogue)
+                store.plan(
                     plan.crawl_id,
                     members=members,
                 )
+                return store.refresh(plan.crawl_id)
 
         return run_with_catalogue_retry(
             attempt, description="crawl materialization fan-out plan"

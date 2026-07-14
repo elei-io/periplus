@@ -1,4 +1,4 @@
-import { completeFromList } from "@codemirror/autocomplete"
+import { completeFromList, snippetCompletion } from "@codemirror/autocomplete"
 import { PostgreSQL, sql } from "@codemirror/lang-sql"
 import { EditorView } from "@codemirror/view"
 import CodeMirror from "@uiw/react-codemirror"
@@ -21,9 +21,53 @@ type SqlEditorProps = {
   height?: string
   ariaLabel?: string
   views?: Array<{ view_name: string; columns: string[] }>
+  enableCssSelect?: boolean
 }
 
-export function SqlEditor({ value, onChange = () => undefined, onRun, readOnly = false, height = "clamp(240px, 38vh, 360px)", ariaLabel = "Catalogue SQL editor", views = [] }: SqlEditorProps) {
+const cssSelectCompletions = [
+  snippetCompletion("css_select('${selector}')", {
+    label: "css_select",
+    detail: "css_select('selector') → boolean",
+    info: "Targets the only elements source in the outer query.",
+    type: "function",
+    boost: 10,
+  }),
+  snippetCompletion("css_select(${alias}, '${selector}')", {
+    label: "css_select(alias, selector)",
+    detail: "Explicit elements source",
+    info: "Use the explicit form when the query has multiple elements sources.",
+    type: "function",
+    boost: 9,
+  }),
+]
+
+const domHelperCompletions = [
+  snippetCompletion("get_attribute('${attribute}')", {
+    label: "get_attribute",
+    detail: "get_attribute('name') → value or NULL",
+    info: "Infers the only elements source. Pass an alias first when joining elements.",
+    type: "function",
+    boost: 8,
+  }),
+  snippetCompletion("has_attribute('${attribute}')", {
+    label: "has_attribute",
+    detail: "has_attribute('name') → boolean",
+    info: "Infers the only elements source. Pass an alias first when joining elements.",
+    type: "function",
+    boost: 8,
+  }),
+  ...["readable_text", "text_content", "inner_html"].map((name) =>
+    snippetCompletion(`${name}()`, {
+      label: name,
+      detail: `${name}() → inferred element`,
+      info: `Use ${name}(alias) when joining multiple elements sources.`,
+      type: "function",
+      boost: 8,
+    })
+  ),
+]
+
+export function SqlEditor({ value, onChange = () => undefined, onRun, readOnly = false, height = "clamp(240px, 38vh, 360px)", ariaLabel = "Catalogue SQL editor", views = [], enableCssSelect = false }: SqlEditorProps) {
   const sqlLanguage = useMemo(() => {
     const tables = catalogueTables
     const viewTables = Object.fromEntries(
@@ -47,13 +91,30 @@ export function SqlEditor({ value, onChange = () => undefined, onRun, readOnly =
     () => [
       sqlLanguage,
       sqlLanguage.language.data.of({
-        autocomplete: completeFromList([...catalogueFunctions]),
+        autocomplete: completeFromList([
+          ...(enableCssSelect
+            ? [
+                ...catalogueFunctions.filter(
+                  (item) =>
+                    ![
+                      "get_attribute",
+                      "has_attribute",
+                      "readable_text",
+                      "text_content",
+                      "inner_html",
+                    ].includes(item.label)
+                ),
+                ...domHelperCompletions,
+                ...cssSelectCompletions,
+              ]
+            : catalogueFunctions),
+        ]),
       }),
       sqlSyntaxHighlighting,
       sqlEditorTheme,
       EditorView.lineWrapping,
     ],
-    [sqlLanguage]
+    [enableCssSelect, sqlLanguage]
   )
 
   return (

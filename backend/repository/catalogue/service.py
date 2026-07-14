@@ -233,7 +233,7 @@ class CatalogueService:
                         raise CatalogueValidationError(
                             "a crawl with document_id must include its document"
                         )
-                    if not crawl.errors_json:
+                    if crawl.outcome != "failed" or crawl.failure_code is None:
                         raise CatalogueValidationError(
                             "a documentless crawl must record an acquisition error"
                         )
@@ -317,7 +317,7 @@ class CatalogueService:
             if new_documents:
                 self._append(
                     "documents",
-                    [value.model_dump(mode="python") for value in new_documents.values()],
+                    [_document_values(value) for value in new_documents.values()],
                 )
             if element_paths:
                 # Keep the whole commit inside the attached DuckLake database.
@@ -427,7 +427,7 @@ class CatalogueService:
         self,
         *,
         normalized_url: str,
-        input_hash: str,
+        config_hash: str,
         captured_after: datetime | None = None,
         captured_before: datetime | None = None,
         limit: int = 20,
@@ -438,14 +438,15 @@ class CatalogueService:
             raise CatalogueValidationError("limit must be greater than zero")
         conditions = [
             "normalized_url = $normalized_url",
-            "input_hash = $input_hash",
+            "config_hash = $config_hash",
+            "purpose = 'use'",
+            "outcome = 'success'",
             "document_id IS NOT NULL",
             "(status_code IS NULL OR status_code BETWEEN 200 AND 399)",
-            "json_array_length(errors_json) = 0",
         ]
         params: dict[str, object] = {
             "normalized_url": normalized_url,
-            "input_hash": input_hash,
+            "config_hash": config_hash,
             "limit": limit,
         }
         if captured_after is not None:
@@ -577,7 +578,9 @@ class CatalogueService:
         self,
         documents: Sequence[DocumentRecord],
     ) -> None:
-        placeholders = ", ".join("(?, ?, ?, ?, ?, ?)" for _ in documents)
+        placeholders = ", ".join(
+            "(" + ", ".join("?" for _ in range(18)) + ")" for _ in documents
+        )
         parameters = [
             value
             for document in documents
@@ -588,6 +591,18 @@ class CatalogueService:
                 document.parser_version,
                 document.parser_options_hash,
                 document.element_count,
+                document.quality_schema_version,
+                document.html_character_count,
+                document.visible_text_chars,
+                document.script_count,
+                document.app_marker_count,
+                document.lazy_marker_count,
+                document.interaction_marker_count,
+                document.button_count,
+                document.form_count,
+                document.input_count,
+                document.anchor_count,
+                json.dumps(document.quality_flags_json, separators=(",", ":")),
             )
         ]
         self.catalogue.connection.execute(
@@ -596,10 +611,25 @@ class CatalogueService:
             "parser_name = staged.parser_name, "
             "parser_version = staged.parser_version, "
             "parser_options_hash = staged.parser_options_hash, "
-            "element_count = staged.element_count "
+            "element_count = staged.element_count, "
+            "quality_schema_version = staged.quality_schema_version, "
+            "html_character_count = staged.html_character_count, "
+            "visible_text_chars = staged.visible_text_chars, "
+            "script_count = staged.script_count, "
+            "app_marker_count = staged.app_marker_count, "
+            "lazy_marker_count = staged.lazy_marker_count, "
+            "interaction_marker_count = staged.interaction_marker_count, "
+            "button_count = staged.button_count, "
+            "form_count = staged.form_count, "
+            "input_count = staged.input_count, "
+            "anchor_count = staged.anchor_count, "
+            "quality_flags_json = staged.quality_flags_json "
             f"FROM (VALUES {placeholders}) AS staged("
             "document_id, dom_schema_version, parser_name, parser_version, "
-            "parser_options_hash, element_count) "
+            "parser_options_hash, element_count, quality_schema_version, "
+            "html_character_count, visible_text_chars, script_count, "
+            "app_marker_count, lazy_marker_count, interaction_marker_count, "
+            "button_count, form_count, input_count, anchor_count, quality_flags_json) "
             "WHERE target.document_id = staged.document_id",
             parameters,
         )
@@ -641,13 +671,25 @@ class CatalogueService:
             yield
 
 def _document_from_row(row: dict[str, Any]) -> DocumentRecord:
-    return DocumentRecord.model_validate(row)
+    values = dict(row)
+    if isinstance(values.get("quality_flags_json"), str):
+        values["quality_flags_json"] = json.loads(values["quality_flags_json"])
+    return DocumentRecord.model_validate(values)
+
+
+def _document_values(document: DocumentRecord) -> dict[str, object]:
+    values = document.model_dump(mode="python")
+    values["quality_flags_json"] = json.dumps(
+        values["quality_flags_json"], separators=(",", ":")
+    )
+    return values
 
 
 def _crawl_values(crawl: CrawlRecord) -> dict[str, object]:
     values = crawl.model_dump(mode="python")
-    for name in ("input_json", "warnings_json", "errors_json"):
-        values[name] = json.dumps(values[name], separators=(",", ":"), sort_keys=True)
+    values["config_json"] = json.dumps(
+        values["config_json"], separators=(",", ":"), sort_keys=True
+    )
     return values
 
 
@@ -688,6 +730,18 @@ def _validate_projection_recipe(
         "parser_version",
         "parser_options_hash",
         "element_count",
+        "quality_schema_version",
+        "html_character_count",
+        "visible_text_chars",
+        "script_count",
+        "app_marker_count",
+        "lazy_marker_count",
+        "interaction_marker_count",
+        "button_count",
+        "form_count",
+        "input_count",
+        "anchor_count",
+        "quality_flags_json",
     )
     if any(getattr(existing, name) != getattr(proposed, name) for name in recipe):
         raise CatalogueConflictError(
@@ -698,9 +752,8 @@ def _validate_projection_recipe(
 
 def _crawl_from_row(row: dict[str, Any]) -> CrawlRecord:
     values = dict(row)
-    for name in ("input_json", "warnings_json", "errors_json"):
-        if isinstance(values.get(name), str):
-            values[name] = json.loads(values[name])
+    if isinstance(values.get("config_json"), str):
+        values["config_json"] = json.loads(values["config_json"])
     return CrawlRecord.model_validate(values)
 
 

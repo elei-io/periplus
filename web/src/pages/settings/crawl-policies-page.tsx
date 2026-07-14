@@ -172,7 +172,7 @@ function CrawlPolicyRow({ policy }: { policy: CrawlPolicyRecord }) {
     <TableRow>
       <TableCell className="max-w-[32rem]">
         <a
-          href={`/settings/crawl-policies/${policy.id}`}
+          href={`/crawl-policies/${policy.id}`}
           className="block min-w-0 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
         >
           <span className="block truncate font-medium text-link underline-offset-4 hover:underline">

@@ -209,7 +209,8 @@ after that boundary. Historical backfill enumerates scopes visible at the activa
 
 Live discovery and activation backfill are independent internal stages:
 
-- live work consumes newly committed scope changes from a durable CDC cursor;
+- one crawl-table CDC planner consumes newly committed `purpose = 'use'` crawls and derives both
+  crawl- and document-scoped work; Atlas does not maintain a second document-table CDC fleet;
 - backfill pages through historical scope IDs at a configurable rate;
 - live work is prioritized so a long backfill does not block freshness;
 - restarting a worker preserves the table, cursor, activation boundary, and completed coverage; and

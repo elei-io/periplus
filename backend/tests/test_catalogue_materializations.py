@@ -28,16 +28,97 @@ from materialization.definitions import publish_scope
 from materialization.fencing import StaleMaterializationJob
 from materialization.queue import MaterializationCommitJob, MaterializationScopeJob
 from repository.catalogue import Catalogue, CatalogueConfig
+from repository.catalogue.fanout import CrawlMaterializationFanoutStore
 from repository.catalogue.materializations import (
     MaterializationError,
     MaterializationStore,
     scoped_view_query,
 )
+from repository.catalogue.records import CrawlMaterializationFanoutMember
 from repository.catalogue.views import CatalogueViewStore
 from repository.objects.store import FileObjectStore
 
 
 class CatalogueMaterializationTests(unittest.TestCase):
+    def test_fanout_plan_recovers_matching_interrupted_member_write(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                crawl_id = uuid4()
+                member = CrawlMaterializationFanoutMember(
+                    crawl_id=crawl_id,
+                    materialization_id=uuid4(),
+                    definition_revision_id=uuid4(),
+                    scope_kind="crawl",
+                    scope_id=str(crawl_id),
+                )
+                catalogue.connection.execute(
+                    "INSERT INTO atlas.main.crawl_materialization_fanout_members "
+                    "VALUES (?, ?, ?, ?, ?, 'planned', NULL, NULL)",
+                    [
+                        member.crawl_id,
+                        member.materialization_id,
+                        member.definition_revision_id,
+                        member.scope_kind,
+                        member.scope_id,
+                    ],
+                )
+                store = CrawlMaterializationFanoutStore(catalogue)
+
+                self.assertEqual(
+                    store.crawls_for_scope(
+                        materialization_id=member.materialization_id,
+                        definition_revision_id=member.definition_revision_id,
+                        scope_kind=member.scope_kind,
+                        scope_id=member.scope_id,
+                    ),
+                    [],
+                )
+                fanout = store.plan(crawl_id, members=[member])
+
+                self.assertEqual(fanout.triggered_count, 1)
+                self.assertEqual(store.members(crawl_id), [member])
+
+    def test_fanout_plan_rejects_incomplete_interrupted_member_write(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                crawl_id = uuid4()
+                orphan = CrawlMaterializationFanoutMember(
+                    crawl_id=crawl_id,
+                    materialization_id=uuid4(),
+                    definition_revision_id=uuid4(),
+                    scope_kind="crawl",
+                    scope_id=str(crawl_id),
+                )
+                expected = orphan.model_copy(update={"materialization_id": uuid4()})
+                catalogue.connection.execute(
+                    "INSERT INTO atlas.main.crawl_materialization_fanout_members "
+                    "VALUES (?, ?, ?, ?, ?, 'planned', NULL, NULL)",
+                    [
+                        orphan.crawl_id,
+                        orphan.materialization_id,
+                        orphan.definition_revision_id,
+                        orphan.scope_kind,
+                        orphan.scope_id,
+                    ],
+                )
+
+                with self.assertRaisesRegex(ValueError, "incomplete interrupted plan"):
+                    CrawlMaterializationFanoutStore(catalogue).plan(
+                        crawl_id, members=[expected]
+                    )
+
     def test_graph_run_lag_filters_active_materialization_revisions(self) -> None:
         first = (uuid4(), uuid4(), "crawl")
         second = (uuid4(), uuid4(), "document")
@@ -58,7 +139,7 @@ class CatalogueMaterializationTests(unittest.TestCase):
         self.assertEqual(result, expected)
         sql, parameters = connection.execute.call_args.args
         self.assertIn("c.graph_run_id", sql)
-        self.assertIn("m.status = 'planned'", sql)
+        self.assertIn("result_status IS NULL", sql)
         self.assertIn("CROSS JOIN active AS a", sql)
         self.assertIn("materialization_scope_results", sql)
         self.assertEqual(parameters, [*first, *second])
@@ -80,17 +161,18 @@ class CatalogueMaterializationTests(unittest.TestCase):
                     """
                     INSERT INTO atlas.main.crawls (
                         crawl_id, document_id, graph_id, graph_run_id, graph_node_id,
-                        crawl_request_id, source_crawl_id, source_edge_id,
+                        crawl_request_id, purpose, trial_id, source_crawl_id, source_edge_id,
                         requested_url, normalized_url, final_url, page_url,
                         url_scheme, url_host, url_port, url_registrable_domain,
                         url_path, url_query, captured_at, status_code, duration_ms,
-                        input_json, input_hash, crawl_policy_id, crawl_policy_revision,
-                        warnings_json, errors_json
-                    ) SELECT ?, 'sha256:phase2', uuid(), ?, uuid(), uuid(), NULL, NULL,
+                        profile, template, config_hash, config_json, crawl_policy_id,
+                        crawl_policy_revision, outcome
+                    ) SELECT ?, 'sha256:phase2', uuid(), ?, uuid(), uuid(), 'use', NULL, NULL, NULL,
                         'https://example.com/phase2', 'https://example.com/phase2',
                         'https://example.com/phase2', 'https://example.com/phase2',
                         'https', 'example.com', 443, 'example.com', '/phase2', '', now(),
-                        200, 1, '{}', 'phase2', NULL, NULL, '[]', '[]'
+                        200, 1, 'http', 'http_fast', repeat('a', 64), '{}', NULL, NULL,
+                        'success'
                     """,
                     [crawl_id, graph_run_id],
                 )
@@ -141,14 +223,12 @@ class CatalogueMaterializationTests(unittest.TestCase):
 
         self.assertEqual(result, 7)
         sql, parameters = connection.execute.call_args.args
-        self.assertIn("status = 'planned'", sql)
+        self.assertIn("r.status IS NULL", sql)
         self.assertEqual(
             parameters,
             [
                 "crawl",
                 "crawl",
-                materialization_id,
-                revision_id,
                 materialization_id,
                 revision_id,
                 "crawl",

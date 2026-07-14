@@ -8,6 +8,8 @@ import type {
   CrawlPolicyListResponse,
   CrawlPolicyUpdateRequest,
   PageParams,
+  PolicyTrialApplyRequest,
+  PolicyTrialReport,
 } from "@/types/resources"
 
 function appendParam(params: URLSearchParams, name: string, value: string) {
@@ -67,6 +69,48 @@ export function useCrawlPolicy(id: string | null) {
         throw await apiErrorFromResponse(response)
       }
       return (await response.json()) as CrawlPolicyDetailRecord
+    },
+  })
+}
+
+export function usePolicyTrials(page: PageParams) {
+  return useQuery({
+    queryKey: ["policy-trials", page],
+    queryFn: async () => {
+      const params = new URLSearchParams(pageParams(page))
+      const response = await fetch(
+        apiUrl(`/crawl-policies/trials?${params.toString()}`)
+      )
+      if (!response.ok) {
+        throw await apiErrorFromResponse(response)
+      }
+      return (await response.json()) as PolicyTrialReport
+    },
+  })
+}
+
+export function useApplyPolicyTrial() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (request: PolicyTrialApplyRequest) => {
+      const response = await fetch(apiUrl("/crawl-policies/trials/apply"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      })
+      if (!response.ok) {
+        throw await apiErrorFromResponse(response)
+      }
+      return (await response.json()) as CrawlPolicyDetailRecord
+    },
+    onSuccess: () => {
+      toast.success("Applied sampled crawl policy.")
+      void queryClient.invalidateQueries({ queryKey: ["policy-trials"] })
+      void queryClient.invalidateQueries({ queryKey: ["crawl-policies"] })
+    },
+    onError: (error) => {
+      toast.error(extractApiError(error))
     },
   })
 }

@@ -142,8 +142,8 @@ its graph to continue:
 9. evaluate outgoing bounded edge SQL; and
 10. admit returned URLs as new transport-routed CrawlRequests.
 
-An ingestion worker may publish asynchronous user-materialization scope work after its base commit,
-but it never evaluates or commits that work and never waits for it.
+An ingestion worker does not publish, evaluate, or commit user-materialization work and never waits
+for it. The materialization worker discovers eligible use crawls independently through DuckLake CDC.
 
 `page_links` is a system projection even if it is exposed through `views.page_links`. It is required
 for navigation and is committed with base ingestion. User-created materialized views are not system
@@ -156,7 +156,8 @@ operation latency, DuckLake conflict rate, CPU, memory, and object-store through
 
 Materialization workers own the complete lifecycle of live user materializations:
 
-1. discover document- or crawl-scoped changes from durable DuckLake CDC positions;
+1. discover eligible use-crawl changes from the durable DuckLake crawl CDC position and derive
+   document- or crawl-scoped work from them;
 2. enumerate bounded historical backfill scopes after activation;
 3. publish or claim an idempotent scope operation;
 4. validate that the view definition and incremental discriminator are still active;

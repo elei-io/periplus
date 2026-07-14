@@ -50,6 +50,7 @@ from runtime.graph_queue import (
     ReadinessWork,
     ensure_graph_progress_storage,
     ensure_graph_storage,
+    settle_sample_request,
 )
 from runtime.graph_runs import settle_request
 from runtime.navigation import (
@@ -94,6 +95,16 @@ async def _settle_graph_ingestion_failure(
 
     jetstream = client.jetstream()
     runs, requests, _workers = await ensure_graph_storage(jetstream)
+    if job.crawl.purpose == "sample":
+        await settle_sample_request(
+            jetstream,
+            requests,
+            job.crawl.crawl_request_id,
+            status="failed",
+            error=f"Repository ingestion failed: {error}",
+            failure_stage="enrichment",
+        )
+        return
     progress = await ensure_graph_progress_storage(jetstream)
     await settle_request(
         runs=runs,
@@ -291,9 +302,19 @@ async def run(
                 if durable_state.status != "pending":
                     if durable_state.status == "succeeded":
                         try:
-                            if durable_state.navigation is not None:
+                            if job.crawl.purpose == "use" and durable_state.navigation is not None:
                                 await _publish_navigation_readiness(
                                     client, job, durable_state.navigation
+                                )
+                            if job.crawl.purpose == "sample":
+                                _runs, requests, _workers = await ensure_graph_storage(
+                                    jetstream
+                                )
+                                await settle_sample_request(
+                                    jetstream,
+                                    requests,
+                                    job.crawl.crawl_request_id,
+                                    status="completed",
                                 )
                         except Exception:
                             logging.exception(
@@ -549,7 +570,7 @@ async def _commit_batch_isolated(
         )
         try:
             package = None
-            if value.navigation_payload is not None:
+            if job.crawl.purpose == "use" and value.navigation_payload is not None:
                 if job.crawl.graph_run_id is None or job.crawl.document_id is None:
                     raise ValueError("graph crawl ingestion requires runtime provenance")
                 name = navigation_object_name(
@@ -570,9 +591,19 @@ async def _commit_batch_isolated(
                 result=result,
                 navigation=package,
             )
-            if durable_state.navigation is not None:
+            if job.crawl.purpose == "use" and durable_state.navigation is not None:
                 await _publish_navigation_readiness(
                     client, job, durable_state.navigation
+                )
+            if job.crawl.purpose == "sample":
+                _runs, requests, _workers = await ensure_graph_storage(
+                    client.jetstream()
+                )
+                await settle_sample_request(
+                    client.jetstream(),
+                    requests,
+                    job.crawl.crawl_request_id,
+                    status="completed",
                 )
         except Exception:
             logging.exception(
@@ -617,7 +648,11 @@ async def _retry_or_fail(
             return
 
         package = None
-        if reconciled is not None and job.crawl.graph_run_id is not None:
+        if (
+            reconciled is not None
+            and job.crawl.purpose == "use"
+            and job.crawl.graph_run_id is not None
+        ):
             try:
                 known_documents = await _known_document_for_crawl(
                     ingestor,
@@ -659,7 +694,7 @@ async def _retry_or_fail(
             navigation=package,
             error=None if reconciled is not None else _exception_message(exc),
         )
-        if durable_state.navigation is not None:
+        if job.crawl.purpose == "use" and durable_state.navigation is not None:
             try:
                 await _publish_navigation_readiness(
                     client, job, durable_state.navigation
@@ -669,6 +704,16 @@ async def _retry_or_fail(
                 await message.nak(delay=1)
                 return
         if durable_state.status == "succeeded":
+            if job.crawl.purpose == "sample":
+                _runs, requests, _workers = await ensure_graph_storage(
+                    client.jetstream()
+                )
+                await settle_sample_request(
+                    client.jetstream(),
+                    requests,
+                    job.crawl.crawl_request_id,
+                    status="completed",
+                )
             await message.ack()
         else:
             await _dead_letter_or_retry(

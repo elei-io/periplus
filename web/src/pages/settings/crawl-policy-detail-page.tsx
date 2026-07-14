@@ -35,7 +35,12 @@ type CrawlPolicyDetailPageProps = {
 }
 
 type CrawlPolicyTemplate =
-  "static_fast" | "static_wait" | "dynamic_scan" | "app_stable" | "app_deep"
+  | "static_fast"
+  | "static_stable"
+  | "dynamic_scan"
+  | "dynamic_stable"
+  | "app_stable"
+  | "app_deep"
 
 type CrawlPolicyTemplateConfig = {
   template: CrawlPolicyTemplate
@@ -56,8 +61,8 @@ const crawlPolicyTemplates: CrawlPolicyTemplateConfig[] = [
     runConfigOverrides: {},
   },
   {
-    template: "static_wait",
-    label: "Static wait",
+    template: "static_stable",
+    label: "Static stable",
     mode: "static",
     wait: "stable",
     maxConcurrency: 10,
@@ -68,6 +73,14 @@ const crawlPolicyTemplates: CrawlPolicyTemplateConfig[] = [
     label: "Dynamic scan",
     mode: "dynamic",
     wait: "none",
+    maxConcurrency: 10,
+    runConfigOverrides: {},
+  },
+  {
+    template: "dynamic_stable",
+    label: "Dynamic stable",
+    mode: "dynamic",
+    wait: "stable",
     maxConcurrency: 10,
     runConfigOverrides: {},
   },
@@ -128,7 +141,7 @@ export function CrawlPolicyDetailPage({
               variant="ghost"
               size="icon-sm"
               nativeButton={false}
-              render={<a href="/settings/crawl-policies" />}
+              render={<a href="/crawl-policies" />}
             >
               <ArrowLeftIcon />
             </Button>
@@ -252,7 +265,7 @@ function TemplateCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
           wait: selectedTemplate.wait,
           run_config_overrides: selectedTemplate.runConfigOverrides,
           cache_block_rules: profileConfig.cache_block_rules ?? {
-            quality_warning_codes: [],
+            quality_flag_codes: [],
           },
           selection: {
             ...objectValue(profileConfig.selection),
@@ -355,7 +368,7 @@ function AdminCard({ policy }: { policy: CrawlPolicyDetailRecord }) {
 
     deletePolicy.mutate(undefined, {
       onSuccess: () => {
-        window.history.pushState(null, "", "/settings/crawl-policies")
+        window.history.pushState(null, "", "/crawl-policies")
         window.dispatchEvent(new PopStateEvent("popstate"))
       },
     })
@@ -465,8 +478,8 @@ function formatCacheBlocks(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return "-"
   }
-  const codes = (value as { quality_warning_codes?: unknown })
-    .quality_warning_codes
+  const codes = (value as { quality_flag_codes?: unknown })
+    .quality_flag_codes
   if (!Array.isArray(codes) || codes.length === 0) {
     return "none"
   }

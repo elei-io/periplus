@@ -27,6 +27,8 @@ from dom import (
     PARSER_NAME,
     PARSER_OPTIONS_HASH,
     PARSER_VERSION,
+    QUALITY_SCHEMA_VERSION,
+    DocumentQuality,
     GroupedLinkPayload,
     write_dom_parquet,
 )
@@ -164,6 +166,7 @@ class RepositoryIngestor:
                 parser_version=PARSER_VERSION,
                 parser_options_hash=PARSER_OPTIONS_HASH,
                 element_count=projection.element_count,
+                **_quality_values(projection.quality),
                 created_at=crawl.captured_at,
             )
         else:
@@ -175,6 +178,7 @@ class RepositoryIngestor:
                     "parser_version": PARSER_VERSION,
                     "parser_options_hash": PARSER_OPTIONS_HASH,
                     "element_count": projection.element_count,
+                    **_quality_values(projection.quality),
                 }
             )
         return PreparedIngestion(
@@ -294,7 +298,7 @@ class RepositoryIngestor:
         self,
         *,
         normalized_url: str,
-        input_hash: str,
+        config_hash: str,
         cache_block_rules: dict[str, Any] | None = None,
         captured_after: datetime | None = None,
         captured_before: datetime | None = None,
@@ -306,12 +310,10 @@ class RepositoryIngestor:
 
         for crawl in self.catalogue_service.find_cached_crawls(
             normalized_url=normalized_url,
-            input_hash=input_hash,
+            config_hash=config_hash,
             captured_after=captured_after,
             captured_before=captured_before,
         ):
-            if _blocked_by_cache_rules(crawl, cache_block_rules):
-                continue
             hit = self._resolve_crawl_record(
                 crawl,
                 include_html=include_html,
@@ -319,7 +321,9 @@ class RepositoryIngestor:
                 repair_projection=repair_projection,
                 require_complete=False,
             )
-            if hit is not None:
+            if hit is not None and not _blocked_by_cache_rules(
+                hit.document, cache_block_rules
+            ):
                 return hit
         return None
 
@@ -416,6 +420,7 @@ class RepositoryIngestor:
                     "parser_version": PARSER_VERSION,
                     "parser_options_hash": PARSER_OPTIONS_HASH,
                     "element_count": projection.element_count,
+                    **_quality_values(projection.quality),
                 }
             )
             repository_snapshot = self.commit_prepared_batch(
@@ -462,6 +467,7 @@ class RepositoryIngestor:
             and document.parser_name == PARSER_NAME
             and document.parser_version == PARSER_VERSION
             and document.parser_options_hash == PARSER_OPTIONS_HASH
+            and document.quality_schema_version == QUALITY_SCHEMA_VERSION
         )
 
     def close(self) -> None:
@@ -512,19 +518,32 @@ class PreparedIngestion:
 
 
 def _blocked_by_cache_rules(
-    crawl: CrawlRecord,
+    document: DocumentRecord | None,
     cache_block_rules: dict[str, Any] | None,
 ) -> bool:
-    configured = (cache_block_rules or {}).get("quality_warning_codes", [])
+    configured = (cache_block_rules or {}).get("quality_flag_codes", [])
     blocking = {value for value in configured if isinstance(value, str)}
     if not blocking:
         return False
-    present = {
-        str(warning.get("code"))
-        for warning in crawl.warnings_json
-        if isinstance(warning, dict) and warning.get("code") is not None
-    }
+    present = set(document.quality_flags_json) if document is not None else set()
     return bool(blocking & present)
+
+
+def _quality_values(quality: DocumentQuality) -> dict[str, object]:
+    return {
+        "quality_schema_version": quality.quality_schema_version,
+        "html_character_count": quality.html_character_count,
+        "visible_text_chars": quality.visible_text_chars,
+        "script_count": quality.script_count,
+        "app_marker_count": quality.app_marker_count,
+        "lazy_marker_count": quality.lazy_marker_count,
+        "interaction_marker_count": quality.interaction_marker_count,
+        "button_count": quality.button_count,
+        "form_count": quality.form_count,
+        "input_count": quality.input_count,
+        "anchor_count": quality.anchor_count,
+        "quality_flags_json": quality.flag_codes,
+    }
 
 
 def _positive_env_int(name: str, default: int) -> int:

@@ -1,9 +1,7 @@
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
-
-from actions.shared.quality.schemas import QualityWarning
+from pydantic import BaseModel
 
 
 class CrawlPage(BaseModel):
@@ -17,8 +15,7 @@ class CrawlPage(BaseModel):
     repository_crawl_created: bool | None = None
     html: str | None = None
     crawl: dict[str, Any] | None = None
-    quality_warnings: list[QualityWarning] = Field(
-        default_factory=list,
-        description="Quality warnings for the captured page content.",
-    )
     error: str | None = None
+    failure_code: str | None = None
+    failure_stage: str | None = None
+    failure_retryable: bool | None = None

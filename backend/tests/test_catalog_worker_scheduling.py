@@ -8,9 +8,12 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from materialization.writer import (
+    _commit_fanout_plan,
     _commit_materialization_entries,
     _materialization_batch_due,
+    _settle_crawl_fanouts,
 )
+from repository.catalogue.fanout import MissingCrawlMaterializationFanout
 from repository.ingestion.worker import (
     _dead_letter_or_retry,
     _settle_graph_ingestion_failure,
@@ -43,11 +46,70 @@ class MaterializationWriterSchedulingTests(unittest.TestCase):
 
 
 class WorkerSettlementTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_fanout_plan_does_not_poison_committed_scope(self) -> None:
+        crawl_id = uuid4()
+        scope = SimpleNamespace(
+            materialization_id=uuid4(),
+            definition_revision_id=uuid4(),
+            scope_kind="crawl",
+            scope_id=str(crawl_id),
+        )
+
+        @asynccontextmanager
+        async def lease(*_args, **_kwargs):
+            yield
+
+        with (
+            patch(
+                "materialization.writer.CrawlMaterializationFanoutStore.crawls_for_scope",
+                return_value=[crawl_id],
+            ),
+            patch("materialization.writer.operation_leases", new=lease),
+            patch(
+                "materialization.writer._refresh_crawl_fanout_fenced",
+                side_effect=MissingCrawlMaterializationFanout("not planned"),
+            ),
+        ):
+            await _settle_crawl_fanouts(
+                SimpleNamespace(), scope, asyncio.Lock(), SimpleNamespace()
+            )
+
+    async def test_fanout_plan_reconciles_coverage_before_publishing_work(self) -> None:
+        crawl_id = uuid4()
+        scope = SimpleNamespace(
+            materialization_id=uuid4(),
+            definition_revision_id=uuid4(),
+            scope_kind="crawl",
+            scope_id=str(crawl_id),
+            operation_id="operation",
+            model_dump_json=lambda: "{}",
+        )
+        plan = SimpleNamespace(crawl_id=crawl_id, scopes=[scope])
+        jetstream = SimpleNamespace(publish=AsyncMock())
+
+        with (
+            patch("materialization.writer.operation_lock", return_value=nullcontext()),
+            patch(
+                "materialization.writer.run_with_catalogue_retry",
+                side_effect=lambda operation, **_kwargs: operation(),
+            ),
+            patch(
+                "materialization.writer.CrawlMaterializationFanoutStore"
+            ) as store_type,
+        ):
+            await _commit_fanout_plan(jetstream, SimpleNamespace(), plan)
+
+        store_type.return_value.plan.assert_called_once()
+        store_type.return_value.refresh.assert_called_once_with(crawl_id)
+        jetstream.publish.assert_awaited_once()
+
     async def test_terminal_ingestion_failure_settles_runtime_request(self) -> None:
         jetstream = object()
         client = SimpleNamespace(jetstream=lambda: jetstream)
         request_id = uuid4()
-        job = SimpleNamespace(crawl=SimpleNamespace(crawl_request_id=request_id))
+        job = SimpleNamespace(
+            crawl=SimpleNamespace(crawl_request_id=request_id, purpose="use")
+        )
         runs, requests, workers, progress = object(), object(), object(), object()
 
         with (
@@ -130,9 +192,14 @@ class WorkerSettlementTests(unittest.IsolatedAsyncioTestCase):
     async def test_durable_commit_is_nacked_when_fanout_settlement_is_unavailable(
         self,
     ) -> None:
-        message = SimpleNamespace(ack=AsyncMock(), nak=AsyncMock())
+        message = SimpleNamespace(
+            ack=AsyncMock(),
+            nak=AsyncMock(),
+            metadata=SimpleNamespace(num_delivered=1),
+        )
         job = SimpleNamespace(
-            scope=SimpleNamespace(operation_id="operation", scope_id="scope")
+            scope=SimpleNamespace(operation_id="operation", scope_id="scope"),
+            staging_key="staging.arrow",
         )
         heartbeat = asyncio.create_task(asyncio.sleep(60))
 
@@ -169,6 +236,62 @@ class WorkerSettlementTests(unittest.IsolatedAsyncioTestCase):
 
         message.ack.assert_not_awaited()
         message.nak.assert_awaited_once_with(delay=5)
+        self.assertTrue(heartbeat.cancelled())
+
+    async def test_exhausted_settlement_is_dead_lettered_and_terminated(self) -> None:
+        message = SimpleNamespace(
+            ack=AsyncMock(),
+            nak=AsyncMock(),
+            term=AsyncMock(),
+            metadata=SimpleNamespace(num_delivered=5),
+        )
+        scope = SimpleNamespace(
+            operation_id="operation",
+            scope_id="scope",
+            model_dump=lambda: {},
+        )
+        job = SimpleNamespace(scope=scope, staging_key="staging.arrow")
+        heartbeat = asyncio.create_task(asyncio.sleep(60))
+        jetstream = SimpleNamespace(publish=AsyncMock())
+
+        @asynccontextmanager
+        async def lease(*_args, **_kwargs):
+            yield
+
+        with (
+            patch(
+                "materialization.writer.commit_scope_batch",
+                return_value={"operation": "committed"},
+            ),
+            patch(
+                "materialization.writer.catalogue_operation_locks",
+                return_value=nullcontext(),
+            ),
+            patch("materialization.writer.operation_leases", new=lease),
+            patch(
+                "materialization.writer.run_with_catalogue_retry",
+                side_effect=lambda operation, **_kwargs: operation(),
+            ),
+            patch(
+                "materialization.writer._settle_crawl_fanouts",
+                new=AsyncMock(side_effect=OSError("MinIO unavailable")),
+            ),
+            patch("materialization.writer.get_int", return_value=5),
+            patch("materialization.writer.MaterializationDeadLetter") as dead_letter,
+        ):
+            dead_letter.return_value.model_dump_json.return_value = "{}"
+            await _commit_materialization_entries(
+                jetstream,
+                SimpleNamespace(),
+                [(message, job, heartbeat)],
+                asyncio.Lock(),
+                SimpleNamespace(),
+            )
+
+        jetstream.publish.assert_awaited_once()
+        message.term.assert_awaited_once()
+        message.nak.assert_not_awaited()
+        message.ack.assert_not_awaited()
         self.assertTrue(heartbeat.cancelled())
 
     async def test_materialization_settlement_yields_catalogue_between_entries(

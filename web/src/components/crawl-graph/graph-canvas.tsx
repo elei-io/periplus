@@ -468,7 +468,7 @@ function EdgeEditDialog({
             </SelectContent>
           </Select>
           <div className="overflow-hidden rounded-md border">
-            <SqlEditor value={sql} onChange={setSql} readOnly={Boolean(edge.used_at)} height="240px" ariaLabel="Edge SQL" />
+            <SqlEditor value={sql} onChange={setSql} readOnly={Boolean(edge.used_at)} height="240px" ariaLabel="Edge SQL" enableCssSelect />
           </div>
         </div>
         <DialogFooter>

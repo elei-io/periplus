@@ -69,7 +69,19 @@ def _missing_scope_page(
         source_table = "documents" if definition.scope_kind == "document" else "crawls"
         identity = "document_id" if definition.scope_kind == "document" else "crawl_id"
         scopes = _qualified(catalogue, source_table)
+        crawls = _qualified(catalogue, "crawls")
         coverage = _qualified(catalogue, "materialization_scope_results")
+        eligible = (
+            "d.purpose = 'use'"
+            if definition.scope_kind == "crawl"
+            else f"EXISTS (SELECT 1 FROM {crawls} AS c AT (VERSION => ?) WHERE "
+            "c.document_id = d.document_id AND c.purpose = 'use')"
+        )
+        eligibility_params = (
+            []
+            if definition.scope_kind == "crawl"
+            else [definition.activation_snapshot]
+        )
         rows = catalogue.connection.execute(
             f"""
             SELECT d.{identity}
@@ -79,7 +91,8 @@ def _missing_scope_page(
              AND r.scope_kind = ?
              AND r.scope_id = CAST(d.{identity} AS VARCHAR)
              AND r.status IN ('succeeded', 'failed')
-            WHERE r.scope_id IS NULL
+            WHERE {eligible}
+              AND r.scope_id IS NULL
               AND (? IS NULL OR CAST(d.{identity} AS VARCHAR) > ?)
             ORDER BY d.{identity}
             LIMIT ?
@@ -88,6 +101,7 @@ def _missing_scope_page(
                 definition.activation_snapshot,
                 definition.definition_revision_id,
                 definition.scope_kind,
+                *eligibility_params,
                 cursor,
                 cursor,
                 limit,
@@ -100,10 +114,22 @@ def _backfill_terminal(definition: CatalogueMaterialization) -> bool:
     with catalogue_from_env() as catalogue:
         source_table = "documents" if definition.scope_kind == "document" else "crawls"
         scopes = _qualified(catalogue, source_table)
+        crawls = _qualified(catalogue, "crawls")
         coverage = _qualified(catalogue, "materialization_scope_results")
+        alias = "c" if definition.scope_kind == "crawl" else "d"
+        eligible = (
+            "c.purpose = 'use'"
+            if definition.scope_kind == "crawl"
+            else f"EXISTS (SELECT 1 FROM {crawls} AS c AT (VERSION => ?) WHERE "
+            "c.document_id = d.document_id AND c.purpose = 'use')"
+        )
+        parameters = [definition.activation_snapshot]
+        if definition.scope_kind == "document":
+            parameters.append(definition.activation_snapshot)
         total = catalogue.connection.execute(
-            f"SELECT count(*) FROM {scopes} AT (VERSION => ?)",
-            [definition.activation_snapshot],
+            f"SELECT count(*) FROM {scopes} AS {alias} AT (VERSION => ?) "
+            f"WHERE {eligible}",
+            parameters,
         ).fetchone()[0]
         completed = catalogue.connection.execute(
             f"SELECT count(*) FROM {coverage} "

@@ -26,9 +26,15 @@ class GraphRepositoryContractTests(unittest.TestCase):
             requested_url="https://example.com",
             normalized_url="https://example.com/",
             captured_at=datetime.now(UTC),
-            input_json={},
-            input_hash="input-hash",
-            errors_json=["failed"],
+            profile="http",
+            template="http_fast",
+            config_json={},
+            config_hash="a" * 64,
+            outcome="failed",
+            failure_code="expected_failure",
+            failure_stage="request",
+            failure_retryable=False,
+            failure_detail="failed",
         )
 
         dumped = crawl.model_dump()

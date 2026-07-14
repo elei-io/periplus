@@ -4,18 +4,22 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 import asyncio
+import hashlib
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4, uuid5
 
-from config import get_float, get_int
+from config import get_bool, get_float, get_int
 from control.crawl_policies.schemas import CrawlPolicySnapshot
+from control.crawl_policies.templates import TEMPLATE_REGISTRY_VERSION, next_trial_policy_snapshot
 from control.crawl_policies.service import find_crawl_policy_for_url
 from control.crawl_graphs.schemas import EdgeDedupeMode
 
-from .graph_queue import CrawlRequest, EdgeEvaluation, EdgeWork, FrozenGraphSnapshot, GraphRun, PendingAdmission, ReadinessWork, crawl_transport_from_policy, edge_evaluation_identity, edge_evaluation_key, get_crawl_request, get_edge_evaluation, get_graph_run, list_crawl_requests, new_graph_run, normalize_request_url, publish_crawl, publish_edge, request_identity, update_crawl_request, update_edge_evaluation, update_graph_run
+from .graph_queue import CrawlRequest, EdgeEvaluation, EdgeWork, FrozenGraphSnapshot, GraphRun, PendingAdmission, PolicyTrialMetadata, ReadinessWork, crawl_transport_from_policy, edge_evaluation_identity, edge_evaluation_key, ensure_policy_trial_budget_storage, get_crawl_request, get_edge_evaluation, get_graph_run, list_crawl_requests, new_graph_run, normalize_request_url, publish_crawl, publish_edge, reconcile_policy_trial_budget, request_identity, reserve_policy_trial_slot, update_crawl_request, update_edge_evaluation, update_graph_run
 from .graph_progress import add_edge_output_progress, initialize_run_progress, mark_run_progress_settled, transition_edge_evaluation_progress, transition_node_progress
 
 _REQUEST_NAMESPACE = UUID("869ee36c-76ad-46f0-a1b7-9b28f4b71386")
+_TRIAL_NAMESPACE = UUID("ec8c1134-ff67-46f4-a73c-d6277705e0f0")
+_SAMPLE_REQUEST_NAMESPACE = UUID("b31887dc-98e1-40a8-a1cf-d29f1199cc02")
 _TERMINAL_RUNS = {"completed", "completed_with_errors", "failed", "cancelled"}
 _TERMINAL_REQUESTS = {"completed", "failed", "cancelled"}
 
@@ -49,6 +53,43 @@ def deterministic_request_id(identity: str) -> UUID:
     return uuid5(_REQUEST_NAMESPACE, identity)
 
 
+def _trial_for_request(
+    request_id: UUID, policy_snapshot_json: dict | None, url: str
+) -> tuple[PolicyTrialMetadata, UUID, dict, str] | None:
+    share = get_float("ATLAS_POLICY_TRIAL_SAMPLE_SHARE", exclusive=False)
+    if not 0 <= share <= 1:
+        raise ValueError("ATLAS_POLICY_TRIAL_SAMPLE_SHARE must be between 0 and 1")
+    version = get_int("ATLAS_POLICY_TRIAL_SAMPLER_VERSION")
+    fraction = int.from_bytes(
+        hashlib.sha256(f"{request_id}:{version}".encode()).digest()[:8], "big"
+    ) / 2**64
+    if fraction >= share:
+        return None
+    candidate = next_trial_policy_snapshot(
+        policy_snapshot_json,
+        url=url,
+        provider_enabled=get_bool("ATLAS_POLICY_TRIAL_PROVIDER_ENABLED"),
+    )
+    if candidate is None:
+        return None
+    sample_policy, candidate_template = candidate
+    trial_id = uuid5(_TRIAL_NAMESPACE, f"{request_id}:{version}")
+    sample_request_id = uuid5(_SAMPLE_REQUEST_NAMESPACE, f"{request_id}:{version}")
+    return (
+        PolicyTrialMetadata(
+            trial_id=trial_id,
+            sampler_version=version,
+            sample_share=share,
+            candidate_strategy="next_more_expensive_template",
+            candidate_template=candidate_template,
+            template_registry_version=TEMPLATE_REGISTRY_VERSION,
+        ),
+        sample_request_id,
+        sample_policy,
+        crawl_transport_from_policy(sample_policy),
+    )
+
+
 def resolve_policy_snapshot(session, url: str) -> dict | None:
     policy = find_crawl_policy_for_url(session, url=url)
     if policy is None:
@@ -59,6 +100,7 @@ def resolve_policy_snapshot(session, url: str) -> dict | None:
     snapshot = CrawlPolicySnapshot(
         id=policy.id,
         revision=policy.revision,
+        origin="editable",
         metric_slug=policy.metric_slug,
         domain_group=policy.domain_group,
         match=policy.match,
@@ -98,6 +140,7 @@ async def admit_request(*, runs, requests, progress, jetstream, run_id: UUID, no
     graph_identity = request_identity(run_id, normalized)
     request_id = deterministic_request_id(identity)
     policy_snapshot_json = policy_resolver(normalized)
+    trial = _trial_for_request(request_id, policy_snapshot_json, normalized)
     pending = PendingAdmission(
         request_id=request_id,
         identity=identity,
@@ -105,6 +148,10 @@ async def admit_request(*, runs, requests, progress, jetstream, run_id: UUID, no
         url=normalized,
         transport=crawl_transport_from_policy(policy_snapshot_json),
         effective_policy_snapshot_json=policy_snapshot_json,
+        sample_request_id=trial[1] if trial else None,
+        sample_transport=trial[3] if trial else None,
+        sample_policy_snapshot_json=trial[2] if trial else None,
+        trial=trial[0] if trial else None,
         source_crawl_id=source_crawl_id,
         source_edge_id=source_edge_id,
         parent_request_id=parent_request_id,
@@ -160,6 +207,19 @@ async def admit_request(*, runs, requests, progress, jetstream, run_id: UUID, no
 
 async def _deliver_pending_admission(*, runs, requests, progress, jetstream, run_id: UUID, pending: PendingAdmission) -> CrawlRequest:
     request = await get_crawl_request(requests, pending.request_id)
+    trial = request.trial if request is not None else pending.trial
+    sample_request = None
+    if trial is not None:
+        if pending.sample_request_id is None:
+            raise ValueError("trial admission is missing a sample request identity")
+        budget = await ensure_policy_trial_budget_storage(jetstream)
+        await reconcile_policy_trial_budget(budget, runs, requests)
+        if not await reserve_policy_trial_slot(
+            budget,
+            pending.sample_request_id,
+            get_int("ATLAS_POLICY_TRIAL_MAX_IN_FLIGHT"),
+        ):
+            trial = None
     if request is None:
         request = CrawlRequest(
             id=pending.request_id,
@@ -167,6 +227,8 @@ async def _deliver_pending_admission(*, runs, requests, progress, jetstream, run
             node_id=pending.node_id,
             url=pending.url,
             transport=pending.transport,
+            purpose="use",
+            trial=trial,
             effective_policy_snapshot_json=pending.effective_policy_snapshot_json,
             source_crawl_id=pending.source_crawl_id,
             source_edge_id=pending.source_edge_id,
@@ -182,7 +244,42 @@ async def _deliver_pending_admission(*, runs, requests, progress, jetstream, run
             if existing is None:
                 raise
             request = existing
+    if trial is not None:
+        if (
+            pending.sample_request_id is None
+            or pending.sample_transport is None
+            or pending.sample_policy_snapshot_json is None
+        ):
+            raise ValueError("trial admission has incomplete frozen sample work")
+        sample_request = await get_crawl_request(requests, pending.sample_request_id)
+        if sample_request is None:
+            sample_request = CrawlRequest(
+                id=pending.sample_request_id,
+                graph_run_id=run_id,
+                node_id=pending.node_id,
+                url=pending.url,
+                transport=pending.sample_transport,
+                purpose="sample",
+                trial=trial,
+                effective_policy_snapshot_json=pending.sample_policy_snapshot_json,
+                source_crawl_id=pending.source_crawl_id,
+                source_edge_id=pending.source_edge_id,
+                parent_request_id=pending.request_id,
+                created_at=pending.created_at,
+                updated_at=pending.created_at,
+            )
+            try:
+                await requests.create(
+                    sample_request.id.hex, sample_request.model_dump_json().encode()
+                )
+            except Exception:
+                existing = await get_crawl_request(requests, sample_request.id)
+                if existing is None:
+                    raise
+                sample_request = existing
     await publish_crawl(jetstream, request)
+    if sample_request is not None:
+        await publish_crawl(jetstream, sample_request)
 
     def clear(value: GraphRun) -> GraphRun:
         remaining = tuple(
@@ -231,7 +328,7 @@ async def request_cancellation(runs, requests, run_id: UUID, *, progress, now: d
         run = await update_graph_run(runs, run_id, cancel)
         if run.status == "cancelled":
             for request in await list_crawl_requests(requests, graph_run_id=run_id):
-                if request.status not in _TERMINAL_REQUESTS:
+                if request.purpose == "use" and request.status not in _TERMINAL_REQUESTS:
                     await settle_request(
                         runs=runs,
                         requests=requests,
@@ -267,7 +364,7 @@ async def expire_graph_run(*, runs, requests, progress, run: GraphRun, now: date
 
     run = await update_graph_run(runs, run.id, fail)
     for request in await list_crawl_requests(requests, graph_run_id=run.id):
-        if request.status not in _TERMINAL_REQUESTS:
+        if request.purpose == "use" and request.status not in _TERMINAL_REQUESTS:
             await settle_request(
                 runs=runs,
                 requests=requests,
@@ -283,6 +380,9 @@ async def expire_graph_run(*, runs, requests, progress, run: GraphRun, now: date
 
 async def settle_request(*, runs, requests, progress, request_id: UUID, status: str, error: str | None = None, now: datetime | None = None, expected_claim_token: UUID | None = None, failure_stage: str | None = None) -> CrawlRequest:
     now = now or datetime.now(UTC)
+    existing_request = await get_crawl_request(requests, request_id)
+    if existing_request is not None and existing_request.purpose != "use":
+        raise ValueError("sample crawl requests cannot settle graph progress")
     became_terminal = False
     def settle(request: CrawlRequest) -> CrawlRequest:
         nonlocal became_terminal
@@ -323,6 +423,8 @@ async def settle_request(*, runs, requests, progress, request_id: UUID, status: 
 async def handle_readiness(*, runs, requests, progress, jetstream, event: ReadinessWork) -> None:
     request = await get_crawl_request(requests, event.crawl_request_id)
     if request is None:
+        return
+    if request.purpose != "use":
         return
     if request.status in _TERMINAL_REQUESTS:
         return

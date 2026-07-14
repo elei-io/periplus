@@ -11,6 +11,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from dom.encoder import ElementRow, iter_html_elements
+from dom.quality import DocumentQuality, DocumentQualityAccumulator
 
 ELEMENT_ARROW_SCHEMA = pa.schema(
     [
@@ -33,6 +34,7 @@ class DomParquet:
     path: Path
     element_count: int
     size_bytes: int
+    quality: DocumentQuality
 
 
 class _BudgetedOutput:
@@ -117,6 +119,15 @@ def write_dom_parquet(
     if max_bytes is not None and max_bytes <= 0:
         raise ValueError("max_bytes must be greater than zero")
     try:
+        quality = DocumentQualityAccumulator(
+            html_character_count=len(captured_html)
+        )
+
+        def measured_rows() -> Iterator[ElementRow]:
+            for row in iter_html_elements(captured_html):
+                quality.observe(row)
+                yield row
+
         with path.open("wb") as raw_output:
             output = _BudgetedOutput(raw_output, max_bytes)
             with pq.ParquetWriter(
@@ -126,7 +137,7 @@ def write_dom_parquet(
                 use_dictionary=["tag", "namespace_uri"],
             ) as writer:
                 for batch in element_record_batches(
-                    iter_html_elements(captured_html),
+                    measured_rows(),
                     document_id=document_id,
                     batch_rows=batch_rows,
                 ):
@@ -141,6 +152,7 @@ def write_dom_parquet(
             path=path,
             element_count=count,
             size_bytes=size_bytes,
+            quality=quality.finish(),
         )
     except BaseException:
         path.unlink(missing_ok=True)

@@ -7,6 +7,8 @@
 **/*.egg-info
 **/*.pyc
 **/.pytest_cache
+**/.coverage
+**/.tmp
 **/build
 **/dist
 web/node_modules

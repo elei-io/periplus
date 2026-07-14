@@ -65,9 +65,13 @@ def navigation_package() -> NavigationPackage:
 class FakeJetStream:
     def __init__(self) -> None:
         self.messages: list[tuple[str, bytes]] = []
+        self.buckets: dict[str, FakeKV] = {}
 
     async def publish(self, subject: str, payload: bytes, **_kwargs) -> None:
         self.messages.append((subject, payload))
+
+    async def key_value(self, bucket: str) -> FakeKV:
+        return self.buckets.setdefault(bucket, FakeKV())
 
 
 def snapshot(*, entry: bool = True, self_edge: bool = False, dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph) -> FrozenGraphSnapshot:

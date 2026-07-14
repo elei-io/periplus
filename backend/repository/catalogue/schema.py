@@ -6,7 +6,7 @@ from ducklake_client import ColumnDef
 
 from dom.schema import ELEMENT_COLUMNS
 
-CATALOGUE_SCHEMA_VERSION = 8
+CATALOGUE_SCHEMA_VERSION = 10
 
 DOCUMENT_COLUMNS: dict[str, ColumnDef] = {
     "document_id": ColumnDef("VARCHAR", nullable=False),
@@ -22,6 +22,18 @@ DOCUMENT_COLUMNS: dict[str, ColumnDef] = {
     "parser_version": ColumnDef("VARCHAR", nullable=False),
     "parser_options_hash": ColumnDef("VARCHAR", nullable=False),
     "element_count": ColumnDef("BIGINT", nullable=False),
+    "quality_schema_version": ColumnDef("INTEGER", nullable=False),
+    "html_character_count": ColumnDef("BIGINT", nullable=False),
+    "visible_text_chars": ColumnDef("BIGINT", nullable=False),
+    "script_count": ColumnDef("BIGINT", nullable=False),
+    "app_marker_count": ColumnDef("BIGINT", nullable=False),
+    "lazy_marker_count": ColumnDef("BIGINT", nullable=False),
+    "interaction_marker_count": ColumnDef("BIGINT", nullable=False),
+    "button_count": ColumnDef("BIGINT", nullable=False),
+    "form_count": ColumnDef("BIGINT", nullable=False),
+    "input_count": ColumnDef("BIGINT", nullable=False),
+    "anchor_count": ColumnDef("BIGINT", nullable=False),
+    "quality_flags_json": ColumnDef("JSON", nullable=False),
     "created_at": ColumnDef("TIMESTAMPTZ", nullable=False),
 }
 
@@ -32,6 +44,8 @@ CRAWL_COLUMNS: dict[str, ColumnDef] = {
     "graph_run_id": ColumnDef("UUID", nullable=False),
     "graph_node_id": ColumnDef("UUID", nullable=False),
     "crawl_request_id": ColumnDef("UUID", nullable=False),
+    "purpose": ColumnDef("VARCHAR", nullable=False),
+    "trial_id": ColumnDef("UUID"),
     "source_crawl_id": ColumnDef("UUID"),
     "source_edge_id": ColumnDef("UUID"),
     "requested_url": ColumnDef("VARCHAR", nullable=False),
@@ -47,12 +61,22 @@ CRAWL_COLUMNS: dict[str, ColumnDef] = {
     "captured_at": ColumnDef("TIMESTAMPTZ", nullable=False),
     "status_code": ColumnDef("INTEGER"),
     "duration_ms": ColumnDef("BIGINT"),
-    "input_json": ColumnDef("JSON", nullable=False),
-    "input_hash": ColumnDef("VARCHAR", nullable=False),
+    "profile": ColumnDef("VARCHAR", nullable=False),
+    "template": ColumnDef("VARCHAR", nullable=False),
+    "config_hash": ColumnDef("VARCHAR", nullable=False),
+    "config_json": ColumnDef("JSON", nullable=False),
     "crawl_policy_id": ColumnDef("UUID"),
     "crawl_policy_revision": ColumnDef("INTEGER"),
-    "warnings_json": ColumnDef("JSON", nullable=False),
-    "errors_json": ColumnDef("JSON", nullable=False),
+    "outcome": ColumnDef("VARCHAR", nullable=False),
+    "failure_code": ColumnDef("VARCHAR"),
+    "failure_stage": ColumnDef("VARCHAR"),
+    "failure_retryable": ColumnDef("BOOLEAN"),
+    "failure_detail": ColumnDef("VARCHAR"),
+    "trial_sampler_version": ColumnDef("INTEGER"),
+    "trial_sample_rate": ColumnDef("DOUBLE"),
+    "trial_candidate_strategy": ColumnDef("VARCHAR"),
+    "trial_candidate_template": ColumnDef("VARCHAR"),
+    "trial_template_registry_version": ColumnDef("INTEGER"),
 }
 
 MATERIALIZATION_SCOPE_RESULT_COLUMNS: dict[str, ColumnDef] = {

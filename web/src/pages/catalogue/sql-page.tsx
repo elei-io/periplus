@@ -13,6 +13,7 @@ import {
 import { CatalogueResultsTable } from "@/components/catalogue/catalogue-results-table"
 import { catalogueTables } from "@/components/catalogue/catalogue-schema"
 import { SqlEditor } from "@/components/catalogue/sql-editor"
+import { SqlReferenceSheet } from "@/components/catalogue/sql-reference-sheet"
 import { formatSql } from "@/components/catalogue/sql-format"
 import { SaveViewDialog } from "@/components/catalogue/save-view-dialog"
 import { SaveQueryDialog } from "@/components/catalogue/save-query-dialog"
@@ -114,6 +115,7 @@ export function CatalogueSqlPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <SqlReferenceSheet />
             <Button size="sm" variant="ghost" onClick={() => setQuery(formatSql(query))} disabled={!query.trim()}><SparklesIcon />Format SQL</Button>
             <Tooltip>
               <TooltipTrigger
@@ -156,6 +158,7 @@ export function CatalogueSqlPage() {
           value={query}
           onChange={setQuery}
           onRun={execute}
+          enableCssSelect
           views={(catalogueViews.data?.items ?? []).filter(
             (view) => view.available
           )}
@@ -187,7 +190,7 @@ export function CatalogueSqlPage() {
             </Button>
           ))}
           <span className="ml-auto hidden text-[10px] text-muted-foreground md:inline">
-            Autocomplete: tables, aliases & columns
+            Autocomplete: tables, CSS & DOM helpers
           </span>
         </div>
       </section>
