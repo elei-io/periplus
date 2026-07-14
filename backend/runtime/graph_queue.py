@@ -33,7 +33,6 @@ RUNS_BUCKET = "atlas_graph_runs"
 REQUESTS_BUCKET = "atlas_crawl_requests"
 WORKERS_BUCKET = "atlas_graph_workers"
 PROGRESS_BUCKET = "atlas_graph_progress"
-CAPACITY_BUCKET = "atlas_crawl_policy_capacity"
 POLICY_TRIAL_BUDGET_BUCKET = "atlas_policy_trial_budget"
 POLICY_TRIAL_BUDGET_KEY = "active"
 
@@ -325,20 +324,6 @@ async def ensure_graph_progress_storage(jetstream):
             description="Current per-component Atlas graph progress",
             history=1,
             ttl=get_float("ATLAS_GRAPH_PROGRESS_TTL_SECONDS"),
-            max_bytes=get_int("ATLAS_GRAPH_STATE_MAX_BYTES"),
-            storage=StorageType.FILE,
-            replicas=get_int("ATLAS_GRAPH_STREAM_REPLICAS"),
-        ),
-    )
-
-
-async def ensure_crawl_capacity_storage(jetstream):
-    return await _bucket(
-        jetstream,
-        KeyValueConfig(
-            bucket=CAPACITY_BUCKET,
-            description="Deployment-wide CrawlPolicy acquisition leases",
-            history=1,
             max_bytes=get_int("ATLAS_GRAPH_STATE_MAX_BYTES"),
             storage=StorageType.FILE,
             replicas=get_int("ATLAS_GRAPH_STREAM_REPLICAS"),

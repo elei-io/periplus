@@ -29,6 +29,11 @@ from runtime.graph_runs import (
     resolve_policy_snapshot,
 )
 from runtime.graph_progress import EdgeProgress, NodeProgress, bootstrap_run_progress
+from runtime.resource_governor import (
+    ResourceUsage,
+    ensure_resource_governor_storage,
+    resource_usage,
+)
 
 router = APIRouter(prefix="/graph-runs", tags=["graph-runs"])
 trigger_router = APIRouter(prefix="/crawl-graphs", tags=["crawl-graphs"])
@@ -89,7 +94,8 @@ class CrawlConcurrencyLimits(BaseModel):
     runtime_capacity: int
     runtime_active: int
     browser_capacity: int
-    crawl_permit_timeout_seconds: float
+    resource_acquire_timeout_seconds: float
+    resources: list[ResourceUsage]
     workers: list[RuntimeWorkerCapacity]
     transports: list[TransportCapacity]
 
@@ -133,8 +139,11 @@ async def _storage():
 async def capacity() -> CrawlConcurrencyLimits:
     client = await connect_nats()
     try:
-        _runs, _requests, workers_bucket = await ensure_graph_storage(client.jetstream())
+        jetstream = client.jetstream()
+        _runs, _requests, workers_bucket = await ensure_graph_storage(jetstream)
+        resource_grants = await ensure_resource_governor_storage(jetstream)
         workers = sorted(await list_worker_states(workers_bucket), key=lambda value: value.worker_id)
+        resources = await resource_usage(resource_grants)
     finally:
         await client.drain()
     transports = [
@@ -156,7 +165,10 @@ async def capacity() -> CrawlConcurrencyLimits:
         runtime_capacity=sum(worker.capacity for worker in workers),
         runtime_active=sum(worker.active_request_count for worker in workers),
         browser_capacity=browser.capacity,
-        crawl_permit_timeout_seconds=get_float("ATLAS_CRAWL_PERMIT_TIMEOUT_SECONDS"),
+        resource_acquire_timeout_seconds=get_float(
+            "ATLAS_RESOURCE_ACQUIRE_TIMEOUT_SECONDS"
+        ),
+        resources=resources,
         workers=[RuntimeWorkerCapacity.model_validate(worker, from_attributes=True) for worker in workers],
         transports=transports,
     )

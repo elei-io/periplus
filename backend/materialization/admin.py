@@ -7,6 +7,7 @@ from control.catalogue_materializations.models import CatalogueMaterialization
 from db.session import session_scope
 from materialization.fencing import scope_job_is_current
 from materialization.queue import (
+    DEAD_LETTER_SUBJECT,
     DEAD_LETTER_STREAM,
     SCOPE_BACKFILL_SUBJECT,
     SCOPE_LIVE_SUBJECT,
@@ -45,6 +46,9 @@ async def list_dead_letters(limit: int) -> MaterializationDeadLetterList:
             except NotFoundError:
                 sequence -= 1
                 continue
+            if raw.subject != DEAD_LETTER_SUBJECT:
+                sequence -= 1
+                continue
             items.append(
                 MaterializationDeadLetterRecord(
                     sequence=sequence,
@@ -63,6 +67,8 @@ async def requeue_dead_letter(sequence: int) -> MaterializationDeadLetterRecord:
         jetstream = client.jetstream()
         await ensure_streams(jetstream)
         raw = await jetstream.get_msg(DEAD_LETTER_STREAM, seq=sequence)
+        if raw.subject != DEAD_LETTER_SUBJECT:
+            raise RuntimeError("the sequence is not a materialization dead letter")
         entry = MaterializationDeadLetter.model_validate_json(raw.data)
         with session_scope() as session:
             definition = session.get(CatalogueMaterialization, entry.job.materialization_id)

@@ -187,9 +187,11 @@ be interpreted as graph-execution ownership.
 
 Because V1 shares the existing transport queues and deployments, trials consume a deliberately
 bounded fraction of normal worker capacity. This is a conscious simplicity tradeoff, not complete
-resource isolation. Trial work still obeys the same deployment-wide remote-pressure limits. If
-measured queue impact becomes material, `sample` work may later move to lower-priority subjects or
-dedicated consumers without changing the DuckLake evidence contract.
+resource isolation. Trial work still obeys the same Resource Governor remote-policy and
+object-write permits as ordinary acquisition, in addition to its independent in-flight trial
+budget. Increasing transport replicas cannot bypass either ceiling. If measured queue impact
+becomes material, `sample` work may later move to a fixed lower-priority subject or dedicated
+consumer without changing the DuckLake evidence contract.
 
 ## Storage behavior
 

@@ -1,227 +1,241 @@
 # Architecture
 
-Atlas has one page-acquisition contract, one durable ingestion path, and one graph-driven way to
-compose subsequent acquisition. Acquisition, ingestion, user materialization, and storage
-maintenance are separate scaling and failure domains.
+Status: accepted target contract. Atlas has one page-acquisition contract, one durable ingestion
+path, one graph-driven navigation model, and one shared resource-admission model.
+
+The central operating rule is:
+
+> Scale capabilities; govern shared resources.
+
+Worker replicas supply execution capacity for a capability. The Resource Governor independently
+bounds pressure on remote sites, DuckLake, and S3 / MinIO across all workers. Replica counts are
+never used as the only shared-resource control.
 
 ```text
-API
- |
- +-- graph trigger --> GraphRun in JetStream/KV
-                          |
-                    CrawlRequest
-                          |
-             route by frozen transport
-                /         |          \
-            HTTP       browser     provider
-             workers     workers     workers
-                \         |          /
-                  immutable HTML.zst
-                          |
-                  frozen ingestion job
-                          |
-                  ingestion worker
-                          |
-       +------------------+-------------------+
-       |                  |                   |
-    DuckLake       Arrow navigation      outgoing bounded
-  base evidence        package              SQL edges
-       |                  |                   |
-       |             verified reference       +--> CrawlRequests
-       |
-       +--> asynchronous scope work --> materialization workers
-                                            |
-                                    live materialized views
+Postgres control plane
+  graphs, policies, definitions
+             |
+        graph runtime
+             |
+      NATS durable work
+       /           \
+acquisition     catalogue work
+HTTP/browser/   ingestion (critical)
+provider        materialization (live/backfill)
+       \           /
+       repository objects ---- DuckLake
+          raw/staging         evidence/coverage
 
-Off the graph hot path:
-
-maintenance worker -- global lease --> bounded compaction / cleanup --> DuckLake
+All expensive phases -> Resource Governor -> expiring resource permits
+Maintenance ----------> exclusive background permit
 ```
 
-The detailed deployment contract is [WORKER_ARCHITECTURE.md](WORKER_ARCHITECTURE.md).
-Crawl-policy sampling and paired evidence are defined in [TRIALS.md](TRIALS.md).
+The detailed contract is [WORKER_ARCHITECTURE.md](WORKER_ARCHITECTURE.md). Crawl graph semantics are
+defined in [CRAWL_GRAPHS.md](CRAWL_GRAPHS.md), and live materialization in
+[PUBLICATIONS.md](PUBLICATIONS.md).
 
 ## Critical-path invariant
 
-The graph critical path ends at base ingestion, navigation readiness, and outgoing edge admission:
-
 ```text
 acquire -> retain raw HTML -> ingest base evidence -> navigation ready -> evaluate edges
+
+                                      independent of
+
+                         materialization scope freshness
 ```
 
-User materialization is asynchronous:
-
-```text
-base evidence or CDC change -> materialization scope -> live view catches up
-```
-
-A slow or unavailable materialization deployment may make a view stale. It must not hold remote or
-browser capacity, delay base ingestion, block outgoing edges, or keep a graph run active.
-
-Navigation-critical system projections such as `page_links` are produced by ingestion and are not
-treated as user materializations, even when exposed through the `views` namespace.
+User materialization is asynchronous. A slow or failed materialization deployment may make a view
+stale, but cannot hold a browser, delay base ingestion, block outgoing edges, or keep a graph run
+active. Navigation-critical system projections such as `page_links` are produced by ingestion.
 
 ## State ownership
 
 | Owner | Authoritative state | Must not own |
 | --- | --- | --- |
-| PostgreSQL `atlas` | Editable graphs, nodes, edges, policies, matches, schemas, queries, views, and materialization definitions | Current graph execution, crawl history, HTML, DOM evidence |
-| NATS JetStream/KV | Graph runs, crawl requests, transport-routed delivery, admission, deduplication, operation leases, worker presence, progress, ingestion delivery, and materialization delivery | Irreplaceable analytical history or large payload bytes |
-| Repository objects | Immutable content-addressed raw HTML, bounded Arrow navigation packages, and deterministic temporary staging objects | Mutable execution metadata |
-| DuckLake | Documents, crawl attempts, graph provenance, versioned DOM elements, system projections, live materialized rows, snapshots, and durable coverage | Editable graph topology or current execution state |
-| Prometheus | Operational counters, gauges, and histograms | Correctness-critical state |
+| PostgreSQL `atlas` | Editable graphs, policies, schedules, matches, schemas, queries, views, materialization definitions, and lifecycle intent | Current graph execution, crawl history, HTML, DOM evidence |
+| NATS JetStream | Durable current work, graph delivery, retries, dead letters, and at-least-once queue state | Irreplaceable analytical history or large payload bytes |
+| NATS KV | Graph runs, requests, admission, deduplication, progress, worker presence, operation leases, and expiring resource grants | Materialization completion or other analytical truth |
+| Repository objects | Immutable content-addressed raw HTML, bounded navigation packages, and deterministic temporary staging | Mutable workflow or scheduling truth |
+| DuckLake | Documents, crawls, graph provenance, DOM, system projections, materialized rows, snapshots, and authoritative scope coverage | Editable graph topology or current queue state |
+| Resource Governor | Current resource-allocation decisions | Work delivery, workflow completion, or commit correctness |
+| Prometheus | Counters, gauges, histograms, and capacity evidence | Correctness-critical state |
 
-PostgreSQL may retain stable definition metadata, but graph runs remain NATS entities. DuckLake may
-retain graph and request provenance for analysis, but it does not own their editable definitions or
-current execution.
+No state is independently authoritative in two stores. Materialization completion is successful
+scope coverage in DuckLake, not a plan header, settlement counter, queue position, or metric.
 
-## Worker ownership
+## Work, capacity, and correctness
 
-### Acquisition workers
+Atlas uses four separate mechanisms:
 
-Acquisition workers claim requests routed by frozen CrawlPolicy transport, acquire one page, store
-immutable raw HTML, and publish a frozen ingestion job. They never open DuckLake or wait for
-ingestion, navigation, or materialization.
+- a JetStream work message says what must eventually happen;
+- a Resource Governor permit says whether shared pressure may start now;
+- an operation lease suppresses simultaneous execution of one deterministic operation; and
+- a PostgreSQL advisory lock plus authoritative DuckLake lookup fences durable commit.
 
-HTTP acquisition uses a lightweight asynchronous client. Browser acquisition uses one long-lived
-Chromium runtime per process with bounded local page concurrency. External providers use the same
-single-page output contract. Each transport has a distinct NATS subject and Kubernetes deployment
-so it can scale independently.
+Capacity permits are expiring operational state. They do not prove that work started, completed, or
+committed. A worker holds the original durable message while requesting an atomic permit bundle,
+publishes the next durable fact, acknowledges the message, and releases the permit. TTL expiry
+recovers capacity after process loss.
 
-CrawlPolicy concurrency is a deployment-wide remote-pressure ceiling enforced with expiring NATS
-leases. Local browser concurrency protects one Chromium process; it is not the deployment-wide
-remote limit.
+Atlas has no durable lock-request/acquired/release workflow and no central scheduler that receives
+every completion. NATS owns work delivery; the Governor owns only admission.
 
-### Ingestion workers
+## Capability and resource boundaries
 
-Ingestion workers verify raw objects, build bounded page-local DOM staging, create
-navigation-critical system projections, commit document/crawl/element evidence, publish a verified
-navigation package, evaluate outgoing bounded edge SQL, and admit returned URLs.
+The independently scalable capabilities are:
 
-They may publish asynchronous materialization scope notifications after the base commit. They never
-evaluate or commit user materializations and never wait for them.
+- HTTP acquisition;
+- browser acquisition;
+- optional provider acquisition;
+- base ingestion and graph navigation; and
+- live/backfill materialization.
 
-### Materialization workers
+Maintenance and the Governor are fixed-size operational deployments. Ingestion and materialization
+remain separate processes because their criticality and failure modes differ, even though both use
+DuckLake and object storage.
 
-Materialization workers own live materialization CDC discovery, activation backfill, bounded scope
-evaluation, deterministic staging, scope replacement, durable coverage, dematerialization, and lag
-settlement. Saved queries cannot be materialized; a view may have at most one live materialization.
+Shared resources are governed across those capabilities:
 
-Activation declares whether updates are keyed by document or crawl and which returned column is the
-incremental discriminator. Atlas does not offer manually refreshed materializations. An ineligible
-view is not activated and reports the exact unsupported construct or missing discriminator.
+- `remote:<domain-group>` bounds remote concurrency across policies in the same group;
+- process-local browser slots protect one Chromium runtime;
+- `catalogue:hot` bounds combined ingestion/materialization operations;
+- maintenance requests the complete `catalogue:hot` pool after ordinary work drains; and
+- weighted `object:read` and `object:write` budgets bound S3 / MinIO pressure.
 
-### Maintenance worker
+The fixed service classes are `critical`, `live`, `backfill`, and `maintenance`. Critical graph work
+and ingestion have a reserved catalogue share, live/backfill work has a reciprocal reserved share,
+backfill has an explicit concurrency ceiling, and
+maintenance requests the full catalogue pool. Scheduling rules are code-owned. Capacities and class
+bounds are typed deployment configuration, while per-remote limits remain frozen CrawlPolicy data.
 
-The maintenance worker owns bounded compaction, flushing, retention, staging cleanup, and narrowly
-defined repair. It runs as one replica by default under an expiring global lease and waits for hot
-path ingestion and materialization commits to drain. It consumes no acquisition, ingestion,
-materialization, or graph-edge capacity.
+## Acquisition
+
+A frozen CrawlPolicy routes each request to its transport subject. The worker acquires the
+deployment-wide remote permit, loads one page, releases remote/browser pressure, obtains bounded
+object-write capacity, stores immutable HTML, and publishes a frozen ingestion job.
+
+Acquisition workers never open DuckLake or wait for ingestion, navigation, materialization, or
+maintenance. Every transport shares the same immutable raw-HTML output contract.
+
+## Ingestion and graph continuation
+
+Ingestion is graph-critical catalogue work. It verifies raw HTML, builds bounded page-local DOM and
+system projections, acquires an atomic catalogue/object permit bundle, commits base evidence,
+publishes a verified navigation package, evaluates outgoing bounded SQL edges, and admits their URLs
+as new transport-routed crawl requests.
+
+Raw HTML is the regeneration authority. NATS owns current readiness and redelivery; DuckLake owns
+durable evidence. Ingestion never evaluates or commits user materialization scopes.
+
+## Materialization
+
+Crawl CDC and activation backfill discover eligible document- or crawl-scoped work and publish
+deterministic scope jobs directly. One job covers bounded evaluation, optional deterministic
+staging, atomic scope replacement, and coverage recording. Compute and commit are not separate work
+queues.
+
+There are no fan-out headers, fan-out members, plan settlement, or startup repair of missing plans.
+CDC and backfill may rediscover the same scope because the job identity is deterministic and
+successful `materialization_scope_results` coverage is authoritative.
+
+Missing work and lag are derived as:
+
+```text
+eligible active-definition scopes
+MINUS
+successful materialization scope coverage
+```
+
+Materialization workers request `live` or `backfill` catalogue/object capacity. Adding replicas
+cannot exceed those shared budgets or consume the critical ingestion reservation.
+
+## Maintenance
+
+Maintenance owns bounded compaction, eligible flushing, retention, staging cleanup, and narrowly
+defined repair. It requests an exclusive background catalogue permit. The Governor grants it only
+after hot permits drain; an operation lease and PostgreSQL maintenance fence still protect
+correctness.
+
+There is no bespoke maintenance-active polling protocol. Maintenance is neither hidden in request
+paths nor allowed to consume graph-critical admission.
 
 ## DuckDB and concurrent writers
 
-Every ingestion and materialization worker process embeds DuckDB and owns its DuckLake connection.
-Start with one active catalogue operation per process. Never share a connection between independent
-coroutines; the connection remains owned until its result is completely consumed or closed.
+Every ingestion and materialization process owns its embedded DuckDB connection and local execution
+lane. Connections are never shared between independently scheduled work.
 
-PostgreSQL-backed DuckLake permits multiple worker processes to operate on the same lake. Each
-mutation still requires:
+Horizontal safety requires deterministic operation identity, an expiring operation lease, advisory
+commit fencing, bounded conflict retry, and authoritative ambiguous-commit reconciliation. The
+Resource Governor adds a global pressure ceiling; it does not replace those requirements.
 
-- deterministic identity derived from immutable input;
-- an expiring NATS lease to suppress overlapping redelivery compute;
-- a PostgreSQL advisory lock around durable identity resolution and commit;
-- bounded transaction-conflict retries; and
-- authoritative reconciliation after an ambiguous commit.
+Transactions report the committing connection's `last_committed_snapshot()`, never an unrelated
+globally latest snapshot.
 
-Horizontal replicas provide concurrency for unrelated work. They do not make overlapping writes
-conflict-free.
+## Queue and acknowledgement contract
 
-Repository and materialization transactions annotate snapshots with bounded Atlas operation
-identifiers. Write responses use the committing connection's `last_committed_snapshot()` rather
-than the globally latest snapshot.
+The target work surface has transport-specific graph subjects and class-specific catalogue
+subjects. Subjects route typed work; they do not model locks. A generic catalogue RPC that executes
+arbitrary SQL is forbidden.
 
-## Crawl graph execution
+At-least-once acknowledgement fences are:
 
-A graph trigger creates current `GraphRun` state in NATS and offers seed URLs to entry nodes. Each
-admitted URL becomes independently claimable work on the NATS subject selected by its frozen
-transport. After base ingestion and verified navigation publication, every outgoing edge evaluates
-bounded crawl-scoped SQL and offers returned URLs to target nodes.
+```text
+acquisition ACK     immutable HTML and ingestion publication are durable
+ingestion ACK       base evidence and recoverable navigation readiness are durable
+materialization ACK scope replacement and coverage are durable
+edge ACK            target request publication is durable or terminal
+```
 
-Raw HTML is the recovery authority. A missing navigation package is regenerated from retained HTML.
-NATS owns current claims, deduplication, readiness, and at-least-once delivery. The complete graph
-contract is [CRAWL_GRAPHS.md](CRAWL_GRAPHS.md).
+Terminal failures enter bounded dead-letter administration. Redelivery resolves authoritative
+identity before repeating expensive work or writes.
 
-## Materialization observability
+## Scaling and observability
 
-JetStream consumer depth is a deployment diagnostic. User-facing freshness comes from authoritative
-DuckLake coverage and fan-out state:
+Queue age and local saturation scale capability deployments. Permit wait age and budget utilization
+identify shared-resource bottlenecks. Adding replicas is safe but may not increase throughput when a
+shared budget is saturated.
 
-- each view reports its pending and failed scopes, stored size, and last successful settlement;
-- each graph reports materialization lag attributable to its crawls; and
-- stopping materialization increases those counters without changing graph-run completion.
+Operators change DuckLake or object-store budgets only from measured capacity evidence. Atlas starts
+with static budgets, fixed fairness, and explicit limits rather than an automatic feedback
+controller. Process liveness is insufficient: each queue and governor resource reports progress,
+wait age, grants, expirations, and saturation.
 
-Queue age is the primary autoscaling signal. Process liveness alone is not healthy if the owned
-queue has stopped advancing.
+## Storage and explicit bounds
 
-## Storage and batching
+HTML size, DOM elements, staging bytes, ingestion batches, materialization scopes, messages, graph
+state, SQL results, remote pressure, browser pages, catalogue concurrency, object I/O, and graph-run
+ceilings all have explicit limits. Failures are visible; durable state is never silently truncated.
 
-Repository and materialization operations are bounded by item, row, byte, memory, and oldest-item
-deadlines. Low-volume deployments flush on time; high-volume deployments flush on size. DuckLake
-owns Parquet layout and compaction. Atlas does not create permanent per-crawl files.
-
-Terminal ingestion and materialization failures enter bounded dead-letter administration paths.
-Redelivery resolves durable identity before repeating a write.
-
-## Reads and cache
-
-Acquisition reads through the repository boundary. A cache hit requires matching normalized URL and
-frozen `config_hash`, acceptable age and document-quality flags, a verified raw object, and current
-DOM and quality recipes. Missing evidence is a miss. A stale structural or quality projection is
-rebuilt from raw HTML through the same ingestion path.
-
-Public point reads use document content IDs and crawl UUIDs. Local paths and physical Parquet paths
-are implementation details.
-
-## Explicit bounds
-
-HTML size, DOM element count, staging bytes, ingestion batches, materialization scopes, NATS
-envelopes, edge SQL results, remote pressure, per-process browser pages, graph-run state, and runaway
-ceilings all have explicit limits. Limit failures are visible and terminal; durable state is never
-silently truncated.
+DuckLake owns Parquet layout and compaction. Atlas never creates permanent per-crawl or per-scope
+files. Object keys are repository-relative and physical local or Parquet paths do not cross public
+boundaries.
 
 ## Code ownership
 
-- `backend/control/` owns editable PostgreSQL-backed graph, policy, query, view, and materialization
-  definitions.
-- `backend/runtime/` owns NATS-backed current graph execution, delivery, admission, deduplication,
-  leases, progress, and capacity.
-- `backend/workers/` owns acquisition, ingestion, materialization, and maintenance process
-  lifecycles.
-- `backend/actions/` owns page acquisition behavior; it must not gain navigation loops.
-- `backend/repository/objects/` owns immutable content-addressed raw HTML.
-- `backend/repository/ingestion/` owns ingestion delivery, validation, batching, health, and
-  recovery.
-- `backend/materialization/` owns live CDC discovery, bounded scope evaluation, commit, coverage,
-  lag, and recovery.
-- `backend/repository/catalogue/` implements DuckLake behind the repository boundary.
+- `backend/control/` owns editable PostgreSQL-backed definitions and lifecycle intent.
+- `backend/runtime/` owns graph execution, work delivery, admission, operation leases, and the
+  KV-backed resource-governance contract.
+- `backend/workers/` owns transport, ingestion, materialization, and maintenance process
+  entrypoints.
+- `backend/actions/` owns page acquisition behavior and no traversal loops.
+- `backend/repository/objects/` owns immutable raw HTML and bounded repository objects.
+- `backend/repository/ingestion/` owns ingestion validation, batching, health, and recovery.
+- `backend/materialization/` owns discovery and one-scope evaluation-through-coverage.
+- `backend/repository/catalogue/` privately implements DuckLake.
 - `backend/repository/service.py` is the application-facing durable repository boundary.
-- `backend/dom/` owns the versioned structural DOM projection.
-- `backend/api/` and `backend/cli/` are thin adapters.
-- `backend/db/` owns generic SQLAlchemy setup and Alembic migrations.
+- `backend/dom/` owns versioned DOM projection.
+- `backend/api/` and `backend/cli/` remain thin adapters.
 
-## Exact contracts
+## Direct cutover
 
-Architecture documents the target ownership and invariants. During the direct greenfield cutover,
-implementation may temporarily lag the target; superseded routes, subjects, workers, and shared
-connection paths must be deleted rather than retained as compatibility behavior.
+Atlas is greenfield. The resource-governed contract directly replaced the former capacity,
+fan-out, materialization-commit, and maintenance-admission paths. Do not add dual publications,
+fallback consumers, legacy aliases, or migration bridges. Reset disposable NATS and DuckLake
+development state when queue or schema contracts change, and delete superseded code and
+configuration in the same cutover.
 
-- Worker and scaling contract: [WORKER_ARCHITECTURE.md](WORKER_ARCHITECTURE.md)
+- Implementation checklist: [AUDIT.md](../AUDIT.md)
+- Worker and resource contract: [WORKER_ARCHITECTURE.md](WORKER_ARCHITECTURE.md)
 - Crawl graph contract: [CRAWL_GRAPHS.md](CRAWL_GRAPHS.md)
-- View and materialization contract: [PUBLICATIONS.md](PUBLICATIONS.md)
-- Crawl-policy trial contract: [TRIALS.md](TRIALS.md)
-- Configuration and defaults: [`.env.example`](../.env.example)
-- PostgreSQL models: [`backend/control/`](../backend/control/)
-- Runtime state and queues: [`backend/runtime/`](../backend/runtime/)
-- Repository messages: [`backend/repository/ingestion/queue.py`](../backend/repository/ingestion/queue.py)
-- DuckLake tables: [`backend/repository/catalogue/schema.py`](../backend/repository/catalogue/schema.py)
-- HTTP surface: the FastAPI-generated OpenAPI document
+- Materialization contract: [PUBLICATIONS.md](PUBLICATIONS.md)
+- Configuration defaults: [`.env.example`](../.env.example)

@@ -6,13 +6,17 @@ import logging
 from ducklake_cdc_client import CDCClient, DMLConsumer
 
 from config import get_optional, get_str
-from datetime import UTC, datetime
 
 from materialization.definitions import active_definitions, scope_job
-from materialization.queue import COMMIT_SUBJECT, CrawlMaterializationFanoutPlanJob
+from materialization.queue import SCOPE_LIVE_SUBJECT
 from repository.catalogue import Catalogue, catalogue_from_env
 from repository.ingestion.health import HealthMonitor
 from runtime.catalogue_lane import run_catalogue_operation
+from runtime.resource_governor import (
+    DURABLE_RESOURCE_WAIT,
+    catalogue_request,
+    resource_permits,
+)
 
 
 def _close_consumer(
@@ -35,18 +39,29 @@ async def _wait(stop: asyncio.Event, seconds: float) -> None:
 
 
 async def run_crawl_planner(
-    jetstream, stop: asyncio.Event, monitor: HealthMonitor | None = None
+    jetstream,
+    stop: asyncio.Event,
+    monitor: HealthMonitor | None = None,
+    resource_grants=None,
 ) -> None:
-    """Freeze crawl-scoped materialization membership before publishing scope work."""
+    """Publish deterministic scopes directly from durable crawl changes."""
 
-    catalogue = await _run_blocking(catalogue_from_env)
+    catalogue = await _run_governed(
+        resource_grants, "cdc-open-catalogue", catalogue_from_env
+    )
     consumer = None
     try:
-        client = await _run_blocking(_cdc_client, catalogue)
-        start_at = await _run_blocking(catalogue.latest_snapshot)
+        client = await _run_governed(
+            resource_grants, "cdc-open-client", _cdc_client, catalogue
+        )
+        start_at = await _run_governed(
+            resource_grants, "cdc-latest-snapshot", catalogue.latest_snapshot
+        )
         if start_at is None:
             raise RuntimeError("DuckLake has no snapshot for crawl materialization planning")
-        consumer = await _run_blocking(
+        consumer = await _run_governed(
+            resource_grants,
+            "cdc-open-consumer",
             _open_crawl_planner_consumer,
             catalogue,
             client,
@@ -55,17 +70,30 @@ async def run_crawl_planner(
         )
         if monitor is not None:
             monitor.subsystem_ready("cdc_crawl_planner")
-        await _reconcile_unplanned_crawls(jetstream)
         while not stop.is_set():
-            batch = await _run_blocking(consumer.read, max_snapshots=100)
+            batch = await _run_governed(
+                resource_grants,
+                "cdc-read",
+                consumer.read,
+                max_snapshots=100,
+            )
             if batch is None:
-                window = await _run_blocking(consumer.window, max_snapshots=100)
+                window = await _run_governed(
+                    resource_grants,
+                    "cdc-window",
+                    consumer.window,
+                    max_snapshots=100,
+                )
                 if window.terminal and window.terminal_at_snapshot is not None:
                     boundary = window.terminal_at_snapshot
-                    await _run_blocking(
+                    await _run_governed(
+                        resource_grants,
+                        "cdc-close-consumer",
                         _close_consumer, catalogue, consumer, drop=True
                     )
-                    consumer = await _run_blocking(
+                    consumer = await _run_governed(
+                        resource_grants,
+                        "cdc-reopen-consumer",
                         _open_crawl_planner_consumer,
                         catalogue,
                         client,
@@ -88,23 +116,30 @@ async def run_crawl_planner(
             }
             definitions = await asyncio.to_thread(active_definitions, live=True)
             for crawl_id, document_id in crawl_scopes:
-                plan = CrawlMaterializationFanoutPlanJob(
-                    crawl_id=crawl_id,
-                    scopes=_crawl_triggered_scopes(
-                        definitions, crawl_id=crawl_id, document_id=document_id
-                    ),
-                    planned_at=datetime.now(UTC),
-                )
-                await jetstream.publish(
-                    COMMIT_SUBJECT,
-                    plan.model_dump_json().encode(),
-                    headers={"Nats-Msg-Id": f"crawl-fanout-{crawl_id}"},
-                )
-            await _run_blocking(batch.commit)
+                for scope in _crawl_triggered_scopes(
+                    definitions, crawl_id=crawl_id, document_id=document_id
+                ):
+                    await jetstream.publish(
+                        SCOPE_LIVE_SUBJECT,
+                        scope.model_dump_json().encode(),
+                        headers={"Nats-Msg-Id": scope.operation_id},
+                    )
+            await _run_governed(
+                resource_grants, "cdc-commit-position", batch.commit
+            )
     finally:
         if consumer is not None:
-            await _run_blocking(_close_consumer, catalogue, consumer, drop=False)
-        await _run_blocking(catalogue.close)
+            await _run_governed(
+                resource_grants,
+                "cdc-release-consumer",
+                _close_consumer,
+                catalogue,
+                consumer,
+                drop=False,
+            )
+        await _run_governed(
+            resource_grants, "cdc-close-catalogue", catalogue.close
+        )
 
 
 def _open_crawl_planner_consumer(
@@ -136,65 +171,27 @@ def _cdc_client(catalogue: Catalogue) -> CDCClient:
     return client
 
 
-async def _reconcile_unplanned_crawls(jetstream) -> int:
-    """Publish every pre-existing missing fan-out once per planner lifecycle."""
-
-    definitions = await asyncio.to_thread(active_definitions, live=True)
-    cursor = None
-    total = 0
-    page_size = 100
-    while True:
-        rows = await _run_blocking(_unplanned_crawl_page, cursor, page_size)
-        for crawl_id_value, document_id, captured_at in rows:
-            crawl_id = str(crawl_id_value)
-            plan = CrawlMaterializationFanoutPlanJob(
-                crawl_id=crawl_id,
-                scopes=_crawl_triggered_scopes(
-                    definitions, crawl_id=crawl_id, document_id=document_id
-                ),
-                planned_at=datetime.now(UTC),
-            )
-            await jetstream.publish(
-                COMMIT_SUBJECT,
-                plan.model_dump_json().encode(),
-                headers={"Nats-Msg-Id": f"crawl-fanout-{crawl_id}"},
-            )
-        total += len(rows)
-        if len(rows) < page_size:
-            return total
-        crawl_id_value, _document_id, captured_at = rows[-1]
-        cursor = (captured_at, crawl_id_value)
-
-
-def _unplanned_crawl_page(cursor, limit: int):
-    with catalogue_from_env() as catalogue:
-        return _unplanned_crawl_page_with_catalogue(catalogue, cursor, limit)
-
-
-def _unplanned_crawl_page_with_catalogue(catalogue, cursor, limit: int):
-    table = lambda name: ".".join(
-        '"' + part.replace('"', '""') + '"'
-        for part in (catalogue.config.alias, catalogue.config.schema, name)
-    )
-    captured_at = cursor[0] if cursor is not None else None
-    crawl_id = cursor[1] if cursor is not None else None
-    rows = catalogue.connection.execute(
-        f"SELECT c.crawl_id, c.document_id, c.captured_at "
-        f"FROM {table('crawls')} AS c LEFT JOIN "
-        f"{table('crawl_materialization_fanouts')} AS f USING (crawl_id) "
-        "WHERE c.purpose = 'use' AND f.crawl_id IS NULL AND "
-        "(? IS NULL OR c.captured_at > ? OR "
-        "(c.captured_at = ? AND c.crawl_id > ?)) "
-        "ORDER BY c.captured_at, c.crawl_id LIMIT ?",
-        [captured_at, captured_at, captured_at, crawl_id, limit],
-    ).fetchall()
-    return rows
-
-
 async def _run_blocking(function, *args, **kwargs):
     """Do not close a DuckDB connection until its worker-thread call has returned."""
 
     return await run_catalogue_operation(function, *args, **kwargs)
+
+
+async def _run_governed(
+    resource_grants, operation_id: str, function, *args, **kwargs
+):
+    if resource_grants is None:
+        return await _run_blocking(function, *args, **kwargs)
+    async with resource_permits(
+        resource_grants,
+        catalogue_request(
+            operation_id,
+            service_class="live",
+            object_read_units=1,
+        ),
+        acquire_timeout=DURABLE_RESOURCE_WAIT,
+    ):
+        return await _run_blocking(function, *args, **kwargs)
 
 
 def _crawl_triggered_scopes(definitions, *, crawl_id: str, document_id):

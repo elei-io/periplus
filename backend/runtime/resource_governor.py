@@ -1,0 +1,608 @@
+"""Deployment-wide admission for scarce Atlas resources.
+
+Work delivery, operation deduplication, and durable commit fencing remain separate
+concerns.  This module only limits how much pressure may be applied at once.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+import math
+from typing import Literal
+from uuid import uuid4
+
+from config import get_float, get_int
+from nats.js.api import KeyValueConfig, StorageType
+from nats.js.errors import (
+    BadRequestError,
+    BucketNotFoundError,
+    KeyDeletedError,
+    KeyNotFoundError,
+    KeyWrongLastSequenceError,
+)
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from observability import resource_metrics
+
+
+RESOURCE_GRANT_BUCKET = "atlas_resource_grants"
+RESOURCE_STATE_KEY = "global"
+DURABLE_RESOURCE_WAIT = float("inf")
+
+ResourceClass = Literal["critical", "live", "backfill", "maintenance"]
+
+
+class ResourceCapacityUnavailable(RuntimeError):
+    """The requested resource bundle did not become available in time."""
+
+
+class ResourcePermitLost(RuntimeError):
+    """A previously granted resource bundle could not be renewed."""
+
+
+class ResourceNeed(BaseModel):
+    """One member of an atomically acquired resource bundle."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(min_length=1)
+    units: int = Field(ge=1)
+    capacity: int | None = Field(default=None, ge=1)
+
+
+class ResourceRequest(BaseModel):
+    """A bounded request for pressure capacity, never durable work state."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    operation_id: str = Field(min_length=1)
+    service_class: ResourceClass
+    resources: tuple[ResourceNeed, ...]
+
+    @model_validator(mode="after")
+    def validate_bundle(self) -> ResourceRequest:
+        names = [resource.name for resource in self.resources]
+        if not names:
+            raise ValueError("a resource request must contain at least one resource")
+        if len(set(names)) != len(names):
+            raise ValueError("a resource bundle cannot repeat a resource name")
+        return self
+
+
+class ResourceGrant(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    token: str
+    operation_id: str
+    service_class: ResourceClass
+    resources: tuple[ResourceNeed, ...]
+    acquired_at: datetime
+    heartbeat_at: datetime
+    expires_at: datetime
+
+
+class ResourceState(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    grants: tuple[ResourceGrant, ...] = ()
+    updated_at: datetime
+
+
+class ResourceUsage(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    capacity: int
+    used: int
+    critical: int = 0
+    live: int = 0
+    backfill: int = 0
+    maintenance: int = 0
+
+
+class ResourceLimits(BaseModel):
+    """Small deployment policy for shared physical capacity."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    catalogue: int = Field(ge=1)
+    catalogue_critical_reserve: int = Field(ge=0)
+    catalogue_noncritical_reserve: int = Field(ge=0)
+    catalogue_backfill_max: int = Field(ge=0)
+    object_read: int = Field(ge=1)
+    object_write: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_catalogue_shares(self) -> ResourceLimits:
+        if self.catalogue_critical_reserve > self.catalogue:
+            raise ValueError("critical catalogue reserve cannot exceed capacity")
+        if self.catalogue_noncritical_reserve > self.catalogue:
+            raise ValueError("noncritical catalogue reserve cannot exceed capacity")
+        if (
+            self.catalogue_critical_reserve + self.catalogue_noncritical_reserve
+            > self.catalogue
+        ):
+            raise ValueError("catalogue class reserves cannot exceed capacity")
+        if self.catalogue_backfill_max > self.catalogue:
+            raise ValueError("backfill catalogue maximum cannot exceed capacity")
+        return self
+
+    @classmethod
+    def from_env(cls) -> ResourceLimits:
+        return cls(
+            catalogue=get_int("ATLAS_RESOURCE_CATALOGUE_CAPACITY"),
+            catalogue_critical_reserve=get_int(
+                "ATLAS_RESOURCE_CATALOGUE_CRITICAL_RESERVE", minimum=0
+            ),
+            catalogue_noncritical_reserve=get_int(
+                "ATLAS_RESOURCE_CATALOGUE_NONCRITICAL_RESERVE", minimum=0
+            ),
+            catalogue_backfill_max=get_int(
+                "ATLAS_RESOURCE_CATALOGUE_BACKFILL_MAX", minimum=0
+            ),
+            object_read=get_int("ATLAS_RESOURCE_OBJECT_READ_CAPACITY"),
+            object_write=get_int("ATLAS_RESOURCE_OBJECT_WRITE_CAPACITY"),
+        )
+
+    def capacity(self, need: ResourceNeed) -> int:
+        configured = {
+            "catalogue:hot": self.catalogue,
+            "object:read": self.object_read,
+            "object:write": self.object_write,
+        }.get(need.name)
+        if configured is None:
+            if need.capacity is None:
+                raise ValueError(
+                    f"dynamic resource {need.name!r} must declare its capacity"
+                )
+            return need.capacity
+        if need.capacity is not None and need.capacity != configured:
+            raise ValueError(
+                f"resource {need.name!r} declared capacity {need.capacity}, "
+                f"configured as {configured}"
+            )
+        return configured
+
+
+class ResourcePermitGuard:
+    def __init__(self, lost: asyncio.Event, grant: ResourceGrant) -> None:
+        self._lost = lost
+        self.grant = grant
+
+    @property
+    def lost(self) -> bool:
+        return self._lost.is_set()
+
+    async def wait_lost(self) -> None:
+        await self._lost.wait()
+
+
+async def ensure_resource_governor_storage(jetstream):
+    """Attach or create the single CAS-fenced resource grant bucket."""
+
+    try:
+        bucket = await jetstream.key_value(RESOURCE_GRANT_BUCKET)
+    except BucketNotFoundError:
+        config = KeyValueConfig(
+            bucket=RESOURCE_GRANT_BUCKET,
+            description="Expiring Atlas shared-resource grants",
+            history=1,
+            ttl=get_float("ATLAS_RESOURCE_LEASE_SECONDS") * 2,
+            storage=StorageType.FILE,
+            replicas=get_int("ATLAS_RESOURCE_LEASE_REPLICAS"),
+        )
+        try:
+            bucket = await jetstream.create_key_value(config=config)
+        except BadRequestError:
+            bucket = await jetstream.key_value(RESOURCE_GRANT_BUCKET)
+    await _validate_bucket(bucket)
+    return bucket
+
+
+async def _validate_bucket(bucket) -> None:
+    status = await bucket.status()
+    config = status.stream_info.config
+    expected_ttl = get_float("ATLAS_RESOURCE_LEASE_SECONDS") * 2
+    expected_replicas = get_int("ATLAS_RESOURCE_LEASE_REPLICAS")
+    mismatches: list[str] = []
+    if config.storage != StorageType.FILE:
+        mismatches.append("file storage")
+    if config.max_msgs_per_subject != 1:
+        mismatches.append("history=1")
+    if config.max_age != expected_ttl:
+        mismatches.append(f"ttl={expected_ttl:g}s")
+    if config.num_replicas != expected_replicas:
+        mismatches.append(f"replicas={expected_replicas}")
+    if mismatches:
+        raise RuntimeError(
+            f"JetStream KV {RESOURCE_GRANT_BUCKET} must use " + ", ".join(mismatches)
+        )
+
+
+def _active_grants(state: ResourceState, *, now: datetime) -> tuple[ResourceGrant, ...]:
+    return tuple(grant for grant in state.grants if grant.expires_at > now)
+
+
+def _need_for(grant: ResourceGrant, name: str) -> ResourceNeed | None:
+    return next((need for need in grant.resources if need.name == name), None)
+
+
+def _bundle_fits(
+    grants: tuple[ResourceGrant, ...],
+    request: ResourceRequest,
+    limits: ResourceLimits,
+) -> bool:
+    for requested in request.resources:
+        capacity = limits.capacity(requested)
+        if requested.units > capacity:
+            raise ValueError(
+                f"resource request for {requested.name!r} needs {requested.units} "
+                f"units but capacity is {capacity}"
+            )
+        existing = [
+            (grant, need)
+            for grant in grants
+            if (need := _need_for(grant, requested.name)) is not None
+        ]
+        for _grant, need in existing:
+            if limits.capacity(need) != capacity:
+                # A CrawlPolicy limit may change while frozen work from the old
+                # revision is still in flight. Drain the old grants before the
+                # stable domain-group resource adopts its new capacity.
+                return False
+        used = sum(need.units for _grant, need in existing)
+        if used + requested.units > capacity:
+            return False
+
+        if requested.name == "catalogue:hot":
+            if request.service_class not in {"critical", "maintenance"}:
+                noncritical_used = sum(
+                    need.units
+                    for grant, need in existing
+                    if grant.service_class != "critical"
+                )
+                if (
+                    noncritical_used + requested.units
+                    > capacity - limits.catalogue_critical_reserve
+                ):
+                    return False
+            if request.service_class == "backfill":
+                backfill_used = sum(
+                    need.units
+                    for grant, need in existing
+                    if grant.service_class == "backfill"
+                )
+                if backfill_used + requested.units > limits.catalogue_backfill_max:
+                    return False
+            if request.service_class == "critical":
+                critical_used = sum(
+                    need.units
+                    for grant, need in existing
+                    if grant.service_class == "critical"
+                )
+                if (
+                    critical_used + requested.units
+                    > capacity - limits.catalogue_noncritical_reserve
+                ):
+                    return False
+    return True
+
+
+async def _read_state(bucket) -> tuple[ResourceState, int | None]:
+    try:
+        entry = await bucket.get(RESOURCE_STATE_KEY)
+    except (KeyNotFoundError, KeyDeletedError):
+        return ResourceState(updated_at=datetime.now(UTC)), None
+    return ResourceState.model_validate_json(entry.value), entry.revision
+
+
+async def resource_usage(
+    bucket, *, limits: ResourceLimits | None = None
+) -> list[ResourceUsage]:
+    """Return the current non-authoritative pressure projection for operators."""
+
+    limits = limits or ResourceLimits.from_env()
+    state, _revision = await _read_state(bucket)
+    grants = _active_grants(state, now=datetime.now(UTC))
+    needs: dict[str, ResourceNeed] = {
+        "catalogue:hot": ResourceNeed(name="catalogue:hot", units=1),
+        "object:read": ResourceNeed(name="object:read", units=1),
+        "object:write": ResourceNeed(name="object:write", units=1),
+    }
+    for grant in grants:
+        for need in grant.resources:
+            needs.setdefault(need.name, need)
+    usages: list[ResourceUsage] = []
+    for name, representative in sorted(needs.items()):
+        by_class = {
+            service_class: sum(
+                need.units
+                for grant in grants
+                if grant.service_class == service_class
+                if (need := _need_for(grant, name)) is not None
+            )
+            for service_class in ("critical", "live", "backfill", "maintenance")
+        }
+        usages.append(
+            ResourceUsage(
+                name=name,
+                capacity=limits.capacity(representative),
+                used=sum(by_class.values()),
+                **by_class,
+            )
+        )
+    return usages
+
+
+async def _write_state(bucket, state: ResourceState, revision: int | None) -> bool:
+    payload = state.model_dump_json().encode()
+    try:
+        if revision is None:
+            await bucket.create(RESOURCE_STATE_KEY, payload)
+        else:
+            await bucket.update(RESOURCE_STATE_KEY, payload, last=revision)
+        return True
+    except KeyWrongLastSequenceError:
+        return False
+
+
+async def _try_acquire(
+    bucket,
+    *,
+    request: ResourceRequest,
+    limits: ResourceLimits,
+    token: str,
+    now: datetime,
+) -> ResourceGrant | None:
+    state, revision = await _read_state(bucket)
+    grants = _active_grants(state, now=now)
+    current = next((grant for grant in grants if grant.token == token), None)
+    lease_seconds = get_float("ATLAS_RESOURCE_LEASE_SECONDS")
+    if current is not None:
+        renewed = current.model_copy(
+            update={
+                "heartbeat_at": now,
+                "expires_at": now + timedelta(seconds=lease_seconds),
+            }
+        )
+        grants = tuple(renewed if grant.token == token else grant for grant in grants)
+        updated = ResourceState(grants=grants, updated_at=now)
+        return renewed if await _write_state(bucket, updated, revision) else None
+
+    if not _bundle_fits(grants, request, limits):
+        if grants != state.grants:
+            await _write_state(
+                bucket, ResourceState(grants=grants, updated_at=now), revision
+            )
+        return None
+    grant = ResourceGrant(
+        token=token,
+        operation_id=request.operation_id,
+        service_class=request.service_class,
+        resources=request.resources,
+        acquired_at=now,
+        heartbeat_at=now,
+        expires_at=now + timedelta(seconds=lease_seconds),
+    )
+    updated = ResourceState(grants=(*grants, grant), updated_at=now)
+    return grant if await _write_state(bucket, updated, revision) else None
+
+
+async def _release(bucket, *, token: str) -> None:
+    while True:
+        state, revision = await _read_state(bucket)
+        grants = tuple(grant for grant in state.grants if grant.token != token)
+        if grants == state.grants:
+            return
+        if await _write_state(
+            bucket,
+            ResourceState(grants=grants, updated_at=datetime.now(UTC)),
+            revision,
+        ):
+            return
+
+
+@asynccontextmanager
+async def resource_permits(
+    bucket,
+    request: ResourceRequest,
+    *,
+    limits: ResourceLimits | None = None,
+    acquire_timeout: float | None = None,
+) -> AsyncIterator[ResourcePermitGuard]:
+    """Atomically lease a resource bundle and renew it until the operation exits."""
+
+    limits = limits or ResourceLimits.from_env()
+    lease_seconds = get_float("ATLAS_RESOURCE_LEASE_SECONDS")
+    heartbeat_seconds = get_float("ATLAS_RESOURCE_HEARTBEAT_SECONDS")
+    if heartbeat_seconds >= lease_seconds:
+        raise ValueError(
+            "ATLAS_RESOURCE_HEARTBEAT_SECONDS must be shorter than "
+            "ATLAS_RESOURCE_LEASE_SECONDS"
+        )
+    timeout = (
+        get_float("ATLAS_RESOURCE_ACQUIRE_TIMEOUT_SECONDS")
+        if acquire_timeout is None
+        else acquire_timeout
+    )
+    token = uuid4().hex
+    loop = asyncio.get_running_loop()
+    wait_started = loop.time()
+    deadline = wait_started + timeout
+    grant: ResourceGrant | None = None
+    while grant is None:
+        try:
+            grant = await _try_acquire(
+                bucket,
+                request=request,
+                limits=limits,
+                token=token,
+                now=datetime.now(UTC),
+            )
+        except asyncio.CancelledError:
+            raise
+        except ValueError:
+            raise
+        except Exception as exc:
+            if loop.time() >= deadline:
+                resource_metrics.admission(
+                    request,
+                    outcome="unavailable",
+                    wait_seconds=loop.time() - wait_started,
+                )
+                raise ResourceCapacityUnavailable(
+                    f"resource governor unavailable for {request.operation_id}"
+                ) from exc
+            await asyncio.sleep(0.1)
+            continue
+        if grant is not None:
+            break
+        if loop.time() >= deadline:
+            resource_metrics.admission(
+                request,
+                outcome="unavailable",
+                wait_seconds=loop.time() - wait_started,
+            )
+            raise ResourceCapacityUnavailable(
+                f"resource capacity unavailable for {request.operation_id}"
+            )
+        await asyncio.sleep(min(0.1, max(0.01, deadline - loop.time())))
+
+    acquired_at = loop.time()
+    resource_metrics.admission(
+        request,
+        outcome="granted",
+        wait_seconds=acquired_at - wait_started,
+    )
+
+    lost = asyncio.Event()
+
+    async def heartbeat() -> None:
+        try:
+            while True:
+                await asyncio.sleep(heartbeat_seconds)
+                renewed = await _try_acquire(
+                    bucket,
+                    request=request,
+                    limits=limits,
+                    token=token,
+                    now=datetime.now(UTC),
+                )
+                if renewed is None:
+                    lost.set()
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            lost.set()
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+    try:
+        yield ResourcePermitGuard(lost, grant)
+        if lost.is_set():
+            raise ResourcePermitLost(
+                f"resource permit was lost for {request.operation_id}"
+            )
+    finally:
+        resource_metrics.hold(
+            request,
+            outcome="lost" if lost.is_set() else "released",
+            hold_seconds=loop.time() - acquired_at,
+        )
+        heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
+        try:
+            await _release(bucket, token=token)
+        except Exception:
+            # Expiry is the final recovery boundary after a broker outage.
+            pass
+
+
+def catalogue_request(
+    operation_id: str,
+    *,
+    service_class: ResourceClass,
+    object_read_units: int = 0,
+    object_write_units: int = 0,
+    limits: ResourceLimits | None = None,
+    exclusive: bool = False,
+) -> ResourceRequest:
+    """Build the fixed bundle used by DuckLake-owning workers."""
+
+    limits = limits or ResourceLimits.from_env()
+    resources = [
+        ResourceNeed(
+            name="catalogue:hot",
+            units=limits.catalogue if exclusive else 1,
+        )
+    ]
+    if object_read_units:
+        if object_read_units > limits.object_read:
+            raise ValueError("object-read request exceeds configured capacity")
+        resources.append(ResourceNeed(name="object:read", units=object_read_units))
+    if object_write_units:
+        if object_write_units > limits.object_write:
+            raise ValueError("object-write request exceeds configured capacity")
+        resources.append(ResourceNeed(name="object:write", units=object_write_units))
+    return ResourceRequest(
+        operation_id=operation_id,
+        service_class=service_class,
+        resources=tuple(resources),
+    )
+
+
+def remote_request(
+    operation_id: str,
+    *,
+    domain_group: str,
+    concurrency: int,
+) -> ResourceRequest:
+    return ResourceRequest(
+        operation_id=operation_id,
+        service_class="critical",
+        resources=(
+            ResourceNeed(
+                name=f"remote:{domain_group}",
+                units=1,
+                capacity=concurrency,
+            ),
+        ),
+    )
+
+
+def object_units(byte_count: int) -> int:
+    """Convert known transfer bytes into stable weighted admission units."""
+
+    if byte_count < 0:
+        raise ValueError("object byte count cannot be negative")
+    unit_bytes = get_int("ATLAS_RESOURCE_OBJECT_UNIT_BYTES")
+    return max(1, math.ceil(byte_count / unit_bytes))
+
+
+def object_request(
+    operation_id: str,
+    *,
+    direction: Literal["read", "write"],
+    byte_count: int,
+    service_class: ResourceClass,
+) -> ResourceRequest:
+    limits = ResourceLimits.from_env()
+    units = object_units(byte_count)
+    capacity = limits.object_read if direction == "read" else limits.object_write
+    if units > capacity:
+        raise ValueError(
+            f"object-{direction} request needs {units} units but capacity is {capacity}"
+        )
+    return ResourceRequest(
+        operation_id=operation_id,
+        service_class=service_class,
+        resources=(
+            ResourceNeed(
+                name=f"object:{direction}",
+                units=units,
+            ),
+        ),
+    )

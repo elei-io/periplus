@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import time
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -28,7 +29,14 @@ from control.crawl_policies.schemas import (
     ProfileConfig,
 )
 from control.crawl_policies.templates import template_for_config
-from runtime.crawl_capacity import capacity_lease
+from runtime.resource_governor import (
+    DURABLE_RESOURCE_WAIT,
+    ResourceCapacityUnavailable,
+    ResourcePermitLost,
+    object_request,
+    remote_request,
+    resource_permits,
+)
 from observability import crawl_metrics
 from repository import (
     RepositoryCacheHit,
@@ -51,6 +59,23 @@ if TYPE_CHECKING:
     from crawl4ai.models import CrawlResult
 else:
     AsyncWebCrawler = CrawlResult = Any
+
+
+_browser_capacity: tuple[int, asyncio.Semaphore] | None = None
+
+
+@asynccontextmanager
+async def _browser_slot():
+    global _browser_capacity
+    capacity = get_int("ATLAS_BROWSER_CONCURRENCY")
+    if _browser_capacity is None or _browser_capacity[0] != capacity:
+        _browser_capacity = (capacity, asyncio.Semaphore(capacity))
+    semaphore = _browser_capacity[1]
+    await semaphore.acquire()
+    try:
+        yield
+    finally:
+        semaphore.release()
 
 
 def _json_safe(value: Any) -> Any:
@@ -473,6 +498,7 @@ async def _persist_page(
     cache_policy: ResolvedCachePolicy,
     retain_html: bool,
     include_links: bool,
+    resource_grants=None,
 ) -> CrawlPage:
     normalized_url = normalize_url(requested_url)
     config_json = _frozen_config(
@@ -565,7 +591,20 @@ async def _persist_page(
         )
         result_page = page
         if page.html is not None:
-            await pipeline.store_raw(captured_html=page.html, identity=identity)
+            if resource_grants is None:
+                await pipeline.store_raw(captured_html=page.html, identity=identity)
+            else:
+                async with resource_permits(
+                    resource_grants,
+                    object_request(
+                        f"raw-html:{crawl_id}",
+                        direction="write",
+                        byte_count=len(page.html.encode()),
+                        service_class="critical",
+                    ),
+                    acquire_timeout=DURABLE_RESOURCE_WAIT,
+                ):
+                    await pipeline.store_raw(captured_html=page.html, identity=identity)
             if not retain_html:
                 # Raw storage is the last operation that needs the captured string.
                 # Drop this function's reference before ingestion backpressure and
@@ -824,8 +863,7 @@ async def _crawl_graph_request(
     repository_pipeline: RepositoryPipeline | None = None,
     crawler: AsyncWebCrawler | None = None,
     http_client: httpx.AsyncClient | None = None,
-    capacity_bucket=None,
-    capacity_owner: UUID | None = None,
+    resource_grants=None,
     cache: CacheOptions | dict[str, Any] | None = None,
     retain_html: bool = True,
     include_links: bool = True,
@@ -1048,17 +1086,25 @@ async def _crawl_graph_request(
         return loaded_page, used_cache
 
     try:
-        async with capacity_lease(
-            session,
-            url=url,
-            policy=policy,
-            progress_reporter=progress_reporter,
-            include_browser=profile == "browser",
-            capacity_bucket=capacity_bucket,
-            owner=capacity_owner,
-        ):
+        async with AsyncExitStack() as stack:
+            if resource_grants is not None:
+                await stack.enter_async_context(
+                    resource_permits(
+                        resource_grants,
+                        remote_request(
+                            str(crawl_request_id),
+                            domain_group=domain_group,
+                            concurrency=envelope.concurrency,
+                        ),
+                        acquire_timeout=DURABLE_RESOURCE_WAIT,
+                    )
+                )
+            if profile == "browser":
+                await stack.enter_async_context(_browser_slot())
             page, reused_cache = await measured_load_page()
     except asyncio.CancelledError:
+        raise
+    except (ResourceCapacityUnavailable, ResourcePermitLost):
         raise
     except Exception as exc:
         await emit_progress(
@@ -1098,6 +1144,7 @@ async def _crawl_graph_request(
             cache_policy=cache_policy,
             retain_html=retain_html,
             include_links=include_links,
+            resource_grants=resource_grants,
         )
         if page.repository_crawl_created:
             crawl_metrics.crawl_persisted(
@@ -1119,8 +1166,7 @@ async def crawl_graph_request(
     progress_reporter: ProgressReporter | None = None,
     crawler: AsyncWebCrawler | None = None,
     http_client: httpx.AsyncClient | None = None,
-    capacity_bucket=None,
-    capacity_owner: UUID | None = None,
+    resource_grants=None,
     repository_pipeline: RepositoryPipeline | None = None,
 ) -> CrawlPage:
     """Acquire and durably ingest one frozen graph crawl request.
@@ -1139,8 +1185,7 @@ async def crawl_graph_request(
                 progress_reporter=progress_reporter,
                 crawler=crawler,
                 http_client=http_client,
-                capacity_bucket=capacity_bucket,
-                capacity_owner=capacity_owner,
+                resource_grants=resource_grants,
             )
         async with RepositoryPipeline(repository_ingestor_from_env()) as pipeline:
             return await _crawl_graph_request(
@@ -1151,6 +1196,5 @@ async def crawl_graph_request(
                 progress_reporter=progress_reporter,
                 crawler=crawler,
                 http_client=http_client,
-                capacity_bucket=capacity_bucket,
-                capacity_owner=capacity_owner,
+                resource_grants=resource_grants,
             )

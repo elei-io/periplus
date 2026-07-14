@@ -38,11 +38,10 @@ destination systems.
 belong in visible graph edges, including self-edges. Do not add an in-memory frontier or
 action-specific crawl loop alongside graph execution.
 
-**Conflating remote pressure with browser capacity.** NATS enforces each CrawlPolicy's explicit
-deployment-wide remote-acquisition ceiling. Browser concurrency remains additionally bounded inside
-each browser worker, and browser replicas determine physical browser capacity independently from
-HTTP acquisition. Do not turn the policy lease into a global browser pool or hold it during cache
-lookup, ingestion, or navigation waiting.
+**Conflating remote pressure with browser capacity.** The Resource Governor enforces each frozen
+CrawlPolicy's deployment-wide remote-acquisition ceiling. Browser concurrency remains additionally
+bounded inside each browser worker. Do not turn remote policy capacity into a global browser pool or
+hold it during cache lookup, object persistence, ingestion, or navigation waiting.
 
 **Routing every transport through one crawl subject.** A shared durable consumer cannot be scaled by
 transport without claiming and rejecting work after reading its body. Freeze the transport before
@@ -56,6 +55,41 @@ deployment first. A remote browser protocol requires a measured need beyond inde
 **Adding graph machinery for non-crawl workflows.** Crawl graphs solve a demonstrated acquisition
 problem. They are not justification for generic node registries, arbitrary payload processors, or
 destination integrations.
+
+## Resource-governance mistakes
+
+**Treating replica counts as shared-resource limits.** Replicas provide executors; they do not bound
+combined DuckLake, S3 / MinIO, or remote pressure. Adding a materialization pod must not implicitly
+raise catalogue concurrency or consume ingestion's reserved share. All expensive phases use the
+shared Resource Governor.
+
+**Turning the Resource Governor into a workflow scheduler.** The governor decides only whether a
+resource bundle may start. It does not create work, sequence graph nodes, receive every completion,
+own materialization lag, or execute arbitrary catalogue RPC. JetStream remains the durable work
+authority and DuckLake coverage remains analytical completion truth.
+
+**Modeling permits as durable lock workflows.** A `lock.request -> lock.acquired -> work.request ->
+work.complete -> lock.release` protocol creates races, repair paths, and another state machine. A
+worker retains its original durable job while requesting an atomic expiring permit bundle. Explicit
+release improves utilization; TTL expiry is recovery.
+
+**Conflating capacity permits, operation leases, and commit fences.** A permit controls pressure, an
+operation lease suppresses simultaneous duplicate execution, and a PostgreSQL advisory lock fences
+durable identity resolution and commit. None substitutes for another, and a permit is never
+completion state.
+
+**Using one global DuckLake mutex.** Catalogue admission is a bounded capacity pool with an
+exclusive maintenance mode, not a single correctness lock. Serialize one process-owned connection,
+fence overlapping identities, and allow governor-approved unrelated work to proceed concurrently.
+
+**Holding one scarce permit while waiting for another.** It creates distributed deadlock and poor
+utilization. Request every simultaneously needed resource as one atomic bundle; release sequential
+phase resources before requesting the next bundle.
+
+**Adding self-tuning admission before measurement.** Feedback controllers can oscillate and conceal
+the actual bottleneck. Begin with static typed budgets, fixed class fairness, permit-wait metrics,
+and measured object bytes/latency. Automate adjustments only after production evidence defines a
+stable control signal.
 
 ## Graph execution mistakes
 
@@ -84,19 +118,19 @@ metadata in NATS.
 short grace period. Also configure an object-store lifecycle expiration so crash orphans cannot
 accumulate indefinitely.
 
-**Waiting forever for a full analytical batch.** Every repository and materialization batch needs
-an oldest-item deadline in addition to item, row, and byte thresholds. A low-volume deployment must
-eventually commit without manual flushing or a later message arriving.
+**Waiting forever for a full analytical batch.** Every repository batch needs an oldest-item
+deadline in addition to item, row, and byte thresholds. One materialization scope owns compute
+through commit and must not wait for a separate result batch or later message.
 
 **Letting a background consumer die invisibly.** A task created beside a worker's main loop must
 report failure through readiness and be joined or polled by the owning loop. A durable commit
-followed by failed settlement is not a terminal message failure: NAK it so the idempotent commit can
-be recognized and settlement retried.
+followed by a lost ACK is not a new operation: redelivery resolves authoritative identity and
+acknowledges the existing effect.
 
-**Reconciling only the first page of missing work.** A periodic `LIMIT` without a keyset cursor can
-republish the same identities forever after the broker deduplication window expires. Reconciliation
-must advance through the complete bounded result set and publish each missing crawl at most once per
-planner lifecycle.
+**Reconciling only the first page of missing work.** A backfill `LIMIT` without a keyset cursor can
+rediscover the same scopes forever. Backfill advances through the complete bounded anti-join of
+eligible scopes and successful coverage. Republication is safe because scope identities and
+coverage are idempotent, but a planner must still make forward progress.
 
 **Assuming exactly-once delivery.** NATS messages may be redelivered. Edge evaluation identities,
 target-node request identities, admission counters, and queue publication must be idempotent so a
@@ -123,7 +157,8 @@ silently mutate already queued work.
 
 **Letting acquisition or maintenance workers perform hot-path catalogue publication.** Ingestion
 workers own base evidence, system projections, navigation, and edges. Materialization workers own
-user-view scope commits. Maintenance uses a separate lease so upkeep consumes neither capacity.
+user-view scope commits. Maintenance receives an exclusive background permit only after hot
+catalogue grants drain.
 
 **Combining ingestion and materialization in one process.** The workflows then share connection,
 memory, scheduling, health, and failure boundaries. Materialization backlog can starve graph-critical
@@ -132,7 +167,8 @@ their DuckDB connections.
 
 **Sharing a DuckDB connection between concurrent tasks.** A connection is owned by one execution
 lane until its query result has been fully consumed or closed. Ingestion and materialization each
-use process-owned connections; horizontal replicas provide concurrency.
+use process-owned connections. Horizontal replicas provide executors, while the Resource Governor
+caps their combined catalogue and object-store pressure.
 
 **Reintroducing a central remote DuckDB session.** It couples unrelated writes and makes one compute
 process the throughput and failure boundary. Ingestion and materialization workers use embedded
@@ -174,8 +210,8 @@ different environments. One repository backend selection must configure both.
 contracts use repository-relative object keys, document IDs, crawl IDs, and graph provenance.
 
 **Passing worker-local staging paths between services.** It works in single-host development and
-fails when workers move. Cross-process staging uses repository-relative keys in the configured
-object store with integrity metadata verified by the writer.
+fails when workers move. Recoverable staging uses repository-relative keys in the configured object
+store with integrity metadata verified by the same scope operation.
 
 **Mutating content-addressed objects.** A hash identity is immutable. Different bytes under the same
 identity are a conflict, never an update.
@@ -186,8 +222,8 @@ identity are a conflict, never an update.
 transport. Calibration and policy changes are separate control-plane operations.
 
 **Allowing unbounded work.** HTML, elements, staging, batches, messages, graph current state,
-materialization scopes, edge SQL, admission, and browser concurrency all need explicit ceilings and
-clear failures.
+materialization scopes, edge SQL, remote pressure, browser concurrency, catalogue concurrency, and
+object I/O all need explicit ceilings and clear failures.
 
 **Hiding maintenance in request paths.** Compaction, deletion, dead-letter recovery, and large
 rebuilds are explicit operator actions, not side effects of reads, graph triggers, or crawls.

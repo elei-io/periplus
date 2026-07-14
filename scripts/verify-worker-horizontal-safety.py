@@ -210,7 +210,7 @@ def main() -> None:
         submission = api("POST", f"/crawl-graphs/{graph_id}/runs", {"urls": urls})
         run_id = submission["run_id"]
         ingestion_before_kill = wait_for_consumer_activity(
-            [("ATLAS_REPOSITORY", "atlas-repository-writer")], timeout=60
+            [("ATLAS_CATALOGUE_WORK", "atlas-repository-writer")], timeout=60
         )
         killed_ingestion = kill_one("atlas-ingestion-worker")
 
@@ -246,12 +246,8 @@ def main() -> None:
         materialization_before_kill = wait_for_consumer_activity(
             [
                 (
-                    "ATLAS_MATERIALIZATION_SCOPES",
+                    "ATLAS_CATALOGUE_WORK",
                     "atlas-materialization-live-worker",
-                ),
-                (
-                    "ATLAS_MATERIALIZATION_COMMITS",
-                    "atlas-repository-materialization-writer",
                 ),
             ],
             timeout=60,

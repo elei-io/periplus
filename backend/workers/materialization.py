@@ -9,13 +9,11 @@ import signal
 
 from config import get_float, get_str
 from materialization.executor import run as run_executor
-from materialization.writer import run as run_writer
 from repository.ingestion.health import HealthMonitor
 
 
 async def run() -> None:
     stop = asyncio.Event()
-    writer_initialized = asyncio.Event()
     monitor = HealthMonitor(
         heartbeat_timeout_seconds=get_float(
             "ATLAS_MATERIALIZATION_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
@@ -26,11 +24,8 @@ async def run() -> None:
         loop.add_signal_handler(value, stop.set)
     tasks = [
         asyncio.create_task(
-            run_writer(writer_initialized, monitor), name="materialization-writer"
-        ),
-        asyncio.create_task(
-            run_executor(writer_initialized, monitor), name="materialization-executor"
-        ),
+            run_executor(monitor=monitor), name="materialization-scopes"
+        )
     ]
     stop_task = asyncio.create_task(stop.wait(), name="materialization-stop")
     done, _pending = await asyncio.wait(

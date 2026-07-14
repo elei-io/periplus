@@ -14,9 +14,7 @@ from nats.js.api import (
     AckPolicy,
     ConsumerConfig,
     KeyValueConfig,
-    RetentionPolicy,
     StorageType,
-    StreamConfig,
 )
 from nats.js.errors import (
     BadRequestError,
@@ -24,7 +22,6 @@ from nats.js.errors import (
     KeyDeletedError,
     KeyNotFoundError,
     KeyWrongLastSequenceError,
-    NotFoundError,
 )
 from pydantic import BaseModel, ConfigDict, model_validator
 import zstandard
@@ -34,13 +31,17 @@ from repository.catalogue import (
     CrawlRecord,
 )
 from runtime.navigation_contract import NavigationPackage
+from runtime.catalogue_queue import (
+    DEAD_LETTER_STREAM,
+    INGEST_DEAD_LETTER_SUBJECT as DEAD_LETTER_SUBJECT,
+    INGEST_SUBJECT as SUBJECT,
+    WORK_STREAM as STREAM,
+    ensure_catalogue_work_stream,
+    ensure_dead_letter_stream as ensure_catalogue_dead_letter_stream,
+)
 
-STREAM = "ATLAS_REPOSITORY"
-SUBJECT = "atlas.repository.ingest"
 DURABLE = "atlas-repository-writer"
 RESULTS_BUCKET = "atlas_repository_results"
-DEAD_LETTER_STREAM = "ATLAS_REPOSITORY_DEAD_LETTER"
-DEAD_LETTER_SUBJECT = "atlas.repository.dead_letter"
 
 
 class IngestionJob(BaseModel):
@@ -134,67 +135,12 @@ async def connect_repository_nats():
 
 
 async def ensure_repository_stream(jetstream) -> None:
-    replicas = get_int("ATLAS_INGEST_STREAM_REPLICAS")
-    config = StreamConfig(
-        name=STREAM,
-        subjects=[SUBJECT],
-        retention=RetentionPolicy.WORK_QUEUE,
-        storage=StorageType.FILE,
-        num_replicas=replicas,
-    )
-    try:
-        info = await jetstream.stream_info(STREAM)
-    except NotFoundError:
-        await jetstream.add_stream(config=config)
-        return
-    if set(info.config.subjects) != {SUBJECT}:
-        raise RuntimeError(f"JetStream {STREAM} must capture only {SUBJECT}")
-    if info.config.retention != RetentionPolicy.WORK_QUEUE:
-        raise RuntimeError(f"JetStream {STREAM} must use work-queue retention")
-    if info.config.storage != StorageType.FILE:
-        raise RuntimeError(f"JetStream {STREAM} must use file storage")
-    if info.config.num_replicas != replicas:
-        raise RuntimeError(f"JetStream {STREAM} must have {replicas} replicas")
+    await ensure_catalogue_work_stream(jetstream)
 
 
 async def ensure_dead_letter_stream(jetstream) -> None:
     """Attach or create the durable operator-managed ingestion failure stream."""
-
-    replicas = get_int("ATLAS_INGEST_STREAM_REPLICAS")
-    config = StreamConfig(
-        name=DEAD_LETTER_STREAM,
-        subjects=[DEAD_LETTER_SUBJECT],
-        retention=RetentionPolicy.LIMITS,
-        storage=StorageType.FILE,
-        num_replicas=replicas,
-        max_age=get_float("ATLAS_INGEST_DEAD_LETTER_TTL_SECONDS"),
-        max_bytes=get_int("ATLAS_INGEST_DEAD_LETTER_MAX_BYTES"),
-    )
-    try:
-        info = await jetstream.stream_info(DEAD_LETTER_STREAM)
-    except NotFoundError:
-        await jetstream.add_stream(config=config)
-        return
-    if set(info.config.subjects) != {DEAD_LETTER_SUBJECT}:
-        raise RuntimeError(
-            f"JetStream {DEAD_LETTER_STREAM} must capture only {DEAD_LETTER_SUBJECT}"
-        )
-    if info.config.retention != RetentionPolicy.LIMITS:
-        raise RuntimeError(f"JetStream {DEAD_LETTER_STREAM} must use limits retention")
-    if info.config.storage != StorageType.FILE:
-        raise RuntimeError(f"JetStream {DEAD_LETTER_STREAM} must use file storage")
-    if info.config.num_replicas != replicas:
-        raise RuntimeError(
-            f"JetStream {DEAD_LETTER_STREAM} must have {replicas} replicas"
-        )
-    if info.config.max_age != config.max_age:
-        raise RuntimeError(
-            f"JetStream {DEAD_LETTER_STREAM} must retain failures for {config.max_age} seconds"
-        )
-    if info.config.max_bytes != config.max_bytes:
-        raise RuntimeError(
-            f"JetStream {DEAD_LETTER_STREAM} must be limited to {config.max_bytes} bytes"
-        )
+    await ensure_catalogue_dead_letter_stream(jetstream)
 
 
 async def ensure_ingestion_results(jetstream):
@@ -439,6 +385,8 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
     """Reset terminal KV state, republish the frozen job, then remove its DLQ entry."""
 
     raw = await jetstream.get_msg(DEAD_LETTER_STREAM, seq=sequence)
+    if raw.subject != DEAD_LETTER_SUBJECT:
+        raise RuntimeError("the sequence is not an ingestion dead letter")
     dead_letter = decode_dead_letter(raw.data)
     while True:
         try:

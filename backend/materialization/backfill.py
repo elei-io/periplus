@@ -9,16 +9,19 @@ from control.catalogue_materializations.models import CatalogueMaterialization
 from db.session import session_scope
 from materialization.definitions import active_definitions, publish_scope
 from materialization.queue import (
-    COMMIT_DURABLE,
-    COMMIT_STREAM,
     SCOPE_BACKFILL_DURABLE,
     SCOPE_STREAM,
 )
 from repository.catalogue import Catalogue, catalogue_from_env
 from runtime.catalogue_lane import run_catalogue_operation
+from runtime.resource_governor import (
+    DURABLE_RESOURCE_WAIT,
+    catalogue_request,
+    resource_permits,
+)
 
 
-async def run_backfill(jetstream, stop: asyncio.Event) -> None:
+async def run_backfill(jetstream, stop: asyncio.Event, resource_grants=None) -> None:
     while not stop.is_set():
         definitions = active_definitions(backfill=True)
         if not definitions:
@@ -27,8 +30,12 @@ async def run_backfill(jetstream, stop: asyncio.Event) -> None:
         for definition in definitions:
             cursor: str | None = None
             while not stop.is_set():
-                scopes = await run_catalogue_operation(
-                    _missing_scope_page, definition, cursor
+                scopes = await _run_governed(
+                    resource_grants,
+                    f"backfill-page:{definition.definition_revision_id}",
+                    _missing_scope_page,
+                    definition,
+                    cursor,
                 )
                 if not scopes:
                     break
@@ -40,7 +47,12 @@ async def run_backfill(jetstream, stop: asyncio.Event) -> None:
                     cursor = scope_id
                     await _wait(stop, delay)
             await _wait_for_queues(jetstream, stop)
-            if await run_catalogue_operation(_backfill_terminal, definition):
+            if await _run_governed(
+                resource_grants,
+                f"backfill-terminal:{definition.definition_revision_id}",
+                _backfill_terminal,
+                definition,
+            ):
                 _finish_backfill(definition)
         await _wait(stop, 5)
 
@@ -48,13 +60,10 @@ async def run_backfill(jetstream, stop: asyncio.Event) -> None:
 async def _wait_for_queues(jetstream, stop: asyncio.Event) -> None:
     while not stop.is_set():
         scope = await jetstream.consumer_info(SCOPE_STREAM, SCOPE_BACKFILL_DURABLE)
-        commit = await jetstream.consumer_info(COMMIT_STREAM, COMMIT_DURABLE)
         if not any(
             (
                 scope.num_pending,
                 scope.num_ack_pending,
-                commit.num_pending,
-                commit.num_ack_pending,
             )
         ):
             return
@@ -169,3 +178,20 @@ async def _wait(stop: asyncio.Event, seconds: float) -> None:
         await asyncio.wait_for(stop.wait(), timeout=seconds)
     except TimeoutError:
         pass
+
+
+async def _run_governed(
+    resource_grants, operation_id: str, function, *args
+):
+    if resource_grants is None:
+        return await run_catalogue_operation(function, *args)
+    async with resource_permits(
+        resource_grants,
+        catalogue_request(
+            operation_id,
+            service_class="backfill",
+            object_read_units=1,
+        ),
+        acquire_timeout=DURABLE_RESOURCE_WAIT,
+    ):
+        return await run_catalogue_operation(function, *args)

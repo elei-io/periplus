@@ -1,8 +1,8 @@
 # Crawl Graphs
 
-Status: implementation-ready target design. The task/action-to-graph cutover is not yet complete.
-During the cutover, change the contract directly and delete superseded task, primitive, and
-action-specific traversal paths rather than adding compatibility bridges.
+Status: accepted graph contract. The resource-governance and one-scope materialization cutover is
+tracked in [AUDIT.md](../AUDIT.md). Any contract replacement is direct: delete superseded task,
+primitive, queue, and action-specific traversal paths rather than adding compatibility bridges.
 
 ## Purpose
 
@@ -193,11 +193,12 @@ acquisition; graph edges remain the only navigation mechanism.
 
 Two requests in the same graph may resolve different policies because their URLs match different
 remotes. The frozen profile routes work to a transport-specific NATS subject before publication, so
-HTTP, browser, and external-provider acquisition deployments scale independently. NATS KV enforces
-policy concurrency across all acquisition replicas with expiring, heartbeat-renewed leases scoped
-to the frozen policy revision. A lease is held only for an actual remote visit, not for repository
-cache lookup, ingestion, or navigation waiting. Browser work also takes a browser-worker-local
-permit to protect that Chromium process. Exact profile configuration remains code-owned.
+HTTP, browser, and external-provider acquisition deployments scale independently. The Resource
+Governor enforces policy concurrency across all acquisition replicas with expiring permits scoped
+to the frozen policy revision. A remote permit is held only for an actual remote visit, not for
+repository cache lookup, object persistence, ingestion, or navigation waiting. Browser work also
+takes a browser-worker-local permit to protect that Chromium process. Exact profile configuration
+remains code-owned.
 
 Atlas may sample a bounded share of use requests and run one shadow acquisition with a different
 frozen policy. Samples reuse the normal transport and repository implementations but never become
@@ -288,15 +289,17 @@ configuration.
 
 ### Acquisition and ingestion
 
-An acquisition worker claims one crawl request from its transport-specific subject, acquires the
-page through the shared crawl path, writes immutable raw HTML through the repository object
-boundary, and publishes a frozen ingestion job. It never opens DuckLake or waits for downstream
-processing.
+An acquisition worker claims one crawl request from its transport-specific subject, requests the
+frozen policy's remote permit, acquires the page through the shared crawl path, releases remote and
+local browser pressure, requests bounded object-write capacity, writes immutable raw HTML through
+the repository boundary, and publishes a frozen ingestion job. It never opens DuckLake or waits for
+downstream processing.
 
-An ingestion worker validates the raw object, commits DuckLake crawl/document/element evidence and
-navigation-critical system projections, publishes the verified navigation package, evaluates
-outgoing edges, and admits their returned URLs. User materialization runs in separate workers and
-cannot change the crawl request's terminal state.
+An ingestion worker validates the raw object, requests the `critical` catalogue/object-store
+resource bundle, commits DuckLake crawl/document/element evidence and navigation-critical system
+projections, publishes the verified navigation package, evaluates outgoing edges, and admits their
+returned URLs. User materialization runs in separate workers and cannot change the crawl request's
+terminal state.
 
 The crawl request may transition through states such as:
 
@@ -332,10 +335,11 @@ digest before registering the package on a dedicated DuckDB connection. The same
 also read `views.*`; live materialized views are asynchronous and may lag the
 just-finished crawl.
 
-Ingestion may publish materialization scope notifications after its base commit, but separate
-materialization workers plan, evaluate, and commit those scopes. Their failures are observable and
-retryable but cannot fail navigation, hold a crawl request at the readiness fence, or keep a graph
-run active. Raw HTML is the permanent regeneration authority if an ephemeral package is missing.
+After the base crawl commit, CDC and activation backfill may discover deterministic materialization
+scopes. A separate materialization worker owns one scope from evaluation through authoritative
+coverage under `live` or `backfill` resource admission. Its failure is observable and retryable but
+cannot fail navigation, hold a crawl request at the readiness fence, or keep a graph run active.
+Raw HTML is the permanent regeneration authority if an ephemeral package is missing.
 
 ### Edge activation
 
@@ -464,6 +468,9 @@ Independent branch after base ingestion or CDC discovery:
 materialization scope -> materialization worker -> durable live-view coverage
 ```
 
+Before an expensive phase starts, its worker requests an atomic expiring resource bundle. Capacity
+permits are not additional work messages and are not included in the durable completion chain.
+
 Delivery is at-least-once. Correctness therefore requires deterministic identities or equivalent KV
 compare-and-swap transitions for:
 
@@ -540,7 +547,7 @@ guards, not graph behavior or crawl-policy settings.
 
 ## Frozen implementation contracts
 
-The cutover uses the following names and payloads. Change this section before implementations
+The runtime uses the following names and payloads. Change this section before implementations
 diverge; do not introduce aliases for alternative names.
 
 ### Postgres tables
@@ -688,6 +695,10 @@ KV buckets:
 - atlas_graph_workers
 - atlas_graph_progress
 - atlas_policy_trial_budget
+
+Shared operational KV outside graph ownership:
+- operation-lease state
+- atlas_resource_grants
 ```
 
 `atlas_policy_trial_budget` is the atomic bounded set of active shadow sample request identities.
@@ -771,38 +782,24 @@ source_crawl_id UUID nullable
 source_edge_id UUID nullable
 ```
 
-There are no task-ID, task-revision, primitive, or compatibility provenance columns after the
-cutover. Each row is exactly one acquisition and also stores its frozen `profile`, ranked
+There are no task-ID, task-revision, primitive, or compatibility provenance columns. Each row is
+exactly one acquisition and also stores its frozen `profile`, ranked
 `template`, `config_json`, `config_hash`, and typed acquisition outcome. Canonical document-quality
 measurements live once on `documents`; they are not copied into every crawl observation.
 
 ### Navigation readiness and asynchronous materialization
 
-DuckLake stores one authoritative fan-out record per crawl:
+Materialization does not maintain a per-crawl fan-out plan. CDC and activation backfill derive
+deterministic scope identities directly from eligible crawls and active definition revisions. Both
+may rediscover the same scope safely.
 
-```text
-crawl_materialization_fanouts
-- crawl_id UUID
-- planning_completed_at TIMESTAMPTZ
-- triggered_count BIGINT
-- settled_count BIGINT
-- failed_count BIGINT
-- completed_at TIMESTAMPTZ nullable
+DuckLake `materialization_scope_results` coverage is the sole completion authority. Pending work and
+per-run lag are derived as eligible crawl-definition scopes minus successful coverage. Queue depth,
+permit state, and worker progress are operational diagnostics and never graph readiness or
+materialization truth.
 
-crawl_materialization_fanout_members
-- crawl_id UUID
-- materialization_id UUID
-- definition_revision_id UUID
-- scope_kind VARCHAR
-- scope_id VARCHAR
-- status VARCHAR: planned | settled | failed
-- settled_at TIMESTAMPTZ nullable
-- error VARCHAR nullable
-```
-
-The planner freezes fan-out membership before publishing analytical scope work. Membership rows
-remain the authoritative identities for asynchronous materialization recovery and observability;
-they are not graph readiness state.
+One materialization scope message owns bounded evaluation, optional deterministic staging, atomic
+scope replacement, and coverage. There is no separate fan-out settlement or commit-delivery queue.
 
 The readiness work payload is:
 

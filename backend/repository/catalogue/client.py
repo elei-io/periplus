@@ -15,8 +15,6 @@ from repository.catalogue.exceptions import CatalogueSchemaError
 from repository.catalogue.schema import (
     CATALOGUE_SCHEMA_VERSION,
     CRAWL_COLUMNS,
-    CRAWL_MATERIALIZATION_FANOUT_COLUMNS,
-    CRAWL_MATERIALIZATION_FANOUT_MEMBER_COLUMNS,
     DOCUMENT_COLUMNS,
     MATERIALIZATION_SCOPE_RESULT_COLUMNS,
     expected_columns,
@@ -93,16 +91,6 @@ class Catalogue:
                 schema_name=self.config.schema,
                 **MATERIALIZATION_SCOPE_RESULT_COLUMNS,
             )
-            self.lake.table.create(
-                "crawl_materialization_fanouts",
-                schema_name=self.config.schema,
-                **CRAWL_MATERIALIZATION_FANOUT_COLUMNS,
-            )
-            self.lake.table.create(
-                "crawl_materialization_fanout_members",
-                schema_name=self.config.schema,
-                **CRAWL_MATERIALIZATION_FANOUT_MEMBER_COLUMNS,
-            )
         self._migrate_schema()
         self._configure_layout()
         self._migrate_layout()
@@ -130,35 +118,12 @@ class Catalogue:
         self.connection.execute(
             f"ALTER TABLE {elements} SET PARTITIONED BY (bucket(16, document_id))"
         )
-        for table_name in (
-            "crawl_materialization_fanouts",
-            "crawl_materialization_fanout_members",
-        ):
-            table = ".".join(
-                _quote_identifier(value)
-                for value in (self.config.alias, self.config.schema, table_name)
-            )
-            self.connection.execute(
-                f"ALTER TABLE {table} SET PARTITIONED BY (bucket(16, crawl_id))"
-            )
 
     def _migrate_layout(self) -> None:
         """Rewrite pre-partition files once so the current layout can prune them."""
 
         self._rewrite_unpartitioned_bucket_files(
             "elements", column="document_id", columns=ELEMENT_COLUMNS
-        )
-        self._rewrite_unpartitioned_bucket_files(
-            "crawl_materialization_fanouts",
-            column="crawl_id",
-            columns=CRAWL_MATERIALIZATION_FANOUT_COLUMNS,
-            stage_in_memory=True,
-        )
-        self._rewrite_unpartitioned_bucket_files(
-            "crawl_materialization_fanout_members",
-            column="crawl_id",
-            columns=CRAWL_MATERIALIZATION_FANOUT_MEMBER_COLUMNS,
-            stage_in_memory=True,
         )
 
     def _rewrite_unpartitioned_bucket_files(
@@ -397,17 +362,6 @@ class Catalogue:
                 "catalogue table 'elements' must be partitioned by "
                 f"bucket(16, document_id), got {elements!r}"
             )
-        for table_name in (
-            "crawl_materialization_fanouts",
-            "crawl_materialization_fanout_members",
-        ):
-            actual = partitioning(table_name)
-            expected = [(0, "crawl_id", "bucket(16)")]
-            if actual != expected:
-                raise CatalogueSchemaError(
-                    f"catalogue table {table_name!r} must be partitioned by "
-                    f"bucket(16, crawl_id), got {actual!r}"
-                )
 
     def _validate_macros(self) -> None:
         rows = self.connection.execute(

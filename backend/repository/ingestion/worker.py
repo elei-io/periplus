@@ -9,8 +9,6 @@ import time
 from datetime import UTC, datetime
 
 from nats.errors import TimeoutError as NatsTimeoutError
-from nats.js.errors import BucketNotFoundError, KeyDeletedError, KeyNotFoundError
-
 from repository.catalogue import (
     CatalogueConflictError,
     CatalogueValidationError,
@@ -43,7 +41,6 @@ from repository.catalogue.operations import (
     run_with_catalogue_retry,
 )
 from repository.service import repository_ingestor_from_env
-from runtime.maintenance_queue import MAINTENANCE_LEASE_BUCKET
 from runtime.catalogue_lane import catalogue_operation_lane
 from runtime.graph_queue import (
     READINESS_SUBJECT,
@@ -64,6 +61,13 @@ from runtime.operation_leases import (
     OperationLeaseUnavailable,
     ensure_operation_lease_storage,
     operation_leases,
+)
+from runtime.resource_governor import (
+    catalogue_request,
+    ensure_resource_governor_storage,
+    object_request,
+    object_units,
+    resource_permits,
 )
 
 
@@ -122,16 +126,19 @@ async def run(
 ) -> None:
     stop = asyncio.Event()
     config = IngestionWorkerConfig.from_env()
+    catalogue_request(
+        "ingestion-startup-validation",
+        service_class="critical",
+        object_read_units=object_units(config.max_staged_bytes),
+        object_write_units=object_units(config.max_staged_bytes),
+    )
     client = await connect_repository_nats()
     jetstream = client.jetstream()
-    try:
-        maintenance_leases = await jetstream.key_value(MAINTENANCE_LEASE_BUCKET)
-    except BucketNotFoundError:
-        maintenance_leases = None
     await ensure_repository_stream(jetstream)
     await ensure_dead_letter_stream(jetstream)
     results_store = await ensure_ingestion_results(jetstream)
     operation_lease_store = await ensure_operation_lease_storage(jetstream)
+    resource_grants = await ensure_resource_governor_storage(jetstream)
     await ensure_repository_consumer(jetstream)
     subscription = await jetstream.pull_subscribe(
         SUBJECT,
@@ -171,6 +178,7 @@ async def run(
             health_ingestor,
             health_monitor,
             catalogue_operation_lane(),
+            resource_grants,
         )
     )
     heartbeat_task = None
@@ -196,6 +204,7 @@ async def run(
             catalogue_connection_lock,
             navigation_store,
             operation_lease_store,
+            resource_grants,
         )
         jobs.clear()
         accepted_messages.clear()
@@ -207,9 +216,6 @@ async def run(
 
     try:
         while not stop.is_set():
-            if await _maintenance_active(maintenance_leases):
-                await asyncio.sleep(0.25)
-                continue
             if (
                 prepared
                 and batch_started_at is not None
@@ -280,11 +286,17 @@ async def run(
                 if job.crawl.document_id is not None
             ]
             try:
-                async with catalogue_connection_lock:
-                    known_documents = await asyncio.to_thread(
-                        ingestor.catalogue_service.get_documents,
-                        document_ids,
-                    )
+                async with resource_permits(
+                    resource_grants,
+                    catalogue_request(
+                        "ingestion-document-preload", service_class="critical"
+                    ),
+                ):
+                    async with catalogue_connection_lock:
+                        known_documents = await asyncio.to_thread(
+                            ingestor.catalogue_service.get_documents,
+                            document_ids,
+                        )
             except Exception:
                 logging.warning(
                     "repository batch document preload unavailable; falling back",
@@ -336,12 +348,22 @@ async def run(
                             ingestor,
                             job.crawl,
                             catalogue_connection_lock,
+                            resource_grants,
                         )
-                    value = await asyncio.to_thread(
-                        ingestor.prepare_from_raw,
-                        crawl=job.crawl,
-                        known_documents=job_known_documents,
-                    )
+                    async with resource_permits(
+                        resource_grants,
+                        object_request(
+                            f"ingestion-raw-read:{job.request_id}",
+                            direction="read",
+                            byte_count=1,
+                            service_class="critical",
+                        ),
+                    ):
+                        value = await asyncio.to_thread(
+                            ingestor.prepare_from_raw,
+                            crawl=job.crawl,
+                            known_documents=job_known_documents,
+                        )
                 except Exception as exc:
                     repository_metrics.preparation(
                         outcome="failed",
@@ -361,6 +383,7 @@ async def run(
                         job,
                         exc,
                         catalogue_connection_lock,
+                        resource_grants,
                     )
                     continue
                 repository_metrics.preparation(
@@ -435,6 +458,7 @@ async def _commit_batch_isolated(
     catalogue_connection_lock: asyncio.Lock,
     navigation_store,
     operation_lease_store,
+    resource_grants,
 ) -> None:
     """Commit valid jobs while recursively isolating deterministic poison entries."""
 
@@ -454,13 +478,22 @@ async def _commit_batch_isolated(
                 attempt, description="repository ingestion commit"
             )
 
-        async with operation_leases(
-            operation_lease_store,
-            (job.request_id for job in jobs),
-            phase="ingestion-commit",
+        async with resource_permits(
+            resource_grants,
+            catalogue_request(
+                f"ingestion-batch:{jobs[0].request_id}",
+                service_class="critical",
+                object_read_units=object_units(staged_bytes),
+                object_write_units=object_units(staged_bytes),
+            ),
         ):
-            async with catalogue_connection_lock:
-                results = await asyncio.to_thread(commit_fenced)
+            async with operation_leases(
+                operation_lease_store,
+                (job.request_id for job in jobs),
+                phase="ingestion-commit",
+            ):
+                async with catalogue_connection_lock:
+                    results = await asyncio.to_thread(commit_fenced)
     except (OperationLeaseUnavailable, OperationLeaseLost):
         repository_metrics.batch(
             outcome="contended",
@@ -499,6 +532,7 @@ async def _commit_batch_isolated(
                 catalogue_connection_lock,
                 navigation_store,
                 operation_lease_store,
+                resource_grants,
             )
             await _commit_batch_isolated(
                 client,
@@ -510,6 +544,7 @@ async def _commit_batch_isolated(
                 catalogue_connection_lock,
                 navigation_store,
                 operation_lease_store,
+                resource_grants,
             )
             return
 
@@ -532,6 +567,7 @@ async def _commit_batch_isolated(
                     job,
                     exc,
                     catalogue_connection_lock,
+                    resource_grants,
                 )
             return
 
@@ -551,6 +587,7 @@ async def _commit_batch_isolated(
             job,
             exc,
             catalogue_connection_lock,
+            resource_grants,
         )
         return
 
@@ -578,13 +615,22 @@ async def _commit_batch_isolated(
                     job.crawl.document_id,
                     job.crawl.page_url,
                 )
-                package = await asyncio.to_thread(
-                    put_navigation_package,
-                    navigation_store,
-                    name=name,
-                    payload=value.navigation_payload,
-                    row_count=value.navigation_row_count,
-                )
+                async with resource_permits(
+                    resource_grants,
+                    object_request(
+                        f"navigation-write:{job.request_id}",
+                        direction="write",
+                        byte_count=len(value.navigation_payload),
+                        service_class="critical",
+                    ),
+                ):
+                    package = await asyncio.to_thread(
+                        put_navigation_package,
+                        navigation_store,
+                        name=name,
+                        payload=value.navigation_payload,
+                        row_count=value.navigation_row_count,
+                    )
             durable_state = await store_ingestion_response(
                 results_store,
                 job=job,
@@ -623,15 +669,24 @@ async def _retry_or_fail(
     job: IngestionJob,
     exc: Exception,
     catalogue_connection_lock: asyncio.Lock,
+    resource_grants,
 ) -> None:
     deliveries = message.metadata.num_delivered
     if deliveries >= max_delivery_attempts():
         try:
-            async with catalogue_connection_lock:
-                reconciled = await asyncio.to_thread(
-                    ingestor.reconcile_crawl_commit,
-                    crawl=job.crawl,
-                )
+            async with resource_permits(
+                resource_grants,
+                catalogue_request(
+                    f"ingestion-reconcile:{job.request_id}",
+                    service_class="critical",
+                    object_read_units=1,
+                ),
+            ):
+                async with catalogue_connection_lock:
+                    reconciled = await asyncio.to_thread(
+                        ingestor.reconcile_crawl_commit,
+                        crawl=job.crawl,
+                    )
         except CatalogueConflictError as reconcile_exc:
             # The stable operation identity points at different durable data, so
             # it cannot be reconciled as this job's success.
@@ -658,29 +713,48 @@ async def _retry_or_fail(
                     ingestor,
                     job.crawl,
                     catalogue_connection_lock,
+                    resource_grants,
                 )
-                prepared = await asyncio.to_thread(
-                    ingestor.prepare_from_raw,
-                    crawl=job.crawl,
-                    known_documents=known_documents,
-                )
+                async with resource_permits(
+                    resource_grants,
+                    object_request(
+                        f"ingestion-recovery-read:{job.request_id}",
+                        direction="read",
+                        byte_count=1,
+                        service_class="critical",
+                    ),
+                ):
+                    prepared = await asyncio.to_thread(
+                        ingestor.prepare_from_raw,
+                        crawl=job.crawl,
+                        known_documents=known_documents,
+                    )
                 try:
                     if prepared.navigation_payload is not None:
                         if job.crawl.document_id is None:
                             raise ValueError(
                                 "navigation package requires a document identity"
                             )
-                        package = await asyncio.to_thread(
-                            put_navigation_package,
-                            navigation_store,
-                            name=navigation_object_name(
-                                job.crawl.graph_run_id,
-                                job.crawl.document_id,
-                                job.crawl.page_url,
+                        async with resource_permits(
+                            resource_grants,
+                            object_request(
+                                f"navigation-recovery-write:{job.request_id}",
+                                direction="write",
+                                byte_count=len(prepared.navigation_payload),
+                                service_class="critical",
                             ),
-                            payload=prepared.navigation_payload,
-                            row_count=prepared.navigation_row_count,
-                        )
+                        ):
+                            package = await asyncio.to_thread(
+                                put_navigation_package,
+                                navigation_store,
+                                name=navigation_object_name(
+                                    job.crawl.graph_run_id,
+                                    job.crawl.document_id,
+                                    job.crawl.page_url,
+                                ),
+                                payload=prepared.navigation_payload,
+                                row_count=prepared.navigation_row_count,
+                            )
                 finally:
                     await asyncio.to_thread(ingestor.discard_prepared, [prepared])
             except Exception as navigation_exc:
@@ -779,16 +853,23 @@ async def _known_document_for_crawl(
     ingestor,
     crawl: CrawlRecord,
     catalogue_connection_lock: asyncio.Lock,
+    resource_grants,
 ) -> dict[str, DocumentRecord]:
     """Read canonical document state without holding the connection during parsing."""
 
     if crawl.document_id is None:
         return {}
-    async with catalogue_connection_lock:
-        existing = await asyncio.to_thread(
-            ingestor.catalogue_service.get_document,
-            crawl.document_id,
-        )
+    async with resource_permits(
+        resource_grants,
+        catalogue_request(
+            f"ingestion-document-read:{crawl.crawl_id}", service_class="critical"
+        ),
+    ):
+        async with catalogue_connection_lock:
+            existing = await asyncio.to_thread(
+                ingestor.catalogue_service.get_document,
+                crawl.document_id,
+            )
     return {crawl.document_id: existing} if existing is not None else {}
 
 
@@ -798,27 +879,12 @@ async def _health_heartbeat(monitor: HealthMonitor) -> None:
         await asyncio.sleep(1)
 
 
-async def _maintenance_active(bucket) -> bool:
-    if bucket is None:
-        return False
-    try:
-        await bucket.get("global")
-    except (KeyNotFoundError, KeyDeletedError):
-        return False
-    except Exception:
-        logging.warning(
-            "maintenance lease state unavailable; pausing catalogue writes",
-            exc_info=True,
-        )
-        return True
-    return True
-
-
 async def _dependency_probe(
     client,
     ingestor,
     monitor: HealthMonitor,
     catalogue_connection_lock: asyncio.Lock,
+    resource_grants,
 ) -> None:
     interval = get_float("ATLAS_INGESTION_WORKER_HEALTH_PROBE_INTERVAL_SECONDS")
     timeout = get_float("ATLAS_INGESTION_WORKER_HEALTH_PROBE_TIMEOUT_SECONDS")
@@ -831,8 +897,14 @@ async def _dependency_probe(
         try:
             await asyncio.wait_for(client.flush(), timeout=timeout)
             async with asyncio.timeout(timeout):
-                async with catalogue_connection_lock:
-                    await asyncio.to_thread(ingestor.validate)
+                async with resource_permits(
+                    resource_grants,
+                    catalogue_request(
+                        "ingestion-health-probe", service_class="critical"
+                    ),
+                ):
+                    async with catalogue_connection_lock:
+                        await asyncio.to_thread(ingestor.validate)
         except Exception as exc:
             monitor.dependencies_unavailable(str(exc) or type(exc).__name__)
         else:

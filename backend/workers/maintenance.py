@@ -5,110 +5,86 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
 import signal
-from datetime import UTC, datetime
-from uuid import uuid4
+from typing import Literal
 
-from config import get_bool, get_float, get_int, get_optional, get_str
-from nats.js.errors import KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError
+from config import get_bool, get_float, get_int, get_str
 from prometheus_client import start_http_server
 
 from repository.catalogue.operations import maintenance_lock
 from repository.ingestion.health import HealthMonitor, start_health_server
 from repository.maintenance import MaintenanceConfig, cleanup_staging, compact
 from runtime.graph_queue import connect_nats
-from runtime.maintenance_queue import (
-    MaintenanceKind,
-    MaintenanceLease,
-    ensure_maintenance_storage,
+from runtime.operation_leases import (
+    OperationLeaseLost,
+    OperationLeaseUnavailable,
+    ensure_operation_lease_storage,
+    operation_leases,
+)
+from runtime.resource_governor import (
+    ResourceCapacityUnavailable,
+    ResourceLimits,
+    ResourcePermitLost,
+    catalogue_request,
+    ensure_resource_governor_storage,
+    resource_permits,
 )
 
 
-async def _heartbeat_lease(
-    bucket, revision: int, lease: MaintenanceLease, stop: asyncio.Event
-) -> None:
-    interval = get_float("ATLAS_MAINTENANCE_HEARTBEAT_SECONDS")
-    current_revision = revision
-    while not stop.is_set():
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=interval)
-            return
-        except TimeoutError:
-            pass
-        lease = lease.model_copy(update={"heartbeat_at": datetime.now(UTC)})
-        current_revision = await bucket.update(
-            "global", lease.model_dump_json().encode(), last=current_revision
-        )
+MaintenanceKind = Literal["compact", "cleanup"]
 
 
 async def _run_operation(
     *,
     kind: MaintenanceKind,
-    worker_id: str,
-    leases,
+    operation_lease_store,
+    resource_grants,
     config: MaintenanceConfig,
     monitor: HealthMonitor | None = None,
 ) -> None:
-    now = datetime.now(UTC)
-    lease = MaintenanceLease(
-        owner=worker_id,
-        operation_id=f"{kind}-{uuid4().hex}",
-        kind=kind,
-        acquired_at=now,
-        heartbeat_at=now,
-    )
-    try:
-        revision = await leases.create("global", lease.model_dump_json().encode())
-    except KeyWrongLastSequenceError:
-        return
+    """Run one singleton operation only after all shared pressure has drained."""
 
-    heartbeat_stop = asyncio.Event()
-    heartbeat = asyncio.create_task(
-        _heartbeat_lease(leases, revision, lease, heartbeat_stop)
-    )
-    operation = None
-    try:
-        def operation_fenced() -> None:
-            with maintenance_lock():
-                if kind == "compact":
-                    compact(config)
-                else:
-                    cleanup_staging(config)
+    limits = ResourceLimits.from_env()
 
-        operation = asyncio.create_task(asyncio.to_thread(operation_fenced))
-        done, _pending = await asyncio.wait(
-            (operation, heartbeat), return_when=asyncio.FIRST_COMPLETED
-        )
-        if heartbeat in done:
-            error = heartbeat.exception()
-            if monitor is not None:
-                monitor.subsystem_unavailable(
-                    "maintenance_lease",
-                    str(error) if error is not None else "maintenance lease was lost",
-                )
-            # DuckDB's blocking maintenance call is not cancellable from another
-            # thread. The PostgreSQL maintenance fence prevents a replacement
-            # worker from overlapping it while this bounded call drains.
-            await operation
-            raise RuntimeError("maintenance lease was lost") from error
-        await operation
+    def operation_fenced() -> None:
+        with maintenance_lock():
+            if kind == "compact":
+                compact(config)
+            else:
+                cleanup_staging(config)
+
+    try:
+        async with operation_leases(
+            operation_lease_store,
+            (kind,),
+            phase="maintenance",
+            acquire_timeout=0,
+        ):
+            async with resource_permits(
+                resource_grants,
+                catalogue_request(
+                    f"maintenance:{kind}",
+                    service_class="maintenance",
+                    object_read_units=limits.object_read,
+                    object_write_units=limits.object_write,
+                    limits=limits,
+                    exclusive=True,
+                ),
+            ):
+                await asyncio.to_thread(operation_fenced)
         if monitor is not None:
-            monitor.subsystem_ready("maintenance_lease")
+            monitor.subsystem_ready("maintenance_admission")
+    except (
+        OperationLeaseUnavailable,
+        ResourceCapacityUnavailable,
+    ):
+        return
+    except (OperationLeaseLost, ResourcePermitLost) as exc:
+        if monitor is not None:
+            monitor.subsystem_unavailable("maintenance_admission", str(exc))
+        logging.exception("maintenance %s admission was lost", kind)
     except Exception:
         logging.exception("maintenance operation %s failed", kind)
-    finally:
-        heartbeat_stop.set()
-        await asyncio.gather(heartbeat, return_exceptions=True)
-        if operation is not None and not operation.done():
-            await operation
-        try:
-            entry = await leases.get("global")
-            current = MaintenanceLease.model_validate_json(entry.value)
-            if current.owner == worker_id and current.operation_id == lease.operation_id:
-                await leases.delete("global", last=entry.revision)
-        except (KeyNotFoundError, KeyDeletedError, KeyWrongLastSequenceError):
-            pass
 
 
 async def run() -> None:
@@ -116,17 +92,18 @@ async def run() -> None:
     loop = asyncio.get_running_loop()
     for value in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(value, stop.set)
-    worker_id = get_optional("ATLAS_MAINTENANCE_WORKER_ID") or f"{os.uname().nodename}:{os.getpid()}"
     config = MaintenanceConfig.from_env()
     client = await connect_nats()
-    leases = await ensure_maintenance_storage(client.jetstream())
+    jetstream = client.jetstream()
+    operation_lease_store = await ensure_operation_lease_storage(jetstream)
+    resource_grants = await ensure_resource_governor_storage(jetstream)
     monitor = HealthMonitor(
         heartbeat_timeout_seconds=get_float(
             "ATLAS_MAINTENANCE_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
         )
     )
     monitor.dependencies_ready()
-    monitor.subsystem_ready("maintenance_lease")
+    monitor.subsystem_ready("maintenance_admission")
     health_server, _ = start_health_server(
         address=get_str("ATLAS_MAINTENANCE_WORKER_HEALTH_HOST"),
         port=get_int("ATLAS_MAINTENANCE_WORKER_HEALTH_PORT"),
@@ -152,15 +129,15 @@ async def run() -> None:
         while not stop.is_set():
             await _run_operation(
                 kind="compact",
-                worker_id=worker_id,
-                leases=leases,
+                operation_lease_store=operation_lease_store,
+                resource_grants=resource_grants,
                 config=config,
                 monitor=monitor,
             )
             await _run_operation(
                 kind="cleanup",
-                worker_id=worker_id,
-                leases=leases,
+                operation_lease_store=operation_lease_store,
+                resource_grants=resource_grants,
                 config=config,
                 monitor=monitor,
             )

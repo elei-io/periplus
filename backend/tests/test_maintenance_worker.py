@@ -1,48 +1,41 @@
 from __future__ import annotations
 
-import asyncio
-import time
+from contextlib import asynccontextmanager
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
-
-from nats.js.errors import KeyNotFoundError
+from unittest.mock import MagicMock, patch
 
 from repository.ingestion.health import HealthMonitor
 from workers.maintenance import _run_operation
 
 
+@asynccontextmanager
+async def granted(*_args, **_kwargs):
+    yield MagicMock()
+
+
 class MaintenanceWorkerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_lost_lease_marks_worker_unready_after_operation_drains(self) -> None:
-        leases = MagicMock()
-        leases.create = AsyncMock(return_value=1)
-        leases.update = AsyncMock(side_effect=RuntimeError("NATS unavailable"))
-        leases.get = AsyncMock(side_effect=KeyNotFoundError)
+    async def test_operation_runs_behind_resource_and_correctness_fences(self) -> None:
         monitor = HealthMonitor()
         monitor.dependencies_ready()
-        monitor.subsystem_ready("maintenance_lease")
+        monitor.subsystem_ready("maintenance_admission")
 
         with (
-            patch("workers.maintenance.get_float", return_value=0.01),
+            patch("workers.maintenance.resource_permits", new=granted),
+            patch("workers.maintenance.operation_leases", new=granted),
             patch("workers.maintenance.maintenance_lock", return_value=MagicMock()),
-            patch(
-                "workers.maintenance.compact",
-                side_effect=lambda _config: time.sleep(0.05),
-            ),
+            patch("workers.maintenance.compact") as compact,
         ):
-            await asyncio.wait_for(
-                _run_operation(
-                    kind="compact",
-                    worker_id="worker-1",
-                    leases=leases,
-                    config=MagicMock(),
-                    monitor=monitor,
-                ),
-                timeout=1,
+            await _run_operation(
+                kind="compact",
+                operation_lease_store=MagicMock(),
+                resource_grants=MagicMock(),
+                config=MagicMock(),
+                monitor=monitor,
             )
 
-        ready, detail = monitor.status()
-        self.assertFalse(ready)
-        self.assertIn("NATS unavailable", detail)
+        compact.assert_called_once()
+        ready, _detail = monitor.status()
+        self.assertTrue(ready)
 
 
 if __name__ == "__main__":

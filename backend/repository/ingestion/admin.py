@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict
 from nats.js.errors import NotFoundError
 
 from repository.ingestion.queue import (
+    DEAD_LETTER_SUBJECT,
     DEAD_LETTER_STREAM,
     DeadLetterEntry,
     connect_repository_nats,
@@ -42,6 +43,9 @@ async def list_dead_letters(limit: int) -> DeadLetterList:
             try:
                 raw = await jetstream.get_msg(DEAD_LETTER_STREAM, seq=sequence)
             except NotFoundError:
+                sequence -= 1
+                continue
+            if raw.subject != DEAD_LETTER_SUBJECT:
                 sequence -= 1
                 continue
             items.append(

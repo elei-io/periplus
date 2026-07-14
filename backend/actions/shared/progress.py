@@ -16,7 +16,7 @@ ProgressPhase = Literal[
     "collect_query_evidence",
     "crawl",
     "crawl_batch",
-    "crawl_capacity",
+    "resource_admission",
     "extract",
     "extract_query_params",
     "generate_schema",

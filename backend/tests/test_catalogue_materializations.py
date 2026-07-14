@@ -22,102 +22,22 @@ from control.catalogue_materializations.service import (
     request_dematerialization,
     summary,
 )
-from materialization.commit import commit_scope, commit_scope_batch
+from materialization.commit import commit_scope
 from materialization.compute import _write_bounded_arrow, compute_scope
 from materialization.definitions import publish_scope
 from materialization.fencing import StaleMaterializationJob
 from materialization.queue import MaterializationCommitJob, MaterializationScopeJob
 from repository.catalogue import Catalogue, CatalogueConfig
-from repository.catalogue.fanout import CrawlMaterializationFanoutStore
 from repository.catalogue.materializations import (
     MaterializationError,
     MaterializationStore,
     scoped_view_query,
 )
-from repository.catalogue.records import CrawlMaterializationFanoutMember
 from repository.catalogue.views import CatalogueViewStore
 from repository.objects.store import FileObjectStore
 
 
 class CatalogueMaterializationTests(unittest.TestCase):
-    def test_fanout_plan_recovers_matching_interrupted_member_write(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            config = CatalogueConfig(
-                catalog=DuckDBCatalog(root / "catalog.ducklake"),
-                storage=DiskStorage(root / "lake"),
-            )
-            with Catalogue(config) as catalogue:
-                catalogue.bootstrap()
-                crawl_id = uuid4()
-                member = CrawlMaterializationFanoutMember(
-                    crawl_id=crawl_id,
-                    materialization_id=uuid4(),
-                    definition_revision_id=uuid4(),
-                    scope_kind="crawl",
-                    scope_id=str(crawl_id),
-                )
-                catalogue.connection.execute(
-                    "INSERT INTO atlas.main.crawl_materialization_fanout_members "
-                    "VALUES (?, ?, ?, ?, ?, 'planned', NULL, NULL)",
-                    [
-                        member.crawl_id,
-                        member.materialization_id,
-                        member.definition_revision_id,
-                        member.scope_kind,
-                        member.scope_id,
-                    ],
-                )
-                store = CrawlMaterializationFanoutStore(catalogue)
-
-                self.assertEqual(
-                    store.crawls_for_scope(
-                        materialization_id=member.materialization_id,
-                        definition_revision_id=member.definition_revision_id,
-                        scope_kind=member.scope_kind,
-                        scope_id=member.scope_id,
-                    ),
-                    [],
-                )
-                fanout = store.plan(crawl_id, members=[member])
-
-                self.assertEqual(fanout.triggered_count, 1)
-                self.assertEqual(store.members(crawl_id), [member])
-
-    def test_fanout_plan_rejects_incomplete_interrupted_member_write(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            config = CatalogueConfig(
-                catalog=DuckDBCatalog(root / "catalog.ducklake"),
-                storage=DiskStorage(root / "lake"),
-            )
-            with Catalogue(config) as catalogue:
-                catalogue.bootstrap()
-                crawl_id = uuid4()
-                orphan = CrawlMaterializationFanoutMember(
-                    crawl_id=crawl_id,
-                    materialization_id=uuid4(),
-                    definition_revision_id=uuid4(),
-                    scope_kind="crawl",
-                    scope_id=str(crawl_id),
-                )
-                expected = orphan.model_copy(update={"materialization_id": uuid4()})
-                catalogue.connection.execute(
-                    "INSERT INTO atlas.main.crawl_materialization_fanout_members "
-                    "VALUES (?, ?, ?, ?, ?, 'planned', NULL, NULL)",
-                    [
-                        orphan.crawl_id,
-                        orphan.materialization_id,
-                        orphan.definition_revision_id,
-                        orphan.scope_kind,
-                        orphan.scope_id,
-                    ],
-                )
-
-                with self.assertRaisesRegex(ValueError, "incomplete interrupted plan"):
-                    CrawlMaterializationFanoutStore(catalogue).plan(
-                        crawl_id, members=[expected]
-                    )
 
     def test_graph_run_lag_filters_active_materialization_revisions(self) -> None:
         first = (uuid4(), uuid4(), "crawl")
@@ -144,7 +64,7 @@ class CatalogueMaterializationTests(unittest.TestCase):
         self.assertIn("materialization_scope_results", sql)
         self.assertEqual(parameters, [*first, *second])
 
-    def test_crawl_with_preexisting_empty_fanout_is_visible_as_lag(self) -> None:
+    def test_crawl_without_scope_result_is_visible_as_lag(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = CatalogueConfig(
@@ -176,12 +96,6 @@ class CatalogueMaterializationTests(unittest.TestCase):
                     """,
                     [crawl_id, graph_run_id],
                 )
-                catalogue.connection.execute(
-                    "INSERT INTO atlas.main.crawl_materialization_fanouts "
-                    "VALUES (?, now(), 0, 0, 0, now())",
-                    [crawl_id],
-                )
-
                 rows = _graph_run_materialization_lag_rows(
                     catalogue,
                     [(materialization_id, definition_revision_id, "crawl")],
@@ -722,11 +636,11 @@ class CatalogueMaterializationTests(unittest.TestCase):
                         return_value=root / "temporary",
                     ),
                 ):
-                    outcomes = commit_scope_batch(catalogue, [job, second_job])
-                    self.assertEqual(set(outcomes.values()), {"committed"})
+                    self.assertEqual(commit_scope(catalogue, job), "committed")
+                    self.assertEqual(commit_scope(catalogue, second_job), "committed")
                     self.assertFalse(object_store.exists(key))
                     self.assertFalse(object_store.exists(second_key))
-                    commit_scope(catalogue, job)
+                    self.assertEqual(commit_scope(catalogue, job), "already_committed")
 
                 self.assertEqual(
                     catalogue.connection.execute(

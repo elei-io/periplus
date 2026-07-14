@@ -5,11 +5,7 @@ import unittest
 from uuid import uuid4
 
 from materialization.queue import MaterializationScopeJob
-from repository.catalogue.records import (
-    CrawlMaterializationFanout,
-    CrawlMaterializationFanoutMember,
-    CrawlRecord,
-)
+from repository.catalogue.records import CrawlRecord
 
 
 class GraphRepositoryContractTests(unittest.TestCase):
@@ -43,17 +39,6 @@ class GraphRepositoryContractTests(unittest.TestCase):
         self.assertNotIn("task_revision", dumped)
         self.assertNotIn("primitive", dumped)
 
-    def test_completed_fanout_requires_every_job_to_settle(self) -> None:
-        with self.assertRaisesRegex(ValueError, "settled all triggered work"):
-            CrawlMaterializationFanout(
-                crawl_id=uuid4(),
-                planning_completed_at=datetime.now(UTC),
-                triggered_count=2,
-                settled_count=1,
-                failed_count=0,
-                completed_at=datetime.now(UTC),
-            )
-
     def test_crawl_scope_is_a_first_class_materialization_job(self) -> None:
         crawl_id = uuid4()
         job = MaterializationScopeJob(
@@ -67,16 +52,8 @@ class GraphRepositoryContractTests(unittest.TestCase):
             source="live",
             enqueued_at=datetime.now(UTC),
         )
-        member = CrawlMaterializationFanoutMember(
-            crawl_id=crawl_id,
-            materialization_id=job.materialization_id,
-            definition_revision_id=job.definition_revision_id,
-            scope_kind="crawl",
-            scope_id=job.scope_id,
-        )
-
         self.assertEqual(job.scope_kind, "crawl")
-        self.assertEqual(member.status, "planned")
+        self.assertEqual(job.scope_id, str(crawl_id))
 
 if __name__ == "__main__":
     unittest.main()

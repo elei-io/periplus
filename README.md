@@ -5,8 +5,9 @@ content-addressed raw HTML, and stores a structural projection for later search,
 analysis.
 
 The project is intentionally small: one page-acquisition path, one repository boundary, and a
-clear owner for every kind of state. Atlas favors bounded local work and explicit operational
-limits over speculative distributed machinery.
+clear owner for every kind of state. Atlas scales worker capabilities independently while one
+narrow, KV-backed Resource Governor contract bounds shared pressure on remote sites, DuckLake, and
+S3 / MinIO.
 
 Atlas is organized around crawl graphs:
 
@@ -35,8 +36,8 @@ make compose-up
 
 Compose starts the complete local stack and exposes the API at `http://127.0.0.1:8000`. The accepted
 target topology separates transport-specific acquisition, ingestion, materialization, and
-maintenance workers; [AUDIT.md](AUDIT.md) tracks temporary implementation gaps during that direct
-cutover.
+maintenance failure domains while resource permits cap their combined dependency pressure.
+[AUDIT.md](AUDIT.md) tracks the direct greenfield cutover.
 
 Compose does not bind-mount the application source tree. After changing Atlas code, rebuild and
 recreate the services with `docker compose up --build -d` (or `make compose-up`) so every running
@@ -72,8 +73,8 @@ Configuration is documented alongside its defaults in [`.env.example`](.env.exam
 
 - [Vision](docs/VISION.md) — what Atlas is for, and what it is not.
 - [Architecture](docs/ARCHITECTURE.md) — components, state ownership, and execution paths.
-- [Worker architecture](docs/WORKER_ARCHITECTURE.md) — process boundaries, queue routing, and
-  horizontal scaling.
+- [Worker and resource architecture](docs/WORKER_ARCHITECTURE.md) — process boundaries, queue
+  routing, resource admission, and scaling.
 - [Crawl graphs](docs/CRAWL_GRAPHS.md) — graph entities, runtime semantics, messaging, and readiness.
 - [Catalogue SQL](docs/CATALOGUE_SQL.md) — analytical tables and DOM-style query helpers.
 - [Hazards](docs/HAZARDS.md) — mistakes and complexity traps to avoid.

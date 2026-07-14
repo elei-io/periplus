@@ -191,18 +191,29 @@ async def operation_leases(
         for operation_id in identities:
             if operation_id in acquired:
                 continue
-            if await _try_acquire(
-                bucket, phase=phase, operation_id=operation_id, owner=owner
-            ):
+            try:
+                granted = await _try_acquire(
+                    bucket, phase=phase, operation_id=operation_id, owner=owner
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                granted = False
+            if granted:
                 acquired.append(operation_id)
                 continue
             break
         else:
             break
         for operation_id in reversed(acquired):
-            await _release(
-                bucket, phase=phase, operation_id=operation_id, owner=owner
-            )
+            try:
+                await _release(
+                    bucket, phase=phase, operation_id=operation_id, owner=owner
+                )
+            except Exception:
+                # The same owner can renew a partially released set after the
+                # broker recovers; TTL remains the final cleanup boundary.
+                pass
         acquired.clear()
         if asyncio.get_running_loop().time() >= deadline:
             raise OperationLeaseUnavailable(

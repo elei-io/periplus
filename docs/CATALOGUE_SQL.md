@@ -120,8 +120,8 @@ SQL `LIMIT` expresses the intended number of candidates. Catalogue execution sti
 row, byte, memory, and timeout limits. Returned URLs become independently claimable crawl requests;
 URL matching selects their crawl policy, and deployment hard ceilings protect against runaway graph
 runs. See [Crawl Graphs](CRAWL_GRAPHS.md) for readiness, recursion, messaging, and state ownership.
-Crawl-scoped materialization fan-out and graph execution remain target contracts until the cutover
-described there is implemented.
+Catalogue execution also requests Resource Governor capacity before starting; SQL bounds do not
+replace global DuckLake or object-store admission.
 
 ## Physical layout
 

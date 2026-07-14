@@ -44,7 +44,8 @@ the published release; version control retains the history.
 
 ### DuckLake crash when replacing an update-fragmented table from itself
 
-- **Atlas caller:** deployment-time repartition of retained crawl materialization fan-out state.
+- **Former Atlas caller:** deployment-time repartition of the superseded crawl-materialization
+  fan-out ledger.
 - **Evidence:** DuckLake 1.5 exited with signal 11 while one transaction created a bucketed
   replacement, ran `INSERT INTO replacement SELECT * FROM source`, dropped the source, and renamed
   the replacement. The source contained 1,378 current rows across 597 small data/update fragments.
@@ -56,11 +57,10 @@ the published release; version control retains the history.
 - **Smallest useful upstream contract:** replacing a table from a scan of its current snapshot must
   not crash when the source has update fragments; add a regression covering scan, drop, and rename
   in one DuckLake transaction.
-- **Atlas status:** mitigated by staging only the small fan-out state tables in memory before their
-  one-time bucket-layout rewrite and by treating frozen fan-out rows as immutable. Settlement is
-  now derived from authoritative scope-result coverage instead of issuing hot updates. The
-  1.9-million-row append-only elements table continues to use a direct transactional
-  `INSERT ... SELECT` so Atlas does not introduce an unbounded memory copy.
+- **Atlas status:** the resource-governed materialization contract deletes fan-out headers, members,
+  settlement, and their repartition path. The crash remains useful upstream evidence, but Atlas no
+  longer relies on a workaround for this table. Large append-only evidence tables continue to use
+  direct transactional `INSERT ... SELECT`; Atlas does not introduce unbounded memory copies.
 
 ### Cancellation and transaction semantics for blocking CDC listen
 

@@ -45,6 +45,15 @@ from runtime.graph_queue import (
     update_edge_evaluation,
 )
 from runtime.graph_runs import EdgeEvaluationBusy, EdgeEvaluationFailed, evaluate_edge, handle_readiness, resolve_policy_snapshot
+from runtime.resource_governor import (
+    DURABLE_RESOURCE_WAIT,
+    ResourceCapacityUnavailable,
+    ResourcePermitLost,
+    catalogue_request,
+    ensure_resource_governor_storage,
+    object_request,
+    resource_permits,
+)
 
 
 class EdgeUrlExecutor:
@@ -175,6 +184,7 @@ async def _process_edge(
     jetstream,
     navigation_store,
     catalogue_operation_lock: asyncio.Lock,
+    resource_grants,
 ) -> None:
     try:
         work = EdgeWork.model_validate_json(message.data)
@@ -208,23 +218,35 @@ async def _process_edge(
 
     heartbeat = asyncio.create_task(keep_alive())
     try:
-        async with catalogue_operation_lock:
-            with session_scope() as session:
-                await evaluate_edge(
-                    runs=runs,
-                    requests=requests,
-                    progress=progress,
-                    jetstream=jetstream,
-                    work=work,
-                    execute_urls=EdgeUrlExecutor(navigation_store, work.navigation),
-                    policy_resolver=lambda url: resolve_policy_snapshot(session, url),
-                    claim_token=claim_token,
-                )
+        async with resource_permits(
+            resource_grants,
+            catalogue_request(
+                f"edge:{identity}",
+                service_class="critical",
+                object_read_units=1,
+            ),
+            acquire_timeout=DURABLE_RESOURCE_WAIT,
+        ):
+            async with catalogue_operation_lock:
+                with session_scope() as session:
+                    await evaluate_edge(
+                        runs=runs,
+                        requests=requests,
+                        progress=progress,
+                        jetstream=jetstream,
+                        work=work,
+                        execute_urls=EdgeUrlExecutor(navigation_store, work.navigation),
+                        policy_resolver=lambda url: resolve_policy_snapshot(session, url),
+                        claim_token=claim_token,
+                    )
     except EdgeEvaluationBusy:
         await message.nak(delay=1)
         return
     except EdgeEvaluationFailed:
         await message.ack()
+        return
+    except (ResourceCapacityUnavailable, ResourcePermitLost):
+        await message.nak(delay=1)
         return
     except Exception:
         await message.nak(delay=1)
@@ -242,6 +264,7 @@ async def run(monitor: HealthMonitor | None = None) -> None:
     jetstream = client.jetstream()
     runs, requests, _workers = await ensure_graph_storage(jetstream)
     progress = await ensure_graph_progress_storage(jetstream)
+    resource_grants = await ensure_resource_governor_storage(jetstream)
     navigation_store = object_store_from_env()
     readiness = await jetstream.pull_subscribe(
         READINESS_SUBJECT, durable=READINESS_CONSUMER, stream=GRAPH_STREAM
@@ -268,9 +291,20 @@ async def run(monitor: HealthMonitor | None = None) -> None:
                         and (now - graph_run.completed_at).total_seconds() >= grace
                     ):
                         try:
-                            await asyncio.to_thread(
-                                delete_run_navigation, navigation_store, graph_run.id
-                            )
+                            async with resource_permits(
+                                resource_grants,
+                                object_request(
+                                    f"navigation-cleanup:{graph_run.id}",
+                                    direction="write",
+                                    byte_count=1,
+                                    service_class="critical",
+                                ),
+                            ):
+                                await asyncio.to_thread(
+                                    delete_run_navigation,
+                                    navigation_store,
+                                    graph_run.id,
+                                )
                         except Exception:
                             logging.warning(
                                 "navigation package cleanup failed for graph run %s",
@@ -311,7 +345,11 @@ async def run(monitor: HealthMonitor | None = None) -> None:
                 for message in messages:
                     arguments = (message, runs, requests, progress, jetstream)
                     if processor is _process_edge:
-                        arguments += (navigation_store, catalogue_operation_lock)
+                        arguments += (
+                            navigation_store,
+                            catalogue_operation_lock,
+                            resource_grants,
+                        )
                     active.add(asyncio.create_task(processor(*arguments)))
                     available -= 1
                     if available <= 0:

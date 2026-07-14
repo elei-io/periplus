@@ -17,22 +17,30 @@ changing worker ownership, queue routing, embedded DuckDB use, or deployment sca
 - Postgres is the control plane: editable crawl graphs, graph nodes and edges, schedules, policies,
   matches, schemas, and catalogue definitions.
 - NATS JetStream/KV owns graph runs, crawl requests, queued work, workers, progress, admission,
-  deduplication, and ingestion state.
+  deduplication, operation leases, and expiring resource grants.
 - Crawl history belongs only in DuckLake; never reintroduce it into control-plane Postgres.
 - Raw HTML is immutable, content-addressed, and stored through `backend/repository/`.
 - `crawl` is the only page-acquisition primitive. Graph nodes map admitted URL inputs to crawl work;
   scoped SQL edges derive URL inputs for subsequent nodes from durable crawl evidence.
 - Acquisition workers only acquire one page, store immutable raw HTML, and publish frozen ingestion
-  jobs. They never open DuckLake or wait for downstream work.
+  jobs. They never open DuckLake or wait for downstream work. Deployment-wide remote pressure and
+  object-store writes use Resource Governor permits; local browser slots remain process-local.
 - HTTP, browser, and external-provider acquisition are separate queue and deployment scaling
   dimensions with one shared raw-HTML output contract.
 - Ingestion workers own base crawl/DOM/system-projection writes, navigation readiness, and outgoing
-  edge evaluation. They never wait for user materialization.
-- Materialization workers independently own CDC discovery, backfill, bounded scope evaluation,
-  live-view commits, coverage, dematerialization, and lag settlement.
+  edge evaluation. They are `critical` catalogue work and never wait for user materialization.
+- Materialization discovery publishes deterministic live/backfill scope jobs directly. One worker
+  evaluates and commits one bounded scope through authoritative coverage; there is no fan-out
+  ledger, settlement workflow, or separate commit queue.
 - Each ingestion or materialization process owns its embedded DuckDB connection and initially runs
-  one catalogue operation at a time. Horizontal replicas provide concurrency.
-- The maintenance worker performs leased off-path upkeep and consumes no hot-path worker capacity.
+  one catalogue operation at a time. Horizontal replicas provide executor capacity; Resource
+  Governor budgets cap combined DuckLake and object-store pressure across replicas.
+- The maintenance worker performs off-path upkeep only after receiving an exclusive background
+  catalogue permit. It does not use a bespoke maintenance-active polling protocol.
+- Capacity permits, operation leases, and PostgreSQL advisory commit locks are distinct. Permits
+  control pressure, leases suppress duplicate execution, and advisory locks fence correctness.
+- The Resource Governor is a narrow admission controller. It never owns work delivery, workflow
+  completion, materialization coverage, or a generic catalogue RPC surface.
 - DuckLake owns analytical Parquet layout and compaction. Do not create permanent per-crawl files.
 - Browser workers own one long-lived Chromium runtime with bounded local page concurrency; browser
   replicas determine physical browser capacity independently from HTTP acquisition.
@@ -42,14 +50,14 @@ changing worker ownership, queue routing, embedded DuckDB use, or deployment sca
 
 ## Code map
 
-- `backend/actions/` — page acquisition and retained-evidence analysis during the graph cutover;
-  do not add new navigation primitives here.
+- `backend/actions/` — page acquisition and retained-evidence analysis; do not add navigation
+  primitives or traversal loops here.
 - `backend/control/` — editable Postgres-backed crawl graphs, policies, matches, schemas, and
   catalogue definitions.
 - `backend/runtime/` — NATS-backed graph runs, crawl requests, queues, progress, workers, admission,
-  deduplication, maintenance delivery, and crawl capacity.
+  deduplication, operation leases, and resource governance.
 - `backend/workers/` — transport-specific acquisition, ingestion, materialization, and maintenance
-  process entrypoints.
+  process entrypoints. Resource governance is a shared `runtime/` contract, not a worker service.
 - `backend/repository/objects/` — immutable content-addressed raw HTML.
 - `backend/repository/ingestion/` — repository queue, pipeline, writer, health, and recovery.
 - `backend/repository/catalogue/` — private DuckLake implementation.
@@ -62,8 +70,9 @@ changing worker ownership, queue routing, embedded DuckDB use, or deployment sca
 Keep editable graph and policy definitions under `control/`, current graph execution under
 `runtime/`, acquisition behavior in the shared crawl path, ingestion/navigation under the
 ingestion worker, user materialization under the materialization worker, and generic Postgres
-infrastructure under `backend/db/`. Do not add a task, action primitive, or action-specific
-traversal loop when a node and scoped SQL edge express the behavior.
+infrastructure under `backend/db/`. Resource-allocation algorithms belong in the governor, not in
+API adapters or work messages. Do not add a task, action primitive, or action-specific traversal
+loop when a node and scoped SQL edge express the behavior.
 
 ## Workflow
 
@@ -116,6 +125,11 @@ that the released capability supersedes.
   mode/wait behavior in graph execution or edge evaluation.
 - Keep object keys repository-relative and local filesystem paths out of public contracts.
 - Add formats, services, queues, and abstractions only for an active caller.
+- Do not model resource acquisition as durable `lock.request`, `lock.acquired`, `lock.release`, or
+  generic `work.complete` message chains. A worker retains its durable work message while waiting
+  for an atomic, expiring permit bundle.
+- Keep scheduling classes fixed and code-owned: `critical`, `live`, `backfill`, and `maintenance`.
+  Deployment configuration controls capacities and weights, not arbitrary scheduling programs.
 - Do not commit generated artifacts, local `.atlas/` data, virtual environments, or secrets.
 - Manage schema changes with Alembic; do not add compatibility models for removed storage paths.
 

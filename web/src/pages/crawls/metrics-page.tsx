@@ -107,12 +107,37 @@ function SystemCapacity({
             detail={browser ? `${browser.worker_count} workers online` : "Browser pool"}
           />
           <Limit
-            label="Fetch wait timeout"
+            label="Admission retry window"
             value={
-              concurrency ? `${concurrency.crawl_permit_timeout_seconds}s` : "—"
+              concurrency ? `${concurrency.resource_acquire_timeout_seconds}s` : "—"
             }
-            detail="Maximum wait for policy capacity"
+            detail="Background retry interval; durable work keeps waiting"
           />
+        </div>
+
+        <div>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <p className="text-sm font-medium">Shared resource admission</p>
+            <span className="text-xs text-muted-foreground">
+              All worker replicas
+            </span>
+          </div>
+          <div className="grid gap-2 md:grid-cols-3">
+            {(concurrency?.resources ?? []).map((resource) => (
+              <div key={resource.name} className="rounded-md border p-3">
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <span className="font-mono text-xs">{resource.name}</span>
+                  <span className="tabular-nums">
+                    {resource.used} / {resource.capacity}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  critical {resource.critical} · live {resource.live} · backfill{" "}
+                  {resource.backfill} · maintenance {resource.maintenance}
+                </p>
+              </div>
+            ))}
+          </div>
         </div>
 
         <div>

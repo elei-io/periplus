@@ -1,8 +1,8 @@
 # Catalogue Definitions, Materialization, and Publication
 
 Status: accepted target design. Queries, revisions, views, and live document- or crawl-scoped view
-materialization exist. The independent materialization-worker cutover, advanced scope adapters, and
-publications remain pending.
+materialization exist. The resource-governed one-scope execution cutover, advanced scope adapters,
+and publications remain pending.
 
 Atlas turns retained web evidence into tabular data. This document defines the layers between SQL
 exploration, reusable definitions, durable derived data, and external consumption.
@@ -126,7 +126,7 @@ operational detail does not compete with the view definition. The sheet leads wi
 - pending and failed scopes;
 - stored size and row count;
 - activation-backfill progress;
-- last successful settlement;
+- last successful coverage;
 - rebuild and retry administration when required; and
 - dematerialization.
 
@@ -144,7 +144,7 @@ definition. It is a fenced repository operation:
 
 1. Atlas disables live discovery and backfill.
 2. The definition is marked for dematerialization.
-3. Queued commits reject the stale definition revision.
+3. Queued scope jobs reject the stale definition revision.
 4. A materialization worker drops the DuckLake table and durable coverage.
 5. Atlas archives the materialization attachment.
 
@@ -209,7 +209,7 @@ after that boundary. Historical backfill enumerates scopes visible at the activa
 
 Live discovery and activation backfill are independent internal stages:
 
-- one crawl-table CDC planner consumes newly committed `purpose = 'use'` crawls and derives both
+- one crawl-table CDC discovery loop consumes newly committed `purpose = 'use'` crawls and derives both
   crawl- and document-scoped work; Atlas does not maintain a second document-table CDC fleet;
 - backfill pages through historical scope IDs at a configurable rate;
 - live work is prioritized so a long backfill does not block freshness;
@@ -219,14 +219,25 @@ Live discovery and activation backfill are independent internal stages:
 Live, backfill, correction, and replay-driven rematerialization all execute the same bounded scope
 definition. A durable coverage record marks a scope complete even when it produces zero rows.
 
-CDC discovers work; it is not the execution queue. Scope work travels through JetStream. A supervised
-materialization worker evaluates one scope and may stage bounded Arrow in repository object storage.
-That worker verifies the checksum, fences the active definition, atomically replaces the scope in
-DuckLake, and records coverage. It shares no process, connection, health state, or concurrency slot
-with base ingestion.
+CDC discovers work; it is not the execution queue. Discovery and backfill publish deterministic
+scope identities directly through JetStream. Atlas does not persist a fan-out header/member ledger
+and does not split computed results into a second commit queue.
+
+One supervised materialization worker owns a scope from evaluation through coverage. It requests a
+`live` or `backfill` Resource Governor bundle, may stage bounded deterministic Arrow in repository
+object storage, verifies the checksum, fences the active definition, atomically replaces the scope
+in DuckLake, records coverage, and acknowledges the original scope message. It shares no process,
+connection, or health state with base ingestion, while both deployments consume their assigned
+shares of the same governed catalogue and object-store resources.
+
+CDC and backfill may rediscover the same scope. They publish the same deterministic job identity,
+and successful `materialization_scope_results` coverage is the sole completion authority. Pending
+work and lag are derived from eligible active-definition scopes minus successful coverage; queue
+position and planning records are diagnostics, never analytical truth.
 
 Every scope job identifies `materialization_id`, `definition_revision_id`, `scope_kind`, and
 `scope_id` together with its active query revision, target, scope column, and live/backfill source.
+This identity is also the retry-stable operation and staging identity.
 Before evaluation and again under a Postgres row lock before commit, Atlas verifies that the
 materialization is active, its source attachment and definition revision are current, its target and
 scope contract still match, and the corresponding live or backfill switch remains enabled. Stale
@@ -290,10 +301,11 @@ External pipeline retries are downstream behavior and are not Atlas rematerializ
 | Owner | Catalogue-related state |
 | --- | --- |
 | Postgres control plane | Queries, immutable query revisions, stable view references, the optional one-to-one live materialization attachment, active definition bindings, lifecycle controls, and future publication contracts |
-| NATS JetStream/KV | Live and backfill scope delivery, operation leases, current materialization-worker progress, retries, and dead letters |
+| NATS JetStream/KV | Live and backfill scope delivery, operation leases, expiring resource grants, current worker progress, retries, and dead letters |
 | DuckLake | Authoritative SQL views, typed materialization tables, durable scope coverage, snapshots, row history, DDL history, and crawl evidence |
 | DuckLake CDC metadata | Durable publication consumer subscriptions, leases, cursors, and audit state |
 | Repository objects | Immutable raw HTML and bounded temporary Arrow staging objects |
+| Resource Governor | Current catalogue/object-store admission decisions; never materialization completion |
 
 Prometheus and progress events remain observational and never become correctness state.
 
@@ -348,6 +360,8 @@ general downstream transformation graphs.
 - Every incremental evaluation is demonstrably bound to one supplied scope and has explicit resource
   limits.
 - Scope replacement and coverage recording are atomic and idempotent.
+- One scope message owns evaluation through coverage; there is no fan-out settlement or separate
+  materialization commit-delivery contract.
 - Ingestion workers write base evidence and navigation-critical system projections; materialization
   workers alone write user-materialized view scopes.
 - Materialization never gates ingestion, navigation readiness, graph edges, or graph-run completion.

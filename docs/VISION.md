@@ -39,8 +39,9 @@ problem, not a hypothetical future scale problem.
 2. Give each kind of state one authoritative owner.
 3. Prefer a direct, bounded implementation over a framework.
 4. Make expensive or stateful behavior explicit.
-5. Scale worker replicas before inventing distributed coordination.
-6. Delete completed migration scaffolding and unused surfaces.
+5. Scale capabilities with worker replicas; govern shared resources with explicit, narrow budgets.
+6. Keep capacity permits separate from durable work and correctness locks.
+7. Delete completed migration scaffolding and unused surfaces.
 
 Crawl graphs do not weaken the workflow-orchestration boundary. Their nodes only map admitted URL
 inputs to crawl work, and their edges only derive further URL inputs from retained crawl evidence.

@@ -1,72 +1,86 @@
-# Architecture cutover audit
+# Resource-governed architecture cutover audit
 
-This file tracks the remaining gap between the implementation and Atlas's accepted worker
-architecture. The canonical contracts are:
+This file is the single checklist for the gap between the implementation and Atlas's accepted
+resource-governed worker architecture. Canonical contracts are:
 
 - [Architecture](docs/ARCHITECTURE.md)
-- [Worker architecture](docs/WORKER_ARCHITECTURE.md)
+- [Worker and resource architecture](docs/WORKER_ARCHITECTURE.md)
 - [Crawl graphs](docs/CRAWL_GRAPHS.md)
 - [Catalogue definitions and materialization](docs/PUBLICATIONS.md)
 - [Hazards](docs/HAZARDS.md)
 
-The former combined crawl/catalogue worker audit and two-worker plan are superseded. They must not
-be used as implementation guidance.
+Older combined-worker and independently scaled compute/commit plans are superseded. They are not
+supported alternatives.
 
 ## Accepted direction
 
-Atlas has independent runtime scaling and failure domains for:
+Atlas scales capabilities and governs shared resources:
 
-1. HTTP page acquisition;
-2. browser page acquisition;
-3. optional external-provider page acquisition;
-4. base evidence ingestion and graph navigation;
-5. live user materialization; and
-6. leased storage maintenance.
+- HTTP, browser, and provider replicas supply acquisition capacity;
+- ingestion replicas supply graph-critical catalogue executors;
+- materialization replicas supply live/backfill catalogue executors;
+- one fixed maintenance deployment owns off-path upkeep; and
+- a shared KV-backed Resource Governor contract bounds remote, DuckLake, and object-store pressure
+  across every replica without adding a scheduler service.
 
-Acquisition workers publish immutable raw HTML and frozen ingestion jobs. Ingestion workers commit
-base evidence, navigation-critical system projections, navigation packages, and outgoing edges.
-Materialization workers drain live CDC/backfill scope work independently. Maintenance remains
-off-path.
+NATS owns durable work. The Governor owns only expiring capacity grants. Operation leases suppress
+duplicate execution, while PostgreSQL advisory locks and DuckLake authority fence commits.
 
-Materialization lag is not graph execution state. Stopping every materialization worker must leave
-acquisition, ingestion, navigation, and graph completion operational.
+Materialization discovery publishes deterministic scopes directly. One scope message covers bounded
+evaluation through atomic replacement and coverage. Successful `materialization_scope_results` is
+the sole completion authority; lag is eligible scopes minus successful coverage.
 
-## Known cutover gaps
+## Completed direct replacements
 
-Until the worker cutover is complete, code may still contain parts of the superseded topology. These
-are migration work, not supported alternative contracts:
+The cutover landed as one direct contract change:
 
-- a combined catalogue process may still supervise ingestion and materialization together;
-- ingestion code may still consume materialization commit work;
-- transport profiles may still share one crawl subject and worker image;
-- Compose and process entrypoints may still name the old catalogue worker;
-- health and presence may not yet be separated by ingestion and materialization deployment; and
-- a process-local shared-connection lock may still protect the combined loop.
+- CrawlPolicy-specific capacity KV state was replaced by stable domain-group remote permits;
+- every worker-side expensive caller uses the typed KV-backed Resource Governor;
+- ingestion and materialization acquire atomic catalogue/object-store permit bundles;
+- reciprocal catalogue reserves prevent graph-critical and materialization starvation, while an
+  independent ceiling bounds backfill;
+- maintenance-active polling and the bespoke global maintenance lease were replaced by exclusive
+  governor admission plus existing correctness fencing;
+- live/backfill discovery publishes deterministic materialization scopes without fan-out planning;
+- one recoverable scope message owns compute through commit and authoritative coverage;
+- the materialization commit stream and writer consumer were deleted;
+- fan-out headers, members, storage, settlement, reconciliation, and repair were deleted;
+- user-facing pending, failed, and lag values derive from active definitions and scope coverage;
+- catalogue work and typed dead letters use the shared accepted stream topology; and
+- obsolete configuration, Compose wiring, metrics, tests, and admin paths were removed.
 
-The cutover deletes each obsolete path when its replacement becomes active. Do not add aliases,
-fallback consumers, dual publication, or compatibility modes.
+No dual publication, fallback consumer, compatibility flag, or schema bridge remains. Existing
+development NATS and DuckLake state must be reset when deploying this greenfield contract because
+the old stream and table schemas are intentionally unsupported.
 
-## Reliability gates
+## Remaining deployment reliability gates
 
 Before production, tests must prove:
 
-- a stopped materialization deployment causes visible per-view lag but no crawl or graph stall;
-- restarting materialization catches up from durable positions without reacquisition;
-- a stopped acquisition deployment does not prevent retained materialization work from draining;
-- HTTP and browser acquisition capacity scale independently;
-- duplicate delivery and worker termination around every commit are idempotent;
-- multiple ingestion replicas safely commit distinct operations;
-- multiple materialization replicas safely commit distinct scopes;
-- overlapping writes retry with bounded backoff and observable conflict metrics;
-- queue age, not process liveness alone, drives health and autoscaling; and
-- maintenance cannot overlap an unfenced hot-path commit.
+- materialization can stop without affecting acquisition, ingestion, navigation, or graph completion;
+- restarting materialization catches up from CDC/backfill discovery and authoritative coverage;
+- increasing materialization replicas does not increase granted DuckLake concurrency;
+- ingestion retains its reserved critical share during continuous materialization backlog;
+- NATS/KV interruption and worker restart preserve durable work and permit acquisition resumes safely;
+- permit loss, worker termination, redelivery, and ambiguous commits converge to one durable effect;
+- remote pressure remains bounded across transport replicas;
+- object-store throttling raises permit and queue age without uncontrolled request growth;
+- critical reserve and backfill ceilings remain enforced under contention;
+- maintenance cannot overlap any granted hot catalogue operation;
+- poison materialization jobs reach dead letter without crash-looping ingestion; and
+- metrics distinguish executor shortage from remote, catalogue, and object-store saturation.
 
-## Evidence from the shared-connection incident
+## Lessons retained from the shared-connection and fan-out incidents
 
-The combined catalogue process allowed ingestion and materialization settlement to use one embedded
-DuckDB/DuckLake connection from independently scheduled coroutines. Result state was corrupted and
-materialization work starved ingestion while the process remained alive.
+The old combined catalogue process showed that unrelated coroutines must not share one embedded
+DuckDB connection or failure boundary. Ingestion and materialization therefore remain separate
+deployments and own their connections.
 
-Serializing that connection and bounding materialization batches is the immediate safety fix. It is
-not the target architecture. The durable lesson is that one execution lane owns one connection and
-that ingestion and materialization need separate processes, health, queues, and scaling controls.
+The later materialization backlog and native DuckLake failure showed that independently scaling
+compute and commit queues can amplify downstream pressure, and that maintaining a mutable fan-out
+ledger duplicates completion state. The durable lessons are:
+
+- one bounded materialization scope owns compute through coverage;
+- coverage, not settlement bookkeeping, is authoritative;
+- replicas provide executors but never define shared-resource capacity; and
+- pressure arbitration belongs in one narrow governor rather than workflow-specific repair loops.

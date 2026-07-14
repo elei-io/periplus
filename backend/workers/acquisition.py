@@ -29,7 +29,6 @@ from runtime.graph_queue import (
     CrawlWork,
     WorkerState,
     connect_nats,
-    ensure_crawl_capacity_storage,
     ensure_graph_storage,
     ensure_graph_progress_storage,
     ensure_policy_trial_budget_storage,
@@ -41,6 +40,7 @@ from runtime.graph_queue import (
     settle_sample_request,
     update_crawl_request,
 )
+from runtime.resource_governor import ensure_resource_governor_storage, object_request
 from runtime.graph_runs import expire_graph_run, reconcile_pending_admissions, settle_request
 from runtime.graph_progress import bootstrap_run_progress, transition_node_progress
 
@@ -76,7 +76,7 @@ async def _process_crawl(
     crawler,
     repository_pipeline,
     transport: CrawlTransport,
-    capacity=None,
+    resource_grants=None,
     http_client: httpx.AsyncClient | None = None,
     jetstream=None,
 ) -> None:
@@ -199,8 +199,7 @@ async def _process_crawl(
                 context=context,
                 crawler=crawler,
                 http_client=http_client,
-                capacity_bucket=capacity,
-                capacity_owner=claim_token,
+                resource_grants=resource_grants,
                 repository_pipeline=repository_pipeline,
             )
         )
@@ -354,6 +353,12 @@ async def run(
         f"{transport}:{os.uname().nodename}:{os.getpid()}"
     )
     capacity = get_int(_worker_setting(transport, "CONCURRENCY"))
+    object_request(
+        "acquisition-startup-validation",
+        direction="write",
+        byte_count=get_int("ATLAS_REPOSITORY_MAX_HTML_BYTES"),
+        service_class="critical",
+    )
     metrics_server = None
     if get_bool("ATLAS_METRICS_ENABLED"):
         metrics_server, _metrics_thread = start_http_server(
@@ -365,7 +370,7 @@ async def run(
     jetstream = client.jetstream()
     runs, requests, workers = await ensure_graph_storage(jetstream)
     progress = await ensure_graph_progress_storage(jetstream)
-    capacity_state = await ensure_crawl_capacity_storage(jetstream)
+    resource_grants = await ensure_resource_governor_storage(jetstream)
     trial_budget = await ensure_policy_trial_budget_storage(jetstream)
     await reconcile_policy_trial_budget(trial_budget, runs, requests)
     for active_run in await list_graph_runs(runs):
@@ -514,7 +519,7 @@ async def run(
                                 crawler,
                                 repository_pipeline,
                                 transport,
-                                capacity_state,
+                                resource_grants,
                                 http_client,
                                 jetstream,
                             )
