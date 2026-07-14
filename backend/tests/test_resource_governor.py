@@ -231,10 +231,10 @@ class ResourceGovernorTests(unittest.IsolatedAsyncioTestCase):
     async def test_remote_limit_change_does_not_create_a_second_pool(self) -> None:
         bucket = FakeBucket()
         old = remote_request(
-            "old", domain_group="example", concurrency=2
+            "old", remote_domain="example", concurrency=2
         )
         new = remote_request(
-            "new", domain_group="example", concurrency=4
+            "new", remote_domain="example", concurrency=4
         )
         async with resource_permits(bucket, old, limits=self.limits):
             with self.assertRaises(ResourceCapacityUnavailable):

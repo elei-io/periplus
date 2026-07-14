@@ -30,8 +30,10 @@ class PolicyTrialReportTests(unittest.TestCase):
                 captured_at TIMESTAMPTZ NOT NULL,
                 status_code INTEGER,
                 duration_ms BIGINT,
-                template VARCHAR NOT NULL,
-                trial_candidate_template VARCHAR,
+                crawl_profile_slug VARCHAR NOT NULL,
+                trial_candidate_profile_slug VARCHAR,
+                config_hash VARCHAR NOT NULL,
+                trial_candidate_profile_config_hash VARCHAR,
                 failure_code VARCHAR
             );
             CREATE TABLE documents (
@@ -112,7 +114,7 @@ class PolicyTrialReportTests(unittest.TestCase):
             ),
         ]
         self.connection.executemany(
-            "INSERT INTO crawls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows
+            "INSERT INTO crawls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows
         )
 
         report = get_policy_trial_report(self.catalogue, limit=100, offset=0)
@@ -132,8 +134,8 @@ class PolicyTrialReportTests(unittest.TestCase):
         self.assertEqual(example.completed_pairs, 2)
         self.assertEqual(example.recovered_crawls, 1)
         self.assertEqual(example.identical_documents, 1)
-        self.assertEqual(example.use_template, "http_fast")
-        self.assertEqual(example.candidate_template, "static_fast")
+        self.assertEqual(example.use_profile, "direct")
+        self.assertEqual(example.candidate_profile, "rendered")
         self.assertEqual(example.median_use_quality_flag_count, 0)
         self.assertEqual(example.median_sample_quality_flag_count, 0.5)
         self.assertEqual(example.use_acquisition_failure_count, 1)
@@ -145,9 +147,20 @@ class PolicyTrialReportTests(unittest.TestCase):
                 scheme="https",
                 host="example.com",
                 port=443,
-                template_name="static_fast",
+                profile_slug="rendered",
+                profile_config_hash=self._hash("rendered"),
             ),
             "example.com",
+        )
+        self.assertIsNone(
+            get_policy_trial_application_domain(
+                self.catalogue,
+                scheme="https",
+                host="example.com",
+                port=443,
+                profile_slug="rendered",
+                profile_config_hash=self._hash("changed-rendered"),
+            )
         )
 
     def test_keeps_policy_comparison_cohorts_separate_for_one_origin(self) -> None:
@@ -169,8 +182,8 @@ class PolicyTrialReportTests(unittest.TestCase):
                 document_id="http-use",
                 status_code=200,
                 duration_ms=100,
-                use_template="http_fast",
-                candidate_template="static_fast",
+                use_profile="direct",
+                candidate_profile="rendered",
             ),
             self._crawl(
                 purpose="sample",
@@ -179,8 +192,8 @@ class PolicyTrialReportTests(unittest.TestCase):
                 document_id="static-sample",
                 status_code=200,
                 duration_ms=300,
-                use_template="http_fast",
-                candidate_template="static_fast",
+                use_profile="direct",
+                candidate_profile="rendered",
             ),
             self._crawl(
                 purpose="use",
@@ -189,8 +202,8 @@ class PolicyTrialReportTests(unittest.TestCase):
                 document_id="static-use",
                 status_code=200,
                 duration_ms=200,
-                use_template="static_fast",
-                candidate_template="static_stable",
+                use_profile="rendered",
+                candidate_profile="settled",
             ),
             self._crawl(
                 purpose="sample",
@@ -199,12 +212,12 @@ class PolicyTrialReportTests(unittest.TestCase):
                 document_id="stable-sample",
                 status_code=200,
                 duration_ms=500,
-                use_template="static_fast",
-                candidate_template="static_stable",
+                use_profile="rendered",
+                candidate_profile="settled",
             ),
         ]
         self.connection.executemany(
-            "INSERT INTO crawls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO crawls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
 
@@ -212,23 +225,23 @@ class PolicyTrialReportTests(unittest.TestCase):
 
         self.assertEqual(report.total_comparisons, 2)
         comparisons = {
-            (item.use_template, item.candidate_template): item
+            (item.use_profile, item.candidate_profile): item
             for item in report.comparisons
         }
         self.assertEqual(
-            comparisons[("http_fast", "static_fast")].median_element_delta_percent,
+            comparisons[("direct", "rendered")].median_element_delta_percent,
             100.0,
         )
         self.assertEqual(
-            comparisons[("static_fast", "static_stable")].median_element_delta_percent,
+            comparisons[("rendered", "settled")].median_element_delta_percent,
             50.0,
         )
         self.assertEqual(
-            comparisons[("static_fast", "static_stable")].median_duration_delta_ms,
+            comparisons[("rendered", "settled")].median_duration_delta_ms,
             300.0,
         )
         self.assertEqual(
-            comparisons[("static_fast", "static_stable")].verdict,
+            comparisons[("rendered", "settled")].verdict,
             "insufficient_evidence",
         )
 
@@ -269,7 +282,7 @@ class PolicyTrialReportTests(unittest.TestCase):
                 ]
             )
         self.connection.executemany(
-            "INSERT INTO crawls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO crawls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
 
@@ -298,8 +311,8 @@ class PolicyTrialReportTests(unittest.TestCase):
         status_code: int | None,
         duration_ms: int,
         error: str | None = None,
-        use_template: str = "http_fast",
-        candidate_template: str = "static_fast",
+        use_profile: str = "direct",
+        candidate_profile: str = "rendered",
     ) -> tuple:
         host = url.split("/", 3)[2]
         return (
@@ -315,7 +328,19 @@ class PolicyTrialReportTests(unittest.TestCase):
             "2026-07-14T00:00:00Z",
             status_code,
             duration_ms,
-            use_template if purpose == "use" else candidate_template,
-            candidate_template if trial_id is not None else None,
+            use_profile if purpose == "use" else candidate_profile,
+            candidate_profile if trial_id is not None else None,
+            PolicyTrialReportTests._hash(
+                use_profile if purpose == "use" else f"{candidate_profile}-fresh"
+            ),
+            (
+                PolicyTrialReportTests._hash(candidate_profile)
+                if trial_id is not None
+                else None
+            ),
             "expected_failure" if error else None,
         )
+
+    @staticmethod
+    def _hash(value: str) -> str:
+        return (value + "0" * 64)[:64]

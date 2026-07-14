@@ -1,266 +1,57 @@
-import {
-  CheckCircle2Icon,
-  FilterIcon,
-  RefreshCwIcon,
-  ShieldCheckIcon,
-  XCircleIcon,
-} from "lucide-react"
+import { CheckCircle2Icon, FilterIcon, PlusIcon, RefreshCwIcon, ShieldCheckIcon, XCircleIcon } from "lucide-react"
 import { useState } from "react"
+import { toast } from "sonner"
 
+import { ResourcePagination, RESOURCE_PAGE_SIZE } from "@/components/resources/resource-pagination"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from "@/components/ui/select"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
-import {
-  useCrawlPolicies,
-  useUpdateCrawlPolicy,
-} from "@/hooks/use-resource-data"
-import {
-  ResourcePagination,
-  RESOURCE_PAGE_SIZE,
-} from "@/components/resources/resource-pagination"
-import type { CrawlPolicyFilters, CrawlPolicyRecord } from "@/types/resources"
+import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { useCreateCrawlPolicy, useCrawlPolicies, useCrawlProfiles, useUpdateCrawlPolicy } from "@/hooks/use-resource-data"
+import type { CrawlPolicyFilters, CrawlPolicyRecord, CrawlProfileRecord } from "@/types/resources"
+import { PolicyForm, policyDraft, policyDraftError, policyValues, type PolicyDraft } from "./policy-form"
 
-const defaultFilters: CrawlPolicyFilters = {
-  matchPattern: "",
-  enabled: "all",
-  template: "",
-  mode: "all",
-}
+const defaultFilters: CrawlPolicyFilters = { matchPattern: "", enabled: "all", profileSlug: "", transport: "all" }
 
 export function CrawlPoliciesPage() {
-  const [filters, setFilters] = useState<CrawlPolicyFilters>(defaultFilters)
+  const [filters, setFilters] = useState(defaultFilters)
   const [offset, setOffset] = useState(0)
-  const policiesQuery = useCrawlPolicies(filters, {
-    limit: RESOURCE_PAGE_SIZE,
-    offset,
-  })
-  const policies = policiesQuery.data?.items ?? []
-  const total = policiesQuery.data?.total ?? 0
+  const [newDraft, setNewDraft] = useState<PolicyDraft | null>(null)
+  const profilesQuery = useCrawlProfiles()
+  const profiles = profilesQuery.data?.items ?? []
+  const query = useCrawlPolicies(filters, { limit: RESOURCE_PAGE_SIZE, offset })
+  const policies = query.data?.items ?? []
+  const patchFilters = (patch: Partial<CrawlPolicyFilters>) => { setOffset(0); setFilters((current) => ({ ...current, ...patch })) }
 
-  const patchFilters = (patch: Partial<CrawlPolicyFilters>) => {
-    setOffset(0)
-    setFilters((current) => ({ ...current, ...patch }))
+  return <div className="flex min-h-0 w-full flex-col gap-4">
+    <section className="flex flex-col gap-3 border-b pb-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><ShieldCheckIcon className="size-4 text-muted-foreground" /><h1 className="text-lg font-medium">Policies</h1><Badge variant="outline">{query.data?.total ?? 0}</Badge></div><div className="flex gap-2"><Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => void query.refetch()}><RefreshCwIcon className={query.isFetching ? "animate-spin" : ""} /> Refresh</Button><Button size="sm" disabled={!profiles.length} onClick={() => setNewDraft(policyDraft(undefined, profiles))}><PlusIcon /> New policy</Button></div></div>
+      <div className="grid gap-2 lg:grid-cols-[minmax(16rem,1fr)_14rem_11rem]"><div className="relative"><FilterIcon className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input className="pl-9" value={filters.matchPattern} placeholder="Find a website or path" onChange={(event) => patchFilters({ matchPattern: event.target.value })} /></div><Select value={filters.profileSlug || "all"} onValueChange={(value) => patchFilters({ profileSlug: value === "all" || value === null ? "" : value })}><SelectTrigger aria-label="Profile" className="w-full"><span>{filters.profileSlug ? profiles.find((profile) => profile.slug === filters.profileSlug)?.name ?? "Profile" : "All profiles"}</span></SelectTrigger><SelectContent><SelectItem value="all">All profiles</SelectItem>{profiles.map((profile) => <SelectItem key={profile.id} value={profile.slug}>{profile.name}</SelectItem>)}</SelectContent></Select><Select value={filters.enabled} onValueChange={(value) => value && patchFilters({ enabled: value as CrawlPolicyFilters["enabled"] })}><SelectTrigger aria-label="Status" className="w-full"><span>{filters.enabled === "enabled" ? "Enabled" : filters.enabled === "disabled" ? "Disabled" : "All statuses"}</span></SelectTrigger><SelectContent><SelectItem value="all">All statuses</SelectItem><SelectItem value="enabled">Enabled</SelectItem><SelectItem value="disabled">Disabled</SelectItem></SelectContent></Select></div>
+    </section>
+    <Table containerClassName="min-h-0 flex-1 rounded-md border bg-card/80"><TableHeader><TableRow><TableHead>Applies to</TableHead><TableHead>Fetch with</TableHead><TableHead>Website limit</TableHead><TableHead>Status</TableHead><TableHead className="w-28">Action</TableHead></TableRow></TableHeader><TableBody>{policies.map((policy) => <PolicyRow key={policy.id} policy={policy} />)}{!query.isLoading && policies.length === 0 ? <TableRow><TableCell colSpan={5} className="h-28 text-center"><p className="font-medium">No matching policies</p><p className="mt-1 text-xs text-muted-foreground">Try a different filter or add a website rule.</p></TableCell></TableRow> : null}</TableBody></Table>
+    <ResourcePagination total={query.data?.total ?? 0} limit={query.data?.limit ?? RESOURCE_PAGE_SIZE} offset={query.data?.offset ?? offset} isFetching={query.isFetching} onOffsetChange={setOffset} />
+    <NewPolicyDialog draft={newDraft} onDraftChange={setNewDraft} profiles={profiles} onClose={() => setNewDraft(null)} />
+  </div>
+}
+
+function PolicyRow({ policy }: { policy: CrawlPolicyRecord }) {
+  const update = useUpdateCrawlPolicy(policy.id)
+  const isDefault = policy.slug === "default"
+  return <TableRow><TableCell className="max-w-[34rem]"><a href={`/crawl-policies/${policy.id}`} className="block min-w-0"><span className="block truncate font-medium text-link hover:underline">{coverageLabel(policy)}</span><span className="block truncate text-xs text-muted-foreground">{isDefault ? "Fallback when no specific website policy matches" : policy.match}</span></a></TableCell><TableCell><a href={`/crawl-profiles/${policy.profile.id}`} className="font-medium text-link hover:underline">{policy.profile.name}</a><span className="block text-xs text-muted-foreground">{transportLabel(policy)}</span></TableCell><TableCell><span className="font-medium tabular-nums">{policy.max_concurrency}</span><span className="block text-xs text-muted-foreground">simultaneous requests</span></TableCell><TableCell><Badge variant={policy.enabled ? "secondary" : "destructive"}>{policy.enabled ? <CheckCircle2Icon /> : <XCircleIcon />}{policy.enabled ? "Enabled" : "Disabled"}</Badge></TableCell><TableCell><Button size="sm" variant="outline" disabled={isDefault || update.isPending} onClick={() => update.mutate({ enabled: !policy.enabled })}>{policy.enabled ? "Disable" : "Enable"}</Button></TableCell></TableRow>
+}
+
+function NewPolicyDialog({ draft, onDraftChange, profiles, onClose }: { draft: PolicyDraft | null; onDraftChange: (draft: PolicyDraft | null) => void; profiles: CrawlProfileRecord[]; onClose: () => void }) {
+  const create = useCreateCrawlPolicy()
+  const submit = () => {
+    if (!draft) return
+    const error = policyDraftError(draft)
+    if (error) return toast.error(error)
+    const values = policyValues(draft)
+    create.mutate({ slug: `policy-${Date.now().toString(36)}`, ...values }, { onSuccess: (policy) => { onClose(); window.history.pushState(null, "", `/crawl-policies/${policy.id}`); window.dispatchEvent(new PopStateEvent("popstate")) } })
   }
-
-  return (
-    <div className="flex min-h-0 w-full flex-col gap-4">
-      <section className="flex flex-col gap-3 border-b pb-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-2">
-            <ShieldCheckIcon className="size-4 text-muted-foreground" />
-            <h1 className="truncate text-lg font-medium">Crawl Policies</h1>
-            <Badge variant="outline">{total}</Badge>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={policiesQuery.isFetching}
-            onClick={() => void policiesQuery.refetch()}
-          >
-            <RefreshCwIcon />
-            Refresh
-          </Button>
-        </div>
-        <div className="grid gap-2 xl:grid-cols-[minmax(16rem,1fr)_12rem_10rem_10rem]">
-          <div className="relative">
-            <FilterIcon className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              className="pl-9"
-              value={filters.matchPattern}
-              placeholder="https://example.com/*"
-              onChange={(event) =>
-                patchFilters({ matchPattern: event.target.value })
-              }
-            />
-          </div>
-          <Input
-            value={filters.template}
-            placeholder="static_fast"
-            onChange={(event) => patchFilters({ template: event.target.value })}
-          />
-          <FilterSelect
-            value={filters.mode}
-            options={[
-              { value: "all", label: "All modes" },
-              { value: "static", label: "Static" },
-              { value: "dynamic", label: "Dynamic" },
-              { value: "app", label: "App" },
-            ]}
-            onChange={(mode) =>
-              patchFilters({ mode: mode as CrawlPolicyFilters["mode"] })
-            }
-            aria-label="Mode"
-          />
-          <FilterSelect
-            value={filters.enabled}
-            options={[
-              { value: "all", label: "All states" },
-              { value: "enabled", label: "Enabled" },
-              { value: "disabled", label: "Disabled" },
-            ]}
-            onChange={(enabled) =>
-              patchFilters({
-                enabled: enabled as CrawlPolicyFilters["enabled"],
-              })
-            }
-            aria-label="Enabled state"
-          />
-        </div>
-      </section>
-
-      <Table containerClassName="min-h-0 flex-1 rounded-md border bg-card/80">
-        <TableHeader>
-          <TableRow>
-            <TableHead>Match</TableHead>
-            <TableHead>Template</TableHead>
-            <TableHead>Profile</TableHead>
-            <TableHead>Concurrency</TableHead>
-            <TableHead>Updated</TableHead>
-            <TableHead className="w-28">Action</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {policies.map((policy) => (
-            <CrawlPolicyRow key={policy.id} policy={policy} />
-          ))}
-          {!policiesQuery.isLoading && policies.length === 0 ? (
-            <TableRow>
-              <TableCell
-                colSpan={6}
-                className="h-24 text-center text-muted-foreground"
-              >
-                No crawl policies match.
-              </TableCell>
-            </TableRow>
-          ) : null}
-        </TableBody>
-      </Table>
-
-      <ResourcePagination
-        total={total}
-        limit={policiesQuery.data?.limit ?? RESOURCE_PAGE_SIZE}
-        offset={policiesQuery.data?.offset ?? offset}
-        isFetching={policiesQuery.isFetching}
-        onOffsetChange={setOffset}
-      />
-    </div>
-  )
+  return <Dialog open={draft !== null} onOpenChange={(open) => { if (!open && !create.isPending) onClose() }}><DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-5xl"><DialogHeader><DialogTitle>New policy</DialogTitle><DialogDescription>Choose a website or path, then assign the profile Atlas should use there.</DialogDescription></DialogHeader>{draft ? <PolicyForm draft={draft} onChange={(value) => onDraftChange(value)} profiles={profiles} /> : null}<DialogFooter showCloseButton><Button disabled={!draft || create.isPending} onClick={submit}>{create.isPending ? "Creating…" : "Create policy"}</Button></DialogFooter></DialogContent></Dialog>
 }
 
-function CrawlPolicyRow({ policy }: { policy: CrawlPolicyRecord }) {
-  const updatePolicy = useUpdateCrawlPolicy(policy.id)
-
-  const invalidate = () => {
-    updatePolicy.mutate({ enabled: false })
-  }
-
-  return (
-    <TableRow>
-      <TableCell className="max-w-[32rem]">
-        <a
-          href={`/crawl-policies/${policy.id}`}
-          className="block min-w-0 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
-        >
-          <span className="block truncate font-medium text-link underline-offset-4 hover:underline">
-            {policy.match}
-          </span>
-          <span className="block truncate font-mono text-xs text-muted-foreground">
-            {policy.id}
-          </span>
-        </a>
-      </TableCell>
-      <TableCell>
-        <Badge variant="outline">{policy.template ?? "-"}</Badge>
-      </TableCell>
-      <TableCell>
-        <Badge variant="secondary">{policy.profile ?? "-"}</Badge>
-        <span className="ml-2 text-xs text-muted-foreground">
-          {[policy.mode, policy.wait].filter(Boolean).join(" / ")}
-        </span>
-      </TableCell>
-      <TableCell>{policy.concurrency ?? "-"}</TableCell>
-      <TableCell>
-        <div className="flex items-center gap-2">
-          <Badge variant={policy.enabled ? "secondary" : "destructive"}>
-            {policy.enabled ? <CheckCircle2Icon /> : <XCircleIcon />}
-            {policy.enabled ? "Enabled" : "Disabled"}
-          </Badge>
-          <span className="text-xs text-muted-foreground">
-            {formatDate(policy.updated_at)}
-          </span>
-        </div>
-      </TableCell>
-      <TableCell>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={!policy.enabled || updatePolicy.isPending}
-          onClick={invalidate}
-        >
-          Invalidate
-        </Button>
-      </TableCell>
-    </TableRow>
-  )
-}
-
-function FilterSelect({
-  value,
-  options,
-  onChange,
-  "aria-label": ariaLabel,
-}: {
-  value: string
-  options: Array<{ value: string; label: string }>
-  onChange: (value: string) => void
-  "aria-label": string
-}) {
-  const selectedLabel =
-    options.find((option) => option.value === value)?.label ?? value
-
-  return (
-    <Select
-      value={value}
-      onValueChange={(nextValue) => {
-        if (nextValue !== null) {
-          onChange(nextValue)
-        }
-      }}
-    >
-      <SelectTrigger aria-label={ariaLabel} className="w-full">
-        <span>{selectedLabel}</span>
-      </SelectTrigger>
-      <SelectContent>
-        {options.map((option) => (
-          <SelectItem key={option.value} value={option.value}>
-            {option.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  )
-}
-
-function formatDate(value: string | null) {
-  if (!value) {
-    return "-"
-  }
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value))
-}
+function coverageLabel(policy: CrawlPolicyRecord) { if (policy.host === "*") return "All websites and pages"; if (policy.path_prefix === "/" && policy.path_mode === "prefix") return `All pages on ${policy.host}`; return policy.path_mode === "exact" ? `${policy.host}${policy.path_prefix} only` : `${policy.host}${policy.path_prefix} and below` }
+function transportLabel(policy: CrawlPolicyRecord) { return policy.profile.transport === "http" ? "Direct HTTP" : policy.profile.transport === "browser" ? "Browser" : "Firecrawl" }

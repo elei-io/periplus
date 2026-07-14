@@ -17,7 +17,7 @@ cannot silently raise a shared-resource ceiling.
 The graph-critical path remains:
 
 ```text
-acquisition -> immutable HTML -> base ingestion -> navigation ready -> outgoing edges
+acquisition -> immutable content -> base ingestion -> HTML navigation or artifact terminal
 
                                          independent of
 
@@ -40,7 +40,7 @@ Postgres control plane
        |                 |                  |
  HTTP acquisition  browser acquisition  provider acquisition
        |                 |                  |
-       +-------- immutable raw HTML --------+
+       +------ immutable HTML / artifacts ------+
                          |
                   catalogue ingestion
                          |
@@ -112,23 +112,26 @@ Keep the vocabulary closed until measurement proves another shared bottleneck:
 
 | Resource | Meaning |
 | --- | --- |
-| `remote:<domain-group>` | Deployment-wide concurrent pressure shared by CrawlPolicies in one operator-defined remote group |
+| `remote:<registrable-domain>` | Deployment-wide concurrent courtesy pressure for one website |
 | `catalogue:hot` | Concurrent ingestion and materialization DuckLake operations; maintenance requests the full capacity for exclusivity |
 | `object:read` | Weighted in-flight repository/object-store reads |
 | `object:write` | Weighted in-flight repository/object-store writes |
 
-Deployment setup creates one catch-all `public-web` CrawlPolicy. Its remote permit is the final
-match for every HTTP(S) URL. Evidence-backed trial applications and user policies add more-specific
-matches above it. Runtime admission never invents an implicit transport, concurrency, or remote
-group when policy resolution fails.
+Deployment setup creates five CrawlProfiles and one catch-all CrawlPolicy. Its remote permit is the
+final match for every HTTP(S) URL. Evidence-backed trial applications and user policies add
+more-specific matches above it. Runtime derives the permit key from the URL's registrable domain
+and never invents an implicit transport or concurrency when policy resolution fails.
 
 Browser page slots are process-local capacity and remain a local semaphore. The frozen CrawlPolicy
 permit is deployment-wide remote pressure. They are deliberately different resources.
 
-The HTTP acquisition boundary accepts `text/html` and `application/xhtml+xml` only. Other media
-types settle as non-retryable acquisition warnings and never enter raw-HTML storage or DOM
-projection. DOM traversal itself is iterative so valid deeply nested HTML does not depend on the
-Python recursion limit.
+The HTTP acquisition boundary always accepts `text/html` and `application/xhtml+xml`. A frozen
+HTTP CrawlProfile may additionally retain direct responses in the closed media families
+`application/pdf`, `image/*`, and `video/*`, subject to policy and deployment byte ceilings. Other
+media types settle as non-retryable acquisition warnings. Artifact bytes are streamed to bounded
+local spool, stored exactly and content-addressed, and never enter DOM projection. Embedded HTML
+subresources are not artifact crawl inputs. DOM traversal itself is iterative so valid deeply
+nested HTML does not depend on the Python recursion limit.
 
 S3 / MinIO is not a mutex. Object-store permits represent weighted operations or expected bytes.
 Known byte sizes are used where available; bounded operation-class estimates are used otherwise.
@@ -214,7 +217,7 @@ Acquisition workers own only one remote page acquisition:
 2. request the frozen policy's remote permit and any simultaneous local transport capacity;
 3. load one page;
 4. release remote/browser pressure;
-5. request weighted object-write capacity and store immutable raw HTML; and
+5. request weighted object-write capacity and store immutable raw HTML or artifact bytes; and
 6. publish a frozen ingestion job before acknowledging acquisition.
 
 They never open DuckLake, parse retained DOM, evaluate edges, wait for ingestion, or run
@@ -222,21 +225,22 @@ materialization.
 
 HTTP workers use a process-wide asynchronous client and bounded local I/O concurrency. Browser
 workers own one long-lived Chromium runtime with bounded page/context concurrency. Providers receive
-their own subject and deployment when their quotas or scaling differ. All transports produce the
-same raw-HTML contract.
+their own subject and deployment when their quotas or scaling differ. Browser and provider profiles
+produce raw HTML; they do not claim artifact support unless they can preserve original
+main-response bytes exactly.
 
 ## Ingestion workers
 
 Ingestion is `critical` catalogue work. One frozen job:
 
 1. resolves any already-committed deterministic identity;
-2. verifies immutable raw HTML;
-3. builds page-local DOM staging and navigation-critical system projections;
+2. verifies immutable raw HTML or artifact bytes;
+3. builds page-local DOM staging and navigation-critical system projections for HTML only;
 4. requests an atomic catalogue/object-store permit bundle;
 5. commits crawl, document, element, projection, and provenance evidence;
-6. writes and verifies the bounded navigation package;
-7. publishes navigation readiness;
-8. evaluates outgoing bounded SQL edges; and
+6. writes and verifies the bounded navigation package for HTML;
+7. publishes crawl readiness;
+8. evaluates outgoing bounded SQL edges for HTML, while artifacts settle terminally; and
 9. admits returned URLs as new transport-routed CrawlRequests.
 
 Ingestion does not evaluate or commit user materializations. It does not poll maintenance state;
@@ -285,7 +289,7 @@ maintenance-active polling protocol or bespoke maintenance-capacity ledger.
 Delivery is at-least-once. Workers acknowledge only after the next durable state exists:
 
 ```text
-acquisition ACK     raw HTML and ingestion publication are durable
+acquisition ACK     raw HTML/artifact bytes and ingestion publication are durable
 ingestion ACK       base evidence and recoverable navigation readiness are durable
 materialization ACK scope replacement and successful/terminal coverage are durable
 edge ACK            every admitted target request is durable or terminal
@@ -361,8 +365,8 @@ migration bridges. [AUDIT.md](../AUDIT.md) is the sole checklist for implementat
 - Maintenance never overlaps a granted hot catalogue operation.
 - A poison materialization scope reaches dead letter without crash-looping ingestion.
 - Metrics distinguish executor shortage from remote, catalogue, and object-store saturation.
-- The crawl dashboard reconstructs peak courtesy-group concurrency from durable DuckLake crawl
-  timing and `domain_group` provenance; 100% means that group reached its configured limit.
+- The crawl dashboard reconstructs peak per-site concurrency from durable crawl timing,
+  `url_registrable_domain`, and frozen `remote_concurrency`; 100% means that site reached its limit.
 - Run warnings count external acquisition failures. Run errors count Atlas pipeline/lifecycle and
   materialization failures. `Cooldown` is a presentation phase while terminal acquisition waits
   for materialization coverage, not a second graph-run terminal state.

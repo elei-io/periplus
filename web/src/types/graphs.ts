@@ -138,10 +138,11 @@ export type PolicyPressureResponse = {
   range_end: string
   bucket_seconds: number
   items: Array<{
-    domain_group: string
+    remote_domain: string
     points: Array<{
       captured_at: string
       peak_concurrency: number
+      limit: number
     }>
   }>
 }

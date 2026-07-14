@@ -37,7 +37,7 @@ defined in [CRAWL_GRAPHS.md](CRAWL_GRAPHS.md), and live materialization in
 ## Critical-path invariant
 
 ```text
-acquire -> retain raw HTML -> ingest base evidence -> navigation ready -> evaluate edges
+acquire -> retain immutable content -> ingest base evidence -> HTML navigation or artifact terminal
 
                                       independent of
 
@@ -55,8 +55,8 @@ active. Navigation-critical system projections such as `page_links` are produced
 | PostgreSQL `atlas` | Editable graphs, policies, schedules, matches, schemas, queries, views, materialization definitions, and lifecycle intent | Current graph execution, crawl history, HTML, DOM evidence |
 | NATS JetStream | Durable current work, graph delivery, retries, dead letters, and at-least-once queue state | Irreplaceable analytical history or large payload bytes |
 | NATS KV | Graph runs, requests, admission, deduplication, progress, worker presence, operation leases, and expiring resource grants | Materialization completion or other analytical truth |
-| Repository objects | Immutable content-addressed raw HTML, bounded navigation packages, and deterministic temporary staging | Mutable workflow or scheduling truth |
-| DuckLake | Documents, crawls, graph provenance, DOM, system projections, materialized rows, snapshots, and authoritative scope coverage | Editable graph topology or current queue state |
+| Repository objects | Immutable content-addressed raw HTML and artifacts, bounded navigation packages, and deterministic temporary staging | Mutable workflow or scheduling truth |
+| DuckLake | Documents, artifacts, crawls, graph provenance, DOM, system projections, materialized rows, snapshots, and authoritative scope coverage | Editable graph topology or current queue state |
 | Resource Governor | Current resource-allocation decisions | Work delivery, workflow completion, or commit correctness |
 | Prometheus | Counters, gauges, histograms, and capacity evidence | Correctness-critical state |
 
@@ -96,15 +96,16 @@ DuckLake and object storage.
 
 Shared resources are governed across those capabilities:
 
-- `remote:<domain-group>` bounds remote concurrency across policies in the same group;
+- `remote:<registrable-domain>` bounds courtesy concurrency independently per website;
 - process-local browser slots protect one Chromium runtime;
 - `catalogue:hot` bounds combined ingestion/materialization operations;
 - maintenance requests the complete `catalogue:hot` pool after ordinary work drains; and
 - weighted `object:read` and `object:write` budgets bound S3 / MinIO pressure.
 
-Deployment setup seeds one editable catch-all CrawlPolicy for `*://*/*`. Every admitted URL must
-resolve that policy or a more-specific policy added by a trial or user. There is no implicit
-no-policy acquisition profile or `unclassified` remote lane.
+Deployment setup seeds five CrawlProfiles and one editable catch-all CrawlPolicy for `*://*/*`.
+Every admitted URL resolves that policy or a more-specific policy added by a trial or user. The
+governor key is derived from the URL's registrable domain; there is no operator-authored domain
+group, implicit acquisition profile, or `unclassified` lane.
 
 The fixed service classes are `critical`, `live`, `backfill`, and `maintenance`. Critical graph work
 and ingestion have a reserved catalogue share, live/backfill work has a reciprocal reserved share,
@@ -114,19 +115,21 @@ bounds are typed deployment configuration, while per-remote limits remain frozen
 
 ## Acquisition
 
-A frozen CrawlPolicy routes each request to its transport subject. The worker acquires the
-deployment-wide remote permit, loads one page, releases remote/browser pressure, obtains bounded
-object-write capacity, stores immutable HTML, and publishes a frozen ingestion job.
+A frozen CrawlPolicy and its CrawlProfile route each request to its transport subject. The worker acquires the
+deployment-wide remote permit, loads one URL, releases remote/browser pressure, obtains bounded
+object-write capacity, stores immutable HTML or an explicitly allowed direct-response artifact,
+and publishes a frozen ingestion job.
 
 Acquisition workers never open DuckLake or wait for ingestion, navigation, materialization, or
-maintenance. Every transport shares the same immutable raw-HTML output contract.
+maintenance. HTML remains the shared transport contract. Exact artifact capture is enabled only
+for transports that can preserve the original main-response bytes; initially that is HTTP.
 
 ## Ingestion and graph continuation
 
-Ingestion is graph-critical catalogue work. It verifies raw HTML, builds bounded page-local DOM and
-system projections, acquires an atomic catalogue/object permit bundle, commits base evidence,
-publishes a verified navigation package, evaluates outgoing bounded SQL edges, and admits their URLs
-as new transport-routed crawl requests.
+Ingestion is graph-critical catalogue work. For HTML it verifies raw HTML, builds bounded page-local
+DOM and system projections, commits base evidence, publishes a verified navigation package, and
+evaluates outgoing bounded SQL edges. For an artifact it verifies the immutable bytes, commits the
+artifact and crawl observation, and marks the request terminal without DOM or outgoing edges.
 
 Raw HTML is the regeneration authority. NATS owns current readiness and redelivery; DuckLake owns
 durable evidence. Ingestion never evaluates or commits user materialization scopes.
@@ -184,7 +187,7 @@ arbitrary SQL is forbidden.
 At-least-once acknowledgement fences are:
 
 ```text
-acquisition ACK     immutable HTML and ingestion publication are durable
+acquisition ACK     immutable HTML/artifact bytes and ingestion publication are durable
 ingestion ACK       base evidence and recoverable navigation readiness are durable
 materialization ACK scope replacement and coverage are durable
 edge ACK            target request publication is durable or terminal
@@ -206,7 +209,7 @@ wait age, grants, expirations, and saturation.
 
 ## Storage and explicit bounds
 
-HTML size, DOM elements, staging bytes, ingestion batches, materialization scopes, messages, graph
+HTML and artifact size, DOM elements, staging bytes, ingestion batches, materialization scopes, messages, graph
 state, SQL results, remote pressure, browser pages, catalogue concurrency, object I/O, and graph-run
 ceilings all have explicit limits. Failures are visible; durable state is never silently truncated.
 
@@ -222,7 +225,7 @@ boundaries.
 - `backend/workers/` owns transport, ingestion, materialization, and maintenance process
   entrypoints.
 - `backend/actions/` owns page acquisition behavior and no traversal loops.
-- `backend/repository/objects/` owns immutable raw HTML and bounded repository objects.
+- `backend/repository/objects/` owns immutable raw HTML, artifacts, and bounded repository objects.
 - `backend/repository/ingestion/` owns ingestion validation, batching, health, and recovery.
 - `backend/materialization/` owns discovery and one-scope evaluation-through-coverage.
 - `backend/repository/catalogue/` privately implements DuckLake.

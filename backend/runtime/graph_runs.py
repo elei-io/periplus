@@ -8,10 +8,14 @@ import hashlib
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4, uuid5
 
-from config import get_bool, get_float, get_int
+from config import get_float, get_int
 from control.crawl_policies.schemas import CrawlPolicySnapshot
-from control.crawl_policies.templates import TEMPLATE_REGISTRY_VERSION, next_trial_policy_snapshot
-from control.crawl_policies.service import find_crawl_policy_for_url
+from control.crawl_policies.service import (
+    find_crawl_policy_for_url,
+    next_trial_profile,
+    profile_config_hash,
+    profile_snapshot,
+)
 from control.crawl_graphs.schemas import EdgeDedupeMode
 
 from .graph_queue import CrawlRequest, EdgeEvaluation, EdgeWork, FrozenGraphSnapshot, GraphRun, PendingAdmission, PolicyTrialMetadata, ReadinessWork, crawl_transport_from_policy, edge_evaluation_identity, edge_evaluation_key, ensure_policy_trial_budget_storage, get_crawl_request, get_edge_evaluation, get_graph_run, list_crawl_requests, new_graph_run, normalize_request_url, publish_crawl, publish_edge, reconcile_policy_trial_budget, request_identity, reserve_policy_trial_slot, update_crawl_request, update_edge_evaluation, update_graph_run
@@ -20,6 +24,7 @@ from .graph_progress import add_edge_output_progress, initialize_run_progress, m
 _REQUEST_NAMESPACE = UUID("869ee36c-76ad-46f0-a1b7-9b28f4b71386")
 _TRIAL_NAMESPACE = UUID("ec8c1134-ff67-46f4-a73c-d6277705e0f0")
 _SAMPLE_REQUEST_NAMESPACE = UUID("b31887dc-98e1-40a8-a1cf-d29f1199cc02")
+_TRIAL_POLICY_NAMESPACE = UUID("7d3af5dc-bbbc-4b83-843e-ab02d8bb731b")
 _TERMINAL_RUNS = {"completed", "completed_with_errors", "failed", "cancelled"}
 _TERMINAL_REQUESTS = {"completed", "failed", "cancelled"}
 
@@ -65,14 +70,23 @@ def _trial_for_request(
     ) / 2**64
     if fraction >= share:
         return None
-    candidate = next_trial_policy_snapshot(
-        policy_snapshot_json,
-        url=url,
-        provider_enabled=get_bool("ATLAS_POLICY_TRIAL_PROVIDER_ENABLED"),
-    )
+    incumbent = CrawlPolicySnapshot.model_validate(policy_snapshot_json)
+    candidate = incumbent.trial_candidate
     if candidate is None:
         return None
-    sample_policy, candidate_template = candidate
+    candidate_hash = profile_config_hash(candidate.config)
+    candidate_config = dict(candidate.config)
+    candidate_config["cache"] = {"mode": "refresh"}
+    candidate = candidate.model_copy(update={"config": candidate_config})
+    sample_policy = incumbent.model_copy(
+        update={
+            "id": uuid5(_TRIAL_POLICY_NAMESPACE, f"{candidate.id}:{url}"),
+            "origin": "system_trial",
+            "slug": f"trial-{candidate.slug}",
+            "profile": candidate,
+            "trial_candidate": None,
+        }
+    ).model_dump(mode="json")
     trial_id = uuid5(_TRIAL_NAMESPACE, f"{request_id}:{version}")
     sample_request_id = uuid5(_SAMPLE_REQUEST_NAMESPACE, f"{request_id}:{version}")
     return (
@@ -80,9 +94,10 @@ def _trial_for_request(
             trial_id=trial_id,
             sampler_version=version,
             sample_share=share,
-            candidate_strategy="next_more_expensive_template",
-            candidate_template=candidate_template,
-            template_registry_version=TEMPLATE_REGISTRY_VERSION,
+            candidate_strategy="next_higher_cost_profile",
+            candidate_profile_id=candidate.id,
+            candidate_profile_slug=candidate.slug,
+            candidate_profile_config_hash=candidate_hash,
         ),
         sample_request_id,
         sample_policy,
@@ -92,24 +107,18 @@ def _trial_for_request(
 
 def resolve_policy_snapshot(session, url: str) -> dict:
     policy = find_crawl_policy_for_url(session, url=url)
-    matcher = policy.url_match
-    if matcher is None:
-        raise RuntimeError("resolved CrawlPolicy has no URL matcher")
+    candidate = next_trial_profile(session, policy.profile)
     snapshot = CrawlPolicySnapshot(
         id=policy.id,
-        revision=policy.revision,
         origin="editable",
-        metric_slug=policy.metric_slug,
-        domain_group=policy.domain_group,
-        match=policy.match,
-        config=policy.config or {},
-        matcher={
-            "scheme": matcher.scheme,
-            "host": matcher.host,
-            "path_pattern": matcher.path_pattern,
-            "match_type": matcher.match_type,
-            "priority": matcher.priority,
-        },
+        slug=policy.slug,
+        scheme=policy.scheme,
+        host=policy.host,
+        path_prefix=policy.path_prefix,
+        path_mode=policy.path_mode,
+        max_concurrency=policy.max_concurrency,
+        profile=profile_snapshot(policy.profile),
+        trial_candidate=profile_snapshot(candidate) if candidate is not None else None,
     )
     return snapshot.model_dump(mode="json")
 
@@ -453,7 +462,7 @@ async def handle_readiness(*, runs, requests, progress, jetstream, event: Readin
     if run.status in _TERMINAL_RUNS:
         return
     outgoing = [edge for edge in run.snapshot.edges if edge.source_node_id == request.node_id]
-    if not outgoing:
+    if event.navigation is None or not outgoing:
         await settle_request(runs=runs, requests=requests, progress=progress, request_id=request.id, status="completed")
         return
     previous_status: str | None = None
@@ -465,6 +474,7 @@ async def handle_readiness(*, runs, requests, progress, jetstream, event: Readin
     if previous_status != request.status:
         await _project(transition_node_progress(progress, request, previous_status=previous_status))
     for edge in outgoing:
+        assert event.navigation is not None
         work = EdgeWork(
             graph_run_id=run.id,
             crawl_request_id=request.id,

@@ -2,7 +2,7 @@
 
 from prometheus_client import Counter, Gauge, Histogram
 
-_raw_writes = Counter("atlas_repository_raw_writes_total", "Raw HTML write outcomes.", ("outcome",))
+_raw_writes = Counter("atlas_repository_raw_writes_total", "Raw content write outcomes.", ("outcome",))
 _attempts = Counter("atlas_repository_ingestion_attempts_total", "Repository ingestion outcomes.", ("outcome",))
 _batches = Counter("atlas_repository_ingestion_batches_total", "Repository batch outcomes.", ("outcome",))
 _duration = Histogram("atlas_repository_ingestion_duration_seconds", "Repository ingestion phase duration.", ("phase", "outcome"))

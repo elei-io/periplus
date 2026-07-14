@@ -10,43 +10,85 @@ export type PaginatedResponse<T> = {
   offset: number
 }
 
-export type CrawlPolicyRecord = {
+export type CrawlTransport = "http" | "browser" | "firecrawl"
+
+export type CrawlProfileRecord = {
   id: string
-  metric_slug: string
-  domain_group: string
-  url_match_id: string | null
-  match: string
-  enabled: boolean
+  slug: string
+  name: string
+  description: string | null
+  transport: CrawlTransport
   config: Record<string, unknown>
-  revision: number
-  template: string | null
-  profile: string | null
-  mode: string | null
-  wait: string | null
-  concurrency: number | null
+  cost_rank: number
+  trial_eligible: boolean
   created_at: string
   updated_at: string
 }
 
-export type CrawlPolicyDetailRecord = Omit<
-  CrawlPolicyRecord,
-  "template" | "profile" | "mode" | "wait" | "concurrency"
->
+export type CrawlProfileListResponse = PaginatedResponse<CrawlProfileRecord>
 
+export type CrawlProfileUpdateRequest = {
+  name?: string
+  description?: string
+  config?: Record<string, unknown>
+  cost_rank?: number
+  trial_eligible?: boolean
+}
+
+export type CrawlProfileCreateRequest = {
+  slug: string
+  name: string
+  description?: string
+  transport: CrawlTransport
+  config: Record<string, unknown>
+  cost_rank: number
+  trial_eligible: boolean
+}
+
+export type CrawlPolicyRecord = {
+  id: string
+  slug: string
+  scheme: "*" | "http" | "https"
+  host: string
+  path_prefix: string
+  path_mode: "exact" | "prefix"
+  match: string
+  profile: CrawlProfileRecord
+  max_concurrency: number
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type CrawlPolicyDetailRecord = CrawlPolicyRecord
 export type CrawlPolicyListResponse = PaginatedResponse<CrawlPolicyRecord>
 
 export type CrawlPolicyUpdateRequest = {
   enabled?: boolean
-  match?: string
-  config?: Record<string, unknown>
-  domain_group?: string
+  scheme?: "*" | "http" | "https"
+  host?: string
+  path_prefix?: string
+  path_mode?: "exact" | "prefix"
+  profile_id?: string
+  max_concurrency?: number
+}
+
+export type CrawlPolicyCreateRequest = {
+  slug: string
+  scheme: "*" | "http" | "https"
+  host: string
+  path_prefix: string
+  path_mode: "exact" | "prefix"
+  profile_id: string
+  max_concurrency: number
+  enabled: boolean
 }
 
 export type CrawlPolicyFilters = {
   matchPattern: string
   enabled: "all" | "enabled" | "disabled"
-  template: string
-  mode: "all" | "static" | "dynamic" | "app"
+  profileSlug: string
+  transport: "all" | CrawlTransport
 }
 
 export type PolicyTrialComparison = {
@@ -54,8 +96,11 @@ export type PolicyTrialComparison = {
   host: string
   port: number
   registrable_domain: string
-  use_template: string
-  candidate_template: string
+  use_profile: string
+  candidate_profile: string
+  use_profile_config_hash: string
+  candidate_profile_config_hash: string
+  candidate_profile_definition_hash: string
   selected_trials: number
   completed_pairs: number
   recovered_crawls: number
@@ -79,7 +124,7 @@ export type PolicyTrialComparison = {
   median_duration_delta_ms: number | null
   last_trial_at: string
   current_policy_id: string | null
-  current_template: string
+  current_profile: string
   applied: boolean
   verdict:
     | "awaiting_sample"
@@ -95,7 +140,7 @@ export type PolicyTrialApplyRequest = Pick<
   PolicyTrialComparison,
   "scheme" | "host" | "port"
 > & {
-  template: string
+  profile: string
 }
 
 export type PolicyTrialSummary = {

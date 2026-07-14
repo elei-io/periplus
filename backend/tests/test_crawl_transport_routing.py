@@ -17,17 +17,19 @@ from runtime.graph_queue import (
 def policy_snapshot(profile: str) -> dict:
     return {
         "id": str(uuid4()),
-        "revision": 1,
-        "metric_slug": f"{profile}-test",
-        "domain_group": "test",
-        "match": "example.com",
-        "config": {"profile": profile, "concurrency": 1, "config": {}},
-        "matcher": {
-            "scheme": "https",
-            "host": "example.com",
-            "path_pattern": "/**",
-            "match_type": "glob",
-            "priority": 1,
+        "slug": f"{profile}-test",
+        "scheme": "https",
+        "host": "example.com",
+        "path_prefix": "/",
+        "path_mode": "prefix",
+        "max_concurrency": 1,
+        "profile": {
+            "id": str(uuid4()),
+            "slug": f"{profile}-profile",
+            "name": f"{profile.title()} test",
+            "transport": profile,
+            "config": {},
+            "cost_rank": 10,
         },
     }
 

@@ -9,6 +9,12 @@ from repository.objects.html import (
     RawHtmlRepository,
     identify_html,
 )
+from repository.objects.artifact import (
+    ArtifactIdentity,
+    RawArtifactRepository,
+    StoredArtifact,
+    artifact_object_key,
+)
 from repository.objects.store import FileObjectStore, S3ObjectStore
 from repository.ingestion.pipeline import RepositoryPipeline
 from repository.service import (
@@ -19,6 +25,8 @@ from repository.service import (
 
 __all__ = [
     "FileObjectStore",
+    "ArtifactIdentity",
+    "RawArtifactRepository",
     "RawHtmlRepository",
     "RepositoryIntegrityError",
     "RepositoryKeyError",
@@ -27,6 +35,8 @@ __all__ = [
     "RepositoryPipeline",
     "RepositoryCacheHit",
     "S3ObjectStore",
+    "StoredArtifact",
+    "artifact_object_key",
     "identify_html",
     "repository_ingestor_from_env",
 ]

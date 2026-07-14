@@ -17,6 +17,7 @@ from repository.ingestion.queue import (
 )
 from repository.objects.config import object_store_from_env
 from repository.objects.html import HtmlIdentity, RawHtmlRepository
+from repository.objects.artifact import ArtifactIdentity, RawArtifactRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +26,7 @@ class AcquisitionResume:
 
     crawl: CrawlRecord
     document: DocumentRecord | None = None
+    artifact: None = None
     html: None = None
     links: None = None
     projection_rebuilt: bool = False
@@ -32,10 +34,12 @@ class AcquisitionResume:
 
 
 class AcquisitionPipeline:
-    """Store immutable HTML and publish ingestion without opening DuckLake."""
+    """Store immutable captured content and publish ingestion without opening DuckLake."""
 
     def __init__(self, *, queue: IngestionQueueClient | None = None) -> None:
-        self.html_repository = RawHtmlRepository(object_store_from_env())
+        store = object_store_from_env()
+        self.html_repository = RawHtmlRepository(store)
+        self.artifact_repository = RawArtifactRepository(store)
         self.queue = queue or IngestionQueueClient()
         self._running = False
 
@@ -88,6 +92,33 @@ class AcquisitionPipeline:
     ) -> None:
         self._require_running()
         await self.queue.enqueue(crawl, request_id=request_id)
+
+    async def store_artifact(
+        self,
+        *,
+        content,
+        identity: ArtifactIdentity,
+    ) -> None:
+        self._require_running()
+        started_at = time.perf_counter()
+        try:
+            stored = await asyncio.to_thread(
+                self.artifact_repository.put,
+                content,
+                identity=identity,
+            )
+        except BaseException:
+            repository_metrics.raw_write(
+                outcome="failed",
+                duration_seconds=time.perf_counter() - started_at,
+                html_bytes=identity.size_bytes,
+            )
+            raise
+        repository_metrics.raw_write(
+            outcome="created" if stored.created else "deduplicated",
+            duration_seconds=time.perf_counter() - started_at,
+            html_bytes=stored.size_bytes,
+        )
 
     async def resolve_crawl(self, crawl_id: UUID, **_kwargs) -> AcquisitionResume | None:
         """Resolve only exact operation redelivery from NATS, never analytical cache."""

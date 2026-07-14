@@ -30,7 +30,7 @@ _DOM_HELPERS = frozenset({"inner_html", "readable_text", "text_content"})
 _DOM_SQL_SPECIAL_FORMS = frozenset(
     {"css_select", "get_attribute", "has_attribute", *_DOM_HELPERS}
 )
-_MANAGED_ROW_TABLES = frozenset({"crawls", "documents", "elements"})
+_MANAGED_ROW_TABLES = frozenset({"artifacts", "crawls", "documents", "elements"})
 _MAX_DOM_HELPER_INPUT_ROWS = 10_000
 _ABSURD_LIMIT = 100_000
 

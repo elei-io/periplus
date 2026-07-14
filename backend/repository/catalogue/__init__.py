@@ -13,6 +13,7 @@ from repository.catalogue.exceptions import (
     CatalogueValidationError,
 )
 from repository.catalogue.records import (
+    ArtifactRecord,
     CatalogueWriteResult,
     CrawlRecord,
     DocumentRecord,
@@ -38,6 +39,7 @@ def catalogue_from_env():
 
 __all__ = [
     "Catalogue",
+    "ArtifactRecord",
     "CatalogueBatchEntry",
     "CatalogueConfig",
     "CatalogueConfigError",

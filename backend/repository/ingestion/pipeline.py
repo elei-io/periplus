@@ -12,6 +12,7 @@ from config import get_float, get_int
 from repository.catalogue import CatalogueWriteResult, CrawlRecord
 from observability import repository_metrics
 from repository.objects.html import HtmlIdentity
+from repository.objects.artifact import ArtifactIdentity
 from repository.ingestion.queue import IngestionQueueClient, projection_ingestion_request_id
 from repository.service import ProjectionRebuildRequired, RepositoryIngestor
 
@@ -123,6 +124,34 @@ class RepositoryPipeline:
         if not self._running:
             raise RuntimeError("repository pipeline is not running")
         return await self.queue.submit(crawl, request_id=request_id)
+
+    async def store_artifact(
+        self,
+        *,
+        content,
+        identity: ArtifactIdentity,
+    ) -> None:
+        if not self._running:
+            raise RuntimeError("repository pipeline is not running")
+        started_at = time.perf_counter()
+        try:
+            stored = await asyncio.to_thread(
+                self.ingestor.artifact_repository.put,
+                content,
+                identity=identity,
+            )
+        except BaseException:
+            repository_metrics.raw_write(
+                outcome="failed",
+                duration_seconds=time.perf_counter() - started_at,
+                html_bytes=identity.size_bytes,
+            )
+            raise
+        repository_metrics.raw_write(
+            outcome="created" if stored.created else "deduplicated",
+            duration_seconds=time.perf_counter() - started_at,
+            html_bytes=stored.size_bytes,
+        )
 
     async def enqueue_stored(
         self,

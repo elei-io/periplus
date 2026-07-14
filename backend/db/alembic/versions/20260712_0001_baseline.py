@@ -51,23 +51,45 @@ def upgrade() -> None:
         ['current_revision_id'],
         ['id'],
     )
-    op.create_table('crawl_policies',
+    op.create_table('crawl_profiles',
     sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('metric_slug', sa.Text(), nullable=False),
-    sa.Column('domain_group', sa.Text(), nullable=False),
-    sa.Column('url_match_id', sa.UUID(), nullable=True),
-    sa.Column('match', sa.Text(), nullable=False),
-    sa.Column('enabled', sa.Boolean(), nullable=False),
+    sa.Column('slug', sa.Text(), nullable=False),
+    sa.Column('name', sa.Text(), nullable=False),
+    sa.Column('description', sa.Text(), nullable=True),
+    sa.Column('transport', sa.Text(), nullable=False),
     sa.Column('config', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('revision', sa.Integer(), nullable=False),
+    sa.Column('cost_rank', sa.Integer(), nullable=False),
+    sa.Column('trial_eligible', sa.Boolean(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint('cost_rank >= 0', name='ck_crawl_profiles_cost_rank'),
+    sa.CheckConstraint("transport IN ('http', 'browser', 'firecrawl')", name='ck_crawl_profiles_transport'),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('metric_slug')
+    sa.UniqueConstraint('slug')
+    )
+    op.create_index('uq_crawl_profiles_trial_cost', 'crawl_profiles', ['cost_rank'], unique=True, postgresql_where=sa.text('trial_eligible'))
+    op.create_table('crawl_policies',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('slug', sa.Text(), nullable=False),
+    sa.Column('scheme', sa.Text(), nullable=False),
+    sa.Column('host', sa.Text(), nullable=False),
+    sa.Column('path_prefix', sa.Text(), nullable=False),
+    sa.Column('path_mode', sa.Text(), nullable=False),
+    sa.Column('profile_id', sa.UUID(), nullable=False),
+    sa.Column('max_concurrency', sa.Integer(), nullable=False),
+    sa.Column('enabled', sa.Boolean(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint('max_concurrency >= 1', name='ck_crawl_policies_concurrency'),
+    sa.CheckConstraint("path_mode IN ('exact', 'prefix')", name='ck_crawl_policies_path_mode'),
+    sa.CheckConstraint("scheme IN ('*', 'http', 'https')", name='ck_crawl_policies_scheme'),
+    sa.ForeignKeyConstraint(['profile_id'], ['crawl_profiles.id'], ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('scheme', 'host', 'path_prefix', 'path_mode', name='uq_crawl_policies_match'),
+    sa.UniqueConstraint('slug')
     )
     op.create_index('ix_crawl_policies_enabled', 'crawl_policies', ['enabled'], unique=False)
-    op.create_index('ix_crawl_policies_match', 'crawl_policies', ['match'], unique=False)
-    op.create_index('ix_crawl_policies_url_match_id', 'crawl_policies', ['url_match_id'], unique=False)
+    op.create_index('ix_crawl_policies_host', 'crawl_policies', ['host'], unique=False)
     op.create_table('crawl_graphs',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('name', sa.Text(), nullable=False),
@@ -116,33 +138,6 @@ def upgrade() -> None:
     op.create_index('ix_crawl_graph_edges_graph_id', 'crawl_graph_edges', ['graph_id'], unique=False)
     op.create_index('ix_crawl_graph_edges_source_node_id', 'crawl_graph_edges', ['source_node_id'], unique=False)
     op.create_index('ix_crawl_graph_edges_target_node_id', 'crawl_graph_edges', ['target_node_id'], unique=False)
-    op.create_table('url_matches',
-    sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('scheme', sa.Text(), nullable=False),
-    sa.Column('host', sa.Text(), nullable=False),
-    sa.Column('domain', sa.Text(), nullable=False),
-    sa.Column('path_pattern', sa.Text(), nullable=False),
-    sa.Column('match_type', sa.Text(), nullable=False),
-    sa.Column('query_policy', sa.Text(), nullable=False),
-    sa.Column('enabled', sa.Boolean(), nullable=False),
-    sa.Column('priority', sa.Integer(), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('scheme', 'host', 'path_pattern', 'match_type', 'query_policy', name='uq_url_matches_identity')
-    )
-    op.create_index('ix_url_matches_domain', 'url_matches', ['domain'], unique=False)
-    op.create_index('ix_url_matches_enabled', 'url_matches', ['enabled'], unique=False)
-    op.create_index('ix_url_matches_host', 'url_matches', ['host'], unique=False)
-    op.create_index('ix_url_matches_path_pattern', 'url_matches', ['path_pattern'], unique=False)
-    op.create_foreign_key(
-        'fk_crawl_policies_url_match',
-        'crawl_policies',
-        'url_matches',
-        ['url_match_id'],
-        ['id'],
-        ondelete='SET NULL',
-    )
     op.create_table('catalogue_view_references',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('ducklake_view_uuid', sa.UUID(), nullable=False),
@@ -206,12 +201,6 @@ def downgrade() -> None:
     op.drop_table('catalogue_materializations')
     op.drop_index('ix_catalogue_view_references_archived_at', table_name='catalogue_view_references')
     op.drop_table('catalogue_view_references')
-    op.drop_constraint('fk_crawl_policies_url_match', 'crawl_policies', type_='foreignkey')
-    op.drop_index('ix_url_matches_path_pattern', table_name='url_matches')
-    op.drop_index('ix_url_matches_host', table_name='url_matches')
-    op.drop_index('ix_url_matches_enabled', table_name='url_matches')
-    op.drop_index('ix_url_matches_domain', table_name='url_matches')
-    op.drop_table('url_matches')
     op.drop_index('ix_crawl_graph_edges_target_node_id', table_name='crawl_graph_edges')
     op.drop_index('ix_crawl_graph_edges_source_node_id', table_name='crawl_graph_edges')
     op.drop_index('ix_crawl_graph_edges_graph_id', table_name='crawl_graph_edges')
@@ -220,10 +209,11 @@ def downgrade() -> None:
     op.drop_index('ix_crawl_graph_nodes_graph_id', table_name='crawl_graph_nodes')
     op.drop_table('crawl_graph_nodes')
     op.drop_table('crawl_graphs')
-    op.drop_index('ix_crawl_policies_url_match_id', table_name='crawl_policies')
-    op.drop_index('ix_crawl_policies_match', table_name='crawl_policies')
+    op.drop_index('ix_crawl_policies_host', table_name='crawl_policies')
     op.drop_index('ix_crawl_policies_enabled', table_name='crawl_policies')
     op.drop_table('crawl_policies')
+    op.drop_index('uq_crawl_profiles_trial_cost', table_name='crawl_profiles', postgresql_where=sa.text('trial_eligible'))
+    op.drop_table('crawl_profiles')
     op.drop_constraint('fk_catalogue_queries_current_revision', 'catalogue_queries', type_='foreignkey')
     op.drop_index('ix_catalogue_query_revisions_query_id', table_name='catalogue_query_revisions')
     op.drop_table('catalogue_query_revisions')

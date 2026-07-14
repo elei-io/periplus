@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -6,14 +8,44 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, m
 
 from actions.shared.cache import CacheOptions
 
+CrawlTransport = Literal["http", "browser", "firecrawl"]
+PathMode = Literal["exact", "prefix"]
+
+
+def _normalize_match_host(value: str) -> str:
+    host = value.strip().lower()
+    if not host or "/" in host or "://" in host or "?" in host or "#" in host:
+        raise ValueError("host must be * or a hostname with an optional port")
+    return host
+
+
+def _normalize_match_path(value: str) -> str:
+    path = value.strip()
+    if not path.startswith("/") or "?" in path or "#" in path:
+        raise ValueError("path_prefix must begin with / and contain no query or fragment")
+    return path
+
 
 class ProfileConfig(BaseModel):
-    """Settings shared by every acquisition profile."""
+    """Settings shared by every acquisition transport."""
 
     model_config = ConfigDict(extra="allow")
 
     cache: CacheOptions | None = None
     cache_block_rules: dict[str, JsonValue] = Field(default_factory=dict)
+    artifact_media_types: tuple[
+        Literal["application/pdf", "image/*", "video/*"], ...
+    ] = ()
+    artifact_max_bytes: int = Field(
+        default=64 * 1024 * 1024, ge=1, le=256 * 1024 * 1024
+    )
+
+    @field_validator("artifact_media_types")
+    @classmethod
+    def unique_artifact_media_types(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("artifact media types must be unique")
+        return value
 
 
 class HttpProfileConfig(ProfileConfig):
@@ -41,76 +73,113 @@ PROFILE_CONFIG_TYPES = {
 }
 
 
-class CrawlPolicyConfig(BaseModel):
-    """Unified acquisition profile envelope frozen into crawl work."""
+def parse_profile_config(transport: CrawlTransport, config: dict[str, Any]) -> ProfileConfig:
+    parsed = PROFILE_CONFIG_TYPES[transport].model_validate(config)
+    if transport != "http" and parsed.artifact_media_types:
+        raise ValueError("artifact capture is supported only by the HTTP transport")
+    return parsed
 
-    model_config = ConfigDict(extra="forbid")
 
-    profile: Literal["http", "browser", "firecrawl"] = "http"
-    concurrency: int = Field(default=4, ge=1)
+class CrawlProfileSnapshot(BaseModel):
+    """Complete acquisition behaviour frozen into queued work."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
+    name: str = Field(min_length=1)
+    transport: CrawlTransport
     config: dict[str, Any] = Field(default_factory=dict)
+    cost_rank: int = Field(ge=0)
 
     @model_validator(mode="after")
-    def validate_profile_config(self) -> CrawlPolicyConfig:
-        PROFILE_CONFIG_TYPES[self.profile].model_validate(self.config)
+    def validate_transport_config(self) -> CrawlProfileSnapshot:
+        parse_profile_config(self.transport, self.config)
         return self
 
     def parsed_config(self) -> ProfileConfig:
-        return PROFILE_CONFIG_TYPES[self.profile].model_validate(self.config)
-
-
-class UrlMatchSnapshot(BaseModel):
-    """The immutable URL-matching fields used by a queued task run."""
-
-    model_config = ConfigDict(frozen=True)
-
-    scheme: str
-    host: str
-    path_pattern: str
-    match_type: Literal["exact", "glob"]
-    priority: int
+        return parse_profile_config(self.transport, self.config)
 
 
 class CrawlPolicySnapshot(BaseModel):
-    """The complete CrawlPolicy execution view frozen when a run is queued."""
+    """Complete policy resolution frozen when crawl work is queued."""
 
     model_config = ConfigDict(frozen=True)
 
     id: UUID
-    revision: int
     origin: Literal["editable", "system_trial"] = "editable"
-    metric_slug: str
-    domain_group: str
-    match: str
-    config: dict[str, Any]
-    matcher: UrlMatchSnapshot
+    slug: str
+    scheme: Literal["*", "http", "https"]
+    host: str
+    path_prefix: str
+    path_mode: PathMode
+    max_concurrency: int = Field(ge=1)
+    profile: CrawlProfileSnapshot
+    trial_candidate: CrawlProfileSnapshot | None = None
 
 
-class CrawlPolicyRecord(BaseModel):
+class CrawlProfileRecord(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    metric_slug: str
-    domain_group: str
-    url_match_id: UUID | None = None
-    match: str
-    enabled: bool
+    slug: str
+    name: str
+    description: str | None
+    transport: CrawlTransport
     config: dict[str, Any]
-    revision: int
+    cost_rank: int
+    trial_eligible: bool
     created_at: datetime
     updated_at: datetime
 
 
-class CrawlPolicyListRecord(CrawlPolicyRecord):
-    template: str | None = None
-    profile: str | None = None
-    mode: str | None = None
-    wait: str | None = None
-    concurrency: int | None = None
+class CrawlProfileListResponse(BaseModel):
+    items: list[CrawlProfileRecord]
+    total: int
+    limit: int
+    offset: int
+
+
+class CrawlProfileUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1)
+    description: str | None = None
+    config: dict[str, Any] | None = None
+    cost_rank: int | None = Field(default=None, ge=0)
+    trial_eligible: bool | None = None
+
+
+class CrawlProfileCreateRequest(BaseModel):
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
+    name: str = Field(min_length=1)
+    description: str | None = None
+    transport: CrawlTransport
+    config: dict[str, Any] = Field(default_factory=dict)
+    cost_rank: int = Field(ge=0)
+    trial_eligible: bool = False
+
+    @model_validator(mode="after")
+    def validate_transport_config(self) -> CrawlProfileCreateRequest:
+        parse_profile_config(self.transport, self.config)
+        return self
+
+
+class CrawlPolicyRecord(BaseModel):
+    id: UUID
+    slug: str
+    scheme: Literal["*", "http", "https"]
+    host: str
+    path_prefix: str
+    path_mode: PathMode
+    match: str
+    profile: CrawlProfileRecord
+    max_concurrency: int
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
 
 
 class CrawlPolicyListResponse(BaseModel):
-    items: list[CrawlPolicyListRecord]
+    items: list[CrawlPolicyRecord]
     total: int
     limit: int
     offset: int
@@ -121,8 +190,11 @@ class PolicyTrialComparisonRecord(BaseModel):
     host: str
     port: int
     registrable_domain: str
-    use_template: str
-    candidate_template: str
+    use_profile: str
+    candidate_profile: str
+    use_profile_config_hash: str
+    candidate_profile_config_hash: str
+    candidate_profile_definition_hash: str
     selected_trials: int
     completed_pairs: int
     recovered_crawls: int
@@ -146,7 +218,7 @@ class PolicyTrialComparisonRecord(BaseModel):
     median_duration_delta_ms: float | None
     last_trial_at: datetime
     current_policy_id: UUID | None
-    current_template: str
+    current_profile: str
     applied: bool
     verdict: Literal[
         "awaiting_sample",
@@ -163,7 +235,7 @@ class PolicyTrialApplyRequest(BaseModel):
     scheme: Literal["http", "https"]
     host: str = Field(min_length=1)
     port: int = Field(ge=1, le=65535)
-    template: str = Field(min_length=1)
+    profile: str = Field(min_length=1)
 
 
 class PolicyTrialSummaryRecord(BaseModel):
@@ -190,13 +262,40 @@ class PolicyTrialReportResponse(BaseModel):
 
 class CrawlPolicyUpdateRequest(BaseModel):
     enabled: bool | None = None
-    match: str | None = None
-    config: dict[str, Any] | None = None
-    domain_group: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_-]{0,62}$")
+    scheme: Literal["*", "http", "https"] | None = None
+    host: str | None = Field(default=None, min_length=1)
+    path_prefix: str | None = Field(default=None, min_length=1)
+    path_mode: PathMode | None = None
+    profile_id: UUID | None = None
+    max_concurrency: int | None = Field(default=None, ge=1)
 
-    @field_validator("config")
+    @field_validator("host")
     @classmethod
-    def validate_cache_config(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
-        if value is not None:
-            CrawlPolicyConfig.model_validate(value)
-        return value
+    def normalize_host(cls, value: str | None) -> str | None:
+        return None if value is None else _normalize_match_host(value)
+
+    @field_validator("path_prefix")
+    @classmethod
+    def normalize_path(cls, value: str | None) -> str | None:
+        return None if value is None else _normalize_match_path(value)
+
+
+class CrawlPolicyCreateRequest(BaseModel):
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
+    scheme: Literal["*", "http", "https"]
+    host: str = Field(min_length=1)
+    path_prefix: str = Field(default="/", min_length=1)
+    path_mode: PathMode = "prefix"
+    profile_id: UUID
+    max_concurrency: int = Field(default=4, ge=1)
+    enabled: bool = True
+
+    @field_validator("host")
+    @classmethod
+    def normalize_host(cls, value: str) -> str:
+        return _normalize_match_host(value)
+
+    @field_validator("path_prefix")
+    @classmethod
+    def normalize_path(cls, value: str) -> str:
+        return _normalize_match_path(value)

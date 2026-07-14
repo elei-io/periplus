@@ -40,6 +40,13 @@ def crawl(crawl_id: str) -> None:
     _show(f"/operations/repository/crawls/{crawl_id}")
 
 
+@repository.command("artifact")
+def artifact(artifact_id: str) -> None:
+    """Show durable metadata for one content-addressed artifact."""
+
+    _show(f"/operations/repository/artifacts/{artifact_id}")
+
+
 @repository.command("dead-letters")
 def dead_letters(
     limit: int = typer.Option(50, min=1, max=500, help="Maximum failures to show."),

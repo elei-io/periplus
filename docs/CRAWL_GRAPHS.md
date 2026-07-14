@@ -13,13 +13,15 @@ work.
 
 The uniform execution rule is:
 
-> A graph node maps admitted URL inputs to crawl work. Once the crawl is durable and its verified
-> navigation package is referenced by NATS, every outgoing edge runs scoped SQL and offers its
-> returned URLs to target nodes.
+> A graph node maps admitted URL inputs to crawl work. Once an HTML crawl is durable and its
+> verified navigation package is referenced by NATS, every outgoing edge runs scoped SQL and offers
+> its returned URLs to target nodes. A durable artifact crawl settles at that boundary without
+> outgoing edge work.
 
 This keeps acquisition replaceable. A browser library may load a page, but it is not the downstream
-source of truth for links or navigation. Atlas retains immutable raw HTML, a versioned structural DOM
-projection, and derived DuckLake tables; graph edges operate on that evidence.
+source of truth for links or navigation. Atlas retains immutable raw HTML, explicitly allowed
+direct-response artifacts, a versioned structural DOM projection for HTML, and derived DuckLake
+tables; graph edges operate only on HTML navigation evidence.
 
 ## Product model
 
@@ -45,6 +47,7 @@ Durable evidence uses DuckLake:
 
 ```text
 documents
+artifacts
 crawls with graph provenance
 elements
 materialized derived facts
@@ -111,8 +114,10 @@ When a graph is triggered, its frozen root node receives the trigger URL inputs.
 receive URLs from edges and participate in cycles; being root only determines initial admission.
 
 The node does not write DuckLake directly. It maps admitted inputs to the ordinary crawl path, which
-stores immutable raw HTML and publishes ingestion work. Ingestion workers own base evidence,
-navigation-critical system projections, navigation-package publication, and outgoing edges.
+stores immutable HTML or explicitly allowed direct-response artifact bytes and publishes ingestion
+work. Ingestion workers own base evidence, HTML navigation-critical system projections,
+navigation-package publication, and outgoing edges. Artifact crawls are successful terminal
+observations and do not activate outgoing edges.
 Materialization workers independently maintain user-created live materialized views.
 
 ### CrawlGraphEdge
@@ -175,23 +180,24 @@ selects the effective crawl policy.
 
 ### CrawlPolicy
 
-Crawl policy controls pressure and acquisition behavior for matching remote URLs. It is selected
-through Atlas URL matching, not attached to a graph or node. The effective policy may cover:
+CrawlPolicy selects reusable acquisition behavior and controls courtesy pressure for matching
+remote URLs. It is not attached to a graph or node. CrawlProfile owns transport behavior:
 
 ```text
-Acquisition
-- profile: http | browser | firecrawl
-- concurrency: maximum simultaneous remote acquisitions across the Atlas deployment
-- config: profile-specific waits, timeouts, headers, provider options, and cache settings
+Acquisition profile
+- transport: http | browser | firecrawl
+- config: transport-specific waits, timeouts, headers, provider options, cache, and artifacts
+- cost_rank: deterministic order for optional acquisition trials
 ```
 
-The stable policy envelope is `{profile, concurrency, config}`. Atlas validates `config` against
-the selected profile before the policy is frozen. Deployment setup seeds one editable `*://*/*`
-policy using bounded HTTP acquisition. More-specific trial- or user-created URL matches override
-it. Admission fails if the catch-all is missing; there is no second implicit default lane. Profile
-selection does not change the crawl contract: every successful profile returns
-raw HTML to the ordinary immutable-object and ingestion path. External providers perform one page
-acquisition; graph edges remain the only navigation mechanism.
+The policy owns `{scheme, host, path_prefix, path_mode, profile_id, max_concurrency}`. Exact scheme,
+exact host, exact path, then longest prefix determine the winner. Deployment setup seeds five
+profiles and one editable `*://*/*` policy using Direct HTTP acquisition. There is no separate
+URL-match table, priority, domain group, or implicit default lane. Every profile performs one URL
+acquisition. HTTP profiles may retain explicitly allowed direct-response
+PDF, image, or video bytes; browser and provider profiles retain HTML only until they can preserve
+exact main-response bytes. External providers perform one page acquisition; graph edges remain the
+only navigation mechanism.
 
 Two requests in the same graph may resolve different policies because their URLs match different
 remotes. The frozen profile routes work to a transport-specific NATS subject before publication, so
@@ -292,16 +298,16 @@ configuration.
 ### Acquisition and ingestion
 
 An acquisition worker claims one crawl request from its transport-specific subject, requests the
-frozen policy's remote permit, acquires the page through the shared crawl path, releases remote and
-local browser pressure, requests bounded object-write capacity, writes immutable raw HTML through
-the repository boundary, and publishes a frozen ingestion job. It never opens DuckLake or waits for
-downstream processing.
+frozen policy's remote permit, acquires the URL through the shared crawl path, releases remote and
+local browser pressure, requests bounded object-write capacity, writes immutable HTML or artifact
+bytes through the repository boundary, and publishes a frozen ingestion job. It never opens
+DuckLake or waits for downstream processing.
 
-An ingestion worker validates the raw object, requests the `critical` catalogue/object-store
-resource bundle, commits DuckLake crawl/document/element evidence and navigation-critical system
-projections, publishes the verified navigation package, evaluates outgoing edges, and admits their
-returned URLs. User materialization runs in separate workers and cannot change the crawl request's
-terminal state.
+An ingestion worker validates the raw object and requests the `critical` catalogue/object-store
+resource bundle. HTML commits crawl/document/element evidence and navigation-critical projections,
+then publishes a verified navigation package and evaluates outgoing edges. An artifact commits its
+canonical artifact row and crawl observation, then settles without DOM or outgoing edges. User
+materialization runs in separate workers and cannot change the crawl request's terminal state.
 
 The crawl request may transition through states such as:
 
@@ -331,6 +337,8 @@ durable NATS package reference published
 crawl ready for outgoing edges
 ```
 
+Artifact ingestion crosses the same barrier with no navigation package and settles terminally.
+
 The package is page-local Arrow data exposed as `nav.*` tables. Its NATS reference contains the
 object key, SHA-256, byte size, recipe version, and row count. Edge execution verifies size and
 digest before registering the package on a dedicated DuckDB connection. The same connection may
@@ -341,7 +349,8 @@ After the base crawl commit, CDC and activation backfill may discover determinis
 scopes. A separate materialization worker owns one scope from evaluation through authoritative
 coverage under `live` or `backfill` resource admission. Its failure is observable and retryable but
 cannot fail navigation, hold a crawl request at the readiness fence, or keep a graph run active.
-Raw HTML is the permanent regeneration authority if an ephemeral package is missing.
+Raw HTML is the permanent regeneration authority if an ephemeral package is missing. Artifacts have
+no navigation package and cross the same readiness boundary as terminal content.
 
 ### Edge activation
 
@@ -539,7 +548,7 @@ runs are unaffected because their complete executable graph is frozen in NATS. D
 provenance may retain component IDs whose Postgres definitions were later deleted.
 
 Runtime state remains in NATS only while operationally useful. User graph configuration stays in
-Postgres, while raw HTML, crawl observations, elements, derived facts, and graph provenance remain
+Postgres, while raw HTML, artifacts, crawl observations, elements, derived facts, and graph provenance remain
 durable in repository objects and DuckLake. Exact NATS cleanup timing is deployment configuration,
 not part of the graph data model.
 
@@ -735,6 +744,7 @@ node_id
 url
 transport: http | browser | firecrawl
 document_id nullable
+artifact_id nullable
 effective_policy_snapshot_json
 source_crawl_id nullable
 source_edge_id nullable
@@ -785,8 +795,8 @@ source_edge_id UUID nullable
 ```
 
 There are no task-ID, task-revision, primitive, or compatibility provenance columns. Each row is
-exactly one acquisition and also stores its frozen `profile`, ranked
-`template`, `config_json`, `config_hash`, and typed acquisition outcome. Canonical document-quality
+exactly one acquisition and also stores its transport `profile`, `crawl_profile_id`,
+`crawl_profile_slug`, `remote_concurrency`, `config_json`, `config_hash`, and typed outcome. Canonical document-quality
 measurements live once on `documents`; they are not copied into every crawl observation.
 
 ### Navigation readiness and asynchronous materialization
@@ -826,6 +836,11 @@ The readiness work payload is:
 The repository ingestion result stores the same package reference in NATS before work is
 acknowledged. If readiness publication fails, redelivery republishes from that durable state.
 `event_id` and the edge-evaluation identity make redelivery idempotent.
+
+Artifact readiness uses the same payload with `navigation: null`. It settles the crawl request
+without publishing edge work. A successful crawl references exactly one of `document_id` or
+`artifact_id`; response media type and filename remain observation fields on `crawls`, while the
+`artifacts` row contains canonical hash, object key, byte size, and creation time.
 
 ## Cutover rule
 

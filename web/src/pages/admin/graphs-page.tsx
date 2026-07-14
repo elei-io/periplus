@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 
 import { GraphCanvas } from "@/components/crawl-graph/graph-canvas"
+import { SqlEditor } from "@/components/catalogue/sql-editor"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -161,10 +162,14 @@ export function CrawlGraphDetailPage({
   }
 
   if (graphQuery.isLoading) {
-    return <LoaderCircleIcon className="m-auto size-5 animate-spin text-muted-foreground" />
+    return (
+      <LoaderCircleIcon className="m-auto size-5 animate-spin text-muted-foreground" />
+    )
   }
   if (!graphQuery.data) {
-    return <p className="m-auto text-sm text-muted-foreground">Graph not found.</p>
+    return (
+      <p className="m-auto text-sm text-muted-foreground">Graph not found.</p>
+    )
   }
   return (
     <div className="w-full">
@@ -216,7 +221,13 @@ function GraphDetail({
 
   useEffect(() => {
     const run = runQuery.data
-    if (!run || run.status === "queued" || run.status === "running" || announcedRuns.current.has(run.id)) return
+    if (
+      !run ||
+      run.status === "queued" ||
+      run.status === "running" ||
+      announcedRuns.current.has(run.id)
+    )
+      return
     announcedRuns.current.add(run.id)
     toast.success(`Graph run ${run.status.replaceAll("_", " ")}.`, {
       action: {
@@ -231,7 +242,9 @@ function GraphDetail({
       <header className="flex flex-wrap items-start justify-between gap-3 border-b pb-4">
         <div>
           <div className="flex items-center gap-2">
-            <h2 className="text-xl font-semibold tracking-tight">{graph.name}</h2>
+            <h2 className="text-xl font-semibold tracking-tight">
+              {graph.name}
+            </h2>
             <Badge variant="secondary">
               {graph.root_node_id ? "Root set" : "No root"}
             </Badge>
@@ -242,7 +255,9 @@ function GraphDetail({
             >
               <SelectTrigger className="w-48">
                 <span className="truncate">
-                  Root: {graph.nodes.find((node) => node.id === graph.root_node_id)?.name ?? "Not set"}
+                  Root:{" "}
+                  {graph.nodes.find((node) => node.id === graph.root_node_id)
+                    ?.name ?? "Not set"}
                 </span>
               </SelectTrigger>
               <SelectContent>
@@ -264,7 +279,10 @@ function GraphDetail({
         <div className="flex gap-2">
           <RunGraphButton graph={graph} onStarted={setActiveRunId} />
           {activeRuns.length > 1 ? (
-            <Select value={activeRunId} onValueChange={(runId) => runId && setActiveRunId(runId)}>
+            <Select
+              value={activeRunId}
+              onValueChange={(runId) => runId && setActiveRunId(runId)}
+            >
               <SelectTrigger className="w-44">
                 <span className="truncate">Run {activeRunId?.slice(0, 8)}</span>
               </SelectTrigger>
@@ -278,7 +296,11 @@ function GraphDetail({
             </Select>
           ) : null}
           {activeRunId ? (
-            <Button variant="outline" disabled={cancelRun.isPending} onClick={() => cancelRun.mutate(activeRunId)}>
+            <Button
+              variant="outline"
+              disabled={cancelRun.isPending}
+              onClick={() => cancelRun.mutate(activeRunId)}
+            >
               Cancel
             </Button>
           ) : null}
@@ -584,9 +606,15 @@ function EdgeRow({
           <Trash2Icon />
         </Button>
       </div>
-      <pre className="mt-2 max-h-24 overflow-auto rounded bg-muted p-2 text-xs">
-        {edge.sql}
-      </pre>
+      <div className="mt-2 overflow-hidden rounded border bg-card/50">
+        <SqlEditor
+          value={edge.sql}
+          readOnly
+          height={`${Math.max(80, Math.min(128, edge.sql.split("\n").length * 20 + 28))}px`}
+          ariaLabel={`Read-only SQL for edge ${edge.name}`}
+          enableCssSelect
+        />
+      </div>
     </div>
   )
 }
@@ -623,10 +651,7 @@ function RunGraphButton({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <Button
-        disabled={!graph.root_node_id}
-        onClick={() => setOpen(true)}
-      >
+      <Button disabled={!graph.root_node_id} onClick={() => setOpen(true)}>
         <PlayIcon />
         Run graph
       </Button>
@@ -645,7 +670,11 @@ function RunGraphButton({
         />
         <DialogFooter>
           <Button disabled={trigger.isPending} onClick={run}>
-            {trigger.isPending ? <LoaderCircleIcon className="animate-spin" /> : <PlayIcon />}
+            {trigger.isPending ? (
+              <LoaderCircleIcon className="animate-spin" />
+            ) : (
+              <PlayIcon />
+            )}
             Start run
           </Button>
         </DialogFooter>

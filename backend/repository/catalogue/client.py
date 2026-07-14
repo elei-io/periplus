@@ -13,6 +13,7 @@ from ducklake_client import ColumnDef, DuckLake, DuckLakeError, PostgresCatalog,
 from repository.catalogue.config import CatalogueConfig
 from repository.catalogue.exceptions import CatalogueSchemaError
 from repository.catalogue.schema import (
+    ARTIFACT_COLUMNS,
     CATALOGUE_SCHEMA_VERSION,
     CRAWL_COLUMNS,
     DOCUMENT_COLUMNS,
@@ -71,6 +72,11 @@ class Catalogue:
             self.lake.schema.create(self.config.schema)
             self.lake.schema.create("views")
             self.lake.schema.create("_atlas_materializations")
+            self.lake.table.create(
+                "artifacts",
+                schema_name=self.config.schema,
+                **ARTIFACT_COLUMNS,
+            )
             self.lake.table.create(
                 "documents",
                 schema_name=self.config.schema,

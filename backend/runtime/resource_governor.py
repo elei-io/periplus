@@ -251,7 +251,7 @@ def _bundle_fits(
             if limits.capacity(need) != capacity:
                 # A CrawlPolicy limit may change while frozen work from the old
                 # revision is still in flight. Drain the old grants before the
-                # stable domain-group resource adopts its new capacity.
+                # stable remote-domain resource adopts its new capacity.
                 return False
         used = sum(need.units for _grant, need in existing)
         if used + requested.units > capacity:
@@ -557,7 +557,7 @@ def catalogue_request(
 def remote_request(
     operation_id: str,
     *,
-    domain_group: str,
+    remote_domain: str,
     concurrency: int,
 ) -> ResourceRequest:
     return ResourceRequest(
@@ -565,7 +565,7 @@ def remote_request(
         service_class="critical",
         resources=(
             ResourceNeed(
-                name=f"remote:{domain_group}",
+                name=f"remote:{remote_domain}",
                 units=1,
                 capacity=concurrency,
             ),

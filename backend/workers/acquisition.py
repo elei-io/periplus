@@ -256,6 +256,7 @@ async def _process_crawl(
                         else "awaiting_navigation"
                     ),
                     "document_id": page.document_id,
+                    "artifact_id": page.artifact_id,
                     "claim_token": None,
                     "claim_expires_at": None,
                     "updated_at": datetime.now(UTC),
@@ -356,7 +357,10 @@ async def run(
     object_request(
         "acquisition-startup-validation",
         direction="write",
-        byte_count=get_int("ATLAS_REPOSITORY_MAX_HTML_BYTES"),
+        byte_count=max(
+            get_int("ATLAS_REPOSITORY_MAX_HTML_BYTES"),
+            get_int("ATLAS_REPOSITORY_MAX_ARTIFACT_BYTES"),
+        ),
         service_class="critical",
     )
     metrics_server = None

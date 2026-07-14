@@ -36,8 +36,11 @@ class PolicyTrialComparison:
     host: str
     port: int
     registrable_domain: str
-    use_template: str
-    candidate_template: str
+    use_profile: str
+    candidate_profile: str
+    use_profile_config_hash: str
+    candidate_profile_config_hash: str
+    candidate_profile_definition_hash: str
     selected_trials: int
     completed_pairs: int
     recovered_crawls: int
@@ -77,7 +80,8 @@ def get_policy_trial_application_domain(
     scheme: str,
     host: str,
     port: int,
-    template_name: str,
+    profile_slug: str,
+    profile_config_hash: str,
 ) -> str | None:
     """Return the observed registrable domain when a completed trial supports this action."""
 
@@ -90,12 +94,13 @@ def get_policy_trial_application_domain(
         SELECT registrable_domain
         FROM pairs
         WHERE scheme = ? AND host = ? AND port = ?
-          AND sample_template = ?
+          AND sample_profile = ?
+          AND candidate_profile_definition_hash = ?
           AND sample_crawl_id IS NOT NULL
         ORDER BY use_captured_at DESC
         LIMIT 1
         """,
-        [scheme, host, port, template_name],
+        [scheme, host, port, profile_slug, profile_config_hash],
     ).fetchone()
     return None if row is None else str(row[0])
 
@@ -149,9 +154,13 @@ def get_policy_trial_report(
             WITH {base}
             SELECT count(*)
             FROM (
-                SELECT scheme, host, port, use_template, sample_template
+                SELECT scheme, host, port, use_profile, sample_profile,
+                       use_profile_config_hash, candidate_profile_config_hash,
+                       candidate_profile_definition_hash
                 FROM pairs
-                GROUP BY scheme, host, port, use_template, sample_template
+                GROUP BY scheme, host, port, use_profile, sample_profile,
+                         use_profile_config_hash, candidate_profile_config_hash,
+                         candidate_profile_definition_hash
             ) AS comparison_cohorts
             """
         ).fetchone()[0]
@@ -160,8 +169,8 @@ def get_policy_trial_report(
         f"""
         WITH {base}
         SELECT scheme, host, port, registrable_domain,
-               use_template,
-               sample_template,
+               use_profile,
+               sample_profile,
                count(*) AS selected_trials,
                count(*) FILTER (WHERE sample_crawl_id IS NOT NULL) AS completed_pairs,
                count(*) FILTER (
@@ -250,10 +259,15 @@ def get_policy_trial_report(
                    WHERE sample_crawl_id IS NOT NULL AND sample_failure_count > 0
                ) AS sample_acquisition_failure_count,
                median(sample_duration_ms - use_duration_ms) AS median_duration_delta_ms,
-               max(use_captured_at) AS last_trial_at
+               max(use_captured_at) AS last_trial_at,
+               use_profile_config_hash,
+               candidate_profile_config_hash,
+               candidate_profile_definition_hash
         FROM pairs
         GROUP BY scheme, host, port, registrable_domain,
-                 use_template, sample_template
+                 use_profile, sample_profile, use_profile_config_hash,
+                 candidate_profile_config_hash,
+                 candidate_profile_definition_hash
         ORDER BY last_trial_at DESC, scheme, host, port
         LIMIT ? OFFSET ?
         """,
@@ -266,8 +280,8 @@ def get_policy_trial_report(
             host=str(row[1]),
             port=int(row[2]),
             registrable_domain=str(row[3]),
-            use_template=str(row[4]),
-            candidate_template=str(row[5]),
+            use_profile=str(row[4]),
+            candidate_profile=str(row[5]),
             selected_trials=int(row[6]),
             completed_pairs=int(row[7]),
             recovered_crawls=int(row[8]),
@@ -290,6 +304,9 @@ def get_policy_trial_report(
             sample_acquisition_failure_count=int(row[25]),
             median_duration_delta_ms=_optional_float(row[26]),
             last_trial_at=row[27],
+            use_profile_config_hash=str(row[28]),
+            candidate_profile_config_hash=str(row[29]),
+            candidate_profile_definition_hash=str(row[30]),
         )
         for row in comparison_rows
     )
@@ -334,9 +351,22 @@ def _paired_trials_cte(crawls: str, documents: str) -> str:
                    u.url_port AS port,
                    u.url_registrable_domain AS registrable_domain,
                    u.requested_url,
-                   u.template AS use_template,
-                   coalesce(u.trial_candidate_template, s.template, 'unknown')
-                       AS sample_template,
+                   u.crawl_profile_slug AS use_profile,
+                   u.config_hash AS use_profile_config_hash,
+                   coalesce(
+                       u.trial_candidate_profile_slug,
+                       s.crawl_profile_slug,
+                       'unknown'
+                   ) AS sample_profile,
+                   coalesce(
+                       s.config_hash,
+                       u.trial_candidate_profile_config_hash,
+                       repeat('0', 64)
+                   ) AS candidate_profile_config_hash,
+                   coalesce(
+                       u.trial_candidate_profile_config_hash,
+                       repeat('0', 64)
+                   ) AS candidate_profile_definition_hash,
                    u.crawl_id AS use_crawl_id,
                    u.captured_at AS use_captured_at,
                    u.status_code AS use_status_code,

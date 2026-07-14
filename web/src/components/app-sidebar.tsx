@@ -10,7 +10,6 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarSeparator,
 } from "@/components/ui/sidebar"
 
 type AppSidebarProps = {
@@ -21,7 +20,7 @@ type AppSidebarProps = {
 export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader className="px-3 py-3">
+      <SidebarHeader className="h-14 shrink-0 justify-center border-b px-3 py-0">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" tooltip="Atlas">
@@ -38,7 +37,6 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
-      <SidebarSeparator />
       <SidebarContent>
         {navigationGroups.map((group) => (
           <SidebarGroup key={group.slug}>

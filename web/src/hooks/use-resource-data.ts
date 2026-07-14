@@ -4,9 +4,14 @@ import { toast } from "sonner"
 import { apiErrorFromResponse, apiUrl, extractApiError } from "@/lib/api"
 import type {
   CrawlPolicyDetailRecord,
+  CrawlPolicyCreateRequest,
   CrawlPolicyFilters,
   CrawlPolicyListResponse,
   CrawlPolicyUpdateRequest,
+  CrawlProfileListResponse,
+  CrawlProfileCreateRequest,
+  CrawlProfileRecord,
+  CrawlProfileUpdateRequest,
   PageParams,
   PolicyTrialApplyRequest,
   PolicyTrialReport,
@@ -29,14 +34,80 @@ function pageParams(page: PageParams) {
 function crawlPolicyParams(filters: CrawlPolicyFilters, page?: PageParams) {
   const params = new URLSearchParams(page ? pageParams(page) : undefined)
   appendParam(params, "match_pattern", filters.matchPattern)
-  appendParam(params, "template", filters.template)
+  appendParam(params, "profile_slug", filters.profileSlug)
   if (filters.enabled !== "all") {
     params.set("enabled", String(filters.enabled === "enabled"))
   }
-  if (filters.mode !== "all") {
-    params.set("mode", filters.mode)
+  if (filters.transport !== "all") {
+    params.set("transport", filters.transport)
   }
   return params
+}
+
+export function useCrawlProfiles(page: PageParams = { limit: 100, offset: 0 }) {
+  return useQuery({
+    queryKey: ["crawl-profiles", page],
+    queryFn: async () => {
+      const params = new URLSearchParams(pageParams(page))
+      const response = await fetch(apiUrl(`/crawl-profiles/?${params.toString()}`))
+      if (!response.ok) throw await apiErrorFromResponse(response)
+      return (await response.json()) as CrawlProfileListResponse
+    },
+  })
+}
+
+export function useCrawlProfile(id: string | null) {
+  return useQuery({
+    enabled: Boolean(id),
+    queryKey: ["crawl-profile", id],
+    queryFn: async () => {
+      const response = await fetch(apiUrl(`/crawl-profiles/${id}`))
+      if (!response.ok) throw await apiErrorFromResponse(response)
+      return (await response.json()) as CrawlProfileRecord
+    },
+  })
+}
+
+export function useUpdateCrawlProfile(id: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (request: CrawlProfileUpdateRequest) => {
+      const response = await fetch(apiUrl(`/crawl-profiles/${id}`), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      })
+      if (!response.ok) throw await apiErrorFromResponse(response)
+      return (await response.json()) as CrawlProfileRecord
+    },
+    onSuccess: () => {
+      toast.success("Updated crawl profile.")
+      void queryClient.invalidateQueries({ queryKey: ["crawl-profile", id] })
+      void queryClient.invalidateQueries({ queryKey: ["crawl-profiles"] })
+      void queryClient.invalidateQueries({ queryKey: ["crawl-policies"] })
+    },
+    onError: (error) => toast.error(extractApiError(error)),
+  })
+}
+
+export function useCreateCrawlProfile() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (request: CrawlProfileCreateRequest) => {
+      const response = await fetch(apiUrl("/crawl-profiles/"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      })
+      if (!response.ok) throw await apiErrorFromResponse(response)
+      return (await response.json()) as CrawlProfileRecord
+    },
+    onSuccess: () => {
+      toast.success("Created crawl profile.")
+      void queryClient.invalidateQueries({ queryKey: ["crawl-profiles"] })
+    },
+    onError: (error) => toast.error(extractApiError(error)),
+  })
 }
 
 export function useCrawlPolicies(
@@ -140,6 +211,26 @@ export function useUpdateCrawlPolicy(id: string) {
     onError: (error) => {
       toast.error(extractApiError(error))
     },
+  })
+}
+
+export function useCreateCrawlPolicy() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (request: CrawlPolicyCreateRequest) => {
+      const response = await fetch(apiUrl("/crawl-policies/"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      })
+      if (!response.ok) throw await apiErrorFromResponse(response)
+      return (await response.json()) as CrawlPolicyDetailRecord
+    },
+    onSuccess: () => {
+      toast.success("Created crawl policy.")
+      void queryClient.invalidateQueries({ queryKey: ["crawl-policies"] })
+    },
+    onError: (error) => toast.error(extractApiError(error)),
   })
 }
 

@@ -41,18 +41,21 @@ import {
 } from "@/components/ui/table"
 import {
   useApplyPolicyTrial,
+  useCrawlProfiles,
   usePolicyTrials,
 } from "@/hooks/use-resource-data"
 import { extractApiError } from "@/lib/api"
 import type {
   PolicyTrialComparison,
   PolicyTrialSummary,
+  CrawlProfileRecord,
 } from "@/types/resources"
 
 export function PolicyTrialsPage() {
   const [offset, setOffset] = useState(0)
   const [applyComparison, setApplyComparison] = useState<PolicyTrialComparison | null>(null)
   const trialsQuery = usePolicyTrials({ limit: RESOURCE_PAGE_SIZE, offset })
+  const profilesQuery = useCrawlProfiles()
   const applyTrial = useApplyPolicyTrial()
   const report = trialsQuery.data
 
@@ -62,7 +65,7 @@ export function PolicyTrialsPage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <FlaskConicalIcon className="size-4 text-muted-foreground" />
-            <h1 className="truncate text-lg font-medium">Policy trials</h1>
+            <h1 className="truncate text-lg font-medium">Trials</h1>
             {report ? (
               <Badge variant={report.summary.sampling_active ? "secondary" : "outline"}>
                 {report.summary.sampling_active ? "Sampling" : "Off"}
@@ -92,6 +95,7 @@ export function PolicyTrialsPage() {
       ) : null}
       {report ? (
         <>
+          <TrialLadder profiles={profilesQuery.data?.items ?? []} />
           <SamplingSummary summary={report.summary} />
           <ComparisonEvidence
             comparisons={report.items}
@@ -120,7 +124,7 @@ export function PolicyTrialsPage() {
               scheme: comparison.scheme,
               host: comparison.host,
               port: comparison.port,
-              template: comparison.candidate_template,
+              profile: comparison.candidate_profile,
             },
             { onSuccess: () => setApplyComparison(null) }
           )
@@ -128,6 +132,12 @@ export function PolicyTrialsPage() {
       />
     </div>
   )
+}
+
+function TrialLadder({ profiles }: { profiles: CrawlProfileRecord[] }) {
+  const eligible = [...profiles].filter((profile) => profile.trial_eligible).sort((left, right) => left.cost_rank - right.cost_rank)
+  if (!eligible.length) return null
+  return <Card><CardHeader><CardTitle>Trial ladder</CardTitle><CardDescription>When a page is sampled, Atlas compares its current profile with the next profile in this order.</CardDescription></CardHeader><CardContent><div className="flex flex-wrap items-center gap-2">{eligible.map((profile, index) => <div key={profile.id} className="contents"><a href={`/crawl-profiles/${profile.id}`} className="rounded-md border bg-muted/15 px-3 py-2 hover:bg-muted/30"><span className="font-medium">{profile.name}</span><span className="ml-2 text-xs text-muted-foreground">cost {profile.cost_rank}</span></a>{index < eligible.length - 1 ? <ChevronRightIcon className="size-4 text-muted-foreground" /> : null}</div>)}</div></CardContent></Card>
 }
 
 function SamplingSummary({ summary }: { summary: PolicyTrialSummary }) {
@@ -141,12 +151,12 @@ function SamplingSummary({ summary }: { summary: PolicyTrialSummary }) {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <CardTitle>
-              {summary.sampling_active ? "Sampling is active" : "Sampling is off"}
+              {summary.sampling_active ? "Trials are collecting evidence" : "Trials are paused"}
             </CardTitle>
             <CardDescription className="mt-1 max-w-2xl">
               {summary.sampling_active
-                ? `${formatPercent(summary.configured_sample_rate)} of ordinary crawls are selected for one shadow acquisition with the next policy template.`
-                : "No new trials are being selected. Historical evidence remains available below."}
+                ? `${formatPercent(summary.configured_sample_rate)} of crawled pages are fetched once more with the next profile in the ladder.`
+                : "No new comparisons are being started. Existing results remain available below."}
             </CardDescription>
           </div>
           <Badge variant={summary.sampling_active ? "secondary" : "outline"}>
@@ -158,22 +168,22 @@ function SamplingSummary({ summary }: { summary: PolicyTrialSummary }) {
       <CardContent>
         <div className="grid gap-x-6 gap-y-5 sm:grid-cols-2 xl:grid-cols-4">
           <SummaryMetric
-            label="Current sample rate"
+            label="Pages selected"
             value={formatPercent(summary.configured_sample_rate)}
             detail={`At most ${summary.max_in_flight.toLocaleString()} samples in flight`}
           />
           <SummaryMetric
-            label="Observed rate · all time"
+            label="Actual selection rate"
             value={formatPercent(summary.observed_sample_rate)}
-            detail={`${summary.selected_trials.toLocaleString()} of ${summary.use_crawls.toLocaleString()} use crawls selected`}
+            detail={`${summary.selected_trials.toLocaleString()} of ${summary.use_crawls.toLocaleString()} pages considered`}
           />
           <SummaryMetric
-            label="Completed pairs"
+            label="Comparisons completed"
             value={summary.completed_pairs.toLocaleString()}
             detail={`${formatPercent(pairRate)} of selected trials · ${summary.sample_crawls.toLocaleString()} samples recorded`}
           />
           <SummaryMetric
-            label="Awaiting a sample"
+            label="Still waiting"
             value={summary.awaiting_samples.toLocaleString()}
             detail={
               summary.pairs_with_failure
@@ -222,9 +232,9 @@ function ComparisonEvidence({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Policy comparisons</CardTitle>
+        <CardTitle>Results by website</CardTitle>
         <CardDescription>
-          Expand a comparison to inspect the evidence behind Atlas&apos;s verdict.
+          Compare what the current and candidate profiles found on the same pages.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -232,16 +242,16 @@ function ComparisonEvidence({
           <TableHeader className="bg-muted/30">
             <TableRow className="hover:bg-transparent">
               <TableHead className="min-w-32 pl-3">Domain</TableHead>
-              <TableHead className="min-w-40">Trial policy</TableHead>
-              <TableHead className="w-16">Pairs</TableHead>
-              <TableHead className="min-w-44">Verdict</TableHead>
+              <TableHead className="min-w-40">Profiles compared</TableHead>
+              <TableHead className="w-16">Pages</TableHead>
+              <TableHead className="min-w-44">Recommendation</TableHead>
               <TableHead className="w-16 pr-3 text-right">Action</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {comparisons.map((comparison) => (
               <ComparisonRow
-                key={`${comparison.scheme}:${comparison.host}:${comparison.port}:${comparison.use_template}:${comparison.candidate_template}`}
+                key={`${comparison.scheme}:${comparison.host}:${comparison.port}:${comparison.use_profile_config_hash}:${comparison.candidate_profile_config_hash}`}
                 comparison={comparison}
                 onApply={() => onApply(comparison)}
               />
@@ -253,7 +263,7 @@ function ComparisonEvidence({
                   <p className="mt-1 text-xs text-muted-foreground">
                     {samplingActive
                       ? "Atlas is sampling; evidence will appear after both acquisitions are ingested."
-                      : "Set ATLAS_POLICY_TRIAL_SAMPLE_SHARE above zero to begin collecting paired evidence."}
+                      : "Enable trial sampling in the Atlas deployment settings to begin collecting comparisons."}
                   </p>
                 </TableCell>
               </TableRow>
@@ -273,7 +283,7 @@ function ComparisonRow({
   onApply: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
-  const detailId = `trial-${comparison.scheme}-${comparison.host}-${comparison.port}-${comparison.use_template}-${comparison.candidate_template}`
+  const detailId = `trial-${comparison.scheme}-${comparison.host}-${comparison.port}-${comparison.use_profile_config_hash}-${comparison.candidate_profile_config_hash}`
 
   return (
     <>
@@ -302,7 +312,7 @@ function ComparisonRow({
         </TableCell>
         <TableCell className="py-3 whitespace-normal">
           <Badge variant="outline">
-            {formatTemplate(comparison.use_template)} → {formatTemplate(comparison.candidate_template)}
+            {formatProfile(comparison.use_profile)} → {formatProfile(comparison.candidate_profile)}
           </Badge>
         </TableCell>
         <TableCell className="py-3 whitespace-normal">
@@ -365,12 +375,12 @@ function ComparisonFeatures({ comparison }: { comparison: PolicyTrialComparison 
         <div>
           <p className="font-medium">{comparison.verdict_reason}</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Features compare {formatTemplate(comparison.use_template)} with {formatTemplate(comparison.candidate_template)} for the same URLs.
+            Features compare {formatProfile(comparison.use_profile)} with {formatProfile(comparison.candidate_profile)} for the same URLs.
           </p>
         </div>
         <div className="text-right">
           <p className="text-[0.625rem] text-muted-foreground uppercase">Current policy</p>
-          <p className="mt-1 font-medium">{formatTemplate(comparison.current_template)}</p>
+          <p className="mt-1 font-medium">{formatProfile(comparison.current_profile)}</p>
         </div>
       </div>
       <div className="grid gap-px overflow-hidden rounded-md border bg-border sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -450,7 +460,7 @@ function ApplyPolicyDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            Apply {comparison ? formatTemplate(comparison.candidate_template) : "sampled policy"} to {comparison ? originLabel(comparison) : "domain"}?
+            Apply {comparison ? formatProfile(comparison.candidate_profile) : "sampled profile"} to {comparison ? originLabel(comparison) : "domain"}?
           </DialogTitle>
           <DialogDescription>
             Atlas will create or update the broad domain policy for future crawls. More-specific path policies will continue to override it.
@@ -517,8 +527,8 @@ function originLabel(comparison: PolicyTrialComparison) {
     : `${comparison.host}:${comparison.port}`
 }
 
-function formatTemplate(value: string) {
-  return value.replaceAll("_", " ")
+function formatProfile(value: string) {
+  return value.replaceAll("-", " ")
 }
 
 function formatEvidenceDelta(comparison: PolicyTrialComparison) {

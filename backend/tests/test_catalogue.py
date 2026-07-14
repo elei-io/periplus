@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+import io
 import tempfile
 import unittest
 from dataclasses import asdict
@@ -23,7 +24,13 @@ from repository.catalogue import Catalogue, CatalogueConfig, CatalogueConfigErro
 from repository.catalogue import CrawlRecord
 from repository.catalogue.service import CatalogueService
 from repository.catalogue.schema import CRAWL_COLUMNS, expected_columns
-from repository import FileObjectStore, RawHtmlRepository, RepositoryIngestor
+from repository import (
+    ArtifactIdentity,
+    FileObjectStore,
+    RawArtifactRepository,
+    RawHtmlRepository,
+    RepositoryIngestor,
+)
 from dom import encode_html
 
 
@@ -106,6 +113,70 @@ class CatalogueConfigTests(unittest.TestCase):
 
 
 class CatalogueBootstrapTests(unittest.TestCase):
+    def test_artifact_ingestion_is_queryable_by_domain_path_and_media_type(self) -> None:
+        payload = b"%PDF-1.7\r\nAtlas"
+        identity = ArtifactIdentity(
+            sha256=hashlib.sha256(payload).hexdigest(),
+            size_bytes=len(payload),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            catalogue = Catalogue(
+                CatalogueConfig(
+                    catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                    storage=DiskStorage(root / "lake"),
+                )
+            )
+            catalogue.bootstrap()
+            store = FileObjectStore(root / "objects")
+            RawArtifactRepository(store).put(
+                io.BytesIO(payload),
+                identity=identity,
+            )
+            ingestor = RepositoryIngestor(
+                html_repository=RawHtmlRepository(store),
+                catalogue=catalogue,
+                staging_root=root / "staging",
+            )
+            crawl = CrawlRecord(
+                crawl_id=uuid4(),
+                artifact_id=identity.artifact_id,
+                graph_id=uuid4(),
+                graph_run_id=uuid4(),
+                graph_node_id=uuid4(),
+                crawl_request_id=uuid4(),
+                requested_url="https://reports.example.com/reports/atlas.pdf",
+                normalized_url="https://reports.example.com/reports/atlas.pdf",
+                final_url="https://reports.example.com/reports/atlas.pdf",
+                captured_at=datetime(2026, 7, 14, tzinfo=UTC),
+                status_code=200,
+                response_media_type="application/pdf",
+                response_filename="atlas.pdf",
+                profile="http",
+                crawl_profile_slug="direct",
+                remote_concurrency=4,
+                config_hash="a" * 64,
+                config_json={"profile": "http"},
+                outcome="success",
+            )
+            prepared = ingestor.prepare_from_raw(crawl=crawl)
+            result = ingestor.commit_prepared_batch([prepared])[0]
+            stored = ingestor.catalogue_service.get_artifact(identity.artifact_id)
+            unique_pdfs = catalogue.connection.execute(
+                "SELECT count(DISTINCT c.artifact_id) "
+                "FROM atlas.main.crawls c "
+                "JOIN atlas.main.artifacts a USING (artifact_id) "
+                "WHERE c.url_registrable_domain = 'example.com' "
+                "AND c.url_path LIKE '/reports/%' "
+                "AND c.response_media_type = 'application/pdf'"
+            ).fetchone()[0]
+            ingestor.close()
+
+        self.assertEqual(result.artifact_id, identity.artifact_id)
+        self.assertTrue(result.artifact_created)
+        self.assertIsNotNone(stored)
+        self.assertEqual(unique_pdfs, 1)
+
     def test_ingestion_persists_typed_outcome_and_document_quality(self) -> None:
         html = (
             '<html><body><div id="root">Atlas</div><a href="/docs">Docs</a>'
@@ -142,9 +213,9 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 captured_at=datetime(2026, 7, 14, tzinfo=UTC),
                 status_code=200,
                 duration_ms=12,
-                domain_group="public-web",
                 profile="http",
-                template="http_fast",
+                crawl_profile_slug="direct",
+                remote_concurrency=4,
                 config_hash="a" * 64,
                 config_json={"profile": "http"},
                 outcome="success",
@@ -193,13 +264,13 @@ class CatalogueBootstrapTests(unittest.TestCase):
                         "requested_url, normalized_url, final_url, page_url, "
                         "url_scheme, url_host, url_port, url_registrable_domain, "
                         "url_path, url_query, captured_at, status_code, duration_ms, "
-                        "domain_group, profile, template, config_hash, config_json, crawl_policy_id, "
-                        "crawl_policy_revision, outcome, failure_code, failure_stage, "
+                        "profile, crawl_profile_slug, remote_concurrency, config_hash, config_json, crawl_policy_id, "
+                        "outcome, failure_code, failure_stage, "
                         "failure_retryable, failure_detail"
                         ") SELECT uuid(), NULL, uuid(), uuid(), uuid(), uuid(), 'use', NULL, NULL, NULL, 'https://x', "
                         "'https://x/', NULL, 'https://x/', 'https', 'x', 443, 'x', '/', "
-                        "'', now(), NULL, NULL, 'public-web', 'http', 'http_fast', repeat('a', 64), "
-                        "'{}', NULL, NULL, 'failed', 'expected_failure', 'request', "
+                        "'', now(), NULL, NULL, 'http', 'direct', 4, repeat('a', 64), "
+                        "'{}', NULL, 'failed', 'expected_failure', 'request', "
                         "false, 'expected failure'"
                     )
                     catalogue.set_commit_message(
@@ -566,9 +637,9 @@ class CatalogueBootstrapTests(unittest.TestCase):
             normalized_url="https://docs.example.co.jp/start",
             final_url="https://www.example.co.jp:8443/guides/sql?q=ducklake",
             captured_at=datetime(2026, 7, 11, tzinfo=UTC),
-            domain_group="public-web",
             profile="http",
-            template="http_fast",
+            crawl_profile_slug="direct",
+            remote_concurrency=4,
             config_json={},
             config_hash="a" * 64,
             outcome="failed",

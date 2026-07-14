@@ -67,7 +67,16 @@ const domHelperCompletions = [
   ),
 ]
 
-export function SqlEditor({ value, onChange = () => undefined, onRun, readOnly = false, height = "clamp(240px, 38vh, 360px)", ariaLabel = "Catalogue SQL editor", views = [], enableCssSelect = false }: SqlEditorProps) {
+export function SqlEditor({
+  value,
+  onChange = () => undefined,
+  onRun,
+  readOnly = false,
+  height = "clamp(240px, 38vh, 360px)",
+  ariaLabel = "Catalogue SQL editor",
+  views = [],
+  enableCssSelect = false,
+}: SqlEditorProps) {
   const sqlLanguage = useMemo(() => {
     const tables = catalogueTables
     const viewTables = Object.fromEntries(
@@ -127,7 +136,11 @@ export function SqlEditor({ value, onChange = () => undefined, onRun, readOnly =
       editable={!readOnly}
       onChange={onChange}
       onKeyDown={(event) => {
-        if (onRun && (event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        if (
+          onRun &&
+          (event.metaKey || event.ctrlKey) &&
+          event.key === "Enter"
+        ) {
           event.preventDefault()
           onRun()
         }
@@ -137,13 +150,13 @@ export function SqlEditor({ value, onChange = () => undefined, onRun, readOnly =
         foldGutter: false,
         dropCursor: false,
         allowMultipleSelections: false,
-        indentOnInput: true,
-        bracketMatching: true,
-        closeBrackets: true,
+        indentOnInput: !readOnly,
+        bracketMatching: !readOnly,
+        closeBrackets: !readOnly,
         autocompletion: !readOnly,
         highlightSelectionMatches: false,
-        highlightActiveLine: true,
-        highlightActiveLineGutter: true,
+        highlightActiveLine: !readOnly,
+        highlightActiveLineGutter: !readOnly,
         syntaxHighlighting: false,
         highlightSpecialChars: false,
         drawSelection: false,

@@ -65,21 +65,27 @@ def navigation_package() -> NavigationPackage:
 def policy_snapshot(profile: str = "http") -> dict:
     return {
         "id": str(uuid4()),
-        "revision": 1,
-        "metric_slug": f"{profile}-test",
-        "domain_group": "test",
-        "match": "*://*/*",
-        "config": {
-            "profile": profile,
-            "concurrency": 4,
-            "config": {"template": "http_fast"} if profile == "http" else {},
+        "slug": f"{profile}-test",
+        "scheme": "*",
+        "host": "*",
+        "path_prefix": "/",
+        "path_mode": "prefix",
+        "max_concurrency": 4,
+        "profile": {
+            "id": str(uuid4()),
+            "slug": f"{profile}-profile",
+            "name": f"{profile.title()} test",
+            "transport": profile,
+            "config": {},
+            "cost_rank": 10,
         },
-        "matcher": {
-            "scheme": "*",
-            "host": "*",
-            "path_pattern": "/*",
-            "match_type": "glob",
-            "priority": -1_000_000,
+        "trial_candidate": {
+            "id": str(uuid4()),
+            "slug": "rendered",
+            "name": "Rendered",
+            "transport": "browser",
+            "config": {"mode": "static", "wait": "none"},
+            "cost_rank": 20,
         },
     }
 
@@ -309,21 +315,7 @@ class GraphRuntimeTests(unittest.TestCase):
         await runs.create(run.id.hex, run.model_dump_json().encode())
         await initialize_run_progress(progress, run)
         node = run.snapshot.nodes[0]
-        resolver = lambda _url: {
-            "id": str(uuid4()),
-            "revision": 1,
-            "metric_slug": "browser-test",
-            "domain_group": "test",
-            "match": "example.com",
-            "config": {"profile": "browser", "concurrency": 1, "config": {}},
-            "matcher": {
-                "scheme": "https",
-                "host": "example.com",
-                "path_pattern": "/**",
-                "match_type": "glob",
-                "priority": 1,
-            },
-        }
+        resolver = lambda _url: policy_snapshot("browser")
         first, first_admitted = await admit_request(runs=runs, requests=requests, progress=progress, jetstream=jetstream, run_id=run.id, node_id=node.id, url="https://example.com/a#one", policy_resolver=resolver)
         second, second_admitted = await admit_request(runs=runs, requests=requests, progress=progress, jetstream=jetstream, run_id=run.id, node_id=node.id, url="https://EXAMPLE.com/a#two", policy_resolver=resolver)
         assert first is not None and second is not None and first.id == second.id
@@ -425,6 +417,53 @@ class GraphRuntimeTests(unittest.TestCase):
         current = await get_crawl_request(requests, request.id)
         assert current is not None
         self.assertEqual(current.status, "evaluating_edges")
+
+    asyncio.run(scenario())
+
+ def test_artifact_readiness_completes_without_activating_html_edges(self) -> None:
+    async def scenario() -> None:
+        runs, requests, progress, jetstream = FakeKV(), FakeKV(), FakeKV(), FakeJetStream()
+        graph = snapshot()
+        run = new_graph_run(graph, ["https://example.com/report.pdf"]).model_copy(
+            update={"status": "running", "request_count": 1, "pending_request_count": 1}
+        )
+        await runs.create(run.id.hex, run.model_dump_json().encode())
+        await initialize_run_progress(progress, run)
+        from runtime.graph_queue import CrawlRequest
+
+        request = CrawlRequest(
+            id=uuid4(),
+            graph_run_id=run.id,
+            node_id=graph.root_node_id,
+            url="https://example.com/report.pdf",
+            transport="http",
+            artifact_id="sha256:" + "a" * 64,
+            effective_policy_snapshot_json=policy_snapshot(),
+            status="awaiting_navigation",
+            created_at=run.created_at,
+            updated_at=run.created_at,
+        )
+        await requests.create(request.id.hex, request.model_dump_json().encode())
+
+        await handle_readiness(
+            runs=runs,
+            requests=requests,
+            progress=progress,
+            jetstream=jetstream,
+            event=ReadinessWork(
+                event_id=uuid4(),
+                crawl_id=uuid4(),
+                graph_run_id=run.id,
+                crawl_request_id=request.id,
+                navigation=None,
+                occurred_at=datetime.now(UTC),
+            ),
+        )
+
+        self.assertEqual(jetstream.messages, [])
+        current = await get_crawl_request(requests, request.id)
+        assert current is not None
+        self.assertEqual(current.status, "completed")
 
     asyncio.run(scenario())
 

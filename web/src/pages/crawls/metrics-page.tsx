@@ -40,7 +40,6 @@ import {
   useGraphRuns,
   usePolicyPressure,
 } from "@/hooks/use-crawl-graphs"
-import { useCrawlPolicies } from "@/hooks/use-resource-data"
 import type {
   CrawlConcurrencyLimits,
   GraphRunMaterializationLag,
@@ -48,14 +47,6 @@ import type {
   PolicyPressureHours,
   PolicyPressureResponse,
 } from "@/types/graphs"
-import type { CrawlPolicyRecord } from "@/types/resources"
-
-const policyFilters = {
-  matchPattern: "",
-  enabled: "enabled" as const,
-  template: "",
-  mode: "all" as const,
-}
 
 const pressureRanges: PolicyPressureHours[] = [1, 6, 24, 72]
 const chartColors = [
@@ -72,13 +63,6 @@ export function CrawlMetricsPage() {
   const concurrencyQuery = useCrawlConcurrencyLimits()
   const materializationLagQuery = useGraphRunMaterializationLag()
   const pressureQuery = usePolicyPressure(pressureHours)
-  const policiesQuery = useCrawlPolicies(policyFilters, {
-    limit: 500,
-    offset: 0,
-  })
-  const policies = (policiesQuery.data?.items ?? []).filter(
-    (policy) => policy.concurrency !== null,
-  )
   const lag = materializationLagQuery.data?.items ?? []
   const lagByRun = new Map(lag.map((item) => [item.run_id, item]))
   const runs = runsQuery.data?.items ?? []
@@ -93,7 +77,7 @@ export function CrawlMetricsPage() {
     <div className="flex w-full min-w-0 flex-col gap-4 pb-2">
       <LiveTotals
         concurrency={concurrencyQuery.data}
-        policies={policies}
+        pressure={pressureQuery.data}
         runs={runs}
         lag={lag}
       />
@@ -103,12 +87,11 @@ export function CrawlMetricsPage() {
           hours={pressureHours}
           onHoursChange={setPressureHours}
           pressure={pressureQuery.data}
-          policies={policies}
-          loading={pressureQuery.isLoading || policiesQuery.isLoading}
+          loading={pressureQuery.isLoading}
         />
         <ResourceHeadroom
           concurrency={concurrencyQuery.data}
-          policies={policies}
+          pressure={pressureQuery.data}
           lag={lag}
         />
       </div>
@@ -120,28 +103,26 @@ export function CrawlMetricsPage() {
 
 function LiveTotals({
   concurrency,
-  policies,
+  pressure,
   runs,
   lag,
 }: {
   concurrency?: CrawlConcurrencyLimits
-  policies: CrawlPolicyRecord[]
+  pressure?: PolicyPressureResponse
   runs: GraphRunRecord[]
   lag: GraphRunMaterializationLag[]
 }) {
-  const policyLimits = policyLimitsByGroup(policies)
-  const remoteByGroup = resourceUseByPrefix(concurrency, "remote:")
-  const busiest = [...policyLimits].sort(([leftGroup, leftLimit], [rightGroup, rightLimit]) => {
-    const left = (remoteByGroup.get(leftGroup) ?? 0) / leftLimit
-    const right = (remoteByGroup.get(rightGroup) ?? 0) / rightLimit
-    return right - left
+  const remoteResources = currentRemoteResources(concurrency, pressure)
+  const busiest = [...remoteResources].sort((left, right) => {
+    const leftPressure = left.used / left.capacity
+    const rightPressure = right.used / right.capacity
+    return rightPressure - leftPressure
   })[0]
   const pendingUpdates = lag.reduce((sum, item) => sum + item.pending_updates, 0)
   const cooling = runs.filter((run) => {
     const runLag = lag.find((item) => item.run_id === run.id)
     return isTerminalRun(run) && Boolean(runLag?.pending_updates)
   }).length
-  const busiestUsed = busiest ? remoteByGroup.get(busiest[0]) ?? 0 : 0
 
   return (
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -152,8 +133,8 @@ function LiveTotals({
       />
       <MetricCard
         label="Busiest website limit"
-        value={busiest ? `${busiestUsed} / ${busiest[1]}` : "—"}
-        detail={busiest ? policyGroupLabel(busiest[0], policies) : "no policy limits"}
+        value={busiest ? `${busiest.used} / ${busiest.capacity}` : "—"}
+        detail={busiest ? busiest.domain : "no observed websites"}
       />
       <MetricCard
         label="View updates waiting"
@@ -199,9 +180,9 @@ function MetricCard({
 type PressureSeries = {
   key: string
   countKey: string
-  domainGroup: string
+  limitKey: string
+  remoteDomain: string
   label: string
-  limit: number
   color: string
 }
 
@@ -211,18 +192,16 @@ function PolicyPressureChart({
   hours,
   onHoursChange,
   pressure,
-  policies,
   loading,
 }: {
   hours: PolicyPressureHours
   onHoursChange: (hours: PolicyPressureHours) => void
   pressure?: PolicyPressureResponse
-  policies: CrawlPolicyRecord[]
   loading: boolean
 }) {
   const { data, series } = useMemo(
-    () => pressureChartData(pressure, policies),
-    [pressure, policies],
+    () => pressureChartData(pressure),
+    [pressure],
   )
 
   return (
@@ -254,7 +233,7 @@ function PolicyPressureChart({
           </div>
         ) : series.length === 0 ? (
           <div className="flex h-72 items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
-            No enabled website limits
+            No website activity in this period
           </div>
         ) : (
           <>
@@ -306,7 +285,7 @@ function PolicyPressureChart({
             </div>
             <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 border-t pt-3">
               {series.map((item) => {
-                const peak = Math.max(...data.map((datum) => datum[item.countKey] ?? 0))
+                const peak = data.reduce((best, datum) => (datum[item.key] ?? 0) > (best[item.key] ?? 0) ? datum : best, data[0] ?? { timestamp: 0 })
                 return (
                   <div key={item.key} className="flex items-center gap-2 text-xs">
                     <span
@@ -315,7 +294,7 @@ function PolicyPressureChart({
                     />
                     <span className="font-medium">{item.label}</span>
                     <span className="text-muted-foreground tabular-nums">
-                      peak {peak}/{item.limit}
+                      peak {peak[item.countKey] ?? 0}/{peak[item.limitKey] ?? 0}
                     </span>
                   </div>
                 )
@@ -351,7 +330,7 @@ function PressureTooltip({
               {item.label}
             </span>
             <span className="font-medium tabular-nums">
-              {datum?.[item.countKey] ?? 0} / {item.limit}
+              {datum?.[item.countKey] ?? 0} / {datum?.[item.limitKey] ?? 0}
             </span>
           </div>
         ))}
@@ -360,25 +339,21 @@ function PressureTooltip({
   )
 }
 
-function pressureChartData(
-  pressure: PolicyPressureResponse | undefined,
-  policies: CrawlPolicyRecord[],
-) {
-  const limits = policyLimitsByGroup(policies)
-  const series: PressureSeries[] = [...limits].map(([domainGroup, limit], index) => ({
+function pressureChartData(pressure: PolicyPressureResponse | undefined) {
+  const series: PressureSeries[] = (pressure?.items ?? []).map((item, index) => ({
     key: `pressure_${index}`,
     countKey: `count_${index}`,
-    domainGroup,
-    label: policyGroupLabel(domainGroup, policies),
-    limit,
+    limitKey: `limit_${index}`,
+    remoteDomain: item.remote_domain,
+    label: item.remote_domain,
     color: chartColors[index % chartColors.length],
   }))
   if (!pressure || series.length === 0) return { data: [], series }
 
   const pointsByGroup = new Map(
     pressure.items.map((item) => [
-      item.domain_group,
-      new Map(item.points.map((point) => [Date.parse(point.captured_at), point.peak_concurrency])),
+      item.remote_domain,
+      new Map(item.points.map((point) => [Date.parse(point.captured_at), point])),
     ]),
   )
   const start = Date.parse(pressure.range_start)
@@ -390,9 +365,12 @@ function pressureChartData(
     const timestamp = start + index * bucketMilliseconds
     const datum: PressureDatum = { timestamp }
     for (const item of series) {
-      const count = pointsByGroup.get(item.domainGroup)?.get(timestamp) ?? 0
+      const point = pointsByGroup.get(item.remoteDomain)?.get(timestamp)
+      const count = point?.peak_concurrency ?? 0
+      const limit = point?.limit ?? 1
       datum[item.countKey] = count
-      datum[item.key] = Math.round((count / item.limit) * 1_000) / 10
+      datum[item.limitKey] = limit
+      datum[item.key] = Math.round((count / limit) * 1_000) / 10
     }
     return datum
   })
@@ -401,17 +379,16 @@ function pressureChartData(
 
 function ResourceHeadroom({
   concurrency,
-  policies,
+  pressure,
   lag,
 }: {
   concurrency?: CrawlConcurrencyLimits
-  policies: CrawlPolicyRecord[]
+  pressure?: PolicyPressureResponse
   lag: GraphRunMaterializationLag[]
 }) {
-  const policyLimits = policyLimitsByGroup(policies)
-  const remoteByGroup = resourceUseByPrefix(concurrency, "remote:")
-  const remoteCapacity = [...policyLimits.values()].reduce((sum, value) => sum + value, 0)
-  const remoteUsed = [...remoteByGroup.values()].reduce((sum, value) => sum + value, 0)
+  const remoteResources = currentRemoteResources(concurrency, pressure)
+  const remoteCapacity = remoteResources.reduce((sum, value) => sum + value.capacity, 0)
+  const remoteUsed = remoteResources.reduce((sum, value) => sum + value.used, 0)
   const catalogue = concurrency?.resources.find((item) => item.name === "catalogue:hot")
   const objectRead = concurrency?.resources.find((item) => item.name === "object:read")
   const objectWrite = concurrency?.resources.find((item) => item.name === "object:write")
@@ -668,30 +645,25 @@ function RunProgress({ run, className = "" }: { run: GraphRunRecord; className?:
   )
 }
 
-function policyLimitsByGroup(policies: CrawlPolicyRecord[]) {
-  const limits = new Map<string, number>()
-  for (const policy of policies) {
-    if (policy.concurrency === null) continue
-    limits.set(policy.domain_group, Math.max(limits.get(policy.domain_group) ?? 0, policy.concurrency))
-  }
-  return limits
-}
-
-function policyGroupLabel(domainGroup: string, policies: CrawlPolicyRecord[]) {
-  const policy = policies.find((item) => item.domain_group === domainGroup)
-  return policy?.metric_slug === "system-default" ? "Default public web" : domainGroup
-}
-
-function resourceUseByPrefix(concurrency: CrawlConcurrencyLimits | undefined, prefix: string) {
-  return new Map(
-    (concurrency?.resources ?? [])
-      .filter((resource) => resource.name.startsWith(prefix))
-      .map((resource) => [resource.name.slice(prefix.length), resource.used]),
-  )
-}
-
 function isActiveRun(run: GraphRunRecord) {
   return run.status === "queued" || run.status === "running"
+}
+
+function currentRemoteResources(
+  concurrency: CrawlConcurrencyLimits | undefined,
+  pressure: PolicyPressureResponse | undefined,
+) {
+  const resources = new Map<string, { domain: string; used: number; capacity: number }>()
+  for (const item of pressure?.items ?? []) {
+    const latest = item.points.at(-1)
+    if (latest) resources.set(item.remote_domain, { domain: item.remote_domain, used: 0, capacity: latest.limit })
+  }
+  for (const resource of concurrency?.resources ?? []) {
+    if (!resource.name.startsWith("remote:")) continue
+    const domain = resource.name.slice("remote:".length)
+    resources.set(domain, { domain, used: resource.used, capacity: resource.capacity })
+  }
+  return [...resources.values()]
 }
 
 function isTerminalRun(run: GraphRunRecord) {

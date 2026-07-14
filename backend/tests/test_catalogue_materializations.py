@@ -85,13 +85,13 @@ class CatalogueMaterializationTests(unittest.TestCase):
                         requested_url, normalized_url, final_url, page_url,
                         url_scheme, url_host, url_port, url_registrable_domain,
                         url_path, url_query, captured_at, status_code, duration_ms,
-                        domain_group, profile, template, config_hash, config_json, crawl_policy_id,
-                        crawl_policy_revision, outcome
+                        profile, crawl_profile_slug, remote_concurrency, config_hash,
+                        config_json, crawl_policy_id, outcome
                     ) SELECT ?, 'sha256:phase2', uuid(), ?, uuid(), uuid(), 'use', NULL, NULL, NULL,
                         'https://example.com/phase2', 'https://example.com/phase2',
                         'https://example.com/phase2', 'https://example.com/phase2',
                         'https', 'example.com', 443, 'example.com', '/phase2', '', now(),
-                        200, 1, 'public-web', 'http', 'http_fast', repeat('a', 64), '{}', NULL, NULL,
+                        200, 1, 'http', 'direct', 4, repeat('a', 64), '{}', NULL,
                         'success'
                     """,
                     [crawl_id, graph_run_id],

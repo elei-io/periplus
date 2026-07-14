@@ -14,8 +14,8 @@ from nats.js.api import AckPolicy, ConsumerConfig, KeyValueConfig, RetentionPoli
 from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError, NotFoundError
 from pydantic import BaseModel, ConfigDict, Field
 from control.crawl_graphs.schemas import EdgeDedupeMode, FrozenGraphEdge, FrozenGraphNode, FrozenGraphSnapshot
-from control.crawl_policies.schemas import CrawlPolicyConfig, CrawlPolicySnapshot
-from control.url_matching import normalize_url
+from control.crawl_policies.schemas import CrawlPolicySnapshot
+from control.urls import normalize_url
 from runtime.navigation_contract import NavigationPackage
 
 GRAPH_STREAM = "ATLAS_GRAPH_WORK"
@@ -60,9 +60,10 @@ class PolicyTrialMetadata(BaseModel):
     trial_id: UUID
     sampler_version: int = Field(ge=1)
     sample_share: float = Field(ge=0, le=1)
-    candidate_strategy: Literal["next_more_expensive_template"]
-    candidate_template: str
-    template_registry_version: int = Field(ge=1)
+    candidate_strategy: Literal["next_higher_cost_profile"]
+    candidate_profile_id: UUID
+    candidate_profile_slug: str
+    candidate_profile_config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class PendingAdmission(BaseModel):
@@ -118,6 +119,7 @@ class CrawlRequest(BaseModel):
     purpose: CrawlPurpose = "use"
     trial: PolicyTrialMetadata | None = None
     document_id: str | None = None
+    artifact_id: str | None = None
     effective_policy_snapshot_json: dict
     source_crawl_id: UUID | None = None
     source_edge_id: UUID | None = None
@@ -173,7 +175,7 @@ class ReadinessWork(BaseModel):
     crawl_id: UUID
     graph_run_id: UUID
     crawl_request_id: UUID
-    navigation: NavigationPackage
+    navigation: NavigationPackage | None = None
     occurred_at: datetime
 
 
@@ -629,7 +631,7 @@ def crawl_transport_from_policy(
     policy_snapshot_json: dict,
 ) -> CrawlTransport:
     snapshot = CrawlPolicySnapshot.model_validate(policy_snapshot_json)
-    return CrawlPolicyConfig.model_validate(snapshot.config).profile
+    return snapshot.profile.transport
 
 
 async def publish_crawl(jetstream, request: CrawlRequest) -> None:

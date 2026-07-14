@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 from config import get_int
 
 from repository.catalogue import (
+    ArtifactRecord,
     Catalogue,
     CatalogueBatchEntry,
     CatalogueConflictError,
@@ -34,6 +35,11 @@ from dom import (
 )
 from repository.objects.config import object_store_from_env, staging_root_from_env
 from repository.objects.html import HtmlIdentity, RawHtmlRepository, StoredHtml, html_object_key
+from repository.objects.artifact import (
+    ArtifactIdentity,
+    RawArtifactRepository,
+    artifact_object_key,
+)
 from runtime.navigation import build_navigation_package
 
 
@@ -48,6 +54,7 @@ class ProjectionRebuildRequired(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class RepositoryLimits:
     max_html_bytes: int = 64 * 1024 * 1024
+    max_artifact_bytes: int = 256 * 1024 * 1024
     max_document_elements: int = 1_000_000
     max_document_staged_bytes: int = 256 * 1024 * 1024
 
@@ -56,6 +63,9 @@ class RepositoryLimits:
         return cls(
             max_html_bytes=_positive_env_int(
                 "ATLAS_REPOSITORY_MAX_HTML_BYTES", 64 * 1024 * 1024
+            ),
+            max_artifact_bytes=_positive_env_int(
+                "ATLAS_REPOSITORY_MAX_ARTIFACT_BYTES", 256 * 1024 * 1024
             ),
             max_document_elements=_positive_env_int(
                 "ATLAS_REPOSITORY_MAX_DOCUMENT_ELEMENTS", 1_000_000
@@ -73,11 +83,15 @@ class RepositoryIngestor:
         self,
         *,
         html_repository: RawHtmlRepository,
+        artifact_repository: RawArtifactRepository | None = None,
         catalogue: Catalogue,
         staging_root: Path | None = None,
         limits: RepositoryLimits | None = None,
     ) -> None:
         self.html_repository = html_repository
+        self.artifact_repository = artifact_repository or RawArtifactRepository(
+            html_repository.store
+        )
         self.catalogue = catalogue
         self.catalogue_service = CatalogueService(catalogue)
         self.staging_root = staging_root or staging_root_from_env()
@@ -95,6 +109,32 @@ class RepositoryIngestor:
         known_documents: Mapping[str, DocumentRecord] | None = None,
     ) -> PreparedIngestion:
         """Prepare a queued ingestion using only its durable raw object reference."""
+
+        if crawl.artifact_id is not None:
+            prefix = "sha256:"
+            if not crawl.artifact_id.startswith(prefix):
+                raise ValueError("crawl.artifact_id must be a SHA-256 content identity")
+            sha256 = crawl.artifact_id.removeprefix(prefix)
+            object_key = artifact_object_key(sha256)
+            identity = self.artifact_repository.verify(object_key)
+            if identity.size_bytes > self.limits.max_artifact_bytes:
+                raise ValueError(
+                    f"artifact exceeded its {self.limits.max_artifact_bytes} byte repository budget"
+                )
+            if identity.sha256 != sha256:
+                raise ValueError("raw artifact does not match crawl.artifact_id")
+            artifact = ArtifactRecord(
+                artifact_id=crawl.artifact_id,
+                sha256=sha256,
+                object_key=object_key,
+                size_bytes=identity.size_bytes,
+                created_at=crawl.captured_at,
+            )
+            return PreparedIngestion(
+                document=None,
+                artifact=artifact,
+                crawl=crawl,
+            )
 
         if crawl.document_id is None:
             return PreparedIngestion(
@@ -206,6 +246,7 @@ class RepositoryIngestor:
                 [
                     CatalogueBatchEntry(
                         document=value.document,
+                        artifact=value.artifact,
                         crawl=value.crawl,
                         elements_path=value.elements_path,
                         replace_projection=value.replace_projection,
@@ -238,14 +279,27 @@ class RepositoryIngestor:
             document = self.catalogue_service.get_document(crawl.document_id)
             if document is None or not self._projection_is_current(document):
                 return None
+        if crawl.artifact_id is not None:
+            artifact = self.catalogue_service.get_artifact(crawl.artifact_id)
+            if artifact is None:
+                return None
+            self.artifact_repository.verify(
+                artifact.object_key,
+                expected=ArtifactIdentity(
+                    sha256=artifact.sha256,
+                    size_bytes=artifact.size_bytes,
+                ),
+            )
 
         snapshot = self.catalogue.latest_snapshot()
         if snapshot is None:
             raise CatalogueValidationError("DuckLake did not publish a repository snapshot")
         return CatalogueWriteResult(
             document_id=crawl.document_id,
+            artifact_id=crawl.artifact_id,
             crawl_id=crawl.crawl_id,
             document_created=False,
+            artifact_created=False,
             crawl_created=False,
             repository_snapshot=snapshot,
         )
@@ -358,11 +412,29 @@ class RepositoryIngestor:
         require_complete: bool,
     ) -> RepositoryCacheHit | None:
         if crawl.document_id is None:
+            artifact = None
+            if crawl.artifact_id is not None:
+                artifact = self.catalogue_service.get_artifact(crawl.artifact_id)
+                if artifact is None:
+                    if require_complete:
+                        raise RuntimeError(
+                            f"crawl {crawl.crawl_id} references missing artifact "
+                            f"{crawl.artifact_id}"
+                        )
+                    return None
+                self.artifact_repository.verify(
+                    artifact.object_key,
+                    expected=ArtifactIdentity(
+                        sha256=artifact.sha256,
+                        size_bytes=artifact.size_bytes,
+                    ),
+                )
             repository_snapshot = self.catalogue.latest_snapshot()
             if repository_snapshot is None:
                 raise RuntimeError("DuckLake repository has no snapshot")
             return RepositoryCacheHit(
                 crawl=crawl,
+                artifact=artifact,
                 document=None,
                 html=None,
                 links=None,
@@ -487,8 +559,10 @@ class RepositoryIngestor:
 
 
 def repository_ingestor_from_env() -> RepositoryIngestor:
+    store = object_store_from_env()
     return RepositoryIngestor(
-        html_repository=RawHtmlRepository(object_store_from_env()),
+        html_repository=RawHtmlRepository(store),
+        artifact_repository=RawArtifactRepository(store),
         catalogue=catalogue_from_env(),
         staging_root=staging_root_from_env(),
         limits=RepositoryLimits.from_env(),
@@ -503,12 +577,14 @@ class RepositoryCacheHit:
     links: GroupedLinkPayload | None
     projection_rebuilt: bool
     repository_snapshot: int
+    artifact: ArtifactRecord | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedIngestion:
     document: DocumentRecord | None
     crawl: CrawlRecord
+    artifact: ArtifactRecord | None = None
     elements_path: Path | None = None
     element_count: int = 0
     staged_bytes: int = 0

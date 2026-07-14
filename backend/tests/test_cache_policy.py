@@ -5,30 +5,34 @@ import unittest
 from unittest.mock import patch
 
 from actions.shared.cache import CacheOptions, resolve_cache_policy
-from control.crawl_policies.schemas import CrawlPolicyConfig
+from control.crawl_policies.schemas import CrawlProfileSnapshot
+from uuid import uuid4
 
 
 class CachePolicyTests(unittest.TestCase):
     def test_crawl_policy_transport_is_typed_before_it_is_frozen(self) -> None:
-        policy = CrawlPolicyConfig.model_validate({
-            "profile": "browser",
-            "concurrency": 2,
+        profile = CrawlProfileSnapshot.model_validate({
+            "id": uuid4(),
+            "slug": "dynamic-test",
+            "name": "Dynamic test",
+            "transport": "browser",
+            "cost_rank": 10,
             "config": {
                 "mode": "dynamic",
                 "wait": "network",
                 "cache": {"mode": "prefer", "max_age_seconds": 30},
             },
         })
-        profile = policy.parsed_config()
-        self.assertEqual(getattr(profile, "mode"), "dynamic")
-        self.assertEqual(profile.cache, CacheOptions(mode="prefer", max_age_seconds=30))
+        config = profile.parsed_config()
+        self.assertEqual(getattr(config, "mode"), "dynamic")
+        self.assertEqual(config.cache, CacheOptions(mode="prefer", max_age_seconds=30))
         for invalid in (
-            {"profile": "unknown"},
-            {"profile": "browser", "config": {"mode": "javascript"}},
-            {"concurrency": 0},
+            {**profile.model_dump(), "transport": "unknown"},
+            {**profile.model_dump(), "config": {"mode": "javascript"}},
+            {**profile.model_dump(), "cost_rank": -1},
         ):
             with self.assertRaises(ValueError):
-                CrawlPolicyConfig.model_validate(invalid)
+                CrawlProfileSnapshot.model_validate(invalid)
 
     def test_defaults_are_finite_and_prefer_reuse(self) -> None:
         with patch.dict(os.environ, {}, clear=True):

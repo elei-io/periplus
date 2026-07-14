@@ -126,10 +126,11 @@ class GraphRunMaterializationLagList(BaseModel):
 class PolicyPressurePoint(BaseModel):
     captured_at: datetime
     peak_concurrency: int
+    limit: int
 
 
 class PolicyPressureSeries(BaseModel):
-    domain_group: str
+    remote_domain: str
     points: list[PolicyPressurePoint]
 
 
@@ -401,11 +402,12 @@ def policy_pressure(
         pool.release(catalogue)
 
     series: dict[str, list[PolicyPressurePoint]] = {}
-    for domain_group, captured_at, peak_concurrency in rows:
-        series.setdefault(str(domain_group), []).append(
+    for remote_domain, captured_at, peak_concurrency, limit in rows:
+        series.setdefault(str(remote_domain), []).append(
             PolicyPressurePoint(
                 captured_at=captured_at,
                 peak_concurrency=int(peak_concurrency),
+                limit=int(limit),
             )
         )
     return PolicyPressureResponse(
@@ -414,8 +416,8 @@ def policy_pressure(
         range_end=range_end,
         bucket_seconds=bucket_seconds,
         items=[
-            PolicyPressureSeries(domain_group=domain_group, points=points)
-            for domain_group, points in sorted(series.items())
+            PolicyPressureSeries(remote_domain=remote_domain, points=points)
+            for remote_domain, points in sorted(series.items())
         ],
     )
 
@@ -431,7 +433,8 @@ def _policy_pressure_rows(
     return catalogue.connection.execute(
         f"""
         WITH source AS (
-            SELECT domain_group,
+            SELECT url_registrable_domain AS remote_domain,
+                   remote_concurrency,
                    greatest(
                        captured_at - duration_ms * INTERVAL '1 millisecond',
                        $range_start
@@ -446,27 +449,36 @@ def _policy_pressure_rows(
                   < $range_end
         ),
         events AS (
-            SELECT domain_group, started_at AS event_at, 1 AS delta FROM source
+            SELECT remote_domain, started_at AS event_at, 1 AS delta,
+                   remote_concurrency
+            FROM source
             UNION ALL
-            SELECT domain_group, finished_at AS event_at, -1 AS delta FROM source
+            SELECT remote_domain, finished_at AS event_at, -1 AS delta,
+                   remote_concurrency
+            FROM source
         ),
         grouped_events AS (
-            SELECT domain_group, event_at, sum(delta) AS delta
+            SELECT remote_domain, event_at, sum(delta) AS delta,
+                   max(remote_concurrency) AS remote_concurrency
             FROM events
             GROUP BY ALL
         ),
         states AS (
-            SELECT domain_group,
+            SELECT remote_domain,
                    event_at,
+                   remote_concurrency,
                    sum(delta) OVER (
-                       PARTITION BY domain_group
+                       PARTITION BY remote_domain
                        ORDER BY event_at
                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
                    ) AS concurrency
             FROM grouped_events
         ),
         groups AS (
-            SELECT DISTINCT domain_group FROM source
+            SELECT remote_domain,
+                   arg_min(remote_concurrency, started_at) AS initial_limit
+            FROM source
+            GROUP BY remote_domain
         ),
         buckets AS (
             SELECT unnest(generate_series(
@@ -476,38 +488,70 @@ def _policy_pressure_rows(
             )) AS bucket_at
         ),
         bucket_grid AS (
-            SELECT domain_group, bucket_at FROM groups CROSS JOIN buckets
+            SELECT remote_domain, initial_limit, bucket_at
+            FROM groups CROSS JOIN buckets
         ),
         bucket_starts AS (
-            SELECT bucket_grid.domain_group,
+            SELECT bucket_grid.remote_domain,
                    bucket_grid.bucket_at,
-                   coalesce(states.concurrency, 0) AS concurrency
+                   coalesce(states.concurrency, 0) AS concurrency,
+                   coalesce(
+                       states.remote_concurrency,
+                       bucket_grid.initial_limit
+                   ) AS remote_concurrency
             FROM bucket_grid
             ASOF LEFT JOIN states
-              ON bucket_grid.domain_group = states.domain_group
+              ON bucket_grid.remote_domain = states.remote_domain
              AND bucket_grid.bucket_at >= states.event_at
         ),
         event_peaks AS (
-            SELECT domain_group,
+            SELECT remote_domain,
                    time_bucket(
                        $bucket_seconds * INTERVAL '1 second',
                        event_at,
                        $range_start
                    ) AS bucket_at,
-                   max(concurrency) AS concurrency
+                   arg_max(
+                       concurrency,
+                       struct_pack(
+                           pressure := concurrency::DOUBLE / remote_concurrency,
+                           concurrency := concurrency,
+                           event_at := event_at
+                       )
+                   ) AS concurrency,
+                   arg_max(
+                       remote_concurrency,
+                       struct_pack(
+                           pressure := concurrency::DOUBLE / remote_concurrency,
+                           concurrency := concurrency,
+                           event_at := event_at
+                       )
+                   ) AS remote_concurrency
             FROM states
             WHERE event_at >= $range_start AND event_at < $range_end
             GROUP BY ALL
         )
-        SELECT bucket_starts.domain_group,
+        SELECT bucket_starts.remote_domain,
                bucket_starts.bucket_at,
-               greatest(
-                   bucket_starts.concurrency,
-                   coalesce(event_peaks.concurrency, 0)
-               ) AS peak_concurrency
+               CASE
+                   WHEN coalesce(event_peaks.concurrency::DOUBLE
+                        / event_peaks.remote_concurrency, -1)
+                        > bucket_starts.concurrency::DOUBLE
+                          / bucket_starts.remote_concurrency
+                   THEN event_peaks.concurrency
+                   ELSE bucket_starts.concurrency
+               END AS peak_concurrency,
+               CASE
+                   WHEN coalesce(event_peaks.concurrency::DOUBLE
+                        / event_peaks.remote_concurrency, -1)
+                        > bucket_starts.concurrency::DOUBLE
+                          / bucket_starts.remote_concurrency
+                   THEN event_peaks.remote_concurrency
+                   ELSE bucket_starts.remote_concurrency
+               END AS remote_concurrency
         FROM bucket_starts
-        LEFT JOIN event_peaks USING (domain_group, bucket_at)
-        ORDER BY domain_group, bucket_at
+        LEFT JOIN event_peaks USING (remote_domain, bucket_at)
+        ORDER BY remote_domain, bucket_at
         """,
         {
             "range_start": range_start,

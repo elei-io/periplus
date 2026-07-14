@@ -3,45 +3,50 @@ from __future__ import annotations
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 from control.crawl_policies.schemas import CrawlPolicySnapshot
-from control.crawl_policies.templates import (
-    CRAWL_POLICY_TEMPLATES,
-    TEMPLATE_REGISTRY_VERSION,
-    next_trial_policy_snapshot,
-)
+from control.crawl_policies.service import SEEDED_PROFILES, profile_config_hash
 from runtime.graph_queue import get_graph_run, list_crawl_requests, new_graph_run
 from runtime.graph_progress import initialize_run_progress
-from runtime.graph_runs import admit_request
+from runtime.graph_runs import _trial_for_request, admit_request
 from tests.test_graph_runtime import FakeJetStream, FakeKV, policy_snapshot, snapshot
 
 
-class PolicyTemplateTests(unittest.TestCase):
-    def test_registry_is_a_ranked_acquisition_ladder(self) -> None:
+class CrawlProfileLadderTests(unittest.TestCase):
+    def test_seeded_profiles_form_the_five_step_cost_ladder(self) -> None:
         self.assertEqual(
-            [value.name for value in CRAWL_POLICY_TEMPLATES],
-            [
-                "http_fast",
-                "static_fast",
-                "static_stable",
-                "dynamic_scan",
-                "dynamic_stable",
-                "app_stable",
-                "app_deep",
-                "provider",
-            ],
+            [value["slug"] for value in SEEDED_PROFILES],
+            ["direct", "rendered", "settled", "full-page", "interactive"],
         )
-        candidate = next_trial_policy_snapshot(
-            policy_snapshot(), url="https://example.com/docs", provider_enabled=False
+        self.assertEqual(
+            [value["cost_rank"] for value in SEEDED_PROFILES],
+            [10, 20, 30, 40, 50],
         )
+
+    def test_trial_freezes_the_next_profile_with_a_fresh_cache(self) -> None:
+        with (
+            patch("runtime.graph_runs.get_float", return_value=1.0),
+            patch("runtime.graph_runs.get_int", return_value=3),
+        ):
+            candidate = _trial_for_request(
+                uuid4(),
+                policy_snapshot(),
+                "https://example.com/docs",
+            )
+
         assert candidate is not None
-        value, template = candidate
-        self.assertEqual(template, "static_fast")
+        metadata, _request_id, value, transport = candidate
         frozen = CrawlPolicySnapshot.model_validate(value)
+        self.assertEqual(metadata.candidate_profile_slug, "rendered")
+        self.assertEqual(
+            metadata.candidate_profile_config_hash,
+            profile_config_hash({"mode": "static", "wait": "none"}),
+        )
         self.assertEqual(frozen.origin, "system_trial")
-        self.assertEqual(frozen.revision, TEMPLATE_REGISTRY_VERSION)
-        self.assertEqual(frozen.config["profile"], "browser")
-        self.assertEqual(frozen.config["config"]["cache"], {"mode": "refresh"})
+        self.assertEqual(frozen.profile.slug, "rendered")
+        self.assertEqual(frozen.profile.config["cache"], {"mode": "refresh"})
+        self.assertEqual(transport, "browser")
 
 
 class PolicyTrialAdmissionTests(unittest.IsolatedAsyncioTestCase):
@@ -61,7 +66,6 @@ class PolicyTrialAdmissionTests(unittest.IsolatedAsyncioTestCase):
         }
         with (
             patch("runtime.graph_runs.get_float", return_value=1.0),
-            patch("runtime.graph_runs.get_bool", return_value=False),
             patch(
                 "runtime.graph_runs.get_int",
                 side_effect=lambda name: integers[name],
@@ -70,10 +74,7 @@ class PolicyTrialAdmissionTests(unittest.IsolatedAsyncioTestCase):
                 "runtime.graph_runs.ensure_policy_trial_budget_storage",
                 new=AsyncMock(return_value=SimpleNamespace()),
             ),
-            patch(
-                "runtime.graph_runs.reconcile_policy_trial_budget",
-                new=AsyncMock(),
-            ),
+            patch("runtime.graph_runs.reconcile_policy_trial_budget", new=AsyncMock()),
             patch(
                 "runtime.graph_runs.reserve_policy_trial_slot",
                 new=AsyncMock(return_value=True),

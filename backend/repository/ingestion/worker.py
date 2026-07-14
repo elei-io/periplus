@@ -71,14 +71,15 @@ from runtime.resource_governor import (
 )
 
 
-async def _publish_navigation_readiness(
-    client, job: IngestionJob, package: NavigationPackage
+async def _publish_crawl_readiness(
+    client, job: IngestionJob, package: NavigationPackage | None
 ) -> None:
     crawl = job.crawl
     if crawl.graph_run_id is None or crawl.crawl_request_id is None:
-        raise ValueError("navigation readiness requires graph runtime provenance")
+        raise ValueError("crawl readiness requires graph runtime provenance")
+    identity = package.sha256 if package is not None else (crawl.artifact_id or "contentless")
     event = ReadinessWork(
-        event_id=navigation_event_id(crawl.crawl_id, package.sha256),
+        event_id=navigation_event_id(crawl.crawl_id, identity),
         crawl_id=crawl.crawl_id,
         graph_run_id=crawl.graph_run_id,
         crawl_request_id=crawl.crawl_request_id,
@@ -314,11 +315,17 @@ async def run(
                 if durable_state.status != "pending":
                     if durable_state.status == "succeeded":
                         try:
-                            if job.crawl.purpose == "use" and durable_state.navigation is not None:
-                                await _publish_navigation_readiness(
+                            if (
+                                job.crawl.purpose == "use"
+                                and job.crawl.outcome == "success"
+                            ):
+                                await _publish_crawl_readiness(
                                     client, job, durable_state.navigation
                                 )
-                            if job.crawl.purpose == "sample":
+                            if (
+                                job.crawl.purpose == "sample"
+                                and job.crawl.outcome == "success"
+                            ):
                                 _runs, requests, _workers = await ensure_graph_storage(
                                     jetstream
                                 )
@@ -637,11 +644,11 @@ async def _commit_batch_isolated(
                 result=result,
                 navigation=package,
             )
-            if job.crawl.purpose == "use" and durable_state.navigation is not None:
-                await _publish_navigation_readiness(
+            if job.crawl.purpose == "use" and job.crawl.outcome == "success":
+                await _publish_crawl_readiness(
                     client, job, durable_state.navigation
                 )
-            if job.crawl.purpose == "sample":
+            if job.crawl.purpose == "sample" and job.crawl.outcome == "success":
                 _runs, requests, _workers = await ensure_graph_storage(
                     client.jetstream()
                 )
@@ -768,9 +775,13 @@ async def _retry_or_fail(
             navigation=package,
             error=None if reconciled is not None else _exception_message(exc),
         )
-        if job.crawl.purpose == "use" and durable_state.navigation is not None:
+        if (
+            job.crawl.purpose == "use"
+            and job.crawl.outcome == "success"
+            and durable_state.status == "succeeded"
+        ):
             try:
-                await _publish_navigation_readiness(
+                await _publish_crawl_readiness(
                     client, job, durable_state.navigation
                 )
             except Exception:
@@ -778,7 +789,7 @@ async def _retry_or_fail(
                 await message.nak(delay=1)
                 return
         if durable_state.status == "succeeded":
-            if job.crawl.purpose == "sample":
+            if job.crawl.purpose == "sample" and job.crawl.outcome == "success":
                 _runs, requests, _workers = await ensure_graph_storage(
                     client.jetstream()
                 )

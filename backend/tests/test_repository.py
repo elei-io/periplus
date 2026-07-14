@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import os
 import tempfile
 import unittest
@@ -12,8 +13,10 @@ import boto3
 from botocore.exceptions import ClientError
 
 from repository import (
+    ArtifactIdentity,
     FileObjectStore,
     RawHtmlRepository,
+    RawArtifactRepository,
     RepositoryIntegrityError,
     RepositoryKeyError,
     RepositoryObjectNotFound,
@@ -120,6 +123,39 @@ class RawHtmlRepositoryTests(unittest.TestCase):
 
                 self.assertEqual(restored, html)
                 self.assertEqual(repository.identify(restored).sha256, stored.sha256)
+
+
+class RawArtifactRepositoryTests(unittest.TestCase):
+    def test_artifact_is_exact_content_addressed_and_deduplicated(self) -> None:
+        payload = b"%PDF-1.7\r\n\x00exact-binary"
+        identity = ArtifactIdentity(
+            sha256=hashlib.sha256(payload).hexdigest(),
+            size_bytes=len(payload),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = RawArtifactRepository(FileObjectStore(Path(temp_dir)))
+            first = repository.put(io.BytesIO(payload), identity=identity)
+            second = repository.put(io.BytesIO(payload), identity=identity)
+
+            self.assertTrue(first.created)
+            self.assertFalse(second.created)
+            self.assertEqual(first.artifact_id, f"sha256:{identity.sha256}")
+            self.assertEqual(repository.verify(first.object_key), identity)
+            with repository.store.open(first.object_key) as content:
+                self.assertEqual(content.read(), payload)
+
+    def test_existing_corrupt_artifact_is_rejected(self) -> None:
+        payload = b"artifact"
+        identity = ArtifactIdentity(
+            sha256=hashlib.sha256(payload).hexdigest(),
+            size_bytes=len(payload),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = RawArtifactRepository(FileObjectStore(Path(temp_dir)))
+            repository.store.put_if_absent(identity.object_key, io.BytesIO(b"wrong"))
+
+            with self.assertRaises(RepositoryIntegrityError):
+                repository.put(io.BytesIO(payload), identity=identity)
 
 
 class RepositoryConfigTests(unittest.TestCase):

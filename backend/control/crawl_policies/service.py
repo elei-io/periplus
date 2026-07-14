@@ -1,58 +1,127 @@
 from __future__ import annotations
 
-import fnmatch
-import re
 from datetime import UTC, datetime
-from urllib.parse import urlparse, urlunparse
+import hashlib
+import json
+from urllib.parse import urlparse
 from uuid import UUID
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, joinedload
 
-from control.crawl_policies.models import CrawlPolicy
-from control.crawl_policies.schemas import (
-    CrawlPolicyConfig,
-    CrawlPolicyListRecord,
-    UrlMatchSnapshot,
+from control.urls import normalize_url
+
+from .models import CrawlPolicy, CrawlProfile
+from .schemas import (
+    CrawlPolicyCreateRequest,
+    CrawlPolicyRecord,
+    CrawlProfileCreateRequest,
+    CrawlProfileSnapshot,
+    parse_profile_config,
 )
-from control.crawl_policies.templates import get_crawl_policy_template
-from control.url_matching import UrlMatch
-from control.url_matching import normalize_url
 
-DEFAULT_POLICY_METRIC_SLUG = "system-default"
-DEFAULT_POLICY_DOMAIN_GROUP = "public-web"
-DEFAULT_POLICY_MATCH = "*://*/*"
+DEFAULT_POLICY_SLUG = "default"
 
 
-def _match_string(url_match: UrlMatch) -> str:
-    return urlunparse((url_match.scheme, url_match.host, url_match.path_pattern, "", "", ""))
+def profile_config_hash(config: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
-def _matches(url: str, url_match: UrlMatch | UrlMatchSnapshot) -> bool:
+SEEDED_PROFILES: tuple[dict, ...] = (
+    {
+        "slug": "direct",
+        "name": "Direct",
+        "description": "Plain HTTP without a browser.",
+        "transport": "http",
+        "config": {},
+        "cost_rank": 10,
+        "trial_eligible": True,
+    },
+    {
+        "slug": "rendered",
+        "name": "Rendered",
+        "description": "Lightweight browser acquisition through initial DOM readiness.",
+        "transport": "browser",
+        "config": {"mode": "static", "wait": "none", "run_config_overrides": {}},
+        "cost_rank": 20,
+        "trial_eligible": True,
+    },
+    {
+        "slug": "settled",
+        "name": "Settled",
+        "description": "Browser acquisition that waits for DOM and link stability.",
+        "transport": "browser",
+        "config": {"mode": "static", "wait": "stable", "run_config_overrides": {}},
+        "cost_rank": 30,
+        "trial_eligible": True,
+    },
+    {
+        "slug": "full-page",
+        "name": "Full page",
+        "description": "Dynamic browser acquisition after the page has settled.",
+        "transport": "browser",
+        "config": {"mode": "dynamic", "wait": "stable", "run_config_overrides": {}},
+        "cost_rank": 40,
+        "trial_eligible": True,
+    },
+    {
+        "slug": "interactive",
+        "name": "Interactive",
+        "description": "Longer application hydration and deeper scrolling.",
+        "transport": "browser",
+        "config": {
+            "mode": "app",
+            "wait": "stable",
+            "run_config_overrides": {
+                "delay_before_return_html": 6.0,
+                "max_scroll_steps": 8,
+                "scroll_delay": 1.0,
+            },
+        },
+        "cost_rank": 50,
+        "trial_eligible": True,
+    },
+)
+
+
+def profile_snapshot(profile: CrawlProfile) -> CrawlProfileSnapshot:
+    return CrawlProfileSnapshot(
+        id=profile.id,
+        slug=profile.slug,
+        name=profile.name,
+        transport=profile.transport,
+        config=profile.config or {},
+        cost_rank=profile.cost_rank,
+    )
+
+
+def match_for_policy(policy: CrawlPolicy) -> str:
+    suffix = "" if policy.path_mode == "exact" else "*"
+    return f"{policy.scheme}://{policy.host}{policy.path_prefix}{suffix}"
+
+
+def _matches(url: str, policy: CrawlPolicy) -> bool:
     parsed = urlparse(normalize_url(url))
-    if not getattr(url_match, "enabled", True):
+    if not policy.enabled:
         return False
-    if url_match.scheme not in {"*", parsed.scheme}:
+    if policy.scheme not in {"*", parsed.scheme}:
         return False
-    if url_match.host not in {"*", parsed.netloc}:
+    if policy.host not in {"*", parsed.netloc}:
         return False
-    if url_match.match_type == "exact":
-        return parsed.path == url_match.path_pattern
-    if url_match.match_type == "glob":
-        return fnmatch.fnmatch(parsed.path or "/", url_match.path_pattern)
-    return False
+    path = parsed.path or "/"
+    if policy.path_mode == "exact":
+        return path == policy.path_prefix
+    return path.startswith(policy.path_prefix)
 
 
-def _specificity(
-    url_match: UrlMatch | UrlMatchSnapshot,
-) -> tuple[int, int, int, int]:
-    wildcard_count = url_match.path_pattern.count("*")
-    literal_count = len(url_match.path_pattern.replace("*", ""))
+def _specificity(policy: CrawlPolicy) -> tuple[int, int, int, int]:
     return (
-        url_match.priority,
-        int(url_match.scheme != "*"),
-        int(url_match.host != "*"),
-        literal_count - wildcard_count,
+        int(policy.scheme != "*"),
+        int(policy.host != "*"),
+        int(policy.path_mode == "exact"),
+        len(policy.path_prefix),
     )
 
 
@@ -63,130 +132,117 @@ def find_crawl_policy_for_url(session: Session, *, url: str) -> CrawlPolicy:
 def find_crawl_policies_for_urls(
     session: Session, *, urls: list[str]
 ) -> dict[str, CrawlPolicy]:
-    policies = list(session.scalars(
-        select(CrawlPolicy)
-        .join(UrlMatch, CrawlPolicy.url_match_id == UrlMatch.id)
-        .options(joinedload(CrawlPolicy.url_match))
-        .where(CrawlPolicy.enabled.is_(True))
-        .where(UrlMatch.enabled.is_(True))
-        .order_by(CrawlPolicy.updated_at.desc())
-    ))
+    policies = list(
+        session.scalars(
+            select(CrawlPolicy)
+            .options(joinedload(CrawlPolicy.profile))
+            .where(CrawlPolicy.enabled.is_(True))
+        ).unique()
+    )
     result: dict[str, CrawlPolicy] = {}
     for url in urls:
-        matches = [
-            policy
-            for policy in policies
-            if policy.url_match is not None and _matches(url, policy.url_match)
-        ]
+        matches = [policy for policy in policies if _matches(url, policy)]
         if not matches:
             raise RuntimeError(
                 "Atlas has no enabled catch-all CrawlPolicy; run deployment setup"
             )
-        result[url] = max(
-            matches, key=lambda policy: _specificity(policy.url_match)
-        )
+        result[url] = max(matches, key=_specificity)
     return result
 
 
+def ensure_crawl_profiles(session: Session) -> dict[str, CrawlProfile]:
+    existing = {
+        profile.slug: profile
+        for profile in session.scalars(select(CrawlProfile))
+    }
+    for values in SEEDED_PROFILES:
+        if values["slug"] in existing:
+            continue
+        profile = CrawlProfile(**values)
+        parse_profile_config(profile.transport, profile.config)
+        session.add(profile)
+        existing[profile.slug] = profile
+    session.flush()
+    return existing
+
+
 def ensure_default_crawl_policy(session: Session) -> CrawlPolicy:
-    """Ensure every URL has one explicit, editable policy resolution path."""
+    """Ensure every URL has one explicit policy resolution path."""
 
-    url_match = session.scalar(
-        select(UrlMatch).where(
-            UrlMatch.scheme == "*",
-            UrlMatch.host == "*",
-            UrlMatch.path_pattern == "/*",
-            UrlMatch.match_type == "glob",
-            UrlMatch.query_policy == "ignore",
-        )
-    )
-    if url_match is None:
-        url_match = UrlMatch(
-            scheme="*",
-            host="*",
-            domain="*",
-            path_pattern="/*",
-            match_type="glob",
-            query_policy="ignore",
-            enabled=True,
-            priority=-1_000_000,
-        )
-        session.add(url_match)
-        session.flush()
-
+    profiles = ensure_crawl_profiles(session)
     policy = session.scalar(
         select(CrawlPolicy)
-        .where(CrawlPolicy.url_match_id == url_match.id)
-        .order_by(CrawlPolicy.created_at.asc())
-        .limit(1)
+        .options(joinedload(CrawlPolicy.profile))
+        .where(CrawlPolicy.slug == DEFAULT_POLICY_SLUG)
     )
     if policy is None:
         policy = CrawlPolicy(
-            metric_slug=DEFAULT_POLICY_METRIC_SLUG,
-            domain_group=DEFAULT_POLICY_DOMAIN_GROUP,
-            url_match_id=url_match.id,
-            match=DEFAULT_POLICY_MATCH,
+            slug=DEFAULT_POLICY_SLUG,
+            scheme="*",
+            host="*",
+            path_prefix="/",
+            path_mode="prefix",
+            profile_id=profiles["direct"].id,
+            max_concurrency=4,
             enabled=True,
-            config=CrawlPolicyConfig(
-                profile="http",
-                concurrency=4,
-                config={"template": "http_fast"},
-            ).model_dump(mode="json"),
         )
-        policy.url_match = url_match
+        policy.profile = profiles["direct"]
         session.add(policy)
         session.flush()
     return policy
 
 
-def match_for_policy(policy: CrawlPolicy) -> str:
-    if policy.url_match is not None:
-        return _match_string(policy.url_match)
-    return policy.match
+def next_trial_profile(session: Session, profile: CrawlProfile) -> CrawlProfile | None:
+    return session.scalar(
+        select(CrawlProfile)
+        .where(CrawlProfile.trial_eligible.is_(True))
+        .where(CrawlProfile.cost_rank > profile.cost_rank)
+        .order_by(CrawlProfile.cost_rank.asc())
+        .limit(1)
+    )
 
 
-def _sql_like_from_glob(pattern: str) -> str:
-    return pattern.replace("%", r"\%").replace("_", r"\_").replace("*", "%")
-
-
-def _list_record(policy: CrawlPolicy) -> CrawlPolicyListRecord:
-    envelope = CrawlPolicyConfig.model_validate(policy.config or {})
-    profile_config = envelope.parsed_config()
-    return CrawlPolicyListRecord(
+def _policy_record(policy: CrawlPolicy) -> CrawlPolicyRecord:
+    return CrawlPolicyRecord(
         id=policy.id,
-        metric_slug=policy.metric_slug,
-        domain_group=policy.domain_group,
-        url_match_id=policy.url_match_id,
+        slug=policy.slug,
+        scheme=policy.scheme,
+        host=policy.host,
+        path_prefix=policy.path_prefix,
+        path_mode=policy.path_mode,
         match=match_for_policy(policy),
+        profile=policy.profile,
+        max_concurrency=policy.max_concurrency,
         enabled=policy.enabled,
-        config=policy.config or {},
-        revision=policy.revision,
-        template=str(getattr(profile_config, "template", "") or "") or None,
-        profile=envelope.profile,
-        mode=str(getattr(profile_config, "mode", "") or "") or None,
-        wait=str(getattr(profile_config, "wait", "") or "") or None,
-        concurrency=envelope.concurrency,
         created_at=policy.created_at,
         updated_at=policy.updated_at,
     )
 
 
-def _filtered_statement(
+def _filtered_policy_statement(
     *,
     match_pattern: str | None = None,
     enabled: bool | None = None,
-    template: str | None = None,
-    mode: str | None = None,
+    profile_slug: str | None = None,
+    transport: str | None = None,
 ) -> Select[tuple[CrawlPolicy]]:
-    statement = select(CrawlPolicy)
+    statement = select(CrawlPolicy).join(CrawlProfile)
     if match_pattern:
-        statement = statement.where(CrawlPolicy.match.ilike(_sql_like_from_glob(match_pattern), escape="\\"))
+        needle = match_pattern.strip().replace("*", "")
+        statement = statement.where(
+            func.concat(
+                CrawlPolicy.scheme,
+                "://",
+                CrawlPolicy.host,
+                CrawlPolicy.path_prefix,
+            ).ilike(f"%{needle}%")
+        )
     if enabled is not None:
         statement = statement.where(CrawlPolicy.enabled == enabled)
-    if template:
-        statement = statement.where(CrawlPolicy.config["config"]["template"].as_string() == template)
-    if mode:
-        statement = statement.where(CrawlPolicy.config["config"]["mode"].as_string() == mode)
+    if profile_slug:
+        statement = statement.where(CrawlProfile.slug == profile_slug)
+    if transport:
+        statement = statement.where(CrawlProfile.transport == transport)
     return statement
 
 
@@ -195,46 +251,50 @@ def list_crawl_policies(
     *,
     match_pattern: str | None = None,
     enabled: bool | None = None,
-    template: str | None = None,
-    mode: str | None = None,
+    profile_slug: str | None = None,
+    transport: str | None = None,
     limit: int = 100,
     offset: int = 0,
-) -> list[CrawlPolicyListRecord]:
+) -> list[CrawlPolicyRecord]:
     statement = (
-        _filtered_statement(
+        _filtered_policy_statement(
             match_pattern=match_pattern,
             enabled=enabled,
-            template=template,
-            mode=mode,
+            profile_slug=profile_slug,
+            transport=transport,
         )
+        .options(joinedload(CrawlPolicy.profile))
         .order_by(CrawlPolicy.updated_at.desc(), CrawlPolicy.created_at.desc())
         .limit(limit)
         .offset(offset)
     )
-    return [_list_record(policy) for policy in session.scalars(statement)]
+    return [_policy_record(policy) for policy in session.scalars(statement).unique()]
 
 
-def count_crawl_policies(
-    session: Session,
-    *,
-    match_pattern: str | None = None,
-    enabled: bool | None = None,
-    template: str | None = None,
-    mode: str | None = None,
-) -> int:
+def count_crawl_policies(session: Session, **filters) -> int:
     statement = select(func.count()).select_from(
-        _filtered_statement(
-            match_pattern=match_pattern,
-            enabled=enabled,
-            template=template,
-            mode=mode,
-        ).subquery()
+        _filtered_policy_statement(**filters).subquery()
     )
     return int(session.scalar(statement) or 0)
 
 
 def get_crawl_policy(session: Session, policy_id: UUID) -> CrawlPolicy | None:
-    return session.get(CrawlPolicy, policy_id)
+    return session.scalar(
+        select(CrawlPolicy)
+        .options(joinedload(CrawlPolicy.profile))
+        .where(CrawlPolicy.id == policy_id)
+    )
+
+
+def create_crawl_policy(session: Session, request: CrawlPolicyCreateRequest) -> CrawlPolicy:
+    profile = session.get(CrawlProfile, request.profile_id)
+    if profile is None:
+        raise ValueError("crawl profile does not exist")
+    policy = CrawlPolicy(**request.model_dump())
+    policy.profile = profile
+    session.add(policy)
+    session.flush()
+    return policy
 
 
 def update_crawl_policy(
@@ -242,45 +302,125 @@ def update_crawl_policy(
     *,
     policy: CrawlPolicy,
     enabled: bool | None = None,
-    match: str | None = None,
-    config: dict | None = None,
-    domain_group: str | None = None,
+    scheme: str | None = None,
+    host: str | None = None,
+    path_prefix: str | None = None,
+    path_mode: str | None = None,
+    profile_id: UUID | None = None,
+    max_concurrency: int | None = None,
 ) -> CrawlPolicy:
     policy = session.scalar(
         select(CrawlPolicy)
+        .options(joinedload(CrawlPolicy.profile))
         .where(CrawlPolicy.id == policy.id)
         .with_for_update()
         .execution_options(populate_existing=True)
     )
     if policy is None:
         raise ValueError("crawl policy no longer exists")
-    if policy.metric_slug == DEFAULT_POLICY_METRIC_SLUG:
+    if policy.slug == DEFAULT_POLICY_SLUG:
         if enabled is False:
             raise ValueError("the default CrawlPolicy cannot be disabled")
-        if match is not None and match != DEFAULT_POLICY_MATCH:
+        candidate = (
+            scheme if scheme is not None else policy.scheme,
+            host if host is not None else policy.host,
+            path_prefix if path_prefix is not None else policy.path_prefix,
+            path_mode if path_mode is not None else policy.path_mode,
+        )
+        if candidate != ("*", "*", "/", "prefix"):
             raise ValueError("the default CrawlPolicy must continue to match every URL")
-    policy.revision += 1
-    if enabled is not None:
-        policy.enabled = enabled
-    if match is not None:
-        policy.match = match
-    if config is not None:
-        policy.config = config
-    if domain_group is not None:
-        normalized_group = domain_group.strip().lower()
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", normalized_group):
-            raise ValueError("domain_group must contain 1-63 lowercase letters, numbers, underscores, or hyphens")
-        policy.domain_group = normalized_group
+    if profile_id is not None:
+        profile = session.get(CrawlProfile, profile_id)
+        if profile is None:
+            raise ValueError("crawl profile does not exist")
+        policy.profile_id = profile.id
+        policy.profile = profile
+    for field, value in (
+        ("enabled", enabled),
+        ("scheme", scheme),
+        ("host", host),
+        ("path_prefix", path_prefix),
+        ("path_mode", path_mode),
+        ("max_concurrency", max_concurrency),
+    ):
+        if value is not None:
+            setattr(policy, field, value)
     policy.updated_at = datetime.now(UTC)
     session.flush()
     return policy
 
 
 def delete_crawl_policy(session: Session, *, policy: CrawlPolicy) -> None:
-    if policy.metric_slug == DEFAULT_POLICY_METRIC_SLUG:
+    if policy.slug == DEFAULT_POLICY_SLUG:
         raise ValueError("the default CrawlPolicy cannot be deleted")
     session.delete(policy)
     session.flush()
+
+
+def list_crawl_profiles(
+    session: Session, *, limit: int = 100, offset: int = 0
+) -> list[CrawlProfile]:
+    return list(
+        session.scalars(
+            select(CrawlProfile)
+            .order_by(CrawlProfile.cost_rank, CrawlProfile.slug)
+            .limit(limit)
+            .offset(offset)
+        )
+    )
+
+
+def count_crawl_profiles(session: Session) -> int:
+    return int(session.scalar(select(func.count()).select_from(CrawlProfile)) or 0)
+
+
+def get_crawl_profile(session: Session, profile_id: UUID) -> CrawlProfile | None:
+    return session.get(CrawlProfile, profile_id)
+
+
+def get_crawl_profile_by_slug(session: Session, slug: str) -> CrawlProfile | None:
+    return session.scalar(select(CrawlProfile).where(CrawlProfile.slug == slug))
+
+
+def create_crawl_profile(session: Session, request: CrawlProfileCreateRequest) -> CrawlProfile:
+    parse_profile_config(request.transport, request.config)
+    profile = CrawlProfile(**request.model_dump())
+    session.add(profile)
+    session.flush()
+    return profile
+
+
+def update_crawl_profile(
+    session: Session,
+    *,
+    profile: CrawlProfile,
+    name: str | None = None,
+    description: str | None = None,
+    description_set: bool = False,
+    config: dict | None = None,
+    cost_rank: int | None = None,
+    trial_eligible: bool | None = None,
+) -> CrawlProfile:
+    profile = session.scalar(
+        select(CrawlProfile).where(CrawlProfile.id == profile.id).with_for_update()
+    )
+    if profile is None:
+        raise ValueError("crawl profile no longer exists")
+    if config is not None:
+        parse_profile_config(profile.transport, config)
+        profile.config = config
+    for field, value in (
+        ("name", name),
+        ("cost_rank", cost_rank),
+        ("trial_eligible", trial_eligible),
+    ):
+        if value is not None:
+            setattr(profile, field, value)
+    if description_set:
+        profile.description = description
+    profile.updated_at = datetime.now(UTC)
+    session.flush()
+    return profile
 
 
 def apply_policy_trial_candidate(
@@ -289,14 +429,13 @@ def apply_policy_trial_candidate(
     scheme: str,
     host: str,
     port: int,
-    registrable_domain: str,
-    template_name: str,
+    profile_slug: str,
 ) -> CrawlPolicy:
-    """Apply one sampled template as the broad policy for an observed origin."""
+    """Apply one sampled profile as the broad policy for an observed origin."""
 
-    template = get_crawl_policy_template(template_name)
-    if template is None:
-        raise ValueError(f"Unknown crawl policy template: {template_name}")
+    profile = get_crawl_profile_by_slug(session, profile_slug)
+    if profile is None:
+        raise ValueError(f"Unknown crawl profile: {profile_slug}")
     if scheme not in {"http", "https"}:
         raise ValueError("Policy trial scheme must be HTTP or HTTPS")
     normalized_host = host.strip().lower()
@@ -304,62 +443,37 @@ def apply_policy_trial_candidate(
         raise ValueError("Policy trial host is invalid")
     default_port = {"http": 80, "https": 443}[scheme]
     match_host = normalized_host if port == default_port else f"{normalized_host}:{port}"
-    match_string = f"{scheme}://{match_host}/*"
-
-    url_match = session.scalar(
-        select(UrlMatch)
-        .where(
-            UrlMatch.scheme == scheme,
-            UrlMatch.host == match_host,
-            UrlMatch.path_pattern == "/*",
-            UrlMatch.match_type == "glob",
-            UrlMatch.query_policy == "ignore",
-        )
-        .with_for_update()
-    )
-    if url_match is None:
-        url_match = UrlMatch(
-            scheme=scheme,
-            host=match_host,
-            domain=registrable_domain,
-            path_pattern="/*",
-            match_type="glob",
-            query_policy="ignore",
-            enabled=True,
-            priority=0,
-        )
-        session.add(url_match)
-        session.flush()
-    elif not url_match.enabled:
-        url_match.enabled = True
-        url_match.updated_at = datetime.now(UTC)
-
     policy = session.scalar(
         select(CrawlPolicy)
-        .where(CrawlPolicy.url_match_id == url_match.id)
-        .order_by(CrawlPolicy.updated_at.desc())
-        .limit(1)
+        .options(joinedload(CrawlPolicy.profile))
+        .where(
+            CrawlPolicy.scheme == scheme,
+            CrawlPolicy.host == match_host,
+            CrawlPolicy.path_prefix == "/",
+            CrawlPolicy.path_mode == "prefix",
+        )
         .with_for_update()
     )
-    config = template.policy_config()
     if policy is None:
-        domain_group = re.sub(r"[^a-z0-9_-]+", "-", registrable_domain.lower()).strip("-")
-        if not domain_group:
-            raise ValueError("Policy trial domain does not produce a valid domain group")
+        slug_host = "".join(
+            char if char.isalnum() else "-" for char in match_host.lower()
+        ).strip("-")
         policy = CrawlPolicy(
-            domain_group=domain_group[:63],
-            url_match_id=url_match.id,
-            match=match_string,
+            slug=f"{slug_host[:48]}-{profile.slug}",
+            scheme=scheme,
+            host=match_host,
+            path_prefix="/",
+            path_mode="prefix",
+            profile_id=profile.id,
+            max_concurrency=4,
             enabled=True,
-            config=config,
         )
-        policy.url_match = url_match
+        policy.profile = profile
         session.add(policy)
-    elif not policy.enabled or policy.config != config or policy.match != match_string:
+    else:
+        policy.profile_id = profile.id
+        policy.profile = profile
         policy.enabled = True
-        policy.config = config
-        policy.match = match_string
-        policy.revision += 1
         policy.updated_at = datetime.now(UTC)
     session.flush()
     return policy

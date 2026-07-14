@@ -6,7 +6,15 @@ from ducklake_client import ColumnDef
 
 from dom.schema import ELEMENT_COLUMNS
 
-CATALOGUE_SCHEMA_VERSION = 12
+CATALOGUE_SCHEMA_VERSION = 15
+
+ARTIFACT_COLUMNS: dict[str, ColumnDef] = {
+    "artifact_id": ColumnDef("VARCHAR", nullable=False),
+    "sha256": ColumnDef("VARCHAR", nullable=False),
+    "object_key": ColumnDef("VARCHAR", nullable=False),
+    "size_bytes": ColumnDef("BIGINT", nullable=False),
+    "created_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+}
 
 DOCUMENT_COLUMNS: dict[str, ColumnDef] = {
     "document_id": ColumnDef("VARCHAR", nullable=False),
@@ -40,6 +48,7 @@ DOCUMENT_COLUMNS: dict[str, ColumnDef] = {
 CRAWL_COLUMNS: dict[str, ColumnDef] = {
     "crawl_id": ColumnDef("UUID", nullable=False),
     "document_id": ColumnDef("VARCHAR"),
+    "artifact_id": ColumnDef("VARCHAR"),
     "graph_id": ColumnDef("UUID", nullable=False),
     "graph_run_id": ColumnDef("UUID", nullable=False),
     "graph_node_id": ColumnDef("UUID", nullable=False),
@@ -61,13 +70,15 @@ CRAWL_COLUMNS: dict[str, ColumnDef] = {
     "captured_at": ColumnDef("TIMESTAMPTZ", nullable=False),
     "status_code": ColumnDef("INTEGER"),
     "duration_ms": ColumnDef("BIGINT"),
-    "domain_group": ColumnDef("VARCHAR", nullable=False),
+    "response_media_type": ColumnDef("VARCHAR"),
+    "response_filename": ColumnDef("VARCHAR"),
     "profile": ColumnDef("VARCHAR", nullable=False),
-    "template": ColumnDef("VARCHAR", nullable=False),
+    "crawl_profile_id": ColumnDef("UUID"),
+    "crawl_profile_slug": ColumnDef("VARCHAR", nullable=False),
+    "remote_concurrency": ColumnDef("INTEGER", nullable=False),
     "config_hash": ColumnDef("VARCHAR", nullable=False),
     "config_json": ColumnDef("JSON", nullable=False),
     "crawl_policy_id": ColumnDef("UUID"),
-    "crawl_policy_revision": ColumnDef("INTEGER"),
     "outcome": ColumnDef("VARCHAR", nullable=False),
     "failure_code": ColumnDef("VARCHAR"),
     "failure_stage": ColumnDef("VARCHAR"),
@@ -76,8 +87,9 @@ CRAWL_COLUMNS: dict[str, ColumnDef] = {
     "trial_sampler_version": ColumnDef("INTEGER"),
     "trial_sample_rate": ColumnDef("DOUBLE"),
     "trial_candidate_strategy": ColumnDef("VARCHAR"),
-    "trial_candidate_template": ColumnDef("VARCHAR"),
-    "trial_template_registry_version": ColumnDef("INTEGER"),
+    "trial_candidate_profile_id": ColumnDef("UUID"),
+    "trial_candidate_profile_slug": ColumnDef("VARCHAR"),
+    "trial_candidate_profile_config_hash": ColumnDef("VARCHAR"),
 }
 
 MATERIALIZATION_SCOPE_RESULT_COLUMNS: dict[str, ColumnDef] = {
@@ -97,6 +109,7 @@ MATERIALIZATION_SCOPE_RESULT_COLUMNS: dict[str, ColumnDef] = {
 
 def expected_columns() -> dict[str, dict[str, ColumnDef]]:
     return {
+        "artifacts": ARTIFACT_COLUMNS,
         "documents": DOCUMENT_COLUMNS,
         "crawls": CRAWL_COLUMNS,
         "elements": ELEMENT_COLUMNS,

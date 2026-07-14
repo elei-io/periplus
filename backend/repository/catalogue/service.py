@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 from collections.abc import Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +15,7 @@ from uuid import UUID
 from repository.catalogue.client import Catalogue
 from repository.catalogue.exceptions import CatalogueConflictError, CatalogueValidationError
 from repository.catalogue.records import (
+    ArtifactRecord,
     CatalogueWriteResult,
     CrawlRecord,
     DocumentRecord,
@@ -27,6 +28,7 @@ from dom import ElementRow, GroupedLinkPayload, links_from_elements
 class CatalogueBatchEntry:
     document: DocumentRecord | None
     crawl: CrawlRecord
+    artifact: ArtifactRecord | None = None
     elements_path: Path | None = None
     replace_projection: bool = False
 
@@ -56,7 +58,19 @@ class CatalogueService:
         operation_key = hashlib.sha256(
             "\0".join(sorted(str(entry.crawl.crawl_id) for entry in entries)).encode()
         ).hexdigest()
-        with self._write_fence(f"ingest-{operation_key}"):
+        content_ids = sorted(
+            {
+                identity
+                for entry in entries
+                for identity in (entry.crawl.document_id, entry.crawl.artifact_id)
+                if identity is not None
+            }
+        )
+        with ExitStack() as fences:
+            for identity in content_ids:
+                identity_key = hashlib.sha256(identity.encode()).hexdigest()
+                fences.enter_context(self._write_fence(f"content-{identity_key}"))
+            fences.enter_context(self._write_fence(f"ingest-{operation_key}"))
             return self._record_crawl_batch_unfenced(entries)
 
     def compact_small_files(
@@ -206,10 +220,12 @@ class CatalogueService:
         if not entries:
             return []
         new_documents: dict[str, DocumentRecord] = {}
+        new_artifacts: dict[str, ArtifactRecord] = {}
         replacement_documents: dict[str, DocumentRecord] = {}
         element_paths: dict[str, Path] = {}
         new_crawls: dict[UUID, CrawlRecord] = {}
         document_created: list[bool] = []
+        artifact_created: list[bool] = []
         crawl_created: list[bool] = []
 
         with self.catalogue.lake.transaction():
@@ -221,21 +237,61 @@ class CatalogueService:
             documents_by_id = self.get_documents(
                 [document.document_id for document in batch_documents]
             )
+            batch_artifacts = [
+                entry.artifact for entry in entries if entry.artifact is not None
+            ]
+            for artifact in batch_artifacts:
+                _validate_artifact_identity(artifact)
+            artifacts_by_id = self.get_artifacts(
+                [artifact.artifact_id for artifact in batch_artifacts]
+            )
             crawls_by_id = self._lookup_batch_crawls(
                 [entry.crawl for entry in entries]
             )
 
             for entry in entries:
+                artifact = entry.artifact
                 document = entry.document
                 crawl = entry.crawl
+                if artifact is not None and document is not None:
+                    raise CatalogueValidationError(
+                        "a crawl cannot include both an artifact and a document"
+                    )
+                if artifact is None:
+                    if crawl.artifact_id is not None:
+                        raise CatalogueValidationError(
+                            "a crawl with artifact_id must include its artifact"
+                        )
+                    artifact_created.append(False)
+                else:
+                    if crawl.artifact_id != artifact.artifact_id:
+                        raise CatalogueValidationError(
+                            "crawl.artifact_id must match artifact.artifact_id"
+                        )
+                    existing_artifact = artifacts_by_id.get(artifact.artifact_id)
+                    pending_artifact = new_artifacts.get(artifact.artifact_id)
+                    if existing_artifact is None and pending_artifact is None:
+                        new_artifacts[artifact.artifact_id] = artifact
+                        artifact_created.append(True)
+                    elif existing_artifact is not None:
+                        _validate_canonical_artifact(existing_artifact, artifact)
+                        artifact_created.append(False)
+                    else:
+                        assert pending_artifact is not None
+                        _validate_canonical_artifact(pending_artifact, artifact)
+                        artifact_created.append(False)
+
                 if document is None:
                     if crawl.document_id is not None:
                         raise CatalogueValidationError(
                             "a crawl with document_id must include its document"
                         )
-                    if crawl.outcome != "failed" or crawl.failure_code is None:
+                    if (
+                        artifact is None
+                        and (crawl.outcome != "failed" or crawl.failure_code is None)
+                    ):
                         raise CatalogueValidationError(
-                            "a documentless crawl must record an acquisition error"
+                            "a contentless crawl must record an acquisition error"
                         )
                     if entry.elements_path is not None or entry.replace_projection:
                         raise CatalogueValidationError(
@@ -314,6 +370,11 @@ class CatalogueService:
                     identifiers,
                 )
 
+            if new_artifacts:
+                self._append(
+                    "artifacts",
+                    [_artifact_values(value) for value in new_artifacts.values()],
+                )
             if new_documents:
                 self._append(
                     "documents",
@@ -339,6 +400,7 @@ class CatalogueService:
 
             made_changes = bool(
                 new_documents
+                or new_artifacts
                 or element_paths
                 or replacement_documents
                 or new_crawls
@@ -350,6 +412,7 @@ class CatalogueService:
                     extra={
                         "crawl_ids": [str(entry.crawl.crawl_id) for entry in entries],
                         "new_documents": len(new_documents),
+                        "new_artifacts": len(new_artifacts),
                         "new_crawls": len(new_crawls),
                         "element_rows": sum(
                             entry.document.element_count
@@ -369,21 +432,54 @@ class CatalogueService:
             raise CatalogueValidationError("DuckLake did not publish a repository snapshot")
         return [
             CatalogueWriteResult(
+                artifact_id=(
+                    entry.artifact.artifact_id if entry.artifact is not None else None
+                ),
                 document_id=(
                     entry.document.document_id if entry.document is not None else None
                 ),
                 crawl_id=entry.crawl.crawl_id,
                 document_created=created_document,
+                artifact_created=created_artifact,
                 crawl_created=created_crawl,
                 repository_snapshot=snapshot,
             )
-            for entry, created_document, created_crawl in zip(
+            for entry, created_document, created_artifact, created_crawl in zip(
                 entries,
                 document_created,
+                artifact_created,
                 crawl_created,
                 strict=True,
             )
         ]
+
+    def get_artifact(self, artifact_id: str) -> ArtifactRecord | None:
+        rows = self.catalogue.lake.sql_dicts(
+            f"SELECT * FROM {self._table('artifacts')} WHERE artifact_id = $artifact_id",
+            artifact_id=artifact_id,
+        )
+        row = _one_or_none(rows, identity=f"artifact_id {artifact_id!r}")
+        return ArtifactRecord.model_validate(row) if row is not None else None
+
+    def get_artifacts(
+        self,
+        artifact_ids: Sequence[str],
+    ) -> dict[str, ArtifactRecord]:
+        rows = self._lookup_rows_by_identity(
+            "artifacts",
+            "artifact_id",
+            artifact_ids,
+        )
+        result: dict[str, ArtifactRecord] = {}
+        for row in rows:
+            artifact = ArtifactRecord.model_validate(row)
+            if artifact.artifact_id in result:
+                raise CatalogueConflictError(
+                    f"catalogue contains duplicate rows for artifact_id "
+                    f"{artifact.artifact_id!r}"
+                )
+            result[artifact.artifact_id] = artifact
+        return result
 
     def get_document(self, document_id: str) -> DocumentRecord | None:
         rows = self.catalogue.lake.sql_dicts(
@@ -685,6 +781,10 @@ def _document_values(document: DocumentRecord) -> dict[str, object]:
     return values
 
 
+def _artifact_values(artifact: ArtifactRecord) -> dict[str, object]:
+    return artifact.model_dump(mode="python")
+
+
 def _crawl_values(crawl: CrawlRecord) -> dict[str, object]:
     values = crawl.model_dump(mode="python")
     values["config_json"] = json.dumps(
@@ -717,6 +817,25 @@ def _validate_document_identity(document: DocumentRecord) -> None:
     if document.document_id != expected:
         raise CatalogueValidationError(
             "document_id must be the sha256-prefixed canonical HTML hash"
+        )
+
+
+def _validate_artifact_identity(artifact: ArtifactRecord) -> None:
+    expected = f"sha256:{artifact.sha256}"
+    if artifact.artifact_id != expected:
+        raise CatalogueValidationError(
+            "artifact_id must be the sha256-prefixed canonical byte hash"
+        )
+
+
+def _validate_canonical_artifact(
+    existing: ArtifactRecord,
+    proposed: ArtifactRecord,
+) -> None:
+    immutable = ("artifact_id", "sha256", "object_key", "size_bytes")
+    if any(getattr(existing, name) != getattr(proposed, name) for name in immutable):
+        raise CatalogueConflictError(
+            f"artifact_id {existing.artifact_id!r} already has different canonical metadata"
         )
 
 

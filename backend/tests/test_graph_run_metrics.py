@@ -32,24 +32,28 @@ class GraphRunMetricsTests(unittest.TestCase):
                         graph_node_id, crawl_request_id, purpose, requested_url,
                         normalized_url, page_url, url_scheme, url_host, url_port,
                         url_registrable_domain, url_path, url_query, captured_at,
-                        duration_ms, domain_group, profile, template, config_hash,
-                        config_json, outcome
+                        duration_ms, profile, crawl_profile_slug, remote_concurrency,
+                        config_hash, config_json, outcome, failure_code, failure_stage,
+                        failure_retryable, failure_detail
                     ) VALUES
                         (uuid(), NULL, uuid(), uuid(), uuid(), uuid(), 'use',
                          'https://a.test/1', 'https://a.test/1', 'https://a.test/1',
                          'https', 'a.test', 443, 'a.test', '/1', '',
                          TIMESTAMPTZ '2026-07-14 00:03:00+00', 120000,
-                         'public-web', 'http', 'http_fast', repeat('a', 64), '{}', 'failed'),
+                         'http', 'direct', 2, repeat('a', 64), '{}', 'failed',
+                         'expected_failure', 'request', false, 'failed'),
                         (uuid(), NULL, uuid(), uuid(), uuid(), uuid(), 'use',
                          'https://a.test/2', 'https://a.test/2', 'https://a.test/2',
                          'https', 'a.test', 443, 'a.test', '/2', '',
                          TIMESTAMPTZ '2026-07-14 00:07:00+00', 300000,
-                         'public-web', 'http', 'http_fast', repeat('b', 64), '{}', 'failed'),
+                         'http', 'direct', 2, repeat('b', 64), '{}', 'failed',
+                         'expected_failure', 'request', false, 'failed'),
                         (uuid(), NULL, uuid(), uuid(), uuid(), uuid(), 'use',
                          'https://a.test/3', 'https://a.test/3', 'https://a.test/3',
                          'https', 'a.test', 443, 'a.test', '/3', '',
                          TIMESTAMPTZ '2026-07-14 00:13:00+00', 60000,
-                         'public-web', 'http', 'http_fast', repeat('c', 64), '{}', 'failed')
+                         'http', 'direct', 2, repeat('c', 64), '{}', 'failed',
+                         'expected_failure', 'request', false, 'failed')
                     """
                 )
 
@@ -60,7 +64,19 @@ class GraphRunMetricsTests(unittest.TestCase):
                     bucket_seconds=300,
                 )
 
+                leading_rows = _policy_pressure_rows(
+                    catalogue,
+                    range_start=datetime(2026, 7, 13, 23, 55, tzinfo=UTC),
+                    range_end=datetime(2026, 7, 14, 0, 5, tzinfo=UTC),
+                    bucket_seconds=300,
+                )
+
         self.assertEqual([int(row[2]) for row in rows], [2, 1, 1, 0])
+        self.assertEqual([int(row[3]) for row in rows], [2, 2, 2, 2])
+        self.assertEqual(
+            [(int(row[2]), int(row[3])) for row in leading_rows],
+            [(0, 2), (2, 2)],
+        )
 
 
 class GraphRunStageMetricsTests(unittest.IsolatedAsyncioTestCase):

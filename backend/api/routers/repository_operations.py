@@ -17,7 +17,7 @@ from materialization.admin import (
     requeue_dead_letter as requeue_materialization_dead_letter,
 )
 from repository import repository_ingestor_from_env
-from repository.catalogue import CrawlRecord, DocumentRecord
+from repository.catalogue import ArtifactRecord, CrawlRecord, DocumentRecord
 
 router = APIRouter(prefix="/operations/repository", tags=["operations"])
 
@@ -29,6 +29,16 @@ def document(document_id: str) -> DocumentRecord:
         record = repository.catalogue_service.get_document(document_id)
     if record is None:
         raise HTTPException(status_code=404, detail="document was not found")
+    return record
+
+
+@router.get("/artifacts/{artifact_id}", response_model=ArtifactRecord)
+def artifact(artifact_id: str) -> ArtifactRecord:
+    with repository_ingestor_from_env() as repository:
+        repository.validate()
+        record = repository.catalogue_service.get_artifact(artifact_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="artifact was not found")
     return record
 
 
