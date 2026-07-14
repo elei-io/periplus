@@ -75,28 +75,25 @@ def iter_html_elements(source: str) -> Iterator[ElementRow]:
 def iter_tree_elements(root: Element) -> Iterator[ElementRow]:
     """Yield rows for an already parsed HTML5 tree."""
 
-    next_index = 0
     subtree_sizes: dict[int, int] = {}
-
-    def count_subtree(element: Element) -> int:
-        size = 1 + sum(
-            count_subtree(child)
-            for child in element
-            if isinstance(child.tag, str)
+    count_stack: list[tuple[Element, bool]] = [(root, False)]
+    while count_stack:
+        element, visited = count_stack.pop()
+        children = [child for child in element if isinstance(child.tag, str)]
+        if not visited:
+            count_stack.append((element, True))
+            count_stack.extend((child, False) for child in reversed(children))
+            continue
+        subtree_sizes[id(element)] = 1 + sum(
+            subtree_sizes[id(child)] for child in children
         )
-        subtree_sizes[id(element)] = size
-        return size
 
-    count_subtree(root)
-
-    def walk(
-        element: Element,
-        *,
-        parent_index: int | None,
-        depth: int,
-        text_tail: str,
-    ) -> Iterator[ElementRow]:
-        nonlocal next_index
+    next_index = 0
+    walk_stack: list[tuple[Element, int | None, int, str]] = [
+        (root, None, 0, "")
+    ]
+    while walk_stack:
+        element, parent_index, depth, text_tail = walk_stack.pop()
         element_index = next_index
         next_index += 1
         namespace_uri, tag = _split_expanded_name(element.tag)
@@ -119,15 +116,12 @@ def iter_tree_elements(root: Element) -> Iterator[ElementRow]:
             text_direct=text or "",
             text_tail=text_tail,
         )
-        for child, child_tail in zip(children, child_tails, strict=True):
-            yield from walk(
-                child,
-                parent_index=element_index,
-                depth=depth + 1,
-                text_tail=child_tail or "",
+        walk_stack.extend(
+            (child, element_index, depth + 1, child_tail or "")
+            for child, child_tail in reversed(
+                list(zip(children, child_tails, strict=True))
             )
-
-    yield from walk(root, parent_index=None, depth=0, text_tail="")
+        )
 
 
 def encode_html(source: str) -> list[ElementRow]:

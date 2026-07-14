@@ -3,16 +3,48 @@ from __future__ import annotations
 import asyncio
 import threading
 import unittest
-from unittest.mock import MagicMock
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from ducklake_cdc_client import LeaseContentionError
 
-from materialization.executor import _supervise_cdc, _supervise_subsystem
+from materialization.executor import (
+    _probe_dependencies_once,
+    _supervise_cdc,
+    _supervise_subsystem,
+)
 from materialization.live import _close_consumer, _run_blocking
 from repository.ingestion.health import HealthMonitor
 
 
 class MaterializationSupervisionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dependency_probe_treats_an_owned_catalogue_lane_as_busy(self) -> None:
+        @asynccontextmanager
+        async def granted(*_args, **_kwargs):
+            yield
+
+        client = SimpleNamespace(flush=AsyncMock())
+        catalogue = SimpleNamespace(connection=SimpleNamespace(execute=MagicMock()))
+        lane = SimpleNamespace(locked=lambda: True)
+        with (
+            patch("materialization.executor.resource_permits", new=granted),
+            patch("materialization.executor.catalogue_operation_lane", return_value=lane),
+            patch(
+                "materialization.executor.run_catalogue_operation",
+                new=AsyncMock(),
+            ) as run_operation,
+        ):
+            await _probe_dependencies_once(
+                client,
+                catalogue,
+                MagicMock(),
+                timeout=0.1,
+            )
+
+        client.flush.assert_awaited_once()
+        run_operation.assert_not_awaited()
+
     async def test_cdc_failure_is_retried_without_escaping_supervisor(self) -> None:
         stop = asyncio.Event()
         attempts = 0

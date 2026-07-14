@@ -34,7 +34,6 @@ def policy_snapshot(profile: str) -> dict:
 
 class CrawlTransportRoutingTests(unittest.TestCase):
     def test_frozen_policy_selects_exact_transport(self) -> None:
-        self.assertEqual(crawl_transport_from_policy(None), "http")
         for profile in ("http", "browser", "firecrawl"):
             self.assertEqual(crawl_transport_from_policy(policy_snapshot(profile)), profile)
 
@@ -53,6 +52,7 @@ class CrawlTransportRoutingTests(unittest.TestCase):
                     node_id=uuid4(),
                     url="https://example.com/",
                     transport=transport,
+                    effective_policy_snapshot_json=policy_snapshot(transport),
                     created_at=now,
                     updated_at=now,
                 )

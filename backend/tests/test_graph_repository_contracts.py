@@ -22,6 +22,7 @@ class GraphRepositoryContractTests(unittest.TestCase):
             requested_url="https://example.com",
             normalized_url="https://example.com/",
             captured_at=datetime.now(UTC),
+            domain_group="public-web",
             profile="http",
             template="http_fast",
             config_json={},

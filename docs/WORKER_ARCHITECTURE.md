@@ -117,8 +117,18 @@ Keep the vocabulary closed until measurement proves another shared bottleneck:
 | `object:read` | Weighted in-flight repository/object-store reads |
 | `object:write` | Weighted in-flight repository/object-store writes |
 
+Deployment setup creates one catch-all `public-web` CrawlPolicy. Its remote permit is the final
+match for every HTTP(S) URL. Evidence-backed trial applications and user policies add more-specific
+matches above it. Runtime admission never invents an implicit transport, concurrency, or remote
+group when policy resolution fails.
+
 Browser page slots are process-local capacity and remain a local semaphore. The frozen CrawlPolicy
 permit is deployment-wide remote pressure. They are deliberately different resources.
+
+The HTTP acquisition boundary accepts `text/html` and `application/xhtml+xml` only. Other media
+types settle as non-retryable acquisition warnings and never enter raw-HTML storage or DOM
+projection. DOM traversal itself is iterative so valid deeply nested HTML does not depend on the
+Python recursion limit.
 
 S3 / MinIO is not a mutex. Object-store permits represent weighted operations or expected bytes.
 Known byte sizes are used where available; bounded operation-class estimates are used otherwise.
@@ -129,6 +139,8 @@ fails configuration validation instead of waiting forever for an impossible gran
 
 DuckLake is also not a single correctness lock. `catalogue:hot` is a capacity pool. Deterministic
 operation leases and PostgreSQL advisory locks continue to fence overlapping identities.
+Worker dependency probes do not wait behind a process's occupied embedded-DuckDB lane: active
+owned work is healthy, while queue-progress monitoring detects a genuinely stuck operation.
 
 ### Fixed service classes
 
@@ -349,3 +361,8 @@ migration bridges. [AUDIT.md](../AUDIT.md) is the sole checklist for implementat
 - Maintenance never overlaps a granted hot catalogue operation.
 - A poison materialization scope reaches dead letter without crash-looping ingestion.
 - Metrics distinguish executor shortage from remote, catalogue, and object-store saturation.
+- The crawl dashboard reconstructs peak courtesy-group concurrency from durable DuckLake crawl
+  timing and `domain_group` provenance; 100% means that group reached its configured limit.
+- Run warnings count external acquisition failures. Run errors count Atlas pipeline/lifecycle and
+  materialization failures. `Cooldown` is a presentation phase while terminal acquisition waits
+  for materialization coverage, not a second graph-run terminal state.

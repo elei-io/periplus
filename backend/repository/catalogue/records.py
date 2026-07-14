@@ -71,6 +71,7 @@ class CrawlRecord(CatalogueRecord):
     captured_at: datetime
     status_code: int | None = Field(default=None, ge=100, le=599)
     duration_ms: int | None = Field(default=None, ge=0)
+    domain_group: str = Field(min_length=1)
     profile: Literal["http", "browser", "firecrawl"]
     template: str = Field(min_length=1)
     config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")

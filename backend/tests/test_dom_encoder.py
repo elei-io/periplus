@@ -3,12 +3,14 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from xml.etree.ElementTree import Element, SubElement
 
 from dom import (
     DOM_SCHEMA_VERSION,
     ELEMENT_COLUMNS,
     ElementRow,
     encode_html,
+    iter_tree_elements,
     links_from_elements,
     links_from_html,
     write_dom_parquet,
@@ -20,6 +22,18 @@ XLINK_NAMESPACE = "http://www.w3.org/1999/xlink"
 
 
 class DomEncoderTests(unittest.TestCase):
+    def test_deep_tree_projection_does_not_depend_on_python_recursion(self) -> None:
+        root = Element("root")
+        leaf = root
+        for _ in range(1_500):
+            leaf = SubElement(leaf, "nested")
+
+        rows = list(iter_tree_elements(root))
+
+        self.assertEqual(len(rows), 1_501)
+        self.assertEqual(rows[0].subtree_end_index, 1_500)
+        self.assertEqual(rows[-1].depth, 1_500)
+
     def test_parquet_element_budget_removes_partial_staging_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "document.parquet"

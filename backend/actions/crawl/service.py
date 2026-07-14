@@ -142,7 +142,7 @@ async def _crawl_url(
     profile: str,
     config: ProfileConfig,
     progress_reporter: ProgressReporter | None,
-    domain_group: str = "unclassified",
+    domain_group: str,
 ) -> CrawlPage:
     await emit_progress(
         progress_reporter,
@@ -272,6 +272,30 @@ async def _acquire_http(
         timeout=config.timeout_seconds,
         follow_redirects=config.follow_redirects,
     ) as response:
+        content_type = response.headers.get("content-type", "")
+        media_type = content_type.partition(";")[0].strip().lower()
+        if media_type not in {"text/html", "application/xhtml+xml"}:
+            final_url = str(response.url)
+            display_type = media_type or "missing Content-Type"
+            error = f"HTTP response is not HTML ({display_type})."
+            return CrawlPage(
+                url=final_url,
+                success=False,
+                status_code=response.status_code,
+                duration_seconds=0,
+                html=None,
+                crawl={
+                    "url": final_url,
+                    "success": False,
+                    "status_code": response.status_code,
+                    "redirected_url": final_url if final_url != url else None,
+                    "error_message": error,
+                },
+                error=error,
+                failure_code="unsupported_content_type",
+                failure_stage="response",
+                failure_retryable=False,
+            )
         limit = get_int("ATLAS_REPOSITORY_MAX_HTML_BYTES")
         content_length = response.headers.get("content-length")
         if content_length is not None and content_length.isdigit() and int(content_length) > limit:
@@ -491,6 +515,7 @@ async def _persist_page(
     requested_url: str,
     page: CrawlPage,
     profile: str,
+    domain_group: str,
     concurrency: int,
     profile_config: ProfileConfig,
     policy: CrawlPolicySnapshot | None = None,
@@ -566,6 +591,7 @@ async def _persist_page(
             captured_at=finished_at,
             status_code=page.status_code,
             duration_ms=duration_ms,
+            domain_group=domain_group,
             profile=profile,
             template=template_for_config(config_json).name,
             config_json=config_json,
@@ -840,18 +866,18 @@ def _repository_crawl_payload(
 
 
 def _profile_from_policy(
-    policy: CrawlPolicySnapshot | None,
+    policy: CrawlPolicySnapshot,
 ) -> tuple[CrawlPolicyConfig, ProfileConfig]:
-    envelope = CrawlPolicyConfig.model_validate(policy.config if policy is not None else {})
+    envelope = CrawlPolicyConfig.model_validate(policy.config)
     return envelope, envelope.parsed_config()
 
 
-def _frozen_crawl_policy() -> CrawlPolicySnapshot | None:
+def _frozen_crawl_policy() -> CrawlPolicySnapshot:
     execution = current_graph_execution()
     if execution is None:
         raise RuntimeError("Crawl acquisition has no graph execution context")
     value = execution.effective_policy_snapshot_json
-    return CrawlPolicySnapshot.model_validate(value) if value is not None else None
+    return CrawlPolicySnapshot.model_validate(value)
 
 
 async def _crawl_graph_request(
@@ -887,7 +913,7 @@ async def _crawl_graph_request(
     fresh_after = cache_now - timedelta(seconds=cache_policy.max_age_seconds)
     if not cache_policy.reads_cache:
         crawl_metrics.repository_cache(outcome=cache_policy.mode)
-    domain_group = policy.domain_group if policy is not None else "unclassified"
+    domain_group = policy.domain_group
     acquisition_recorded = False
     acquisition_failure_duration = 0.0
     commit_checkpoint(session)
@@ -987,6 +1013,7 @@ async def _crawl_graph_request(
                 requested_url=url,
                 page=repository_page,
                 profile=profile,
+                domain_group=domain_group,
                 concurrency=envelope.concurrency,
                 profile_config=profile_config,
                 policy=policy,
@@ -1137,6 +1164,7 @@ async def _crawl_graph_request(
             requested_url=url,
             page=page,
             profile=profile,
+            domain_group=domain_group,
             concurrency=envelope.concurrency,
             profile_config=profile_config,
             policy=policy,

@@ -112,6 +112,7 @@ class RawHtmlRepository:
                 with io.TextIOWrapper(
                     io.BufferedReader(hashing_reader),
                     encoding="utf-8",
+                    newline="",
                 ) as text:
                     canonical = text.read()
         expected = _sha256_from_key(object_key)

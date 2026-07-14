@@ -186,8 +186,10 @@ Acquisition
 ```
 
 The stable policy envelope is `{profile, concurrency, config}`. Atlas validates `config` against
-the selected profile before the policy is frozen. A missing URL match uses the explicit `http`
-default. Profile selection does not change the crawl contract: every successful profile returns
+the selected profile before the policy is frozen. Deployment setup seeds one editable `*://*/*`
+policy using bounded HTTP acquisition. More-specific trial- or user-created URL matches override
+it. Admission fails if the catch-all is missing; there is no second implicit default lane. Profile
+selection does not change the crawl contract: every successful profile returns
 raw HTML to the ordinary immutable-object and ingestion path. External providers perform one page
 acquisition; graph edges remain the only navigation mechanism.
 

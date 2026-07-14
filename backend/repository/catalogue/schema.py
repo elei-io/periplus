@@ -6,7 +6,7 @@ from ducklake_client import ColumnDef
 
 from dom.schema import ELEMENT_COLUMNS
 
-CATALOGUE_SCHEMA_VERSION = 11
+CATALOGUE_SCHEMA_VERSION = 12
 
 DOCUMENT_COLUMNS: dict[str, ColumnDef] = {
     "document_id": ColumnDef("VARCHAR", nullable=False),
@@ -61,6 +61,7 @@ CRAWL_COLUMNS: dict[str, ColumnDef] = {
     "captured_at": ColumnDef("TIMESTAMPTZ", nullable=False),
     "status_code": ColumnDef("INTEGER"),
     "duration_ms": ColumnDef("BIGINT"),
+    "domain_group": ColumnDef("VARCHAR", nullable=False),
     "profile": ColumnDef("VARCHAR", nullable=False),
     "template": ColumnDef("VARCHAR", nullable=False),
     "config_hash": ColumnDef("VARCHAR", nullable=False),

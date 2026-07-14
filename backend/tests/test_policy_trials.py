@@ -13,7 +13,7 @@ from control.crawl_policies.templates import (
 from runtime.graph_queue import get_graph_run, list_crawl_requests, new_graph_run
 from runtime.graph_progress import initialize_run_progress
 from runtime.graph_runs import admit_request
-from tests.test_graph_runtime import FakeJetStream, FakeKV, snapshot
+from tests.test_graph_runtime import FakeJetStream, FakeKV, policy_snapshot, snapshot
 
 
 class PolicyTemplateTests(unittest.TestCase):
@@ -32,7 +32,7 @@ class PolicyTemplateTests(unittest.TestCase):
             ],
         )
         candidate = next_trial_policy_snapshot(
-            None, url="https://example.com/docs", provider_enabled=False
+            policy_snapshot(), url="https://example.com/docs", provider_enabled=False
         )
         assert candidate is not None
         value, template = candidate
@@ -87,7 +87,7 @@ class PolicyTrialAdmissionTests(unittest.IsolatedAsyncioTestCase):
                 run_id=run.id,
                 node_id=graph.root_node_id,
                 url="https://example.com/",
-                policy_resolver=lambda _url: None,
+                policy_resolver=lambda _url: policy_snapshot(),
             )
 
         assert use is not None and admitted

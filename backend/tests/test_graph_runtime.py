@@ -62,6 +62,28 @@ def navigation_package() -> NavigationPackage:
     )
 
 
+def policy_snapshot(profile: str = "http") -> dict:
+    return {
+        "id": str(uuid4()),
+        "revision": 1,
+        "metric_slug": f"{profile}-test",
+        "domain_group": "test",
+        "match": "*://*/*",
+        "config": {
+            "profile": profile,
+            "concurrency": 4,
+            "config": {"template": "http_fast"} if profile == "http" else {},
+        },
+        "matcher": {
+            "scheme": "*",
+            "host": "*",
+            "path_pattern": "/*",
+            "match_type": "glob",
+            "priority": -1_000_000,
+        },
+    }
+
+
 class FakeJetStream:
     def __init__(self) -> None:
         self.messages: list[tuple[str, bytes]] = []
@@ -83,6 +105,11 @@ def snapshot(*, entry: bool = True, self_edge: bool = False, dedupe_mode: EdgeDe
 
 
 class GraphRuntimeTests(unittest.TestCase):
+ def setUp(self) -> None:
+    trial_patch = patch("runtime.graph_runs._trial_for_request", return_value=None)
+    trial_patch.start()
+    self.addCleanup(trial_patch.stop)
+
  def test_invalid_acquisition_work_is_terminated(self) -> None:
     async def scenario() -> None:
         message = SimpleNamespace(
@@ -124,6 +151,7 @@ class GraphRuntimeTests(unittest.TestCase):
             node_id=graph.root_node_id,
             url="https://example.com/",
             transport="http",
+            effective_policy_snapshot_json=policy_snapshot(),
             created_at=run.created_at,
             updated_at=run.created_at,
         )
@@ -169,6 +197,7 @@ class GraphRuntimeTests(unittest.TestCase):
             node_id=graph.root_node_id,
             url="https://example.com/",
             transport="http",
+            effective_policy_snapshot_json=policy_snapshot(),
             status="crawling",
             claim_token=uuid4(),
             claim_expires_at=datetime.now(UTC) - timedelta(seconds=1),
@@ -218,6 +247,7 @@ class GraphRuntimeTests(unittest.TestCase):
             node_id=graph.root_node_id,
             url="https://example.com/",
             transport="http",
+            effective_policy_snapshot_json=policy_snapshot(),
             created_at=run.created_at,
             updated_at=run.created_at,
         )
@@ -326,6 +356,7 @@ class GraphRuntimeTests(unittest.TestCase):
             node_id=graph.root_node_id,
             url="https://example.com/",
             transport="http",
+            effective_policy_snapshot_json=policy_snapshot(),
             status="awaiting_navigation",
             created_at=started,
             updated_at=started,
@@ -365,6 +396,7 @@ class GraphRuntimeTests(unittest.TestCase):
             node_id=graph.root_node_id,
             url="https://example.com/",
             transport="http",
+            effective_policy_snapshot_json=policy_snapshot(),
             status="awaiting_navigation",
             created_at=run.created_at,
             updated_at=run.created_at,
@@ -396,6 +428,64 @@ class GraphRuntimeTests(unittest.TestCase):
 
     asyncio.run(scenario())
 
+ def test_settlement_separates_external_warnings_from_atlas_errors(self) -> None:
+    async def scenario() -> None:
+        runs, requests, progress = FakeKV(), FakeKV(), FakeKV()
+        graph = snapshot()
+        now = datetime(2026, 1, 1, tzinfo=UTC)
+        run = new_graph_run(graph, ["https://example.com"], now=now).model_copy(
+            update={"status": "running", "request_count": 2, "pending_request_count": 2}
+        )
+        await runs.create(run.id.hex, run.model_dump_json().encode())
+        await initialize_run_progress(progress, run)
+        from runtime.graph_queue import CrawlRequest
+
+        crawl_requests = []
+        for path in ("external", "pipeline"):
+            crawl_request = CrawlRequest(
+                id=uuid4(),
+                graph_run_id=run.id,
+                node_id=graph.root_node_id,
+                url=f"https://example.com/{path}",
+                transport="http",
+                effective_policy_snapshot_json=policy_snapshot(),
+                status="crawling",
+                created_at=now,
+                updated_at=now,
+            )
+            await requests.create(
+                crawl_request.id.hex, crawl_request.model_dump_json().encode()
+            )
+            crawl_requests.append(crawl_request)
+
+        await settle_request(
+            runs=runs,
+            requests=requests,
+            progress=progress,
+            request_id=crawl_requests[0].id,
+            status="failed",
+            failure_stage="acquisition",
+            now=now,
+        )
+        await settle_request(
+            runs=runs,
+            requests=requests,
+            progress=progress,
+            request_id=crawl_requests[1].id,
+            status="failed",
+            failure_stage="edge",
+            now=now,
+        )
+
+        current = await get_graph_run(runs, run.id)
+        assert current is not None
+        self.assertEqual(current.status, "completed_with_errors")
+        self.assertEqual(current.failed_request_count, 2)
+        self.assertEqual(current.warning_count, 1)
+        self.assertEqual(current.error_count, 1)
+
+    asyncio.run(scenario())
+
  def test_cancellation_settles_every_nonterminal_request(self) -> None:
     async def scenario() -> None:
         runs, requests, progress = FakeKV(), FakeKV(), FakeKV()
@@ -419,6 +509,7 @@ class GraphRuntimeTests(unittest.TestCase):
                 node_id=graph.root_node_id,
                 url=url,
                 transport="http",
+                effective_policy_snapshot_json=policy_snapshot(),
                 status=status,
                 created_at=run.created_at,
                 updated_at=run.created_at,
@@ -460,6 +551,7 @@ class GraphRuntimeTests(unittest.TestCase):
             )
 
         self.assertEqual(expired.status, "failed")
+        self.assertEqual(expired.error_count, 1)
         self.assertIn("ATLAS_GRAPH_MAX_RUN_SECONDS=60", expired.error or "")
 
     asyncio.run(scenario())
@@ -493,7 +585,7 @@ class GraphRuntimeTests(unittest.TestCase):
                 run_id=run.id,
                 node_id=graph.root_node_id,
                 url="https://example.com/a",
-                policy_resolver=lambda _url: None,
+                policy_resolver=lambda _url: policy_snapshot(),
             )
 
         reserved = await get_graph_run(runs, run.id)
@@ -524,15 +616,15 @@ class GraphRuntimeTests(unittest.TestCase):
         run = new_graph_run(graph, ["https://example.com"])
         await runs.create(run.id.hex, run.model_dump_json().encode())
         await initialize_run_progress(progress, run)
-        source, _admitted = await admit_request(runs=runs, requests=requests, progress=progress, jetstream=jetstream, run_id=run.id, node_id=graph.nodes[0].id, url="https://example.com", policy_resolver=lambda _url: None)
+        source, _admitted = await admit_request(runs=runs, requests=requests, progress=progress, jetstream=jetstream, run_id=run.id, node_id=graph.nodes[0].id, url="https://example.com", policy_resolver=lambda _url: policy_snapshot())
         assert source is not None
         work = EdgeWork(graph_run_id=run.id, crawl_request_id=source.id, crawl_id=uuid4(), edge_id=graph.edges[0].id, navigation=navigation_package())
         calls = []
         def execute(sql, parameters):
             calls.append((sql, parameters))
             return ["https://target.example/a"]
-        first = await evaluate_edge(runs=runs, requests=requests, progress=progress, jetstream=jetstream, work=work, execute_urls=execute, policy_resolver=lambda _url: None)
-        second = await evaluate_edge(runs=runs, requests=requests, progress=progress, jetstream=jetstream, work=work, execute_urls=execute, policy_resolver=lambda _url: None)
+        first = await evaluate_edge(runs=runs, requests=requests, progress=progress, jetstream=jetstream, work=work, execute_urls=execute, policy_resolver=lambda _url: policy_snapshot())
+        second = await evaluate_edge(runs=runs, requests=requests, progress=progress, jetstream=jetstream, work=work, execute_urls=execute, policy_resolver=lambda _url: policy_snapshot())
         assert first == second == 1
         assert calls == [
             (
@@ -570,7 +662,7 @@ class GraphRuntimeTests(unittest.TestCase):
             run_id=run.id,
             node_id=graph.nodes[0].id,
             url="https://example.com",
-            policy_resolver=lambda _url: None,
+            policy_resolver=lambda _url: policy_snapshot(),
         )
         assert source is not None and admitted
 
@@ -606,7 +698,7 @@ class GraphRuntimeTests(unittest.TestCase):
                         navigation=navigation_package(),
                     ),
                     execute_urls=query,
-                    policy_resolver=lambda _url: None,
+                    policy_resolver=lambda _url: policy_snapshot(),
                 )
 
         failed = await get_crawl_request(requests, source.id)
@@ -629,7 +721,7 @@ class GraphRuntimeTests(unittest.TestCase):
             source, admitted = await admit_request(
                 runs=runs, requests=requests, progress=progress, jetstream=jetstream,
                 run_id=run.id, node_id=graph.nodes[0].id,
-                url=f"https://source.example/{path}", policy_resolver=lambda _url: None,
+                url=f"https://source.example/{path}", policy_resolver=lambda _url: policy_snapshot(),
             )
             assert source is not None and admitted
             source = await update_crawl_request(
@@ -647,7 +739,7 @@ class GraphRuntimeTests(unittest.TestCase):
                     navigation=navigation_package(),
                 ),
                 execute_urls=lambda _sql, _parameters: ["https://target.example/same"],
-                policy_resolver=lambda _url: None,
+                policy_resolver=lambda _url: policy_snapshot(),
             )
         state = EdgeProgress.model_validate_json(
             (await progress.get(edge_progress_key(run.id, graph.edges[0].id))).value
@@ -672,13 +764,13 @@ class GraphRuntimeTests(unittest.TestCase):
         first, first_admitted = await admit_request(
             runs=runs, requests=requests, progress=progress, jetstream=jetstream,
             run_id=run.id, node_id=graph.nodes[0].id, url="https://target.example/same",
-            policy_resolver=lambda _url: None, dedupe_mode=EdgeDedupeMode.crawl,
+            policy_resolver=lambda _url: policy_snapshot(), dedupe_mode=EdgeDedupeMode.crawl,
             source_edge_id=edge_id, source_crawl_id=crawl_id,
         )
         second, second_admitted = await admit_request(
             runs=runs, requests=requests, progress=progress, jetstream=jetstream,
             run_id=run.id, node_id=graph.nodes[-1].id, url="https://target.example/same",
-            policy_resolver=lambda _url: None,
+            policy_resolver=lambda _url: policy_snapshot(),
         )
         self.assertIsNotNone(first)
         self.assertTrue(first_admitted)

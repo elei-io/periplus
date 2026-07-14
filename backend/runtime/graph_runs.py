@@ -54,7 +54,7 @@ def deterministic_request_id(identity: str) -> UUID:
 
 
 def _trial_for_request(
-    request_id: UUID, policy_snapshot_json: dict | None, url: str
+    request_id: UUID, policy_snapshot_json: dict, url: str
 ) -> tuple[PolicyTrialMetadata, UUID, dict, str] | None:
     share = get_float("ATLAS_POLICY_TRIAL_SAMPLE_SHARE", exclusive=False)
     if not 0 <= share <= 1:
@@ -90,13 +90,11 @@ def _trial_for_request(
     )
 
 
-def resolve_policy_snapshot(session, url: str) -> dict | None:
+def resolve_policy_snapshot(session, url: str) -> dict:
     policy = find_crawl_policy_for_url(session, url=url)
-    if policy is None:
-        return None
     matcher = policy.url_match
     if matcher is None:
-        return None
+        raise RuntimeError("resolved CrawlPolicy has no URL matcher")
     snapshot = CrawlPolicySnapshot(
         id=policy.id,
         revision=policy.revision,
@@ -126,7 +124,7 @@ def _ceiling_error(run: GraphRun, now: datetime) -> str | None:
     return None
 
 
-async def admit_request(*, runs, requests, progress, jetstream, run_id: UUID, node_id: UUID, url: str, policy_resolver: Callable[[str], dict | None], dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph, source_crawl_id: UUID | None = None, source_document_id: str | None = None, source_edge_id: UUID | None = None, parent_request_id: UUID | None = None, now: datetime | None = None) -> tuple[CrawlRequest | None, bool]:
+async def admit_request(*, runs, requests, progress, jetstream, run_id: UUID, node_id: UUID, url: str, policy_resolver: Callable[[str], dict], dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph, source_crawl_id: UUID | None = None, source_document_id: str | None = None, source_edge_id: UUID | None = None, parent_request_id: UUID | None = None, now: datetime | None = None) -> tuple[CrawlRequest | None, bool]:
     now = now or datetime.now(UTC)
     normalized = normalize_request_url(url)
     identity = request_identity(
@@ -167,7 +165,12 @@ async def admit_request(*, runs, requests, progress, jetstream, run_id: UUID, no
             return run
         error = _ceiling_error(run, now)
         if error:
-            return run.model_copy(update={"status": "failed", "completed_at": now, "error": error})
+            return run.model_copy(update={
+                "status": "failed",
+                "completed_at": now,
+                "error": error,
+                "error_count": run.error_count + 1,
+            })
         admitted = True
         identities = (identity,)
         if graph_identity != identity and graph_identity not in run.seen_request_identities:
@@ -309,7 +312,7 @@ async def reconcile_pending_admissions(*, runs, requests, progress, jetstream, r
     return reconciled
 
 
-async def create_graph_run(*, runs, requests, progress, jetstream, snapshot: FrozenGraphSnapshot, urls: list[str], policy_resolver: Callable[[str], dict | None], trigger_kind: str = "manual") -> GraphRun:
+async def create_graph_run(*, runs, requests, progress, jetstream, snapshot: FrozenGraphSnapshot, urls: list[str], policy_resolver: Callable[[str], dict], trigger_kind: str = "manual") -> GraphRun:
     run = new_graph_run(snapshot, urls, trigger_kind=trigger_kind)  # type: ignore[arg-type]
     await runs.create(run.id.hex, run.model_dump_json().encode())
     await _project(initialize_run_progress(progress, run))
@@ -360,6 +363,7 @@ async def expire_graph_run(*, runs, requests, progress, run: GraphRun, now: date
             "status": "failed",
             "completed_at": now,
             "error": error,
+            "error_count": value.error_count + 1,
         })
 
     run = await update_graph_run(runs, run.id, fail)
@@ -410,10 +414,25 @@ async def settle_request(*, runs, requests, progress, request_id: UUID, status: 
         def account(run: GraphRun) -> GraphRun:
             pending = max(0, run.pending_request_count - 1)
             failures = run.failed_request_count + (1 if status == "failed" else 0)
+            warnings = run.warning_count + (
+                1 if status == "failed" and failure_stage == "acquisition" else 0
+            )
+            errors = run.error_count + (
+                1 if status == "failed" and failure_stage != "acquisition" else 0
+            )
+            update = {
+                "pending_request_count": pending,
+                "failed_request_count": failures,
+                "warning_count": warnings,
+                "error_count": errors,
+                "last_progress_at": now,
+            }
             if pending == 0 and run.status not in _TERMINAL_RUNS:
                 final = "completed_with_errors" if failures else "completed"
-                return run.model_copy(update={"pending_request_count": pending, "failed_request_count": failures, "last_progress_at": now, "status": final, "completed_at": now})
-            return run.model_copy(update={"pending_request_count": pending, "failed_request_count": failures, "last_progress_at": now})
+                return run.model_copy(
+                    update={**update, "status": final, "completed_at": now}
+                )
+            return run.model_copy(update=update)
         run = await update_graph_run(runs, request.graph_run_id, account)
         if run.status in _TERMINAL_RUNS:
             await _project(mark_run_progress_settled(progress, run))
@@ -465,7 +484,7 @@ async def handle_readiness(*, runs, requests, progress, jetstream, event: Readin
         await publish_edge(jetstream, work)
 
 
-async def evaluate_edge(*, runs, requests, progress, jetstream, work: EdgeWork, execute_urls: Callable[[str, Mapping[str, object]], Iterable[str]], policy_resolver: Callable[[str], dict | None], claim_token: UUID | None = None) -> int:
+async def evaluate_edge(*, runs, requests, progress, jetstream, work: EdgeWork, execute_urls: Callable[[str, Mapping[str, object]], Iterable[str]], policy_resolver: Callable[[str], dict], claim_token: UUID | None = None) -> int:
     claim_token = claim_token or uuid4()
     identity = edge_evaluation_identity(work.graph_run_id, work.crawl_request_id, work.crawl_id, work.edge_id)
     existing = await get_edge_evaluation(requests, identity)

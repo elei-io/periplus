@@ -57,6 +57,7 @@ def _concurrent_ingest(
                     captured_at=datetime(2026, 7, 11, 12, value, tzinfo=UTC),
                     status_code=200,
                     duration_ms=100,
+                    domain_group="public-web",
                     profile="http",
                     template="http_fast",
                     config_json={"value": value},

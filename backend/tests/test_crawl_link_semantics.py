@@ -64,6 +64,7 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
                 requested_url=page.url,
                 page=page,
                 profile="http",
+                domain_group="test",
                 concurrency=4,
                 profile_config=HttpProfileConfig(),
                 repository_pipeline=pipeline,
@@ -124,6 +125,7 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
                 requested_url=page.url,
                 page=page,
                 profile="http",
+                domain_group="test",
                 concurrency=4,
                 profile_config=HttpProfileConfig(),
                 repository_pipeline=pipeline,
@@ -190,6 +192,7 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
                 profile="browser",
                 config=BrowserProfileConfig(),
                 progress_reporter=None,
+                domain_group="test",
             )
 
         page = await _canonicalize_transient_links(page)

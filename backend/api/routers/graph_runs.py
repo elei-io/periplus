@@ -1,8 +1,10 @@
 """Current crawl-graph run API."""
 
+import asyncio
 import json
 import time
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from enum import IntEnum
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -28,7 +30,12 @@ from runtime.graph_runs import (
     request_cancellation,
     resolve_policy_snapshot,
 )
-from runtime.graph_progress import EdgeProgress, NodeProgress, bootstrap_run_progress
+from runtime.graph_progress import (
+    EdgeProgress,
+    NodeProgress,
+    bootstrap_run_progress,
+    node_progress_key,
+)
 from runtime.resource_governor import (
     ResourceUsage,
     ensure_resource_governor_storage,
@@ -61,6 +68,11 @@ class GraphRunSummary(BaseModel):
     request_count: int
     pending_request_count: int
     failed_request_count: int
+    warning_count: int
+    error_count: int
+    queued_request_count: int
+    fetching_request_count: int
+    processing_request_count: int
     created_at: datetime
     started_at: datetime | None
     last_progress_at: datetime | None
@@ -111,20 +123,75 @@ class GraphRunMaterializationLagList(BaseModel):
     items: list[GraphRunMaterializationLag]
 
 
-def _run_summaries(session: Session, runs: list[GraphRun]) -> list[GraphRunSummary]:
+class PolicyPressurePoint(BaseModel):
+    captured_at: datetime
+    peak_concurrency: int
+
+
+class PolicyPressureSeries(BaseModel):
+    domain_group: str
+    points: list[PolicyPressurePoint]
+
+
+class PolicyPressureResponse(BaseModel):
+    hours: Literal[1, 6, 24, 72]
+    range_start: datetime
+    range_end: datetime
+    bucket_seconds: int
+    items: list[PolicyPressureSeries]
+
+
+class PolicyPressureHours(IntEnum):
+    one_hour = 1
+    six_hours = 6
+    one_day = 24
+    three_days = 72
+
+
+async def _run_summaries(
+    session: Session,
+    progress,
+    runs: list[GraphRun],
+) -> list[GraphRunSummary]:
     graph_ids = {run.graph_id for run in runs}
     names = dict(
         session.execute(
             select(CrawlGraph.id, CrawlGraph.name).where(CrawlGraph.id.in_(graph_ids))
         ).all()
     ) if graph_ids else {}
+    stage_counts = await asyncio.gather(
+        *(_run_stage_counts(progress, run) for run in runs)
+    )
     return [
         GraphRunSummary(
             **run.model_dump(),
             graph_name=names.get(run.graph_id),
+            queued_request_count=counts[0],
+            fetching_request_count=counts[1],
+            processing_request_count=counts[2],
         )
-        for run in runs
+        for run, counts in zip(runs, stage_counts, strict=True)
     ]
+
+
+async def _run_stage_counts(progress, run: GraphRun) -> tuple[int, int, int]:
+    entries = await asyncio.gather(
+        *(
+            progress.get(node_progress_key(run.id, node.id))
+            for node in run.snapshot.nodes
+        ),
+        return_exceptions=True,
+    )
+    nodes: list[NodeProgress] = []
+    for entry in entries:
+        if isinstance(entry, Exception):
+            continue
+        nodes.append(NodeProgress.model_validate_json(entry.value))
+    pending = run.pending_request_count
+    queued = min(pending, sum(node.queued for node in nodes))
+    fetching = min(pending - queued, sum(node.crawling for node in nodes))
+    processing = max(0, pending - queued - fetching)
+    return queued, fetching, processing
 
 
 async def _storage():
@@ -305,6 +372,151 @@ def _graph_run_materialization_lag_rows(
     ).fetchall()
 
 
+@router.get("/policy-pressure", response_model=PolicyPressureResponse)
+def policy_pressure(
+    request: Request,
+    hours: PolicyPressureHours = PolicyPressureHours.one_day,
+) -> PolicyPressureResponse:
+    range_end = datetime.now(UTC)
+    range_start = range_end - timedelta(hours=hours)
+    bucket_seconds = {1: 60, 6: 300, 24: 900, 72: 3600}[hours]
+    pool: CatalogueReadPool = request.app.state.catalogue_read_pool
+    try:
+        catalogue = pool.acquire()
+    except CatalogueReadPoolExhausted as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    try:
+        rows = _policy_pressure_rows(
+            catalogue,
+            range_start=range_start,
+            range_end=range_end,
+            bucket_seconds=bucket_seconds,
+        )
+    except duckdb.IOException as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Policy pressure is temporarily unavailable.",
+        ) from exc
+    finally:
+        pool.release(catalogue)
+
+    series: dict[str, list[PolicyPressurePoint]] = {}
+    for domain_group, captured_at, peak_concurrency in rows:
+        series.setdefault(str(domain_group), []).append(
+            PolicyPressurePoint(
+                captured_at=captured_at,
+                peak_concurrency=int(peak_concurrency),
+            )
+        )
+    return PolicyPressureResponse(
+        hours=int(hours),
+        range_start=range_start,
+        range_end=range_end,
+        bucket_seconds=bucket_seconds,
+        items=[
+            PolicyPressureSeries(domain_group=domain_group, points=points)
+            for domain_group, points in sorted(series.items())
+        ],
+    )
+
+
+def _policy_pressure_rows(
+    catalogue: Catalogue,
+    *,
+    range_start: datetime,
+    range_end: datetime,
+    bucket_seconds: int,
+) -> list[tuple]:
+    crawls = _catalogue_table(catalogue, "crawls")
+    return catalogue.connection.execute(
+        f"""
+        WITH source AS (
+            SELECT domain_group,
+                   greatest(
+                       captured_at - duration_ms * INTERVAL '1 millisecond',
+                       $range_start
+                   ) AS started_at,
+                   least(captured_at, $range_end) AS finished_at
+            FROM {crawls}
+            WHERE purpose = 'use'
+              AND duration_ms IS NOT NULL
+              AND duration_ms > 0
+              AND captured_at > $range_start
+              AND captured_at - duration_ms * INTERVAL '1 millisecond'
+                  < $range_end
+        ),
+        events AS (
+            SELECT domain_group, started_at AS event_at, 1 AS delta FROM source
+            UNION ALL
+            SELECT domain_group, finished_at AS event_at, -1 AS delta FROM source
+        ),
+        grouped_events AS (
+            SELECT domain_group, event_at, sum(delta) AS delta
+            FROM events
+            GROUP BY ALL
+        ),
+        states AS (
+            SELECT domain_group,
+                   event_at,
+                   sum(delta) OVER (
+                       PARTITION BY domain_group
+                       ORDER BY event_at
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                   ) AS concurrency
+            FROM grouped_events
+        ),
+        groups AS (
+            SELECT DISTINCT domain_group FROM source
+        ),
+        buckets AS (
+            SELECT unnest(generate_series(
+                $range_start,
+                $range_end - $bucket_seconds * INTERVAL '1 second',
+                $bucket_seconds * INTERVAL '1 second'
+            )) AS bucket_at
+        ),
+        bucket_grid AS (
+            SELECT domain_group, bucket_at FROM groups CROSS JOIN buckets
+        ),
+        bucket_starts AS (
+            SELECT bucket_grid.domain_group,
+                   bucket_grid.bucket_at,
+                   coalesce(states.concurrency, 0) AS concurrency
+            FROM bucket_grid
+            ASOF LEFT JOIN states
+              ON bucket_grid.domain_group = states.domain_group
+             AND bucket_grid.bucket_at >= states.event_at
+        ),
+        event_peaks AS (
+            SELECT domain_group,
+                   time_bucket(
+                       $bucket_seconds * INTERVAL '1 second',
+                       event_at,
+                       $range_start
+                   ) AS bucket_at,
+                   max(concurrency) AS concurrency
+            FROM states
+            WHERE event_at >= $range_start AND event_at < $range_end
+            GROUP BY ALL
+        )
+        SELECT bucket_starts.domain_group,
+               bucket_starts.bucket_at,
+               greatest(
+                   bucket_starts.concurrency,
+                   coalesce(event_peaks.concurrency, 0)
+               ) AS peak_concurrency
+        FROM bucket_starts
+        LEFT JOIN event_peaks USING (domain_group, bucket_at)
+        ORDER BY domain_group, bucket_at
+        """,
+        {
+            "range_start": range_start,
+            "range_end": range_end,
+            "bucket_seconds": bucket_seconds,
+        },
+    ).fetchall()
+
+
 def _catalogue_table(catalogue: Catalogue, name: str) -> str:
     return ".".join(
         '"' + value.replace('"', '""') + '"'
@@ -350,18 +562,19 @@ async def active_graph_runs(
     graph_id: UUID,
     session: Annotated[Session, Depends(get_session)],
 ) -> GraphRunList:
-    client, runs, _requests, _progress = await _storage()
+    client, runs, _requests, progress = await _storage()
     try:
         items = [
             run
             for run in await list_graph_runs(runs)
             if run.graph_id == graph_id and run.status in {"queued", "running"}
         ]
+        items.sort(key=lambda run: run.created_at, reverse=True)
+        summaries = await _run_summaries(session, progress, items)
     finally:
         await client.drain()
-    items.sort(key=lambda run: run.created_at, reverse=True)
     return GraphRunList(
-        items=_run_summaries(session, items),
+        items=summaries,
         total=len(items),
     )
 
@@ -382,14 +595,15 @@ async def get(run_id: UUID) -> GraphRun:
 async def list_runs(
     session: Annotated[Session, Depends(get_session)],
 ) -> GraphRunList:
-    client, runs, _requests, _progress = await _storage()
+    client, runs, _requests, progress = await _storage()
     try:
         items = await list_graph_runs(runs)
+        items.sort(key=lambda run: run.created_at, reverse=True)
+        summaries = await _run_summaries(session, progress, items)
     finally:
         await client.drain()
-    items.sort(key=lambda run: run.created_at, reverse=True)
     return GraphRunList(
-        items=_run_summaries(session, items),
+        items=summaries,
         total=len(items),
     )
 

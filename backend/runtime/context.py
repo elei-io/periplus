@@ -17,7 +17,7 @@ class GraphExecutionContext:
     graph_run_id: UUID
     graph_node_id: UUID
     crawl_request_id: UUID
-    effective_policy_snapshot_json: dict | None
+    effective_policy_snapshot_json: dict
     purpose: Literal["use", "sample"] = "use"
     trial: dict | None = None
     source_crawl_id: UUID | None = None

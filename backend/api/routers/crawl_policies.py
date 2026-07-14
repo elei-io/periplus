@@ -253,14 +253,17 @@ def update(
     if policy is None:
         raise HTTPException(status_code=404, detail="Crawl policy not found.")
 
-    updated = update_crawl_policy(
-        session=session,
-        policy=policy,
-        enabled=request.enabled,
-        match=request.match,
-        config=request.config,
-        domain_group=request.domain_group,
-    )
+    try:
+        updated = update_crawl_policy(
+            session=session,
+            policy=policy,
+            enabled=request.enabled,
+            match=request.match,
+            config=request.config,
+            domain_group=request.domain_group,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _record(updated)
 
 
@@ -273,4 +276,7 @@ def delete(
     if policy is None:
         raise HTTPException(status_code=404, detail="Crawl policy not found.")
 
-    delete_crawl_policy(session=session, policy=policy)
+    try:
+        delete_crawl_policy(session=session, policy=policy)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -74,7 +74,7 @@ class PendingAdmission(BaseModel):
     node_id: UUID
     url: str
     transport: CrawlTransport
-    effective_policy_snapshot_json: dict | None = None
+    effective_policy_snapshot_json: dict
     sample_request_id: UUID | None = None
     sample_transport: CrawlTransport | None = None
     sample_policy_snapshot_json: dict | None = None
@@ -98,6 +98,8 @@ class GraphRun(BaseModel):
     request_count: int = 0
     pending_request_count: int = 0
     failed_request_count: int = 0
+    warning_count: int = 0
+    error_count: int = 0
     created_at: datetime
     started_at: datetime | None = None
     last_progress_at: datetime | None = None
@@ -116,7 +118,7 @@ class CrawlRequest(BaseModel):
     purpose: CrawlPurpose = "use"
     trial: PolicyTrialMetadata | None = None
     document_id: str | None = None
-    effective_policy_snapshot_json: dict | None = None
+    effective_policy_snapshot_json: dict
     source_crawl_id: UUID | None = None
     source_edge_id: UUID | None = None
     parent_request_id: UUID | None = None
@@ -624,10 +626,8 @@ async def _list_keys(bucket) -> list[str]:
 
 
 def crawl_transport_from_policy(
-    policy_snapshot_json: dict | None,
+    policy_snapshot_json: dict,
 ) -> CrawlTransport:
-    if policy_snapshot_json is None:
-        return "http"
     snapshot = CrawlPolicySnapshot.model_validate(policy_snapshot_json)
     return CrawlPolicyConfig.model_validate(snapshot.config).profile
 

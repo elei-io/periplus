@@ -71,6 +71,11 @@ export type GraphRunRecord = {
   request_count: number
   pending_request_count: number
   failed_request_count: number
+  warning_count: number
+  error_count: number
+  queued_request_count?: number
+  fetching_request_count?: number
+  processing_request_count?: number
   created_at: string
   started_at: string | null
   last_progress_at: string | null
@@ -123,4 +128,20 @@ export type GraphRunMaterializationLag = {
 
 export type GraphRunMaterializationLagList = {
   items: GraphRunMaterializationLag[]
+}
+
+export type PolicyPressureHours = 1 | 6 | 24 | 72
+
+export type PolicyPressureResponse = {
+  hours: PolicyPressureHours
+  range_start: string
+  range_end: string
+  bucket_seconds: number
+  items: Array<{
+    domain_group: string
+    points: Array<{
+      captured_at: string
+      peak_concurrency: number
+    }>
+  }>
 }

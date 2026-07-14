@@ -36,7 +36,7 @@ from observability import materialization_metrics
 from repository.catalogue import catalogue_from_env
 from repository.catalogue.operations import operation_lock, run_with_catalogue_retry
 from repository.ingestion.health import HealthMonitor, start_health_server
-from runtime.catalogue_lane import run_catalogue_operation
+from runtime.catalogue_lane import catalogue_operation_lane, run_catalogue_operation
 from runtime.operation_leases import (
     OperationLeaseLost,
     OperationLeaseUnavailable,
@@ -561,22 +561,42 @@ async def _dependency_probe(
     )
     while not stop.is_set():
         try:
-            await asyncio.wait_for(client.flush(), timeout=timeout)
-            async with asyncio.timeout(timeout):
-                async with resource_permits(
-                    resource_grants,
-                    catalogue_request(
-                        "materialization-health-probe", service_class="live"
-                    ),
-                ):
-                    await run_catalogue_operation(
-                        catalogue.connection.execute, "SELECT 1"
-                    )
+            await _probe_dependencies_once(
+                client,
+                catalogue,
+                resource_grants,
+                timeout=timeout,
+            )
         except Exception as exc:
             monitor.dependencies_unavailable(str(exc) or type(exc).__name__)
         else:
             monitor.dependencies_ready()
         await _wait(stop, interval)
+
+
+async def _probe_dependencies_once(
+    client,
+    catalogue,
+    resource_grants,
+    *,
+    timeout: float,
+) -> None:
+    await asyncio.wait_for(client.flush(), timeout=timeout)
+    async with asyncio.timeout(timeout):
+        async with resource_permits(
+            resource_grants,
+            catalogue_request(
+                "materialization-health-probe", service_class="live"
+            ),
+        ):
+            # A running scope owns the one process-local DuckDB lane. Waiting for
+            # that lane would make healthy useful work fail its own readiness
+            # probe. Queue-stall monitoring is responsible for detecting a hung
+            # scope; probe DuckDB only when the lane is immediately available.
+            if not catalogue_operation_lane().locked():
+                await run_catalogue_operation(
+                    catalogue.connection.execute, "SELECT 1"
+                )
 
 
 async def _wait(stop: asyncio.Event, seconds: float) -> None:

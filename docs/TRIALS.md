@@ -82,8 +82,9 @@ Each crawl records:
 - `config_hash`, the SHA-256 fingerprint of that canonical configuration.
 
 The trial preserves those fields exactly as for any other crawl. It never relies only on a mutable
-policy identifier. The sample may use a system-generated challenger rather than an editable
-matching policy; `config_json` remains authoritative even when no active CrawlPolicy owns it.
+policy identifier. The use request always has an editable matching policy, at minimum the seeded
+catch-all. The sample may use a system-generated challenger rather than a separately editable
+policy; `config_json` remains authoritative for that frozen challenger.
 
 Unlike the superseded input hash, `config_hash` deliberately excludes the URL. It answers whether
 two acquisitions used the same frozen behavior and makes policy cohorts cheap to group. URL

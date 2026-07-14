@@ -104,6 +104,23 @@ class RawHtmlRepositoryTests(unittest.TestCase):
             self.assertTrue(first.object_key.endswith(f"{first.sha256}.html.zst"))
             self.assertEqual(repository.read(first.object_key), "<html><body>Atlas</body></html>")
 
+    def test_read_preserves_newlines_used_by_content_identity(self) -> None:
+        values = (
+            "<html>\r\n<body>Atlas</body>\r\n</html>",
+            "<html>\r<body>Atlas</body>\r</html>",
+            "<html>\n<body>Atlas</body>\n</html>",
+            "<html>\r\n<body>アトラス</body>\r\n</html>",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = RawHtmlRepository(FileObjectStore(Path(temp_dir)))
+
+            for html in values:
+                stored = repository.put(html, chunk_chars=7)
+                restored = repository.read(stored.object_key)
+
+                self.assertEqual(restored, html)
+                self.assertEqual(repository.identify(restored).sha256, stored.sha256)
+
 
 class RepositoryConfigTests(unittest.TestCase):
     @patch("repository.objects.config.boto3.client")

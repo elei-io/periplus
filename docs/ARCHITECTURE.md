@@ -102,6 +102,10 @@ Shared resources are governed across those capabilities:
 - maintenance requests the complete `catalogue:hot` pool after ordinary work drains; and
 - weighted `object:read` and `object:write` budgets bound S3 / MinIO pressure.
 
+Deployment setup seeds one editable catch-all CrawlPolicy for `*://*/*`. Every admitted URL must
+resolve that policy or a more-specific policy added by a trial or user. There is no implicit
+no-policy acquisition profile or `unclassified` remote lane.
+
 The fixed service classes are `critical`, `live`, `backfill`, and `maintenance`. Critical graph work
 and ingestion have a reserved catalogue share, live/backfill work has a reciprocal reserved share,
 backfill has an explicit concurrency ceiling, and

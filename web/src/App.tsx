@@ -57,6 +57,11 @@ const PolicyTrialsPage = lazy(() =>
     default: module.PolicyTrialsPage,
   }))
 )
+const DocsPage = lazy(() =>
+  import("@/pages/docs/docs-page").then((module) => ({
+    default: module.DocsPage,
+  }))
+)
 
 function PageFallback() {
   return (
@@ -150,6 +155,10 @@ export function App() {
       return <CrawlPoliciesPage />
     }
 
+    if (activeItem.href === "/docs") {
+      return <DocsPage />
+    }
+
     return (
       <div className="flex flex-1 items-center justify-center p-6">
         <h1 className="text-2xl font-medium tracking-normal">
@@ -174,9 +183,9 @@ export function App() {
             </span>
           </div>
         </header>
-        <div className="app-surface relative flex min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 lg:p-6">
+        <div className="app-surface relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain p-4 lg:p-6">
           <div className="app-surface-grain pointer-events-none absolute inset-0" />
-          <div className="relative z-10 flex min-w-0 flex-1">
+          <div className="relative z-10 flex min-h-full min-w-0">
             <Suspense fallback={<PageFallback />}>{page}</Suspense>
           </div>
         </div>

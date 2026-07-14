@@ -19,6 +19,10 @@ from control.crawl_policies.templates import get_crawl_policy_template
 from control.url_matching import UrlMatch
 from control.url_matching import normalize_url
 
+DEFAULT_POLICY_METRIC_SLUG = "system-default"
+DEFAULT_POLICY_DOMAIN_GROUP = "public-web"
+DEFAULT_POLICY_MATCH = "*://*/*"
+
 
 def _match_string(url_match: UrlMatch) -> str:
     return urlunparse((url_match.scheme, url_match.host, url_match.path_pattern, "", "", ""))
@@ -28,7 +32,9 @@ def _matches(url: str, url_match: UrlMatch | UrlMatchSnapshot) -> bool:
     parsed = urlparse(normalize_url(url))
     if not getattr(url_match, "enabled", True):
         return False
-    if parsed.scheme != url_match.scheme or parsed.netloc != url_match.host:
+    if url_match.scheme not in {"*", parsed.scheme}:
+        return False
+    if url_match.host not in {"*", parsed.netloc}:
         return False
     if url_match.match_type == "exact":
         return parsed.path == url_match.path_pattern
@@ -37,19 +43,26 @@ def _matches(url: str, url_match: UrlMatch | UrlMatchSnapshot) -> bool:
     return False
 
 
-def _specificity(url_match: UrlMatch | UrlMatchSnapshot) -> tuple[int, int]:
+def _specificity(
+    url_match: UrlMatch | UrlMatchSnapshot,
+) -> tuple[int, int, int, int]:
     wildcard_count = url_match.path_pattern.count("*")
     literal_count = len(url_match.path_pattern.replace("*", ""))
-    return (url_match.priority, literal_count - wildcard_count)
+    return (
+        url_match.priority,
+        int(url_match.scheme != "*"),
+        int(url_match.host != "*"),
+        literal_count - wildcard_count,
+    )
 
 
-def find_crawl_policy_for_url(session: Session, *, url: str) -> CrawlPolicy | None:
+def find_crawl_policy_for_url(session: Session, *, url: str) -> CrawlPolicy:
     return find_crawl_policies_for_urls(session, urls=[url])[url]
 
 
 def find_crawl_policies_for_urls(
     session: Session, *, urls: list[str]
-) -> dict[str, CrawlPolicy | None]:
+) -> dict[str, CrawlPolicy]:
     policies = list(session.scalars(
         select(CrawlPolicy)
         .join(UrlMatch, CrawlPolicy.url_match_id == UrlMatch.id)
@@ -58,19 +71,72 @@ def find_crawl_policies_for_urls(
         .where(UrlMatch.enabled.is_(True))
         .order_by(CrawlPolicy.updated_at.desc())
     ))
-    result: dict[str, CrawlPolicy | None] = {}
+    result: dict[str, CrawlPolicy] = {}
     for url in urls:
         matches = [
             policy
             for policy in policies
             if policy.url_match is not None and _matches(url, policy.url_match)
         ]
-        result[url] = (
-            max(matches, key=lambda policy: _specificity(policy.url_match))
-            if matches
-            else None
+        if not matches:
+            raise RuntimeError(
+                "Atlas has no enabled catch-all CrawlPolicy; run deployment setup"
+            )
+        result[url] = max(
+            matches, key=lambda policy: _specificity(policy.url_match)
         )
     return result
+
+
+def ensure_default_crawl_policy(session: Session) -> CrawlPolicy:
+    """Ensure every URL has one explicit, editable policy resolution path."""
+
+    url_match = session.scalar(
+        select(UrlMatch).where(
+            UrlMatch.scheme == "*",
+            UrlMatch.host == "*",
+            UrlMatch.path_pattern == "/*",
+            UrlMatch.match_type == "glob",
+            UrlMatch.query_policy == "ignore",
+        )
+    )
+    if url_match is None:
+        url_match = UrlMatch(
+            scheme="*",
+            host="*",
+            domain="*",
+            path_pattern="/*",
+            match_type="glob",
+            query_policy="ignore",
+            enabled=True,
+            priority=-1_000_000,
+        )
+        session.add(url_match)
+        session.flush()
+
+    policy = session.scalar(
+        select(CrawlPolicy)
+        .where(CrawlPolicy.url_match_id == url_match.id)
+        .order_by(CrawlPolicy.created_at.asc())
+        .limit(1)
+    )
+    if policy is None:
+        policy = CrawlPolicy(
+            metric_slug=DEFAULT_POLICY_METRIC_SLUG,
+            domain_group=DEFAULT_POLICY_DOMAIN_GROUP,
+            url_match_id=url_match.id,
+            match=DEFAULT_POLICY_MATCH,
+            enabled=True,
+            config=CrawlPolicyConfig(
+                profile="http",
+                concurrency=4,
+                config={"template": "http_fast"},
+            ).model_dump(mode="json"),
+        )
+        policy.url_match = url_match
+        session.add(policy)
+        session.flush()
+    return policy
 
 
 def match_for_policy(policy: CrawlPolicy) -> str:
@@ -188,6 +254,11 @@ def update_crawl_policy(
     )
     if policy is None:
         raise ValueError("crawl policy no longer exists")
+    if policy.metric_slug == DEFAULT_POLICY_METRIC_SLUG:
+        if enabled is False:
+            raise ValueError("the default CrawlPolicy cannot be disabled")
+        if match is not None and match != DEFAULT_POLICY_MATCH:
+            raise ValueError("the default CrawlPolicy must continue to match every URL")
     policy.revision += 1
     if enabled is not None:
         policy.enabled = enabled
@@ -206,6 +277,8 @@ def update_crawl_policy(
 
 
 def delete_crawl_policy(session: Session, *, policy: CrawlPolicy) -> None:
+    if policy.metric_slug == DEFAULT_POLICY_METRIC_SLUG:
+        raise ValueError("the default CrawlPolicy cannot be deleted")
     session.delete(policy)
     session.flush()
 
@@ -271,8 +344,10 @@ def apply_policy_trial_candidate(
     config = template.policy_config()
     if policy is None:
         domain_group = re.sub(r"[^a-z0-9_-]+", "-", registrable_domain.lower()).strip("-")
+        if not domain_group:
+            raise ValueError("Policy trial domain does not produce a valid domain group")
         policy = CrawlPolicy(
-            domain_group=(domain_group or "unclassified")[:63],
+            domain_group=domain_group[:63],
             url_match_id=url_match.id,
             match=match_string,
             enabled=True,

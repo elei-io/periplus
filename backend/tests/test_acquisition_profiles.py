@@ -15,6 +15,7 @@ class AcquisitionProfileTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(
                 200,
                 text="<html><body>ok</body></html>",
+                headers={"Content-Type": "text/html; charset=utf-8"},
                 request=request,
             )
 
@@ -28,6 +29,28 @@ class AcquisitionProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(page.success)
         self.assertEqual(page.status_code, 200)
         self.assertIn("<body>ok</body>", page.html or "")
+
+    async def test_http_profile_rejects_non_html_without_decoding_it(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=b"%PDF-1.7\x00binary",
+                headers={"Content-Type": "application/pdf"},
+                request=request,
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            page = await _acquire_http(
+                client,
+                "https://example.com/report.pdf",
+                HttpProfileConfig(),
+            )
+
+        self.assertFalse(page.success)
+        self.assertIsNone(page.html)
+        self.assertEqual(page.failure_code, "unsupported_content_type")
+        self.assertFalse(page.failure_retryable)
+        self.assertIn("application/pdf", page.error or "")
 
     async def test_firecrawl_profile_requests_raw_html(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:

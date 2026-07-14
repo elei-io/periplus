@@ -102,15 +102,13 @@ def template_for_config(config_json: dict | None) -> CrawlPolicyTemplate:
     return _BY_NAME["static_fast"]
 
 
-def template_for_policy(snapshot_json: dict | None) -> CrawlPolicyTemplate:
-    if snapshot_json is None:
-        return _BY_NAME["http_fast"]
+def template_for_policy(snapshot_json: dict) -> CrawlPolicyTemplate:
     snapshot = CrawlPolicySnapshot.model_validate(snapshot_json)
     return template_for_config(snapshot.config)
 
 
 def next_trial_policy_snapshot(
-    snapshot_json: dict | None,
+    snapshot_json: dict,
     *,
     url: str,
     provider_enabled: bool,
@@ -124,11 +122,7 @@ def next_trial_policy_snapshot(
     )
     if candidate is None:
         return None
-    incumbent = (
-        CrawlPolicySnapshot.model_validate(snapshot_json)
-        if snapshot_json is not None
-        else None
-    )
+    incumbent = CrawlPolicySnapshot.model_validate(snapshot_json)
     parsed = urlsplit(url)
     policy_config = candidate.policy_config()
     policy_config["config"]["cache"] = {"mode": "refresh"}
@@ -137,19 +131,9 @@ def next_trial_policy_snapshot(
         revision=TEMPLATE_REGISTRY_VERSION,
         origin="system_trial",
         metric_slug=f"trial-{candidate.name}",
-        domain_group=(incumbent.domain_group if incumbent else "unclassified"),
+        domain_group=incumbent.domain_group,
         match=f"{parsed.scheme}://{parsed.hostname or ''}/*",
         config=policy_config,
-        matcher=(
-            incumbent.matcher
-            if incumbent is not None
-            else {
-                "scheme": parsed.scheme,
-                "host": parsed.hostname or "",
-                "path_pattern": "/*",
-                "match_type": "glob",
-                "priority": 0,
-            }
-        ),
+        matcher=incumbent.matcher,
     )
     return snapshot.model_dump(mode="json"), candidate.name

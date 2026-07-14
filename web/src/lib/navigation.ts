@@ -1,5 +1,6 @@
 import {
   ChartNoAxesCombinedIcon,
+  BookOpenIcon,
   FlaskConicalIcon,
   GitForkIcon,
   FileCode2Icon,
@@ -76,6 +77,19 @@ export const navigationGroups: NavigationGroup[] = [
         icon: FlaskConicalIcon,
         title: "Policy Trials",
         description: "Compare ordinary crawls with sampled policy alternatives.",
+      },
+    ],
+  },
+  {
+    name: "Help",
+    slug: "help",
+    items: [
+      {
+        name: "Documentation",
+        href: "/docs",
+        icon: BookOpenIcon,
+        title: "Atlas Documentation",
+        description: "Operate, scale, and query Atlas.",
       },
     ],
   },

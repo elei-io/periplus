@@ -142,6 +142,7 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 captured_at=datetime(2026, 7, 14, tzinfo=UTC),
                 status_code=200,
                 duration_ms=12,
+                domain_group="public-web",
                 profile="http",
                 template="http_fast",
                 config_hash="a" * 64,
@@ -192,12 +193,12 @@ class CatalogueBootstrapTests(unittest.TestCase):
                         "requested_url, normalized_url, final_url, page_url, "
                         "url_scheme, url_host, url_port, url_registrable_domain, "
                         "url_path, url_query, captured_at, status_code, duration_ms, "
-                        "profile, template, config_hash, config_json, crawl_policy_id, "
+                        "domain_group, profile, template, config_hash, config_json, crawl_policy_id, "
                         "crawl_policy_revision, outcome, failure_code, failure_stage, "
                         "failure_retryable, failure_detail"
                         ") SELECT uuid(), NULL, uuid(), uuid(), uuid(), uuid(), 'use', NULL, NULL, NULL, 'https://x', "
                         "'https://x/', NULL, 'https://x/', 'https', 'x', 443, 'x', '/', "
-                        "'', now(), NULL, NULL, 'http', 'http_fast', repeat('a', 64), "
+                        "'', now(), NULL, NULL, 'public-web', 'http', 'http_fast', repeat('a', 64), "
                         "'{}', NULL, NULL, 'failed', 'expected_failure', 'request', "
                         "false, 'expected failure'"
                     )
@@ -565,6 +566,7 @@ class CatalogueBootstrapTests(unittest.TestCase):
             normalized_url="https://docs.example.co.jp/start",
             final_url="https://www.example.co.jp:8443/guides/sql?q=ducklake",
             captured_at=datetime(2026, 7, 11, tzinfo=UTC),
+            domain_group="public-web",
             profile="http",
             template="http_fast",
             config_json={},

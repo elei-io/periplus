@@ -13,6 +13,8 @@ import type {
   GraphRunRecord,
   EdgeDedupeMode,
   GraphRunMaterializationLagList,
+  PolicyPressureHours,
+  PolicyPressureResponse,
 } from "@/types/graphs"
 
 const graphsKey = ["crawl-graphs"] as const
@@ -290,6 +292,16 @@ export function useGraphRunMaterializationLag() {
     refetchInterval: 5_000,
     queryFn: async () => jsonResponse<GraphRunMaterializationLagList>(
       await fetch(apiUrl("/graph-runs/materialization-lag"))
+    ),
+  })
+}
+
+export function usePolicyPressure(hours: PolicyPressureHours) {
+  return useQuery({
+    queryKey: ["graph-runs", "policy-pressure", hours],
+    refetchInterval: 30_000,
+    queryFn: async () => jsonResponse<PolicyPressureResponse>(
+      await fetch(apiUrl(`/graph-runs/policy-pressure?hours=${hours}`))
     ),
   })
 }
