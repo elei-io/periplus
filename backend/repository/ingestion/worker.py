@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import time
 from datetime import UTC, datetime
 
@@ -34,14 +35,19 @@ from repository.ingestion.queue import (
     ensure_repository_stream,
     max_delivery_attempts,
     publish_dead_letter,
+    record_ingestion_processing_failure,
     store_ingestion_response,
 )
 from repository.catalogue.operations import (
-    operation_locks as catalogue_operation_locks,
+    is_retryable_catalogue_unavailability,
     run_with_catalogue_retry,
 )
 from repository.service import repository_ingestor_from_env
 from runtime.catalogue_lane import catalogue_operation_lane
+from runtime.catalogue_workers import (
+    catalogue_worker_presence,
+    ensure_catalogue_worker_storage,
+)
 from runtime.graph_queue import (
     READINESS_SUBJECT,
     ReadinessWork,
@@ -63,6 +69,9 @@ from runtime.operation_leases import (
     operation_leases,
 )
 from runtime.resource_governor import (
+    DURABLE_RESOURCE_WAIT,
+    ResourceCapacityUnavailable,
+    ResourcePermitLost,
     catalogue_request,
     ensure_resource_governor_storage,
     object_request,
@@ -140,6 +149,7 @@ async def run(
     results_store = await ensure_ingestion_results(jetstream)
     operation_lease_store = await ensure_operation_lease_storage(jetstream)
     resource_grants = await ensure_resource_governor_storage(jetstream)
+    catalogue_workers = await ensure_catalogue_worker_storage(jetstream)
     await ensure_repository_consumer(jetstream)
     subscription = await jetstream.pull_subscribe(
         SUBJECT,
@@ -178,11 +188,22 @@ async def run(
             client,
             health_ingestor,
             health_monitor,
-            catalogue_operation_lane(),
-            resource_grants,
         )
     )
     heartbeat_task = None
+    fetched_heartbeat_task = None
+    active_operation_count = 0
+    presence_task = asyncio.create_task(
+        catalogue_worker_presence(
+            catalogue_workers,
+            worker_id=f"ingestion:{os.uname().nodename}:{os.getpid()}",
+            capability="ingestion",
+            started_at=datetime.now(UTC),
+            active_operation_count=lambda: active_operation_count,
+            healthy=lambda: health_monitor.status()[0],
+            stop=stop,
+        )
+    )
     # Keep all access to this embedded connection explicit and serialized. Object
     # reads and DOM parsing occur outside the lock.
     catalogue_connection_lock = catalogue_operation_lane()
@@ -192,7 +213,7 @@ async def run(
     batch_started_at: float | None = None
 
     async def flush_prepared() -> None:
-        nonlocal heartbeat_task, batch_started_at
+        nonlocal heartbeat_task, batch_started_at, active_operation_count
         if not prepared:
             return
         await _commit_batch_isolated(
@@ -210,6 +231,7 @@ async def run(
         jobs.clear()
         accepted_messages.clear()
         prepared.clear()
+        active_operation_count = 0
         batch_started_at = None
         await client.flush()
         await _cancel_task(heartbeat_task)
@@ -281,23 +303,32 @@ async def run(
                     logging.exception("discarding invalid repository ingestion job")
                     await message.term()
 
+            if decoded_messages:
+                active_operation_count = 1
+
             document_ids = [
                 job.crawl.document_id
                 for _, job in decoded_messages
                 if job.crawl.document_id is not None
             ]
+            fetched_heartbeat_task = asyncio.create_task(
+                _heartbeat_messages([message for message, _job in decoded_messages])
+            )
             try:
                 async with resource_permits(
                     resource_grants,
                     catalogue_request(
                         "ingestion-document-preload", service_class="critical"
                     ),
+                    acquire_timeout=0,
                 ):
                     async with catalogue_connection_lock:
                         known_documents = await asyncio.to_thread(
                             ingestor.catalogue_service.get_documents,
                             document_ids,
                         )
+            except ResourceCapacityUnavailable:
+                known_documents = None
             except Exception:
                 logging.warning(
                     "repository batch document preload unavailable; falling back",
@@ -345,32 +376,33 @@ async def run(
                     else:
                         await _notify(client, job, durable_state)
                         await _dead_letter_or_retry(
-                            client, message, job, durable_state.error or "ingestion failed"
+                            client,
+                            message,
+                            job,
+                            durable_state.error or "ingestion failed",
+                            durable_state.processing_failure_count,
                         )
                     continue
                 try:
-                    job_known_documents = known_documents
-                    if job_known_documents is None:
-                        job_known_documents = await _known_document_for_crawl(
-                            ingestor,
-                            job.crawl,
-                            catalogue_connection_lock,
-                            resource_grants,
-                        )
-                    async with resource_permits(
+                    value = await _prepare_ingestion_job(
+                        ingestor,
+                        message,
+                        job,
+                        known_documents,
+                        catalogue_connection_lock,
                         resource_grants,
-                        object_request(
-                            f"ingestion-raw-read:{job.request_id}",
-                            direction="read",
-                            byte_count=1,
-                            service_class="critical",
-                        ),
-                    ):
-                        value = await asyncio.to_thread(
-                            ingestor.prepare_from_raw,
-                            crawl=job.crawl,
-                            known_documents=job_known_documents,
-                        )
+                        heartbeat_message=False,
+                    )
+                except ResourcePermitLost:
+                    repository_metrics.preparation(
+                        outcome="unavailable",
+                        duration_seconds=time.perf_counter() - preparation_started,
+                    )
+                    logging.warning(
+                        "repository ingestion permit was lost; retaining work"
+                    )
+                    await message.nak(delay=1)
+                    continue
                 except Exception as exc:
                     repository_metrics.preparation(
                         outcome="failed",
@@ -409,11 +441,16 @@ async def run(
                     )
                 if _batch_reached_limit(prepared, config=config):
                     await flush_prepared()
+            await _cancel_task(fetched_heartbeat_task)
+            fetched_heartbeat_task = None
+            active_operation_count = 1 if prepared else 0
     finally:
         stop.set()
         await _cancel_task(heartbeat_task)
+        await _cancel_task(fetched_heartbeat_task)
         await _cancel_task(health_heartbeat_task)
         await _cancel_task(dependency_probe_task)
+        await _cancel_task(presence_task)
         await asyncio.to_thread(health_server.shutdown)
         health_server.server_close()
         await asyncio.to_thread(health_ingestor.close)
@@ -475,11 +512,10 @@ async def _commit_batch_isolated(
     try:
         def commit_fenced():
             def attempt():
-                with catalogue_operation_locks(job.request_id for job in jobs):
-                    return ingestor.commit_prepared_batch(
-                        prepared,
-                        cleanup_on_error=False,
-                    )
+                return ingestor.commit_prepared_batch(
+                    prepared,
+                    cleanup_on_error=False,
+                )
 
             return run_with_catalogue_retry(
                 attempt, description="repository ingestion commit"
@@ -493,6 +529,7 @@ async def _commit_batch_isolated(
                 object_read_units=object_units(staged_bytes),
                 object_write_units=object_units(staged_bytes),
             ),
+            acquire_timeout=DURABLE_RESOURCE_WAIT,
         ):
             async with operation_leases(
                 operation_lease_store,
@@ -514,6 +551,35 @@ async def _commit_batch_isolated(
             await message.nak(delay=1)
         return
     except Exception as exc:
+        if is_retryable_catalogue_unavailability(exc) or isinstance(
+            exc, ResourcePermitLost
+        ):
+            repository_metrics.batch(
+                outcome="unavailable",
+                duration_seconds=time.perf_counter() - commit_started,
+                items=len(prepared),
+                element_rows=element_rows,
+                staged_bytes=staged_bytes,
+            )
+            logging.warning(
+                "repository ingestion catalogue unavailable; retrying batch",
+                exc_info=True,
+            )
+            await asyncio.to_thread(ingestor.discard_prepared, prepared)
+            delay = min(
+                30,
+                2
+                ** min(
+                    5,
+                    max(
+                        message.metadata.num_delivered for message in messages
+                    )
+                    - 1,
+                ),
+            )
+            for message in messages:
+                await message.nak(delay=delay)
+            return
         repository_metrics.batch(
             outcome="failed",
             duration_seconds=time.perf_counter() - commit_started,
@@ -630,6 +696,7 @@ async def _commit_batch_isolated(
                         byte_count=len(value.navigation_payload),
                         service_class="critical",
                     ),
+                    acquire_timeout=DURABLE_RESOURCE_WAIT,
                 ):
                     package = await asyncio.to_thread(
                         put_navigation_package,
@@ -678,8 +745,46 @@ async def _retry_or_fail(
     catalogue_connection_lock: asyncio.Lock,
     resource_grants,
 ) -> None:
-    deliveries = message.metadata.num_delivered
-    if deliveries >= max_delivery_attempts():
+    heartbeat = asyncio.create_task(_heartbeat_messages([message]))
+    try:
+        await _retry_or_fail_with_heartbeat(
+            client,
+            results_store,
+            ingestor,
+            navigation_store,
+            message,
+            job,
+            exc,
+            catalogue_connection_lock,
+            resource_grants,
+        )
+    finally:
+        await _cancel_task(heartbeat)
+
+
+async def _retry_or_fail_with_heartbeat(
+    client,
+    results_store,
+    ingestor,
+    navigation_store,
+    message,
+    job: IngestionJob,
+    exc: Exception,
+    catalogue_connection_lock: asyncio.Lock,
+    resource_grants,
+) -> None:
+    try:
+        processing_failure_count = await record_ingestion_processing_failure(
+            results_store, job.request_id
+        )
+    except Exception:
+        logging.warning(
+            "repository attempt accounting unavailable; retaining work",
+            exc_info=True,
+        )
+        await message.nak(delay=30)
+        return
+    if processing_failure_count >= max_delivery_attempts():
         try:
             async with resource_permits(
                 resource_grants,
@@ -688,6 +793,7 @@ async def _retry_or_fail(
                     service_class="critical",
                     object_read_units=1,
                 ),
+                acquire_timeout=DURABLE_RESOURCE_WAIT,
             ):
                 async with catalogue_connection_lock:
                     reconciled = await asyncio.to_thread(
@@ -730,6 +836,7 @@ async def _retry_or_fail(
                         byte_count=1,
                         service_class="critical",
                     ),
+                    acquire_timeout=DURABLE_RESOURCE_WAIT,
                 ):
                     prepared = await asyncio.to_thread(
                         ingestor.prepare_from_raw,
@@ -750,6 +857,7 @@ async def _retry_or_fail(
                                 byte_count=len(prepared.navigation_payload),
                                 service_class="critical",
                             ),
+                            acquire_timeout=DURABLE_RESOURCE_WAIT,
                         ):
                             package = await asyncio.to_thread(
                                 put_navigation_package,
@@ -802,10 +910,16 @@ async def _retry_or_fail(
             await message.ack()
         else:
             await _dead_letter_or_retry(
-                client, message, job, durable_state.error or _exception_message(exc)
+                client,
+                message,
+                job,
+                durable_state.error or _exception_message(exc),
+                durable_state.processing_failure_count,
             )
         return
-    await message.nak(delay=min(30, 2 ** max(0, deliveries - 1)))
+    await message.nak(
+        delay=min(30, 2 ** max(0, processing_failure_count - 1))
+    )
 
 
 def _exception_message(exc: BaseException) -> str:
@@ -821,7 +935,13 @@ def _exception_message(exc: BaseException) -> str:
     return ": ".join(messages)
 
 
-async def _dead_letter_or_retry(client, message, job: IngestionJob, error: str) -> None:
+async def _dead_letter_or_retry(
+    client,
+    message,
+    job: IngestionJob,
+    error: str,
+    processing_failure_count: int,
+) -> None:
     """Only remove terminal work after its durable failure copy is acknowledged."""
 
     try:
@@ -838,7 +958,7 @@ async def _dead_letter_or_retry(client, message, job: IngestionJob, error: str) 
             client.jetstream(),
             job=job,
             error=error,
-            delivery_count=message.metadata.num_delivered,
+            processing_failure_count=processing_failure_count,
         )
     except Exception:
         logging.warning(
@@ -853,11 +973,56 @@ async def _dead_letter_or_retry(client, message, job: IngestionJob, error: str) 
 async def _heartbeat_messages(messages) -> None:
     interval = max(1.0, min(30.0, ack_wait_seconds() / 3))
     while True:
-        await asyncio.sleep(interval)
         await asyncio.gather(
             *(message.in_progress() for message in messages),
             return_exceptions=True,
         )
+        await asyncio.sleep(interval)
+
+
+async def _prepare_ingestion_job(
+    ingestor,
+    message,
+    job: IngestionJob,
+    known_documents,
+    catalogue_connection_lock: asyncio.Lock,
+    resource_grants,
+    *,
+    heartbeat_message: bool = True,
+):
+    """Prepare one delivery while heartbeating through durable capacity waits."""
+
+    heartbeat = (
+        asyncio.create_task(_heartbeat_messages([message]))
+        if heartbeat_message
+        else None
+    )
+    try:
+        job_known_documents = known_documents
+        if job_known_documents is None:
+            job_known_documents = await _known_document_for_crawl(
+                ingestor,
+                job.crawl,
+                catalogue_connection_lock,
+                resource_grants,
+            )
+        async with resource_permits(
+            resource_grants,
+            object_request(
+                f"ingestion-raw-read:{job.request_id}",
+                direction="read",
+                byte_count=1,
+                service_class="critical",
+            ),
+            acquire_timeout=DURABLE_RESOURCE_WAIT,
+        ):
+            return await asyncio.to_thread(
+                ingestor.prepare_from_raw,
+                crawl=job.crawl,
+                known_documents=job_known_documents,
+            )
+    finally:
+        await _cancel_task(heartbeat)
 
 
 async def _known_document_for_crawl(
@@ -875,6 +1040,7 @@ async def _known_document_for_crawl(
         catalogue_request(
             f"ingestion-document-read:{crawl.crawl_id}", service_class="critical"
         ),
+        acquire_timeout=DURABLE_RESOURCE_WAIT,
     ):
         async with catalogue_connection_lock:
             existing = await asyncio.to_thread(
@@ -894,8 +1060,6 @@ async def _dependency_probe(
     client,
     ingestor,
     monitor: HealthMonitor,
-    catalogue_connection_lock: asyncio.Lock,
-    resource_grants,
 ) -> None:
     interval = get_float("ATLAS_INGESTION_WORKER_HEALTH_PROBE_INTERVAL_SECONDS")
     timeout = get_float("ATLAS_INGESTION_WORKER_HEALTH_PROBE_TIMEOUT_SECONDS")
@@ -907,19 +1071,23 @@ async def _dependency_probe(
     while True:
         try:
             await asyncio.wait_for(client.flush(), timeout=timeout)
-            async with asyncio.timeout(timeout):
-                async with resource_permits(
-                    resource_grants,
-                    catalogue_request(
-                        "ingestion-health-probe", service_class="critical"
-                    ),
-                ):
-                    async with catalogue_connection_lock:
-                        await asyncio.to_thread(ingestor.validate)
         except Exception as exc:
             monitor.dependencies_unavailable(str(exc) or type(exc).__name__)
         else:
-            monitor.dependencies_ready()
+            validation = asyncio.create_task(asyncio.to_thread(ingestor.validate))
+            try:
+                await asyncio.wait_for(asyncio.shield(validation), timeout=timeout)
+            except TimeoutError:
+                monitor.dependencies_unavailable(
+                    f"catalogue health validation exceeded {timeout:g}s"
+                )
+                # This connection has one owner. Do not overlap another probe
+                # while the timed-out native call is still unwinding.
+                await asyncio.gather(validation, return_exceptions=True)
+            except Exception as exc:
+                monitor.dependencies_unavailable(str(exc) or type(exc).__name__)
+            else:
+                monitor.dependencies_ready()
         await asyncio.sleep(interval)
 
 

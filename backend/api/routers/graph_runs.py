@@ -30,6 +30,11 @@ from runtime.graph_runs import (
     request_cancellation,
     resolve_policy_snapshot,
 )
+from runtime.catalogue_workers import (
+    CatalogueCapability,
+    ensure_catalogue_worker_storage,
+    list_catalogue_worker_states,
+)
 from runtime.graph_progress import (
     EdgeProgress,
     NodeProgress,
@@ -101,6 +106,13 @@ class TransportCapacity(BaseModel):
     active: int
 
 
+class CatalogueExecutorCapacity(BaseModel):
+    capability: CatalogueCapability
+    worker_count: int
+    capacity: int
+    active: int
+
+
 class CrawlConcurrencyLimits(BaseModel):
     worker_count: int
     runtime_capacity: int
@@ -110,6 +122,7 @@ class CrawlConcurrencyLimits(BaseModel):
     resources: list[ResourceUsage]
     workers: list[RuntimeWorkerCapacity]
     transports: list[TransportCapacity]
+    catalogue_executors: list[CatalogueExecutorCapacity]
 
 
 class GraphRunMaterializationLag(BaseModel):
@@ -121,6 +134,30 @@ class GraphRunMaterializationLag(BaseModel):
 
 class GraphRunMaterializationLagList(BaseModel):
     items: list[GraphRunMaterializationLag]
+
+
+class WarningDomainCount(BaseModel):
+    domain: str
+    count: int
+
+
+class GraphRunWarningGroup(BaseModel):
+    failure_code: str
+    status_code: int | None
+    response_media_type: str | None
+    retryable: bool | None
+    count: int
+    detail: str | None
+    domains: list[WarningDomainCount]
+
+
+class GraphRunWarningSummary(BaseModel):
+    run_id: UUID
+    warning_count: int
+    observed_count: int
+    awaiting_evidence_count: int
+    truncated_group_count: int
+    items: list[GraphRunWarningGroup]
 
 
 class PolicyPressurePoint(BaseModel):
@@ -210,7 +247,12 @@ async def capacity() -> CrawlConcurrencyLimits:
         jetstream = client.jetstream()
         _runs, _requests, workers_bucket = await ensure_graph_storage(jetstream)
         resource_grants = await ensure_resource_governor_storage(jetstream)
+        catalogue_workers_bucket = await ensure_catalogue_worker_storage(jetstream)
         workers = sorted(await list_worker_states(workers_bucket), key=lambda value: value.worker_id)
+        catalogue_workers = sorted(
+            await list_catalogue_worker_states(catalogue_workers_bucket),
+            key=lambda value: value.worker_id,
+        )
         resources = await resource_usage(resource_grants)
     finally:
         await client.drain()
@@ -228,6 +270,26 @@ async def capacity() -> CrawlConcurrencyLimits:
         for transport in ("http", "browser", "firecrawl")
     ]
     browser = next(item for item in transports if item.transport == "browser")
+    catalogue_executors = [
+        CatalogueExecutorCapacity(
+            capability=capability,
+            worker_count=sum(
+                worker.capability == capability and worker.healthy
+                for worker in catalogue_workers
+            ),
+            capacity=sum(
+                worker.capacity
+                for worker in catalogue_workers
+                if worker.capability == capability and worker.healthy
+            ),
+            active=sum(
+                worker.active_operation_count
+                for worker in catalogue_workers
+                if worker.capability == capability and worker.healthy
+            ),
+        )
+        for capability in ("ingestion", "materialization")
+    ]
     return CrawlConcurrencyLimits(
         worker_count=len(workers),
         runtime_capacity=sum(worker.capacity for worker in workers),
@@ -239,6 +301,7 @@ async def capacity() -> CrawlConcurrencyLimits:
         resources=resources,
         workers=[RuntimeWorkerCapacity.model_validate(worker, from_attributes=True) for worker in workers],
         transports=transports,
+        catalogue_executors=catalogue_executors,
     )
 
 
@@ -568,6 +631,116 @@ def _catalogue_table(catalogue: Catalogue, name: str) -> str:
     )
 
 
+def _warning_rows(catalogue: Catalogue, run_id: UUID) -> tuple[list[tuple], int, int]:
+    crawls = _catalogue_table(catalogue, "crawls")
+    rows = catalogue.connection.execute(
+        f"""
+        WITH domain_counts AS (
+            SELECT coalesce(failure_code, 'acquisition_failure') AS failure_code,
+                   status_code,
+                   response_media_type,
+                   failure_retryable,
+                   coalesce(url_registrable_domain, 'unknown') AS domain,
+                   any_value(nullif(failure_detail, '')) AS representative_detail,
+                   count(*) AS domain_count
+            FROM {crawls}
+            WHERE graph_run_id = $run_id
+              AND purpose = 'use'
+              AND outcome IN ('partial', 'failed')
+            GROUP BY failure_code, status_code, response_media_type,
+                     failure_retryable, domain
+        ), group_counts AS (
+            SELECT failure_code, status_code, response_media_type,
+                   failure_retryable, sum(domain_count) AS warning_count
+            FROM domain_counts
+            GROUP BY failure_code, status_code, response_media_type,
+                     failure_retryable
+        ), ranked_groups AS (
+            SELECT *,
+                   row_number() OVER (
+                       ORDER BY warning_count DESC, failure_code, status_code
+                   ) AS group_rank,
+                   count(*) OVER () AS total_groups,
+                   sum(warning_count) OVER () AS observed_count
+            FROM group_counts
+        ), ranked_domains AS (
+            SELECT *,
+                   row_number() OVER (
+                       PARTITION BY failure_code, status_code,
+                                    response_media_type, failure_retryable
+                       ORDER BY domain_count DESC, domain
+                   ) AS domain_rank,
+                   first_value(representative_detail) OVER (
+                       PARTITION BY failure_code, status_code,
+                                    response_media_type, failure_retryable
+                       ORDER BY domain_count DESC, domain
+                   ) AS representative_detail_for_group
+            FROM domain_counts
+        )
+        SELECT groups.failure_code, groups.status_code,
+               groups.response_media_type, groups.failure_retryable,
+               groups.warning_count,
+               domains.representative_detail_for_group,
+               domains.domain, domains.domain_count,
+               groups.observed_count, groups.total_groups
+        FROM ranked_groups AS groups
+        JOIN ranked_domains AS domains
+          ON groups.failure_code = domains.failure_code
+         AND groups.status_code IS NOT DISTINCT FROM domains.status_code
+         AND groups.response_media_type IS NOT DISTINCT FROM domains.response_media_type
+         AND groups.failure_retryable IS NOT DISTINCT FROM domains.failure_retryable
+        WHERE groups.group_rank <= 50 AND domains.domain_rank <= 5
+        ORDER BY groups.group_rank, domains.domain_rank
+        """,
+        {"run_id": run_id},
+    ).fetchall()
+    if not rows:
+        return [], 0, 0
+    return rows, int(rows[0][8]), int(rows[0][9])
+
+
+def _warning_groups(rows: list[tuple]) -> list[GraphRunWarningGroup]:
+    grouped: dict[
+        tuple[str, int | None, str | None, bool | None], GraphRunWarningGroup
+    ] = {}
+    for code, status, media_type, retryable, count, detail, domain, domain_count, *_ in rows:
+        key = (
+            str(code or "acquisition_failure"),
+            int(status) if status is not None else None,
+            str(media_type) if media_type is not None else None,
+            bool(retryable) if retryable is not None else None,
+        )
+        group = grouped.get(key)
+        if group is None:
+            group = GraphRunWarningGroup(
+                failure_code=key[0],
+                status_code=key[1],
+                response_media_type=key[2],
+                retryable=key[3],
+                count=int(count),
+                detail=str(detail) if detail else None,
+                domains=[],
+            )
+            grouped[key] = group
+        group.domains.append(
+            WarningDomainCount(
+                domain=str(domain or "unknown"), count=int(domain_count)
+            )
+        )
+    return list(grouped.values())
+
+
+def _read_warning_summary(
+    pool: CatalogueReadPool, run_id: UUID
+) -> tuple[list[GraphRunWarningGroup], int, int]:
+    catalogue = pool.acquire()
+    try:
+        rows, observed_count, total_groups = _warning_rows(catalogue, run_id)
+        return _warning_groups(rows), observed_count, total_groups
+    finally:
+        pool.release(catalogue)
+
+
 @trigger_router.post("/{graph_id}/runs", response_model=GraphRunSubmission, status_code=202)
 async def trigger(
     graph_id: UUID,
@@ -620,6 +793,38 @@ async def active_graph_runs(
     return GraphRunList(
         items=summaries,
         total=len(items),
+    )
+
+
+@router.get("/{run_id}/warnings", response_model=GraphRunWarningSummary)
+async def warning_summary(run_id: UUID, request: Request) -> GraphRunWarningSummary:
+    client, runs, _requests, _progress = await _storage()
+    try:
+        run = await get_graph_run(runs, run_id)
+    finally:
+        await client.drain()
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Graph run {run_id} was not found.")
+
+    pool: CatalogueReadPool = request.app.state.catalogue_read_pool
+    try:
+        items, observed, total_groups = await asyncio.to_thread(
+            _read_warning_summary, pool, run_id
+        )
+    except CatalogueReadPoolExhausted as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except duckdb.Error as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Warning evidence is temporarily unavailable.",
+        ) from exc
+    return GraphRunWarningSummary(
+        run_id=run_id,
+        warning_count=run.warning_count,
+        observed_count=observed,
+        awaiting_evidence_count=max(0, run.warning_count - observed),
+        truncated_group_count=max(0, total_groups - len(items)),
+        items=items,
     )
 
 

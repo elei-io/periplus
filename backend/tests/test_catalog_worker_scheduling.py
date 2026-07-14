@@ -68,7 +68,9 @@ class WorkerSettlementTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(),
             ) as publish,
         ):
-            await _dead_letter_or_retry(client, message, job, "catalogue unavailable")
+            await _dead_letter_or_retry(
+                client, message, job, "catalogue unavailable", 5
+            )
 
         settle.assert_awaited_once_with(client, job, "catalogue unavailable")
         publish.assert_awaited_once()
@@ -92,7 +94,9 @@ class WorkerSettlementTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(),
             ) as publish,
         ):
-            await _dead_letter_or_retry(client, message, job, "catalogue unavailable")
+            await _dead_letter_or_retry(
+                client, message, job, "catalogue unavailable", 5
+            )
 
         publish.assert_not_awaited()
         message.term.assert_not_awaited()

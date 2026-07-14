@@ -10,6 +10,7 @@ import {
   TriangleAlertIcon,
   ViewIcon,
   SaveIcon,
+  BracesIcon,
 } from "lucide-react"
 
 import { CatalogueResultsTable } from "@/components/catalogue/catalogue-results-table"
@@ -20,6 +21,7 @@ import { SqlReferenceSheet } from "@/components/catalogue/sql-reference-sheet"
 import { formatSql } from "@/components/catalogue/sql-format"
 import { SaveViewDialog } from "@/components/catalogue/save-view-dialog"
 import { SaveQueryDialog } from "@/components/catalogue/save-query-dialog"
+import { SaveTableMacroDialog } from "@/components/catalogue/save-table-macro-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -31,6 +33,7 @@ import {
 import { useCatalogueQuery } from "@/hooks/use-catalogue-query"
 import { useCatalogueLint } from "@/hooks/use-catalogue-lint"
 import { useCatalogueViews } from "@/hooks/use-catalogue-views"
+import { useCatalogueTableMacros } from "@/hooks/use-catalogue-table-macros"
 import { useSavedQuery } from "@/hooks/use-saved-queries"
 import {
   Tooltip,
@@ -84,9 +87,11 @@ export function CatalogueSqlPage() {
   const [elapsed, setElapsed] = useState<number | null>(null)
   const [saveViewOpen, setSaveViewOpen] = useState(false)
   const [saveQueryOpen, setSaveQueryOpen] = useState(false)
+  const [saveTableMacroOpen, setSaveTableMacroOpen] = useState(false)
   const catalogueQuery = useCatalogueQuery()
   const catalogueLint = useCatalogueLint(query, queryMode)
   const catalogueViews = useCatalogueViews()
+  const catalogueTableMacros = useCatalogueTableMacros()
 
   useEffect(() => {
     if (!savedQuery.data) return
@@ -162,6 +167,23 @@ export function CatalogueSqlPage() {
                 Create a persistent, non-materialized DuckLake view from this SQL
               </TooltipContent>
             </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setSaveTableMacroOpen(true)}
+                    disabled={!query.trim()}
+                  />
+                }
+              >
+                <BracesIcon /> Save as macro
+              </TooltipTrigger>
+              <TooltipContent>
+                Create a reusable, parameterized table macro from this SQL
+              </TooltipContent>
+            </Tooltip>
             <Badge
               variant="outline"
               className="hidden font-mono text-[10px] sm:inline-flex"
@@ -222,6 +244,9 @@ export function CatalogueSqlPage() {
           views={(catalogueViews.data?.items ?? []).filter(
             (view) => view.available
           )}
+          macros={(catalogueTableMacros.data?.items ?? []).filter(
+            (macro) => macro.available
+          )}
         />
         {catalogueLint.data && catalogueLint.data.diagnostics.length > 0 && (
           <div className="space-y-1.5 border-t border-amber-500/20 bg-amber-500/5 px-4 py-2.5">
@@ -268,6 +293,12 @@ export function CatalogueSqlPage() {
       <SaveViewDialog
         open={saveViewOpen}
         onOpenChange={setSaveViewOpen}
+        sql={query}
+        queryRevisionId={savedQuery.data?.current_revision_id}
+      />
+      <SaveTableMacroDialog
+        open={saveTableMacroOpen}
+        onOpenChange={setSaveTableMacroOpen}
         sql={query}
         queryRevisionId={savedQuery.data?.current_revision_id}
       />

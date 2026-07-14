@@ -71,6 +71,7 @@ class Catalogue:
         with self.lake.transaction():
             self.lake.schema.create(self.config.schema)
             self.lake.schema.create("views")
+            self.lake.schema.create("macros")
             self.lake.schema.create("_atlas_materializations")
             self.lake.table.create(
                 "artifacts",

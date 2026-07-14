@@ -89,8 +89,9 @@ not graph execution, workflow state, result settlement, or correctness.
 The governor is a shared runtime contract implemented with compare-and-swap against one expiring,
 revision-fenced NATS KV projection. It is not another service or leader-elected scheduler. Every
 worker runs the same typed admission code, and KV revisions serialize competing grant updates.
-Permit requests need not be durable because the original work message remains durable while a
-worker waits and retries.
+Permit requests need not be durable because the original work message remains durable and is
+heartbeated while a worker waits. Expiring waiter intent makes reserved shares work-conserving; it
+is admission state, not a pending-work queue or completion authority.
 
 One request contains:
 
@@ -142,8 +143,9 @@ fails configuration validation instead of waiting forever for an impossible gran
 
 DuckLake is also not a single correctness lock. `catalogue:hot` is a capacity pool. Deterministic
 operation leases and PostgreSQL advisory locks continue to fence overlapping identities.
-Worker dependency probes do not wait behind a process's occupied embedded-DuckDB lane: active
-owned work is healthy, while queue-progress monitoring detects a genuinely stuck operation.
+Worker dependency probes do not request scarce work permits or wait behind a process's occupied
+embedded-DuckDB lane. They use a separately owned connection; active owned work and permit waiting
+are healthy, while queue-progress monitoring detects a genuinely stuck operation.
 
 ### Fixed service classes
 
@@ -156,13 +158,17 @@ Priority policy is code-owned and intentionally small:
 
 The initial algorithm reserves catalogue shares in both directions so graph-critical work and user
 materialization cannot starve each other, caps concurrent backfill, and grants maintenance the full
-catalogue capacity only after hot grants drain. Workers retry unavailable
-bundles while retaining their work messages. Do not add a central pending-request scheduler,
-weighted-fair queue, or adaptive controller until measured starvation or unfairness requires one.
+catalogue capacity only after hot grants drain. Reservations are minimum shares under contention,
+not hard ceilings: idle units are borrowed until an expiring waiter for the reserved class appears.
+Workers heartbeat their durable work messages while waiting for required bundles. Capacity waiting
+does not increment processing attempts, enter reconciliation, or publish dead letters. Do not add a
+central pending-request scheduler, weighted-fair queue, or adaptive controller until measured
+starvation or unfairness requires one.
 
-Users do not author scheduling algorithms. Typed deployment configuration supplies capacities,
-critical/noncritical reserves, and the backfill ceiling. Per-remote CrawlPolicy limits remain editable
-control-plane policy. Changing worker replicas does not change either contract.
+Users do not author scheduling algorithms. Typed deployment configuration supplies safety
+capacities, minimum critical/noncritical shares, and the backfill ceiling. Per-remote CrawlPolicy
+limits remain editable control-plane policy. Changing worker replicas does not raise a shared
+safety ceiling, but every replica adds a usable execution lane until that ceiling is reached.
 
 ## Queue surface
 
@@ -205,6 +211,12 @@ requires:
 - a PostgreSQL advisory lock around durable identity resolution and commit;
 - bounded transaction-conflict retries; and
 - authoritative reconciliation after an ambiguous commit.
+
+One mutation may overlap several crawl, content, or scope identities. It acquires that complete
+independent fence set in deterministic order through one PostgreSQL session and one overall
+timeout. Batch cardinality must never multiply database sessions, and a composite batch hash must
+not replace per-identity contention because partially overlapping batches would then pass each
+other.
 
 The Resource Governor bounds combined pressure across those independent processes. It does not
 replace any correctness mechanism above.
@@ -317,8 +329,9 @@ and actual versus estimated object I/O. Queue age remains more important than ra
 memory are local executor signals, not correctness state.
 
 Adding replicas must be monotonic: it may reduce executor shortage, but it cannot increase shared
-pressure beyond the configured budget. Replicas waiting almost entirely for permits indicate a
-resource bottleneck, not a reason to add more workers.
+pressure beyond the configured budget. Before that ceiling, idle reserved shares must not prevent a
+new replica from doing useful work. Replicas waiting almost entirely for permits indicate a resource
+bottleneck, not a reason to add more workers.
 
 ## Production deployment
 

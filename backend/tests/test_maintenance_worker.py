@@ -14,7 +14,7 @@ async def granted(*_args, **_kwargs):
 
 
 class MaintenanceWorkerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_operation_runs_behind_resource_and_correctness_fences(self) -> None:
+    async def test_operation_runs_behind_resource_and_operation_admission(self) -> None:
         monitor = HealthMonitor()
         monitor.dependencies_ready()
         monitor.subsystem_ready("maintenance_admission")
@@ -22,7 +22,6 @@ class MaintenanceWorkerTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("workers.maintenance.resource_permits", new=granted),
             patch("workers.maintenance.operation_leases", new=granted),
-            patch("workers.maintenance.maintenance_lock", return_value=MagicMock()),
             patch("workers.maintenance.compact") as compact,
         ):
             await _run_operation(

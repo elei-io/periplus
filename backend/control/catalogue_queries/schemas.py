@@ -40,6 +40,7 @@ class CatalogueQueryRecord(BaseModel):
     id: UUID
     name: str
     description: str | None
+    fixture_path: str | None
     current_revision_id: UUID
     current_revision: int
     sql: str

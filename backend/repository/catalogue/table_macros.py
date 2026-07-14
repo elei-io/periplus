@@ -1,0 +1,142 @@
+"""Persistent user-owned DuckLake table-macro administration."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import re
+
+from repository.catalogue.client import Catalogue
+from repository.catalogue.query import compile_catalogue_definition
+
+TABLE_MACRO_SCHEMA = "macros"
+_SAFE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+
+
+class CatalogueTableMacroError(ValueError):
+    pass
+
+
+class CatalogueTableMacroConflictError(CatalogueTableMacroError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class DuckLakeTableMacro:
+    schema_name: str
+    macro_name: str
+    parameters: tuple[str, ...]
+
+    @property
+    def qualified_name(self) -> str:
+        return f"{self.schema_name}.{self.macro_name}"
+
+
+class CatalogueTableMacroStore:
+    def __init__(self, catalogue: Catalogue) -> None:
+        self.catalogue = catalogue
+
+    def list(self) -> list[DuckLakeTableMacro]:
+        rows = self.catalogue.connection.execute(
+            """
+            SELECT schema_name, function_name, parameters
+            FROM duckdb_functions()
+            WHERE database_name = ?
+              AND schema_name = ?
+              AND function_type = 'table_macro'
+            ORDER BY function_name
+            """,
+            [self.catalogue.config.alias, TABLE_MACRO_SCHEMA],
+        ).fetchall()
+        return [
+            DuckLakeTableMacro(
+                schema_name=str(row[0]),
+                macro_name=str(row[1]),
+                parameters=tuple(str(value) for value in (row[2] or [])),
+            )
+            for row in rows
+        ]
+
+    def get(self, name: str) -> DuckLakeTableMacro | None:
+        return next((macro for macro in self.list() if macro.macro_name == name), None)
+
+    def create(self, *, name: str, parameters: list[str], sql: str) -> DuckLakeTableMacro:
+        normalized = _validate(name, parameters)
+        if self.get(name) is not None:
+            raise CatalogueTableMacroConflictError(
+                f"Table macro {TABLE_MACRO_SCHEMA}.{name} already exists."
+            )
+        self._execute_definition(
+            "CREATE MACRO", name=name, parameters=normalized, sql=sql
+        )
+        return self._require(name)
+
+    def replace(self, *, name: str, parameters: list[str], sql: str) -> DuckLakeTableMacro:
+        normalized = _validate(name, parameters)
+        self._execute_definition(
+            "CREATE OR REPLACE MACRO", name=name, parameters=normalized, sql=sql
+        )
+        return self._require(name)
+
+    def drop(self, *, name: str) -> None:
+        _validate_name(name, "Table macro name")
+        self.catalogue.connection.execute(
+            f"DROP MACRO IF EXISTS {_qualified(self.catalogue, name)}"
+        )
+
+    def _execute_definition(
+        self,
+        operation: str,
+        *,
+        name: str,
+        parameters: tuple[str, ...],
+        sql: str,
+    ) -> None:
+        compiled = compile_catalogue_definition(sql)
+        signature = ", ".join(_quote_identifier(value) for value in parameters)
+        namespace = ".".join(
+            _quote_identifier(part)
+            for part in (self.catalogue.config.alias, self.catalogue.config.schema)
+        )
+        self.catalogue.connection.execute(f"USE {namespace}")
+        self.catalogue.connection.execute(
+            f"{operation} {_qualified(self.catalogue, name)}({signature}) "
+            f"AS TABLE ({compiled})"
+        )
+
+    def _require(self, name: str) -> DuckLakeTableMacro:
+        macro = self.get(name)
+        if macro is None:
+            raise CatalogueTableMacroError(
+                f"Table macro {TABLE_MACRO_SCHEMA}.{name} was not found after mutation."
+            )
+        return macro
+
+
+def _validate(name: str, parameters: list[str]) -> tuple[str, ...]:
+    _validate_name(name, "Table macro name")
+    normalized = tuple(value.strip() for value in parameters)
+    if len(normalized) > 32:
+        raise CatalogueTableMacroError("Table macros may have at most 32 parameters.")
+    for parameter in normalized:
+        _validate_name(parameter, "Parameter name")
+    if len(set(normalized)) != len(normalized):
+        raise CatalogueTableMacroError("Table macro parameter names must be unique.")
+    return normalized
+
+
+def _validate_name(value: str, label: str) -> None:
+    if not _SAFE_NAME.fullmatch(value):
+        raise CatalogueTableMacroError(
+            f"{label} must use lower-case letters, numbers, and underscores."
+        )
+
+
+def _qualified(catalogue: Catalogue, name: str) -> str:
+    return ".".join(
+        _quote_identifier(part)
+        for part in (catalogue.config.alias, TABLE_MACRO_SCHEMA, name)
+    )
+
+
+def _quote_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'

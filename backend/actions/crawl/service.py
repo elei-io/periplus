@@ -1,4 +1,5 @@
 import asyncio
+from email.utils import parsedate_to_datetime
 import hashlib
 import json
 import tempfile
@@ -57,6 +58,20 @@ from control.urls import normalize_url
 from .schemas import CrawlPage
 from .schemas import CapturedArtifact
 from repository.objects.artifact import ArtifactIdentity
+
+
+_ERROR_RESPONSE_PREVIEW_BYTES = 512
+_MAX_RETRY_AFTER_SECONDS = 300.0
+_RETRYABLE_HTTP_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+class RetryableAcquisitionError(RuntimeError):
+    """Signal durable redelivery without committing a terminal crawl observation."""
+
+    def __init__(self, page: CrawlPage) -> None:
+        super().__init__(page.error or "Retryable page acquisition failure.")
+        self.page = page
+        self.retry_after_seconds = page.retry_after_seconds
 
 if TYPE_CHECKING:
     from crawl4ai import AsyncWebCrawler
@@ -159,9 +174,9 @@ async def _crawl_url(
 
     try:
         if profile == "http":
-            page = await _acquire_http(
-                http_client, url, HttpProfileConfig.model_validate(config.model_dump())
-            )
+            http_config = HttpProfileConfig.model_validate(config.model_dump())
+            async with asyncio.timeout(http_config.timeout_seconds):
+                page = await _acquire_http(http_client, url, http_config)
         elif profile == "browser":
             if crawler is None:
                 raise RuntimeError("Browser acquisition requires a crawler")
@@ -303,17 +318,55 @@ async def _acquire_http(
     url: str,
     config: HttpProfileConfig,
 ) -> CrawlPage:
+    headers = {
+        "Accept": _http_accept_header(config),
+        "User-Agent": config.user_agent,
+        **config.headers,
+    }
     async with client.stream(
         "GET",
         url,
-        headers=config.headers,
-        timeout=config.timeout_seconds,
+        headers=headers,
+        timeout=httpx.Timeout(
+            config.timeout_seconds,
+            connect=min(5.0, config.timeout_seconds),
+            pool=min(1.0, config.timeout_seconds),
+        ),
         follow_redirects=config.follow_redirects,
     ) as response:
         content_type = response.headers.get("content-type", "")
         media_type = content_type.partition(";")[0].strip().lower()
+        final_url = str(response.url)
+        if not response.is_success:
+            preview = await _http_error_preview(response)
+            error = f"HTTP {response.status_code}"
+            if preview:
+                error = f"{error}: {preview}"
+            retryable = response.status_code in _RETRYABLE_HTTP_STATUSES
+            return CrawlPage(
+                url=final_url,
+                success=False,
+                status_code=response.status_code,
+                duration_seconds=0,
+                crawl={
+                    "url": final_url,
+                    "success": False,
+                    "status_code": response.status_code,
+                    "redirected_url": final_url if final_url != url else None,
+                    "error_message": error,
+                    "response_media_type": media_type or None,
+                },
+                error=error,
+                failure_code="http_status",
+                failure_stage="request",
+                failure_retryable=retryable,
+                retry_after_seconds=(
+                    _retry_after_seconds(response.headers.get("retry-after"))
+                    if retryable
+                    else None
+                ),
+            )
         if media_type not in {"text/html", "application/xhtml+xml"}:
-            final_url = str(response.url)
             if _artifact_media_type_allowed(media_type, config.artifact_media_types):
                 policy_limit = config.artifact_max_bytes
                 repository_limit = get_int("ATLAS_REPOSITORY_MAX_ARTIFACT_BYTES")
@@ -347,11 +400,9 @@ async def _acquire_http(
                 except BaseException:
                     content.close()
                     raise
-                success = response.is_success
-                error = None if success else f"HTTP {response.status_code}"
                 return CrawlPage(
                     url=final_url,
-                    success=success,
+                    success=True,
                     status_code=response.status_code,
                     duration_seconds=0,
                     artifact=CapturedArtifact(
@@ -367,21 +418,12 @@ async def _acquire_http(
                     ),
                     crawl={
                         "url": final_url,
-                        "success": success,
+                        "success": True,
                         "status_code": response.status_code,
                         "redirected_url": final_url if final_url != url else None,
-                        "error_message": error,
+                        "error_message": None,
                         "response_media_type": media_type,
                     },
-                    error=error,
-                    failure_code="http_status" if not success else None,
-                    failure_stage="request" if not success else None,
-                    failure_retryable=(
-                        response.status_code in {408, 425, 429}
-                        or response.status_code >= 500
-                    )
-                    if not success
-                    else None,
                 )
             display_type = media_type or "missing Content-Type"
             error = f"HTTP response is not HTML ({display_type})."
@@ -418,32 +460,63 @@ async def _acquire_http(
         encoding = response.encoding or "utf-8"
         html = body.decode(encoding, errors="replace") or None
         final_url = str(response.url)
-        success = response.is_success
-        error = None if success else f"HTTP {response.status_code}"
         crawl = {
             "url": final_url,
-            "success": success,
+            "success": True,
             "status_code": response.status_code,
             "redirected_url": final_url if final_url != url else None,
-            "error_message": error,
+            "error_message": None,
             "response_media_type": media_type,
         }
         return CrawlPage(
             url=final_url,
-            success=success,
+            success=True,
             status_code=response.status_code,
             duration_seconds=0,
             html=html,
             crawl=crawl,
-            error=error,
-            failure_code="http_status" if not success else None,
-            failure_stage="request" if not success else None,
-            failure_retryable=(
-                response.status_code in {408, 425, 429} or response.status_code >= 500
-            )
-            if not success
-            else None,
         )
+
+
+def _http_accept_header(config: HttpProfileConfig) -> str:
+    values = ["text/html", "application/xhtml+xml;q=0.9"]
+    quality = 0.8
+    for media_type in config.artifact_media_types:
+        values.append(f"{media_type};q={quality:.1f}")
+        quality = max(0.1, quality - 0.1)
+    return ", ".join(values)
+
+
+async def _http_error_preview(response: httpx.Response) -> str | None:
+    captured = bytearray()
+    async for chunk in response.aiter_bytes():
+        remaining = _ERROR_RESPONSE_PREVIEW_BYTES - len(captured)
+        if remaining <= 0:
+            break
+        captured.extend(chunk[:remaining])
+        if len(captured) >= _ERROR_RESPONSE_PREVIEW_BYTES:
+            break
+    if not captured:
+        return None
+    text = bytes(captured).decode(response.encoding or "utf-8", errors="replace")
+    preview = " ".join(text.split())
+    return preview or None
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        seconds = (retry_at - datetime.now(UTC)).total_seconds()
+    return min(_MAX_RETRY_AFTER_SECONDS, max(0.0, seconds))
 
 
 def _artifact_media_type_allowed(media_type: str, allowed: tuple[str, ...]) -> bool:
@@ -1075,6 +1148,7 @@ async def _crawl_graph_request(
     cache: CacheOptions | dict[str, Any] | None = None,
     retain_html: bool = True,
     include_links: bool = True,
+    persist_retryable_failure: bool = True,
 ) -> CrawlPage:
     cache_options = cache if isinstance(cache, CacheOptions) else CacheOptions.model_validate(cache or {})
     policy = _frozen_crawl_policy()
@@ -1309,6 +1383,9 @@ async def _crawl_graph_request(
     except (ResourceCapacityUnavailable, ResourcePermitLost):
         raise
     except Exception as exc:
+        failure_code, failure_stage, failure_retryable = _exception_failure(
+            exc, profile
+        )
         await emit_progress(
             progress_reporter,
             ProgressEvent(
@@ -1324,12 +1401,22 @@ async def _crawl_graph_request(
             success=False,
             duration_seconds=acquisition_failure_duration,
             error=str(exc),
+            failure_code=failure_code,
+            failure_stage=failure_stage,
+            failure_retryable=failure_retryable,
         )
         reused_cache = False
         if not acquisition_recorded:
             crawl_metrics.crawl_failure(
                 page=page, mode=profile, remote_domain=remote_domain
             )
+
+    if (
+        not page.success
+        and page.failure_retryable is True
+        and not persist_retryable_failure
+    ):
+        raise RetryableAcquisitionError(page)
 
     if (
         not reused_cache
@@ -1371,6 +1458,7 @@ async def crawl_graph_request(
     http_client: httpx.AsyncClient | None = None,
     resource_grants=None,
     repository_pipeline: RepositoryPipeline | None = None,
+    persist_retryable_failure: bool = True,
 ) -> CrawlPage:
     """Acquire and durably ingest one frozen graph crawl request.
 
@@ -1389,6 +1477,7 @@ async def crawl_graph_request(
                 crawler=crawler,
                 http_client=http_client,
                 resource_grants=resource_grants,
+                persist_retryable_failure=persist_retryable_failure,
             )
         async with RepositoryPipeline(repository_ingestor_from_env()) as pipeline:
             return await _crawl_graph_request(
@@ -1400,4 +1489,5 @@ async def crawl_graph_request(
                 crawler=crawler,
                 http_client=http_client,
                 resource_grants=resource_grants,
+                persist_retryable_failure=persist_retryable_failure,
             )

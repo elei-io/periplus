@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import hashlib
 from collections.abc import Sequence
-from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +12,7 @@ from uuid import UUID
 
 from repository.catalogue.client import Catalogue
 from repository.catalogue.exceptions import CatalogueConflictError, CatalogueValidationError
+from repository.catalogue.operations import maintenance_lock, repository_commit_lock
 from repository.catalogue.records import (
     ArtifactRecord,
     CatalogueWriteResult,
@@ -55,9 +54,6 @@ class CatalogueService:
     ) -> list[CatalogueWriteResult]:
         """Commit a microbatch with one append per logical DuckLake table."""
 
-        operation_key = hashlib.sha256(
-            "\0".join(sorted(str(entry.crawl.crawl_id) for entry in entries)).encode()
-        ).hexdigest()
         content_ids = sorted(
             {
                 identity
@@ -66,11 +62,11 @@ class CatalogueService:
                 if identity is not None
             }
         )
-        with ExitStack() as fences:
-            for identity in content_ids:
-                identity_key = hashlib.sha256(identity.encode()).hexdigest()
-                fences.enter_context(self._write_fence(f"content-{identity_key}"))
-            fences.enter_context(self._write_fence(f"ingest-{operation_key}"))
+        with repository_commit_lock(
+            self.catalogue,
+            crawl_ids=[entry.crawl.crawl_id for entry in entries],
+            content_ids=content_ids,
+        ):
             return self._record_crawl_batch_unfenced(entries)
 
     def compact_small_files(
@@ -104,7 +100,7 @@ class CatalogueService:
                 "target_file_bytes must not exceed maximum_operation_bytes"
             )
 
-        with self._write_fence("maintenance-global"):
+        with maintenance_lock(self.catalogue):
             # DuckLake inlines tiny writes into its metadata catalogue. Flush those
             # accumulated rows before file compaction so Postgres does not become
             # an unbounded data store at low ingestion rates.
@@ -754,17 +750,6 @@ class CatalogueService:
             _quote_identifier(part)
             for part in (self.catalogue.config.alias, self.catalogue.config.schema, table_name)
         )
-
-    @contextmanager
-    def _write_fence(self, operation: str) -> Iterator[None]:
-        """Fence redelivery of one deterministic operation without serializing the catalogue."""
-
-        with self.catalogue.lake.fence(
-            operation,
-            namespace="atlas",
-            timeout=120,
-        ):
-            yield
 
 def _document_from_row(row: dict[str, Any]) -> DocumentRecord:
     values = dict(row)

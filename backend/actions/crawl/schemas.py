@@ -37,3 +37,4 @@ class CrawlPage(BaseModel):
     failure_code: str | None = None
     failure_stage: str | None = None
     failure_retryable: bool | None = None
+    retry_after_seconds: float | None = None

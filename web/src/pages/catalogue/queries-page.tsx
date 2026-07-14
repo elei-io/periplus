@@ -35,7 +35,7 @@ function QueryListPage() {
                 <ArrowUpRightIcon className="size-4 text-muted-foreground transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-primary" />
               </div>
               <div className="relative mt-4"><h2 className="truncate text-sm font-semibold">{query.name}</h2><p className="mt-1 line-clamp-2 min-h-10 text-xs leading-5 text-muted-foreground">{query.description || "Reusable catalogue SQL with immutable revision history."}</p></div>
-              <div className="relative mt-4 flex flex-wrap items-center justify-between gap-2 border-t pt-3"><span className="flex items-center gap-1.5 text-[10px] text-muted-foreground"><HistoryIcon className="size-3" />{query.current_revision} revision{query.current_revision === 1 ? "" : "s"}</span><Badge variant="secondary">v{query.current_revision}</Badge></div>
+              <div className="relative mt-4 flex flex-wrap items-center justify-between gap-2 border-t pt-3"><span className="flex items-center gap-1.5 text-[10px] text-muted-foreground"><HistoryIcon className="size-3" />{query.current_revision} revision{query.current_revision === 1 ? "" : "s"}</span><div className="flex gap-1.5">{query.fixture_path && <Badge>Fixture</Badge>}<Badge variant="secondary">v{query.current_revision}</Badge></div></div>
             </a>
           ))}
         </div>
@@ -62,6 +62,7 @@ function QueryDetailPage({ queryId }: { queryId: string }) {
     <div className="flex min-h-0 w-full flex-col gap-4 overflow-y-auto">
       <div><Button nativeButton={false} render={<a href="/catalogue/queries" />} variant="ghost"><ArrowLeftIcon />All saved queries</Button></div>
       <CatalogueHero icon={FileCode2Icon} eyebrow={`Saved query · revision ${revision.revision}`} title={query.name} description={query.description || "Reusable catalogue SQL with immutable revision history."}>
+        {query.fixture_path && <Badge>Fixture · {query.fixture_path}</Badge>}
         <Button nativeButton={false} size="sm" variant="outline" render={<a href={`/catalogue/sql?query=${query.id}${revision.id === query.current_revision_id ? "" : `&revision=${revision.revision}`}`} />}><FileCode2Icon />{revision.id === query.current_revision_id ? "Open in SQL" : `Open v${revision.revision}`}</Button>
         <Button size="sm" variant="ghost" disabled={archive.isPending} onClick={() => { if (window.confirm(`Archive ${query.name}?`)) archive.mutate(query.id) }}><ArchiveIcon />Archive</Button>
       </CatalogueHero>

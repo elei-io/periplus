@@ -14,8 +14,9 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from prometheus_client import start_http_server
 import httpx
 
-from actions.crawl.service import crawl_graph_request
+from actions.crawl.service import RetryableAcquisitionError, crawl_graph_request
 from config import get_bool, get_float, get_int, get_optional, get_str
+from control.crawl_policies.schemas import DEFAULT_HTTP_USER_AGENT
 from observability import crawl_metrics
 from repository.ingestion.acquisition import AcquisitionPipeline
 from repository.ingestion.health import HealthMonitor, start_health_server
@@ -40,13 +41,39 @@ from runtime.graph_queue import (
     settle_sample_request,
     update_crawl_request,
 )
-from runtime.resource_governor import ensure_resource_governor_storage, object_request
+from runtime.resource_governor import (
+    ResourceCapacityUnavailable,
+    ResourcePermitLost,
+    ensure_resource_governor_storage,
+    object_request,
+)
 from runtime.graph_runs import expire_graph_run, reconcile_pending_admissions, settle_request
 from runtime.graph_progress import bootstrap_run_progress, transition_node_progress
 
 
 class BrowserCrawler(Protocol):
     async def arun(self, *args, **kwargs): ...
+
+
+class AcquisitionClaimLost(RuntimeError):
+    """The delivery or crawl-request claim was lost before work could settle."""
+
+
+def http_client_for_worker(capacity: int) -> httpx.AsyncClient:
+    """Build the bounded process-owned transport pool for one acquisition worker."""
+
+    return httpx.AsyncClient(
+        headers={"User-Agent": DEFAULT_HTTP_USER_AGENT},
+        timeout=httpx.Timeout(20.0, connect=5.0, write=5.0, pool=1.0),
+        limits=httpx.Limits(
+            max_connections=capacity,
+            max_keepalive_connections=capacity,
+            keepalive_expiry=30.0,
+        ),
+        follow_redirects=False,
+        http2=False,
+        trust_env=False,
+    )
 
 
 async def _keep_alive(message, requests, request_id: UUID, claim_token: UUID) -> None:
@@ -180,6 +207,7 @@ async def _process_crawl(
         _keep_alive(message, requests, request.id, claim_token)
     )
     acquisition = None
+    max_deliver = get_int("ATLAS_CRAWL_MAX_DELIVER")
     try:
         context = GraphExecutionContext(
             graph_id=run.graph_id,
@@ -201,6 +229,9 @@ async def _process_crawl(
                 http_client=http_client,
                 resource_grants=resource_grants,
                 repository_pipeline=repository_pipeline,
+                persist_retryable_failure=(
+                    request.processing_failure_count + 1 >= max_deliver
+                ),
             )
         )
         done, _pending = await asyncio.wait(
@@ -210,11 +241,11 @@ async def _process_crawl(
             acquisition.cancel()
             await asyncio.gather(acquisition, return_exceptions=True)
             if heartbeat.cancelled():
-                raise RuntimeError("acquisition claim heartbeat was cancelled")
+                raise AcquisitionClaimLost("acquisition claim heartbeat was cancelled")
             heartbeat_error = heartbeat.exception()
             if heartbeat_error is not None:
-                raise RuntimeError("acquisition claim heartbeat failed") from heartbeat_error
-            raise RuntimeError("acquisition claim ownership was lost")
+                raise AcquisitionClaimLost("acquisition claim heartbeat failed") from heartbeat_error
+            raise AcquisitionClaimLost("acquisition claim ownership was lost")
         page = await acquisition
         if page.crawl_id != request.id:
             raise RuntimeError(
@@ -272,10 +303,29 @@ async def _process_crawl(
                 pass
         await message.ack()
     except Exception as exc:
-        delivery_count = int(
-            getattr(getattr(message, "metadata", None), "num_delivered", 1)
+        infrastructure_failure = isinstance(
+            exc,
+            (
+                AcquisitionClaimLost,
+                NatsTimeoutError,
+                OSError,
+                ResourceCapacityUnavailable,
+                ResourcePermitLost,
+            ),
         )
-        if delivery_count < get_int("ATLAS_CRAWL_MAX_DELIVER"):
+        failure_count = request.processing_failure_count
+        if not infrastructure_failure:
+            def record_failure(current: CrawlRequest) -> CrawlRequest:
+                if current.status != "crawling" or current.claim_token != claim_token:
+                    return current
+                return current.model_copy(
+                    update={"processing_failure_count": current.processing_failure_count + 1}
+                )
+
+            request = await update_crawl_request(requests, request.id, record_failure)
+            failure_count = request.processing_failure_count
+
+        if infrastructure_failure or failure_count < max_deliver:
             def release_claim(current: CrawlRequest) -> CrawlRequest:
                 if current.status != "crawling" or current.claim_token != claim_token:
                     return current
@@ -296,7 +346,17 @@ async def _process_crawl(
                     )
                 except Exception:
                     pass
-            await message.nak(delay=min(30, 2 ** max(0, delivery_count - 1)))
+            retry_after = (
+                exc.retry_after_seconds
+                if isinstance(exc, RetryableAcquisitionError)
+                else None
+            )
+            delay = (
+                retry_after
+                if retry_after is not None
+                else min(30, 2 ** max(0, failure_count - 1))
+            )
+            await message.nak(delay=delay)
             return
         if request.purpose == "sample":
             await settle_sample_request(
@@ -487,7 +547,7 @@ async def run(
 
     presence_task = asyncio.create_task(presence())
     try:
-        async with httpx.AsyncClient() as http_client:
+        async with http_client_for_worker(capacity) as http_client:
             async with AcquisitionPipeline() as repository_pipeline:
                 while not stop.is_set():
                     completed = {task for task in active if task.done()}

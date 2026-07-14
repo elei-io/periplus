@@ -84,10 +84,25 @@ class ResourceGrant(BaseModel):
     expires_at: datetime
 
 
+class ResourceWaiter(BaseModel):
+    """Expiring demand used only to make reserved shares work-conserving."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    token: str
+    operation_id: str
+    service_class: ResourceClass
+    resources: tuple[ResourceNeed, ...]
+    waiting_since: datetime
+    heartbeat_at: datetime
+    expires_at: datetime
+
+
 class ResourceState(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     grants: tuple[ResourceGrant, ...] = ()
+    waiters: tuple[ResourceWaiter, ...] = ()
     updated_at: datetime
 
 
@@ -101,6 +116,12 @@ class ResourceUsage(BaseModel):
     live: int = 0
     backfill: int = 0
     maintenance: int = 0
+    waiting: int = 0
+    critical_waiting: int = 0
+    live_waiting: int = 0
+    backfill_waiting: int = 0
+    maintenance_waiting: int = 0
+    oldest_wait_seconds: float = 0.0
 
 
 class ResourceLimits(BaseModel):
@@ -226,12 +247,21 @@ def _active_grants(state: ResourceState, *, now: datetime) -> tuple[ResourceGran
     return tuple(grant for grant in state.grants if grant.expires_at > now)
 
 
-def _need_for(grant: ResourceGrant, name: str) -> ResourceNeed | None:
-    return next((need for need in grant.resources if need.name == name), None)
+def _active_waiters(
+    state: ResourceState, *, now: datetime
+) -> tuple[ResourceWaiter, ...]:
+    return tuple(waiter for waiter in state.waiters if waiter.expires_at > now)
+
+
+def _need_for(
+    owner: ResourceGrant | ResourceWaiter, name: str
+) -> ResourceNeed | None:
+    return next((need for need in owner.resources if need.name == name), None)
 
 
 def _bundle_fits(
     grants: tuple[ResourceGrant, ...],
+    waiters: tuple[ResourceWaiter, ...],
     request: ResourceRequest,
     limits: ResourceLimits,
 ) -> bool:
@@ -258,16 +288,41 @@ def _bundle_fits(
             return False
 
         if requested.name == "catalogue:hot":
+            if request.service_class != "maintenance" and any(
+                waiter.service_class == "maintenance"
+                and _need_for(waiter, "catalogue:hot") is not None
+                for waiter in waiters
+            ):
+                # Once exclusive maintenance is waiting, stop admitting new hot
+                # work so current grants can drain instead of starving it forever.
+                return False
+            critical_used = sum(
+                need.units
+                for grant, need in existing
+                if grant.service_class == "critical"
+            )
+            noncritical_used = sum(
+                need.units
+                for grant, need in existing
+                if grant.service_class not in {"critical", "maintenance"}
+            )
+            critical_waiting = any(
+                waiter.service_class == "critical"
+                and _need_for(waiter, "catalogue:hot") is not None
+                for waiter in waiters
+            )
+            noncritical_waiting = any(
+                waiter.service_class in {"live", "backfill"}
+                and _need_for(waiter, "catalogue:hot") is not None
+                for waiter in waiters
+            )
             if request.service_class not in {"critical", "maintenance"}:
-                noncritical_used = sum(
-                    need.units
-                    for grant, need in existing
-                    if grant.service_class != "critical"
+                reserved_gap = (
+                    max(0, limits.catalogue_critical_reserve - critical_used)
+                    if critical_waiting
+                    else 0
                 )
-                if (
-                    noncritical_used + requested.units
-                    > capacity - limits.catalogue_critical_reserve
-                ):
+                if used + requested.units > capacity - reserved_gap:
                     return False
             if request.service_class == "backfill":
                 backfill_used = sum(
@@ -278,15 +333,15 @@ def _bundle_fits(
                 if backfill_used + requested.units > limits.catalogue_backfill_max:
                     return False
             if request.service_class == "critical":
-                critical_used = sum(
-                    need.units
-                    for grant, need in existing
-                    if grant.service_class == "critical"
+                reserved_gap = (
+                    max(
+                        0,
+                        limits.catalogue_noncritical_reserve - noncritical_used,
+                    )
+                    if noncritical_waiting
+                    else 0
                 )
-                if (
-                    critical_used + requested.units
-                    > capacity - limits.catalogue_noncritical_reserve
-                ):
+                if used + requested.units > capacity - reserved_gap:
                     return False
     return True
 
@@ -306,7 +361,9 @@ async def resource_usage(
 
     limits = limits or ResourceLimits.from_env()
     state, _revision = await _read_state(bucket)
-    grants = _active_grants(state, now=datetime.now(UTC))
+    now = datetime.now(UTC)
+    grants = _active_grants(state, now=now)
+    waiters = _active_waiters(state, now=now)
     needs: dict[str, ResourceNeed] = {
         "catalogue:hot": ResourceNeed(name="catalogue:hot", units=1),
         "object:read": ResourceNeed(name="object:read", units=1),
@@ -314,6 +371,9 @@ async def resource_usage(
     }
     for grant in grants:
         for need in grant.resources:
+            needs.setdefault(need.name, need)
+    for waiter in waiters:
+        for need in waiter.resources:
             needs.setdefault(need.name, need)
     usages: list[ResourceUsage] = []
     for name, representative in sorted(needs.items()):
@@ -326,12 +386,37 @@ async def resource_usage(
             )
             for service_class in ("critical", "live", "backfill", "maintenance")
         }
+        waiting_by_class = {
+            service_class: sum(
+                1
+                for waiter in waiters
+                if waiter.service_class == service_class
+                if _need_for(waiter, name) is not None
+            )
+            for service_class in ("critical", "live", "backfill", "maintenance")
+        }
+        resource_waiters = [
+            waiter for waiter in waiters if _need_for(waiter, name) is not None
+        ]
         usages.append(
             ResourceUsage(
                 name=name,
                 capacity=limits.capacity(representative),
                 used=sum(by_class.values()),
                 **by_class,
+                waiting=sum(waiting_by_class.values()),
+                critical_waiting=waiting_by_class["critical"],
+                live_waiting=waiting_by_class["live"],
+                backfill_waiting=waiting_by_class["backfill"],
+                maintenance_waiting=waiting_by_class["maintenance"],
+                oldest_wait_seconds=(
+                    max(
+                        0.0,
+                        (now - min(waiter.waiting_since for waiter in resource_waiters)).total_seconds(),
+                    )
+                    if resource_waiters
+                    else 0.0
+                ),
             )
         )
     return usages
@@ -359,8 +444,10 @@ async def _try_acquire(
 ) -> ResourceGrant | None:
     state, revision = await _read_state(bucket)
     grants = _active_grants(state, now=now)
+    waiters = _active_waiters(state, now=now)
     current = next((grant for grant in grants if grant.token == token), None)
     lease_seconds = get_float("ATLAS_RESOURCE_LEASE_SECONDS")
+    heartbeat_seconds = get_float("ATLAS_RESOURCE_HEARTBEAT_SECONDS")
     if current is not None:
         renewed = current.model_copy(
             update={
@@ -369,13 +456,42 @@ async def _try_acquire(
             }
         )
         grants = tuple(renewed if grant.token == token else grant for grant in grants)
-        updated = ResourceState(grants=grants, updated_at=now)
+        updated = ResourceState(grants=grants, waiters=waiters, updated_at=now)
         return renewed if await _write_state(bucket, updated, revision) else None
 
-    if not _bundle_fits(grants, request, limits):
-        if grants != state.grants:
+    current_waiter = next(
+        (waiter for waiter in waiters if waiter.token == token), None
+    )
+    other_waiters = tuple(waiter for waiter in waiters if waiter.token != token)
+    if not _bundle_fits(grants, other_waiters, request, limits):
+        should_refresh = (
+            current_waiter is None
+            or (now - current_waiter.heartbeat_at).total_seconds()
+            >= heartbeat_seconds
+        )
+        if should_refresh:
+            waiter = ResourceWaiter(
+                token=token,
+                operation_id=request.operation_id,
+                service_class=request.service_class,
+                resources=request.resources,
+                waiting_since=(
+                    current_waiter.waiting_since
+                    if current_waiter is not None
+                    else now
+                ),
+                heartbeat_at=now,
+                expires_at=now + timedelta(seconds=lease_seconds),
+            )
+            waiters = (*other_waiters, waiter)
+        if (
+            grants != state.grants
+            or waiters != state.waiters
+        ):
             await _write_state(
-                bucket, ResourceState(grants=grants, updated_at=now), revision
+                bucket,
+                ResourceState(grants=grants, waiters=waiters, updated_at=now),
+                revision,
             )
         return None
     grant = ResourceGrant(
@@ -387,7 +503,11 @@ async def _try_acquire(
         heartbeat_at=now,
         expires_at=now + timedelta(seconds=lease_seconds),
     )
-    updated = ResourceState(grants=(*grants, grant), updated_at=now)
+    updated = ResourceState(
+        grants=(*grants, grant),
+        waiters=other_waiters,
+        updated_at=now,
+    )
     return grant if await _write_state(bucket, updated, revision) else None
 
 
@@ -395,11 +515,16 @@ async def _release(bucket, *, token: str) -> None:
     while True:
         state, revision = await _read_state(bucket)
         grants = tuple(grant for grant in state.grants if grant.token != token)
-        if grants == state.grants:
+        waiters = tuple(waiter for waiter in state.waiters if waiter.token != token)
+        if grants == state.grants and waiters == state.waiters:
             return
         if await _write_state(
             bucket,
-            ResourceState(grants=grants, updated_at=datetime.now(UTC)),
+            ResourceState(
+                grants=grants,
+                waiters=waiters,
+                updated_at=datetime.now(UTC),
+            ),
             revision,
         ):
             return
@@ -433,20 +558,34 @@ async def resource_permits(
     wait_started = loop.time()
     deadline = wait_started + timeout
     grant: ResourceGrant | None = None
-    while grant is None:
-        try:
-            grant = await _try_acquire(
-                bucket,
-                request=request,
-                limits=limits,
-                token=token,
-                now=datetime.now(UTC),
-            )
-        except asyncio.CancelledError:
-            raise
-        except ValueError:
-            raise
-        except Exception as exc:
+    try:
+        while grant is None:
+            try:
+                grant = await _try_acquire(
+                    bucket,
+                    request=request,
+                    limits=limits,
+                    token=token,
+                    now=datetime.now(UTC),
+                )
+            except asyncio.CancelledError:
+                raise
+            except ValueError:
+                raise
+            except Exception as exc:
+                if loop.time() >= deadline:
+                    resource_metrics.admission(
+                        request,
+                        outcome="unavailable",
+                        wait_seconds=loop.time() - wait_started,
+                    )
+                    raise ResourceCapacityUnavailable(
+                        f"resource governor unavailable for {request.operation_id}"
+                    ) from exc
+                await asyncio.sleep(0.1)
+                continue
+            if grant is not None:
+                break
             if loop.time() >= deadline:
                 resource_metrics.admission(
                     request,
@@ -454,22 +593,15 @@ async def resource_permits(
                     wait_seconds=loop.time() - wait_started,
                 )
                 raise ResourceCapacityUnavailable(
-                    f"resource governor unavailable for {request.operation_id}"
-                ) from exc
-            await asyncio.sleep(0.1)
-            continue
-        if grant is not None:
-            break
-        if loop.time() >= deadline:
-            resource_metrics.admission(
-                request,
-                outcome="unavailable",
-                wait_seconds=loop.time() - wait_started,
-            )
-            raise ResourceCapacityUnavailable(
-                f"resource capacity unavailable for {request.operation_id}"
-            )
-        await asyncio.sleep(min(0.1, max(0.01, deadline - loop.time())))
+                    f"resource capacity unavailable for {request.operation_id}"
+                )
+            await asyncio.sleep(min(0.1, max(0.01, deadline - loop.time())))
+    except BaseException:
+        try:
+            await _release(bucket, token=token)
+        except Exception:
+            pass
+        raise
 
     acquired_at = loop.time()
     resource_metrics.admission(

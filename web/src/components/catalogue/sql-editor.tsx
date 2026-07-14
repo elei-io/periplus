@@ -21,6 +21,7 @@ type SqlEditorProps = {
   height?: string
   ariaLabel?: string
   views?: Array<{ view_name: string; columns: string[] }>
+  macros?: Array<{ macro_name: string; parameters: string[] }>
   enableCssSelect?: boolean
 }
 
@@ -75,6 +76,7 @@ export function SqlEditor({
   height = "clamp(240px, 38vh, 360px)",
   ariaLabel = "Catalogue SQL editor",
   views = [],
+  macros = [],
   enableCssSelect = false,
 }: SqlEditorProps) {
   const sqlLanguage = useMemo(() => {
@@ -87,7 +89,8 @@ export function SqlEditor({
       ...viewTables,
       main: tables,
       views: viewTables,
-      atlas: { main: tables, views: viewTables },
+      macros: {},
+      atlas: { main: tables, views: viewTables, macros: {} },
     }
     return sql({
       dialect: PostgreSQL,
@@ -116,14 +119,27 @@ export function SqlEditor({
                 ...domHelperCompletions,
                 ...cssSelectCompletions,
               ]
-            : catalogueFunctions),
+              : catalogueFunctions),
+          ...macros.map((macro) =>
+            snippetCompletion(
+              `macros.${macro.macro_name}(${macro.parameters
+                .map((parameter) => `\${${parameter}}`)
+                .join(", ")})`,
+              {
+                label: macro.macro_name,
+                detail: `macros.${macro.macro_name}(${macro.parameters.join(", ")})`,
+                type: "function",
+                boost: 7,
+              }
+            )
+          ),
         ]),
       }),
       sqlSyntaxHighlighting,
       sqlEditorTheme,
       EditorView.lineWrapping,
     ],
-    [enableCssSelect, sqlLanguage]
+    [enableCssSelect, macros, sqlLanguage]
   )
 
   return (

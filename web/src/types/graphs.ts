@@ -89,6 +89,26 @@ export type GraphRunListResponse = {
   total: number
 }
 
+export type GraphRunWarningSummary = {
+  run_id: string
+  warning_count: number
+  observed_count: number
+  awaiting_evidence_count: number
+  truncated_group_count: number
+  items: Array<{
+    failure_code: string
+    status_code: number | null
+    response_media_type: string | null
+    retryable: boolean | null
+    count: number
+    detail: string | null
+    domains: Array<{
+      domain: string
+      count: number
+    }>
+  }>
+}
+
 export type CrawlConcurrencyLimits = {
   worker_count: number
   runtime_capacity: number
@@ -103,6 +123,12 @@ export type CrawlConcurrencyLimits = {
     live: number
     backfill: number
     maintenance: number
+    waiting: number
+    critical_waiting: number
+    live_waiting: number
+    backfill_waiting: number
+    maintenance_waiting: number
+    oldest_wait_seconds: number
   }>
   workers: Array<{
     worker_id: string
@@ -113,6 +139,12 @@ export type CrawlConcurrencyLimits = {
   }>
   transports: Array<{
     transport: "http" | "browser" | "firecrawl"
+    worker_count: number
+    capacity: number
+    active: number
+  }>
+  catalogue_executors: Array<{
+    capability: "ingestion" | "materialization"
     worker_count: number
     capacity: number
     active: number

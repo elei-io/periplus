@@ -185,9 +185,15 @@ remote URLs. It is not attached to a graph or node. CrawlProfile owns transport 
 ```text
 Acquisition profile
 - transport: http | browser | firecrawl
-- config: transport-specific waits, timeouts, headers, provider options, cache, and artifacts
+- config: transport-specific identity, waits, timeouts, safe headers, provider options, cache, and artifacts
 - cost_rank: deterministic order for optional acquisition trials
 ```
+
+Every HTTP profile carries a descriptive crawler User-Agent with operator contact. That identity is
+frozen with the request and included in crawl evidence and cache identity. Direct acquisition
+classifies HTTP status before response media type, and retryable transport/status failures retain
+their durable CrawlRequest for bounded JetStream redelivery before one terminal observation is
+published.
 
 The policy owns `{scheme, host, path_prefix, path_mode, profile_id, max_concurrency}`. Exact scheme,
 exact host, exact path, then longest prefix determine the winner. Deployment setup seeds five
@@ -302,9 +308,10 @@ local browser pressure, requests bounded object-write capacity, writes immutable
 bytes through the repository boundary, and publishes a frozen ingestion job. It never opens
 DuckLake or waits for downstream processing.
 
-An ingestion worker validates the raw object and requests the `critical` catalogue/object-store
-resource bundle. HTML commits crawl/document/element evidence, then publishes a verified navigation
-package and evaluates outgoing edges. An artifact commits its
+An ingestion worker validates the raw object and heartbeats the durable ingestion delivery while
+waiting for the required `critical` catalogue/object-store resource bundle. Capacity waiting is not
+a processing attempt or failure. HTML commits crawl/document/element evidence, then publishes a
+verified navigation package and evaluates outgoing edges. An artifact commits its
 canonical artifact row and crawl observation, then settles without DOM or outgoing edges. User
 materialization runs in separate workers and cannot change the crawl request's terminal state.
 
@@ -652,9 +659,15 @@ POST   /crawl-graphs/{graph_id}/runs
 GET    /crawl-graphs/{graph_id}/runs/active
 GET    /graph-runs/
 GET    /graph-runs/{run_id}
+GET    /graph-runs/{run_id}/warnings
 POST   /graph-runs/{run_id}/cancel
 GET    /graph-runs/{run_id}/events
 ```
+
+The warnings endpoint groups durable failed or partial acquisition evidence by typed failure code,
+HTTP status, response media type, retryability, and top registrable domains. It also reports how
+many current run warnings are still awaiting DuckLake ingestion. Capacity waits and Atlas pipeline
+failures are not acquisition warnings.
 
 The run trigger body is exactly:
 

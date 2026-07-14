@@ -29,18 +29,19 @@ the published release; version control retains the history.
 
 ## Wishlist
 
-### Native nested/list types in typed schema definitions
+### Persisted table macros cannot round-trip optional NULL defaults
 
-- **Atlas caller:** compact document-quality flag codes in the canonical DuckLake `documents`
-  table.
-- **Evidence:** `ColumnDef("VARCHAR[]", nullable=False)` is rejected by the published
-  `ducklake-client` type validator even though DuckDB and DuckLake support list columns. The
-  validator currently accepts scalar types only.
-- **Smallest useful upstream contract:** allow recursively validated DuckDB list/array types in
-  `ColumnDef`, including schema creation and validation tests for `VARCHAR[]`.
-- **Atlas status:** not blocked. Atlas temporarily stores the small code vector as JSON once per
-  content-addressed document; after a published release it can use a native list without an
-  application wrapper.
+- **Atlas caller:** fixture-seeded catalogue table macros used for time-bounded selector history.
+- **Evidence:** DuckDB accepts `CREATE MACRO example(required, optional := NULL)`, but committing
+  the macro to DuckLake fails with `unsupported type "NULL"`. Using
+  `optional := CAST(NULL AS VARCHAR)` commits, but reopening the catalogue substitutes the string
+  `"NULL"`; a body cast such as `CAST(optional AS BIGINT)` then raises a conversion error when the
+  optional argument is omitted.
+- **Smallest useful upstream contract:** DuckLake should persist and restore typed nullable macro
+  defaults without changing their value, with a regression that invokes the macro both with and
+  without the optional argument after reopening the catalogue.
+- **Atlas status:** no workaround. `macros.selector_stats` keeps its single required URL pattern,
+  while the separate `macros.selector_stats_history` macro takes explicit time bounds.
 
 ### DuckLake crash when replacing an update-fragmented table from itself
 
@@ -62,7 +63,7 @@ the published release; version control retains the history.
   longer relies on a workaround for this table. Large append-only evidence tables continue to use
   direct transactional `INSERT ... SELECT`; Atlas does not introduce unbounded memory copies.
 
-### Cancellation and transaction semantics for blocking CDC listen
+### PostgreSQL transaction semantics for blocking CDC listen
 
 - **Atlas caller:** live materialization planning in materialization workers through
   `ducklake-cdc-client`.
@@ -72,12 +73,17 @@ the published release; version control retains the history.
   clients. The timeout bounded the Python call's intended wait but did not prevent the underlying
   metadata transaction from remaining open.
 - **Smallest useful upstream contract:** `listen` must leave no transaction open between bounded
-  polls, with a regression test against a Postgres-backed DuckLake; alternatively document it as a
-  blocking-only primitive and provide an async/non-blocking polling helper with explicit lease
-  lifecycle semantics.
-- **Atlas status:** mitigated locally by using `read(max_snapshots=100)` plus an async one-second
-  wait and by bounding/reaping every embedded Postgres pool. The upstream behavior is still worth a
-  focused reproduction because other consumers may reasonably choose `listen`.
+  polls, with a regression test against a Postgres-backed DuckLake; alternatively document its
+  steady-state transaction behavior explicitly.
+- **Upstream status:** `ducklake-cdc-client` 0.6.1 adds bounded close/cancellation, typed retryable
+  lease errors, broader H-022 retry recognition, and restart guidance. Together with
+  `ducklake-cdc` 0.5.4, normal close uses owner-token-conditional release. These changes resolve
+  shutdown and stale-owner safety, but do not establish that `listen` leaves no PostgreSQL
+  transaction open between successful bounded polls.
+- **Atlas status:** uses one consumer-owned derived DuckDB connection and
+  `read(max_snapshots=100)` plus an async one-second wait, with bounded/reaped embedded PostgreSQL
+  pools. The remaining `listen` behavior is not on Atlas's active path but remains worth a focused
+  upstream reproduction.
 
 Atlas deliberately embeds DuckDB in each ingestion and materialization worker. Remote Quack support
 is not an Atlas deployment direction and is not tracked as an Atlas upstream requirement.
@@ -88,8 +94,21 @@ No upstream work is currently in progress.
 
 ## Released, awaiting Atlas adoption
 
-No releases awaiting adoption. Atlas adopted `ducklake-cdc-client` v0.6.0 for typed retryable lease
-failures and bounded cancellation-aware close/release, and `ducklake-cdc` v0.5.3 from its immutable
-release assets. The image verifies the published SHA-256 and Atlas validates both `cdc_version()`
-and `cdc_build_revision()` at startup. Community installation remains disabled until
-[community-extensions PR #2229](https://github.com/duckdb/community-extensions/pull/2229) is merged.
+### Native nested/list types in typed schema definitions
+
+- **Atlas caller:** compact document-quality flag codes in the canonical DuckLake `documents`
+  table.
+- **Former evidence:** `ColumnDef("VARCHAR[]", nullable=False)` was rejected by the scalar type
+  validator even though DuckDB and DuckLake support list columns.
+- **Upstream status:** resolved by the published composable `ListType` contract, including nested
+  type validation and schema SQL generation. Atlas now locks `ducklake-client` 0.8.2, which contains
+  that contract.
+- **Atlas adoption:** pending. Atlas still stores the small code vector as JSON once per
+  content-addressed document. A direct greenfield schema cutover can replace it with
+  `ColumnDef(ListType("VARCHAR"), nullable=False)` and delete the JSON encode/decode path.
+
+The CDC releases are fully adopted: Atlas uses `ducklake-cdc-client` 0.6.1 and installs
+`ducklake_cdc` 0.5.4 from the DuckDB community repository for DuckDB 1.5.4. Atlas validates
+`cdc_version()` at startup. The crawl CDC planner lets each high-level consumer derive and own its
+dedicated DuckDB connection, and its supervisor reopens a fresh consumer after typed retryable
+failures. The underlying H-022 lock-ordering defect remains tracked upstream.

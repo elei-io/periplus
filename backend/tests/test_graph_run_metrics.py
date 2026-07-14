@@ -9,7 +9,12 @@ from uuid import uuid4
 
 from ducklake_client import DiskStorage, DuckDBCatalog
 
-from api.routers.graph_runs import _policy_pressure_rows, _run_stage_counts
+from api.routers.graph_runs import (
+    _policy_pressure_rows,
+    _run_stage_counts,
+    _warning_groups,
+    _warning_rows,
+)
 from repository.catalogue import Catalogue, CatalogueConfig
 from runtime.graph_progress import NodeProgress, node_progress_key
 
@@ -114,6 +119,90 @@ class GraphRunStageMetricsTests(unittest.IsolatedAsyncioTestCase):
         counts = await _run_stage_counts(ProgressBucket(), run)
 
         self.assertEqual(counts, (3, 2, 5))
+
+
+class GraphRunWarningMetricsTests(unittest.TestCase):
+    def test_warning_query_bounds_groups_without_grouping_response_details(self) -> None:
+        queries: list[str] = []
+
+        class Result:
+            def fetchall(self):
+                return [
+                    (
+                        "http_status",
+                        429,
+                        "text/plain",
+                        True,
+                        100,
+                        "representative",
+                        "example.com",
+                        100,
+                        100,
+                        1,
+                    )
+                ]
+
+        class Connection:
+            def execute(self, query, _parameters):
+                queries.append(query)
+                return Result()
+
+        catalogue = SimpleNamespace(
+            config=SimpleNamespace(alias="atlas", schema="main"),
+            connection=Connection(),
+        )
+        rows, observed, total_groups = _warning_rows(catalogue, uuid4())
+
+        self.assertEqual((observed, total_groups), (100, 1))
+        self.assertEqual(len(rows), 1)
+        self.assertIn("groups.group_rank <= 50", queries[0])
+        self.assertNotIn("GROUP BY ALL", queries[0])
+        self.assertNotIn("GROUP BY failure_detail", queries[0])
+
+    def test_warning_groups_keep_failure_reason_and_top_domains(self) -> None:
+        groups = _warning_groups(
+            [
+                (
+                    "http_status",
+                    403,
+                    "text/plain",
+                    False,
+                    1506,
+                    "HTTP 403: identify your crawler",
+                    "wikipedia.org",
+                    1486,
+                ),
+                (
+                    "http_status",
+                    403,
+                    "text/plain",
+                    False,
+                    1506,
+                    "HTTP 403: identify your crawler",
+                    "wikimedia.org",
+                    20,
+                ),
+                (
+                    "unsupported_content_type",
+                    200,
+                    "application/pdf",
+                    False,
+                    3,
+                    "HTTP response is not HTML (application/pdf).",
+                    "mercari.com",
+                    3,
+                ),
+            ]
+        )
+
+        self.assertEqual([group.count for group in groups], [1506, 3])
+        self.assertEqual(groups[0].failure_code, "http_status")
+        self.assertEqual(groups[0].status_code, 403)
+        self.assertEqual(groups[0].detail, "HTTP 403: identify your crawler")
+        self.assertEqual(
+            [(item.domain, item.count) for item in groups[0].domains],
+            [("wikipedia.org", 1486), ("wikimedia.org", 20)],
+        )
 
 
 if __name__ == "__main__":

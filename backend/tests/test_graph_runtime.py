@@ -9,7 +9,10 @@ from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
+from actions.crawl.schemas import CrawlPage
+from actions.crawl.service import RetryableAcquisitionError
 from control.crawl_graphs.schemas import EdgeDedupeMode, FrozenGraphEdge, FrozenGraphNode, FrozenGraphSnapshot
+from control.crawl_policies.schemas import DEFAULT_HTTP_USER_AGENT
 from runtime.graph_queue import EdgeWork, ReadinessWork, edge_evaluation_identity, get_crawl_request, get_graph_run, new_graph_run, normalize_request_url, request_identity, update_crawl_request
 from runtime.graph_runs import EdgeEvaluationFailed, admit_request, deterministic_request_id, evaluate_edge, expire_graph_run, handle_readiness, reconcile_pending_admissions, request_cancellation, settle_request
 from runtime.graph_progress import EdgeProgress, edge_progress_key, initialize_run_progress
@@ -63,6 +66,7 @@ def navigation_package() -> NavigationPackage:
 
 
 def policy_snapshot(profile: str = "http") -> dict:
+    config = {"user_agent": DEFAULT_HTTP_USER_AGENT} if profile == "http" else {}
     return {
         "id": str(uuid4()),
         "slug": f"{profile}-test",
@@ -76,7 +80,7 @@ def policy_snapshot(profile: str = "http") -> dict:
             "slug": f"{profile}-profile",
             "name": f"{profile.title()} test",
             "transport": profile,
-            "config": {},
+            "config": config,
             "cost_rank": 10,
         },
         "trial_candidate": {
@@ -261,7 +265,7 @@ class GraphRuntimeTests(unittest.TestCase):
 
         class Message:
             data = CrawlWork(crawl_request_id=request.id, transport="http").model_dump_json().encode()
-            metadata = SimpleNamespace(num_delivered=1)
+            metadata = SimpleNamespace(num_delivered=50)
             ack = AsyncMock()
             nak = AsyncMock()
 
@@ -278,9 +282,70 @@ class GraphRuntimeTests(unittest.TestCase):
         assert current is not None
         self.assertEqual(current.status, "queued")
         self.assertIsNone(current.claim_token)
+        self.assertEqual(current.processing_failure_count, 0)
         Message.nak.assert_awaited_once_with(delay=1)
         Message.ack.assert_not_awaited()
         settle.assert_not_awaited()
+
+    asyncio.run(scenario())
+
+ def test_retryable_acquisition_uses_retry_after_without_settling(self) -> None:
+    async def scenario() -> None:
+        runs, requests = FakeKV(), FakeKV()
+        graph = snapshot()
+        run = new_graph_run(graph, ["https://example.com"])
+        await runs.create(run.id.hex, run.model_dump_json().encode())
+        from runtime.graph_queue import CrawlRequest, CrawlWork
+
+        request = CrawlRequest(
+            id=uuid4(),
+            graph_run_id=run.id,
+            node_id=graph.root_node_id,
+            url="https://example.com/",
+            transport="http",
+            effective_policy_snapshot_json=policy_snapshot(),
+            created_at=run.created_at,
+            updated_at=run.created_at,
+        )
+        await requests.create(request.id.hex, request.model_dump_json().encode())
+
+        class Message:
+            data = CrawlWork(crawl_request_id=request.id, transport="http").model_dump_json().encode()
+            metadata = SimpleNamespace(num_delivered=50)
+            ack = AsyncMock()
+            nak = AsyncMock()
+
+        retryable = RetryableAcquisitionError(
+            CrawlPage(
+                url=request.url,
+                success=False,
+                status_code=429,
+                duration_seconds=0.1,
+                error="HTTP 429: slow down",
+                failure_code="http_status",
+                failure_stage="request",
+                failure_retryable=True,
+                retry_after_seconds=12,
+            )
+        )
+        acquire = AsyncMock(side_effect=retryable)
+        with (
+            patch("workers.acquisition.crawl_graph_request", acquire),
+            patch("workers.acquisition.transition_node_progress", AsyncMock()),
+            patch("workers.acquisition.settle_request", AsyncMock()) as settle,
+        ):
+            await _process_crawl(
+                Message(), runs, requests, object(), object(), object(), "http"
+            )
+
+        current = await get_crawl_request(requests, request.id)
+        assert current is not None
+        self.assertEqual(current.status, "queued")
+        self.assertEqual(current.processing_failure_count, 1)
+        Message.nak.assert_awaited_once_with(delay=12)
+        Message.ack.assert_not_awaited()
+        settle.assert_not_awaited()
+        self.assertFalse(acquire.await_args.kwargs["persist_retryable_failure"])
 
     asyncio.run(scenario())
 

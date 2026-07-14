@@ -131,6 +131,7 @@ class CrawlRequest(BaseModel):
     updated_at: datetime
     error: str | None = None
     failure_stage: FailureStage | None = None
+    processing_failure_count: int = Field(default=0, ge=0)
 
 
 class PolicyTrialBudget(BaseModel):

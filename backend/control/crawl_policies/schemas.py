@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from typing import Any, Literal
 from uuid import UUID
 
@@ -10,6 +11,28 @@ from actions.shared.cache import CacheOptions
 
 CrawlTransport = Literal["http", "browser", "firecrawl"]
 PathMode = Literal["exact", "prefix"]
+DEFAULT_HTTP_USER_AGENT = (
+    "AtlasBot/0.1.0 (https://github.com/ekkuleivonen/atlas)"
+)
+
+_HTTP_HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+_FORBIDDEN_HTTP_PROFILE_HEADERS = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "proxy-authorization",
+        "set-cookie",
+        "user-agent",
+    }
+)
+_GENERIC_HTTP_USER_AGENT_PREFIXES = (
+    "curl/",
+    "httpx/",
+    "python-httpx/",
+    "python-requests/",
+    "python-urllib/",
+    "wget/",
+)
 
 
 def _normalize_match_host(value: str) -> str:
@@ -50,8 +73,39 @@ class ProfileConfig(BaseModel):
 
 class HttpProfileConfig(ProfileConfig):
     timeout_seconds: float = Field(default=20, gt=0)
-    headers: dict[str, str] = Field(default_factory=dict)
+    user_agent: str = Field(min_length=16, max_length=512)
+    headers: dict[str, str] = Field(default_factory=dict, max_length=32)
     follow_redirects: bool = True
+
+    @field_validator("user_agent")
+    @classmethod
+    def descriptive_user_agent(cls, value: str) -> str:
+        user_agent = value.strip()
+        if user_agent.lower().startswith(_GENERIC_HTTP_USER_AGENT_PREFIXES):
+            raise ValueError("user agent must identify the crawler, not its HTTP library")
+        if "\r" in user_agent or "\n" in user_agent:
+            raise ValueError("user agent must not contain line breaks")
+        if "(" not in user_agent or ")" not in user_agent:
+            raise ValueError("user agent must include operator contact in parentheses")
+        return user_agent
+
+    @field_validator("headers")
+    @classmethod
+    def safe_headers(cls, value: dict[str, str]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        for raw_name, raw_value in value.items():
+            name = raw_name.strip()
+            if not _HTTP_HEADER_NAME.fullmatch(name):
+                raise ValueError(f"invalid HTTP header name: {raw_name!r}")
+            if name.lower() in _FORBIDDEN_HTTP_PROFILE_HEADERS:
+                raise ValueError(f"HTTP profile header {name!r} is not allowed")
+            header_value = raw_value.strip()
+            if not header_value or "\r" in header_value or "\n" in header_value:
+                raise ValueError(f"HTTP profile header {name!r} has an invalid value")
+            if len(header_value) > 4096:
+                raise ValueError(f"HTTP profile header {name!r} is too long")
+            normalized[name] = header_value
+        return normalized
 
 
 class BrowserProfileConfig(ProfileConfig):

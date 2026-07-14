@@ -8,12 +8,19 @@ import json
 import subprocess
 import time
 from pathlib import Path
+from threading import Event, Thread
 from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
 import nats
+from runtime.resource_governor import (
+    DURABLE_RESOURCE_WAIT,
+    catalogue_request,
+    ensure_resource_governor_storage,
+    resource_permits,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -160,6 +167,54 @@ def wait_for_replicas(service: str, expected: int, timeout: float = 30) -> None:
     raise RuntimeError(f"{service} did not start {expected} replicas")
 
 
+def hold_catalogue_capacity(seconds: float) -> tuple[Thread, Event, list[BaseException]]:
+    acquired = Event()
+    errors: list[BaseException] = []
+
+    async def hold() -> None:
+        client = await nats.connect("nats://127.0.0.1:4222", connect_timeout=2)
+        try:
+            bucket = await ensure_resource_governor_storage(client.jetstream())
+            async with resource_permits(
+                bucket,
+                catalogue_request(
+                    f"horizontal-smoke-hold-{uuid4().hex}",
+                    service_class="maintenance",
+                    exclusive=True,
+                ),
+                acquire_timeout=DURABLE_RESOURCE_WAIT,
+            ):
+                acquired.set()
+                await asyncio.sleep(seconds)
+        finally:
+            await client.close()
+
+    def run() -> None:
+        try:
+            asyncio.run(hold())
+        except BaseException as exc:
+            errors.append(exc)
+            acquired.set()
+
+    thread = Thread(target=run, daemon=True)
+    thread.start()
+    return thread, acquired, errors
+
+
+def wait_for_catalogue_waiter(service_class: str, timeout: float = 30) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    field = f"{service_class}_waiting"
+    while time.monotonic() < deadline:
+        capacity = api("GET", "/graph-runs/capacity")
+        catalogue = next(
+            item for item in capacity["resources"] if item["name"] == "catalogue:hot"
+        )
+        if catalogue[field] > 0:
+            return catalogue
+        time.sleep(0.2)
+    raise RuntimeError(f"no {service_class} catalogue waiter appeared")
+
+
 def main() -> None:
     materializations = api("GET", "/catalogue/materializations/")
     if not materializations["items"]:
@@ -177,12 +232,12 @@ def main() -> None:
             "--scale",
             "atlas-ingestion-worker=2",
             "--scale",
-            "atlas-materialization-worker=1",
+            "atlas-materialization-worker=2",
             "atlas-ingestion-worker",
             "atlas-materialization-worker",
         )
         wait_for_replica_health("atlas-ingestion-worker", 2)
-        wait_for_replica_health("atlas-materialization-worker", 1)
+        wait_for_replica_health("atlas-materialization-worker", 2)
 
         graph = api(
             "POST",
@@ -204,55 +259,43 @@ def main() -> None:
             },
         )
 
-        # Accumulate materialization work while proving ingestion separately.
-        compose("stop", "atlas-materialization-worker")
-        urls = [f"https://example.com/?atlas-phase3={token}-{index}" for index in range(24)]
+        # Hold the complete catalogue budget beyond one ACK interval. Both
+        # catalogue capabilities remain online so the queue, heartbeats, and
+        # work-conserving handoff are exercised under real contention.
+        holder, holder_acquired, holder_errors = hold_catalogue_capacity(65)
+        if not holder_acquired.wait(timeout=30):
+            raise RuntimeError("catalogue saturation permit was not acquired")
+        if holder_errors:
+            raise holder_errors[0]
+        urls = [f"https://example.com/?atlas-phase3={token}-{index}" for index in range(48)]
         submission = api("POST", f"/crawl-graphs/{graph_id}/runs", {"urls": urls})
         run_id = submission["run_id"]
         ingestion_before_kill = wait_for_consumer_activity(
             [("ATLAS_CATALOGUE_WORK", "atlas-repository-writer")], timeout=60
         )
+        catalogue_wait = wait_for_catalogue_waiter("critical")
         killed_ingestion = kill_one("atlas-ingestion-worker")
+        holder.join(timeout=90)
+        if holder.is_alive():
+            raise RuntimeError("catalogue saturation permit did not release")
+        if holder_errors:
+            raise holder_errors[0]
+
+        materialization_before_kill = wait_for_consumer_activity(
+            [("ATLAS_CATALOGUE_WORK", "atlas-materialization-live-worker")],
+            timeout=120,
+        )
+        killed_materialization = kill_one("atlas-materialization-worker")
 
         completed = wait_for_run(run_id)
         if (
             completed["status"] != "completed"
             or completed["failed_request_count"] != 0
+            or completed["warning_count"] != 0
+            or completed["error_count"] != 0
             or completed["request_count"] != len(urls)
         ):
             raise RuntimeError(f"ingestion did not settle exactly once: {completed}")
-        offline_lag = run_lag(run_id)
-        if offline_lag["materialization_count"] < 1 or offline_lag["pending_updates"] < 1:
-            raise RuntimeError(f"materialization backlog is not visible: {offline_lag}")
-
-        # Phase the proof so Docker Desktop capacity cannot masquerade as a
-        # catalogue correctness failure. Materialization must drain without
-        # acquisition or ingestion processes running.
-        compose(
-            "stop",
-            "atlas-crawl-http-worker",
-            "atlas-crawl-browser-worker",
-            "atlas-crawl-provider-worker",
-            "atlas-ingestion-worker",
-        )
-        compose(
-            "up",
-            "-d",
-            "--scale",
-            "atlas-materialization-worker=2",
-            "atlas-materialization-worker",
-        )
-        wait_for_replicas("atlas-materialization-worker", 2)
-        materialization_before_kill = wait_for_consumer_activity(
-            [
-                (
-                    "ATLAS_CATALOGUE_WORK",
-                    "atlas-materialization-live-worker",
-                ),
-            ],
-            timeout=60,
-        )
-        killed_materialization = kill_one("atlas-materialization-worker")
         settled_lag = wait_for_materialization(run_id)
         stable = api("GET", f"/graph-runs/{run_id}")
         if stable["request_count"] != len(urls) or stable["completed_at"] != completed["completed_at"]:
@@ -284,7 +327,7 @@ def main() -> None:
                     "materialization_before_kill": materialization_before_kill,
                     "killed_ingestion_container": killed_ingestion,
                     "killed_materialization_container": killed_materialization,
-                    "offline_lag": offline_lag,
+                    "catalogue_wait": catalogue_wait,
                     "settled_lag": settled_lag,
                     "reacquired": False,
                 },

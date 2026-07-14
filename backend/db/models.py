@@ -5,3 +5,4 @@ import control.crawl_graphs.models  # noqa: F401
 import control.catalogue_views.models  # noqa: F401
 import control.catalogue_materializations.models  # noqa: F401
 import control.catalogue_queries.models  # noqa: F401
+import control.catalogue_table_macros.models  # noqa: F401

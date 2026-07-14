@@ -41,6 +41,7 @@ class CatalogueViewRecord(BaseModel):
     qualified_name: str
     display_name: str
     description: str | None
+    fixture_path: str | None
     sql: str
     columns: list[str]
     column_types: list[str]

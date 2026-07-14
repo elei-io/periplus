@@ -5,11 +5,13 @@ path, one graph-driven navigation model, and one shared resource-admission model
 
 The central operating rule is:
 
-> Scale capabilities; govern shared resources.
+> Queues absorb overload; scale capabilities until a measured shared-resource ceiling is reached.
 
 Worker replicas supply execution capacity for a capability. The Resource Governor independently
-bounds pressure on remote sites, DuckLake, and S3 / MinIO across all workers. Replica counts are
-never used as the only shared-resource control.
+bounds pressure on remote sites, DuckLake, and S3 / MinIO across all workers. Reserved catalogue
+shares are work-conserving: idle shares are borrowed, while expiring waiter intent restores each
+class's guarantee under contention. Replica counts are never used as the only shared-resource
+control, but adding a replica must add usable execution capacity until a shared ceiling is full.
 
 ```text
 Postgres control plane
@@ -73,10 +75,11 @@ Atlas uses four separate mechanisms:
 - an operation lease suppresses simultaneous execution of one deterministic operation; and
 - a PostgreSQL advisory lock plus authoritative DuckLake lookup fences durable commit.
 
-Capacity permits are expiring operational state. They do not prove that work started, completed, or
-committed. A worker holds the original durable message while requesting an atomic permit bundle,
-publishes the next durable fact, acknowledges the message, and releases the permit. TTL expiry
-recovers capacity after process loss.
+Capacity permits and waiter intent are expiring operational state. They do not prove that work
+started, completed, or committed. A worker heartbeats the original durable message while requesting
+an atomic permit bundle, publishes the next durable fact, acknowledges the message, and releases
+the permit. Waiting for capacity is queue backpressure, never a processing attempt or terminal
+failure. TTL expiry recovers admission state after process loss.
 
 Atlas has no durable lock-request/acquired/release workflow and no central scheduler that receives
 every completion. NATS owns work delivery; the Governor owns only admission.
@@ -110,9 +113,10 @@ group, implicit acquisition profile, or `unclassified` lane.
 
 The fixed service classes are `critical`, `live`, `backfill`, and `maintenance`. Critical graph work
 and ingestion have a reserved catalogue share, live/backfill work has a reciprocal reserved share,
-backfill has an explicit concurrency ceiling, and
-maintenance requests the full catalogue pool. Scheduling rules are code-owned. Capacities and class
-bounds are typed deployment configuration, while per-remote limits remain frozen CrawlPolicy data.
+backfill has an explicit concurrency ceiling, and maintenance requests the full catalogue pool.
+Reservations are minimum guarantees only while that class is waiting; otherwise another class may
+borrow the idle units. Scheduling rules are code-owned. Capacities and class bounds are typed
+deployment configuration, while per-remote limits remain frozen CrawlPolicy data.
 
 ## Acquisition
 
@@ -200,8 +204,9 @@ identity before repeating expensive work or writes.
 ## Scaling and observability
 
 Queue age and local saturation scale capability deployments. Permit wait age and budget utilization
-identify shared-resource bottlenecks. Adding replicas is safe but may not increase throughput when a
-shared budget is saturated.
+identify shared-resource bottlenecks. Adding replicas increases usable lanes until a shared budget
+is saturated; beyond that point Atlas must identify the ceiling instead of presenting idle replicas
+as additional throughput.
 
 Operators change DuckLake or object-store budgets only from measured capacity evidence. Atlas starts
 with static budgets, fixed fairness, and explicit limits rather than an automatic feedback

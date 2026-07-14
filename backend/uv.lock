@@ -202,8 +202,8 @@ requires-dist = [
     { name = "crawl4ai", specifier = ">=0.9.0" },
     { name = "cssselect2", specifier = ">=0.9" },
     { name = "duckdb", specifier = "==1.5.4" },
-    { name = "ducklake-cdc-client", specifier = ">=0.6.0" },
-    { name = "ducklake-client", specifier = ">=0.8.1" },
+    { name = "ducklake-cdc-client", specifier = "==0.6.1" },
+    { name = "ducklake-client", specifier = ">=0.8.2" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.139.0" },
     { name = "html5lib", specifier = ">=1.1" },
     { name = "httpx", specifier = ">=0.28" },
@@ -586,30 +586,30 @@ wheels = [
 
 [[package]]
 name = "ducklake-cdc-client"
-version = "0.6.0"
+version = "0.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "duckdb" },
     { name = "ducklake-client" },
     { name = "pytz" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/03/6c/301ac04b3c6c04f215c5ca4410640685f9cc7187203736ef0dcb80b60a9e/ducklake_cdc_client-0.6.0.tar.gz", hash = "sha256:1d9a3c8237b707d28448c29ce84805da036748a2b9d8b53d78aa466a5af2c479", size = 47440, upload-time = "2026-07-12T18:44:01.095Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a6/41/51d91e32b79f17d728e9441701d0b0557d6c8a0038bf993928dfb7e43700/ducklake_cdc_client-0.6.1.tar.gz", hash = "sha256:ba330b9f6a5656bf3233651ee0ff39e74c1b104ea8dcceaa92e204d3877c2bec", size = 48694, upload-time = "2026-07-12T19:34:23.597Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/92/ed/59fc7f21548a03ca2fbd86292197ecfe31934af3d0405bd7843e854a9de1/ducklake_cdc_client-0.6.0-py3-none-any.whl", hash = "sha256:8d4d75cb5dc5879446b3f203e02ce75d9721f5b2c571b97460d3a04cd33ea54d", size = 41714, upload-time = "2026-07-12T18:44:00.181Z" },
+    { url = "https://files.pythonhosted.org/packages/33/0f/960a0292adb09adcc62525f72320d8b341c8dc04bace90c2309f7226d8ae/ducklake_cdc_client-0.6.1-py3-none-any.whl", hash = "sha256:2a70bd70a6e234e2fe23f7954a2e1ac64623fb346ac3e0ed74e84d11b0a2aeb4", size = 42430, upload-time = "2026-07-12T19:34:22.404Z" },
 ]
 
 [[package]]
 name = "ducklake-client"
-version = "0.8.1"
+version = "0.8.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "duckdb" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pytz" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/84/e3/d9dda70f1869bb6f230d9740c31699d02d3acebff21c88151295122bb73a/ducklake_client-0.8.1.tar.gz", hash = "sha256:1b33540f2df1b58e37bab11941f0117e9825c1b67b8ea8daa3ac24ce2e8475e2", size = 27456, upload-time = "2026-07-10T16:27:25.161Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0c/89/9a7d4d8542b2ac9e7bbfc4c7ee66ccb79f67d2568e36b0001cb78bf24d9e/ducklake_client-0.8.2.tar.gz", hash = "sha256:6e08df736c4041c0f56b5668435a9de3cd0be8f16ff670744eb163ec89f3d95e", size = 29214, upload-time = "2026-07-14T10:44:36.56Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8f/26/3a5560c4d1e079acd46fe74f0f97f08677c95da5030d5cc427ea2f6b2bcf/ducklake_client-0.8.1-py3-none-any.whl", hash = "sha256:08b3536f3c250de1a3996cedfb55dd7b57966c67ae1e71d015753a7e6858bbe2", size = 35841, upload-time = "2026-07-10T16:27:24.088Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/c3/eed0914bc5bffbdfc32514bfb56946280a3b641d30b0f0c356ba6f19a903/ducklake_client-0.8.2-py3-none-any.whl", hash = "sha256:e35144b3a72e98bb5f7a80fe23fde23b9a04cd34a3870c444f2ac2b57f27eb85", size = 37135, upload-time = "2026-07-14T10:44:35.553Z" },
 ]
 
 [[package]]

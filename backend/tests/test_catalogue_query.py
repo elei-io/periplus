@@ -10,7 +10,14 @@ import pyarrow as pa
 from ducklake_client import DiskStorage, DuckDBCatalog
 from fastapi import HTTPException
 
-from api.routers.catalogue import CatalogueQueryMode, CatalogueSqlRequest, sql_query
+from api.routers.catalogue import (
+    CatalogueQueryMode,
+    CatalogueSqlRequest,
+    catalogue_metadata,
+    catalogue_status,
+    lint_sql,
+    sql_query,
+)
 from api.catalogue_pool import CatalogueReadPool, CatalogueReadPoolExhausted
 from repository.catalogue import Catalogue, CatalogueConfig
 from repository.catalogue.query import (
@@ -21,6 +28,8 @@ from repository.catalogue.query import (
     lint_select,
     stream_arrow_reader,
 )
+from repository.catalogue.metadata import read_catalogue_metadata
+from repository.catalogue.status import read_catalogue_status
 
 
 class CatalogueQueryClassificationTests(unittest.TestCase):
@@ -47,6 +56,17 @@ class CatalogueQueryClassificationTests(unittest.TestCase):
 
 
 class CatalogueQueryLintTests(unittest.TestCase):
+    def test_lint_endpoint_reports_unbounded_interactive_query(self) -> None:
+        response = lint_sql(
+            CatalogueSqlRequest(sql="SELECT * FROM documents", mode="run")
+        )
+
+        self.assertEqual(
+            [diagnostic.code for diagnostic in response.diagnostics],
+            ["missing_limit"],
+        )
+        self.assertEqual(response.diagnostics[0].severity, "warning")
+
     def test_warns_when_dom_helper_is_not_fed_by_bounded_materialized_cte(self) -> None:
         diagnostics = lint_select(
             "SELECT inner_html(e.document_id, e.element_index) "
@@ -119,6 +139,65 @@ class CatalogueQueryLintTests(unittest.TestCase):
 
 
 class CatalogueQueryExecutionTests(unittest.TestCase):
+    def test_catalogue_metadata_includes_typed_views_and_macros(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                catalogue.connection.execute(
+                    "CREATE VIEW atlas.views.recent_documents AS "
+                    "SELECT document_id, created_at FROM atlas.main.documents"
+                )
+                catalogue.connection.execute(
+                    "CREATE MACRO atlas.macros.sample_documents(limit_rows) AS TABLE "
+                    "SELECT * FROM atlas.main.documents LIMIT limit_rows"
+                )
+                metadata = read_catalogue_metadata(catalogue)
+
+        relations = {
+            (relation.schema_name, relation.name): relation
+            for relation in metadata.relations
+        }
+        view = relations[("views", "recent_documents")]
+        self.assertEqual(view.kind, "view")
+        self.assertEqual(
+            [(column.name, column.data_type) for column in view.columns],
+            [
+                ("document_id", "VARCHAR"),
+                ("created_at", "TIMESTAMP WITH TIME ZONE"),
+            ],
+        )
+        table_macro = next(
+            function
+            for function in metadata.functions
+            if function.schema_name == "macros"
+            and function.name == "sample_documents"
+        )
+        self.assertEqual(table_macro.kind, "table_macro")
+        self.assertEqual(
+            [parameter.name for parameter in table_macro.parameters],
+            ["limit_rows"],
+        )
+
+    def test_catalogue_status_reports_active_storage_and_ducklake_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                status = read_catalogue_status(catalogue)
+
+        self.assertEqual(status.active_file_count, 0)
+        self.assertEqual(status.active_storage_bytes, 0)
+        self.assertTrue(status.ducklake_version)
+
     def test_explain_does_not_execute_but_explain_analyze_does(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -303,6 +382,42 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
             raised.exception.detail,
             "catalogue SQL is busy; no read connection became available within 5 seconds",
         )
+
+    @patch("api.routers.catalogue.read_catalogue_status")
+    def test_status_endpoint_releases_its_catalogue(self, read_status: MagicMock) -> None:
+        request = MagicMock()
+        pool = request.app.state.catalogue_read_pool
+        catalogue = pool.acquire.return_value
+        read_status.return_value.active_file_count = 4
+        read_status.return_value.active_storage_bytes = 1_024
+        read_status.return_value.ducklake_version = "1.3.0"
+
+        response = catalogue_status(request)
+
+        self.assertEqual(response.active_file_count, 4)
+        self.assertEqual(response.active_storage_bytes, 1_024)
+        self.assertEqual(response.ducklake_version, "1.3.0")
+        pool.release.assert_called_once_with(catalogue)
+
+    @patch("api.routers.catalogue.read_catalogue_metadata")
+    def test_metadata_endpoint_releases_its_catalogue(
+        self, read_metadata: MagicMock
+    ) -> None:
+        request = MagicMock()
+        pool = request.app.state.catalogue_read_pool
+        catalogue = pool.acquire.return_value
+        read_metadata.return_value.catalog_name = "atlas"
+        read_metadata.return_value.default_schema = "main"
+        read_metadata.return_value.relations = ()
+        read_metadata.return_value.functions = ()
+
+        response = catalogue_metadata(request)
+
+        self.assertEqual(response.catalog_name, "atlas")
+        self.assertEqual(response.default_schema, "main")
+        self.assertEqual(response.relations, [])
+        self.assertEqual(response.functions, [])
+        pool.release.assert_called_once_with(catalogue)
 
 
 class CatalogueReadPoolTests(unittest.TestCase):

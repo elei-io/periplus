@@ -21,7 +21,7 @@ def dematerialize_one(catalogue) -> bool:
 
     def attempt() -> None:
         nonlocal changed
-        with operation_lock("materialization-dematerialization"):
+        with operation_lock(catalogue, "materialization-dematerialization"):
             with session_scope() as session:
                 model = session.scalar(
                     select(CatalogueMaterialization)

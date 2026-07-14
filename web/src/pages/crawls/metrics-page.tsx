@@ -19,6 +19,13 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
   Card,
   CardAction,
   CardContent,
@@ -38,6 +45,7 @@ import {
   useCrawlConcurrencyLimits,
   useGraphRunMaterializationLag,
   useGraphRuns,
+  useGraphRunWarnings,
   usePolicyPressure,
 } from "@/hooks/use-crawl-graphs"
 import type {
@@ -119,22 +127,35 @@ function LiveTotals({
     return rightPressure - leftPressure
   })[0]
   const pendingUpdates = lag.reduce((sum, item) => sum + item.pending_updates, 0)
+  const queuedPages = runs.reduce(
+    (sum, run) => sum + (run.queued_request_count ?? 0),
+    0,
+  )
+  const downstreamPages = runs.reduce(
+    (sum, run) => sum + (run.processing_request_count ?? 0),
+    0,
+  )
   const cooling = runs.filter((run) => {
     const runLag = lag.find((item) => item.run_id === run.id)
     return isTerminalRun(run) && Boolean(runLag?.pending_updates)
   }).length
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
       <MetricCard
         label="Network fetches"
         value={`${concurrency?.runtime_active ?? 0} / ${concurrency?.runtime_capacity ?? 0}`}
-        detail="active worker slots"
+        detail={`${concurrency?.worker_count ?? 0} workers · active / available slots`}
       />
       <MetricCard
         label="Busiest website limit"
         value={busiest ? `${busiest.used} / ${busiest.capacity}` : "—"}
         detail={busiest ? busiest.domain : "no observed websites"}
+      />
+      <MetricCard
+        label="Pages queued"
+        value={queuedPages.toLocaleString()}
+        detail={`${downstreamPages.toLocaleString()} ingesting / graph`}
       />
       <MetricCard
         label="View updates waiting"
@@ -395,12 +416,37 @@ function ResourceHeadroom({
   const storageUsed = (objectRead?.used ?? 0) + (objectWrite?.used ?? 0)
   const storageCapacity = (objectRead?.capacity ?? 0) + (objectWrite?.capacity ?? 0)
   const pending = lag.reduce((sum, item) => sum + item.pending_updates, 0)
+  const ingestionExecutors = concurrency?.catalogue_executors.find(
+    (item) => item.capability === "ingestion",
+  )
+  const materializationExecutors = concurrency?.catalogue_executors.find(
+    (item) => item.capability === "materialization",
+  )
+  const fetchWorkers = (concurrency?.transports ?? [])
+    .filter((item) => item.worker_count > 0)
+    .map((item) => `${item.worker_count} ${transportName(item.transport)}`)
+    .join(" · ")
+  const catalogueOwners = catalogue
+    ? [
+        ["ingestion", catalogue.critical],
+        ["live", catalogue.live],
+        ["backfill", catalogue.backfill],
+        ["maintenance", catalogue.maintenance],
+      ].filter(([, count]) => Number(count) > 0).map(([label, count]) => `${count} ${label}`)
+    : []
+  const catalogueNote = [
+    catalogueOwners.join(" · "),
+    catalogue?.waiting
+      ? `${catalogue.waiting} waiting · oldest ${formatAge(catalogue.oldest_wait_seconds * 1_000)}`
+      : "",
+    pending ? `${pending.toLocaleString()} view updates waiting` : "",
+  ].filter(Boolean).join(" · ")
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Headroom now</CardTitle>
-        <CardDescription>The first full resource is the bottleneck</CardDescription>
+        <CardDescription>Current shared permits; these are not replica counts</CardDescription>
         <CardAction>
           <Button
             variant="ghost"
@@ -418,12 +464,25 @@ function ResourceHeadroom({
           label="Fetch workers"
           used={concurrency?.runtime_active ?? 0}
           capacity={concurrency?.runtime_capacity ?? 0}
+          note={fetchWorkers || undefined}
         />
         <HeadroomRow
-          label="Catalogue"
+          label="Ingestion executors"
+          used={ingestionExecutors?.active ?? 0}
+          capacity={ingestionExecutors?.capacity ?? 0}
+          note={`${ingestionExecutors?.worker_count ?? 0} healthy replicas`}
+        />
+        <HeadroomRow
+          label="Materialization executors"
+          used={materializationExecutors?.active ?? 0}
+          capacity={materializationExecutors?.capacity ?? 0}
+          note={`${materializationExecutors?.worker_count ?? 0} healthy replicas`}
+        />
+        <HeadroomRow
+          label="Catalogue permits"
           used={catalogue?.used ?? 0}
           capacity={catalogue?.capacity ?? 0}
-          note={pending ? `${pending.toLocaleString()} updates waiting` : undefined}
+          note={catalogueNote || "No catalogue work admitted"}
         />
         <HeadroomRow
           label="Object storage"
@@ -576,12 +635,90 @@ function RunRow({
           </p>
         ) : null}
       </TableCell>
-      <CountCell value={run.warning_count} tone="warning" />
+      <WarningCountCell run={run} />
       <CountCell value={errorCount} tone="error" />
       <TableCell className="py-4 pr-4 align-top whitespace-normal">
         <MaterializationLag lag={lag} />
       </TableCell>
     </TableRow>
+  )
+}
+
+function WarningCountCell({ run }: { run: GraphRunRecord }) {
+  const [open, setOpen] = useState(false)
+  const query = useGraphRunWarnings(run.id, open && run.warning_count > 0)
+  return (
+    <TableCell className="py-4 text-right align-top">
+      {run.warning_count > 0 ? (
+        <Button
+          variant="ghost"
+          size="xs"
+          className="h-auto px-1 font-medium text-amber-600 underline decoration-dotted underline-offset-4 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300"
+          onClick={() => setOpen(true)}
+        >
+          {run.warning_count.toLocaleString()}
+        </Button>
+      ) : (
+        <span className="font-medium text-muted-foreground tabular-nums">0</span>
+      )}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Acquisition warnings</DialogTitle>
+            <DialogDescription>
+              Remote responses that could not produce a successful crawl. Atlas pipeline failures are counted as errors instead.
+            </DialogDescription>
+          </DialogHeader>
+          {query.isLoading ? (
+            <LoaderCircleIcon className="mx-auto my-8 size-5 animate-spin text-muted-foreground" />
+          ) : query.isError ? (
+            <p className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+              Warning evidence is temporarily unavailable.
+            </p>
+          ) : query.data ? (
+            <div className="grid gap-3">
+              {query.data.awaiting_evidence_count > 0 ? (
+                <p className="rounded-md border bg-muted/20 p-3 text-xs text-muted-foreground">
+                  {query.data.awaiting_evidence_count.toLocaleString()} recent warnings are still waiting for durable catalogue evidence.
+                </p>
+              ) : null}
+              {query.data.truncated_group_count > 0 ? (
+                <p className="rounded-md border bg-muted/20 p-3 text-xs text-muted-foreground">
+                  Showing the 50 largest warning groups; {query.data.truncated_group_count.toLocaleString()} smaller groups are omitted.
+                </p>
+              ) : null}
+              {query.data.items.map((item) => (
+                <div
+                  key={`${item.failure_code}:${item.status_code}:${item.response_media_type}`}
+                  className="rounded-md border p-3 text-left"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p className="font-medium">{warningTitle(item.failure_code, item.status_code)}</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {[item.response_media_type, item.retryable ? "retryable" : "terminal"].filter(Boolean).join(" · ")}
+                      </p>
+                    </div>
+                    <Badge variant="secondary">{item.count.toLocaleString()}</Badge>
+                  </div>
+                  {item.detail ? <p className="mt-2 break-words text-xs">{item.detail}</p> : null}
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {item.domains.map((domain) => (
+                      <Badge key={domain.domain} variant="outline">
+                        {domain.domain} · {domain.count.toLocaleString()}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {query.data.items.length === 0 ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">No durable warning evidence yet.</p>
+              ) : null}
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+    </TableCell>
   )
 }
 
@@ -601,6 +738,19 @@ function CountCell({ value, tone }: { value: number; tone: "warning" | "error" }
       </span>
     </TableCell>
   )
+}
+
+function warningTitle(code: string, status: number | null) {
+  if (code === "http_status" && status) return `HTTP ${status}`
+  if (code === "unsupported_content_type") return "Unsupported response type"
+  if (code === "browser_navigation") return "Browser navigation failed"
+  if (code === "provider_failure") return "Provider acquisition failed"
+  if (code === "timeout") return "Request timed out"
+  return sentenceCase(code.replaceAll("_", " "))
+}
+
+function transportName(transport: "http" | "browser" | "firecrawl") {
+  return transport === "http" ? "HTTP" : transport === "browser" ? "browser" : "provider"
 }
 
 function MaterializationLag({ lag }: { lag?: GraphRunMaterializationLag }) {

@@ -64,7 +64,7 @@ export function CatalogueViewsPage({ viewId }: { viewId?: string }) {
                         <span className="min-w-0"><span className="block truncate font-medium group-hover:text-primary">{view.display_name}</span><span className="block truncate font-mono text-[10px] text-muted-foreground">{view.qualified_name}</span></span>
                       </a>
                     </TableCell>
-                    <TableCell><Badge variant={view.managed ? "secondary" : "outline"}>{view.managed ? "Managed" : "Unowned"}</Badge></TableCell>
+                    <TableCell><Badge variant={view.fixture_path ? "default" : view.managed ? "secondary" : "outline"}>{view.fixture_path ? "Fixture" : view.managed ? "Managed" : "Unowned"}</Badge></TableCell>
                     <TableCell className="text-right font-mono tabular-nums">{view.columns.length}</TableCell>
                     <TableCell><MaterializationCell materialization={view.materialization} /></TableCell>
                     <TableCell className="text-right font-mono tabular-nums">{view.materialization?.row_count.toLocaleString() ?? "—"}</TableCell>
@@ -153,8 +153,8 @@ function ViewDetail({ view }: { view: CatalogueViewRecord }) {
 }
 
 function ViewStatus({ view }: { view: CatalogueViewRecord }) {
-  const label = view.available ? view.managed ? "Managed" : "Unowned" : "Unavailable"
-  const explanation = view.available ? view.managed ? "Atlas manages this DuckLake view for the user." : "Adopt this DuckLake view to manage it in Atlas." : "The referenced DuckLake view is missing."
+  const label = view.available ? view.fixture_path ? "Fixture" : view.managed ? "Managed" : "Unowned" : "Unavailable"
+  const explanation = view.available ? view.fixture_path ? `Seeded from ${view.fixture_path}.` : view.managed ? "Atlas manages this DuckLake view for the user." : "Adopt this DuckLake view to manage it in Atlas." : "The referenced DuckLake view is missing."
   return <Tooltip><TooltipTrigger render={<Badge variant={view.available ? "secondary" : "destructive"} />}>{label}</TooltipTrigger><TooltipContent>{explanation}</TooltipContent></Tooltip>
 }
 

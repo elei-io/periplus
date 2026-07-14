@@ -63,6 +63,14 @@ combined DuckLake, S3 / MinIO, or remote pressure. Adding a materialization pod 
 raise catalogue concurrency or consume ingestion's reserved share. All expensive phases use the
 shared Resource Governor.
 
+**Turning reserved shares into permanent idle capacity.** A reserve is a minimum guarantee when its
+class is waiting, not a hard ceiling on another class. Record only expiring admission intent, allow
+idle units to be borrowed, and restore the waiting class's share as current grants drain.
+
+**Counting admission waits as failed work.** Full capacity is normal queue backpressure. Heartbeat
+the durable message while waiting; do not consume processing attempts, reconcile an operation that
+never started, emit a traceback, publish dead letter, or fail worker health.
+
 **Turning the Resource Governor into a workflow scheduler.** The governor decides only whether a
 resource bundle may start. It does not create work, sequence graph nodes, receive every completion,
 own materialization lag, or execute arbitrary catalogue RPC. JetStream remains the durable work
@@ -170,6 +178,11 @@ lane until its query result has been fully consumed or closed. Ingestion and mat
 use process-owned connections. Horizontal replicas provide executors, while the Resource Governor
 caps their combined catalogue and object-store pressure.
 
+**Opening one PostgreSQL fence session per batch member.** A batch with 100 independent content
+identities can exhaust a 100-client server before it begins its DuckLake transaction. Acquire the
+complete independently contended lock set in deterministic order through one session. Do not hash
+the set into one batch identity: `{A, B}` and `{B, C}` must still contend on `B`.
+
 **Reintroducing a central remote DuckDB session.** It couples unrelated writes and makes one compute
 process the throughput and failure boundary. Ingestion and materialization workers use embedded
 DuckDB against the shared PostgreSQL-backed DuckLake catalogue with deterministic operation
@@ -181,6 +194,11 @@ compaction. Use bounded temporary staging and let DuckLake own physical data fil
 **Holding a blocking CDC poll open in Postgres.** An embedded DuckDB/Postgres CDC listener can retain
 an idle transaction and consume a pooled metadata connection while it waits. Use non-blocking reads
 with an async delay, bound every embedded Postgres pool, and enable idle/lifetime reaping.
+
+**Holding catalogue admission while waiting for a CDC consumer lease.** Atlas already elects one
+planner owner with an operation lease. Open the upstream consumer with non-blocking lease policy,
+release catalogue admission immediately on contention, and do not open the CDC catalogue at all
+when no live definition needs discovery.
 
 **Reporting the globally latest snapshot as a write result.** Another connection may commit between
 the local transaction and lookup. Attribute writes with `last_committed_snapshot()` on the

@@ -60,7 +60,7 @@ class DeadLetterEntry(BaseModel):
     job: IngestionJob
     error: str
     failed_at: datetime
-    delivery_count: int
+    processing_failure_count: int
 
 
 def encode_dead_letter(entry: DeadLetterEntry) -> bytes:
@@ -86,6 +86,7 @@ class IngestionState(BaseModel):
     result: CatalogueWriteResult | None = None
     navigation: NavigationPackage | None = None
     error: str | None = None
+    processing_failure_count: int = 0
 
     @model_validator(mode="after")
     def validate_state(self) -> IngestionState:
@@ -326,6 +327,31 @@ async def store_ingestion_response(
             continue
 
 
+async def record_ingestion_processing_failure(results, request_id: str) -> int:
+    """Count one admitted processing failure without counting redelivery."""
+
+    while True:
+        entry = await results.get(request_id)
+        current = IngestionState.model_validate_json(entry.value)
+        if current.status != "pending":
+            return current.processing_failure_count
+        updated = current.model_copy(
+            update={
+                "processing_failure_count": current.processing_failure_count + 1,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        try:
+            await results.update(
+                request_id,
+                updated.model_dump_json().encode(),
+                last=entry.revision,
+            )
+            return updated.processing_failure_count
+        except KeyWrongLastSequenceError:
+            continue
+
+
 async def mark_ingestion_published(results, request_id: str) -> IngestionState:
     """CAS a PubAck marker without overwriting a concurrently terminal result."""
 
@@ -356,7 +382,7 @@ async def publish_dead_letter(
     *,
     job: IngestionJob,
     error: str,
-    delivery_count: int,
+    processing_failure_count: int,
 ) -> None:
     """Persist a terminal failure before its work-queue message is removed."""
 
@@ -364,7 +390,7 @@ async def publish_dead_letter(
         job=job,
         error=error,
         failed_at=datetime.now(UTC),
-        delivery_count=delivery_count,
+        processing_failure_count=processing_failure_count,
     )
     payload = encode_dead_letter(entry)
     _validate_envelope(payload, label="repository dead-letter envelope")
@@ -374,7 +400,7 @@ async def publish_dead_letter(
         stream=DEAD_LETTER_STREAM,
         headers={
             "Nats-Msg-Id": (
-                f"{job.request_id}:terminal:{delivery_count}:"
+                f"{job.request_id}:terminal:{processing_failure_count}:"
                 f"{job.enqueued_at.isoformat()}"
             )
         },
@@ -415,6 +441,7 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
                 "published_at": None,
                 "result": None,
                 "error": None,
+                "processing_failure_count": 0,
             }
         )
         try:

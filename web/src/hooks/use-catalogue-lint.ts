@@ -2,12 +2,9 @@ import { useQuery } from "@tanstack/react-query"
 import { useEffect, useState } from "react"
 
 import { apiErrorFromResponse, apiUrl } from "@/lib/api"
-import type {
-  CatalogueLintResult,
-  CatalogueQueryMode,
-} from "@/types/catalogue"
+import type { CatalogueLintResult, CatalogueQueryMode } from "@/types/catalogue"
 
-const lintDebounceMs = 400
+const lintDebounceMs = 700
 
 async function lintCatalogueQuery(
   sql: string,
@@ -26,19 +23,32 @@ async function lintCatalogueQuery(
   return (await response.json()) as CatalogueLintResult
 }
 
-export function useCatalogueLint(sql: string, mode: CatalogueQueryMode) {
-  const [debouncedSql, setDebouncedSql] = useState(sql)
+export function useCatalogueLint(
+  sql: string,
+  mode: CatalogueQueryMode,
+  enabled = true
+) {
+  const [debouncedSql, setDebouncedSql] = useState("")
 
   useEffect(() => {
-    const timeout = window.setTimeout(() => setDebouncedSql(sql), lintDebounceMs)
+    const timeout = window.setTimeout(
+      () => setDebouncedSql(enabled ? sql : ""),
+      lintDebounceMs
+    )
     return () => window.clearTimeout(timeout)
-  }, [sql])
+  }, [enabled, sql])
 
-  return useQuery({
+  const query = useQuery({
     queryKey: ["catalogue-sql-lint", debouncedSql, mode],
     queryFn: ({ signal }) => lintCatalogueQuery(debouncedSql, mode, signal),
-    enabled: Boolean(debouncedSql.trim()),
+    enabled: enabled && Boolean(debouncedSql.trim()),
     staleTime: Number.POSITIVE_INFINITY,
     retry: false,
   })
+
+  return {
+    ...query,
+    data: enabled && debouncedSql === sql ? query.data : undefined,
+    isDebouncing: enabled && debouncedSql !== sql,
+  }
 }

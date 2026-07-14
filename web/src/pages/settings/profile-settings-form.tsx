@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea"
 import type { CrawlProfileRecord, CrawlTransport } from "@/types/resources"
 
 type CacheMode = "default" | "prefer" | "refresh" | "no_store"
+const defaultHttpUserAgent = "AtlasBot/0.1.0 (https://github.com/ekkuleivonen/atlas)"
 
 export type ProfileDraft = {
   name: string
@@ -25,6 +26,7 @@ export type ProfileDraft = {
   staleHours: string
   blockedQualityFlags: string[]
   timeoutSeconds: string
+  userAgent: string
   followRedirects: boolean
   headers: Array<{ name: string; value: string }>
   artifactMediaTypes: string[]
@@ -68,6 +70,7 @@ export function profileDraft(profile?: CrawlProfileRecord): ProfileDraft {
     staleHours: secondsAsHours(cache.stale_if_error_seconds),
     blockedQualityFlags: stringArray(blockRules.quality_flag_codes),
     timeoutSeconds: String(numberValue(config.timeout_seconds, profile?.transport === "firecrawl" ? 90 : 20)),
+    userAgent: typeof config.user_agent === "string" ? config.user_agent : defaultHttpUserAgent,
     followRedirects: booleanValue(config.follow_redirects, true),
     headers: Object.entries(objectValue(config.headers)).map(([name, value]) => ({ name, value: String(value) })),
     artifactMediaTypes: stringArray(config.artifact_media_types),
@@ -108,6 +111,7 @@ export function profileConfig(draft: ProfileDraft): Record<string, unknown> {
     delete config.api_url
     delete config.provider_options
     config.timeout_seconds = Number(draft.timeoutSeconds)
+    config.user_agent = draft.userAgent.trim()
     config.follow_redirects = draft.followRedirects
     const headers = Object.fromEntries(
       draft.headers.filter((header) => header.name.trim()).map((header) => [header.name.trim(), header.value])
@@ -120,6 +124,7 @@ export function profileConfig(draft: ProfileDraft): Record<string, unknown> {
     }
   } else if (draft.transport === "browser") {
     delete config.timeout_seconds
+    delete config.user_agent
     delete config.follow_redirects
     delete config.headers
     delete config.api_url
@@ -140,6 +145,7 @@ export function profileConfig(draft: ProfileDraft): Record<string, unknown> {
     delete config.wait
     delete config.run_config_overrides
     delete config.follow_redirects
+    delete config.user_agent
     delete config.headers
     config.timeout_seconds = Number(draft.timeoutSeconds)
     config.api_url = draft.firecrawlApiUrl.trim()
@@ -153,6 +159,7 @@ export function profileDraftError(draft: ProfileDraft): string | null {
   if (!draft.name.trim()) return "Give this profile a name."
   if (!Number.isInteger(cost) || cost < 0) return "Cost order must be a whole number of zero or greater."
   if (draft.transport !== "browser" && (!(timeout > 0) || (draft.transport === "firecrawl" && timeout > 300))) return "Enter a valid request timeout."
+  if (draft.transport === "http" && (!draft.userAgent.trim() || !draft.userAgent.includes("(") || !draft.userAgent.includes(")"))) return "Identify the crawler and include operator contact in parentheses."
   if (draft.cacheMinutes && Number(draft.cacheMinutes) < 0) return "Cache freshness cannot be negative."
   if (draft.staleFallback && (!(Number(draft.staleHours) >= 0) || Number(draft.staleHours) * 60 < Number(draft.cacheMinutes || 0))) return "The error fallback must be at least as old as the normal cache window."
   if (draft.artifactMediaTypes.length && (!(Number(draft.artifactMaxMb) >= 1) || Number(draft.artifactMaxMb) > 256)) return "File size limit must be between 1 and 256 MB."
@@ -200,8 +207,9 @@ export function ProfileSettingsForm({ draft, onChange, allowTransport = false }:
 function HttpSettings({ draft, patch }: FormSectionProps) {
   const addHeader = () => patch({ headers: [...draft.headers, { name: "", value: "" }] })
   return <div className="grid gap-4">
+    <Field label="Crawler identity" detail="A descriptive User-Agent with operator contact; do not imitate a browser."><Input value={draft.userAgent} onChange={(event) => patch({ userAgent: event.target.value })} /></Field>
     <div className="grid gap-3 sm:grid-cols-2"><Field label="Give up after" detail="Seconds"><Input type="number" min={1} step={1} value={draft.timeoutSeconds} onChange={(event) => patch({ timeoutSeconds: event.target.value })} /></Field><ToggleRow label="Follow redirects" detail="Continue when a site moves the request." checked={draft.followRedirects} onCheckedChange={(value) => patch({ followRedirects: value })} /></div>
-    <div className="grid gap-2"><div className="flex items-end justify-between gap-3"><div><Label>Request headers</Label><p className="text-xs text-muted-foreground">Only add headers the website requires.</p></div><Button type="button" size="sm" variant="outline" onClick={addHeader}><PlusIcon /> Add header</Button></div>{draft.headers.length ? draft.headers.map((header, index) => <div key={index} className="grid grid-cols-[minmax(7rem,0.7fr)_minmax(8rem,1fr)_auto] gap-2"><Input aria-label={`Header ${index + 1} name`} placeholder="Header name" value={header.name} onChange={(event) => patch({ headers: draft.headers.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item) })} /><Input aria-label={`Header ${index + 1} value`} placeholder="Value" value={header.value} onChange={(event) => patch({ headers: draft.headers.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item) })} /><Button type="button" size="icon-sm" variant="ghost" aria-label={`Remove header ${index + 1}`} onClick={() => patch({ headers: draft.headers.filter((_, itemIndex) => itemIndex !== index) })}><Trash2Icon /></Button></div>) : <div className="rounded-md border border-dashed p-3 text-center text-xs text-muted-foreground">No custom headers</div>}</div>
+    <div className="grid gap-2"><div className="flex items-end justify-between gap-3"><div><Label>Request headers</Label><p className="text-xs text-muted-foreground">Authentication, cookies, proxies, and User-Agent belong to explicit typed settings and cannot be added here.</p></div><Button type="button" size="sm" variant="outline" onClick={addHeader}><PlusIcon /> Add header</Button></div>{draft.headers.length ? draft.headers.map((header, index) => <div key={index} className="grid grid-cols-[minmax(7rem,0.7fr)_minmax(8rem,1fr)_auto] gap-2"><Input aria-label={`Header ${index + 1} name`} placeholder="Header name" value={header.name} onChange={(event) => patch({ headers: draft.headers.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item) })} /><Input aria-label={`Header ${index + 1} value`} placeholder="Value" value={header.value} onChange={(event) => patch({ headers: draft.headers.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item) })} /><Button type="button" size="icon-sm" variant="ghost" aria-label={`Remove header ${index + 1}`} onClick={() => patch({ headers: draft.headers.filter((_, itemIndex) => itemIndex !== index) })}><Trash2Icon /></Button></div>) : <div className="rounded-md border border-dashed p-3 text-center text-xs text-muted-foreground">No custom headers</div>}</div>
   </div>
 }
 

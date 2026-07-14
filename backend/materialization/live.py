@@ -5,7 +5,7 @@ import logging
 
 from ducklake_cdc_client import CDCClient, DMLConsumer
 
-from config import get_optional, get_str
+from config import get_str
 
 from materialization.definitions import active_definitions, scope_job
 from materialization.queue import SCOPE_LIVE_SUBJECT
@@ -46,13 +46,39 @@ async def run_crawl_planner(
 ) -> None:
     """Publish deterministic scopes directly from durable crawl changes."""
 
+    while not stop.is_set():
+        definitions = await asyncio.to_thread(active_definitions, live=True)
+        if not definitions:
+            if monitor is not None:
+                monitor.subsystem_ready("cdc_crawl_planner")
+            await _wait(stop, 1)
+            continue
+        await _run_active_crawl_planner(
+            jetstream,
+            stop,
+            monitor=monitor,
+            resource_grants=resource_grants,
+        )
+
+
+async def _run_active_crawl_planner(
+    jetstream,
+    stop: asyncio.Event,
+    monitor: HealthMonitor | None = None,
+    resource_grants=None,
+) -> None:
+    """Own the CDC consumer only while live definitions need discovery."""
+
     catalogue = await _run_governed(
         resource_grants, "cdc-open-catalogue", catalogue_from_env
     )
     consumer = None
     try:
-        client = await _run_governed(
-            resource_grants, "cdc-open-client", _cdc_client, catalogue
+        await _run_governed(
+            resource_grants,
+            "cdc-validate-extension",
+            _validate_cdc_extension,
+            catalogue,
         )
         start_at = await _run_governed(
             resource_grants, "cdc-latest-snapshot", catalogue.latest_snapshot
@@ -64,13 +90,15 @@ async def run_crawl_planner(
             "cdc-open-consumer",
             _open_crawl_planner_consumer,
             catalogue,
-            client,
             start_at,
             "use",
         )
         if monitor is not None:
             monitor.subsystem_ready("cdc_crawl_planner")
         while not stop.is_set():
+            definitions = await asyncio.to_thread(active_definitions, live=True)
+            if not definitions:
+                return
             batch = await _run_governed(
                 resource_grants,
                 "cdc-read",
@@ -96,7 +124,6 @@ async def run_crawl_planner(
                         "cdc-reopen-consumer",
                         _open_crawl_planner_consumer,
                         catalogue,
-                        client,
                         boundary,
                         "error",
                     )
@@ -114,7 +141,6 @@ async def run_crawl_planner(
                 and change.values.get("crawl_id")
                 and change.values.get("purpose") == "use"
             }
-            definitions = await asyncio.to_thread(active_definitions, live=True)
             for crawl_id, document_id in crawl_scopes:
                 for scope in _crawl_triggered_scopes(
                     definitions, crawl_id=crawl_id, document_id=document_id
@@ -143,7 +169,7 @@ async def run_crawl_planner(
 
 
 def _open_crawl_planner_consumer(
-    catalogue: Catalogue, client: CDCClient, start_at: int, on_exists: str
+    catalogue: Catalogue, start_at: int, on_exists: str
 ) -> DMLConsumer:
     return DMLConsumer(
         catalogue.lake,
@@ -152,15 +178,14 @@ def _open_crawl_planner_consumer(
         mode="changes",
         start_at=start_at,
         on_exists=on_exists,
-        client=client,
+        lease_policy="error",
     ).open()
 
 
-def _cdc_client(catalogue: Catalogue) -> CDCClient:
-    """Load the image-pinned CDC extension on this DuckDB connection."""
+def _validate_cdc_extension(catalogue: Catalogue) -> None:
+    """Load and validate the image-installed community CDC extension."""
 
-    if not get_optional("ATLAS_DUCKLAKE_CDC_EXTENSION"):
-        catalogue.connection.execute("LOAD ducklake_cdc")
+    catalogue.connection.execute("LOAD ducklake_cdc")
     client = CDCClient(catalogue.lake, install_extension=False)
     actual = client.version()
     expected = get_str("ATLAS_DUCKLAKE_CDC_VERSION")
@@ -168,7 +193,6 @@ def _cdc_client(catalogue: Catalogue) -> CDCClient:
         raise RuntimeError(
             f"DuckLake CDC version mismatch: expected {expected!r}, got {actual!r}"
         )
-    return client
 
 
 async def _run_blocking(function, *args, **kwargs):

@@ -143,6 +143,7 @@ def record(query: CatalogueQuery) -> CatalogueQueryRecord:
         id=query.id,
         name=query.name,
         description=query.description,
+        fixture_path=query.fixture_path,
         current_revision_id=current.id,
         current_revision=current.revision,
         sql=current.sql,

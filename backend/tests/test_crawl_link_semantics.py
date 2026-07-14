@@ -10,7 +10,11 @@ from uuid import uuid4
 from actions.crawl.schemas import CapturedArtifact, CrawlPage
 from actions.crawl.service import _canonicalize_transient_links, _crawl_url, _persist_page
 from actions.shared.cache import ResolvedCachePolicy
-from control.crawl_policies.schemas import BrowserProfileConfig, HttpProfileConfig
+from control.crawl_policies.schemas import (
+    DEFAULT_HTTP_USER_AGENT,
+    BrowserProfileConfig,
+    HttpProfileConfig,
+)
 from dom import links_from_html
 from repository.objects.artifact import ArtifactIdentity
 
@@ -68,7 +72,7 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
                 requested_url=page.url,
                 page=page,
                 profile="http",
-                profile_config=HttpProfileConfig(),
+                profile_config=HttpProfileConfig(user_agent=DEFAULT_HTTP_USER_AGENT),
                 repository_pipeline=pipeline,
                 cache_policy=ResolvedCachePolicy(mode="refresh", max_age_seconds=120),
                 retain_html=False,
@@ -127,7 +131,7 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
                 requested_url=page.url,
                 page=page,
                 profile="http",
-                profile_config=HttpProfileConfig(),
+                profile_config=HttpProfileConfig(user_agent=DEFAULT_HTTP_USER_AGENT),
                 repository_pipeline=pipeline,
                 cache_policy=ResolvedCachePolicy(mode="prefer", max_age_seconds=120),
                 retain_html=False,
@@ -203,6 +207,7 @@ class CrawlLinkSemanticsTests(unittest.IsolatedAsyncioTestCase):
                 page=page,
                 profile="http",
                 profile_config=HttpProfileConfig(
+                    user_agent=DEFAULT_HTTP_USER_AGENT,
                     artifact_media_types=("application/pdf",),
                 ),
                 repository_pipeline=pipeline,

@@ -299,12 +299,18 @@ async def run(monitor: HealthMonitor | None = None) -> None:
                                     byte_count=1,
                                     service_class="critical",
                                 ),
+                                acquire_timeout=0,
                             ):
                                 await asyncio.to_thread(
                                     delete_run_navigation,
                                     navigation_store,
                                     graph_run.id,
                                 )
+                        except ResourceCapacityUnavailable:
+                            # Cleanup is off-path. Shared object-store pressure is
+                            # ordinary backpressure, so defer it without blocking
+                            # navigation work or alarming the operator.
+                            continue
                         except Exception:
                             logging.warning(
                                 "navigation package cleanup failed for graph run %s",

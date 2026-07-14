@@ -27,17 +27,19 @@ class DeploymentTests(TestCase):
         connect.assert_not_called()
 
     @patch("deployment.bootstrap_catalogue")
+    @patch("deployment.seed_catalogue_fixture_definitions")
     @patch("deployment.seed_system_control_plane")
     @patch("deployment.migrate_control_database")
     @patch("deployment.ensure_catalogue_database")
     def test_setup_order(
-        self, ensure_database, migrate, seed_control, bootstrap
+        self, ensure_database, migrate, seed_control, seed_fixtures, bootstrap
     ) -> None:
         manager = MagicMock()
         manager.attach_mock(ensure_database, "ensure")
         manager.attach_mock(migrate, "migrate")
         manager.attach_mock(bootstrap, "bootstrap")
         manager.attach_mock(seed_control, "seed_control")
+        manager.attach_mock(seed_fixtures, "seed_fixtures")
 
         deployment.main([])
 
@@ -48,6 +50,7 @@ class DeploymentTests(TestCase):
                 call.migrate(),
                 call.seed_control(),
                 call.bootstrap(),
+                call.seed_fixtures(),
             ],
         )
 

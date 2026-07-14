@@ -2,105 +2,87 @@ from __future__ import annotations
 
 import unittest
 from unittest.mock import MagicMock, call, patch
+from uuid import UUID
 
 import duckdb
+from ducklake_client import DuckLakeFenceError, FenceSpec
 
 from repository.catalogue.operations import (
-    _MAINTENANCE_LOCK_KEY,
-    advisory_lock_key,
+    maintenance_lock,
+    is_retryable_catalogue_unavailability,
     operation_locks,
+    repository_commit_lock,
     run_with_catalogue_retry,
 )
 
 
 class CatalogueOperationLockTests(unittest.TestCase):
-    def _catalogue_config(self, name: str) -> str:
-        return {
-            "ATLAS_CATALOGUE_CATALOG": "postgres",
-            "ATLAS_CATALOGUE_CATALOG_DSN": "postgresql://atlas",
-        }[name]
+    def _catalogue(self) -> MagicMock:
+        catalogue = MagicMock()
+        catalogue.lake.fence_set.return_value.__enter__.return_value = catalogue.lake
+        return catalogue
 
-    def test_microbatch_uses_one_postgres_session_for_every_lock(self) -> None:
-        connection = MagicMock()
-        connect = MagicMock()
-        connect.return_value.__enter__.return_value = connection
+    def test_operation_locks_are_one_independent_fence_set(self) -> None:
+        catalogue = self._catalogue()
 
-        with (
-            patch(
-                "repository.catalogue.operations.get_str",
-                side_effect=self._catalogue_config,
-            ),
-            patch(
-                "repository.catalogue.operations.get_float",
-                return_value=30.0,
-            ),
-            patch("repository.catalogue.operations.psycopg.connect", connect),
-        ):
-            with operation_locks(("second", "first", "first")):
+        with patch("repository.catalogue.operations.get_float", return_value=30.0):
+            with operation_locks(catalogue, ("second", "first", "first")):
                 pass
 
-        connect.assert_called_once_with("postgresql://atlas")
-        first = advisory_lock_key("atlas-catalog-operation:first")
-        second = advisory_lock_key("atlas-catalog-operation:second")
+        catalogue.lake.fence_set.assert_called_once_with(
+            FenceSpec.shared("catalogue-maintenance"),
+            FenceSpec.exclusive("operation", "first"),
+            FenceSpec.exclusive("operation", "second"),
+            namespace="atlas",
+            timeout=30.0,
+        )
+
+    def test_repository_batch_fences_each_crawl_and_content_identity(self) -> None:
+        catalogue = self._catalogue()
+        crawl_ids = [UUID(int=value) for value in range(1, 101)]
+        content_ids = [f"sha256:{value:064x}" for value in range(100)]
+
+        with patch("repository.catalogue.operations.get_float", return_value=30.0):
+            with repository_commit_lock(
+                catalogue,
+                crawl_ids=crawl_ids,
+                content_ids=content_ids,
+            ):
+                pass
+
+        catalogue.lake.fence_set.assert_called_once()
+        args = catalogue.lake.fence_set.call_args.args
+        self.assertEqual(len(args), 201)
+        self.assertEqual(args[0], FenceSpec.shared("catalogue-maintenance"))
         self.assertEqual(
-            connection.execute.call_args_list,
-            [
-                call(
-                    "SELECT set_config('lock_timeout', %s, false)",
-                    ("30000ms",),
-                ),
-                call(
-                    "SELECT pg_advisory_lock_shared(%s)",
-                    (_MAINTENANCE_LOCK_KEY,),
-                ),
-                call("SELECT pg_advisory_lock(%s)", (first,)),
-                call("SELECT pg_advisory_lock(%s)", (second,)),
-                call("SELECT pg_advisory_unlock(%s)", (second,)),
-                call("SELECT pg_advisory_unlock(%s)", (first,)),
-                call(
-                    "SELECT pg_advisory_unlock_shared(%s)",
-                    (_MAINTENANCE_LOCK_KEY,),
-                ),
-            ],
+            {spec.keys for spec in args[1:101]},
+            {("crawl", str(crawl_id)) for crawl_id in crawl_ids},
+        )
+        self.assertEqual(
+            {spec.keys for spec in args[101:]},
+            {("content", content_id) for content_id in content_ids},
         )
 
-    def test_partial_acquisition_releases_only_acquired_locks(self) -> None:
-        connection = MagicMock()
-        connect = MagicMock()
-        connect.return_value.__enter__.return_value = connection
-        first = advisory_lock_key("atlas-catalog-operation:first")
-        second = advisory_lock_key("atlas-catalog-operation:second")
+    def test_maintenance_uses_the_exclusive_barrier(self) -> None:
+        catalogue = self._catalogue()
 
-        def execute(query, parameters):
-            if query == "SELECT pg_advisory_lock(%s)" and parameters == (second,):
-                raise TimeoutError("lock timeout")
-
-        connection.execute.side_effect = execute
-        with (
-            patch(
-                "repository.catalogue.operations.get_str",
-                side_effect=self._catalogue_config,
-            ),
-            patch(
-                "repository.catalogue.operations.get_float",
-                return_value=30.0,
-            ),
-            patch("repository.catalogue.operations.psycopg.connect", connect),
-            self.assertRaisesRegex(TimeoutError, "lock timeout"),
-        ):
-            with operation_locks(("first", "second")):
+        with patch("repository.catalogue.operations.get_float", return_value=30.0):
+            with maintenance_lock(catalogue):
                 pass
 
-        connection.execute.assert_any_call(
-            "SELECT pg_advisory_unlock(%s)", (first,)
+        catalogue.lake.fence_set.assert_called_once_with(
+            FenceSpec.exclusive("catalogue-maintenance"),
+            namespace="atlas",
+            timeout=30.0,
         )
-        connection.execute.assert_any_call(
-            "SELECT pg_advisory_unlock_shared(%s)", (_MAINTENANCE_LOCK_KEY,)
+
+    def test_fence_failure_is_retryable_infrastructure_unavailability(self) -> None:
+        self.assertTrue(
+            is_retryable_catalogue_unavailability(
+                DuckLakeFenceError("catalogue unavailable")
+            )
         )
-        self.assertNotIn(
-            call("SELECT pg_advisory_unlock(%s)", (second,)),
-            connection.execute.call_args_list,
-        )
+        self.assertFalse(is_retryable_catalogue_unavailability(ValueError("bad row")))
 
     def test_transaction_conflicts_retry_with_bounded_backoff(self) -> None:
         attempts = 0

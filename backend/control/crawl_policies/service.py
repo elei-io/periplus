@@ -17,10 +17,27 @@ from .schemas import (
     CrawlPolicyRecord,
     CrawlProfileCreateRequest,
     CrawlProfileSnapshot,
+    DEFAULT_HTTP_USER_AGENT,
     parse_profile_config,
 )
 
 DEFAULT_POLICY_SLUG = "default"
+
+
+def _lock_policy_match(
+    session: Session,
+    *,
+    scheme: str,
+    host: str,
+    path_prefix: str,
+    path_mode: str,
+) -> None:
+    """Serialize creation or replacement of one unique policy match."""
+
+    identity = "\x1f".join((scheme, host, path_prefix, path_mode))
+    session.execute(
+        select(func.pg_advisory_xact_lock(func.hashtextextended(identity, 0)))
+    )
 
 
 def profile_config_hash(config: dict) -> str:
@@ -35,7 +52,7 @@ SEEDED_PROFILES: tuple[dict, ...] = (
         "name": "Direct",
         "description": "Plain HTTP without a browser.",
         "transport": "http",
-        "config": {},
+        "config": {"user_agent": DEFAULT_HTTP_USER_AGENT},
         "cost_rank": 10,
         "trial_eligible": True,
     },
@@ -313,7 +330,7 @@ def update_crawl_policy(
         select(CrawlPolicy)
         .options(joinedload(CrawlPolicy.profile))
         .where(CrawlPolicy.id == policy.id)
-        .with_for_update()
+        .with_for_update(of=CrawlPolicy)
         .execution_options(populate_existing=True)
     )
     if policy is None:
@@ -443,6 +460,13 @@ def apply_policy_trial_candidate(
         raise ValueError("Policy trial host is invalid")
     default_port = {"http": 80, "https": 443}[scheme]
     match_host = normalized_host if port == default_port else f"{normalized_host}:{port}"
+    _lock_policy_match(
+        session,
+        scheme=scheme,
+        host=match_host,
+        path_prefix="/",
+        path_mode="prefix",
+    )
     policy = session.scalar(
         select(CrawlPolicy)
         .options(joinedload(CrawlPolicy.profile))
@@ -452,7 +476,7 @@ def apply_policy_trial_candidate(
             CrawlPolicy.path_prefix == "/",
             CrawlPolicy.path_mode == "prefix",
         )
-        .with_for_update()
+        .with_for_update(of=CrawlPolicy)
     )
     if policy is None:
         slug_host = "".join(

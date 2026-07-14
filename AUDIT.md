@@ -66,6 +66,9 @@ Before production, tests must prove:
 - remote pressure remains bounded across transport replicas;
 - object-store throttling raises permit and queue age without uncontrolled request growth;
 - critical reserve and backfill ceilings remain enforced under contention;
+- idle reserved catalogue shares are borrowable and return to a waiting class as grants drain;
+- catalogue saturation keeps ingestion deliveries heartbeated and pending without consuming
+  processing attempts, publishing failures, or failing worker health;
 - maintenance cannot overlap any granted hot catalogue operation;
 - poison materialization jobs reach dead letter without crash-looping ingestion; and
 - metrics distinguish executor shortage from remote, catalogue, and object-store saturation.

@@ -12,6 +12,8 @@ from materialization.queue import (
     SCOPE_BACKFILL_SUBJECT,
     SCOPE_LIVE_SUBJECT,
     MaterializationDeadLetter,
+    clear_materialization_processing_failures,
+    ensure_materialization_attempts,
     ensure_streams,
 )
 from repository.ingestion.queue import connect_repository_nats
@@ -84,6 +86,10 @@ async def requeue_dead_letter(sequence: int) -> MaterializationDeadLetterRecord:
             SCOPE_LIVE_SUBJECT
             if entry.job.source == "live"
             else SCOPE_BACKFILL_SUBJECT
+        )
+        attempts = await ensure_materialization_attempts(jetstream)
+        await clear_materialization_processing_failures(
+            attempts, entry.job.operation_id
         )
         await jetstream.publish(
             subject,

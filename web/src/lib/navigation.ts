@@ -7,6 +7,7 @@ import {
   GaugeIcon,
   FileCode2Icon,
   ShieldCheckIcon,
+  SquareTerminalIcon,
   TablePropertiesIcon,
   ViewIcon,
 } from "lucide-react"
@@ -18,6 +19,14 @@ export const navigationGroups: NavigationGroup[] = [
     name: "Catalogue",
     slug: "catalogue",
     items: [
+      {
+        name: "Workbench",
+        href: "/catalogue/workbench",
+        icon: SquareTerminalIcon,
+        title: "Catalogue Workbench",
+        description:
+          "Explore the DuckLake catalogue in an interactive SQL session.",
+      },
       {
         name: "SQL",
         href: "/catalogue/sql",
@@ -38,6 +47,13 @@ export const navigationGroups: NavigationGroup[] = [
         icon: ViewIcon,
         title: "Catalogue Views",
         description: "Inspect and edit persistent DuckLake views.",
+      },
+      {
+        name: "Macros",
+        href: "/catalogue/macros",
+        icon: BracesIcon,
+        title: "Table Macros",
+        description: "Author reusable, parameterized catalogue relations.",
       },
     ],
   },
@@ -133,7 +149,11 @@ export function findNavigationItem(pathname: string) {
       .flatMap((group) => group.items)
       .find((item) => item.href === "/crawls/graphs")
   }
-  for (const href of ["/catalogue/queries", "/catalogue/views"]) {
+  for (const href of [
+    "/catalogue/queries",
+    "/catalogue/views",
+    "/catalogue/macros",
+  ]) {
     if (pathname.startsWith(`${href}/`)) {
       return navigationGroups
         .flatMap((group) => group.items)

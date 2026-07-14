@@ -5,7 +5,7 @@ import multiprocessing
 import os
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -76,6 +76,85 @@ def _concurrent_ingest(
     "Postgres catalogue integration is opt-in",
 )
 class PostgresCatalogueConcurrencyTests(unittest.TestCase):
+    def test_hundred_unique_items_use_a_bounded_fence_session_count(self) -> None:
+        admin_dsn = os.environ["ATLAS_TEST_DATABASE_URL"]
+        database_name = f"atlas_catalogue_test_{uuid4().hex}"
+        with psycopg.connect(admin_dsn, autocommit=True) as admin:
+            admin.execute(
+                sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database_name))
+            )
+
+        catalogue_dsn = make_conninfo(admin_dsn, dbname=database_name)
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                catalogue = Catalogue(
+                    CatalogueConfig(
+                        catalog=PostgresCatalog(catalogue_dsn),
+                        storage=DiskStorage(root / "lake"),
+                    )
+                )
+                catalogue.bootstrap()
+                ingestor = RepositoryIngestor(
+                    html_repository=RawHtmlRepository(
+                        FileObjectStore(root / "objects")
+                    ),
+                    catalogue=catalogue,
+                    staging_root=root / "staging",
+                )
+                with ingestor:
+                    prepared = []
+                    captured_at = datetime(2026, 7, 14, 10, 0, tzinfo=UTC)
+                    for value in range(1, 101):
+                        html = f"<html><body>Unique page {value}</body></html>"
+                        identity = ingestor.store_raw(html)
+                        prepared.append(
+                            ingestor.prepare_from_raw(
+                                crawl=CrawlRecord(
+                                    crawl_id=UUID(int=value),
+                                    document_id=f"sha256:{identity.sha256}",
+                                    graph_id=UUID(int=1_000),
+                                    graph_run_id=UUID(int=2_000),
+                                    graph_node_id=UUID(int=3_000),
+                                    crawl_request_id=UUID(int=4_000 + value),
+                                    requested_url=f"https://example.com/{value}",
+                                    normalized_url=f"https://example.com/{value}",
+                                    final_url=f"https://example.com/{value}",
+                                    captured_at=captured_at + timedelta(seconds=value),
+                                    status_code=200,
+                                    duration_ms=100,
+                                    profile="http",
+                                    crawl_profile_slug="direct",
+                                    remote_concurrency=4,
+                                    config_json={"value": value},
+                                    config_hash=f"{value:064x}",
+                                    outcome="success",
+                                )
+                            )
+                        )
+
+                    results = ingestor.commit_prepared_batch(prepared)
+                    self.assertEqual(len(results), 100)
+                    self.assertEqual(
+                        catalogue.lake.sql_scalar(
+                            "SELECT count(*) FROM atlas.main.documents"
+                        ),
+                        100,
+                    )
+                    self.assertEqual(
+                        catalogue.lake.sql_scalar(
+                            "SELECT count(*) FROM atlas.main.crawls"
+                        ),
+                        100,
+                    )
+        finally:
+            with psycopg.connect(admin_dsn, autocommit=True) as admin:
+                admin.execute(
+                    sql.SQL("DROP DATABASE {} WITH (FORCE)").format(
+                        sql.Identifier(database_name)
+                    )
+                )
+
     def _run_concurrent_ingests(self, values: tuple[int, int]) -> tuple[int, int, bool]:
         admin_dsn = os.environ["ATLAS_TEST_DATABASE_URL"]
         database_name = f"atlas_catalogue_test_{uuid4().hex}"

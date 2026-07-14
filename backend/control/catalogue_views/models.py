@@ -18,6 +18,7 @@ class CatalogueViewReference(Base):
     __tablename__ = "catalogue_view_references"
     __table_args__ = (
         UniqueConstraint("schema_name", "view_name", name="uq_catalogue_view_reference_name"),
+        UniqueConstraint("fixture_path", name="uq_catalogue_view_references_fixture_path"),
         Index("ix_catalogue_view_references_archived_at", "archived_at"),
     )
 
@@ -27,6 +28,7 @@ class CatalogueViewReference(Base):
     view_name: Mapped[str] = mapped_column(Text)
     display_name: Mapped[str] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fixture_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_from_query_revision_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("catalogue_query_revisions.id", ondelete="SET NULL"),

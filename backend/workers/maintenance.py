@@ -11,7 +11,6 @@ from typing import Literal
 from config import get_bool, get_float, get_int, get_str
 from prometheus_client import start_http_server
 
-from repository.catalogue.operations import maintenance_lock
 from repository.ingestion.health import HealthMonitor, start_health_server
 from repository.maintenance import MaintenanceConfig, cleanup_staging, compact
 from runtime.graph_queue import connect_nats
@@ -46,12 +45,11 @@ async def _run_operation(
 
     limits = ResourceLimits.from_env()
 
-    def operation_fenced() -> None:
-        with maintenance_lock():
-            if kind == "compact":
-                compact(config)
-            else:
-                cleanup_staging(config)
+    def operation() -> None:
+        if kind == "compact":
+            compact(config)
+        else:
+            cleanup_staging(config)
 
     try:
         async with operation_leases(
@@ -71,7 +69,7 @@ async def _run_operation(
                     exclusive=True,
                 ),
             ):
-                await asyncio.to_thread(operation_fenced)
+                await asyncio.to_thread(operation)
         if monitor is not None:
             monitor.subsystem_ready("maintenance_admission")
     except (

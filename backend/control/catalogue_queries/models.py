@@ -16,11 +16,15 @@ def utc_now() -> datetime:
 
 class CatalogueQuery(Base):
     __tablename__ = "catalogue_queries"
-    __table_args__ = (Index("ix_catalogue_queries_archived_at", "archived_at"),)
+    __table_args__ = (
+        UniqueConstraint("fixture_path", name="uq_catalogue_queries_fixture_path"),
+        Index("ix_catalogue_queries_archived_at", "archived_at"),
+    )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fixture_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     current_revision_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey(

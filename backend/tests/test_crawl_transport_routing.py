@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
+from control.crawl_policies.schemas import DEFAULT_HTTP_USER_AGENT
 from runtime.graph_queue import (
     CRAWL_SUBJECTS,
     CrawlRequest,
@@ -15,6 +16,7 @@ from runtime.graph_queue import (
 
 
 def policy_snapshot(profile: str) -> dict:
+    config = {"user_agent": DEFAULT_HTTP_USER_AGENT} if profile == "http" else {}
     return {
         "id": str(uuid4()),
         "slug": f"{profile}-test",
@@ -28,7 +30,7 @@ def policy_snapshot(profile: str) -> dict:
             "slug": f"{profile}-profile",
             "name": f"{profile.title()} test",
             "transport": profile,
-            "config": {},
+            "config": config,
             "cost_rank": 10,
         },
     }

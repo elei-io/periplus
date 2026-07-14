@@ -271,6 +271,30 @@ def prepare_catalogue_query(
     )
 
 
+def compile_catalogue_definition(sql: str) -> str:
+    """Compile public Atlas SQL into a self-contained persistent query definition.
+
+    Interactive execution can bind generated selector values separately. Persistent
+    views and table macros cannot retain those connection-local bindings, so generated
+    values are rendered as SQL literals while user placeholders remain forbidden.
+    """
+
+    rewritten = _rewrite_select(sql)
+    if rewritten.required_parameters:
+        names = ", ".join(f"${name}" for name in rewritten.required_parameters)
+        raise CatalogueQueryError(
+            f"persistent SQL definitions cannot contain query parameters: {names}"
+        )
+    statement = classify_select(rewritten.sql)
+
+    def inline_generated_parameter(node: exp.Expression) -> exp.Expression:
+        if isinstance(node, exp.Placeholder) and node.name in rewritten.parameters:
+            return exp.convert(rewritten.parameters[node.name])
+        return node
+
+    return statement.transform(inline_generated_parameter).sql(dialect="duckdb")
+
+
 def _rewrite_select(sql: str) -> RewrittenSelectorSql:
     # Local import keeps the standalone AST layer dependent on query classification without
     # introducing a module-import cycle when execution opts into the rewrite.

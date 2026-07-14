@@ -18,7 +18,7 @@ catalogue-benchmark:
 
 catalogue-test-postgres:
 	docker compose up -d --wait atlas-postgres
-	cd backend && ATLAS_TEST_DATABASE_URL="$${ATLAS_TEST_DATABASE_URL:-postgresql://$${POSTGRES_USER:-atlas}:$${POSTGRES_PASSWORD:-atlas}@127.0.0.1:$${POSTGRES_PORT:-5432}/$${POSTGRES_DB:-atlas}}" uv run python -m unittest tests.test_catalogue_postgres -v
+	cd backend && ATLAS_TEST_DATABASE_URL="$${ATLAS_TEST_DATABASE_URL:-postgresql://$${POSTGRES_USER:-atlas}:$${POSTGRES_PASSWORD:-atlas}@127.0.0.1:$${POSTGRES_PORT:-5432}/$${POSTGRES_DB:-atlas}}" uv run python -m unittest tests.test_catalogue_postgres tests.test_crawl_policy_postgres -v
 
 repository-test-s3:
 	docker compose up -d --wait atlas-minio

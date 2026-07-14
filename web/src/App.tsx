@@ -24,6 +24,11 @@ const CatalogueSqlPage = lazy(() =>
     default: module.CatalogueSqlPage,
   }))
 )
+const CatalogueWorkbenchPage = lazy(() =>
+  import("@/pages/catalogue/workbench-page").then((module) => ({
+    default: module.CatalogueWorkbenchPage,
+  }))
+)
 const CatalogueViewsPage = lazy(() =>
   import("@/pages/catalogue/views-page").then((module) => ({
     default: module.CatalogueViewsPage,
@@ -32,6 +37,11 @@ const CatalogueViewsPage = lazy(() =>
 const CatalogueQueriesPage = lazy(() =>
   import("@/pages/catalogue/queries-page").then((module) => ({
     default: module.CatalogueQueriesPage,
+  }))
+)
+const CatalogueTableMacrosPage = lazy(() =>
+  import("@/pages/catalogue/table-macros-page").then((module) => ({
+    default: module.CatalogueTableMacrosPage,
   }))
 )
 const CrawlGraphsPage = lazy(() =>
@@ -127,6 +137,8 @@ export function App() {
     )
   }, [activeItem.href])
 
+  const isFullScreenWorkbench = activeItem.href === "/catalogue/workbench"
+
   const handleNavigate = useCallback((href: string) => {
     const targetPathname = new URL(href, window.location.origin).pathname
     if (href === `${window.location.pathname}${window.location.search}`) {
@@ -138,6 +150,10 @@ export function App() {
   }, [])
 
   const page = (() => {
+    if (activeItem.href === "/catalogue/workbench") {
+      return <CatalogueWorkbenchPage />
+    }
+
     if (activeItem.href === "/catalogue/sql") {
       return <CatalogueSqlPage />
     }
@@ -156,6 +172,15 @@ export function App() {
       return (
         <CatalogueQueriesPage
           queryId={queryId ? decodeURIComponent(queryId) : undefined}
+        />
+      )
+    }
+
+    if (activeItem.href === "/catalogue/macros") {
+      const macroId = pathname.match(/^\/catalogue\/macros\/([^/]+)$/)?.[1]
+      return (
+        <CatalogueTableMacrosPage
+          macroId={macroId ? decodeURIComponent(macroId) : undefined}
         />
       )
     }
@@ -234,9 +259,23 @@ export function App() {
             </span>
           </div>
         </header>
-        <div className="app-surface relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain p-4 lg:p-6">
-          <div className="app-surface-grain pointer-events-none absolute inset-0" />
-          <div className="relative z-10 flex min-h-full min-w-0">
+        <div
+          className={
+            isFullScreenWorkbench
+              ? "app-surface relative min-h-0 min-w-0 flex-1 overflow-hidden"
+              : "app-surface relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain p-4 lg:p-6"
+          }
+        >
+          {!isFullScreenWorkbench && (
+            <div className="app-surface-grain pointer-events-none absolute inset-0" />
+          )}
+          <div
+            className={
+              isFullScreenWorkbench
+                ? "relative z-10 flex h-full min-h-0 min-w-0"
+                : "relative z-10 flex min-h-full min-w-0"
+            }
+          >
             <Suspense fallback={<PageFallback />}>{page}</Suspense>
           </div>
         </div>

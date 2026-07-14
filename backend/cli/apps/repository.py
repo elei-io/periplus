@@ -61,7 +61,7 @@ def dead_letters(
         entry = item["entry"]
         typer.echo(
             f"{item['sequence']}\t{entry['failed_at']}\t{entry['job']['request_id']}\t"
-            f"{entry['delivery_count']} deliveries\t{entry['error']}"
+            f"{entry['processing_failure_count']} processing failures\t{entry['error']}"
         )
     if not items:
         typer.echo("No repository ingestion dead letters.")

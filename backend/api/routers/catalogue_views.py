@@ -41,8 +41,9 @@ def _catalogue() -> Catalogue:
 
 @contextmanager
 def _catalogue_mutation(operation_id: str) -> Iterator[Catalogue]:
-    with operation_lock(operation_id), _catalogue() as catalogue:
-        yield catalogue
+    with _catalogue() as catalogue:
+        with operation_lock(catalogue, operation_id):
+            yield catalogue
 
 
 @router.get("/", response_model=CatalogueViewListResponse)

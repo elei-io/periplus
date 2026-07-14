@@ -1,15 +1,24 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
-from config import get_float
+from config import get_float, get_int
 from nats.js.api import (
     AckPolicy,
     ConsumerConfig,
+    KeyValueConfig,
+    StorageType,
 )
-from pydantic import BaseModel, ConfigDict
+from nats.js.errors import (
+    BadRequestError,
+    BucketNotFoundError,
+    KeyDeletedError,
+    KeyNotFoundError,
+    KeyWrongLastSequenceError,
+)
+from pydantic import BaseModel, ConfigDict, Field
 from runtime.catalogue_queue import (
     DEAD_LETTER_STREAM,
     MATERIALIZE_BACKFILL_SUBJECT as SCOPE_BACKFILL_SUBJECT,
@@ -22,6 +31,7 @@ from runtime.catalogue_queue import (
 
 SCOPE_LIVE_DURABLE = "atlas-materialization-live-worker"
 SCOPE_BACKFILL_DURABLE = "atlas-materialization-backfill-worker"
+ATTEMPTS_BUCKET = "atlas_materialization_attempts"
 
 
 class MaterializationScopeJob(BaseModel):
@@ -69,9 +79,89 @@ class MaterializationDeadLetter(BaseModel):
     job: MaterializationScopeJob
     stage: Literal["scope"] = "scope"
     error: str
-    delivery_count: int
+    processing_failure_count: int
     failed_at: datetime
     staging_key: str | None = None
+
+
+class MaterializationAttemptState(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    operation_id: str
+    processing_failure_count: int = Field(ge=0)
+    updated_at: datetime
+
+
+async def ensure_materialization_attempts(jetstream):
+    config = KeyValueConfig(
+        bucket=ATTEMPTS_BUCKET,
+        description="Processing-failure counts for active materialization scopes",
+        history=1,
+        ttl=get_float("ATLAS_MATERIALIZATION_ATTEMPT_TTL_SECONDS"),
+        max_bytes=get_int("ATLAS_MATERIALIZATION_ATTEMPT_MAX_BYTES"),
+        storage=StorageType.FILE,
+        replicas=get_int("ATLAS_RESOURCE_LEASE_REPLICAS"),
+    )
+    try:
+        bucket = await jetstream.key_value(ATTEMPTS_BUCKET)
+    except BucketNotFoundError:
+        try:
+            bucket = await jetstream.create_key_value(config=config)
+        except BadRequestError:
+            bucket = await jetstream.key_value(ATTEMPTS_BUCKET)
+    status = await bucket.status()
+    actual = status.stream_info.config
+    if (
+        actual.storage != StorageType.FILE
+        or actual.max_msgs_per_subject != 1
+        or actual.max_age != config.ttl
+        or actual.max_bytes != config.max_bytes
+        or actual.num_replicas != config.replicas
+    ):
+        raise RuntimeError(
+            f"JetStream KV {ATTEMPTS_BUCKET} has an incompatible contract"
+        )
+    return bucket
+
+
+async def record_materialization_processing_failure(bucket, operation_id: str) -> int:
+    while True:
+        try:
+            entry = await bucket.get(operation_id)
+        except (KeyNotFoundError, KeyDeletedError):
+            state = MaterializationAttemptState(
+                operation_id=operation_id,
+                processing_failure_count=1,
+                updated_at=datetime.now(UTC),
+            )
+            try:
+                await bucket.create(operation_id, state.model_dump_json().encode())
+                return 1
+            except KeyWrongLastSequenceError:
+                continue
+        current = MaterializationAttemptState.model_validate_json(entry.value)
+        updated = current.model_copy(
+            update={
+                "processing_failure_count": current.processing_failure_count + 1,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        try:
+            await bucket.update(
+                operation_id,
+                updated.model_dump_json().encode(),
+                last=entry.revision,
+            )
+            return updated.processing_failure_count
+        except KeyWrongLastSequenceError:
+            continue
+
+
+async def clear_materialization_processing_failures(bucket, operation_id: str) -> None:
+    try:
+        await bucket.delete(operation_id)
+    except (KeyNotFoundError, KeyDeletedError):
+        pass
 
 
 async def ensure_streams(jetstream) -> None:

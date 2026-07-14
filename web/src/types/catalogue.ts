@@ -11,9 +11,46 @@ export type CatalogueQueryResult = {
   rows: unknown[][]
 }
 
+export type CatalogueMetadataColumn = {
+  name: string
+  data_type: string
+  nullable: boolean
+}
+
+export type CatalogueMetadataRelation = {
+  catalog_name: string
+  schema_name: string
+  name: string
+  kind: "table" | "view"
+  columns: CatalogueMetadataColumn[]
+}
+
+export type CatalogueMetadataFunctionParameter = {
+  name: string
+  data_type: string | null
+}
+
+export type CatalogueMetadataFunction = {
+  catalog_name: string
+  schema_name: string
+  name: string
+  kind: string
+  description: string | null
+  return_type: string | null
+  parameters: CatalogueMetadataFunctionParameter[]
+  varargs: string | null
+}
+
+export type CatalogueMetadata = {
+  catalog_name: string
+  default_schema: string
+  relations: CatalogueMetadataRelation[]
+  functions: CatalogueMetadataFunction[]
+}
+
 export type CatalogueLintDiagnostic = {
   code: string
-  severity: "warning"
+  severity: "warning" | "error"
   message: string
 }
 
@@ -41,6 +78,7 @@ export type CatalogueViewRecord = {
   qualified_name: string
   display_name: string
   description: string | null
+  fixture_path: string | null
   sql: string
   columns: string[]
   column_types: string[]
@@ -53,6 +91,25 @@ export type CatalogueViewRecord = {
 }
 
 export type CatalogueViewList = { items: CatalogueViewRecord[] }
+
+export type CatalogueTableMacroRecord = {
+  id: string
+  schema_name: string
+  macro_name: string
+  qualified_name: string
+  display_name: string
+  description: string | null
+  parameters: string[]
+  sql: string
+  definition_revision_id: string
+  fixture_path: string | null
+  available: boolean
+  created_from_query_revision_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type CatalogueTableMacroList = { items: CatalogueTableMacroRecord[] }
 
 export type SavedQueryRevision = {
   id: string
@@ -68,6 +125,7 @@ export type SavedQuery = {
   id: string
   name: string
   description: string | null
+  fixture_path: string | null
   current_revision_id: string
   current_revision: number
   sql: string

@@ -11,6 +11,7 @@ import type {
   GraphRunSubmission,
   GraphRunListResponse,
   GraphRunRecord,
+  GraphRunWarningSummary,
   EdgeDedupeMode,
   GraphRunMaterializationLagList,
   PolicyPressureHours,
@@ -273,6 +274,16 @@ export function useGraphRuns() {
     refetchInterval: 5_000,
     queryFn: async () =>
       jsonResponse<GraphRunListResponse>(await fetch(apiUrl("/graph-runs/"))),
+  })
+}
+
+export function useGraphRunWarnings(runId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["graph-runs", runId, "warnings"],
+    enabled,
+    queryFn: async () => jsonResponse<GraphRunWarningSummary>(
+      await fetch(apiUrl(`/graph-runs/${runId}/warnings`))
+    ),
   })
 }
 

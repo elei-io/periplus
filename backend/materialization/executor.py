@@ -6,6 +6,7 @@ import argparse
 import asyncio
 from datetime import UTC, datetime
 import logging
+import os
 import time
 
 import nats
@@ -30,13 +31,24 @@ from materialization.queue import (
     MaterializationDeadLetter,
     MaterializationFailureJob,
     MaterializationScopeJob,
+    clear_materialization_processing_failures,
+    ensure_materialization_attempts,
     ensure_streams,
+    record_materialization_processing_failure,
 )
 from observability import materialization_metrics
 from repository.catalogue import catalogue_from_env
-from repository.catalogue.operations import operation_lock, run_with_catalogue_retry
+from repository.catalogue.operations import (
+    is_retryable_catalogue_unavailability,
+    operation_lock,
+    run_with_catalogue_retry,
+)
 from repository.ingestion.health import HealthMonitor, start_health_server
 from runtime.catalogue_lane import catalogue_operation_lane, run_catalogue_operation
+from runtime.catalogue_workers import (
+    catalogue_worker_presence,
+    ensure_catalogue_worker_storage,
+)
 from runtime.operation_leases import (
     OperationLeaseLost,
     OperationLeaseUnavailable,
@@ -52,6 +64,10 @@ from runtime.resource_governor import (
     object_units,
     resource_permits,
 )
+
+
+class MaterializationDeliveryUnavailable(RuntimeError):
+    """Broker settlement failed after catalogue processing completed."""
 
 
 async def run(
@@ -70,8 +86,10 @@ async def run(
     client = await nats.connect(get_str("NATS_URL"), max_reconnect_attempts=-1)
     jetstream = client.jetstream()
     await ensure_streams(jetstream)
+    materialization_attempts = await ensure_materialization_attempts(jetstream)
     operation_lease_store = await ensure_operation_lease_storage(jetstream)
     resource_grants = await ensure_resource_governor_storage(jetstream)
+    catalogue_workers = await ensure_catalogue_worker_storage(jetstream)
     live_subscription = await jetstream.pull_subscribe(
         SCOPE_LIVE_SUBJECT, durable=SCOPE_LIVE_DURABLE, stream=SCOPE_STREAM
     )
@@ -101,9 +119,23 @@ async def run(
         )
     if initialized is not None:
         initialized.set()
+    active_operation_count = [0]
     try:
         async with asyncio.TaskGroup() as tasks:
             tasks.create_task(_heartbeat(monitor, stop))
+            tasks.create_task(
+                catalogue_worker_presence(
+                    catalogue_workers,
+                    worker_id=(
+                        f"materialization:{os.uname().nodename}:{os.getpid()}"
+                    ),
+                    capability="materialization",
+                    started_at=datetime.now(UTC),
+                    active_operation_count=lambda: active_operation_count[0],
+                    healthy=lambda: monitor.status()[0],
+                    stop=stop,
+                )
+            )
             tasks.create_task(
                 _consume_scopes(
                     jetstream,
@@ -113,6 +145,8 @@ async def run(
                     stop,
                     operation_lease_store,
                     resource_grants,
+                    active_operation_count,
+                    materialization_attempts,
                 ),
                 name="materialization-scopes",
             )
@@ -159,7 +193,7 @@ async def run(
             )
             tasks.create_task(_observe_scope_queue(jetstream, stop, monitor))
             tasks.create_task(
-                _dependency_probe(client, catalogue, resource_grants, monitor, stop)
+                _dependency_probe(client, catalogue, monitor, stop)
             )
     finally:
         stop.set()
@@ -180,6 +214,8 @@ async def _consume_scopes(
     stop: asyncio.Event,
     operation_lease_store,
     resource_grants,
+    active_operation_count: list[int],
+    materialization_attempts,
 ) -> None:
     """Consume one scope at a time; horizontal replicas provide concurrency."""
 
@@ -188,13 +224,18 @@ async def _consume_scopes(
             live_subscription, backfill_subscription, batch=1
         )
         for message in messages:
-            await _process_scope(
-                jetstream,
-                catalogue,
-                message,
-                operation_lease_store,
-                resource_grants,
-            )
+            active_operation_count[0] = 1
+            try:
+                await _process_scope(
+                    jetstream,
+                    catalogue,
+                    message,
+                    operation_lease_store,
+                    resource_grants,
+                    materialization_attempts,
+                )
+            finally:
+                active_operation_count[0] = 0
 
 
 async def _process_scope(
@@ -203,6 +244,7 @@ async def _process_scope(
     message,
     operation_lease_store,
     resource_grants,
+    materialization_attempts,
 ) -> None:
     started_at = datetime.now(UTC)
     operation_started = time.perf_counter()
@@ -245,21 +287,44 @@ async def _process_scope(
                     await run_catalogue_operation(
                         _commit_scope_fenced, catalogue, staged
                     )
-        await message.ack()
+        try:
+            await message.ack()
+        except Exception as exc:
+            raise MaterializationDeliveryUnavailable from exc
+        await _clear_processing_failures_best_effort(
+            materialization_attempts, job.operation_id
+        )
         outcome = "succeeded"
     except StaleMaterializationJob:
         logging.info("settling stale materialization scope %s", job.operation_id)
-        await message.ack()
+        try:
+            await message.ack()
+        except Exception as exc:
+            raise MaterializationDeliveryUnavailable from exc
+        await _clear_processing_failures_best_effort(
+            materialization_attempts, job.operation_id
+        )
         outcome = "stale"
     except (
         OperationLeaseUnavailable,
         OperationLeaseLost,
         ResourceCapacityUnavailable,
         ResourcePermitLost,
+        MaterializationDeliveryUnavailable,
     ):
         outcome = "contended"
         await message.nak(delay=1)
     except Exception as exc:
+        if is_retryable_catalogue_unavailability(exc):
+            outcome = "unavailable"
+            logging.warning(
+                "materialization catalogue unavailable; retrying scope",
+                exc_info=True,
+            )
+            await message.nak(
+                delay=min(30, 2 ** min(5, message.metadata.num_delivered - 1))
+            )
+            return
         logging.exception("materialization scope failed")
         await _retry_or_fail(
             jetstream,
@@ -268,6 +333,7 @@ async def _process_scope(
             job,
             operation_lease_store,
             resource_grants,
+            materialization_attempts,
             started_at=started_at,
             error=exc,
         )
@@ -308,7 +374,7 @@ def _scope_succeeded(catalogue, job: MaterializationScopeJob) -> bool:
 
 def _commit_scope_fenced(catalogue, staged):
     def attempt():
-        with operation_lock(staged.scope.operation_id):
+        with operation_lock(catalogue, staged.scope.operation_id):
             return commit_scope(catalogue, staged)
 
     return run_with_catalogue_retry(
@@ -318,7 +384,7 @@ def _commit_scope_fenced(catalogue, staged):
 
 def _record_scope_failure_fenced(catalogue, failure) -> bool:
     def attempt() -> bool:
-        with operation_lock(failure.scope.operation_id):
+        with operation_lock(catalogue, failure.scope.operation_id):
             return record_scope_failure(catalogue, failure)
 
     return run_with_catalogue_retry(
@@ -333,14 +399,27 @@ async def _retry_or_fail(
     job: MaterializationScopeJob,
     operation_lease_store,
     resource_grants,
+    materialization_attempts,
     *,
     started_at: datetime,
     error: Exception,
 ) -> None:
-    deliveries = message.metadata.num_delivered
+    try:
+        processing_failure_count = await record_materialization_processing_failure(
+            materialization_attempts, job.operation_id
+        )
+    except Exception:
+        logging.warning(
+            "materialization attempt accounting unavailable; retaining scope",
+            exc_info=True,
+        )
+        await message.nak(delay=30)
+        return
     maximum = get_int("ATLAS_MATERIALIZATION_MAX_DELIVER")
-    if deliveries < maximum:
-        await message.nak(delay=min(30, 2 ** max(0, deliveries - 1)))
+    if processing_failure_count < maximum:
+        await message.nak(
+            delay=min(30, 2 ** max(0, processing_failure_count - 1))
+        )
         return
     failure = MaterializationFailureJob(
         scope=job,
@@ -351,7 +430,7 @@ async def _retry_or_fail(
     dead_letter = MaterializationDeadLetter(
         job=job,
         error=str(error),
-        delivery_count=deliveries,
+        processing_failure_count=processing_failure_count,
         failed_at=datetime.now(UTC),
     )
     service_class = "live" if job.source == "live" else "backfill"
@@ -384,6 +463,23 @@ async def _retry_or_fail(
         await message.nak(delay=30)
     else:
         await message.term()
+        await _clear_processing_failures_best_effort(
+            materialization_attempts, job.operation_id
+        )
+
+
+async def _clear_processing_failures_best_effort(
+    materialization_attempts, operation_id: str
+) -> None:
+    try:
+        await clear_materialization_processing_failures(
+            materialization_attempts, operation_id
+        )
+    except Exception:
+        logging.warning(
+            "materialization attempt cleanup unavailable",
+            exc_info=True,
+        )
 
 
 async def _run_dematerialization(catalogue, resource_grants, stop: asyncio.Event) -> None:
@@ -551,7 +647,7 @@ async def _supervise_cdc(
 
 
 async def _dependency_probe(
-    client, catalogue, resource_grants, monitor: HealthMonitor, stop: asyncio.Event
+    client, catalogue, monitor: HealthMonitor, stop: asyncio.Event
 ) -> None:
     interval = get_float(
         "ATLAS_MATERIALIZATION_WORKER_HEALTH_PROBE_INTERVAL_SECONDS"
@@ -564,7 +660,6 @@ async def _dependency_probe(
             await _probe_dependencies_once(
                 client,
                 catalogue,
-                resource_grants,
                 timeout=timeout,
             )
         except Exception as exc:
@@ -577,26 +672,17 @@ async def _dependency_probe(
 async def _probe_dependencies_once(
     client,
     catalogue,
-    resource_grants,
     *,
     timeout: float,
 ) -> None:
     await asyncio.wait_for(client.flush(), timeout=timeout)
+    # A running scope owns the one process-local DuckDB lane. Waiting for that
+    # lane, or requesting scarce work admission, would make healthy useful work
+    # fail its own readiness probe. Queue-stall monitoring detects a hung scope.
+    if catalogue_operation_lane().locked():
+        return
     async with asyncio.timeout(timeout):
-        async with resource_permits(
-            resource_grants,
-            catalogue_request(
-                "materialization-health-probe", service_class="live"
-            ),
-        ):
-            # A running scope owns the one process-local DuckDB lane. Waiting for
-            # that lane would make healthy useful work fail its own readiness
-            # probe. Queue-stall monitoring is responsible for detecting a hung
-            # scope; probe DuckDB only when the lane is immediately available.
-            if not catalogue_operation_lane().locked():
-                await run_catalogue_operation(
-                    catalogue.connection.execute, "SELECT 1"
-                )
+        await run_catalogue_operation(catalogue.connection.execute, "SELECT 1")
 
 
 async def _wait(stop: asyncio.Event, seconds: float) -> None:

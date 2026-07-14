@@ -51,8 +51,7 @@ def catalogue_config_from_env() -> CatalogueConfig:
     storage_kind = get_str("ATLAS_REPOSITORY_STORAGE").lower()
     storage = _storage_from_env(root)
     override_data_path = _optional_bool("ATLAS_CATALOGUE_OVERRIDE_DATA_PATH")
-    cdc_extension = get_optional("ATLAS_DUCKLAKE_CDC_EXTENSION")
-    duckdb_settings = {"allow_unsigned_extensions": True} if cdc_extension else {}
+    duckdb_settings = {}
     if isinstance(catalog, PostgresCatalog):
         duckdb_settings.update(
             {
@@ -75,8 +74,6 @@ def catalogue_config_from_env() -> CatalogueConfig:
     duckdb = DuckDBConfig(
         database=get_str("ATLAS_CATALOGUE_DUCKDB_DATABASE"),
         config=duckdb_settings,
-        extensions=(cdc_extension,) if cdc_extension else (),
-        install_extensions=not bool(cdc_extension),
         threads=_optional_int("ATLAS_CATALOGUE_DUCKDB_THREADS"),
         memory_limit=_optional("ATLAS_CATALOGUE_DUCKDB_MEMORY_LIMIT"),
         max_temp_directory_size=_optional("ATLAS_CATALOGUE_DUCKDB_MAX_TEMP_SIZE"),
