@@ -1,54 +1,55 @@
 [project]
 name = "atlas"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
+description = "Web acquisition and normalization for SQL-centric data pipelines"
+readme = { text = "Atlas backend services and command-line tools.", content-type = "text/markdown" }
 requires-python = ">=3.14"
 dependencies = [
     "alembic>=1.18",
     "crawl4ai>=0.9.0",
-    "croniter>=6.0",
     "fastapi[standard]>=0.139.0",
     "httpx>=0.28",
     "nats-py>=2.11",
     "psycopg[binary]>=3.2",
     "prometheus-client>=0.22",
+    "pydantic>=2.12",
+    "python-dotenv>=1.2",
     "sqlalchemy>=2.0",
     "typer>=0.26.8",
+    "rich>=14.0",
+    "ducklake-client>=0.8.2",
+    "boto3>=1.42",
+    "zstandard>=0.25",
+    "html5lib>=1.1",
+    "cssselect2>=0.9",
+    "pyarrow>=21",
+    "sqlglot>=27",
+    "ducklake-cdc-client==0.6.1",
+    "duckdb==1.5.4",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.5",
 ]
 
 [project.scripts]
 atlas = "cli.app:app"
-atlas-worker = "worker.app:main"
+atlas-setup = "deployment:main"
+atlas-crawl-http-worker = "workers.crawl_http:main"
+atlas-crawl-browser-worker = "workers.crawl_browser:main"
+atlas-crawl-provider-worker = "workers.crawl_provider:main"
+atlas-ingestion-worker = "workers.ingestion:main"
+atlas-materialization-worker = "workers.materialization:main"
+atlas-maintenance-worker = "workers.maintenance:main"
 
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = [
-    "actions",
-    "actions.extract",
-    "actions.index",
-    "actions.crawl",
-    "actions.search",
-    "actions.shared",
-    "actions.shared.data_schema",
-    "actions.shared.query_schema",
-    "actions.shared.quality",
-    "artifacts",
-    "crawl_policies",
-    "crawls",
-    "data_schemas",
-    "query_schemas",
-    "api",
-    "api.routers",
-    "cli",
-    "cli.apps",
-    "db",
-    "metrics",
-    "observability",
-    "tasks",
-    "urls",
-    "worker",
-]
+py-modules = ["deployment"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests*", "build*"]

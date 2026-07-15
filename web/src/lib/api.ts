@@ -12,12 +12,13 @@ export class ApiError extends Error {
 
 export function apiUrl(path: string) {
   const baseUrl = import.meta.env.VITE_API_URL
+  const apiPath = path.startsWith("/") ? path : `/${path}`
 
   if (!baseUrl) {
-    return path
+    return `/api${apiPath}`
   }
 
-  return new URL(path, baseUrl).toString()
+  return new URL(apiPath.slice(1), `${baseUrl.replace(/\/$/, "")}/`).toString()
 }
 
 export function extractApiError(error: unknown) {

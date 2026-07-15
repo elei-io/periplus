@@ -1,0 +1,393 @@
+import { useEffect, useState } from "react"
+import {
+  ActivityIcon,
+  Clock3Icon,
+  DatabaseIcon,
+  ListTreeIcon,
+  PlayIcon,
+  Rows3Icon,
+  SparklesIcon,
+  TriangleAlertIcon,
+  ViewIcon,
+  SaveIcon,
+  BracesIcon,
+} from "lucide-react"
+
+import { CatalogueResultsTable } from "@/components/catalogue/catalogue-results-table"
+import { CatalogueExplainPlan } from "@/components/catalogue/catalogue-explain-plan"
+import { catalogueTables } from "@/components/catalogue/catalogue-schema"
+import { SqlEditor } from "@/components/catalogue/sql-editor"
+import { SqlReferenceSheet } from "@/components/catalogue/sql-reference-sheet"
+import { formatSql } from "@/components/catalogue/sql-format"
+import { SaveViewDialog } from "@/components/catalogue/save-view-dialog"
+import { SaveQueryDialog } from "@/components/catalogue/save-query-dialog"
+import { SaveTableMacroDialog } from "@/components/catalogue/save-table-macro-dialog"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+} from "@/components/ui/select"
+import { useCatalogueQuery } from "@/hooks/use-catalogue-query"
+import { useCatalogueLint } from "@/hooks/use-catalogue-lint"
+import { useCatalogueViews } from "@/hooks/use-catalogue-views"
+import { useCatalogueTableMacros } from "@/hooks/use-catalogue-table-macros"
+import { useSavedQuery } from "@/hooks/use-saved-queries"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import type { CatalogueQueryMode } from "@/types/catalogue"
+
+const initialSql = `SELECT *\nFROM documents\nLIMIT 100;`
+
+const queryModeLabels: Record<CatalogueQueryMode, string> = {
+  run: "Run",
+  explain: "Explain",
+  explain_analyze: "Explain analyze",
+}
+
+const queryModeActions: Record<CatalogueQueryMode, string> = {
+  run: "Run query",
+  explain: "Explain query",
+  explain_analyze: "Analyze query",
+}
+
+const examples = [
+  {
+    label: "Recent documents",
+    sql: `SELECT document_id, element_count, created_at\nFROM documents\nORDER BY created_at DESC\nLIMIT 100;`,
+  },
+  {
+    label: "Links",
+    sql: `WITH selected AS MATERIALIZED (\n  SELECT document_id, element_index, attributes\n  FROM elements\n  WHERE tag = 'a' AND has_attribute(attributes, 'href')\n  LIMIT 100\n)\nSELECT\n  document_id,\n  text_content(document_id, element_index) AS text,\n  get_attribute(attributes, 'href') AS href\nFROM selected;`,
+  },
+  {
+    label: "Tag counts",
+    sql: `SELECT tag, count(*) AS elements\nFROM elements\nGROUP BY tag\nORDER BY elements DESC\nLIMIT 100;`,
+  },
+]
+
+export function CatalogueSqlPage() {
+  const params = new URLSearchParams(window.location.search)
+  const [savedQueryId, setSavedQueryId] = useState<string | null>(
+    params.get("query")
+  )
+  const [requestedRevision, setRequestedRevision] = useState<number | null>(
+    Number(params.get("revision") || "") || null
+  )
+  const savedQuery = useSavedQuery(savedQueryId)
+  const [query, setQuery] = useState(initialSql)
+  const [queryMode, setQueryMode] = useState<CatalogueQueryMode>("run")
+  const [executedMode, setExecutedMode] = useState<CatalogueQueryMode | null>(null)
+  const [startedAt, setStartedAt] = useState<number | null>(null)
+  const [elapsed, setElapsed] = useState<number | null>(null)
+  const [saveViewOpen, setSaveViewOpen] = useState(false)
+  const [saveQueryOpen, setSaveQueryOpen] = useState(false)
+  const [saveTableMacroOpen, setSaveTableMacroOpen] = useState(false)
+  const catalogueQuery = useCatalogueQuery()
+  const catalogueLint = useCatalogueLint(query, queryMode)
+  const catalogueViews = useCatalogueViews()
+  const catalogueTableMacros = useCatalogueTableMacros()
+
+  useEffect(() => {
+    if (!savedQuery.data) return
+    const revision = requestedRevision
+      ? savedQuery.data.revisions.find((item) => item.revision === requestedRevision)
+      : null
+    // Loading a requested immutable revision is an intentional external-state synchronization.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setQuery(revision?.sql ?? savedQuery.data.sql)
+  }, [savedQuery.data, requestedRevision])
+
+  function execute() {
+    if (!query.trim() || catalogueQuery.isPending) return
+    const started = performance.now()
+    setStartedAt(started)
+    catalogueQuery.mutate(
+      { sql: query, mode: queryMode },
+      {
+        onSuccess: () => setExecutedMode(queryMode),
+        onSettled: () => {
+          setElapsed(performance.now() - started)
+          setStartedAt(null)
+        },
+      }
+    )
+  }
+
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto">
+      <section className="sql-workbench overflow-hidden rounded-xl border bg-card shadow-sm">
+        <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 border-b bg-card/95 px-4 py-3 backdrop-blur">
+          <div className="flex items-center gap-2">
+            {savedQuery.data && (
+              <Badge variant="secondary">
+                {savedQuery.data.name} · v{savedQuery.data.current_revision}
+              </Badge>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setSaveQueryOpen(true)}
+              disabled={!query.trim()}
+            >
+              <SaveIcon /> {savedQuery.data ? "Save revision" : "Save query"}
+            </Button>
+            <div className="flex size-7 items-center justify-center rounded-md bg-primary/10 text-primary">
+              <DatabaseIcon className="size-3.5" />
+            </div>
+            <div>
+              <div className="text-xs font-medium">DuckLake catalogue</div>
+              <div className="text-[11px] text-muted-foreground">
+                Read-only · Arrow IPC
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <SqlReferenceSheet />
+            <Button size="sm" variant="ghost" onClick={() => setQuery(formatSql(query))} disabled={!query.trim()}><SparklesIcon />Format SQL</Button>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setSaveViewOpen(true)}
+                    disabled={!query.trim()}
+                  />
+                }
+              >
+                <ViewIcon /> Save as view
+              </TooltipTrigger>
+              <TooltipContent>
+                Create a persistent, non-materialized DuckLake view from this SQL
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setSaveTableMacroOpen(true)}
+                    disabled={!query.trim()}
+                  />
+                }
+              >
+                <BracesIcon /> Save as macro
+              </TooltipTrigger>
+              <TooltipContent>
+                Create a reusable, parameterized table macro from this SQL
+              </TooltipContent>
+            </Tooltip>
+            <Badge
+              variant="outline"
+              className="hidden font-mono text-[10px] sm:inline-flex"
+            >
+              ⌘ ↵
+            </Badge>
+            <Select
+              value={queryMode}
+              onValueChange={(value) =>
+                value && setQueryMode(value as CatalogueQueryMode)
+              }
+              disabled={catalogueQuery.isPending}
+            >
+              <SelectTrigger
+                size="sm"
+                className="min-w-32"
+                aria-label="Query mode"
+              >
+                <span>{queryModeLabels[queryMode]}</span>
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="run">
+                  <PlayIcon /> Run
+                </SelectItem>
+                <SelectItem value="explain">
+                  <ListTreeIcon /> Explain
+                </SelectItem>
+                <SelectItem value="explain_analyze">
+                  <ActivityIcon /> Explain analyze
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              onClick={execute}
+              disabled={catalogueQuery.isPending || !query.trim()}
+            >
+              {catalogueQuery.isPending ? (
+                <SparklesIcon className="animate-pulse" />
+              ) : queryMode === "explain" ? (
+                <ListTreeIcon />
+              ) : queryMode === "explain_analyze" ? (
+                <ActivityIcon />
+              ) : (
+                <PlayIcon />
+              )}{" "}
+              {catalogueQuery.isPending
+                ? `${queryModeLabels[queryMode]}…`
+                : queryModeActions[queryMode]}
+            </Button>
+          </div>
+        </div>
+        <SqlEditor
+          value={query}
+          onChange={setQuery}
+          onRun={execute}
+          enableCssSelect
+          views={(catalogueViews.data?.items ?? []).filter(
+            (view) => view.available
+          )}
+          macros={(catalogueTableMacros.data?.items ?? []).filter(
+            (macro) => macro.available
+          )}
+        />
+        {catalogueLint.data && catalogueLint.data.diagnostics.length > 0 && (
+          <div className="space-y-1.5 border-t border-amber-500/20 bg-amber-500/5 px-4 py-2.5">
+            {catalogueLint.data.diagnostics.map((diagnostic) => (
+              <div
+                key={diagnostic.code}
+                className="flex items-start gap-2 text-[11px] text-amber-800 dark:text-amber-300"
+              >
+                <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
+                <span>{diagnostic.message}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-2 border-t bg-muted/15 px-4 py-2.5">
+          <span className="mr-1 text-[11px] text-muted-foreground">Try</span>
+          {examples.map((example) => (
+            <Button
+              key={example.label}
+              variant="ghost"
+              size="xs"
+              className="h-6 rounded-full border bg-background px-2.5 text-[10px]"
+              onClick={() => setQuery(example.sql)}
+            >
+              {example.label}
+            </Button>
+          ))}
+          <span className="ml-auto hidden text-[10px] text-muted-foreground md:inline">
+            Autocomplete: tables, CSS & DOM helpers
+          </span>
+        </div>
+      </section>
+      <SaveQueryDialog
+        open={saveQueryOpen}
+        onOpenChange={setSaveQueryOpen}
+        sql={query}
+        query={savedQuery.data ?? null}
+        onSaved={(saved) => {
+          setSavedQueryId(saved.id)
+          setRequestedRevision(null)
+          window.history.replaceState(null, "", `/catalogue/sql?query=${saved.id}`)
+        }}
+      />
+      <SaveViewDialog
+        open={saveViewOpen}
+        onOpenChange={setSaveViewOpen}
+        sql={query}
+        queryRevisionId={savedQuery.data?.current_revision_id}
+      />
+      <SaveTableMacroDialog
+        open={saveTableMacroOpen}
+        onOpenChange={setSaveTableMacroOpen}
+        sql={query}
+        queryRevisionId={savedQuery.data?.current_revision_id}
+      />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+        <div className="flex min-h-5 items-center gap-3 text-[11px] text-muted-foreground">
+          {catalogueQuery.data ? (
+            <>
+              {executedMode === "run" ? (
+                <span className="flex items-center gap-1.5">
+                  <Rows3Icon className="size-3" />
+                  {catalogueQuery.data.rows.length.toLocaleString()} rows
+                </span>
+              ) : (
+                <span>{executedMode === "explain_analyze" ? "Execution profile" : "Query plan"}</span>
+              )}
+              {executedMode && (
+                <Badge variant="outline" className="h-5 text-[9px]">
+                  {queryModeLabels[executedMode]}
+                </Badge>
+              )}
+              {executedMode === "run" ? (
+                <span>{catalogueQuery.data.columns.length} columns</span>
+              ) : null}
+              {elapsed !== null && (
+                <span className="flex items-center gap-1.5">
+                  <Clock3Icon className="size-3" />
+                  {elapsed < 1000
+                    ? `${Math.round(elapsed)} ms`
+                    : `${(elapsed / 1000).toFixed(2)} s`}
+                </span>
+              )}
+            </>
+          ) : (
+            <span>Run or explain a query to inspect its results.</span>
+          )}
+          {startedAt !== null && (
+            <span className="animate-pulse">
+              {queryMode === "run" ? "Executing" : "Planning"} query…
+            </span>
+          )}
+        </div>
+        {catalogueQuery.data && executedMode === "run" && (
+          <CatalogueResultsTable
+            key={catalogueQuery.data.columns.join("\u0000")}
+            result={catalogueQuery.data}
+          />
+        )}
+        {catalogueQuery.data && executedMode && executedMode !== "run" ? (
+          <CatalogueExplainPlan
+            key={`${executedMode}-${catalogueQuery.data.rows.length}`}
+            result={catalogueQuery.data}
+            mode={executedMode}
+          />
+        ) : null}
+        {!catalogueQuery.data && (
+          <div className="grid gap-3 pt-2 lg:grid-cols-2">
+            {(["documents", "elements"] as const).map((table) => (
+              <button
+                key={table}
+                type="button"
+                className="group rounded-xl border bg-card/70 p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:bg-card hover:shadow-md"
+                onClick={() =>
+                  setQuery(`SELECT *\nFROM atlas.main.${table}\nLIMIT 100;`)
+                }
+              >
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2 font-mono text-xs font-medium">
+                    <DatabaseIcon className="size-3.5 text-primary" />
+                    atlas.main.{table}
+                  </div>
+                  <span className="text-[10px] text-muted-foreground transition-colors group-hover:text-primary">
+                    Open query →
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {catalogueTables[table].map((column) => (
+                    <span
+                      key={column}
+                      className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground"
+                    >
+                      {column}
+                    </span>
+                  ))}
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

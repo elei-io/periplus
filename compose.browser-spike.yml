@@ -1,0 +1,36 @@
+name: atlas-steel-spike
+
+services:
+  steel-browser-spike-api:
+    image: ghcr.io/steel-dev/steel-browser-api:latest
+    platform: ${STEEL_PLATFORM:-linux/arm64}
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:9223:9223"
+    volumes:
+      - ./.artifacts/steel-cache:/app/.cache
+    environment:
+      DOMAIN: localhost:3000
+      CDP_DOMAIN: localhost:9223
+      DEBUG: "true"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        Xvfb :10 -screen 0 1280x800x24 -ac &
+        exec /app/api/entrypoint.sh
+    shm_size: "2gb"
+    init: true
+    cap_add:
+      - SYS_ADMIN
+    restart: unless-stopped
+
+  steel-browser-spike-ui:
+    image: ghcr.io/steel-dev/steel-browser-ui:latest
+    platform: ${STEEL_PLATFORM:-linux/arm64}
+    ports:
+      - "127.0.0.1:5173:80"
+    environment:
+      API_URL: http://steel-browser-spike-api:3000
+    depends_on:
+      - steel-browser-spike-api
+    restart: unless-stopped

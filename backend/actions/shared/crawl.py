@@ -1,8 +1,11 @@
 from hashlib import sha1
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from crawl4ai import BrowserConfig, CacheMode, CrawlerRunConfig
-from crawl4ai.models import CrawlResult
+if TYPE_CHECKING:
+    from crawl4ai import BrowserConfig, CrawlerRunConfig
+    from crawl4ai.models import CrawlResult
+else:
+    BrowserConfig = CrawlerRunConfig = CrawlResult = Any
 
 CrawlMode = Literal["static", "dynamic", "app"]
 CrawlWait = Literal["none", "stable", "network", "fixed"]
@@ -61,6 +64,8 @@ def run_config_for_mode(
     wait: CrawlWait,
     **overrides,
 ) -> CrawlerRunConfig:
+    from crawl4ai import CacheMode, CrawlerRunConfig
+
     config = {
         "cache_mode": CacheMode.BYPASS,
         "magic": True,
@@ -93,6 +98,8 @@ def run_config_for_mode(
 
 
 def browser_config_for_mode(mode: CrawlMode) -> BrowserConfig:
+    from crawl4ai import BrowserConfig
+
     return BrowserConfig(
         headless=True,
         enable_stealth=True,
@@ -120,6 +127,8 @@ def app_pre_scan_wait_config(
 
 
 def app_scan_config(url: str, **overrides) -> CrawlerRunConfig:
+    from crawl4ai import CacheMode, CrawlerRunConfig
+
     config = {
         "cache_mode": CacheMode.BYPASS,
         "magic": True,

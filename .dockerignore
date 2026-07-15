@@ -1,0 +1,14 @@
+.git
+.env
+.atlas
+**/.DS_Store
+**/.venv
+**/__pycache__
+**/*.egg-info
+**/*.pyc
+**/.pytest_cache
+**/.coverage
+**/.tmp
+**/build
+**/dist
+web/node_modules

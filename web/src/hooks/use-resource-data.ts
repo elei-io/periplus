@@ -3,24 +3,18 @@ import { toast } from "sonner"
 
 import { apiErrorFromResponse, apiUrl, extractApiError } from "@/lib/api"
 import type {
-  ArtifactDetailRecord,
-  ArtifactFilters,
-  ArtifactInvalidateRequest,
-  ArtifactInvalidateResponse,
-  ArtifactListResponse,
   CrawlPolicyDetailRecord,
+  CrawlPolicyCreateRequest,
   CrawlPolicyFilters,
   CrawlPolicyListResponse,
   CrawlPolicyUpdateRequest,
-  DataSchemaDetailRecord,
-  DataSchemaFilters,
-  DataSchemaListResponse,
-  DataSchemaUpdateRequest,
+  CrawlProfileListResponse,
+  CrawlProfileCreateRequest,
+  CrawlProfileRecord,
+  CrawlProfileUpdateRequest,
   PageParams,
-  QuerySchemaDetailRecord,
-  QuerySchemaFilters,
-  QuerySchemaListResponse,
-  QuerySchemaUpdateRequest,
+  PolicyTrialApplyRequest,
+  PolicyTrialReport,
 } from "@/types/resources"
 
 function appendParam(params: URLSearchParams, name: string, value: string) {
@@ -37,172 +31,82 @@ function pageParams(page: PageParams) {
   }
 }
 
-function artifactParams(filters: ArtifactFilters, page?: PageParams) {
-  const params = new URLSearchParams(page ? pageParams(page) : undefined)
-  appendParam(params, "url_pattern", filters.urlPattern)
-  if (filters.kind !== "all") {
-    params.set("kind", filters.kind)
-  }
-  if (filters.invalidated !== "all") {
-    params.set("invalidated", String(filters.invalidated === "invalidated"))
-  }
-  if (filters.warnings !== "all") {
-    params.set("warnings", String(filters.warnings === "warning"))
-  }
-  return params
-}
-
-function querySchemaParams(filters: QuerySchemaFilters, page?: PageParams) {
-  const params = new URLSearchParams(page ? pageParams(page) : undefined)
-  appendParam(params, "match_pattern", filters.matchPattern)
-  appendParam(params, "domain", filters.domain)
-  if (filters.schemaType !== "all") {
-    params.set("schema_type", filters.schemaType)
-  }
-  if (filters.enabled !== "all") {
-    params.set("enabled", String(filters.enabled === "enabled"))
-  }
-  if (filters.warnings !== "all") {
-    params.set("warnings", String(filters.warnings === "warning"))
-  }
-  return params
-}
-
 function crawlPolicyParams(filters: CrawlPolicyFilters, page?: PageParams) {
   const params = new URLSearchParams(page ? pageParams(page) : undefined)
   appendParam(params, "match_pattern", filters.matchPattern)
-  appendParam(params, "template", filters.template)
+  appendParam(params, "profile_slug", filters.profileSlug)
   if (filters.enabled !== "all") {
     params.set("enabled", String(filters.enabled === "enabled"))
   }
-  if (filters.mode !== "all") {
-    params.set("mode", filters.mode)
+  if (filters.transport !== "all") {
+    params.set("transport", filters.transport)
   }
   return params
 }
 
-function dataSchemaParams(filters: DataSchemaFilters, page?: PageParams) {
-  const params = new URLSearchParams(page ? pageParams(page) : undefined)
-  appendParam(params, "match_pattern", filters.matchPattern)
-  appendParam(params, "prompt", filters.prompt)
-  if (filters.schemaType !== "all") {
-    params.set("schema_type", filters.schemaType)
-  }
-  if (filters.enabled !== "all") {
-    params.set("enabled", String(filters.enabled === "enabled"))
-  }
-  if (filters.warnings !== "all") {
-    params.set("warnings", String(filters.warnings === "warning"))
-  }
-  return params
-}
-
-export function useArtifacts(filters: ArtifactFilters, page: PageParams) {
+export function useCrawlProfiles(page: PageParams = { limit: 100, offset: 0 }) {
   return useQuery({
-    queryKey: ["artifacts", filters, page],
+    queryKey: ["crawl-profiles", page],
     queryFn: async () => {
-      const response = await fetch(
-        apiUrl(`/artifacts/?${artifactParams(filters, page).toString()}`)
-      )
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as ArtifactListResponse
+      const params = new URLSearchParams(pageParams(page))
+      const response = await fetch(apiUrl(`/crawl-profiles/?${params.toString()}`))
+      if (!response.ok) throw await apiErrorFromResponse(response)
+      return (await response.json()) as CrawlProfileListResponse
     },
   })
 }
 
-export function useArtifact(id: string | null) {
+export function useCrawlProfile(id: string | null) {
   return useQuery({
     enabled: Boolean(id),
-    queryKey: ["artifact", id],
+    queryKey: ["crawl-profile", id],
     queryFn: async () => {
-      const response = await fetch(apiUrl(`/artifacts/${id}`))
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as ArtifactDetailRecord
+      const response = await fetch(apiUrl(`/crawl-profiles/${id}`))
+      if (!response.ok) throw await apiErrorFromResponse(response)
+      return (await response.json()) as CrawlProfileRecord
     },
   })
 }
 
-export function useQuerySchemas(filters: QuerySchemaFilters, page: PageParams) {
-  return useQuery({
-    queryKey: ["query-schemas", filters, page],
-    queryFn: async () => {
-      const response = await fetch(
-        apiUrl(`/query-schemas/?${querySchemaParams(filters, page).toString()}`)
-      )
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as QuerySchemaListResponse
-    },
-  })
-}
-
-export function useQuerySchema(id: string | null) {
-  return useQuery({
-    enabled: Boolean(id),
-    queryKey: ["query-schema", id],
-    queryFn: async () => {
-      const response = await fetch(apiUrl(`/query-schemas/${id}`))
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as QuerySchemaDetailRecord
-    },
-  })
-}
-
-export function useUpdateQuerySchema(id: string) {
+export function useUpdateCrawlProfile(id: string) {
   const queryClient = useQueryClient()
-
   return useMutation({
-    mutationFn: async (request: QuerySchemaUpdateRequest) => {
-      const response = await fetch(apiUrl(`/query-schemas/${id}`), {
+    mutationFn: async (request: CrawlProfileUpdateRequest) => {
+      const response = await fetch(apiUrl(`/crawl-profiles/${id}`), {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
       })
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as QuerySchemaDetailRecord
+      if (!response.ok) throw await apiErrorFromResponse(response)
+      return (await response.json()) as CrawlProfileRecord
     },
     onSuccess: () => {
-      toast.success("Updated query schema.")
-      void queryClient.invalidateQueries({ queryKey: ["query-schema", id] })
-      void queryClient.invalidateQueries({ queryKey: ["query-schemas"] })
+      toast.success("Updated crawl profile.")
+      void queryClient.invalidateQueries({ queryKey: ["crawl-profile", id] })
+      void queryClient.invalidateQueries({ queryKey: ["crawl-profiles"] })
+      void queryClient.invalidateQueries({ queryKey: ["crawl-policies"] })
     },
-    onError: (error) => {
-      toast.error(extractApiError(error))
-    },
+    onError: (error) => toast.error(extractApiError(error)),
   })
 }
 
-export function useDeleteQuerySchema(id: string) {
+export function useCreateCrawlProfile() {
   const queryClient = useQueryClient()
-
   return useMutation({
-    mutationFn: async () => {
-      const response = await fetch(apiUrl(`/query-schemas/${id}`), {
-        method: "DELETE",
+    mutationFn: async (request: CrawlProfileCreateRequest) => {
+      const response = await fetch(apiUrl("/crawl-profiles/"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
       })
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
+      if (!response.ok) throw await apiErrorFromResponse(response)
+      return (await response.json()) as CrawlProfileRecord
     },
     onSuccess: () => {
-      toast.success("Deleted query schema.")
-      void queryClient.invalidateQueries({ queryKey: ["query-schema", id] })
-      void queryClient.invalidateQueries({ queryKey: ["query-schemas"] })
+      toast.success("Created crawl profile.")
+      void queryClient.invalidateQueries({ queryKey: ["crawl-profiles"] })
     },
-    onError: (error) => {
-      toast.error(extractApiError(error))
-    },
+    onError: (error) => toast.error(extractApiError(error)),
   })
 }
 
@@ -240,6 +144,48 @@ export function useCrawlPolicy(id: string | null) {
   })
 }
 
+export function usePolicyTrials(page: PageParams) {
+  return useQuery({
+    queryKey: ["policy-trials", page],
+    queryFn: async () => {
+      const params = new URLSearchParams(pageParams(page))
+      const response = await fetch(
+        apiUrl(`/crawl-policies/trials?${params.toString()}`)
+      )
+      if (!response.ok) {
+        throw await apiErrorFromResponse(response)
+      }
+      return (await response.json()) as PolicyTrialReport
+    },
+  })
+}
+
+export function useApplyPolicyTrial() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (request: PolicyTrialApplyRequest) => {
+      const response = await fetch(apiUrl("/crawl-policies/trials/apply"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      })
+      if (!response.ok) {
+        throw await apiErrorFromResponse(response)
+      }
+      return (await response.json()) as CrawlPolicyDetailRecord
+    },
+    onSuccess: () => {
+      toast.success("Applied sampled crawl policy.")
+      void queryClient.invalidateQueries({ queryKey: ["policy-trials"] })
+      void queryClient.invalidateQueries({ queryKey: ["crawl-policies"] })
+    },
+    onError: (error) => {
+      toast.error(extractApiError(error))
+    },
+  })
+}
+
 export function useUpdateCrawlPolicy(id: string) {
   const queryClient = useQueryClient()
 
@@ -268,6 +214,26 @@ export function useUpdateCrawlPolicy(id: string) {
   })
 }
 
+export function useCreateCrawlPolicy() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (request: CrawlPolicyCreateRequest) => {
+      const response = await fetch(apiUrl("/crawl-policies/"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      })
+      if (!response.ok) throw await apiErrorFromResponse(response)
+      return (await response.json()) as CrawlPolicyDetailRecord
+    },
+    onSuccess: () => {
+      toast.success("Created crawl policy.")
+      void queryClient.invalidateQueries({ queryKey: ["crawl-policies"] })
+    },
+    onError: (error) => toast.error(extractApiError(error)),
+  })
+}
+
 export function useDeleteCrawlPolicy(id: string) {
   const queryClient = useQueryClient()
 
@@ -284,113 +250,6 @@ export function useDeleteCrawlPolicy(id: string) {
       toast.success("Deleted crawl policy.")
       void queryClient.invalidateQueries({ queryKey: ["crawl-policy", id] })
       void queryClient.invalidateQueries({ queryKey: ["crawl-policies"] })
-    },
-    onError: (error) => {
-      toast.error(extractApiError(error))
-    },
-  })
-}
-
-export function useDataSchemas(filters: DataSchemaFilters, page: PageParams) {
-  return useQuery({
-    queryKey: ["data-schemas", filters, page],
-    queryFn: async () => {
-      const response = await fetch(
-        apiUrl(`/data-schemas/?${dataSchemaParams(filters, page).toString()}`)
-      )
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as DataSchemaListResponse
-    },
-  })
-}
-
-export function useDataSchema(id: string | null) {
-  return useQuery({
-    enabled: Boolean(id),
-    queryKey: ["data-schema", id],
-    queryFn: async () => {
-      const response = await fetch(apiUrl(`/data-schemas/${id}`))
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as DataSchemaDetailRecord
-    },
-  })
-}
-
-export function useUpdateDataSchema(id: string) {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (request: DataSchemaUpdateRequest) => {
-      const response = await fetch(apiUrl(`/data-schemas/${id}`), {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(request),
-      })
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as DataSchemaDetailRecord
-    },
-    onSuccess: () => {
-      toast.success("Updated data schema.")
-      void queryClient.invalidateQueries({ queryKey: ["data-schema", id] })
-      void queryClient.invalidateQueries({ queryKey: ["data-schemas"] })
-    },
-    onError: (error) => {
-      toast.error(extractApiError(error))
-    },
-  })
-}
-
-export function useDeleteDataSchema(id: string) {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async () => {
-      const response = await fetch(apiUrl(`/data-schemas/${id}`), {
-        method: "DELETE",
-      })
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-    },
-    onSuccess: () => {
-      toast.success("Deleted data schema.")
-      void queryClient.invalidateQueries({ queryKey: ["data-schema", id] })
-      void queryClient.invalidateQueries({ queryKey: ["data-schemas"] })
-    },
-    onError: (error) => {
-      toast.error(extractApiError(error))
-    },
-  })
-}
-
-export function useInvalidateArtifacts() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (request: ArtifactInvalidateRequest) => {
-      const response = await fetch(apiUrl("/artifacts/invalidate"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(request),
-      })
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as ArtifactInvalidateResponse
-    },
-    onSuccess: (result) => {
-      toast.success(`Invalidated ${result.invalidated} artifacts.`)
-      void queryClient.invalidateQueries({ queryKey: ["artifacts"] })
     },
     onError: (error) => {
       toast.error(extractApiError(error))

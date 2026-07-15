@@ -1,41 +1,40 @@
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, BinaryIO
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict
 
-from actions.shared.quality.schemas import QualityWarning
+from repository.objects.artifact import ArtifactIdentity
 
 
-class Input(BaseModel):
-    urls: list[str] = Field(
-        min_length=1,
-        description="The URLs to crawl.",
-    )
+@dataclass(slots=True)
+class CapturedArtifact:
+    content: BinaryIO
+    identity: ArtifactIdentity
+    media_type: str
+    filename: str | None = None
+
+    def close(self) -> None:
+        self.content.close()
 
 
 class CrawlPage(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     url: str
     success: bool
     status_code: int | None = None
     duration_seconds: float
     crawl_id: UUID | None = None
-    artifact_ids: list[UUID] = Field(default_factory=list)
+    document_id: str | None = None
+    artifact_id: str | None = None
+    repository_snapshot: int | None = None
+    repository_crawl_created: bool | None = None
     html: str | None = None
+    artifact: CapturedArtifact | None = None
     crawl: dict[str, Any] | None = None
-    artifact_warnings: list[QualityWarning] = Field(
-        default_factory=list,
-        description="Artifact quality warnings for the captured page content.",
-    )
     error: str | None = None
-
-
-class CrawlStats(BaseModel):
-    requested_urls: int
-    succeeded: int
-    failed: int
-    duration_seconds: float
-
-
-class CrawlOutput(BaseModel):
-    stats: CrawlStats
-    pages: list[CrawlPage]
+    failure_code: str | None = None
+    failure_stage: str | None = None
+    failure_retryable: bool | None = None
+    retry_after_seconds: float | None = None

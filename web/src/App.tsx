@@ -8,20 +8,6 @@ import {
 } from "react"
 
 import { AppSidebar } from "@/components/app-sidebar"
-import { CalibratePage } from "@/pages/playground/calibrate-page"
-import { ExtractPage } from "@/pages/playground/extract-page"
-import { IndexPage } from "@/pages/playground/index-page"
-import { CrawlPage } from "@/pages/playground/crawl-page"
-import { SearchPage } from "@/pages/playground/search-page"
-import { TasksPage } from "@/pages/admin/tasks-page"
-import { ArtifactDetailPage } from "@/pages/cache/artifact-detail-page"
-import { ArtifactsPage } from "@/pages/cache/artifacts-page"
-import { CrawlPolicyDetailPage } from "@/pages/settings/crawl-policy-detail-page"
-import { CrawlPoliciesPage } from "@/pages/settings/crawl-policies-page"
-import { DataSchemaDetailPage } from "@/pages/cache/data-schema-detail-page"
-import { DataSchemasPage } from "@/pages/cache/data-schemas-page"
-import { QuerySchemaDetailPage } from "@/pages/cache/query-schema-detail-page"
-import { QuerySchemasPage } from "@/pages/cache/query-schemas-page"
 import {
   defaultNavigationItem,
   findNavigationItem,
@@ -33,11 +19,97 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 
-const MetricsPage = lazy(() =>
-  import("@/pages/admin/metrics-page").then((module) => ({
-    default: module.MetricsPage,
+const CatalogueSqlPage = lazy(() =>
+  import("@/pages/catalogue/sql-page").then((module) => ({
+    default: module.CatalogueSqlPage,
   }))
 )
+const CatalogueWorkbenchPage = lazy(() =>
+  import("@/pages/catalogue/workbench-page").then((module) => ({
+    default: module.CatalogueWorkbenchPage,
+  }))
+)
+const CatalogueViewsPage = lazy(() =>
+  import("@/pages/catalogue/views-page").then((module) => ({
+    default: module.CatalogueViewsPage,
+  }))
+)
+const CatalogueQueriesPage = lazy(() =>
+  import("@/pages/catalogue/queries-page").then((module) => ({
+    default: module.CatalogueQueriesPage,
+  }))
+)
+const CatalogueTableMacrosPage = lazy(() =>
+  import("@/pages/catalogue/table-macros-page").then((module) => ({
+    default: module.CatalogueTableMacrosPage,
+  }))
+)
+const CrawlGraphsPage = lazy(() =>
+  import("@/pages/admin/graphs-page").then((module) => ({
+    default: module.CrawlGraphsPage,
+  }))
+)
+const CrawlGraphDetailPage = lazy(() =>
+  import("@/pages/admin/graphs-page").then((module) => ({
+    default: module.CrawlGraphDetailPage,
+  }))
+)
+const CrawlMetricsPage = lazy(() =>
+  import("@/pages/crawls/metrics-page").then((module) => ({
+    default: module.CrawlMetricsPage,
+  }))
+)
+const CrawlPoliciesPage = lazy(() =>
+  import("@/pages/settings/crawl-policies-page").then((module) => ({
+    default: module.CrawlPoliciesPage,
+  }))
+)
+const CrawlPolicyDetailPage = lazy(() =>
+  import("@/pages/settings/crawl-policy-detail-page").then((module) => ({
+    default: module.CrawlPolicyDetailPage,
+  }))
+)
+const CrawlProfilesPage = lazy(() =>
+  import("@/pages/settings/crawl-profiles-page").then((module) => ({
+    default: module.CrawlProfilesPage,
+  }))
+)
+const CrawlProfileDetailPage = lazy(() =>
+  import("@/pages/settings/crawl-profiles-page").then((module) => ({
+    default: module.CrawlProfileDetailPage,
+  }))
+)
+const PolicyTrialsPage = lazy(() =>
+  import("@/pages/settings/policy-trials-page").then((module) => ({
+    default: module.PolicyTrialsPage,
+  }))
+)
+const SqlQueriesDocsPage = lazy(() =>
+  import("@/pages/docs/docs-page").then((module) => ({
+    default: module.SqlQueriesDocsPage,
+  }))
+)
+const CrawlGraphsDocsPage = lazy(() =>
+  import("@/pages/docs/docs-page").then((module) => ({
+    default: module.CrawlGraphsDocsPage,
+  }))
+)
+const ResourcesScalingDocsPage = lazy(() =>
+  import("@/pages/docs/docs-page").then((module) => ({
+    default: module.ResourcesScalingDocsPage,
+  }))
+)
+
+function PageFallback() {
+  return (
+    <div
+      className="flex flex-1 items-center justify-center text-sm text-muted-foreground"
+      role="status"
+    >
+      Loading…
+    </div>
+  )
+}
 
 function getCurrentPathname() {
   return window.location.pathname
@@ -65,95 +137,102 @@ export function App() {
     )
   }, [activeItem.href])
 
-  const handleNavigate = useCallback(
-    (href: string) => {
-      if (href === pathname) {
-        return
-      }
+  const isFullScreenWorkbench = activeItem.href === "/catalogue/workbench"
 
-      window.history.pushState(null, "", href)
-      setPathname(href)
-    },
-    [pathname]
-  )
+  const handleNavigate = useCallback((href: string) => {
+    const targetPathname = new URL(href, window.location.origin).pathname
+    if (href === `${window.location.pathname}${window.location.search}`) {
+      return
+    }
+
+    window.history.pushState(null, "", href)
+    setPathname(targetPathname)
+  }, [])
 
   const page = (() => {
-    if (activeItem.href === "/playground/index") {
-      return <IndexPage />
+    if (activeItem.href === "/catalogue/workbench") {
+      return <CatalogueWorkbenchPage />
     }
 
-    if (activeItem.href === "/playground/search") {
-      return <SearchPage />
+    if (activeItem.href === "/catalogue/sql") {
+      return <CatalogueSqlPage />
     }
 
-    if (activeItem.href === "/playground/extract") {
-      return <ExtractPage />
-    }
-
-    if (activeItem.href === "/playground/crawl") {
-      return <CrawlPage />
-    }
-
-    if (activeItem.href === "/playground/calibrate") {
-      return <CalibratePage />
-    }
-
-    if (activeItem.href === "/scheduled-work/tasks") {
-      return <TasksPage />
-    }
-
-    if (activeItem.href === "/scheduled-work/metrics") {
+    if (activeItem.href === "/catalogue/views") {
+      const viewId = pathname.match(/^\/catalogue\/views\/([^/]+)$/)?.[1]
       return (
-        <Suspense
-          fallback={
-            <div className="flex w-full items-center justify-center text-sm text-muted-foreground">
-              Loading operations…
-            </div>
-          }
-        >
-          <MetricsPage />
-        </Suspense>
+        <CatalogueViewsPage
+          viewId={viewId ? decodeURIComponent(viewId) : undefined}
+        />
       )
     }
 
-    if (activeItem.href === "/cache/artifacts") {
-      const artifactId = pathname.match(/^\/cache\/artifacts\/([^/]+)$/)?.[1]
-      if (artifactId) {
+    if (activeItem.href === "/catalogue/queries") {
+      const queryId = pathname.match(/^\/catalogue\/queries\/([^/]+)$/)?.[1]
+      return (
+        <CatalogueQueriesPage
+          queryId={queryId ? decodeURIComponent(queryId) : undefined}
+        />
+      )
+    }
+
+    if (activeItem.href === "/catalogue/macros") {
+      const macroId = pathname.match(/^\/catalogue\/macros\/([^/]+)$/)?.[1]
+      return (
+        <CatalogueTableMacrosPage
+          macroId={macroId ? decodeURIComponent(macroId) : undefined}
+        />
+      )
+    }
+
+    if (activeItem.href === "/crawls/graphs") {
+      const graphId = pathname.match(/^\/crawls\/graphs\/([^/]+)$/)?.[1]
+      if (graphId) {
         return (
-          <ArtifactDetailPage artifactId={decodeURIComponent(artifactId)} />
+          <CrawlGraphDetailPage
+            graphId={decodeURIComponent(graphId)}
+            onNavigate={handleNavigate}
+          />
         )
       }
-
-      return <ArtifactsPage />
+      return <CrawlGraphsPage onNavigate={handleNavigate} />
     }
 
-    if (activeItem.href === "/cache/data-schemas") {
-      const schemaId = pathname.match(/^\/cache\/data-schemas\/([^/]+)$/)?.[1]
-      if (schemaId) {
-        return <DataSchemaDetailPage schemaId={decodeURIComponent(schemaId)} />
-      }
-
-      return <DataSchemasPage />
+    if (activeItem.href === "/crawls/metrics") {
+      return <CrawlMetricsPage />
     }
 
-    if (activeItem.href === "/cache/query-schemas") {
-      const schemaId = pathname.match(/^\/cache\/query-schemas\/([^/]+)$/)?.[1]
-      if (schemaId) {
-        return <QuerySchemaDetailPage schemaId={decodeURIComponent(schemaId)} />
-      }
-
-      return <QuerySchemasPage />
+    if (activeItem.href === "/crawl-policies/trials") {
+      return <PolicyTrialsPage />
     }
 
-    if (activeItem.href === "/settings/crawl-policies") {
-      const policyId = pathname.match(
-        /^\/settings\/crawl-policies\/([^/]+)$/
-      )?.[1]
+    if (activeItem.href === "/crawl-policies") {
+      const policyId = pathname.match(/^\/crawl-policies\/([^/]+)$/)?.[1]
       if (policyId) {
         return <CrawlPolicyDetailPage policyId={decodeURIComponent(policyId)} />
       }
 
       return <CrawlPoliciesPage />
+    }
+
+    if (activeItem.href === "/crawl-profiles") {
+      const profileId = pathname.match(/^\/crawl-profiles\/([^/]+)$/)?.[1]
+      if (profileId) {
+        return <CrawlProfileDetailPage profileId={decodeURIComponent(profileId)} />
+      }
+      return <CrawlProfilesPage />
+    }
+
+    if (activeItem.href === "/docs/sql-queries") {
+      return <SqlQueriesDocsPage onNavigate={handleNavigate} />
+    }
+
+    if (activeItem.href === "/docs/crawl-graphs") {
+      return <CrawlGraphsDocsPage onNavigate={handleNavigate} />
+    }
+
+    if (activeItem.href === "/docs/resources-scaling") {
+      return <ResourcesScalingDocsPage onNavigate={handleNavigate} />
     }
 
     return (
@@ -168,7 +247,7 @@ export function App() {
   return (
     <SidebarProvider>
       <AppSidebar pathname={activeItem.href} onNavigate={handleNavigate} />
-      <SidebarInset>
+      <SidebarInset className="h-svh min-h-0 overflow-hidden">
         <header className="relative z-10 flex h-14 shrink-0 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur-xl">
           <SidebarTrigger />
           <div className="flex min-w-0 flex-col">
@@ -180,9 +259,25 @@ export function App() {
             </span>
           </div>
         </header>
-        <div className="app-surface relative flex flex-1 overflow-hidden p-4 lg:p-6">
-          <div className="app-surface-grain pointer-events-none absolute inset-0" />
-          <div className="relative z-10 flex w-full">{page}</div>
+        <div
+          className={
+            isFullScreenWorkbench
+              ? "app-surface relative min-h-0 min-w-0 flex-1 overflow-hidden"
+              : "app-surface relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain p-4 lg:p-6"
+          }
+        >
+          {!isFullScreenWorkbench && (
+            <div className="app-surface-grain pointer-events-none absolute inset-0" />
+          )}
+          <div
+            className={
+              isFullScreenWorkbench
+                ? "relative z-10 flex h-full min-h-0 min-w-0"
+                : "relative z-10 flex min-h-full min-w-0"
+            }
+          >
+            <Suspense fallback={<PageFallback />}>{page}</Suspense>
+          </div>
         </div>
       </SidebarInset>
     </SidebarProvider>

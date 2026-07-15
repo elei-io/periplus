@@ -1,120 +1,82 @@
 # Atlas
 
-Atlas is a Python web crawling and search backend. It exposes the same action logic through:
+Atlas turns web pages into durable, queryable evidence. It acquires a page once, keeps the
+content-addressed raw HTML, and stores a structural projection for later search, extraction, and
+analysis.
 
-- a FastAPI HTTP API,
-- a Typer CLI.
+The project is intentionally small: one page-acquisition path, one repository boundary, and a
+clear owner for every kind of state. Atlas scales worker capabilities independently while one
+narrow, KV-backed Resource Governor contract bounds shared pressure on remote sites, DuckLake, and
+S3 / MinIO.
 
-Its current user-facing web actions are `search`, `index`, `crawl`, and `extract`.
-`extract` can produce structured data with a `DataSchema`, query parameter affordances with a
-`QuerySchema`, or both in one crawl.
+Atlas is organized around crawl graphs:
 
-The current architecture is documented in [ARCHITECHTURE.md](ARCHITECHTURE.md).
+- a graph groups user metadata, nodes, and edges;
+- a node accepts URL inputs and maps admitted inputs to the single `crawl` acquisition primitive;
+- an edge runs bounded, crawl-scoped SQL against DuckLake and passes returned URLs to another node;
+  and
+- self-edges express bounded recursion such as pagination or site walking.
 
-## Repository Layout
+DuckLake remains the inspection and analysis surface. Users query retained crawl evidence and build
+queries, views, and materializations without requiring a separate result-rendering abstraction.
 
-```text
-backend/api/          FastAPI app and routers
-backend/cli/          Typer CLI commands
-backend/actions/      Primitive actions that take inputs and produce outputs
-backend/actions/shared/
-                      Crawler, quality, progress, data-schema, and query-schema support
-backend/artifacts/    Ephemeral task-run artifact metadata and disk helpers
-backend/tasks/        Persisted schedulable work, effects, and task runs
-backend/db/           Postgres setup, SQLAlchemy base/session, and Alembic
-docker/atlas/         Backend container image
-docker-compose.yml    Local API and Postgres stack
-```
+## Quick start
 
-## Requirements
+Requirements:
 
-- Docker and Docker Compose for the full local stack.
-- `uv` for local backend development.
-- Python 3.14, matching `backend/pyproject.toml`.
-
-## Local Development
-
-Install backend dependencies:
+- Python 3.14 and [uv](https://docs.astral.sh/uv/) for backend development.
+- Docker with Docker Compose for the complete local stack.
 
 ```sh
-cd backend
-uv sync
+cp .env.example .env
+make sync
+make check
+make compose-up
 ```
 
-Run the API locally:
+Compose starts the complete local stack and exposes the API at `http://127.0.0.1:8000`. The accepted
+target topology separates transport-specific acquisition, ingestion, materialization, and
+maintenance failure domains while resource permits cap their combined dependency pressure.
+[AUDIT.md](AUDIT.md) tracks the direct greenfield cutover.
+
+Compose does not bind-mount the application source tree. After changing Atlas code, rebuild and
+recreate the services with `docker compose up --build -d` (or `make compose-up`) so every running
+container uses the code installed in its image.
+
+Run the API without Compose:
 
 ```sh
-cd backend
-uv run fastapi dev api/app.py
+make api
 ```
 
-Run the CLI:
+Use the CLI for configuration and repository administration:
 
 ```sh
 cd backend
 uv run atlas --help
-uv run atlas crawl https://example.com
-uv run atlas index https://example.com --max-depth 1
-uv run atlas schema https://example.com --prompt "Extract article cards with title and URL."
-uv run atlas extract https://example.com --prompt "Extract the main heading and visible links."
-uv run atlas extract https://example.com --no-data --query-params
-uv run atlas extract "https://jp.mercari.com/en/search?keyword=16tb%20ironwolf" \
-  --mode app --wait stable \
-  --prompt "Extract each product listing with name, availability status, and price."
 ```
 
-Run a lightweight syntax check:
+Create and trigger crawl graphs through the `/crawl-graphs` API or the Crawl Graphs web interface.
+
+Useful development commands:
 
 ```sh
-make check
+make check                  # compile backend modules and run unit tests
+make setup                  # create databases, migrate, and bootstrap the catalogue
+make catalogue-check        # validate the DuckLake catalogue
+make catalogue-benchmark    # benchmark service reads and partition/DOM SQL paths
+make compose-down           # stop the local stack
 ```
 
-Run database migrations:
+Configuration is documented alongside its defaults in [`.env.example`](.env.example).
 
-```sh
-make db-upgrade
-cd backend && uv run alembic -c db/alembic.ini current
-```
+## Documentation
 
-## Docker Compose
-
-Start the API and Postgres:
-
-```sh
-docker compose up --build
-```
-
-The API is published at `http://127.0.0.1:8000`. Postgres is published at
-`127.0.0.1:5432` by default and persists data in the `atlas-postgres-data`
-Compose volume.
-
-## Configuration
-
-Copy `.env.example` to `.env` when local secrets are needed.
-
-`DATABASE_URL` points Atlas at Postgres. Compose injects an internal URL for
-the API container using `atlas-postgres`; local tools can use the localhost URL
-from `.env.example`.
-
-SQLAlchemy models should inherit from `db.Base`. Task-owned tables live in
-`tasks/models.py`, while Pydantic contracts live in `tasks/schemas.py`.
-Action inputs/outputs live in `actions/<name>/schemas.py`. Alembic reads model metadata from
-`backend/db/alembic/env.py`, so create schema changes with:
-
-```sh
-make db-revision m="describe change"
-make db-upgrade
-cd backend && uv run alembic -c db/alembic.ini check
-```
-
-`OPENROUTER_API_KEY` is only needed when Atlas must generate a data schema, query schema, or infer a target JSON example. Page-load-sensitive commands support `--mode` and `--wait`; use `--mode app --wait stable` for pages that need frontend hydration before their data appears.
-
-Sync CLI/API actions return their data directly and do not write local artifacts. Managed task runs will write ephemeral byte artifacts under `.artifacts/`:
-
-```text
-.artifacts/task-runs/<task-run-id>/result.html
-.artifacts/task-runs/<task-run-id>/result.json
-.artifacts/task-runs/<task-run-id>/atlas.json
-```
-
-Artifact metadata lives in Postgres through lightweight `artifacts` rows. The bytes on disk are ephemeral and may later be uploaded to S3 as the durable result layer.
+- [Vision](docs/VISION.md) — what Atlas is for, and what it is not.
+- [Architecture](docs/ARCHITECTURE.md) — components, state ownership, and execution paths.
+- [Worker and resource architecture](docs/WORKER_ARCHITECTURE.md) — process boundaries, queue
+  routing, resource admission, and scaling.
+- [Crawl graphs](docs/CRAWL_GRAPHS.md) — graph entities, runtime semantics, messaging, and readiness.
+- [Catalogue SQL](docs/CATALOGUE_SQL.md) — analytical tables and DOM-style query helpers.
+- [Hazards](docs/HAZARDS.md) — mistakes and complexity traps to avoid.
+- [Agent guide](AGENTS.md) — concise working rules for coding agents.

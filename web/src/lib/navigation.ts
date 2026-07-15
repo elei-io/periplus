@@ -1,116 +1,80 @@
 import {
-  BarChart3Icon,
+  ChartNoAxesCombinedIcon,
   BoxesIcon,
   BracesIcon,
-  CalendarClockIcon,
-  ClipboardListIcon,
-  DatabaseIcon,
-  FileSearchIcon,
   FlaskConicalIcon,
-  ListFilterIcon,
-  SearchIcon,
+  GitForkIcon,
+  GaugeIcon,
+  FileCode2Icon,
   ShieldCheckIcon,
-  SparklesIcon,
+  SquareTerminalIcon,
+  TablePropertiesIcon,
+  ViewIcon,
 } from "lucide-react"
 
 import type { NavigationGroup } from "@/types/navigation"
 
 export const navigationGroups: NavigationGroup[] = [
   {
-    name: "Playground",
-    slug: "playground",
+    name: "Catalogue",
+    slug: "catalogue",
     items: [
       {
-        name: "Search",
-        href: "/playground/search",
-        icon: SearchIcon,
-        title: "Search Playground",
+        name: "Workbench",
+        href: "/catalogue/workbench",
+        icon: SquareTerminalIcon,
+        title: "Catalogue Workbench",
         description:
-          "Try live search providers and inspect results as they arrive.",
+          "Explore the DuckLake catalogue in an interactive SQL session.",
       },
       {
-        name: "Index",
-        href: "/playground/index",
-        icon: DatabaseIcon,
-        title: "Index Playground",
-        description:
-          "Discover linked pages and watch Atlas move through a site.",
+        name: "SQL",
+        href: "/catalogue/sql",
+        icon: TablePropertiesIcon,
+        title: "Catalogue SQL",
+        description: "Run or explain read-only SQL and inspect its results.",
       },
       {
-        name: "Extract",
-        href: "/playground/extract",
-        icon: SparklesIcon,
-        title: "Extract Playground",
-        description: "Test structured extraction against live pages.",
+        name: "Queries",
+        href: "/catalogue/queries",
+        icon: FileCode2Icon,
+        title: "Saved Queries",
+        description: "Author SQL with immutable revision history.",
       },
       {
-        name: "Crawl",
-        href: "/playground/crawl",
-        icon: FileSearchIcon,
-        title: "Crawl Playground",
-        description: "Fetch page content and inspect crawl output.",
+        name: "Views",
+        href: "/catalogue/views",
+        icon: ViewIcon,
+        title: "Catalogue Views",
+        description: "Inspect and edit persistent DuckLake views.",
       },
       {
-        name: "Calibrate",
-        href: "/playground/calibrate",
-        icon: FlaskConicalIcon,
-        title: "Crawl Policy Calibration",
-        description:
-          "Test transport templates and persist crawl policy settings.",
+        name: "Macros",
+        href: "/catalogue/macros",
+        icon: BracesIcon,
+        title: "Table Macros",
+        description: "Author reusable, parameterized catalogue relations.",
       },
     ],
   },
   {
-    name: "Scheduled Work",
-    slug: "scheduled-work",
+    name: "Crawls",
+    slug: "crawls",
     items: [
       {
-        name: "Tasks",
-        href: "/scheduled-work/tasks",
-        icon: ClipboardListIcon,
-        title: "Task Admin",
-        description: "Create, schedule, filter, and archive task definitions.",
-      },
-      {
-        name: "Effects",
-        href: "/scheduled-work/effects",
-        icon: CalendarClockIcon,
+        name: "Graphs",
+        href: "/crawls/graphs",
+        icon: GitForkIcon,
+        title: "Crawl Graphs",
+        description: "Compose crawl nodes with SQL-defined edges.",
       },
       {
         name: "Metrics",
-        href: "/scheduled-work/metrics",
-        icon: BarChart3Icon,
-        title: "Atlas Operations",
+        href: "/crawls/metrics",
+        icon: ChartNoAxesCombinedIcon,
+        title: "Crawl Metrics",
         description:
-          "Monitor capacity, queue pressure, task outcomes, and crawl health.",
-      },
-    ],
-  },
-  {
-    name: "Cache",
-    slug: "cache",
-    items: [
-      {
-        name: "Artifacts",
-        href: "/cache/artifacts",
-        icon: BoxesIcon,
-        title: "Artifact Cache",
-        description: "Browse cached bytes and invalidate reusable artifacts.",
-      },
-      {
-        name: "Data Schemas",
-        href: "/cache/data-schemas",
-        icon: BracesIcon,
-        title: "Data Schema Registry",
-        description:
-          "Inspect reusable data schemas, matches, failures, and provenance.",
-      },
-      {
-        name: "Query Schemas",
-        href: "/cache/query-schemas",
-        icon: ListFilterIcon,
-        title: "Query Schema Registry",
-        description: "Inspect reusable query parameter data schemas.",
+          "See what each graph is doing and whether its data is up to date.",
       },
     ],
   },
@@ -119,12 +83,54 @@ export const navigationGroups: NavigationGroup[] = [
     slug: "settings",
     items: [
       {
-        name: "Crawl Policies",
-        href: "/settings/crawl-policies",
+        name: "Policies",
+        href: "/crawl-policies",
         icon: ShieldCheckIcon,
-        title: "Crawl Policies",
+        title: "Policies",
         description:
-          "Inspect, edit, invalidate, and delete crawl transport policies.",
+          "Choose how Atlas crawls each website or path.",
+      },
+      {
+        name: "Profiles",
+        href: "/crawl-profiles",
+        icon: GaugeIcon,
+        title: "Profiles",
+        description: "Define reusable ways to fetch and retain pages.",
+      },
+      {
+        name: "Trials",
+        href: "/crawl-policies/trials",
+        icon: FlaskConicalIcon,
+        title: "Trials",
+        description:
+          "See whether a more capable profile finds better evidence.",
+      },
+    ],
+  },
+  {
+    name: "Docs",
+    slug: "docs",
+    items: [
+      {
+        name: "SQL queries",
+        href: "/docs/sql-queries",
+        icon: BracesIcon,
+        title: "SQL Queries",
+        description: "Explore Atlas evidence with catalogue SQL.",
+      },
+      {
+        name: "Crawl Graphs",
+        href: "/docs/crawl-graphs",
+        icon: GitForkIcon,
+        title: "Crawl Graphs",
+        description: "Turn page evidence into the next useful crawl.",
+      },
+      {
+        name: "Resources & Scaling",
+        href: "/docs/resources-scaling",
+        icon: BoxesIcon,
+        title: "Resources & Scaling",
+        description: "Find the limiting resource before adding capacity.",
       },
     ],
   },
@@ -133,25 +139,39 @@ export const navigationGroups: NavigationGroup[] = [
 export const defaultNavigationItem = navigationGroups[0].items[0]
 
 export function findNavigationItem(pathname: string) {
-  if (pathname.startsWith("/cache/artifacts/")) {
+  if (pathname === "/docs") {
     return navigationGroups
       .flatMap((group) => group.items)
-      .find((item) => item.href === "/cache/artifacts")
+      .find((item) => item.href === "/docs/sql-queries")
   }
-  if (pathname.startsWith("/cache/data-schemas/")) {
+  if (pathname.startsWith("/crawls/graphs/")) {
     return navigationGroups
       .flatMap((group) => group.items)
-      .find((item) => item.href === "/cache/data-schemas")
+      .find((item) => item.href === "/crawls/graphs")
   }
-  if (pathname.startsWith("/cache/query-schemas/")) {
-    return navigationGroups
-      .flatMap((group) => group.items)
-      .find((item) => item.href === "/cache/query-schemas")
+  for (const href of [
+    "/catalogue/queries",
+    "/catalogue/views",
+    "/catalogue/macros",
+  ]) {
+    if (pathname.startsWith(`${href}/`)) {
+      return navigationGroups
+        .flatMap((group) => group.items)
+        .find((item) => item.href === href)
+    }
   }
-  if (pathname.startsWith("/settings/crawl-policies/")) {
+  if (
+    pathname.startsWith("/crawl-policies/") &&
+    pathname !== "/crawl-policies/trials"
+  ) {
     return navigationGroups
       .flatMap((group) => group.items)
-      .find((item) => item.href === "/settings/crawl-policies")
+      .find((item) => item.href === "/crawl-policies")
+  }
+  if (pathname.startsWith("/crawl-profiles/")) {
+    return navigationGroups
+      .flatMap((group) => group.items)
+      .find((item) => item.href === "/crawl-profiles")
   }
   return navigationGroups
     .flatMap((group) => group.items)

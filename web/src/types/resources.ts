@@ -1,26 +1,3 @@
-export type ArtifactKind = "html" | "screenshot" | "pdf" | "mhtml"
-
-export type ArtifactRecord = {
-  id: string
-  crawl_id: string | null
-  url_id: string | null
-  task_run_id: string | null
-  kind: ArtifactKind
-  path: string
-  content_type: string
-  size_bytes: number
-  sha256: string
-  input_hash: string | null
-  warning_count: number
-  invalidated_at: string | null
-  invalidated_reason: string | null
-  created_at: string
-  url: string | null
-  normalized_url: string | null
-  domain: string | null
-  path_name: string | null
-}
-
 export type PageParams = {
   limit: number
   offset: number
@@ -33,172 +10,153 @@ export type PaginatedResponse<T> = {
   offset: number
 }
 
-export type ArtifactListResponse = PaginatedResponse<ArtifactRecord>
+export type CrawlTransport = "http" | "browser" | "firecrawl"
 
-export type ArtifactDetailRecord = ArtifactRecord & {
-  meta: Record<string, unknown>
-  warnings_json: Record<string, unknown>
-}
-
-export type ArtifactFilters = {
-  urlPattern: string
-  kind: "all" | ArtifactKind
-  invalidated: "all" | "active" | "invalidated"
-  warnings: "all" | "clean" | "warning"
-}
-
-export type ArtifactInvalidateRequest = {
-  artifact_ids?: string[]
-  url_ids?: string[]
-  url_pattern?: string
-  kind?: ArtifactKind
-  warnings?: boolean
-  reason: string
-}
-
-export type ArtifactInvalidateResponse = {
-  invalidated: number
-}
-
-export type QuerySchemaRecord = {
+export type CrawlProfileRecord = {
   id: string
-  url_match_id: string | null
-  match: string
-  enabled: boolean
-  priority: number
-  schema_type: string
-  domain: string | null
-  path: string | null
-  schema_hash: string
-  param_count: number
-  evidence_count: number
-  warning_count: number
-  generated_from_crawl_id: string | null
-  generated_by_task_run_id: string | null
+  slug: string
+  name: string
+  description: string | null
+  transport: CrawlTransport
+  config: Record<string, unknown>
+  cost_rank: number
+  trial_eligible: boolean
   created_at: string
   updated_at: string
 }
 
-export type QuerySchemaListResponse = PaginatedResponse<QuerySchemaRecord>
+export type CrawlProfileListResponse = PaginatedResponse<CrawlProfileRecord>
 
-export type QuerySchemaDetailRecord = QuerySchemaRecord & {
-  identity_key: string
-  extraction_schema: Record<string, unknown>
-  params_json: Array<Record<string, unknown>>
-  evidence_json: Array<Record<string, unknown>>
-  inputs_json: Record<string, unknown>
-  warnings_json: Record<string, unknown>
+export type CrawlProfileUpdateRequest = {
+  name?: string
+  description?: string
+  config?: Record<string, unknown>
+  cost_rank?: number
+  trial_eligible?: boolean
 }
 
-export type QuerySchemaUpdateRequest = {
-  enabled?: boolean
-  priority?: number
-}
-
-export type QuerySchemaFilters = {
-  matchPattern: string
-  domain: string
-  schemaType: "all" | "css" | "xpath"
-  enabled: "all" | "enabled" | "disabled"
-  warnings: "all" | "clean" | "warning"
-}
-
-export type DataSchemaRecord = {
-  id: string
-  match: string
-  enabled: boolean
-  priority: number
-  prompt: string
-  prompt_hash: string
-  schema_type: string
-  target_json_hash: string | null
-  domain: string | null
-  path: string | null
-  schema_hash: string
-  validation_status: string | null
-  failure_count: number
-  last_failed_at: string | null
-  last_error: string | null
-  task_run_count: number
-  warning_count: number
-  created_at: string
-  updated_at: string
-}
-
-export type DataSchemaListResponse = PaginatedResponse<DataSchemaRecord> & {
-  summary: DataSchemaSummary
-}
-
-export type DataSchemaSummary = {
-  total_schemas: number
-  enabled_schemas: number
-  used_schemas: number
-  total_schema_uses: number
-  reused_schema_uses: number
-  reuse_rate: number
-  avg_uses_per_used_schema: number
-  failing_schemas: number
-}
-
-export type DataSchemaDetailRecord = DataSchemaRecord & {
-  identity_key: string
-  schema_json: Record<string, unknown>
-  generated_from_crawl_id: string | null
-  generated_from_artifact_id: string | null
-  generated_by_task_run_id: string | null
-  inputs_json: Record<string, unknown>
-  warnings_json: Record<string, unknown>
-}
-
-export type DataSchemaUpdateRequest = {
-  match?: string
-  enabled?: boolean
-  priority?: number
-  schema_json?: Record<string, unknown>
-  validation_status?: string | null
-}
-
-export type DataSchemaFilters = {
-  matchPattern: string
-  prompt: string
-  schemaType: "all" | "css" | "xpath"
-  enabled: "all" | "enabled" | "disabled"
-  warnings: "all" | "clean" | "warning"
+export type CrawlProfileCreateRequest = {
+  slug: string
+  name: string
+  description?: string
+  transport: CrawlTransport
+  config: Record<string, unknown>
+  cost_rank: number
+  trial_eligible: boolean
 }
 
 export type CrawlPolicyRecord = {
   id: string
-  metric_slug: string
-  domain_group: string
-  url_match_id: string | null
+  slug: string
+  scheme: "*" | "http" | "https"
+  host: string
+  path_prefix: string
+  path_mode: "exact" | "prefix"
   match: string
+  profile: CrawlProfileRecord
+  max_concurrency: number
   enabled: boolean
-  config: Record<string, unknown>
-  template: string | null
-  mode: string | null
-  wait: string | null
-  max_concurrency: number | null
   created_at: string
   updated_at: string
 }
 
-export type CrawlPolicyDetailRecord = Omit<
-  CrawlPolicyRecord,
-  "template" | "mode" | "wait" | "max_concurrency"
->
-
+export type CrawlPolicyDetailRecord = CrawlPolicyRecord
 export type CrawlPolicyListResponse = PaginatedResponse<CrawlPolicyRecord>
 
 export type CrawlPolicyUpdateRequest = {
   enabled?: boolean
-  match?: string
-  config?: Record<string, unknown>
-  domain_group?: string
+  scheme?: "*" | "http" | "https"
+  host?: string
+  path_prefix?: string
+  path_mode?: "exact" | "prefix"
+  profile_id?: string
+  max_concurrency?: number
+}
+
+export type CrawlPolicyCreateRequest = {
+  slug: string
+  scheme: "*" | "http" | "https"
+  host: string
+  path_prefix: string
+  path_mode: "exact" | "prefix"
+  profile_id: string
+  max_concurrency: number
+  enabled: boolean
 }
 
 export type CrawlPolicyFilters = {
   matchPattern: string
   enabled: "all" | "enabled" | "disabled"
-  template: string
-  mode: "all" | "static" | "dynamic" | "app"
+  profileSlug: string
+  transport: "all" | CrawlTransport
+}
+
+export type PolicyTrialComparison = {
+  scheme: "http" | "https"
+  host: string
+  port: number
+  registrable_domain: string
+  use_profile: string
+  candidate_profile: string
+  use_profile_config_hash: string
+  candidate_profile_config_hash: string
+  candidate_profile_definition_hash: string
+  selected_trials: number
+  completed_pairs: number
+  recovered_crawls: number
+  sample_failures: number
+  identical_documents: number
+  median_html_delta_percent: number | null
+  median_visible_text_delta_percent: number | null
+  median_element_delta_percent: number | null
+  mean_use_visible_text_chars: number | null
+  mean_sample_visible_text_chars: number | null
+  use_visible_text_stddev: number | null
+  sample_visible_text_stddev: number | null
+  use_visible_text_cv: number | null
+  sample_visible_text_cv: number | null
+  use_distinct_document_ratio: number | null
+  sample_distinct_document_ratio: number | null
+  median_use_quality_flag_count: number | null
+  median_sample_quality_flag_count: number | null
+  use_acquisition_failure_count: number
+  sample_acquisition_failure_count: number
+  median_duration_delta_ms: number | null
+  last_trial_at: string
+  current_policy_id: string | null
+  current_profile: string
+  applied: boolean
+  verdict:
+    | "awaiting_sample"
+    | "insufficient_evidence"
+    | "promising"
+    | "no_clear_gain"
+    | "regressed"
+    | "inconclusive"
+  verdict_reason: string
+}
+
+export type PolicyTrialApplyRequest = Pick<
+  PolicyTrialComparison,
+  "scheme" | "host" | "port"
+> & {
+  profile: string
+}
+
+export type PolicyTrialSummary = {
+  sampling_active: boolean
+  configured_sample_rate: number
+  observed_sample_rate: number
+  max_in_flight: number
+  use_crawls: number
+  selected_trials: number
+  sample_crawls: number
+  completed_pairs: number
+  awaiting_samples: number
+  pairs_with_failure: number
+  last_trial_at: string | null
+}
+
+export type PolicyTrialReport = PaginatedResponse<PolicyTrialComparison> & {
+  summary: PolicyTrialSummary
 }

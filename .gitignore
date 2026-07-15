@@ -15,6 +15,7 @@ wheels/
 
 .cache
 .artifacts
+.atlas/
 
 
 # Logs
@@ -41,3 +42,5 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+backend/.tmp/
