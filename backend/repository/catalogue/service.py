@@ -17,9 +17,11 @@ from repository.catalogue.records import (
     ArtifactRecord,
     CatalogueWriteResult,
     CrawlRecord,
+    CrawlStepRecord,
     DocumentRecord,
     ElementRecord,
 )
+from repository.catalogue.schema import CRAWL_STEPS_TABLE, INTERNAL_SCHEMA
 from dom import ElementRow, GroupedLinkPayload, links_from_elements
 
 
@@ -27,6 +29,7 @@ from dom import ElementRow, GroupedLinkPayload, links_from_elements
 class CatalogueBatchEntry:
     document: DocumentRecord | None
     crawl: CrawlRecord
+    crawl_steps: tuple[CrawlStepRecord, ...] | None = ()
     artifact: ArtifactRecord | None = None
     elements_path: Path | None = None
     replace_projection: bool = False
@@ -190,14 +193,18 @@ class CatalogueService:
                 WHERE data_file.end_snapshot IS NULL
                   AND table_info.end_snapshot IS NULL
                   AND schema_info.end_snapshot IS NULL
-                  AND schema_info.schema_name IN (?, '_atlas_materializations')
+                  AND schema_info.schema_name IN (?, ?, '_atlas_materializations')
                   AND data_file.file_size_bytes < ?
                 GROUP BY schema_info.schema_name, table_info.table_name, data_file.partition_id
             ) AS partitions
             GROUP BY schema_name, table_name
             ORDER BY schema_name, table_name
             """,
-            [self.catalogue.config.schema, maximum_input_file_bytes],
+            [
+                self.catalogue.config.schema,
+                INTERNAL_SCHEMA,
+                maximum_input_file_bytes,
+            ],
         ).fetchall()
         return [
             (
@@ -220,6 +227,7 @@ class CatalogueService:
         replacement_documents: dict[str, DocumentRecord] = {}
         element_paths: dict[str, Path] = {}
         new_crawls: dict[UUID, CrawlRecord] = {}
+        new_crawl_steps: dict[UUID, tuple[CrawlStepRecord, ...]] = {}
         document_created: list[bool] = []
         artifact_created: list[bool] = []
         crawl_created: list[bool] = []
@@ -244,11 +252,21 @@ class CatalogueService:
             crawls_by_id = self._lookup_batch_crawls(
                 [entry.crawl for entry in entries]
             )
+            crawl_steps_by_id = self._lookup_batch_crawl_steps(
+                [entry.crawl.crawl_id for entry in entries]
+            )
 
             for entry in entries:
                 artifact = entry.artifact
                 document = entry.document
                 crawl = entry.crawl
+                crawl_steps = (
+                    None
+                    if entry.crawl_steps is None
+                    else tuple(entry.crawl_steps)
+                )
+                if crawl_steps is not None:
+                    _validate_crawl_steps(crawl, crawl_steps)
                 if artifact is not None and document is not None:
                     raise CatalogueValidationError(
                         "a crawl cannot include both an artifact and a document"
@@ -284,10 +302,10 @@ class CatalogueService:
                         )
                     if (
                         artifact is None
-                        and (crawl.outcome != "failed" or crawl.failure_code is None)
+                        and crawl.outcome not in {"failed", "skipped"}
                     ):
                         raise CatalogueValidationError(
-                            "a contentless crawl must record an acquisition error"
+                            "a contentless crawl must be failed or skipped"
                         )
                     if entry.elements_path is not None or entry.replace_projection:
                         raise CatalogueValidationError(
@@ -346,15 +364,35 @@ class CatalogueService:
                         raise CatalogueConflictError(
                             f"crawl_id {str(crawl.crawl_id)!r} already has different provenance"
                         )
+                    if (
+                        crawl_steps is not None
+                        and crawl_steps_by_id.get(crawl.crawl_id, ()) != crawl_steps
+                    ):
+                        raise CatalogueConflictError(
+                            f"crawl_id {str(crawl.crawl_id)!r} already has different completion steps"
+                        )
                     crawl_created.append(False)
                 elif (pending := new_crawls.get(crawl.crawl_id)) is not None:
                     if pending != crawl:
                         raise CatalogueConflictError(
                             f"microbatch contains conflicting crawl {str(crawl.crawl_id)!r}"
                         )
+                    if (
+                        crawl_steps is not None
+                        and new_crawl_steps.get(crawl.crawl_id) != crawl_steps
+                    ):
+                        raise CatalogueConflictError(
+                            f"microbatch contains conflicting completion steps for "
+                            f"crawl {str(crawl.crawl_id)!r}"
+                        )
                     crawl_created.append(False)
                 else:
+                    if crawl_steps is None:
+                        raise CatalogueValidationError(
+                            "projection-only ingestion requires an existing crawl"
+                        )
                     new_crawls[crawl.crawl_id] = crawl
+                    new_crawl_steps[crawl.crawl_id] = crawl_steps
                     crawl_created.append(True)
 
             if replacement_documents:
@@ -393,6 +431,16 @@ class CatalogueService:
                     "crawls",
                     [_crawl_values(value) for value in new_crawls.values()],
                 )
+                steps = [
+                    step
+                    for crawl_id in new_crawls
+                    for step in new_crawl_steps[crawl_id]
+                ]
+                if steps:
+                    self._append_internal(
+                        CRAWL_STEPS_TABLE,
+                        [_crawl_step_values(value) for value in steps],
+                    )
 
             made_changes = bool(
                 new_documents
@@ -410,6 +458,9 @@ class CatalogueService:
                         "new_documents": len(new_documents),
                         "new_artifacts": len(new_artifacts),
                         "new_crawls": len(new_crawls),
+                        "crawl_steps": sum(
+                            len(value) for value in new_crawl_steps.values()
+                        ),
                         "element_rows": sum(
                             entry.document.element_count
                             for entry in entries
@@ -519,7 +570,7 @@ class CatalogueService:
         self,
         *,
         normalized_url: str,
-        config_hash: str,
+        policy_config_hash: str,
         captured_after: datetime | None = None,
         captured_before: datetime | None = None,
         limit: int = 20,
@@ -530,15 +581,14 @@ class CatalogueService:
             raise CatalogueValidationError("limit must be greater than zero")
         conditions = [
             "normalized_url = $normalized_url",
-            "config_hash = $config_hash",
-            "purpose = 'use'",
+            "policy_config_hash = $policy_config_hash",
             "outcome = 'success'",
             "document_id IS NOT NULL",
             "(status_code IS NULL OR status_code BETWEEN 200 AND 399)",
         ]
         params: dict[str, object] = {
             "normalized_url": normalized_url,
-            "config_hash": config_hash,
+            "policy_config_hash": policy_config_hash,
             "limit": limit,
         }
         if captured_after is not None:
@@ -671,7 +721,7 @@ class CatalogueService:
         documents: Sequence[DocumentRecord],
     ) -> None:
         placeholders = ", ".join(
-            "(" + ", ".join("?" for _ in range(18)) + ")" for _ in documents
+            "(" + ", ".join("?" for _ in range(6)) + ")" for _ in documents
         )
         parameters = [
             value
@@ -683,18 +733,6 @@ class CatalogueService:
                 document.parser_version,
                 document.parser_options_hash,
                 document.element_count,
-                document.quality_schema_version,
-                document.html_character_count,
-                document.visible_text_chars,
-                document.script_count,
-                document.app_marker_count,
-                document.lazy_marker_count,
-                document.interaction_marker_count,
-                document.button_count,
-                document.form_count,
-                document.input_count,
-                document.anchor_count,
-                json.dumps(document.quality_flags_json, separators=(",", ":")),
             )
         ]
         self.catalogue.connection.execute(
@@ -703,25 +741,10 @@ class CatalogueService:
             "parser_name = staged.parser_name, "
             "parser_version = staged.parser_version, "
             "parser_options_hash = staged.parser_options_hash, "
-            "element_count = staged.element_count, "
-            "quality_schema_version = staged.quality_schema_version, "
-            "html_character_count = staged.html_character_count, "
-            "visible_text_chars = staged.visible_text_chars, "
-            "script_count = staged.script_count, "
-            "app_marker_count = staged.app_marker_count, "
-            "lazy_marker_count = staged.lazy_marker_count, "
-            "interaction_marker_count = staged.interaction_marker_count, "
-            "button_count = staged.button_count, "
-            "form_count = staged.form_count, "
-            "input_count = staged.input_count, "
-            "anchor_count = staged.anchor_count, "
-            "quality_flags_json = staged.quality_flags_json "
+            "element_count = staged.element_count "
             f"FROM (VALUES {placeholders}) AS staged("
             "document_id, dom_schema_version, parser_name, parser_version, "
-            "parser_options_hash, element_count, quality_schema_version, "
-            "html_character_count, visible_text_chars, script_count, "
-            "app_marker_count, lazy_marker_count, interaction_marker_count, "
-            "button_count, form_count, input_count, anchor_count, quality_flags_json) "
+            "parser_options_hash, element_count) "
             "WHERE target.document_id = staged.document_id",
             parameters,
         )
@@ -745,25 +768,53 @@ class CatalogueService:
             schema_name=self.catalogue.config.schema,
         )
 
+    def _append_internal(
+        self, table_name: str, rows: list[dict[str, object]]
+    ) -> None:
+        self.catalogue.lake.table.append(
+            table_name,
+            rows,
+            schema_name=INTERNAL_SCHEMA,
+        )
+
     def _table(self, table_name: str) -> str:
         return ".".join(
             _quote_identifier(part)
             for part in (self.catalogue.config.alias, self.catalogue.config.schema, table_name)
         )
 
+    def _internal_table(self, table_name: str) -> str:
+        return ".".join(
+            _quote_identifier(part)
+            for part in (self.catalogue.config.alias, INTERNAL_SCHEMA, table_name)
+        )
+
+    def _lookup_batch_crawl_steps(
+        self, crawl_ids: Sequence[UUID]
+    ) -> dict[UUID, tuple[CrawlStepRecord, ...]]:
+        unique = sorted(set(crawl_ids), key=str)
+        if not unique:
+            return {}
+        placeholders = ", ".join("?" for _ in unique)
+        rows = self._fetch_rows(
+            f"SELECT * FROM {self._internal_table(CRAWL_STEPS_TABLE)} "
+            f"WHERE crawl_id IN ({placeholders}) "
+            "ORDER BY crawl_id, attempt_number, step_ordinal",
+            unique,
+        )
+        grouped: dict[UUID, list[CrawlStepRecord]] = {}
+        for row in rows:
+            record = _crawl_step_from_row(row)
+            grouped.setdefault(record.crawl_id, []).append(record)
+        return {crawl_id: tuple(values) for crawl_id, values in grouped.items()}
+
+
 def _document_from_row(row: dict[str, Any]) -> DocumentRecord:
-    values = dict(row)
-    if isinstance(values.get("quality_flags_json"), str):
-        values["quality_flags_json"] = json.loads(values["quality_flags_json"])
-    return DocumentRecord.model_validate(values)
+    return DocumentRecord.model_validate(row)
 
 
 def _document_values(document: DocumentRecord) -> dict[str, object]:
-    values = document.model_dump(mode="python")
-    values["quality_flags_json"] = json.dumps(
-        values["quality_flags_json"], separators=(",", ":")
-    )
-    return values
+    return document.model_dump(mode="python")
 
 
 def _artifact_values(artifact: ArtifactRecord) -> dict[str, object]:
@@ -772,10 +823,50 @@ def _artifact_values(artifact: ArtifactRecord) -> dict[str, object]:
 
 def _crawl_values(crawl: CrawlRecord) -> dict[str, object]:
     values = crawl.model_dump(mode="python")
+    values["policy_config_json"] = json.dumps(
+        values["policy_config_json"], separators=(",", ":"), sort_keys=True
+    )
+    values["acquisition_attempts_json"] = json.dumps(
+        values["acquisition_attempts_json"], separators=(",", ":"), sort_keys=True
+    )
+    return values
+
+
+def _crawl_step_values(step: CrawlStepRecord) -> dict[str, object]:
+    values = step.model_dump(mode="python")
     values["config_json"] = json.dumps(
         values["config_json"], separators=(",", ":"), sort_keys=True
     )
     return values
+
+
+def _crawl_step_from_row(row: dict[str, Any]) -> CrawlStepRecord:
+    values = dict(row)
+    if isinstance(values.get("config_json"), str):
+        values["config_json"] = json.loads(values["config_json"])
+    return CrawlStepRecord.model_validate(values)
+
+
+def _validate_crawl_steps(
+    crawl: CrawlRecord, steps: tuple[CrawlStepRecord, ...]
+) -> None:
+    expected = sorted(steps, key=lambda step: (step.attempt_number, step.step_ordinal))
+    if list(steps) != expected:
+        raise CatalogueValidationError(
+            "crawl completion steps must be ordered by attempt and ordinal"
+        )
+    identities: set[tuple[int, int]] = set()
+    for step in steps:
+        if step.crawl_id != crawl.crawl_id:
+            raise CatalogueValidationError(
+                "crawl completion step crawl_id must match its crawl"
+            )
+        identity = (step.attempt_number, step.step_ordinal)
+        if identity in identities:
+            raise CatalogueValidationError(
+                "crawl completion step attempt and ordinal must be unique"
+            )
+        identities.add(identity)
 
 
 def _validate_canonical_document(
@@ -834,18 +925,6 @@ def _validate_projection_recipe(
         "parser_version",
         "parser_options_hash",
         "element_count",
-        "quality_schema_version",
-        "html_character_count",
-        "visible_text_chars",
-        "script_count",
-        "app_marker_count",
-        "lazy_marker_count",
-        "interaction_marker_count",
-        "button_count",
-        "form_count",
-        "input_count",
-        "anchor_count",
-        "quality_flags_json",
     )
     if any(getattr(existing, name) != getattr(proposed, name) for name in recipe):
         raise CatalogueConflictError(
@@ -856,8 +935,10 @@ def _validate_projection_recipe(
 
 def _crawl_from_row(row: dict[str, Any]) -> CrawlRecord:
     values = dict(row)
-    if isinstance(values.get("config_json"), str):
-        values["config_json"] = json.loads(values["config_json"])
+    if isinstance(values.get("policy_config_json"), str):
+        values["policy_config_json"] = json.loads(values["policy_config_json"])
+    if isinstance(values.get("acquisition_attempts_json"), str):
+        values["acquisition_attempts_json"] = json.loads(values["acquisition_attempts_json"])
     return CrawlRecord.model_validate(values)
 
 

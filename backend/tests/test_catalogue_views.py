@@ -139,7 +139,7 @@ class CatalogueMaterializationSourceChangeTests(unittest.TestCase):
             ducklake_view_uuid=old_uuid,
             schema_name="views",
             view_name="links",
-            display_name="Links",
+            slug="links",
             description=None,
         )
         materialization = SimpleNamespace(
@@ -176,13 +176,13 @@ class CatalogueMaterializationSourceChangeTests(unittest.TestCase):
                 reference,
                 expected_uuid=old_uuid,
                 sql="SELECT 2 AS value",
-                display_name="New links",
+                slug="new-links",
                 description="Changed",
             )
 
         self.assertIs(result, expected)
         self.assertEqual(reference.ducklake_view_uuid, old_uuid)
-        self.assertEqual(reference.display_name, "New links")
+        self.assertEqual(reference.slug, "new-links")
         self.assertEqual(materialization.source_state, "source_changed")
         self.assertEqual(materialization.source_sql, "SELECT 2 AS value")
         store.replace.assert_not_called()

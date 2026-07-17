@@ -19,11 +19,6 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 
-const CatalogueSqlPage = lazy(() =>
-  import("@/pages/catalogue/sql-page").then((module) => ({
-    default: module.CatalogueSqlPage,
-  }))
-)
 const CatalogueWorkbenchPage = lazy(() =>
   import("@/pages/catalogue/workbench-page").then((module) => ({
     default: module.CatalogueWorkbenchPage,
@@ -69,19 +64,9 @@ const CrawlPolicyDetailPage = lazy(() =>
     default: module.CrawlPolicyDetailPage,
   }))
 )
-const CrawlProfilesPage = lazy(() =>
-  import("@/pages/settings/crawl-profiles-page").then((module) => ({
-    default: module.CrawlProfilesPage,
-  }))
-)
-const CrawlProfileDetailPage = lazy(() =>
-  import("@/pages/settings/crawl-profiles-page").then((module) => ({
-    default: module.CrawlProfileDetailPage,
-  }))
-)
-const PolicyTrialsPage = lazy(() =>
-  import("@/pages/settings/policy-trials-page").then((module) => ({
-    default: module.PolicyTrialsPage,
+const DomainPoliciesPage = lazy(() =>
+  import("@/pages/settings/domain-policies-page").then((module) => ({
+    default: module.DomainPoliciesPage,
   }))
 )
 const SqlQueriesDocsPage = lazy(() =>
@@ -154,10 +139,6 @@ export function App() {
       return <CatalogueWorkbenchPage />
     }
 
-    if (activeItem.href === "/catalogue/sql") {
-      return <CatalogueSqlPage />
-    }
-
     if (activeItem.href === "/catalogue/views") {
       const viewId = pathname.match(/^\/catalogue\/views\/([^/]+)$/)?.[1]
       return (
@@ -202,10 +183,6 @@ export function App() {
       return <CrawlMetricsPage />
     }
 
-    if (activeItem.href === "/crawl-policies/trials") {
-      return <PolicyTrialsPage />
-    }
-
     if (activeItem.href === "/crawl-policies") {
       const policyId = pathname.match(/^\/crawl-policies\/([^/]+)$/)?.[1]
       if (policyId) {
@@ -215,12 +192,8 @@ export function App() {
       return <CrawlPoliciesPage />
     }
 
-    if (activeItem.href === "/crawl-profiles") {
-      const profileId = pathname.match(/^\/crawl-profiles\/([^/]+)$/)?.[1]
-      if (profileId) {
-        return <CrawlProfileDetailPage profileId={decodeURIComponent(profileId)} />
-      }
-      return <CrawlProfilesPage />
+    if (activeItem.href === "/domain-policies") {
+      return <DomainPoliciesPage />
     }
 
     if (activeItem.href === "/docs/sql-queries") {

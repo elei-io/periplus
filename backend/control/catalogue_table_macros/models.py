@@ -17,6 +17,7 @@ def utc_now() -> datetime:
 class CatalogueTableMacroDefinition(Base):
     __tablename__ = "catalogue_table_macros"
     __table_args__ = (
+        UniqueConstraint("slug", name="uq_catalogue_table_macro_slug"),
         UniqueConstraint(
             "schema_name", "macro_name", name="uq_catalogue_table_macro_name"
         ),
@@ -27,7 +28,7 @@ class CatalogueTableMacroDefinition(Base):
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     schema_name: Mapped[str] = mapped_column(Text)
     macro_name: Mapped[str] = mapped_column(Text)
-    display_name: Mapped[str] = mapped_column(Text)
+    slug: Mapped[str] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     parameters: Mapped[list[str]] = mapped_column(JSON)
     sql: Mapped[str] = mapped_column(Text)

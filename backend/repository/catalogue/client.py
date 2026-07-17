@@ -16,9 +16,14 @@ from repository.catalogue.schema import (
     ARTIFACT_COLUMNS,
     CATALOGUE_SCHEMA_VERSION,
     CRAWL_COLUMNS,
+    CRAWL_STEP_COLUMNS,
+    CRAWL_STEPS_TABLE,
     DOCUMENT_COLUMNS,
-    MATERIALIZATION_SCOPE_RESULT_COLUMNS,
+    INTERNAL_SCHEMA,
+    MATERIALIZATION_COVERAGE_COLUMNS,
+    MATERIALIZATION_COVERAGE_TABLE,
     expected_columns,
+    expected_internal_columns,
 )
 from dom.schema import ELEMENT_COLUMNS
 
@@ -72,6 +77,7 @@ class Catalogue:
             self.lake.schema.create(self.config.schema)
             self.lake.schema.create("views")
             self.lake.schema.create("macros")
+            self.lake.schema.create(INTERNAL_SCHEMA)
             self.lake.schema.create("_atlas_materializations")
             self.lake.table.create(
                 "artifacts",
@@ -94,9 +100,14 @@ class Catalogue:
                 **ELEMENT_COLUMNS,
             )
             self.lake.table.create(
-                "materialization_scope_results",
-                schema_name=self.config.schema,
-                **MATERIALIZATION_SCOPE_RESULT_COLUMNS,
+                CRAWL_STEPS_TABLE,
+                schema_name=INTERNAL_SCHEMA,
+                **CRAWL_STEP_COLUMNS,
+            )
+            self.lake.table.create(
+                MATERIALIZATION_COVERAGE_TABLE,
+                schema_name=INTERNAL_SCHEMA,
+                **MATERIALIZATION_COVERAGE_COLUMNS,
             )
         self._migrate_schema()
         self._configure_layout()
@@ -208,7 +219,11 @@ class Catalogue:
     def _configure_inlining(self) -> None:
         """Disable metadata inlining for every Atlas-owned physical table."""
 
-        for schema_name in (self.config.schema, "_atlas_materializations"):
+        for schema_name in (
+            self.config.schema,
+            INTERNAL_SCHEMA,
+            "_atlas_materializations",
+        ):
             for table in self.lake.table.list(schema_name=schema_name):
                 self.connection.execute(
                     f"CALL {_quote_identifier(self.config.alias)}.set_option("
@@ -226,49 +241,6 @@ class Catalogue:
             )
             with self.lake.transaction():
                 self.connection.execute(f"DROP TABLE IF EXISTS {table}")
-
-        coverage = self.lake.table.info(
-            "materialization_scope_results",
-            schema_name=self.config.schema,
-            include_summary=False,
-            include_row_count=False,
-            include_snapshots=False,
-        )
-        coverage_names = {column.name for column in coverage.columns}
-        if "materialized_view_id" in coverage_names and "materialization_id" not in coverage_names:
-            table = ".".join(
-                _quote_identifier(value)
-                for value in (
-                    self.config.alias,
-                    self.config.schema,
-                    "materialization_scope_results",
-                )
-            )
-            with self.lake.transaction():
-                self.connection.execute(
-                    f"ALTER TABLE {table} RENAME COLUMN "
-                    "materialized_view_id TO materialization_id"
-                )
-            coverage = self.lake.table.info(
-                "materialization_scope_results",
-                schema_name=self.config.schema,
-                include_summary=False,
-                include_row_count=False,
-                include_snapshots=False,
-            )
-        if not any(column.name == "partition_value" for column in coverage.columns):
-            table = ".".join(
-                _quote_identifier(value)
-                for value in (
-                    self.config.alias,
-                    self.config.schema,
-                    "materialization_scope_results",
-                )
-            )
-            with self.lake.transaction():
-                self.connection.execute(
-                    f"ALTER TABLE {table} ADD COLUMN partition_value DATE"
-                )
 
         info = self.lake.table.info(
             "crawls",
@@ -295,18 +267,29 @@ class Catalogue:
     def validate_schema(self) -> None:
         """Validate columns without scanning catalogue data."""
 
-        for table_name, expected in expected_columns().items():
+        self._validate_schema_tables(self.config.schema, expected_columns())
+        self._validate_schema_tables(INTERNAL_SCHEMA, expected_internal_columns())
+        self._validate_layout()
+        self._validate_macros()
+
+    def _validate_schema_tables(
+        self,
+        schema_name: str,
+        expected_tables: dict[str, dict[str, ColumnDef]],
+    ) -> None:
+        for table_name, expected in expected_tables.items():
             try:
                 info = self.lake.table.info(
                     table_name,
-                    schema_name=self.config.schema,
+                    schema_name=schema_name,
                     include_summary=False,
                     include_row_count=False,
                     include_snapshots=False,
                 )
             except DuckLakeError as exc:
                 raise CatalogueSchemaError(
-                    f"catalogue table is missing or unreadable: {table_name}"
+                    f"catalogue table is missing or unreadable: "
+                    f"{schema_name}.{table_name}"
                 ) from exc
             actual_columns = [
                 (column.name, _normalize_type(column.data_type), column.nullable)
@@ -318,12 +301,10 @@ class Catalogue:
             ]
             if actual_columns != normalized_expected:
                 raise CatalogueSchemaError(
-                    f"catalogue table {table_name!r} does not match "
-                    f"schema v{CATALOGUE_SCHEMA_VERSION}: "
+                    f"catalogue table {schema_name}.{table_name} does not match "
+                    f"schema {CATALOGUE_SCHEMA_VERSION}: "
                     f"expected {normalized_expected!r}, got {actual_columns!r}"
                 )
-        self._validate_layout()
-        self._validate_macros()
 
     def _validate_layout(self) -> None:
         metadata = _quote_identifier(f"__ducklake_metadata_{self.config.alias}")

@@ -122,6 +122,7 @@ class RawHtmlRepositoryTests(unittest.TestCase):
                 restored = repository.read(stored.object_key)
 
                 self.assertEqual(restored, html)
+                self.assertEqual(repository.read_bytes(stored.object_key), html.encode("utf-8"))
                 self.assertEqual(repository.identify(restored).sha256, stored.sha256)
 
 
@@ -141,6 +142,7 @@ class RawArtifactRepositoryTests(unittest.TestCase):
             self.assertFalse(second.created)
             self.assertEqual(first.artifact_id, f"sha256:{identity.sha256}")
             self.assertEqual(repository.verify(first.object_key), identity)
+            self.assertEqual(repository.read_bytes(first.object_key), payload)
             with repository.store.open(first.object_key) as content:
                 self.assertEqual(content.read(), payload)
 

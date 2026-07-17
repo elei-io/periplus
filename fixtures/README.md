@@ -8,5 +8,6 @@ used by the UI:
 - `queries/` — one read-only query, named from the filename.
 
 Fixture-owned definitions are created when missing and updated when their SQL changes. Setup fails
-instead of overwriting a user-owned object with the same name. Removing a fixture does not delete
-an existing definition or any attached materialization.
+instead of overwriting a user-owned object with the same name. Removing a table-macro fixture drops
+that fixture-owned macro on the next setup; user-owned macros are never reconciled this way. Removed
+query and view fixtures remain available, including any attached materialization.

@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from repository.catalogue.client import Catalogue
-from repository.catalogue.schema import CATALOGUE_SCHEMA_VERSION
+from repository.catalogue.schema import CATALOGUE_SCHEMA_VERSION, INTERNAL_SCHEMA
 
 
 @dataclass(frozen=True, slots=True)
@@ -11,7 +11,7 @@ class CatalogueStatus:
     active_file_count: int
     active_storage_bytes: int
     ducklake_version: str | None
-    catalogue_schema_version: int
+    catalogue_schema_version: str
 
 
 def read_catalogue_status(catalogue: Catalogue) -> CatalogueStatus:
@@ -32,9 +32,9 @@ def read_catalogue_status(catalogue: Catalogue) -> CatalogueStatus:
         WHERE data_file.end_snapshot IS NULL
           AND table_info.end_snapshot IS NULL
           AND schema_info.end_snapshot IS NULL
-          AND schema_info.schema_name IN (?, '_atlas_materializations')
+          AND schema_info.schema_name IN (?, ?, '_atlas_materializations')
         """,
-        [catalogue.config.schema],
+        [catalogue.config.schema, INTERNAL_SCHEMA],
     ).fetchone()
     version = catalogue.connection.execute(
         """

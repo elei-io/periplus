@@ -9,8 +9,7 @@ from control.catalogue_materializations.schemas import CatalogueMaterializationS
 class CatalogueViewCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=63)
-    display_name: str | None = Field(default=None, max_length=200)
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,62}$")
     description: str | None = Field(default=None, max_length=2_000)
     sql: str = Field(min_length=1, max_length=100_000)
     created_from_query_revision_id: UUID | None = None
@@ -20,7 +19,7 @@ class CatalogueViewUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expected_ducklake_view_uuid: UUID
-    display_name: str | None = Field(default=None, max_length=200)
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,62}$")
     description: str | None = Field(default=None, max_length=2_000)
     sql: str = Field(min_length=1, max_length=100_000)
 
@@ -29,7 +28,7 @@ class CatalogueViewAdopt(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ducklake_view_uuid: UUID
-    display_name: str | None = Field(default=None, max_length=200)
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,62}$")
     description: str | None = Field(default=None, max_length=2_000)
 
 
@@ -39,7 +38,7 @@ class CatalogueViewRecord(BaseModel):
     schema_name: str
     view_name: str
     qualified_name: str
-    display_name: str
+    slug: str
     description: str | None
     fixture_path: str | None
     sql: str

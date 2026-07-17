@@ -9,7 +9,7 @@ from repository.catalogue.client import Catalogue
 from repository.catalogue.query import compile_catalogue_definition
 
 TABLE_MACRO_SCHEMA = "macros"
-_SAFE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+_SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 
 
 class CatalogueTableMacroError(ValueError):

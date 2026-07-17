@@ -17,9 +17,8 @@ from repository.catalogue import (
     DocumentRecord,
 )
 from observability import repository_metrics
-from prometheus_client import start_http_server
-from config import get_bool, get_float, get_int, get_str
-from repository.ingestion.health import HealthMonitor, start_health_server
+from config import get_float, get_str
+from repository.ingestion.health import HealthMonitor
 from repository.ingestion.pipeline import IngestionWorkerConfig
 from repository.ingestion.queue import (
     DURABLE,
@@ -53,7 +52,6 @@ from runtime.graph_queue import (
     ReadinessWork,
     ensure_graph_progress_storage,
     ensure_graph_storage,
-    settle_sample_request,
 )
 from runtime.graph_runs import settle_request
 from runtime.navigation import (
@@ -78,6 +76,12 @@ from runtime.resource_governor import (
     object_units,
     resource_permits,
 )
+from workers.lifecycle import (
+    WorkerEndpointConfig,
+    WorkerEndpoints,
+    cancel_task,
+    monitor_heartbeat,
+)
 
 
 async def _publish_crawl_readiness(
@@ -86,7 +90,7 @@ async def _publish_crawl_readiness(
     crawl = job.crawl
     if crawl.graph_run_id is None or crawl.crawl_request_id is None:
         raise ValueError("crawl readiness requires graph runtime provenance")
-    identity = package.sha256 if package is not None else (crawl.artifact_id or "contentless")
+    identity = package.sha256 if package is not None else "contentless"
     event = ReadinessWork(
         event_id=navigation_event_id(crawl.crawl_id, identity),
         crawl_id=crawl.crawl_id,
@@ -109,16 +113,6 @@ async def _settle_graph_ingestion_failure(
 
     jetstream = client.jetstream()
     runs, requests, _workers = await ensure_graph_storage(jetstream)
-    if job.crawl.purpose == "sample":
-        await settle_sample_request(
-            jetstream,
-            requests,
-            job.crawl.crawl_request_id,
-            status="failed",
-            error=f"Repository ingestion failed: {error}",
-            failure_stage="enrichment",
-        )
-        return
     progress = await ensure_graph_progress_storage(jetstream)
     await settle_request(
         runs=runs,
@@ -162,12 +156,8 @@ async def run(
     health_ingestor = repository_ingestor_from_env()
     await asyncio.to_thread(health_ingestor.validate)
     next_queue_snapshot = 0.0
-    metrics_server = None
-    if get_bool("ATLAS_METRICS_ENABLED"):
-        metrics_server, _metrics_thread = start_http_server(
-            get_int("ATLAS_INGESTION_WORKER_METRICS_PORT"),
-            addr=get_str("ATLAS_METRICS_HOST"),
-        )
+    endpoints = WorkerEndpoints(WorkerEndpointConfig.from_env("ingestion"))
+    endpoints.start_metrics()
     health_monitor = monitor or HealthMonitor(
         heartbeat_timeout_seconds=float(
             get_str("ATLAS_INGESTION_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS")
@@ -175,14 +165,12 @@ async def run(
     )
     health_monitor.dependencies_ready()
     health_monitor.subsystem_ready("ingestion")
-    health_server, _health_thread = start_health_server(
-        address=get_str("ATLAS_INGESTION_WORKER_HEALTH_HOST"),
-        port=get_int("ATLAS_INGESTION_WORKER_HEALTH_PORT"),
-        monitor=health_monitor,
-    )
+    endpoints.start_health(health_monitor)
     if initialized is not None:
         initialized.set()
-    health_heartbeat_task = asyncio.create_task(_health_heartbeat(health_monitor))
+    health_heartbeat_task = asyncio.create_task(
+        monitor_heartbeat(health_monitor)
+    )
     dependency_probe_task = asyncio.create_task(
         _dependency_probe(
             client,
@@ -234,7 +222,7 @@ async def run(
         active_operation_count = 0
         batch_started_at = None
         await client.flush()
-        await _cancel_task(heartbeat_task)
+        await cancel_task(heartbeat_task)
         heartbeat_task = None
 
     try:
@@ -342,29 +330,16 @@ async def run(
                     results_store,
                     request_id=job.request_id,
                     crawl=job.crawl,
+                    crawl_steps=job.crawl_steps,
                 )
                 if durable_state.status != "pending":
                     if durable_state.status == "succeeded":
                         try:
                             if (
-                                job.crawl.purpose == "use"
-                                and job.crawl.outcome == "success"
+                                job.crawl.outcome == "success"
                             ):
                                 await _publish_crawl_readiness(
                                     client, job, durable_state.navigation
-                                )
-                            if (
-                                job.crawl.purpose == "sample"
-                                and job.crawl.outcome == "success"
-                            ):
-                                _runs, requests, _workers = await ensure_graph_storage(
-                                    jetstream
-                                )
-                                await settle_sample_request(
-                                    jetstream,
-                                    requests,
-                                    job.crawl.crawl_request_id,
-                                    status="completed",
                                 )
                         except Exception:
                             logging.exception(
@@ -441,24 +416,20 @@ async def run(
                     )
                 if _batch_reached_limit(prepared, config=config):
                     await flush_prepared()
-            await _cancel_task(fetched_heartbeat_task)
+            await cancel_task(fetched_heartbeat_task)
             fetched_heartbeat_task = None
             active_operation_count = 1 if prepared else 0
     finally:
         stop.set()
-        await _cancel_task(heartbeat_task)
-        await _cancel_task(fetched_heartbeat_task)
-        await _cancel_task(health_heartbeat_task)
-        await _cancel_task(dependency_probe_task)
-        await _cancel_task(presence_task)
-        await asyncio.to_thread(health_server.shutdown)
-        health_server.server_close()
+        await cancel_task(heartbeat_task)
+        await cancel_task(fetched_heartbeat_task)
+        await cancel_task(health_heartbeat_task)
+        await cancel_task(dependency_probe_task)
+        await cancel_task(presence_task)
+        await endpoints.close()
         await asyncio.to_thread(health_ingestor.close)
         await asyncio.to_thread(ingestor.close)
         await client.drain()
-        if metrics_server is not None:
-            await asyncio.to_thread(metrics_server.shutdown)
-            metrics_server.server_close()
 
 
 def main() -> None:
@@ -680,7 +651,7 @@ async def _commit_batch_isolated(
         )
         try:
             package = None
-            if job.crawl.purpose == "use" and value.navigation_payload is not None:
+            if value.navigation_payload is not None:
                 if job.crawl.graph_run_id is None or job.crawl.document_id is None:
                     raise ValueError("graph crawl ingestion requires runtime provenance")
                 name = navigation_object_name(
@@ -711,19 +682,9 @@ async def _commit_batch_isolated(
                 result=result,
                 navigation=package,
             )
-            if job.crawl.purpose == "use" and job.crawl.outcome == "success":
+            if job.crawl.outcome == "success":
                 await _publish_crawl_readiness(
                     client, job, durable_state.navigation
-                )
-            if job.crawl.purpose == "sample" and job.crawl.outcome == "success":
-                _runs, requests, _workers = await ensure_graph_storage(
-                    client.jetstream()
-                )
-                await settle_sample_request(
-                    client.jetstream(),
-                    requests,
-                    job.crawl.crawl_request_id,
-                    status="completed",
                 )
         except Exception:
             logging.exception(
@@ -759,7 +720,7 @@ async def _retry_or_fail(
             resource_grants,
         )
     finally:
-        await _cancel_task(heartbeat)
+        await cancel_task(heartbeat)
 
 
 async def _retry_or_fail_with_heartbeat(
@@ -818,7 +779,6 @@ async def _retry_or_fail_with_heartbeat(
         package = None
         if (
             reconciled is not None
-            and job.crawl.purpose == "use"
             and job.crawl.graph_run_id is not None
         ):
             try:
@@ -884,8 +844,7 @@ async def _retry_or_fail_with_heartbeat(
             error=None if reconciled is not None else _exception_message(exc),
         )
         if (
-            job.crawl.purpose == "use"
-            and job.crawl.outcome == "success"
+            job.crawl.outcome == "success"
             and durable_state.status == "succeeded"
         ):
             try:
@@ -897,16 +856,6 @@ async def _retry_or_fail_with_heartbeat(
                 await message.nak(delay=1)
                 return
         if durable_state.status == "succeeded":
-            if job.crawl.purpose == "sample" and job.crawl.outcome == "success":
-                _runs, requests, _workers = await ensure_graph_storage(
-                    client.jetstream()
-                )
-                await settle_sample_request(
-                    client.jetstream(),
-                    requests,
-                    job.crawl.crawl_request_id,
-                    status="completed",
-                )
             await message.ack()
         else:
             await _dead_letter_or_retry(
@@ -1019,10 +968,11 @@ async def _prepare_ingestion_job(
             return await asyncio.to_thread(
                 ingestor.prepare_from_raw,
                 crawl=job.crawl,
+                crawl_steps=job.crawl_steps,
                 known_documents=job_known_documents,
             )
     finally:
-        await _cancel_task(heartbeat)
+        await cancel_task(heartbeat)
 
 
 async def _known_document_for_crawl(
@@ -1048,12 +998,6 @@ async def _known_document_for_crawl(
                 crawl.document_id,
             )
     return {crawl.document_id: existing} if existing is not None else {}
-
-
-async def _health_heartbeat(monitor: HealthMonitor) -> None:
-    while True:
-        monitor.heartbeat()
-        await asyncio.sleep(1)
 
 
 async def _dependency_probe(
@@ -1089,14 +1033,5 @@ async def _dependency_probe(
             else:
                 monitor.dependencies_ready()
         await asyncio.sleep(interval)
-
-
-async def _cancel_task(task) -> None:
-    if task is None:
-        return
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-
-
 if __name__ == "__main__":
     main()

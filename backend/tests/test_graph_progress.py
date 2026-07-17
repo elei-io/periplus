@@ -35,8 +35,8 @@ class GraphProgressTests(unittest.TestCase):
                 edges=[FrozenGraphEdge(id=edge_id, name="links", source_node_id=source_id, target_node_id=target_id, sql="SELECT url WHERE crawl_id = $crawl_id LIMIT 10")],
             )
             run = GraphRun(id=run_id, graph_id=graph_id, trigger_kind="manual", status="running", snapshot=snapshot, trigger_urls=("https://example.com",), created_at=now)
-            source = CrawlRequest(id=uuid4(), graph_run_id=run_id, node_id=source_id, url="https://example.com/", transport="http", effective_policy_snapshot_json=policy_snapshot(), status="evaluating_edges", created_at=now, updated_at=now)
-            target = CrawlRequest(id=uuid4(), graph_run_id=run_id, node_id=target_id, url="https://target.example/", transport="http", effective_policy_snapshot_json=policy_snapshot(), source_edge_id=edge_id, status="crawling", created_at=now, updated_at=now)
+            source = CrawlRequest(id=uuid4(), graph_run_id=run_id, node_id=source_id, url="https://example.com/", effective_policy_snapshot_json=policy_snapshot(), status="evaluating_edges", created_at=now, updated_at=now)
+            target = CrawlRequest(id=uuid4(), graph_run_id=run_id, node_id=target_id, url="https://target.example/", effective_policy_snapshot_json=policy_snapshot(), source_edge_id=edge_id, status="crawling", created_at=now, updated_at=now)
             evaluation = EdgeEvaluation(identity="evaluation", graph_run_id=run_id, crawl_request_id=source.id, crawl_id=source.id, edge_id=edge_id, status="running", output_count=3, created_at=now, updated_at=now)
             bucket = FakeKV({source.id.hex: source.model_dump_json().encode(), target.id.hex: target.model_dump_json().encode(), edge_evaluation_key(evaluation.identity): evaluation.model_dump_json().encode()})
 

@@ -11,7 +11,6 @@ from ducklake_client import DiskStorage, DuckDBCatalog
 from fastapi import HTTPException
 
 from api.routers.catalogue import (
-    CatalogueQueryMode,
     CatalogueSqlRequest,
     catalogue_metadata,
     catalogue_status,
@@ -22,6 +21,8 @@ from api.catalogue_pool import CatalogueReadPool, CatalogueReadPoolExhausted
 from repository.catalogue import Catalogue, CatalogueConfig
 from repository.catalogue.query import (
     CatalogueQueryError,
+    CatalogueStatementKind,
+    classify_catalogue_statement,
     classify_select,
     execute_arrow_query,
     explain_arrow_query,
@@ -59,7 +60,7 @@ class CatalogueQueryClassificationTests(unittest.TestCase):
 class CatalogueQueryLintTests(unittest.TestCase):
     def test_lint_endpoint_reports_unbounded_interactive_query(self) -> None:
         response = lint_sql(
-            CatalogueSqlRequest(sql="SELECT * FROM documents", mode="run")
+            CatalogueSqlRequest(sql="SELECT * FROM documents")
         )
 
         self.assertEqual(
@@ -190,6 +191,14 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
                 (column.name, column.data_type)
                 for column in relations[("main", "documents")].columns
             ],
+        )
+        builtin_names = {
+            function.name
+            for function in metadata.functions
+            if function.schema_name == metadata.default_schema
+        }
+        self.assertTrue(
+            {"count", "sum", "avg", "min", "max"}.issubset(builtin_names)
         )
 
     def test_catalogue_status_reports_active_storage_and_ducklake_version(self) -> None:
@@ -328,29 +337,40 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
         pool.release.assert_called_once_with(catalogue)
 
     @patch("api.routers.catalogue.explain_arrow_query")
-    def test_api_dispatches_explain_modes(self, explain_query: MagicMock) -> None:
+    def test_api_dispatches_native_explain_statements(self, explain_query: MagicMock) -> None:
         request = MagicMock()
         catalogue = request.app.state.catalogue_read_pool.acquire.return_value
         explain_query.return_value = MagicMock()
 
-        sql_query(
-            CatalogueSqlRequest(sql="SELECT 1", mode=CatalogueQueryMode.EXPLAIN),
+        response = sql_query(
+            CatalogueSqlRequest(sql="EXPLAIN SELECT 1"),
             request,
         )
         explain_query.assert_called_once_with(catalogue, "SELECT 1", analyze=False)
+        self.assertEqual(response.headers["x-atlas-statement-kind"], "explain")
 
         explain_query.reset_mock()
-        sql_query(
+        response = sql_query(
             CatalogueSqlRequest(
-                sql="SELECT 1",
-                mode=CatalogueQueryMode.EXPLAIN_ANALYZE,
+                sql="EXPLAIN ANALYZE SELECT 1",
             ),
             request,
         )
         explain_query.assert_called_once_with(catalogue, "SELECT 1", analyze=True)
+        self.assertEqual(
+            response.headers["x-atlas-statement-kind"], "explain_analyze"
+        )
 
-    def test_request_defaults_to_run_mode(self) -> None:
-        self.assertEqual(CatalogueSqlRequest(sql="SELECT 1").mode, CatalogueQueryMode.RUN)
+    def test_native_explain_classification_validates_the_inner_query(self) -> None:
+        explained = classify_catalogue_statement("EXPLAIN SELECT 1")
+        analyzed = classify_catalogue_statement("EXPLAIN ANALYZE SELECT 1")
+
+        self.assertEqual(explained.kind, CatalogueStatementKind.EXPLAIN)
+        self.assertEqual(explained.sql, "SELECT 1")
+        self.assertEqual(analyzed.kind, CatalogueStatementKind.EXPLAIN_ANALYZE)
+        self.assertEqual(analyzed.sql, "SELECT 1")
+        with self.assertRaises(CatalogueQueryError):
+            classify_catalogue_statement("EXPLAIN DELETE FROM documents")
 
     @patch("api.routers.catalogue.execute_arrow_query")
     def test_css_rewrite_errors_are_returned_before_streaming_starts(

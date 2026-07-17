@@ -41,6 +41,10 @@ class CrawlGraphValidationError(ValueError):
     pass
 
 
+DEFAULT_CRAWL_GRAPH_SLUG = "single-page"
+DEFAULT_CRAWL_GRAPH_ROOT_NAME = "root"
+
+
 def _clean(value: str) -> str:
     cleaned = value.strip()
     if not cleaned:
@@ -49,7 +53,14 @@ def _clean(value: str) -> str:
 
 
 def _record(graph: CrawlGraph) -> CrawlGraphRecord:
-    return CrawlGraphRecord.model_validate(graph, from_attributes=True)
+    return CrawlGraphRecord(
+        id=graph.id,
+        slug=graph.slug,
+        description=graph.description,
+        root_node_id=graph.root_node_id,
+        system_owned=graph.slug == DEFAULT_CRAWL_GRAPH_SLUG,
+        created_at=graph.created_at,
+    )
 
 
 def _node_record(node: CrawlGraphNode) -> CrawlGraphNodeRecord:
@@ -69,9 +80,49 @@ def detail(graph: CrawlGraph) -> CrawlGraphDetail:
 
 
 def create_graph(session: Session, request: CrawlGraphCreate) -> CrawlGraphDetail:
-    graph = CrawlGraph(name=_clean(request.name), description=request.description)
+    if request.slug == DEFAULT_CRAWL_GRAPH_SLUG:
+        raise CrawlGraphConflictError(
+            f"The {DEFAULT_CRAWL_GRAPH_SLUG} slug is reserved for the system crawl graph."
+        )
+    graph = CrawlGraph(slug=request.slug, description=request.description)
     session.add(graph)
-    session.flush()
+    _flush_conflict(session, "A crawl graph with this slug already exists.")
+    return detail(graph)
+
+
+def ensure_default_crawl_graph(session: Session) -> CrawlGraphDetail:
+    graph = session.scalar(
+        select(CrawlGraph)
+        .where(CrawlGraph.slug == DEFAULT_CRAWL_GRAPH_SLUG)
+        .options(selectinload(CrawlGraph.nodes), selectinload(CrawlGraph.edges))
+    )
+    if graph is None:
+        graph = CrawlGraph(
+            slug=DEFAULT_CRAWL_GRAPH_SLUG,
+            description="Acquire exactly one page without following links.",
+        )
+        session.add(graph)
+        session.flush()
+        root = CrawlGraphNode(
+            graph=graph,
+            name=DEFAULT_CRAWL_GRAPH_ROOT_NAME,
+            description="Receives the URL supplied to the crawl.",
+        )
+        session.add(root)
+        session.flush()
+        graph.root_node_id = root.id
+        session.flush()
+        return detail(graph)
+
+    if (
+        len(graph.nodes) != 1
+        or graph.nodes[0].name != DEFAULT_CRAWL_GRAPH_ROOT_NAME
+        or graph.root_node_id != graph.nodes[0].id
+        or graph.edges
+    ):
+        raise CrawlGraphConflictError(
+            "The system single-page crawl graph has an invalid definition."
+        )
     return detail(graph)
 
 
@@ -95,23 +146,26 @@ def get_graph(session: Session, graph_id: UUID, *, lock: bool = False) -> CrawlG
 
 def update_graph(session: Session, graph_id: UUID, request: CrawlGraphUpdate) -> CrawlGraphDetail:
     graph = get_graph(session, graph_id, lock=True)
+    _require_user_owned(graph)
     if request.root_node_id is not None:
         _get_node(session, graph_id, request.root_node_id)
-    graph.name = _clean(request.name)
+    graph.slug = request.slug
     graph.description = request.description
     graph.root_node_id = request.root_node_id
-    session.flush()
+    _flush_conflict(session, "A crawl graph with this slug already exists.")
     return detail(graph)
 
 
 def delete_graph(session: Session, graph_id: UUID) -> None:
     graph = get_graph(session, graph_id, lock=True)
+    _require_user_owned(graph)
     session.delete(graph)
     session.flush()
 
 
 def create_node(session: Session, graph_id: UUID, request: CrawlGraphNodeCreate) -> CrawlGraphNodeRecord:
     graph = get_graph(session, graph_id, lock=True)
+    _require_user_owned(graph)
     node = CrawlGraphNode(
         graph_id=graph_id,
         name=_clean(request.name),
@@ -126,7 +180,7 @@ def create_node(session: Session, graph_id: UUID, request: CrawlGraphNodeCreate)
 
 
 def update_node(session: Session, graph_id: UUID, node_id: UUID, request: CrawlGraphNodeUpdate) -> CrawlGraphNodeRecord:
-    get_graph(session, graph_id, lock=True)
+    _require_user_owned(get_graph(session, graph_id, lock=True))
     node = _get_node(session, graph_id, node_id, lock=True)
     _require_unused(node.used_at, "node")
     node.name = _clean(request.name)
@@ -143,6 +197,7 @@ def update_node_position(
 ) -> CrawlGraphNodeRecord:
     """Update display-only layout metadata without mutating frozen execution behavior."""
 
+    _require_user_owned(get_graph(session, graph_id, lock=True))
     node = _get_node(session, graph_id, node_id, lock=True)
     node.position_x = request.x
     node.position_y = request.y
@@ -152,6 +207,7 @@ def update_node_position(
 
 def delete_node(session: Session, graph_id: UUID, node_id: UUID) -> None:
     graph = get_graph(session, graph_id, lock=True)
+    _require_user_owned(graph)
     node = _get_node(session, graph_id, node_id, lock=True)
     if graph.root_node_id == node_id:
         graph.root_node_id = None
@@ -167,7 +223,7 @@ def delete_node(session: Session, graph_id: UUID, node_id: UUID) -> None:
 
 
 def create_edge(session: Session, graph_id: UUID, request: CrawlGraphEdgeCreate) -> CrawlGraphEdgeRecord:
-    get_graph(session, graph_id, lock=True)
+    _require_user_owned(get_graph(session, graph_id, lock=True))
     _require_endpoints(session, graph_id, request.source_node_id, request.target_node_id)
     validate_edge_sql(request.sql)
     edge = CrawlGraphEdge(
@@ -185,7 +241,7 @@ def create_edge(session: Session, graph_id: UUID, request: CrawlGraphEdgeCreate)
 
 
 def update_edge(session: Session, graph_id: UUID, edge_id: UUID, request: CrawlGraphEdgeUpdate) -> CrawlGraphEdgeRecord:
-    get_graph(session, graph_id, lock=True)
+    _require_user_owned(get_graph(session, graph_id, lock=True))
     edge = _get_edge(session, graph_id, edge_id, lock=True)
     _require_unused(edge.used_at, "edge")
     _require_endpoints(session, graph_id, request.source_node_id, request.target_node_id)
@@ -201,7 +257,7 @@ def update_edge(session: Session, graph_id: UUID, edge_id: UUID, request: CrawlG
 
 
 def delete_edge(session: Session, graph_id: UUID, edge_id: UUID) -> None:
-    get_graph(session, graph_id, lock=True)
+    _require_user_owned(get_graph(session, graph_id, lock=True))
     session.delete(_get_edge(session, graph_id, edge_id, lock=True))
     session.flush()
 
@@ -297,6 +353,13 @@ def _require_endpoints(session: Session, graph_id: UUID, source_id: UUID, target
 def _require_unused(used_at: datetime | None, kind: str) -> None:
     if used_at is not None:
         raise CrawlGraphConflictError(f"A used crawl graph {kind} cannot be edited.")
+
+
+def _require_user_owned(graph: CrawlGraph) -> None:
+    if graph.slug == DEFAULT_CRAWL_GRAPH_SLUG:
+        raise CrawlGraphConflictError(
+            "The system single-page crawl graph cannot be edited or deleted."
+        )
 
 
 def _flush_conflict(session: Session, message: str) -> None:

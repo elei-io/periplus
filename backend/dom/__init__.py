@@ -19,7 +19,6 @@ from dom.links import (
     links_from_elements,
     links_from_html,
 )
-from dom.quality import QUALITY_SCHEMA_VERSION, DocumentQuality
 from dom.schema import DOM_SCHEMA_VERSION, ELEMENT_COLUMNS
 
 __all__ = [
@@ -30,8 +29,6 @@ __all__ = [
     "PARSER_NAME",
     "PARSER_OPTIONS_HASH",
     "PARSER_VERSION",
-    "QUALITY_SCHEMA_VERSION",
-    "DocumentQuality",
     "ElementRow",
     "DomAnchor",
     "GroupedLinkPayload",

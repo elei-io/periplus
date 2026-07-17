@@ -22,7 +22,7 @@ def upgrade() -> None:
         sa.Column("id", sa.UUID(), nullable=False),
         sa.Column("schema_name", sa.Text(), nullable=False),
         sa.Column("macro_name", sa.Text(), nullable=False),
-        sa.Column("display_name", sa.Text(), nullable=False),
+        sa.Column("slug", sa.Text(), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("parameters", sa.JSON(), nullable=False),
         sa.Column("sql", sa.Text(), nullable=False),
@@ -39,6 +39,7 @@ def upgrade() -> None:
         sa.UniqueConstraint(
             "schema_name", "macro_name", name="uq_catalogue_table_macro_name"
         ),
+        sa.UniqueConstraint("slug", name="uq_catalogue_table_macro_slug"),
     )
     op.create_index(
         "ix_catalogue_table_macros_updated_at",

@@ -27,7 +27,8 @@ NATS owns durable work. The Governor owns only expiring capacity grants. Operati
 duplicate execution, while PostgreSQL advisory locks and DuckLake authority fence commits.
 
 Materialization discovery publishes deterministic scopes directly. One scope message covers bounded
-evaluation through atomic replacement and coverage. Successful `materialization_scope_results` is
+evaluation through atomic replacement and coverage. Successful
+`_atlas.materialization_coverage` is
 the sole completion authority; lag is eligible scopes minus successful coverage.
 
 ## Completed direct replacements
@@ -72,6 +73,33 @@ Before production, tests must prove:
 - maintenance cannot overlap any granted hot catalogue operation;
 - poison materialization jobs reach dead letter without crash-looping ingestion; and
 - metrics distinguish executor shortage from remote, catalogue, and object-store saturation.
+
+### Executable evidence
+
+`make reliability-check` runs the current deployment reliability suite. A failure writes Compose
+state, recent logs, health responses, metrics, capacity, and dead-letter snapshots beneath the
+ignored `.atlas/reliability/` directory.
+
+| Gate | Evidence | Status |
+|---|---|---|
+| Materialization independence | `scripts/verify-worker-independence.py` stops materialization and proves the graph still completes while acquisition and ingestion remain healthy. | Automated smoke |
+| Materialization catch-up | The independence smoke restarts materialization, waits for authoritative lag to settle, and proves the completed graph was not reacquired or changed. Its first current-topology run exposed CDC lease contention after restart: the worker became unhealthy and did not catch up within 90 seconds. | Scenario automated; gate currently failing |
+| Replica-invariant catalogue capacity | `scripts/verify-resource-governor-reliability.py` drives twelve concurrent callers through isolated real JetStream KV and proves grants never exceed the configured catalogue limit. | Governor integration proof; worker-scaling observation remains |
+| Critical ingestion reserve | Governor unit tests and the real-KV smoke prove reserved-share admission and reclamation. | Policy proof; sustained mixed-worker load remains |
+| NATS/KV interruption recovery | Requires destructive broker restart with in-flight deliveries, grants, and waiters. | Missing |
+| Ambiguous commit convergence | Unit fencing/redelivery tests and the horizontal worker-kill smoke cover recovery, but do not pause at every commit/ACK boundary. | Partial |
+| Remote pressure across acquisition replicas | Requires an instrumented standard-CDP endpoint that records concurrent sessions and navigation timing. | Missing |
+| Object-store throttling | Requires controlled S3 latency, reset, and 503 injection. | Missing |
+| Critical reserve and backfill ceiling | The real-KV governor smoke proves the fixed catalogue capacity, backfill ceiling, and live/critical admission policy. | Automated integration proof |
+| Work-conserving reserve borrowing | The real-KV governor smoke fills the catalogue with critical borrowers, introduces a live waiter, and proves the live share is reclaimed as grants drain. | Automated integration proof |
+| Ingestion under catalogue saturation | `scripts/verify-worker-horizontal-safety.py` holds catalogue capacity until ingestion claims work, then verifies health, kills one ingestion replica, releases capacity, and requires exact settlement. Its first current-topology runs were blocked before ingestion because the configured CDP endpoint timed out every acquisition; diagnostics still proved the exclusive 64-unit catalogue hold and waiter state. | Scenario automated; current environment blocked at acquisition |
+| Maintenance exclusion | The real-KV governor smoke proves exclusive maintenance waits for hot work, blocks late hot admission, and owns the full catalogue grant without overlap. | Admission proof; real catalogue-operation overlap observation remains |
+| Poison materialization isolation | Unit tests prove terminal materialization failure coverage and dead-letter publication independently of ingestion. | Unit proof; deployment poison job remains |
+| Pressure-specific metrics | Worker metrics are captured on every smoke failure, but distinct executor, catalogue, remote, and object-store pressure scenarios are not all generated yet. | Partial |
+
+These statuses distinguish admission-policy evidence from full deployment evidence. A unit or
+isolated-KV proof is not promoted to a production gate when the remaining risk is process failure,
+external dependency behavior, or ambiguous durable settlement.
 
 ## Lessons retained from the shared-connection and fan-out incidents
 

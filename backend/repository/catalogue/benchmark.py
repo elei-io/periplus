@@ -39,7 +39,7 @@ def run_hot_path_benchmark(
         [samples],
     ).fetchall()
     crawl_rows = catalogue.connection.execute(
-        "SELECT document_id, normalized_url, page_url, config_hash, captured_at FROM "
+        "SELECT document_id, normalized_url, page_url, policy_config_hash, captured_at FROM "
         f"{table('crawls')} WHERE document_id IS NOT NULL "
         "LIMIT ?",
         [samples],
@@ -55,7 +55,7 @@ def run_hot_path_benchmark(
             lambda normalized_url=normalized_url, config_hash=config_hash: (
                 service.find_cached_crawls(
                     normalized_url=str(normalized_url),
-                    config_hash=str(config_hash),
+                    policy_config_hash=str(config_hash),
                     limit=1,
                 )
             )

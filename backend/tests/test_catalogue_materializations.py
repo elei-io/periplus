@@ -61,7 +61,7 @@ class CatalogueMaterializationTests(unittest.TestCase):
         self.assertIn("c.graph_run_id", sql)
         self.assertIn("result_status IS NULL", sql)
         self.assertIn("CROSS JOIN active AS a", sql)
-        self.assertIn("materialization_scope_results", sql)
+        self.assertIn('"_atlas"."materialization_coverage"', sql)
         self.assertEqual(parameters, [*first, *second])
 
     def test_crawl_without_scope_result_is_visible_as_lag(self) -> None:
@@ -81,18 +81,19 @@ class CatalogueMaterializationTests(unittest.TestCase):
                     """
                     INSERT INTO atlas.main.crawls (
                         crawl_id, document_id, graph_id, graph_run_id, graph_node_id,
-                        crawl_request_id, purpose, trial_id, source_crawl_id, source_edge_id,
+                        crawl_request_id, source_crawl_id, source_edge_id,
                         requested_url, normalized_url, final_url, page_url,
                         url_scheme, url_host, url_port, url_registrable_domain,
                         url_path, url_query, captured_at, status_code, duration_ms,
-                        profile, crawl_profile_slug, remote_concurrency, config_hash,
-                        config_json, crawl_policy_id, outcome
-                    ) SELECT ?, 'sha256:phase2', uuid(), ?, uuid(), uuid(), 'use', NULL, NULL, NULL,
+                        policy_config_hash,
+                        policy_config_json, crawl_policy_id, outcome,
+                        acquisition_attempts_json
+                    ) SELECT ?, 'sha256:phase2', uuid(), ?, uuid(), uuid(), NULL, NULL,
                         'https://example.com/phase2', 'https://example.com/phase2',
                         'https://example.com/phase2', 'https://example.com/phase2',
                         'https', 'example.com', 443, 'example.com', '/phase2', '', now(),
-                        200, 1, 'http', 'direct', 4, repeat('a', 64), '{}', NULL,
-                        'success'
+                        200, 1, repeat('a', 64), '{}', NULL,
+                        'success', '[]'
                     """,
                     [crawl_id, graph_run_id],
                 )
@@ -651,7 +652,7 @@ class CatalogueMaterializationTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     catalogue.connection.execute(
-                        "SELECT count(*) FROM atlas.main.materialization_scope_results"
+                        "SELECT count(*) FROM atlas._atlas.materialization_coverage"
                     ).fetchone()[0],
                     2,
                 )

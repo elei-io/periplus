@@ -1,13 +1,12 @@
 /* eslint-disable react-refresh/only-export-components */
 import { Globe2Icon } from "lucide-react"
 
-import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import type { CrawlPolicyRecord, CrawlProfileRecord } from "@/types/resources"
+import type { CrawlPolicyRecord, ResponseOutcome } from "@/types/resources"
 
 export type PolicyScope = "site" | "section" | "page"
 export type PolicyDraft = {
@@ -15,70 +14,176 @@ export type PolicyDraft = {
   scheme: "*" | "http" | "https"
   scope: PolicyScope
   path: string
-  profileId: string
-  maxConcurrency: string
+  acceptedContentTypes: string
+  navigationTimeoutMs: number
+  contextReplacementRetries: number
+  contextReplacementSettleMs: number
+  waitDynamic: boolean
+  waitDynamicMaximumMs: number
+  waitDynamicSampleMs: number
+  waitDynamicStableSamples: number
+  waitFixed: boolean
+  waitFixedDurationMs: number
+  scroll: boolean
+  scrollMaximumIterations: number
+  scrollViewportRatio: number
+  scrollWaitMs: number
+  scrollStableBottomSamples: number
+  expand: boolean
+  expandMaximumActions: number
+  expandWaitMs: number
+  tooManyRequests: ResponseOutcome
+  clientError: ResponseOutcome
+  serverError: ResponseOutcome
+  unsupportedContentType: ResponseOutcome
   enabled: boolean
 }
 
-export function policyDraft(policy?: CrawlPolicyRecord, profiles: CrawlProfileRecord[] = []): PolicyDraft {
+export function policyDraft(policy?: CrawlPolicyRecord): PolicyDraft {
+  const rules = policy?.content.response_rules.http_status ?? []
+  const outcome = (minimum: number, maximum: number, fallback: ResponseOutcome) => rules.find((rule) => rule.minimum === minimum && rule.maximum === maximum)?.outcome ?? fallback
   return {
-    website: policy?.host === "*" ? "" : policy?.host ?? "",
+    website: policy?.host ?? "",
     scheme: policy?.scheme ?? "*",
     scope: policy ? policy.path_prefix === "/" && policy.path_mode === "prefix" ? "site" : policy.path_mode === "exact" ? "page" : "section" : "site",
     path: policy?.path_prefix ?? "/",
-    profileId: policy?.profile.id ?? profiles[0]?.id ?? "",
-    maxConcurrency: String(policy?.max_concurrency ?? 4),
+    acceptedContentTypes: (policy?.content.accepted_content_types ?? ["text/html", "application/xhtml+xml"]).join(", "),
+    navigationTimeoutMs: policy?.content.completion.navigation.timeout_ms ?? 30000,
+    contextReplacementRetries: policy?.content.completion.navigation.context_replacement_retries ?? 2,
+    contextReplacementSettleMs: policy?.content.completion.navigation.context_replacement_settle_ms ?? 1000,
+    waitDynamic: policy?.content.completion.wait_dynamic.enabled ?? true,
+    waitDynamicMaximumMs: policy?.content.completion.wait_dynamic.maximum_wait_ms ?? 8000,
+    waitDynamicSampleMs: policy?.content.completion.wait_dynamic.sample_interval_ms ?? 250,
+    waitDynamicStableSamples: policy?.content.completion.wait_dynamic.stable_samples ?? 3,
+    waitFixed: policy?.content.completion.wait_fixed.enabled ?? false,
+    waitFixedDurationMs: policy?.content.completion.wait_fixed.duration_ms ?? 0,
+    scroll: policy?.content.completion.scroll.enabled ?? true,
+    scrollMaximumIterations: policy?.content.completion.scroll.maximum_iterations ?? 30,
+    scrollViewportRatio: policy?.content.completion.scroll.viewport_ratio ?? 0.85,
+    scrollWaitMs: policy?.content.completion.scroll.wait_ms ?? 250,
+    scrollStableBottomSamples: policy?.content.completion.scroll.stable_bottom_samples ?? 3,
+    expand: policy?.content.completion.expand.enabled ?? true,
+    expandMaximumActions: policy?.content.completion.expand.maximum_actions ?? 10,
+    expandWaitMs: policy?.content.completion.expand.wait_ms ?? 500,
+    tooManyRequests: outcome(429, 429, "retry"),
+    clientError: outcome(400, 499, "fail"),
+    serverError: outcome(500, 599, "retry"),
+    unsupportedContentType: policy?.content.response_rules.unsupported_content_type ?? "skip",
     enabled: policy?.enabled ?? true,
   }
 }
 
 export function policyValues(draft: PolicyDraft, defaultPolicy = false) {
-  const parsed = parseWebsite(draft.website)
   return {
     scheme: defaultPolicy ? "*" as const : draft.scheme,
-    host: defaultPolicy ? "*" : parsed.host,
+    host: defaultPolicy ? "*" : parseWebsite(draft.website).host,
     path_prefix: defaultPolicy || draft.scope === "site" ? "/" : normalizedPath(draft.path),
     path_mode: defaultPolicy || draft.scope !== "page" ? "prefix" as const : "exact" as const,
-    profile_id: draft.profileId,
-    max_concurrency: Number(draft.maxConcurrency),
+    content: {
+      accepted_content_types: draft.acceptedContentTypes.split(",").map((value) => value.trim().toLowerCase()).filter(Boolean),
+      response_rules: {
+        http_status: [
+          { minimum: 408, maximum: 408, outcome: "retry" as const },
+          { minimum: 425, maximum: 425, outcome: "retry" as const },
+          { minimum: 429, maximum: 429, outcome: draft.tooManyRequests },
+          { minimum: 500, maximum: 599, outcome: draft.serverError },
+          { minimum: 400, maximum: 499, outcome: draft.clientError },
+        ],
+        unsupported_content_type: draft.unsupportedContentType,
+      },
+      completion: {
+        navigation: {
+          timeout_ms: draft.navigationTimeoutMs,
+          context_replacement_retries: draft.contextReplacementRetries,
+          context_replacement_settle_ms: draft.contextReplacementSettleMs,
+        },
+        wait_dynamic: {
+          enabled: draft.waitDynamic,
+          maximum_wait_ms: draft.waitDynamicMaximumMs,
+          sample_interval_ms: draft.waitDynamicSampleMs,
+          stable_samples: draft.waitDynamicStableSamples,
+        },
+        wait_fixed: {
+          enabled: draft.waitFixed,
+          duration_ms: draft.waitFixedDurationMs,
+        },
+        scroll: {
+          enabled: draft.scroll,
+          maximum_iterations: draft.scrollMaximumIterations,
+          viewport_ratio: draft.scrollViewportRatio,
+          wait_ms: draft.scrollWaitMs,
+          stable_bottom_samples: draft.scrollStableBottomSamples,
+        },
+        expand: {
+          enabled: draft.expand,
+          maximum_actions: draft.expandMaximumActions,
+          wait_ms: draft.expandWaitMs,
+        },
+      },
+    },
     enabled: defaultPolicy ? true : draft.enabled,
   }
 }
 
-export function policyDraftError(draft: PolicyDraft, defaultPolicy = false): string | null {
-  const parsed = parseWebsite(draft.website)
-  if (!defaultPolicy && !parsed.host) return "Enter the website this policy applies to."
-  if (!defaultPolicy && (parsed.host.includes("/") || parsed.host.includes(" "))) return "Enter a hostname such as example.com, or paste a complete URL."
-  if (draft.scope !== "site" && !normalizedPath(draft.path).startsWith("/")) return "The page path must start with /."
-  if (!draft.profileId) return "Choose how Atlas should fetch matching pages."
-  if (!Number.isInteger(Number(draft.maxConcurrency)) || Number(draft.maxConcurrency) < 1) return "Simultaneous requests must be a whole number of at least one."
+export function policyDraftError(draft: PolicyDraft, defaultPolicy = false) {
+  const host = parseWebsite(draft.website).host
+  if (!defaultPolicy && (!host || host.includes("/") || host.includes(" "))) return "Enter a valid website hostname or * for every website."
+  if (!draft.acceptedContentTypes.split(",").some((value) => value.trim())) return "Accept at least one content type."
+  if (draft.waitFixed && draft.waitFixedDurationMs <= 0) return "Fixed wait must be greater than zero when enabled."
   return null
 }
 
-export function PolicyForm({ draft, onChange, profiles, defaultPolicy = false }: { draft: PolicyDraft; onChange: (draft: PolicyDraft) => void; profiles: CrawlProfileRecord[]; defaultPolicy?: boolean }) {
+export function PolicyForm({ draft, onChange, defaultPolicy = false }: { draft: PolicyDraft; onChange: (draft: PolicyDraft) => void; defaultPolicy?: boolean }) {
   const patch = (value: Partial<PolicyDraft>) => onChange({ ...draft, ...value })
-  const chosen = profiles.find((profile) => profile.id === draft.profileId)
-  return <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(20rem,0.55fr)]">
-    <Card size="sm"><CardHeader><CardTitle>Where this policy applies</CardTitle><CardDescription>More specific website and path rules take precedence automatically.</CardDescription></CardHeader><CardContent className="grid gap-4">
-      {defaultPolicy ? <div className="flex items-center gap-3 rounded-md border bg-muted/20 p-3"><Globe2Icon className="size-5 text-muted-foreground" /><div><p className="font-medium">Every website and page</p><p className="text-xs text-muted-foreground">This fallback rule keeps Atlas usable when no more specific policy exists.</p></div></div> : <>
-        <Field label="Website" detail="Enter a hostname such as example.com, or paste a URL."><Input autoComplete="off" placeholder="example.com" value={draft.website} onChange={(event) => patch({ website: event.target.value })} /></Field>
-        <ChoiceGrid label="Connection" value={draft.scheme} options={[{ value: "*", label: "HTTP and HTTPS", detail: "Recommended for most sites" }, { value: "https", label: "HTTPS only", detail: "Secure URLs only" }, { value: "http", label: "HTTP only", detail: "Unencrypted URLs only" }]} onChange={(value) => patch({ scheme: value as PolicyDraft["scheme"] })} />
-        <ChoiceGrid label="Pages" value={draft.scope} options={[{ value: "site", label: "Entire website", detail: "Every path on this host" }, { value: "section", label: "One section", detail: "A path and everything below it" }, { value: "page", label: "One exact page", detail: "Only a single path" }]} onChange={(value) => patch({ scope: value as PolicyScope })} />
-        {draft.scope !== "site" ? <Field label={draft.scope === "page" ? "Page path" : "Section path"} detail={draft.scope === "section" ? "Everything below this path is included." : "Query parameters are not part of policy matching."}><Input placeholder="/docs/" value={draft.path} onChange={(event) => patch({ path: event.target.value })} /></Field> : null}
+  return <div className="grid gap-4 xl:grid-cols-2">
+    <Card size="sm"><CardHeader><CardTitle>Where this policy applies</CardTitle><CardDescription>The most specific matching policy is frozen into each crawl.</CardDescription></CardHeader><CardContent className="grid gap-4">
+      {defaultPolicy ? <div className="flex items-center gap-3 rounded-md border p-3"><Globe2Icon className="size-5 text-muted-foreground" /><div><p className="font-medium">Every website and page</p><p className="text-xs text-muted-foreground">Required base matcher · *://*/*</p></div></div> : <>
+        <Field label="Website"><Input placeholder="example.com or *" value={draft.website} onChange={(event) => patch({ website: event.target.value })} /></Field>
+        <Choice label="Connection" value={draft.scheme} options={[["*","HTTP and HTTPS"],["https","HTTPS only"],["http","HTTP only"]]} onChange={(value) => patch({ scheme: value as PolicyDraft["scheme"] })} />
+        <Choice label="Pages" value={draft.scope} options={[["site","Entire website"],["section","One section"],["page","One exact page"]]} onChange={(value) => patch({ scope: value as PolicyScope })} />
+        {draft.scope !== "site" ? <Field label="Path"><Input value={draft.path} onChange={(event) => patch({ path: event.target.value })} /></Field> : null}
+        <Toggle label="Policy enabled" description="Disabled policies do not match URLs." checked={draft.enabled} onCheckedChange={(enabled) => patch({ enabled })} />
       </>}
-      <div className="rounded-md border border-dashed bg-muted/10 px-3 py-2"><p className="text-[0.625rem] uppercase text-muted-foreground">Matches</p><p className="mt-0.5 font-medium">{matchSummary(draft, defaultPolicy)}</p></div>
     </CardContent></Card>
-    <div className="grid content-start gap-4"><Card size="sm"><CardHeader><CardTitle>How Atlas should crawl</CardTitle></CardHeader><CardContent className="grid gap-4">
-      <Field label="Profile"><Select value={draft.profileId} onValueChange={(value) => value && patch({ profileId: value })}><SelectTrigger className="w-full"><span>{chosen?.name ?? "Choose a profile"}</span></SelectTrigger><SelectContent>{profiles.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.name} · {transportLabel(profile)}</SelectItem>)}</SelectContent></Select>{chosen ? <div className="rounded-md bg-muted/20 p-3"><div className="flex flex-wrap gap-2"><Badge variant="outline">{transportLabel(chosen)}</Badge><Badge variant="secondary">cost {chosen.cost_rank}</Badge></div><p className="mt-2 text-xs text-muted-foreground">{chosen.description}</p></div> : null}</Field>
-      <Field label="Simultaneous requests per website" detail="A polite limit shared by all workers crawling the same domain."><Input type="number" min={1} step={1} value={draft.maxConcurrency} onChange={(event) => patch({ maxConcurrency: event.target.value })} /></Field>
-      {!defaultPolicy ? <div className="flex min-h-12 items-center justify-between gap-4 rounded-md border bg-muted/10 px-3 py-2"><div><p className="font-medium">Policy enabled</p><p className="text-xs text-muted-foreground">Disabled policies stay saved but do not match URLs.</p></div><Switch checked={draft.enabled} onCheckedChange={(value) => patch({ enabled: value })} /></div> : null}
-    </CardContent></Card></div>
+    <div className="grid gap-4">
+      <Card size="sm"><CardHeader><CardTitle>Content completion</CardTitle><CardDescription>Disable every method to make the crawl eligible for a static HTTP capture.</CardDescription></CardHeader><CardContent className="grid gap-3">
+        <div className="grid gap-3 rounded-md border p-3"><div><p className="font-medium">Navigation</p><p className="text-xs text-muted-foreground">Bound initial loading and recovery when the page replaces its document.</p></div><div className="grid gap-3 sm:grid-cols-3">
+          <NumberField label="Timeout (ms)" value={draft.navigationTimeoutMs} onChange={(value) => patch({ navigationTimeoutMs: value })} />
+          <NumberField label="Context replacement retries" value={draft.contextReplacementRetries} onChange={(value) => patch({ contextReplacementRetries: value })} />
+          <NumberField label="Settle after replacement (ms)" value={draft.contextReplacementSettleMs} onChange={(value) => patch({ contextReplacementSettleMs: value })} />
+        </div></div>
+        <Method label="Dynamic wait" description="Wait only until rendered content becomes stable." checked={draft.waitDynamic} onCheckedChange={(value) => patch({ waitDynamic: value })}>
+          <NumberField label="Maximum wait (ms)" value={draft.waitDynamicMaximumMs} onChange={(value) => patch({ waitDynamicMaximumMs: value })} />
+          <NumberField label="Sample interval (ms)" value={draft.waitDynamicSampleMs} onChange={(value) => patch({ waitDynamicSampleMs: value })} />
+          <NumberField label="Stable samples" value={draft.waitDynamicStableSamples} onChange={(value) => patch({ waitDynamicStableSamples: value })} />
+        </Method>
+        <Method label="Fixed wait" description="Always wait after dynamic settling as a break-glass fallback." checked={draft.waitFixed} onCheckedChange={(value) => patch({ waitFixed: value })}>
+          <NumberField label="Duration (ms)" value={draft.waitFixedDurationMs} onChange={(value) => patch({ waitFixedDurationMs: value })} />
+        </Method>
+        <Method label="Scroll" description="Scroll until the bottom remains stable." checked={draft.scroll} onCheckedChange={(value) => patch({ scroll: value })}>
+          <NumberField label="Maximum iterations" value={draft.scrollMaximumIterations} onChange={(value) => patch({ scrollMaximumIterations: value })} />
+          <NumberField label="Viewport ratio" value={draft.scrollViewportRatio} step={0.05} onChange={(value) => patch({ scrollViewportRatio: value })} />
+          <NumberField label="Wait per scroll (ms)" value={draft.scrollWaitMs} onChange={(value) => patch({ scrollWaitMs: value })} />
+          <NumberField label="Stable bottom samples" value={draft.scrollStableBottomSamples} onChange={(value) => patch({ scrollStableBottomSamples: value })} />
+        </Method>
+        <Method label="Expand" description="Activate conservative visible load-more controls." checked={draft.expand} onCheckedChange={(value) => patch({ expand: value })}>
+          <NumberField label="Maximum actions" value={draft.expandMaximumActions} onChange={(value) => patch({ expandMaximumActions: value })} />
+          <NumberField label="Wait per action (ms)" value={draft.expandWaitMs} onChange={(value) => patch({ expandWaitMs: value })} />
+        </Method>
+      </CardContent></Card>
+      <Card size="sm"><CardHeader><CardTitle>Response handling</CardTitle><CardDescription>Classify the result without exposing browser automation.</CardDescription></CardHeader><CardContent className="grid gap-4">
+        <Field label="Accepted content types"><Input value={draft.acceptedContentTypes} onChange={(event) => patch({ acceptedContentTypes: event.target.value })} /><p className="text-xs text-muted-foreground">Comma separated. Accepted non-HTML responses are retained as raw artifacts.</p></Field>
+        <div className="grid gap-3 sm:grid-cols-2"><Outcome label="HTTP 429" value={draft.tooManyRequests} onChange={(value) => patch({ tooManyRequests: value })} /><Outcome label="Other HTTP 4xx" value={draft.clientError} onChange={(value) => patch({ clientError: value })} /><Outcome label="HTTP 5xx" value={draft.serverError} onChange={(value) => patch({ serverError: value })} /><Outcome label="Unsupported content type" value={draft.unsupportedContentType} onChange={(value) => patch({ unsupportedContentType: value })} /></div>
+      </CardContent></Card>
+    </div>
   </div>
 }
 
-function Field({ label, detail, children }: { label: string; detail?: string; children: React.ReactNode }) { return <div className="grid content-start gap-1"><Label>{label}</Label>{children}{detail ? <p className="text-xs text-muted-foreground">{detail}</p> : null}</div> }
-function ChoiceGrid({ label, value, options, onChange }: { label: string; value: string; options: Array<{ value: string; label: string; detail: string }>; onChange: (value: string) => void }) { return <div className="grid gap-2"><Label>{label}</Label><div className="grid gap-2 sm:grid-cols-3">{options.map((option) => <button key={option.value} type="button" aria-pressed={value === option.value} onClick={() => onChange(option.value)} className={`rounded-md border p-3 text-left transition-colors ${value === option.value ? "border-primary/60 bg-primary/8 ring-1 ring-primary/20" : "bg-muted/10 hover:bg-muted/25"}`}><p className="font-medium">{option.label}</p><p className="mt-1 text-xs text-muted-foreground">{option.detail}</p></button>)}</div></div> }
-function parseWebsite(value: string): { host: string } { const trimmed = value.trim().toLowerCase(); if (!trimmed) return { host: "" }; try { const url = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`); return { host: url.host } } catch { return { host: trimmed } } }
-function normalizedPath(value: string) { const trimmed = value.trim(); return trimmed ? trimmed.startsWith("/") ? trimmed : `/${trimmed}` : "/" }
-function matchSummary(draft: PolicyDraft, defaultPolicy: boolean) { if (defaultPolicy) return "All pages on all websites"; const host = parseWebsite(draft.website).host || "this website"; if (draft.scope === "site") return `All pages on ${host}`; const path = normalizedPath(draft.path); return draft.scope === "page" ? `${host}${path} only` : `${host}${path} and everything below it` }
-function transportLabel(profile: CrawlProfileRecord) { return profile.transport === "http" ? "Direct HTTP" : profile.transport === "browser" ? "Browser" : "Firecrawl" }
+function Toggle({ label, description, checked, onCheckedChange }: { label: string; description: string; checked: boolean; onCheckedChange: (value: boolean) => void }) { return <div className="flex items-center justify-between gap-4 rounded-md border p-3"><div><p className="font-medium">{label}</p><p className="text-xs text-muted-foreground">{description}</p></div><Switch checked={checked} onCheckedChange={onCheckedChange} /></div> }
+function Method({ label, description, checked, disabled = false, onCheckedChange, children }: { label: string; description: string; checked: boolean; disabled?: boolean; onCheckedChange: (value: boolean) => void; children: React.ReactNode }) { return <div className="grid gap-3 rounded-md border p-3"><div className="flex items-center justify-between gap-4"><div><p className="font-medium">{label}</p><p className="text-xs text-muted-foreground">{description}</p></div><Switch checked={checked} disabled={disabled} onCheckedChange={onCheckedChange} /></div>{checked ? <div className="grid gap-3 sm:grid-cols-2">{children}</div> : null}</div> }
+function NumberField({ label, value, step = 1, disabled = false, onChange }: { label: string; value: number; step?: number; disabled?: boolean; onChange: (value: number) => void }) { return <Field label={label}><Input type="number" min={0} step={step} value={value} disabled={disabled} onChange={(event) => onChange(Number(event.target.value))} /></Field> }
+function Outcome({ label, value, disabled = false, onChange }: { label: string; value: ResponseOutcome; disabled?: boolean; onChange: (value: ResponseOutcome) => void }) { return <Field label={label}><Select value={value} disabled={disabled} onValueChange={(next) => next && onChange(next as ResponseOutcome)}><SelectTrigger><span className="capitalize">{value}</span></SelectTrigger><SelectContent>{["retry", "fail", "skip", "accept"].map((outcome) => <SelectItem key={outcome} value={outcome}>{outcome}</SelectItem>)}</SelectContent></Select></Field> }
+function Field({ label, children }: { label: string; children: React.ReactNode }) { return <div className="grid gap-1"><Label>{label}</Label>{children}</div> }
+function Choice({ label, value, options, onChange }: { label: string; value: string; options: string[][]; onChange: (value: string) => void }) { return <div className="grid gap-2"><Label>{label}</Label><div className="grid grid-cols-3 gap-2">{options.map(([key, name]) => <button key={key} type="button" aria-pressed={value === key} onClick={() => onChange(key)} className={`rounded-md border p-3 text-left ${value === key ? "border-primary bg-primary/8" : ""}`}>{name}</button>)}</div></div> }
+function parseWebsite(value: string) { const trimmed = value.trim().toLowerCase(); if (!trimmed) return { host: "" }; try { return { host: new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`).host } } catch { return { host: trimmed } } }
+function normalizedPath(value: string) { const trimmed = value.trim(); return trimmed.startsWith("/") ? trimmed : `/${trimmed}` }

@@ -15,6 +15,10 @@ from repository.catalogue.materializations import (
     scoped_select,
     scoped_view_query,
 )
+from repository.catalogue.schema import (
+    INTERNAL_SCHEMA,
+    MATERIALIZATION_COVERAGE_TABLE,
+)
 from repository.catalogue.views import CatalogueViewStore, DuckLakeView
 
 from .models import CatalogueMaterialization
@@ -307,7 +311,9 @@ def _record(
 def _scope_progress(
     store: MaterializationStore, model: CatalogueMaterialization
 ) -> tuple[int, int, datetime | None, int]:
-    coverage = _qualified(store, store.catalogue.config.schema, "materialization_scope_results")
+    coverage = _qualified(
+        store, INTERNAL_SCHEMA, MATERIALIZATION_COVERAGE_TABLE
+    )
     row = store.catalogue.connection.execute(
         f"""
         SELECT count(*) FILTER (WHERE status = 'succeeded'),
@@ -321,22 +327,10 @@ def _scope_progress(
     completed, failed, last_completed = int(row[0]), int(row[1]), row[2]
     source_table = "documents" if model.scope_kind == "document" else "crawls"
     source = _qualified(store, store.catalogue.config.schema, source_table)
-    use_filter = (
-        " WHERE EXISTS (SELECT 1 FROM "
-        f"{_qualified(store, store.catalogue.config.schema, 'crawls')} AS c "
-        "AT (VERSION => ?) "
-        "WHERE c.document_id = s.document_id AND c.purpose = 'use')"
-        if model.scope_kind == "document"
-        else " WHERE s.purpose = 'use'"
-    )
     total = int(
         store.catalogue.connection.execute(
-            f"SELECT count(*) FROM {source} AS s AT (VERSION => ?){use_filter}",
-            (
-                [model.activation_snapshot, model.activation_snapshot]
-                if model.scope_kind == "document"
-                else [model.activation_snapshot]
-            ),
+            f"SELECT count(*) FROM {source} AS s AT (VERSION => ?)",
+            [model.activation_snapshot],
         ).fetchone()[0]
     )
     return completed, failed, last_completed, total
@@ -346,9 +340,7 @@ def _pending_live_scopes(
     store: MaterializationStore, model: CatalogueMaterialization
 ) -> int:
     crawls = _qualified(store, store.catalogue.config.schema, "crawls")
-    results = _qualified(
-        store, store.catalogue.config.schema, "materialization_scope_results"
-    )
+    results = _qualified(store, INTERNAL_SCHEMA, MATERIALIZATION_COVERAGE_TABLE)
     row = store.catalogue.connection.execute(
         f"""
         WITH expected AS (
@@ -357,8 +349,7 @@ def _pending_live_scopes(
                        ELSE c.document_id
                    END AS scope_id
             FROM {crawls} AS c
-            WHERE c.purpose = 'use'
-              AND (? = 'crawl' OR c.document_id IS NOT NULL)
+            WHERE (? = 'crawl' OR c.document_id IS NOT NULL)
         )
         SELECT count(*)
         FROM expected AS e
@@ -400,15 +391,8 @@ def _seed_scope(store: MaterializationStore, scope_kind: str) -> str:
     source_table = "documents" if scope_kind == "document" else "crawls"
     identity_column = "document_id" if scope_kind == "document" else "crawl_id"
     table = _qualified(store, store.catalogue.config.schema, source_table)
-    where = (
-        "purpose = 'use'"
-        if scope_kind == "crawl"
-        else "EXISTS (SELECT 1 FROM "
-        f"{_qualified(store, store.catalogue.config.schema, 'crawls')} AS c "
-        f"WHERE c.document_id = {table}.document_id AND c.purpose = 'use')"
-    )
     row = store.catalogue.connection.execute(
-        f"SELECT {identity_column} FROM {table} WHERE {where} LIMIT 1"
+        f"SELECT {identity_column} FROM {table} LIMIT 1"
     ).fetchone()
     return str(row[0]) if row else str(uuid4())
 

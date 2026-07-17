@@ -16,14 +16,26 @@ export function useCatalogueViews() {
   return useQuery({
     queryKey: key,
     queryFn: () => json<CatalogueViewList>("/catalogue/views/"),
-    refetchInterval: (query) => query.state.data?.items.some((item) => item.materialization?.status === "dematerializing" || item.materialization?.status === "backfilling") ? 2_000 : false,
+    refetchInterval: (query) =>
+      query.state.data?.items.some(
+        (item) =>
+          item.materialization?.status === "dematerializing" ||
+          item.materialization?.status === "backfilling"
+      )
+        ? 2_000
+        : false,
   })
 }
 
 export function useCreateCatalogueView() {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: (input: { name: string; display_name?: string; description?: string; sql: string; created_from_query_revision_id?: string }) =>
+    mutationFn: (input: {
+      slug: string
+      description?: string
+      sql: string
+      created_from_query_revision_id?: string
+    }) =>
       json<CatalogueViewRecord>("/catalogue/views/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -44,7 +56,10 @@ export function useAdoptCatalogueView() {
       json<CatalogueViewRecord>("/catalogue/views/adopt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ducklake_view_uuid: view.ducklake_view_uuid }),
+        body: JSON.stringify({
+          ducklake_view_uuid: view.ducklake_view_uuid,
+          slug: view.view_name,
+        }),
       }),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: key })
@@ -57,14 +72,19 @@ export function useAdoptCatalogueView() {
 export function useUpdateCatalogueView() {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: (input: { view: CatalogueViewRecord; sql: string; display_name: string; description: string }) =>
+    mutationFn: (input: {
+      view: CatalogueViewRecord
+      sql: string
+      slug: string
+      description: string
+    }) =>
       json<CatalogueViewRecord>(`/catalogue/views/${input.view.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           expected_ducklake_view_uuid: input.view.ducklake_view_uuid,
           sql: input.sql,
-          display_name: input.display_name,
+          slug: input.slug,
           description: input.description || null,
         }),
       }),
@@ -80,7 +100,10 @@ export function useDetachCatalogueView() {
   const client = useQueryClient()
   return useMutation({
     mutationFn: async (view: CatalogueViewRecord) => {
-      const response = await fetch(apiUrl(`/catalogue/views/${view.id}/reference`), { method: "DELETE" })
+      const response = await fetch(
+        apiUrl(`/catalogue/views/${view.id}/reference`),
+        { method: "DELETE" }
+      )
       if (!response.ok) throw await apiErrorFromResponse(response)
     },
     onSuccess: () => {
@@ -95,8 +118,13 @@ export function useDropCatalogueView() {
   const client = useQueryClient()
   return useMutation({
     mutationFn: async (view: CatalogueViewRecord) => {
-      const query = new URLSearchParams({ expected_ducklake_view_uuid: view.ducklake_view_uuid })
-      const response = await fetch(apiUrl(`/catalogue/views/${view.id}/object?${query}`), { method: "DELETE" })
+      const query = new URLSearchParams({
+        expected_ducklake_view_uuid: view.ducklake_view_uuid,
+      })
+      const response = await fetch(
+        apiUrl(`/catalogue/views/${view.id}/object?${query}`),
+        { method: "DELETE" }
+      )
       if (!response.ok) throw await apiErrorFromResponse(response)
     },
     onSuccess: () => {

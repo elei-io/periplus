@@ -63,6 +63,32 @@ class RawArtifactRepository:
             created=created,
         )
 
+    def read_bytes(self, object_key: str, *, chunk_bytes: int = 1024 * 1024) -> bytes:
+        """Return the exact artifact bytes after verifying their identity."""
+
+        if chunk_bytes <= 0:
+            raise ValueError("chunk_bytes must be greater than zero")
+        chunks: list[bytes] = []
+        digest = hashlib.sha256()
+        try:
+            with self.store.open(object_key) as content:
+                while chunk := content.read(chunk_bytes):
+                    digest.update(chunk)
+                    chunks.append(chunk)
+        except RepositoryIntegrityError:
+            raise
+        except Exception as exc:
+            raise RepositoryIntegrityError(
+                f"artifact object could not be verified: {object_key}"
+            ) from exc
+
+        expected = _sha256_from_key(object_key)
+        if expected is not None and digest.hexdigest() != expected:
+            raise RepositoryIntegrityError(
+                f"artifact object failed content-address verification: {object_key}"
+            )
+        return b"".join(chunks)
+
     def verify(
         self,
         object_key: str,

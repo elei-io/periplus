@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import logging
-import signal
 from typing import Literal
 
-from config import get_bool, get_float, get_int, get_str
-from prometheus_client import start_http_server
+from config import get_float
 
-from repository.ingestion.health import HealthMonitor, start_health_server
+from repository.ingestion.health import HealthMonitor
 from repository.maintenance import MaintenanceConfig, cleanup_staging, compact
 from runtime.graph_queue import connect_nats
 from runtime.operation_leases import (
@@ -27,6 +24,13 @@ from runtime.resource_governor import (
     catalogue_request,
     ensure_resource_governor_storage,
     resource_permits,
+)
+from workers.lifecycle import (
+    WorkerEndpointConfig,
+    WorkerEndpoints,
+    cancel_task,
+    install_signal_handlers,
+    monitor_heartbeat,
 )
 
 
@@ -87,9 +91,7 @@ async def _run_operation(
 
 async def run() -> None:
     stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for value in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(value, stop.set)
+    install_signal_handlers(stop)
     config = MaintenanceConfig.from_env()
     client = await connect_nats()
     jetstream = client.jetstream()
@@ -102,27 +104,10 @@ async def run() -> None:
     )
     monitor.dependencies_ready()
     monitor.subsystem_ready("maintenance_admission")
-    health_server, _ = start_health_server(
-        address=get_str("ATLAS_MAINTENANCE_WORKER_HEALTH_HOST"),
-        port=get_int("ATLAS_MAINTENANCE_WORKER_HEALTH_PORT"),
-        monitor=monitor,
-    )
-    metrics_server = None
-    if get_bool("ATLAS_METRICS_ENABLED"):
-        metrics_server, _ = start_http_server(
-            get_int("ATLAS_MAINTENANCE_WORKER_METRICS_PORT"),
-            addr=get_str("ATLAS_METRICS_HOST"),
-        )
-
-    async def heartbeat() -> None:
-        while not stop.is_set():
-            monitor.heartbeat()
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=1)
-            except TimeoutError:
-                pass
-
-    heartbeat_task = asyncio.create_task(heartbeat())
+    endpoints = WorkerEndpoints(WorkerEndpointConfig.from_env("maintenance"))
+    endpoints.start_health(monitor)
+    endpoints.start_metrics()
+    heartbeat_task = asyncio.create_task(monitor_heartbeat(monitor, stop))
     try:
         while not stop.is_set():
             await _run_operation(
@@ -145,24 +130,6 @@ async def run() -> None:
                 pass
     finally:
         stop.set()
-        heartbeat_task.cancel()
-        await asyncio.gather(heartbeat_task, return_exceptions=True)
-        await asyncio.to_thread(health_server.shutdown)
-        health_server.server_close()
-        if metrics_server is not None:
-            await asyncio.to_thread(metrics_server.shutdown)
-            metrics_server.server_close()
+        await cancel_task(heartbeat_task)
+        await endpoints.close()
         await client.drain()
-
-
-def main() -> None:
-    argparse.ArgumentParser(description="Run the Atlas maintenance worker.").parse_args()
-    logging.basicConfig(
-        level=get_str("ATLAS_LOG_LEVEL"),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-    asyncio.run(run())
-
-
-if __name__ == "__main__":
-    main()

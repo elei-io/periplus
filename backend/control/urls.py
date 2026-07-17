@@ -19,7 +19,12 @@ def normalize_url(value: str) -> str:
         else f"{host}:{port}"
     )
     query = urlencode(
-        sorted(parse_qsl(parsed.query, keep_blank_values=True)),
+        sorted(
+            (name, item)
+            for name, item in parse_qsl(parsed.query, keep_blank_values=True)
+            if not name.lower().startswith("utm_")
+            and name.lower() not in {"fbclid", "gclid", "dclid", "msclkid"}
+        ),
         doseq=True,
     )
     return urlunsplit((scheme, netloc, parsed.path or "/", query, ""))

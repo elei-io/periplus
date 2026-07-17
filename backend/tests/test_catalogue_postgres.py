@@ -57,11 +57,8 @@ def _concurrent_ingest(
                     captured_at=datetime(2026, 7, 11, 12, value, tzinfo=UTC),
                     status_code=200,
                     duration_ms=100,
-                    profile="http",
-                    crawl_profile_slug="direct",
-                    remote_concurrency=4,
-                    config_json={"value": value},
-                    config_hash=f"{value:064x}",
+                    policy_config_json={"value": value},
+                    policy_config_hash=f"{value:064x}",
                     outcome="success",
                 )
             )
@@ -123,11 +120,8 @@ class PostgresCatalogueConcurrencyTests(unittest.TestCase):
                                     captured_at=captured_at + timedelta(seconds=value),
                                     status_code=200,
                                     duration_ms=100,
-                                    profile="http",
-                                    crawl_profile_slug="direct",
-                                    remote_concurrency=4,
-                                    config_json={"value": value},
-                                    config_hash=f"{value:064x}",
+                                    policy_config_json={"value": value},
+                                    policy_config_hash=f"{value:064x}",
                                     outcome="success",
                                 )
                             )

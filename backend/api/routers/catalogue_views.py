@@ -64,13 +64,12 @@ def get(reference_id: UUID, session: Annotated[Session, Depends(get_session)]) -
 @router.post("/", response_model=CatalogueViewRecord, status_code=201)
 def create(payload: CatalogueViewCreate, session: Annotated[Session, Depends(get_session)]) -> CatalogueViewRecord:
     try:
-        with _catalogue_mutation(f"catalogue-view-create:{payload.name}") as catalogue:
+        with _catalogue_mutation(f"catalogue-view-create:{payload.slug}") as catalogue:
             return create_reference(
                 session,
                 CatalogueViewStore(catalogue),
-                name=payload.name,
+                slug=payload.slug,
                 sql=payload.sql,
-                display_name=payload.display_name,
                 description=payload.description,
                 created_from_query_revision_id=payload.created_from_query_revision_id,
             )
@@ -86,7 +85,7 @@ def adopt(payload: CatalogueViewAdopt, session: Annotated[Session, Depends(get_s
                 session,
                 CatalogueViewStore(catalogue),
                 view_uuid=payload.ducklake_view_uuid,
-                display_name=payload.display_name,
+                slug=payload.slug,
                 description=payload.description,
             )
     except (CatalogueViewError, duckdb.Error) as exc:
@@ -106,7 +105,7 @@ def update(reference_id: UUID, payload: CatalogueViewUpdate, session: Annotated[
                 reference,
                 expected_uuid=payload.expected_ducklake_view_uuid,
                 sql=payload.sql,
-                display_name=payload.display_name,
+                slug=payload.slug,
                 description=payload.description,
             )
     except (CatalogueViewError, CatalogueQueryError, duckdb.Error) as exc:

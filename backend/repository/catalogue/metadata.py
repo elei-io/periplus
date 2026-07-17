@@ -111,12 +111,11 @@ def read_catalogue_metadata(catalogue: Catalogue) -> CatalogueMetadata:
             parameter_types,
             varargs
         FROM duckdb_functions()
-        WHERE (database_name = ? OR NOT internal)
-          AND function_type IN ('scalar', 'aggregate', 'table', 'macro', 'table_macro')
+        WHERE function_type IN ('scalar', 'aggregate', 'table', 'macro', 'table_macro')
         ORDER BY database_name, schema_name, function_name, function_type, parameters
         LIMIT ?
         """,
-        [catalog_name, MAX_METADATA_FUNCTIONS + 1],
+        [MAX_METADATA_FUNCTIONS + 1],
     ).fetchall()
     _require_within_limit(function_rows, MAX_METADATA_FUNCTIONS, "functions")
 

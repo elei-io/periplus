@@ -10,7 +10,7 @@ from repository.catalogue.client import Catalogue
 from repository.catalogue.query import classify_select
 
 VIEW_SCHEMA = "views"
-_SAFE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+_SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 
 
 class CatalogueViewError(ValueError):
@@ -137,7 +137,9 @@ class CatalogueViewStore:
 
 def _validate_name(value: str) -> None:
     if not _SAFE_NAME.fullmatch(value):
-        raise CatalogueViewError("View name must use lower-case letters, numbers, and underscores.")
+        raise CatalogueViewError(
+            "View slug must use lower-case letters, numbers, hyphens, and underscores."
+        )
 
 
 def _qualified(catalogue: Catalogue, name: str) -> str:

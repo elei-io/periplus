@@ -22,7 +22,9 @@ from control.crawl_graphs.service import (
     create_edge,
     create_graph,
     create_node,
+    delete_graph,
     delete_node,
+    ensure_default_crawl_graph,
     freeze_graph,
     update_edge,
     update_node,
@@ -47,7 +49,7 @@ class CrawlGraphTests(unittest.TestCase):
 
     def _graph_with_nodes(self):
         graph = create_graph(
-            self.session, CrawlGraphCreate(name="Search", description="Search graph")
+            self.session, CrawlGraphCreate(slug="search", description="Search graph")
         )
         search = create_node(
             self.session,
@@ -60,6 +62,27 @@ class CrawlGraphTests(unittest.TestCase):
             CrawlGraphNodeCreate(name="result_page"),
         )
         return graph, search, result
+
+    def test_default_single_page_graph_is_idempotent_and_immutable(self) -> None:
+        created = ensure_default_crawl_graph(self.session)
+        repeated = ensure_default_crawl_graph(self.session)
+
+        self.assertEqual(repeated.id, created.id)
+        self.assertEqual(created.slug, "single-page")
+        self.assertTrue(created.system_owned)
+        self.assertEqual(len(created.nodes), 1)
+        self.assertEqual(created.nodes[0].name, "root")
+        self.assertEqual(created.root_node_id, created.nodes[0].id)
+        self.assertEqual(created.edges, [])
+
+        with self.assertRaises(CrawlGraphConflictError):
+            create_node(
+                self.session,
+                created.id,
+                CrawlGraphNodeCreate(name="extra"),
+            )
+        with self.assertRaises(CrawlGraphConflictError):
+            delete_graph(self.session, created.id)
 
     def test_freeze_returns_complete_snapshot_and_makes_components_immutable(self) -> None:
         graph, search, result = self._graph_with_nodes()
@@ -111,7 +134,7 @@ class CrawlGraphTests(unittest.TestCase):
 
     def test_edge_endpoints_must_belong_to_graph(self) -> None:
         graph, search, _ = self._graph_with_nodes()
-        other_graph = create_graph(self.session, CrawlGraphCreate(name="Other"))
+        other_graph = create_graph(self.session, CrawlGraphCreate(slug="other"))
         other = create_node(
             self.session,
             other_graph.id,

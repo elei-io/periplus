@@ -56,7 +56,7 @@ export function SqlQueriesDocsPage({ onNavigate }: DocsPageProps) {
         action={
           <Button
             variant="outline"
-            onClick={() => onNavigate("/catalogue/sql")}
+            onClick={() => onNavigate("/catalogue/workbench")}
           >
             Open SQL workbench <ArrowRightIcon />
           </Button>
@@ -92,7 +92,7 @@ export function SqlQueriesDocsPage({ onNavigate }: DocsPageProps) {
               <TableName key="documents">documents</TableName>,
               "One unique HTML document",
               "document_id",
-              "Content identity, parser provenance, page quality and size",
+              "Content identity, parser provenance and size",
             ],
             [
               <TableName key="elements">elements</TableName>,
@@ -179,23 +179,20 @@ ORDER BY captured_at DESC;`}
                   "captured_at, status_code, duration_ms, response_media_type, response_filename, outcome",
                 ],
                 [
-                  "Acquisition",
-                  "profile, crawl_profile_id, crawl_profile_slug, remote_concurrency, config_hash, config_json, crawl_policy_id",
+                  "Policy",
+                  "policy_config_hash, policy_config_json, crawl_policy_id",
                 ],
                 [
                   "Failure",
                   "failure_code, failure_stage, failure_retryable, failure_detail",
                 ],
-                [
-                  "Trials",
-                  "purpose, trial_id, trial_sampler_version, trial_sample_rate, trial_candidate_strategy, trial_candidate_profile_id, trial_candidate_profile_slug, trial_candidate_profile_config_hash",
-                ],
+                ["Attempts", "acquisition_attempts_json"],
               ],
             },
             {
               name: "documents",
               summary:
-                "Content identity, parser provenance and page-quality observations",
+                "Content identity and parser provenance",
               groups: [
                 [
                   "Identity and storage",
@@ -204,10 +201,6 @@ ORDER BY captured_at DESC;`}
                 [
                   "Parser",
                   "dom_schema_version, parser_name, parser_version, parser_options_hash, element_count",
-                ],
-                [
-                  "Quality",
-                  "quality_schema_version, html_character_count, visible_text_chars, script_count, app_marker_count, lazy_marker_count, interaction_marker_count, button_count, form_count, input_count, anchor_count, quality_flags_json",
                 ],
                 ["Time", "created_at"],
               ],
@@ -406,8 +399,13 @@ export function CrawlGraphsDocsPage({ onNavigate }: DocsPageProps) {
             ],
             [
               <TableName key="policy">Crawl Policy</TableName>,
-              "Transport profile, remote concurrency and acquisition configuration matched by URL",
-              "Graph topology or node-specific behavior",
+              "Response handling and content-completion capabilities matched by URL",
+              "Transport choice, browser capacity or graph topology",
+            ],
+            [
+              <TableName key="domain-policy">Domain Policy</TableName>,
+              "Website concurrency and minimum request interval matched by host",
+              "CDP browser-fleet capacity or transport configuration",
             ],
             [
               <TableName key="run">Graph Run</TableName>,
@@ -466,8 +464,8 @@ LIMIT 10;`}
             before runtime deduplication.
           </Rule>
           <Rule title="Leave acquisition to the target request">
-            URL matching chooses and freezes the effective Crawl Policy after
-            the edge emits a candidate.
+            URL matching chooses and freezes the effective Crawl Policy and
+            Domain Policy after the edge emits a candidate.
           </Rule>
         </div>
       </DocsSection>
@@ -561,7 +559,7 @@ export function ResourcesScalingDocsPage({ onNavigate }: DocsPageProps) {
       <DocsSection
         id="model"
         title="There are two independent scaling knobs"
-        lead="Adding workers can reduce a shortage of executors. It cannot raise a website, catalogue or object-store ceiling."
+        lead="Adding workers can reduce a shortage of executors. It cannot raise a catalogue or object-store safety ceiling."
       >
         <ScalingModelDiagram />
 
@@ -576,7 +574,7 @@ export function ResourcesScalingDocsPage({ onNavigate }: DocsPageProps) {
             [
               <TableName key="permits">Capacity permits</TableName>,
               "May this shared resource pressure start now?",
-              "Crawl Policy limits and typed deployment resource budgets",
+              "Typed deployment resource budgets",
             ],
             [
               <TableName key="leases">Operation leases</TableName>,
@@ -601,11 +599,6 @@ export function ResourcesScalingDocsPage({ onNavigate }: DocsPageProps) {
           headers={["Resource", "Protects", "Important distinction"]}
           rows={[
             [
-              <InlineCode key="remote">remote:&lt;domain-group&gt;</InlineCode>,
-              "Deployment-wide concurrent pressure on a remote group",
-              "The matched Crawl Policy supplies the limit; browser slots are separate",
-            ],
-            [
               <InlineCode key="catalogue">catalogue:hot</InlineCode>,
               "Combined DuckLake ingestion and materialization pressure",
               "It is a capacity pool, not the correctness lock for commits",
@@ -619,11 +612,6 @@ export function ResourcesScalingDocsPage({ onNavigate }: DocsPageProps) {
               <InlineCode key="write">object:write</InlineCode>,
               "Weighted in-flight repository writes",
               "Storage throughput must support the configured budget",
-            ],
-            [
-              <TableName key="browser">Browser page slots</TableName>,
-              "One Chromium process",
-              "Process-local semaphore, not a deployment-wide Governor resource",
             ],
           ]}
         />
@@ -645,14 +633,9 @@ export function ResourcesScalingDocsPage({ onNavigate }: DocsPageProps) {
           headers={["Observed signal", "Likely constraint", "Next action"]}
           rows={[
             [
-              "Remote permit wait rises; transport workers have room",
-              "Website access",
-              "Review the matching policy and site tolerance before raising its remote concurrency",
-            ],
-            [
-              "Transport queue age rises; local worker slots stay full",
-              "HTTP, browser or provider workers",
-              "Add replicas for that transport, provided remote limits have headroom",
+              "Acquisition slots stay full while the crawl queue grows",
+              "Acquisition workers",
+              "Add acquisition replicas; domain policies continue to enforce website politeness",
             ],
             [
               "Ingestion queue age rises; catalogue permits have room",
@@ -678,7 +661,7 @@ export function ResourcesScalingDocsPage({ onNavigate }: DocsPageProps) {
         />
 
         <Callout title="Adding replicas is safe, but may not improve throughput">
-          Extra workers still wait behind deployment-wide remote, catalogue and
+          Ingestion and materialization workers still wait behind catalogue and
           object-store budgets. A flat throughput line after adding replicas is
           evidence to inspect permit pressure, not a reason to keep adding
           processes.
@@ -731,9 +714,9 @@ export function ResourcesScalingDocsPage({ onNavigate }: DocsPageProps) {
         lead="These rules keep scaling changes from becoming correctness changes."
       >
         <div className="divide-y overflow-hidden rounded-lg border bg-card/25">
-          <LifecycleRow title="Scale transport deployments independently">
-            HTTP, browser and provider acquisition have separate queues and
-            failure domains. Add capacity only to the saturated transport.
+          <LifecycleRow title="Keep browser capacity and website politeness separate">
+            Scale acquisition coordination and the CDP browser fleet independently.
+            Domain policies remain Atlas-owned correctness constraints.
           </LifecycleRow>
           <LifecycleRow title="Keep graph-critical work independent of view freshness">
             Slow materialization may make views stale, but it must not hold
@@ -1078,8 +1061,8 @@ function ScalingModelDiagram() {
         <div className="grid gap-3 sm:grid-cols-3">
           <DiagramEntity
             icon={CircleGaugeIcon}
-            name="Remote budgets"
-            detail="per domain group"
+            name="Domain politeness"
+            detail="concurrency · pacing"
             subdued
           />
           <DiagramEntity

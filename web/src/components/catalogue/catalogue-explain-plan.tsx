@@ -2,11 +2,11 @@ import { AlertTriangleIcon, ChevronRightIcon } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import type {
-  CatalogueQueryMode,
   CatalogueQueryResult,
+  CatalogueStatementKind,
 } from "@/types/catalogue"
 
-type ExplainMode = Exclude<CatalogueQueryMode, "run">
+type ExplainMode = Exclude<CatalogueStatementKind, "query">
 
 type JsonRecord = Record<string, unknown>
 

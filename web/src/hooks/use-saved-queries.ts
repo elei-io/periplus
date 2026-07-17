@@ -30,7 +30,12 @@ export function useSavedQuery(id: string | null) {
 export function useCreateSavedQuery() {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: (input: { name: string; description?: string; sql: string; change_note?: string }) =>
+    mutationFn: (input: {
+      slug: string
+      description?: string
+      sql: string
+      change_note?: string
+    }) =>
       json<SavedQueryDetail>("/catalogue/queries/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -48,14 +53,20 @@ export function useCreateSavedQuery() {
 export function useUpdateSavedQuery() {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: (input: { query: SavedQueryDetail; sql: string; name?: string; description?: string; change_note?: string }) =>
+    mutationFn: (input: {
+      query: SavedQueryDetail
+      sql: string
+      slug?: string
+      description?: string
+      change_note?: string
+    }) =>
       json<SavedQueryDetail>(`/catalogue/queries/${input.query.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           expected_current_revision_id: input.query.current_revision_id,
           sql: input.sql,
-          name: input.name,
+          slug: input.slug,
           description: input.description ?? null,
           change_note: input.change_note || null,
         }),
@@ -73,11 +84,16 @@ export function useRestoreSavedQueryRevision() {
   const client = useQueryClient()
   return useMutation({
     mutationFn: (input: { query: SavedQueryDetail; revisionId: string }) =>
-      json<SavedQueryDetail>(`/catalogue/queries/${input.query.id}/revisions/${input.revisionId}/restore`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ expected_current_revision_id: input.query.current_revision_id }),
-      }),
+      json<SavedQueryDetail>(
+        `/catalogue/queries/${input.query.id}/revisions/${input.revisionId}/restore`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            expected_current_revision_id: input.query.current_revision_id,
+          }),
+        }
+      ),
     onSuccess: (query) => {
       void client.invalidateQueries({ queryKey: listKey })
       client.setQueryData(["saved-query", query.id], query)
@@ -91,7 +107,9 @@ export function useArchiveSavedQuery() {
   const client = useQueryClient()
   return useMutation({
     mutationFn: async (id: string) => {
-      const response = await fetch(apiUrl(`/catalogue/queries/${id}`), { method: "DELETE" })
+      const response = await fetch(apiUrl(`/catalogue/queries/${id}`), {
+        method: "DELETE",
+      })
       if (!response.ok) throw await apiErrorFromResponse(response)
     },
     onSuccess: () => {

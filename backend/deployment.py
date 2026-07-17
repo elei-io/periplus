@@ -13,6 +13,8 @@ from psycopg.errors import DuplicateDatabase
 
 from config import get_str
 from control.crawl_policies.service import ensure_default_crawl_policy
+from control.crawl_graphs.service import ensure_default_crawl_graph
+from control.domain_policies.service import ensure_default_domain_policy
 from control.catalogue_fixtures import seed_catalogue_fixtures
 from db.session import session_scope
 from repository.catalogue import Catalogue, catalogue_config_from_env
@@ -62,7 +64,9 @@ def seed_catalogue_fixture_definitions() -> None:
 
 def seed_system_control_plane() -> None:
     with session_scope() as session:
+        ensure_default_crawl_graph(session)
         ensure_default_crawl_policy(session)
+        ensure_default_domain_policy(session)
 
 
 def main(argv: Sequence[str] | None = None) -> None:

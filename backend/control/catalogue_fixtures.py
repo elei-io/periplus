@@ -15,6 +15,7 @@ from control.catalogue_queries.service import create_query, detail, restore_quer
 from control.catalogue_table_macros.models import CatalogueTableMacroDefinition
 from control.catalogue_table_macros.service import (
     create_definition as create_macro,
+    drop_definition as drop_macro,
     update_definition as update_macro,
 )
 from control.catalogue_views.models import CatalogueViewReference
@@ -59,13 +60,44 @@ def seed_catalogue_fixtures(
             view_store,
             _parse_relation_fixture(fixtures_root, path, kind="VIEW", schema=VIEW_SCHEMA),
         )
-    for path in _sql_files(fixtures_root / "macros"):
+    macro_paths = _sql_files(fixtures_root / "macros")
+    for path in macro_paths:
         _seed_macro(
             session,
             macro_store,
             _parse_relation_fixture(
                 fixtures_root, path, kind="MACRO", schema=TABLE_MACRO_SCHEMA
             ),
+        )
+    _drop_retired_macros(
+        session,
+        macro_store,
+        active_fixture_paths={
+            path.relative_to(fixtures_root).as_posix() for path in macro_paths
+        },
+    )
+
+
+def _drop_retired_macros(
+    session: Session,
+    store: CatalogueTableMacroStore,
+    *,
+    active_fixture_paths: set[str],
+) -> None:
+    retired = list(
+        session.scalars(
+            select(CatalogueTableMacroDefinition).where(
+                CatalogueTableMacroDefinition.fixture_path.is_not(None),
+                CatalogueTableMacroDefinition.fixture_path.not_in(active_fixture_paths),
+            )
+        )
+    )
+    for definition in retired:
+        drop_macro(
+            session,
+            store,
+            definition,
+            expected_revision_id=definition.definition_revision_id,
         )
 
 
@@ -77,7 +109,7 @@ def _seed_query(session: Session, fixture: RelationFixture) -> None:
         collisions = list(
             session.scalars(
                 select(CatalogueQuery).where(
-                    CatalogueQuery.name == fixture.name,
+                    CatalogueQuery.slug == fixture.name,
                     CatalogueQuery.archived_at.is_(None),
                 )
             )
@@ -89,7 +121,7 @@ def _seed_query(session: Session, fixture: RelationFixture) -> None:
             )
         created = create_query(
             session,
-            name=fixture.name,
+            slug=fixture.name,
             description=None,
             sql=fixture.sql,
             change_note=f"Seeded from {fixture.fixture_path}",
@@ -101,10 +133,10 @@ def _seed_query(session: Session, fixture: RelationFixture) -> None:
         session.flush()
         return
 
-    if existing.name != fixture.name:
+    if existing.slug != fixture.name:
         raise CatalogueFixtureError(
             f"{fixture.fixture_path} changed its saved query name from "
-            f"{existing.name!r} to {fixture.name!r}; use a new fixture filename."
+            f"{existing.slug!r} to {fixture.name!r}; use a new fixture filename."
         )
     if existing.archived_at is not None:
         restore_query(session, existing)
@@ -115,7 +147,7 @@ def _seed_query(session: Session, fixture: RelationFixture) -> None:
             existing,
             expected_revision_id=current.current_revision_id,
             sql=fixture.sql,
-            name=fixture.name,
+            slug=fixture.name,
             description=None,
             change_note=f"Updated from {fixture.fixture_path}",
         )
@@ -145,9 +177,8 @@ def _seed_view(
         created = create_view(
             session,
             store,
-            name=fixture.name,
+            slug=fixture.name,
             sql=fixture.sql,
-            display_name=_display_name(fixture.name),
             description=None,
         )
         if created.id is None:
@@ -176,7 +207,7 @@ def _seed_view(
             existing,
             expected_uuid=current.ducklake_view_uuid,
             sql=fixture.sql,
-            display_name=_display_name(fixture.name),
+            slug=fixture.name,
             description=None,
         )
 
@@ -204,10 +235,9 @@ def _seed_macro(
         created = create_macro(
             session,
             store,
-            name=fixture.name,
+            slug=fixture.name,
             parameters=list(fixture.parameters),
             sql=fixture.sql,
-            display_name=_display_name(fixture.name),
             description=None,
         )
         existing = session.get(CatalogueTableMacroDefinition, created.id)
@@ -234,7 +264,7 @@ def _seed_macro(
             expected_revision_id=existing.definition_revision_id,
             parameters=list(fixture.parameters),
             sql=fixture.sql,
-            display_name=_display_name(fixture.name),
+            slug=fixture.name,
             description=None,
         )
 
@@ -247,7 +277,7 @@ def _parse_query_fixture(root: Path, path: Path) -> RelationFixture:
         raise CatalogueFixtureError(f"Invalid saved query fixture {path}: {exc}") from exc
     return RelationFixture(
         fixture_path=path.relative_to(root).as_posix(),
-        name=_display_name(path.stem),
+        name=path.stem,
         sql=sql,
     )
 
@@ -315,7 +345,3 @@ def _sql_files(directory: Path) -> list[Path]:
 
 def _canonical(sql: str) -> str:
     return classify_select(sql).sql(dialect="duckdb")
-
-
-def _display_name(value: str) -> str:
-    return " ".join(part.capitalize() for part in value.split("_") if part)

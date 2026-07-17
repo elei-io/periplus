@@ -18,6 +18,10 @@ from db.session import session_scope
 from materialization.fencing import scope_job_is_current
 from materialization.queue import MaterializationCommitJob, MaterializationFailureJob
 from repository.catalogue.client import Catalogue
+from repository.catalogue.schema import (
+    INTERNAL_SCHEMA,
+    MATERIALIZATION_COVERAGE_TABLE,
+)
 from repository.objects.config import object_store_from_env, staging_root_from_env
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
@@ -42,7 +46,7 @@ def commit_scope(catalogue: Catalogue, job: MaterializationCommitJob) -> CommitO
 
         connection = catalogue.connection
         coverage = _qualified(
-            catalogue, catalogue.config.schema, "materialization_scope_results"
+            catalogue, INTERNAL_SCHEMA, MATERIALIZATION_COVERAGE_TABLE
         )
         already_committed = connection.execute(
             f"""
@@ -98,7 +102,7 @@ def record_scope_failure(catalogue: Catalogue, job: MaterializationFailureJob) -
         if not scope_job_is_current(definition, scope) and job.reason != "stale":
             return False
         coverage = _qualified(
-            catalogue, catalogue.config.schema, "materialization_scope_results"
+            catalogue, INTERNAL_SCHEMA, MATERIALIZATION_COVERAGE_TABLE
         )
         succeeded = catalogue.connection.execute(
             f"SELECT 1 FROM {coverage} WHERE definition_revision_id = ? "

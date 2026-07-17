@@ -7,8 +7,8 @@ from ipaddress import ip_address
 from typing import Any, Literal
 from urllib.parse import urlparse
 from uuid import UUID
+import tldextract
 
-from crawl4ai.utils import get_base_domain
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
@@ -16,6 +16,9 @@ class CatalogueRecord(BaseModel):
     """Immutable base for durable catalogue values."""
 
     model_config = ConfigDict(frozen=True)
+
+
+_TLD_EXTRACT = tldextract.TLDExtract(suffix_list_urls=())
 
 
 class ArtifactRecord(CatalogueRecord):
@@ -40,18 +43,6 @@ class DocumentRecord(CatalogueRecord):
     parser_version: str = Field(min_length=1)
     parser_options_hash: str = Field(min_length=1)
     element_count: int = Field(ge=0)
-    quality_schema_version: int = Field(ge=1)
-    html_character_count: int = Field(ge=0)
-    visible_text_chars: int = Field(ge=0)
-    script_count: int = Field(ge=0)
-    app_marker_count: int = Field(ge=0)
-    lazy_marker_count: int = Field(ge=0)
-    interaction_marker_count: int = Field(ge=0)
-    button_count: int = Field(ge=0)
-    form_count: int = Field(ge=0)
-    input_count: int = Field(ge=0)
-    anchor_count: int = Field(ge=0)
-    quality_flags_json: tuple[str, ...] = ()
     created_at: datetime
 
 
@@ -63,8 +54,6 @@ class CrawlRecord(CatalogueRecord):
     graph_run_id: UUID
     graph_node_id: UUID
     crawl_request_id: UUID
-    purpose: Literal["use", "sample"] = "use"
-    trial_id: UUID | None = None
     source_crawl_id: UUID | None = None
     source_edge_id: UUID | None = None
     requested_url: str = Field(min_length=1)
@@ -82,26 +71,15 @@ class CrawlRecord(CatalogueRecord):
     duration_ms: int | None = Field(default=None, ge=0)
     response_media_type: str | None = Field(default=None, min_length=1)
     response_filename: str | None = Field(default=None, min_length=1, max_length=1024)
-    profile: Literal["http", "browser", "firecrawl"]
-    crawl_profile_id: UUID | None = None
-    crawl_profile_slug: str = Field(min_length=1)
-    remote_concurrency: int = Field(ge=1)
-    config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    config_json: dict[str, JsonValue]
+    policy_config_hash: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
+    policy_config_json: dict[str, JsonValue] = Field(default_factory=dict)
     crawl_policy_id: UUID | None = None
-    outcome: Literal["success", "partial", "failed"]
+    outcome: Literal["success", "skipped", "failed"]
     failure_code: str | None = None
     failure_stage: str | None = None
     failure_retryable: bool | None = None
     failure_detail: str | None = Field(default=None, max_length=2048)
-    trial_sampler_version: int | None = Field(default=None, ge=1)
-    trial_sample_rate: float | None = Field(default=None, ge=0, le=1)
-    trial_candidate_strategy: str | None = None
-    trial_candidate_profile_id: UUID | None = None
-    trial_candidate_profile_slug: str | None = None
-    trial_candidate_profile_config_hash: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
+    acquisition_attempts_json: tuple[dict[str, JsonValue], ...] = ()
 
     @model_validator(mode="before")
     @classmethod
@@ -116,7 +94,8 @@ class CrawlRecord(CatalogueRecord):
         try:
             ip_address(host)
         except ValueError:
-            registrable_domain = get_base_domain(page_url) or host
+            extracted = _TLD_EXTRACT(host)
+            registrable_domain = extracted.top_domain_under_public_suffix or host
         else:
             registrable_domain = host
         result.update(
@@ -131,7 +110,7 @@ class CrawlRecord(CatalogueRecord):
         return result
 
     @model_validator(mode="after")
-    def validate_outcome_and_trial(self) -> CrawlRecord:
+    def validate_outcome(self) -> CrawlRecord:
         has_failure = self.failure_code is not None
         failure_fields = (
             self.failure_code,
@@ -141,35 +120,23 @@ class CrawlRecord(CatalogueRecord):
         )
         if self.outcome == "success" and any(value is not None for value in failure_fields):
             raise ValueError("a successful crawl cannot record acquisition failure fields")
-        if self.outcome != "success" and not all(
+        if self.outcome == "failed" and not all(
             value is not None for value in failure_fields
         ):
-            raise ValueError("a non-successful crawl requires complete failure provenance")
+            raise ValueError("a failed crawl requires complete failure provenance")
+        if self.outcome == "skipped" and any(value is not None for value in failure_fields):
+            raise ValueError("a skipped crawl cannot record acquisition failure fields")
         captured_count = sum(
             identity is not None for identity in (self.document_id, self.artifact_id)
         )
         if captured_count > 1:
             raise ValueError("a crawl cannot reference both a document and an artifact")
-        if captured_count == 0 and (self.outcome != "failed" or not has_failure):
-            raise ValueError("a contentless crawl must record a failed acquisition")
+        if captured_count == 0 and self.outcome not in {"failed", "skipped"}:
+            raise ValueError("a contentless crawl must be failed or skipped")
         if captured_count == 1 and self.outcome == "failed":
             raise ValueError("a crawl with captured content cannot have a failed outcome")
         if self.artifact_id is not None and self.response_media_type is None:
             raise ValueError("an artifact crawl requires its response media type")
-        if self.purpose == "sample" and self.trial_id is None:
-            raise ValueError("a sample crawl must record a trial_id")
-        trial_fields = (
-            self.trial_sampler_version,
-            self.trial_sample_rate,
-            self.trial_candidate_strategy,
-            self.trial_candidate_profile_id,
-            self.trial_candidate_profile_slug,
-            self.trial_candidate_profile_config_hash,
-        )
-        if self.trial_id is None and any(value is not None for value in trial_fields):
-            raise ValueError("trial metadata requires a trial_id")
-        if self.trial_id is not None and not all(value is not None for value in trial_fields):
-            raise ValueError("a trial crawl requires complete sampling provenance")
         return self
 
 
@@ -183,6 +150,28 @@ class ElementRecord(CatalogueRecord):
     attributes: dict[str, str] = Field(default_factory=dict)
     text_direct: str
     text_tail: str
+
+
+class CrawlStepRecord(CatalogueRecord):
+    crawl_id: UUID
+    attempt_number: int = Field(ge=1)
+    step_ordinal: int = Field(ge=1)
+    method: Literal["wait_dynamic", "wait_fixed", "scroll", "expand"]
+    method_version: int = Field(ge=1)
+    config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    config_json: dict[str, JsonValue]
+    started_at: datetime
+    duration_ms: int = Field(ge=0)
+    iterations: int = Field(ge=0)
+    stop_reason: str = Field(min_length=1)
+    before_element_count: int = Field(ge=0)
+    after_element_count: int = Field(ge=0)
+    before_text_chars: int = Field(ge=0)
+    after_text_chars: int = Field(ge=0)
+    before_link_count: int = Field(ge=0)
+    after_link_count: int = Field(ge=0)
+    before_scroll_height: int = Field(ge=0)
+    after_scroll_height: int = Field(ge=0)
 
 
 class CatalogueWriteResult(CatalogueRecord):

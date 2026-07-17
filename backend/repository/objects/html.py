@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import tempfile
 from dataclasses import dataclass
 
@@ -105,22 +104,27 @@ class RawHtmlRepository:
         )
 
     def read(self, object_key: str) -> str:
+        return self.read_bytes(object_key).decode("utf-8")
+
+    def read_bytes(self, object_key: str, *, chunk_bytes: int = 1024 * 1024) -> bytes:
+        """Return the exact canonical UTF-8 bytes after verifying their identity."""
+
+        if chunk_bytes <= 0:
+            raise ValueError("chunk_bytes must be greater than zero")
+        chunks: list[bytes] = []
+        digest = hashlib.sha256()
         with self.store.open(object_key) as content:
             decompressor = zstandard.ZstdDecompressor()
             with decompressor.stream_reader(content) as reader:
-                hashing_reader = _HashingReader(reader)
-                with io.TextIOWrapper(
-                    io.BufferedReader(hashing_reader),
-                    encoding="utf-8",
-                    newline="",
-                ) as text:
-                    canonical = text.read()
+                while chunk := reader.read(chunk_bytes):
+                    digest.update(chunk)
+                    chunks.append(chunk)
         expected = _sha256_from_key(object_key)
-        if expected is not None and hashing_reader.hexdigest() != expected:
+        if expected is not None and digest.hexdigest() != expected:
             raise RepositoryIntegrityError(
                 f"HTML object failed content-address verification: {object_key}"
             )
-        return canonical
+        return b"".join(chunks)
 
     def verify(
         self,
@@ -159,26 +163,6 @@ class RawHtmlRepository:
                 f"HTML object metadata does not match captured content: {object_key}"
             )
         return identity
-
-
-class _HashingReader(io.RawIOBase):
-    """Hash decompressed bytes as TextIOWrapper decodes them."""
-
-    def __init__(self, source) -> None:
-        self.source = source
-        self.digest = hashlib.sha256()
-
-    def readable(self) -> bool:
-        return True
-
-    def readinto(self, buffer) -> int:
-        count = self.source.readinto(buffer)
-        if count:
-            self.digest.update(memoryview(buffer)[:count])
-        return count
-
-    def hexdigest(self) -> str:
-        return self.digest.hexdigest()
 
 
 def html_object_key(sha256: str) -> str:

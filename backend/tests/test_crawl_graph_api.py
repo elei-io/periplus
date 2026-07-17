@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 from api.routers.crawl_graphs import router
 from control.crawl_graphs.models import CrawlGraph, CrawlGraphEdge, CrawlGraphNode
+from control.crawl_graphs.service import ensure_default_crawl_graph
 from db import Base
 from db.session import get_session
 
@@ -44,7 +45,7 @@ class CrawlGraphApiTests(unittest.TestCase):
 
     def test_crud_graph_nodes_and_edges(self) -> None:
         graph = self.client.post(
-            "/crawl-graphs/", json={"name": "Search", "description": None}
+            "/crawl-graphs/", json={"slug": "search", "description": None}
         )
         self.assertEqual(graph.status_code, 201)
         graph_id = graph.json()["id"]
@@ -74,7 +75,7 @@ class CrawlGraphApiTests(unittest.TestCase):
         self.assertEqual(detail.json()["edges"][0]["dedupe_mode"], "graph")
         changed_root = self.client.put(
             f"/crawl-graphs/{graph_id}",
-            json={"name": "Search", "description": None, "root_node_id": result.json()["id"]},
+            json={"slug": "search", "description": None, "root_node_id": result.json()["id"]},
         )
         self.assertEqual(changed_root.status_code, 200, changed_root.text)
         self.assertEqual(changed_root.json()["root_node_id"], result.json()["id"])
@@ -88,7 +89,7 @@ class CrawlGraphApiTests(unittest.TestCase):
         self.assertEqual(positioned.json()["position_x"], 123.5)
 
     def test_invalid_edge_is_422(self) -> None:
-        graph_id = self.client.post("/crawl-graphs/", json={"name": "Search"}).json()["id"]
+        graph_id = self.client.post("/crawl-graphs/", json={"slug": "search"}).json()["id"]
         node_id = self.client.post(
             f"/crawl-graphs/{graph_id}/nodes",
             json={"name": "search"},
@@ -104,8 +105,27 @@ class CrawlGraphApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422)
 
+    def test_system_graph_is_visible_and_rejects_mutations(self) -> None:
+        with Session(self.engine, expire_on_commit=False) as session:
+            graph = ensure_default_crawl_graph(session)
+            session.commit()
+
+        listing = self.client.get("/crawl-graphs/")
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.json()["items"][0]["slug"], "single-page")
+        self.assertTrue(listing.json()["items"][0]["system_owned"])
+
+        add_node = self.client.post(
+            f"/crawl-graphs/{graph.id}/nodes",
+            json={"name": "extra"},
+        )
+        self.assertEqual(add_node.status_code, 409)
+
+        delete = self.client.delete(f"/crawl-graphs/{graph.id}")
+        self.assertEqual(delete.status_code, 409)
+
     def test_edge_dedupe_mode_is_validated(self) -> None:
-        graph_id = self.client.post("/crawl-graphs/", json={"name": "Search"}).json()["id"]
+        graph_id = self.client.post("/crawl-graphs/", json={"slug": "search"}).json()["id"]
         node_id = self.client.post(
             f"/crawl-graphs/{graph_id}/nodes", json={"name": "search"}
         ).json()["id"]

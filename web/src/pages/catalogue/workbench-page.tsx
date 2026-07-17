@@ -1,22 +1,19 @@
 import { Prec } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 import CodeMirror from "@uiw/react-codemirror"
+import { useVirtualizer } from "@tanstack/react-virtual"
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
-  BracesIcon,
   CopyIcon,
-  FileCode2Icon,
+  DownloadIcon,
   LockKeyholeIcon,
-  SaveIcon,
   TriangleAlertIcon,
-  ViewIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 
 import { createCatalogueCompletionExtensions } from "@/components/catalogue/catalogue-completions"
-import { SaveQueryDialog } from "@/components/catalogue/save-query-dialog"
-import { SaveTableMacroDialog } from "@/components/catalogue/save-table-macro-dialog"
-import { SaveViewDialog } from "@/components/catalogue/save-view-dialog"
+import { CatalogueExplainPlan } from "@/components/catalogue/catalogue-explain-plan"
+import { formatSql } from "@/components/catalogue/sql-format"
 import {
   isWorkbenchCommandLike,
   parseWorkbenchCommand,
@@ -24,6 +21,14 @@ import {
   workbenchCommandSuggestion,
   WORKBENCH_COMMANDS,
 } from "@/components/catalogue/workbench-commands"
+import {
+  crawlColumnCandidates,
+  MAX_CRAWL_URLS,
+  parseCrawlCommandTarget,
+  selectionFromNamedColumn,
+  selectionFromUrl,
+  type CrawlUrlSelection,
+} from "@/components/catalogue/workbench-crawls"
 import { Button } from "@/components/ui/button"
 import {
   Select,
@@ -40,29 +45,51 @@ import { useCatalogueLint } from "@/hooks/use-catalogue-lint"
 import { useCatalogueMetadata } from "@/hooks/use-catalogue-metadata"
 import { useCatalogueQuery } from "@/hooks/use-catalogue-query"
 import { useCatalogueStatus } from "@/hooks/use-catalogue-status"
-import { extractApiError } from "@/lib/api"
+import {
+  useCrawlGraphs,
+  useGraphRun,
+  useTriggerCrawlGraph,
+} from "@/hooks/use-crawl-graphs"
+import { apiUrl, extractApiError } from "@/lib/api"
 import type {
   CatalogueLintDiagnostic,
   CatalogueQueryResult,
 } from "@/types/catalogue"
+
+const WORKBENCH_HISTORY_KEY = "atlas.catalogue.workbench.history"
+const WORKBENCH_HISTORY_LIMIT = 10
+
+function loadWorkbenchHistory() {
+  try {
+    const value: unknown = JSON.parse(
+      window.localStorage.getItem(WORKBENCH_HISTORY_KEY) ?? "[]"
+    )
+    if (!Array.isArray(value)) return []
+    return value
+      .filter((item): item is string => typeof item === "string")
+      .slice(-WORKBENCH_HISTORY_LIMIT)
+  } catch {
+    return []
+  }
+}
+
+function appendWorkbenchHistory(entries: string[], sql: string) {
+  const next = entries.at(-1) === sql ? entries : [...entries, sql]
+  return next.slice(-WORKBENCH_HISTORY_LIMIT)
+}
 
 type TranscriptEntry = {
   id: string
   sql: string
   status: "running" | "success" | "error"
   result?: CatalogueQueryResult
-  output?: "help" | "welcome" | "message"
+  output?: "crawl" | "help" | "welcome" | "message"
+  crawlSelection?: CrawlUrlSelection
+  crawlGraphSlug?: string
   message?: string
   expanded?: boolean
   error?: string
   durationMs?: number
-}
-
-type SaveKind = "view" | "query" | "macro"
-
-type SaveTarget = {
-  kind: SaveKind
-  sql: string
 }
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -206,6 +233,82 @@ function formatCell(value: unknown) {
   return String(value)
 }
 
+function webUrl(value: unknown) {
+  if (typeof value !== "string") return null
+  try {
+    const url = new URL(value)
+    return url.protocol === "http:" || url.protocol === "https:"
+      ? url.href
+      : null
+  } catch {
+    return null
+  }
+}
+
+const RESULT_CELL_PREVIEW_LIMIT = 2_000
+
+function ResultCellValue({
+  value,
+  column,
+  expandable = false,
+}: {
+  value: unknown
+  column?: string
+  expandable?: boolean
+}) {
+  const formatted = formatCell(value)
+  const documentHref =
+    column === "document_id" && typeof value === "string"
+      ? apiUrl(
+          `/operations/repository/documents/${encodeURIComponent(value)}/content`
+        )
+      : null
+  const artifactHref =
+    column === "artifact_id" && typeof value === "string"
+      ? apiUrl(
+          `/operations/repository/artifacts/${encodeURIComponent(value)}/content`
+        )
+      : null
+  const href = documentHref ?? artifactHref ?? webUrl(value)
+  const truncated = formatted.length > RESULT_CELL_PREVIEW_LIMIT
+  const [expanded, setExpanded] = useState(false)
+  const displayed =
+    truncated && !expanded
+      ? `${formatted.slice(0, RESULT_CELL_PREVIEW_LIMIT)}…`
+      : formatted
+
+  const content = href ? (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={href}
+      className="text-inherit underline decoration-current/35 underline-offset-2 hover:decoration-current"
+    >
+      {displayed}
+    </a>
+  ) : (
+    displayed
+  )
+
+  return (
+    <>
+      {content}
+      {truncated && expandable && (
+        <button
+          type="button"
+          className="ml-2 text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded
+            ? "show less"
+            : `show all (${formatted.length.toLocaleString()} characters)`}
+        </button>
+      )}
+    </>
+  )
+}
+
 function jsonValue(value: unknown): unknown {
   if (typeof value === "bigint") return value.toString()
   if (value instanceof Uint8Array) return Array.from(value)
@@ -259,7 +362,10 @@ function resultAsCsv(result: CatalogueQueryResult) {
 
 type ResultExportFormat = "csv" | "json"
 
-function serializeResult(result: CatalogueQueryResult, format: ResultExportFormat) {
+function serializeResult(
+  result: CatalogueQueryResult,
+  format: ResultExportFormat
+) {
   return format === "csv" ? resultAsCsv(result) : resultAsJson(result)
 }
 
@@ -326,7 +432,7 @@ function ResultExportActions({ result }: { result: CatalogueQueryResult }) {
           title="Download table result"
           className="h-6 border-transparent bg-transparent px-1.5 hover:bg-muted/60 dark:bg-transparent dark:hover:bg-muted/40"
         >
-          <SaveIcon />
+          <DownloadIcon />
         </SelectTrigger>
         <SelectContent align="end" alignItemWithTrigger={false}>
           <SelectItem value="csv">Download as CSV</SelectItem>
@@ -382,7 +488,7 @@ function HelpOutput() {
   )
 }
 
-function WelcomeOutput({ schemaVersion }: { schemaVersion?: number }) {
+function WelcomeOutput({ schemaVersion }: { schemaVersion?: string }) {
   return (
     <div className="space-y-3 font-mono text-xs">
       <pre className="leading-5 text-foreground/80">
@@ -400,20 +506,14 @@ function WelcomeOutput({ schemaVersion }: { schemaVersion?: number }) {
         <p>Query crawled pages, documents, and DOM data.</p>
       </div>
       <p className="text-muted-foreground">
-        Atlas schema v{schemaVersion ?? "—"} · type{" "}
+        Atlas schema {schemaVersion ?? "—"} · type{" "}
         <span className="text-primary">\?</span> for help
       </p>
     </div>
   )
 }
 
-function TranscriptActions({
-  sql,
-  onSave,
-}: {
-  sql: string
-  onSave: (kind: SaveKind, sql: string) => void
-}) {
+function TranscriptActions({ sql }: { sql: string }) {
   async function copy() {
     try {
       await navigator.clipboard.writeText(sql)
@@ -425,33 +525,6 @@ function TranscriptActions({
 
   return (
     <div className="ml-auto flex h-6 shrink-0 items-center gap-1 pl-3">
-      <Select
-        value={null}
-        onValueChange={(value) => value && onSave(value as SaveKind, sql)}
-      >
-        <SelectTrigger
-          size="sm"
-          aria-label="Save command"
-          title="Save query"
-          className="h-6 border-transparent bg-transparent px-1.5 font-sans hover:bg-muted/60 dark:bg-transparent dark:hover:bg-muted/40"
-        >
-          <SaveIcon />
-        </SelectTrigger>
-        <SelectContent align="start" alignItemWithTrigger={false}>
-          <SelectItem value="view">
-            <ViewIcon />
-            Save as view
-          </SelectItem>
-          <SelectItem value="query">
-            <FileCode2Icon />
-            Save as query
-          </SelectItem>
-          <SelectItem value="macro">
-            <BracesIcon />
-            Save as macro
-          </SelectItem>
-        </SelectContent>
-      </Select>
       <Button
         type="button"
         variant="ghost"
@@ -520,37 +593,65 @@ function ExpandedResult({
   result: CatalogueQueryResult
   durationMs?: number
 }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  // TanStack Virtual exposes mutable callbacks by design; this view stays uncompiled.
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({
+    count: result.rows.length,
+    getScrollElement: () => containerRef.current,
+    estimateSize: () => 56 + result.columns.length * 44,
+    overscan: 4,
+  })
+
   return (
     <div className="mt-3 max-w-full font-mono text-xs">
-      <div className="max-h-[min(42vh,24rem)] overflow-auto border-y border-border/80">
-        {result.rows.map((row, rowIndex) => (
-          <div
-            key={rowIndex}
-            className="border-b border-border/80 last:border-b-0"
-          >
-            <div className="bg-muted/30 px-3 py-1 text-[10px] text-muted-foreground">
-              record {rowIndex + 1}
-            </div>
-            {result.columns.map((column, columnIndex) => (
+      <div
+        ref={containerRef}
+        className="max-h-[min(42vh,24rem)] overflow-auto border-y border-border/80"
+      >
+        <div
+          className="relative"
+          style={{ height: `${virtualizer.getTotalSize()}px` }}
+        >
+          {virtualizer.getVirtualItems().map((item) => {
+            const row = result.rows[item.index]
+            return (
               <div
-                key={`${column}-${columnIndex}`}
-                className="grid grid-cols-[minmax(8rem,16rem)_minmax(0,1fr)] even:bg-muted/[0.06]"
+                key={item.key}
+                ref={virtualizer.measureElement}
+                data-index={item.index}
+                className="absolute top-0 left-0 w-full border-b border-border/80"
+                style={{ transform: `translateY(${item.start}px)` }}
               >
-                <div className="border-r border-border/80 px-3 py-1.5">
-                  <span className="block truncate text-foreground/75">
-                    {column}
-                  </span>
-                  <span className="block truncate text-[9px] text-muted-foreground/70">
-                    {result.columnTypes[columnIndex] ?? "unknown"}
-                  </span>
+                <div className="bg-muted/30 px-3 py-1 text-[10px] text-muted-foreground">
+                  record {item.index + 1}
                 </div>
-                <div className="px-3 py-1.5 break-words whitespace-pre-wrap text-foreground/85">
-                  {formatCell(row[columnIndex])}
-                </div>
+                {result.columns.map((column, columnIndex) => (
+                  <div
+                    key={`${column}-${columnIndex}`}
+                    className="grid grid-cols-[minmax(8rem,16rem)_minmax(0,1fr)] even:bg-muted/[0.06]"
+                  >
+                    <div className="border-r border-border/80 px-3 py-1.5">
+                      <span className="block truncate text-foreground/75">
+                        {column}
+                      </span>
+                      <span className="block truncate text-[9px] text-muted-foreground/70">
+                        {result.columnTypes[columnIndex] ?? "unknown"}
+                      </span>
+                    </div>
+                    <div className="px-3 py-1.5 break-words whitespace-pre-wrap text-foreground/85">
+                      <ResultCellValue
+                        value={row[columnIndex]}
+                        column={column}
+                        expandable
+                      />
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        ))}
+            )
+          })}
+        </div>
       </div>
       <p className="mt-2 text-[10px] text-muted-foreground">
         {result.rows.length} {result.rows.length === 1 ? "row" : "rows"}
@@ -579,6 +680,14 @@ function ResultTable({
     startX: number
     startWidth: number
   } | null>(null)
+  // TanStack Virtual exposes mutable callbacks by design; this view stays uncompiled.
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({
+    count: result.rows.length,
+    getScrollElement: () => containerRef.current,
+    estimateSize: () => 30,
+    overscan: 12,
+  })
 
   useEffect(() => {
     const container = containerRef.current
@@ -629,97 +738,242 @@ function ResultTable({
         ref={containerRef}
         className="mt-1 max-h-[min(42vh,24rem)] w-full overflow-auto"
       >
-        <table
-          className="table-fixed border-separate border-spacing-0 bg-muted/[0.04] font-mono text-xs"
+        <div
+          className="bg-muted/[0.04] font-mono text-xs"
           style={{ width: `${tableWidth}px` }}
         >
-          <colgroup>
+          <div
+            className="sticky top-0 z-10 grid"
+            style={{
+              gridTemplateColumns: columnWidths
+                .map((width) => `${width}px`)
+                .join(" "),
+            }}
+          >
             {result.columns.map((column, index) => (
-              <col
+              <div
                 key={`${column}-${index}`}
-                style={{ width: `${columnWidths[index]}px` }}
-              />
-            ))}
-          </colgroup>
-          <thead className="sticky top-0 z-10">
-            <tr>
-              {result.columns.map((column, index) => (
-                <th
-                  key={`${column}-${index}`}
-                  className="relative border-y border-r bg-muted/45 px-3 py-2 text-left font-medium text-foreground/75 backdrop-blur-[2px] first:border-l"
+                className="relative border-y border-r bg-muted/45 px-3 py-2 text-left font-medium text-foreground/75 backdrop-blur-[2px] first:border-l"
+              >
+                <span className="block truncate">{column}</span>
+                <span className="mt-0.5 block truncate text-[9px] leading-3 font-normal tracking-wide text-muted-foreground/70">
+                  {result.columnTypes[index] ?? "unknown"}
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Resize ${column} column`}
+                  className="group absolute inset-y-0 -right-1 z-20 flex w-2 cursor-col-resize touch-none justify-center"
+                  onPointerDown={(event) => {
+                    event.currentTarget.setPointerCapture(event.pointerId)
+                    setResize({
+                      index,
+                      startX: event.clientX,
+                      startWidth: columnWidths[index],
+                    })
+                  }}
+                  onPointerMove={(event) => {
+                    if (!resize || resize.index !== index) return
+                    resizeColumn(
+                      index,
+                      resize.startWidth + event.clientX - resize.startX
+                    )
+                  }}
+                  onPointerUp={(event) => {
+                    event.currentTarget.releasePointerCapture(event.pointerId)
+                    setResize(null)
+                  }}
+                  onKeyDownCapture={(event) => {
+                    if (
+                      event.key !== "ArrowLeft" &&
+                      event.key !== "ArrowRight"
+                    ) {
+                      return
+                    }
+                    event.preventDefault()
+                    resizeColumn(
+                      index,
+                      columnWidths[index] +
+                        (event.key === "ArrowRight" ? 16 : -16)
+                    )
+                  }}
                 >
-                  <span className="block truncate">{column}</span>
-                  <span className="mt-0.5 block truncate text-[9px] leading-3 font-normal tracking-wide text-muted-foreground/70">
-                    {result.columnTypes[index] ?? "unknown"}
-                  </span>
-                  <button
-                    type="button"
-                    aria-label={`Resize ${column} column`}
-                    className="group absolute inset-y-0 -right-1 z-20 flex w-2 cursor-col-resize touch-none justify-center"
-                    onPointerDown={(event) => {
-                      event.currentTarget.setPointerCapture(event.pointerId)
-                      setResize({
-                        index,
-                        startX: event.clientX,
-                        startWidth: columnWidths[index],
-                      })
-                    }}
-                    onPointerMove={(event) => {
-                      if (!resize || resize.index !== index) return
-                      resizeColumn(
-                        index,
-                        resize.startWidth + event.clientX - resize.startX
-                      )
-                    }}
-                    onPointerUp={(event) => {
-                      event.currentTarget.releasePointerCapture(event.pointerId)
-                      setResize(null)
-                    }}
-                    onKeyDownCapture={(event) => {
-                      if (
-                        event.key !== "ArrowLeft" &&
-                        event.key !== "ArrowRight"
-                      ) {
-                        return
-                      }
-                      event.preventDefault()
-                      resizeColumn(
-                        index,
-                        columnWidths[index] +
-                          (event.key === "ArrowRight" ? 16 : -16)
-                      )
-                    }}
-                  >
-                    <span className="h-full w-px bg-border transition-colors group-hover:bg-primary group-focus-visible:bg-primary" />
-                  </button>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {result.rows.map((row, rowIndex) => (
-              <tr key={rowIndex} className="even:bg-muted/10 hover:bg-muted/15">
-                {row.map((value, columnIndex) => {
-                  const formatted = formatCell(value)
-                  return (
-                    <td
-                      key={columnIndex}
-                      title={formatted}
-                      className="truncate border-r border-b px-3 py-1.5 text-foreground/85 first:border-l"
-                    >
-                      {formatted}
-                    </td>
-                  )
-                })}
-              </tr>
+                  <span className="h-full w-px bg-border transition-colors group-hover:bg-primary group-focus-visible:bg-primary" />
+                </button>
+              </div>
             ))}
-          </tbody>
-        </table>
+          </div>
+          <div
+            className="relative"
+            style={{ height: `${virtualizer.getTotalSize()}px` }}
+          >
+            {virtualizer.getVirtualItems().map((item) => {
+              const row = result.rows[item.index]
+              return (
+                <div
+                  key={item.key}
+                  className="absolute top-0 left-0 grid even:bg-muted/10 hover:bg-muted/15"
+                  style={{
+                    width: `${tableWidth}px`,
+                    height: `${item.size}px`,
+                    transform: `translateY(${item.start}px)`,
+                    gridTemplateColumns: columnWidths
+                      .map((width) => `${width}px`)
+                      .join(" "),
+                  }}
+                >
+                  {row.map((value, columnIndex) => {
+                    const formatted = formatCell(value)
+                    return (
+                      <div
+                        key={columnIndex}
+                        title={formatted}
+                        className="truncate border-r border-b px-3 py-1.5 text-foreground/85 first:border-l"
+                      >
+                        <ResultCellValue
+                          value={value}
+                          column={result.columns[columnIndex]}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })}
+          </div>
+        </div>
       </div>
       <p className="mt-2 font-mono text-[10px] text-muted-foreground">
         {result.rows.length} {result.rows.length === 1 ? "row" : "rows"}
         {durationMs !== undefined && ` · ${formatDuration(durationMs)}`}
       </p>
+    </div>
+  )
+}
+
+function QueryResult({
+  result,
+  durationMs,
+  expanded,
+}: {
+  result: CatalogueQueryResult
+  durationMs?: number
+  expanded?: boolean
+}) {
+  if (result.statementKind !== "query") {
+    return <CatalogueExplainPlan result={result} mode={result.statementKind} />
+  }
+  return (
+    <ResultTable result={result} durationMs={durationMs} expanded={expanded} />
+  )
+}
+
+function CrawlLaunchOutput({
+  selection,
+  graphSlug,
+}: {
+  selection: CrawlUrlSelection
+  graphSlug: string
+}) {
+  const [runId, setRunId] = useState<string | null>(null)
+  const startedRef = useRef(false)
+  const graphsQuery = useCrawlGraphs()
+  const graphs = graphsQuery.data?.items ?? []
+  const selectedGraph = graphs.find((graph) => graph.slug === graphSlug)
+  const triggerRun = useTriggerCrawlGraph(selectedGraph?.id ?? "")
+  const runQuery = useGraphRun(runId)
+  const run = runQuery.data
+  const mutate = triggerRun.mutate
+  const urls = selection.urls
+
+  useEffect(() => {
+    if (
+      startedRef.current ||
+      !selectedGraph ||
+      selectedGraph.root_node_id === null ||
+      urls.length > MAX_CRAWL_URLS
+    ) {
+      return
+    }
+    startedRef.current = true
+    mutate(urls, {
+      onSuccess: (submission) => setRunId(submission.run_id),
+    })
+  }, [mutate, selectedGraph, urls])
+
+  if (graphsQuery.isLoading) {
+    return (
+      <p className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+        <TerminalSpinner /> Resolving graph {graphSlug}
+      </p>
+    )
+  }
+
+  if (graphsQuery.error) {
+    return (
+      <p className="mt-2 text-xs text-red-700 dark:text-red-300/80">
+        {extractApiError(graphsQuery.error)}
+      </p>
+    )
+  }
+
+  if (!selectedGraph) {
+    return (
+      <p className="mt-2 text-xs text-red-700 dark:text-red-300/80">
+        Crawl graph not found: {graphSlug}
+      </p>
+    )
+  }
+
+  if (selectedGraph.root_node_id === null) {
+    return (
+      <p className="mt-2 text-xs text-red-700 dark:text-red-300/80">
+        Crawl graph {graphSlug} has no root node.
+      </p>
+    )
+  }
+
+  if (urls.length > MAX_CRAWL_URLS) {
+    return (
+      <p className="mt-2 text-xs text-red-700 dark:text-red-300/80">
+        A graph run accepts at most {MAX_CRAWL_URLS.toLocaleString()} URLs.
+      </p>
+    )
+  }
+
+  if (triggerRun.error) {
+    return (
+      <p className="mt-2 text-xs text-red-700 dark:text-red-300/80">
+        {extractApiError(triggerRun.error)}
+      </p>
+    )
+  }
+
+  const status = run?.status ?? "queued"
+  const active = !runId || status === "queued" || status === "running"
+  return (
+    <div className="mt-2 max-w-xl space-y-2 text-xs">
+      <p className="flex items-center gap-2">
+        <span className="text-primary" aria-hidden="true">
+          {active ? "›" : "✓"}
+        </span>
+        {runId
+          ? `Graph run ${status.replaceAll("_", " ")}`
+          : `Starting ${graphSlug}`}
+        {active && <TerminalSpinner />}
+      </p>
+      {runId && (
+        <>
+          <p className="text-muted-foreground">
+            {urls.length.toLocaleString()} initial · {run?.request_count ?? 0}{" "}
+            admitted · {run?.pending_request_count ?? 0} pending ·{" "}
+            {run?.failed_request_count ?? 0} failed
+          </p>
+          <p className="text-[10px] text-muted-foreground">run {runId}</p>
+        </>
+      )}
+      {run?.error && (
+        <p className="text-red-700 dark:text-red-300/80">{run.error}</p>
+      )}
     </div>
   )
 }
@@ -734,15 +988,14 @@ export function CatalogueWorkbenchPage() {
       output: "welcome",
     },
   ])
-  const [history, setHistory] = useState<string[]>([])
+  const [history, setHistory] = useState<string[]>(loadWorkbenchHistory)
   const [historyIndex, setHistoryIndex] = useState<number | null>(null)
   const [expandedOutput, setExpandedOutput] = useState(false)
-  const [saveTarget, setSaveTarget] = useState<SaveTarget | null>(null)
   const historyDraftRef = useRef("")
   const editorRef = useRef<EditorView | null>(null)
   const transcriptEndRef = useRef<HTMLDivElement>(null)
   const catalogueQuery = useCatalogueQuery()
-  const catalogueLint = useCatalogueLint(input, "run", isLintableSql(input))
+  const catalogueLint = useCatalogueLint(input, isLintableSql(input))
   const catalogueMetadata = useCatalogueMetadata()
   const catalogueStatus = useCatalogueStatus()
   const editorExtensions = useMemo(
@@ -757,6 +1010,17 @@ export function CatalogueWorkbenchPage() {
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ block: "nearest" })
   }, [transcript])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        WORKBENCH_HISTORY_KEY,
+        JSON.stringify(history)
+      )
+    } catch {
+      // History remains available for this session when storage is unavailable.
+    }
+  }, [history])
 
   function replaceInput(value: string) {
     setInput(value)
@@ -816,6 +1080,100 @@ export function CatalogueWorkbenchPage() {
       : historyIndex !== null && line.number === editor.state.doc.lines
   }
 
+  function crawlTranscriptEntry(
+    id: string,
+    sql: string,
+    argument: string
+  ): TranscriptEntry {
+    const target = parseCrawlCommandTarget(argument)
+    if (target.kind === "error") {
+      return { id, sql, status: "error", error: target.error }
+    }
+
+    if (target.kind === "url") {
+      const selection = selectionFromUrl(target.url)
+      return "error" in selection
+        ? { id, sql, status: "error", error: selection.error }
+        : {
+            id,
+            sql,
+            status: "success",
+            output: "crawl",
+            crawlSelection: selection,
+            crawlGraphSlug: target.graph,
+          }
+    }
+
+    const lastResult = transcript
+      .toReversed()
+      .find(
+        (entry) =>
+          entry.status === "success" &&
+          entry.result?.statementKind === "query" &&
+          !isMetaCommand(entry.sql)
+      )?.result
+    if (!lastResult) {
+      return {
+        id,
+        sql,
+        status: "error",
+        error:
+          "No query result is available. Supply a URL or run a query first.",
+      }
+    }
+
+    if (target.column) {
+      const selection = selectionFromNamedColumn(lastResult, target.column)
+      if ("error" in selection) {
+        return { id, sql, status: "error", error: selection.error }
+      }
+      if (selection.urls.length === 0) {
+        return {
+          id,
+          sql,
+          status: "error",
+          error: `Column ${target.column} contains no valid HTTP(S) URLs.`,
+        }
+      }
+      return {
+        id,
+        sql,
+        status: "success",
+        output: "crawl",
+        crawlSelection: selection,
+        crawlGraphSlug: target.graph,
+      }
+    }
+
+    const candidates = crawlColumnCandidates(lastResult)
+    if (candidates.length === 0) {
+      return {
+        id,
+        sql,
+        status: "error",
+        error:
+          "The last query result has no URL column. Use \\crawl --column <column> to choose one explicitly.",
+      }
+    }
+    if (candidates.length > 1) {
+      return {
+        id,
+        sql,
+        status: "error",
+        error:
+          "The last query result has multiple URL columns. Use --column <column> explicitly.",
+      }
+    }
+    return {
+      id,
+      sql,
+      status: "success",
+      output: "crawl",
+      crawlSelection: candidates[0],
+      crawlGraphSlug: target.graph,
+    }
+  }
+
   function execute() {
     const sql = input.trim()
     if (!sql) return
@@ -872,15 +1230,16 @@ export function CatalogueWorkbenchPage() {
           }
           break
         }
+        case "crawl":
+          entry = crawlTranscriptEntry(id, sql, outcome.argument)
+          break
         case "error":
           entry = { id, sql, status: "error", error: outcome.error }
           break
       }
 
       setTranscript((entries) => [...entries, entry])
-      setHistory((entries) =>
-        entries.at(-1) === sql ? entries : [...entries, sql]
-      )
+      setHistory((entries) => appendWorkbenchHistory(entries, sql))
       clearPrompt()
       setHistoryIndex(null)
       historyDraftRef.current = ""
@@ -901,9 +1260,7 @@ export function CatalogueWorkbenchPage() {
             : `Unknown meta-command: ${sql}. Try \\?.`,
         },
       ])
-      setHistory((entries) =>
-        entries.at(-1) === sql ? entries : [...entries, sql]
-      )
+      setHistory((entries) => appendWorkbenchHistory(entries, sql))
       clearPrompt()
       setHistoryIndex(null)
       historyDraftRef.current = ""
@@ -919,15 +1276,13 @@ export function CatalogueWorkbenchPage() {
       ...entries,
       { id, sql, status: "running", expanded: expandedOutput },
     ])
-    setHistory((entries) =>
-      entries.at(-1) === sql ? entries : [...entries, sql]
-    )
+    setHistory((entries) => appendWorkbenchHistory(entries, sql))
     clearPrompt()
     setHistoryIndex(null)
     historyDraftRef.current = ""
 
     catalogueQuery.mutate(
-      { sql, mode: "run" },
+      { sql },
       {
         onSuccess: (result) =>
           setTranscript((entries) =>
@@ -979,10 +1334,7 @@ export function CatalogueWorkbenchPage() {
                       )}
                     </pre>
                     {!isMetaCommand(entry.sql) && (
-                      <TranscriptActions
-                        sql={entry.sql}
-                        onSave={(kind, sql) => setSaveTarget({ kind, sql })}
-                      />
+                      <TranscriptActions sql={entry.sql} />
                     )}
                   </div>
                 )}
@@ -1007,8 +1359,17 @@ export function CatalogueWorkbenchPage() {
                       {entry.message}
                     </p>
                   )}
+                  {entry.status === "success" &&
+                    entry.output === "crawl" &&
+                    entry.crawlSelection &&
+                    entry.crawlGraphSlug && (
+                      <CrawlLaunchOutput
+                        selection={entry.crawlSelection}
+                        graphSlug={entry.crawlGraphSlug}
+                      />
+                    )}
                   {entry.status === "success" && entry.result && (
-                    <ResultTable
+                    <QueryResult
                       result={entry.result}
                       durationMs={entry.durationMs}
                       expanded={entry.expanded}
@@ -1051,6 +1412,17 @@ export function CatalogueWorkbenchPage() {
                     }}
                     onChange={setInput}
                     onKeyDown={(event) => {
+                      if (
+                        event.altKey &&
+                        event.shiftKey &&
+                        !event.ctrlKey &&
+                        !event.metaKey &&
+                        event.key.toLocaleLowerCase() === "f"
+                      ) {
+                        event.preventDefault()
+                        replaceInput(formatSql(input))
+                        return
+                      }
                       if (
                         !event.altKey &&
                         !event.ctrlKey &&
@@ -1128,24 +1500,6 @@ export function CatalogueWorkbenchPage() {
           </span>
         </div>
       </footer>
-
-      <SaveQueryDialog
-        open={saveTarget?.kind === "query"}
-        onOpenChange={(open) => !open && setSaveTarget(null)}
-        sql={saveTarget?.sql ?? ""}
-        query={null}
-        onSaved={() => setSaveTarget(null)}
-      />
-      <SaveViewDialog
-        open={saveTarget?.kind === "view"}
-        onOpenChange={(open) => !open && setSaveTarget(null)}
-        sql={saveTarget?.sql ?? ""}
-      />
-      <SaveTableMacroDialog
-        open={saveTarget?.kind === "macro"}
-        onOpenChange={(open) => !open && setSaveTarget(null)}
-        sql={saveTarget?.sql ?? ""}
-      />
     </section>
   )
 }

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from enum import StrEnum
+import re
 from typing import TYPE_CHECKING
 import pyarrow as pa
 from sqlglot import exp, parse
@@ -17,6 +19,19 @@ if TYPE_CHECKING:
 
 class CatalogueQueryError(ValueError):
     """Raised when catalogue SQL is invalid or is not a single read query."""
+
+
+class CatalogueStatementKind(StrEnum):
+    QUERY = "query"
+    EXPLAIN = "explain"
+    EXPLAIN_ANALYZE = "explain_analyze"
+
+
+@dataclass(frozen=True, slots=True)
+class ClassifiedCatalogueStatement:
+    kind: CatalogueStatementKind
+    sql: str
+    query: exp.Query
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +55,9 @@ _DOM_SQL_SPECIAL_FORMS = frozenset(
 _MANAGED_ROW_TABLES = frozenset({"artifacts", "crawls", "documents", "elements"})
 _MAX_DOM_HELPER_INPUT_ROWS = 10_000
 _ABSURD_LIMIT = 100_000
+_EXPLAIN_PREFIX = re.compile(
+    r"(?is)\A(?:\s|--[^\n]*(?:\n|\Z)|/\*.*?\*/)*EXPLAIN\b"
+)
 
 
 def classify_select(sql: str) -> exp.Query:
@@ -57,6 +75,44 @@ def classify_select(sql: str) -> exp.Query:
     if not isinstance(statement, exp.Query):
         raise CatalogueQueryError("only SELECT queries are allowed")
     return statement
+
+
+def classify_catalogue_statement(sql: str) -> ClassifiedCatalogueStatement:
+    """Classify one native query or EXPLAIN statement and validate its inner query."""
+
+    explain = _EXPLAIN_PREFIX.match(sql)
+    if not explain:
+        query = classify_select(sql)
+        return ClassifiedCatalogueStatement(
+            kind=CatalogueStatementKind.QUERY,
+            sql=sql,
+            query=query,
+        )
+
+    inner_sql = sql[explain.end() :].strip()
+    analyze = re.match(r"(?is)^ANALYZE\b", inner_sql)
+    if analyze:
+        inner_sql = inner_sql[analyze.end() :].strip()
+    query = classify_select(inner_sql)
+    return ClassifiedCatalogueStatement(
+        kind=(
+            CatalogueStatementKind.EXPLAIN_ANALYZE
+            if analyze
+            else CatalogueStatementKind.EXPLAIN
+        ),
+        sql=inner_sql,
+        query=query,
+    )
+
+
+def lint_catalogue_statement(sql: str) -> list[CatalogueLintDiagnostic]:
+    """Lint the query contained in a native query or EXPLAIN statement."""
+
+    try:
+        classified = classify_catalogue_statement(sql)
+    except CatalogueQueryError:
+        return []
+    return lint_select(classified.sql)
 
 
 def lint_select(sql: str) -> list[CatalogueLintDiagnostic]:

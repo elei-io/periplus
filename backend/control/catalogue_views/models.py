@@ -17,6 +17,7 @@ def utc_now() -> datetime:
 class CatalogueViewReference(Base):
     __tablename__ = "catalogue_view_references"
     __table_args__ = (
+        UniqueConstraint("slug", name="uq_catalogue_view_reference_slug"),
         UniqueConstraint("schema_name", "view_name", name="uq_catalogue_view_reference_name"),
         UniqueConstraint("fixture_path", name="uq_catalogue_view_references_fixture_path"),
         Index("ix_catalogue_view_references_archived_at", "archived_at"),
@@ -26,7 +27,7 @@ class CatalogueViewReference(Base):
     ducklake_view_uuid: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), unique=True)
     schema_name: Mapped[str] = mapped_column(Text)
     view_name: Mapped[str] = mapped_column(Text)
-    display_name: Mapped[str] = mapped_column(Text)
+    slug: Mapped[str] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     fixture_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_from_query_revision_id: Mapped[UUID | None] = mapped_column(

@@ -13,6 +13,10 @@ from materialization.queue import (
     SCOPE_STREAM,
 )
 from repository.catalogue import Catalogue, catalogue_from_env
+from repository.catalogue.schema import (
+    INTERNAL_SCHEMA,
+    MATERIALIZATION_COVERAGE_TABLE,
+)
 from runtime.catalogue_lane import run_catalogue_operation
 from runtime.resource_governor import (
     DURABLE_RESOURCE_WAIT,
@@ -78,18 +82,10 @@ def _missing_scope_page(
         source_table = "documents" if definition.scope_kind == "document" else "crawls"
         identity = "document_id" if definition.scope_kind == "document" else "crawl_id"
         scopes = _qualified(catalogue, source_table)
-        crawls = _qualified(catalogue, "crawls")
-        coverage = _qualified(catalogue, "materialization_scope_results")
-        eligible = (
-            "d.purpose = 'use'"
-            if definition.scope_kind == "crawl"
-            else f"EXISTS (SELECT 1 FROM {crawls} AS c AT (VERSION => ?) WHERE "
-            "c.document_id = d.document_id AND c.purpose = 'use')"
-        )
-        eligibility_params = (
-            []
-            if definition.scope_kind == "crawl"
-            else [definition.activation_snapshot]
+        coverage = _qualified(
+            catalogue,
+            MATERIALIZATION_COVERAGE_TABLE,
+            schema=INTERNAL_SCHEMA,
         )
         rows = catalogue.connection.execute(
             f"""
@@ -100,8 +96,7 @@ def _missing_scope_page(
              AND r.scope_kind = ?
              AND r.scope_id = CAST(d.{identity} AS VARCHAR)
              AND r.status IN ('succeeded', 'failed')
-            WHERE {eligible}
-              AND r.scope_id IS NULL
+            WHERE r.scope_id IS NULL
               AND (? IS NULL OR CAST(d.{identity} AS VARCHAR) > ?)
             ORDER BY d.{identity}
             LIMIT ?
@@ -110,7 +105,6 @@ def _missing_scope_page(
                 definition.activation_snapshot,
                 definition.definition_revision_id,
                 definition.scope_kind,
-                *eligibility_params,
                 cursor,
                 cursor,
                 limit,
@@ -123,21 +117,15 @@ def _backfill_terminal(definition: CatalogueMaterialization) -> bool:
     with catalogue_from_env() as catalogue:
         source_table = "documents" if definition.scope_kind == "document" else "crawls"
         scopes = _qualified(catalogue, source_table)
-        crawls = _qualified(catalogue, "crawls")
-        coverage = _qualified(catalogue, "materialization_scope_results")
-        alias = "c" if definition.scope_kind == "crawl" else "d"
-        eligible = (
-            "c.purpose = 'use'"
-            if definition.scope_kind == "crawl"
-            else f"EXISTS (SELECT 1 FROM {crawls} AS c AT (VERSION => ?) WHERE "
-            "c.document_id = d.document_id AND c.purpose = 'use')"
+        coverage = _qualified(
+            catalogue,
+            MATERIALIZATION_COVERAGE_TABLE,
+            schema=INTERNAL_SCHEMA,
         )
+        alias = "c" if definition.scope_kind == "crawl" else "d"
         parameters = [definition.activation_snapshot]
-        if definition.scope_kind == "document":
-            parameters.append(definition.activation_snapshot)
         total = catalogue.connection.execute(
-            f"SELECT count(*) FROM {scopes} AS {alias} AT (VERSION => ?) "
-            f"WHERE {eligible}",
+            f"SELECT count(*) FROM {scopes} AS {alias} AT (VERSION => ?)",
             parameters,
         ).fetchone()[0]
         completed = catalogue.connection.execute(
@@ -162,10 +150,12 @@ def _finish_backfill(definition: CatalogueMaterialization) -> None:
         )
 
 
-def _qualified(catalogue: Catalogue, table: str) -> str:
+def _qualified(
+    catalogue: Catalogue, table: str, *, schema: str | None = None
+) -> str:
     return ".".join(
         _quote(value)
-        for value in (catalogue.config.alias, catalogue.config.schema, table)
+        for value in (catalogue.config.alias, schema or catalogue.config.schema, table)
     )
 
 

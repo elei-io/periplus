@@ -108,34 +108,28 @@ def get_record(session: Session, store: CatalogueViewStore, reference_id: UUID) 
     )
 
 
-def create_reference(session: Session, store: CatalogueViewStore, *, name: str, sql: str, display_name: str | None, description: str | None, created_from_query_revision_id: UUID | None = None) -> CatalogueViewRecord:
-    view = store.create(name=name, sql=sql)
+def create_reference(session: Session, store: CatalogueViewStore, *, slug: str, sql: str, description: str | None, created_from_query_revision_id: UUID | None = None) -> CatalogueViewRecord:
+    view = store.create(name=slug, sql=sql)
     reference = _new_or_revived_reference(
-        session, view, display_name=display_name, description=description
+        session, view, slug=slug, description=description
     )
     reference.created_from_query_revision_id = created_from_query_revision_id
-    try:
-        session.flush()
-    except IntegrityError as exc:
-        raise CatalogueViewConflictError("An Atlas reference for this view already exists.") from exc
+    _flush_reference(session)
     return _record(view, reference)
 
 
-def adopt_reference(session: Session, store: CatalogueViewStore, *, view_uuid: UUID, display_name: str | None, description: str | None) -> CatalogueViewRecord:
+def adopt_reference(session: Session, store: CatalogueViewStore, *, view_uuid: UUID, slug: str, description: str | None) -> CatalogueViewRecord:
     view = store.get(view_uuid)
     if view is None:
         raise CatalogueViewConflictError("The DuckLake view no longer exists.")
     reference = _new_or_revived_reference(
-        session, view, display_name=display_name, description=description
+        session, view, slug=slug, description=description
     )
-    try:
-        session.flush()
-    except IntegrityError as exc:
-        raise CatalogueViewConflictError("The DuckLake view is already adopted.") from exc
+    _flush_reference(session)
     return _record(view, reference)
 
 
-def update_reference(session: Session, store: CatalogueViewStore, reference: CatalogueViewReference, *, expected_uuid: UUID, sql: str, display_name: str | None, description: str | None) -> CatalogueViewRecord:
+def update_reference(session: Session, store: CatalogueViewStore, reference: CatalogueViewReference, *, expected_uuid: UUID, sql: str, slug: str, description: str | None) -> CatalogueViewRecord:
     locked_reference = session.scalar(
         select(CatalogueViewReference)
         .where(
@@ -157,8 +151,7 @@ def update_reference(session: Session, store: CatalogueViewStore, reference: Cat
     if locked_reference.ducklake_view_uuid != expected_uuid:
         raise CatalogueViewConflictError("The view reference changed; refresh before editing.")
     classify_select(sql)
-    if display_name is not None:
-        locked_reference.display_name = display_name.strip() or locked_reference.view_name
+    locked_reference.slug = slug
     locked_reference.description = description
     if materialization is not None:
         materialization.live_enabled = False
@@ -166,14 +159,14 @@ def update_reference(session: Session, store: CatalogueViewStore, reference: Cat
         materialization.source_sql = sql.strip()
         materialization.source_state = "source_changed"
         materialization.definition_revision_id = uuid4()
-        session.flush()
+        _flush_reference(session)
         view = store.get(expected_uuid)
         if view is None:
             raise CatalogueViewConflictError("The materialized view is missing.")
         return _record_with_materialization(session, store, view, locked_reference, materialization)
     view = store.replace(current_uuid=expected_uuid, sql=sql)
     _update_reference_identity(locked_reference, view)
-    session.flush()
+    _flush_reference(session)
     return _record(view, locked_reference)
 
 
@@ -243,7 +236,7 @@ def _record(
         schema_name=view.schema_name,
         view_name=view.view_name,
         qualified_name=f"{view.schema_name}.{view.view_name}",
-        display_name=reference.display_name if reference else view.view_name,
+        slug=reference.slug if reference else view.view_name,
         description=reference.description if reference else None,
         fixture_path=reference.fixture_path if reference else None,
         sql=definition_sql or view.sql,
@@ -268,7 +261,7 @@ def _missing_record(
         schema_name=reference.schema_name,
         view_name=reference.view_name,
         qualified_name=f"{reference.schema_name}.{reference.view_name}",
-        display_name=reference.display_name,
+        slug=reference.slug,
         description=reference.description,
         fixture_path=reference.fixture_path,
         sql="",
@@ -298,7 +291,7 @@ def _new_or_revived_reference(
     session: Session,
     view: DuckLakeView,
     *,
-    display_name: str | None,
+    slug: str,
     description: str | None,
 ) -> CatalogueViewReference:
     reference = session.scalar(
@@ -312,7 +305,7 @@ def _new_or_revived_reference(
             ducklake_view_uuid=view.view_uuid,
             schema_name=view.schema_name,
             view_name=view.view_name,
-            display_name=(display_name or view.view_name).strip(),
+            slug=slug,
             description=description,
         )
         session.add(reference)
@@ -320,7 +313,16 @@ def _new_or_revived_reference(
     if reference.archived_at is None:
         raise CatalogueViewConflictError("An Atlas reference for this view already exists.")
     reference.ducklake_view_uuid = view.view_uuid
-    reference.display_name = (display_name or view.view_name).strip()
+    reference.slug = slug
     reference.description = description
     reference.archived_at = None
     return reference
+
+
+def _flush_reference(session: Session) -> None:
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        raise CatalogueViewConflictError(
+            "An Atlas view with this slug already exists."
+        ) from exc

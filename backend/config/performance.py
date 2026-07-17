@@ -13,11 +13,9 @@ from pathlib import Path
 from config.environment import get_int
 
 
-# Local executor lanes.  Catalogue-owning processes remain single-lane by
-# architecture; acquisition has safe transport-specific process concurrency.
-HTTP_ACQUISITION_LANES = 8
-BROWSER_ACQUISITION_LANES = 1
-PROVIDER_ACQUISITION_LANES = 4
+# Local executor lanes. Catalogue-owning processes remain single-lane by
+# architecture; acquisition workers keep bounded process-local coordination.
+CRAWL_ACQUISITION_LANES = 12
 CATALOGUE_EXECUTOR_LANES = 1
 
 # Durable consumers use a generous internal delivery ceiling.  Pull loops only

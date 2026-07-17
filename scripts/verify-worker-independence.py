@@ -12,6 +12,13 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+from reliability_support import (
+    capture_diagnostics,
+    cleanup_materialization_fixture,
+    ensure_active_materialization,
+    require_healthy,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 API = "http://127.0.0.1:8000"
@@ -95,18 +102,15 @@ def wait_for_materialization(run_id: str, timeout: float = 90) -> dict[str, Any]
 
 
 def main() -> None:
-    materializations = api("GET", "/catalogue/materializations/")
-    if not materializations["items"]:
-        raise RuntimeError("the independence smoke requires one active materialized view")
-
     token = uuid4().hex
+    materialization_fixture = ensure_active_materialization(token)
     graph_id: str | None = None
     try:
         graph = api(
             "POST",
             "/crawl-graphs/",
             {
-                "name": f"Worker independence {token[:8]}",
+                "slug": f"worker-independence-{token[:8]}",
                 "description": "Disposable Phase 2 worker-independence smoke graph",
             },
         )
@@ -120,13 +124,15 @@ def main() -> None:
             "PUT",
             f"/crawl-graphs/{graph_id}",
             {
-                "name": graph["name"],
+                "slug": graph["slug"],
                 "description": graph["description"],
                 "root_node_id": node["id"],
             },
         )
 
         compose("stop", "atlas-materialization-worker")
+        require_healthy("atlas-acquisition-worker")
+        require_healthy("atlas-ingestion-worker")
         submission = api(
             "POST",
             f"/crawl-graphs/{graph_id}/runs",
@@ -138,6 +144,8 @@ def main() -> None:
             raise RuntimeError(
                 f"graph did not complete cleanly with materialization offline: {completed}"
             )
+        require_healthy("atlas-acquisition-worker")
+        require_healthy("atlas-ingestion-worker")
         offline_lag = run_lag(run_id)
         if (
             offline_lag["materialization_count"] < 1
@@ -152,6 +160,7 @@ def main() -> None:
             "completed_at": completed["completed_at"],
         }
         compose("up", "-d", "--wait", "atlas-materialization-worker")
+        require_healthy("atlas-materialization-worker", expected=1)
         settled_lag = wait_for_materialization(run_id)
         after = api("GET", f"/graph-runs/{run_id}")
         if stable_run != {
@@ -177,19 +186,29 @@ def main() -> None:
                 indent=2,
             )
         )
+    except BaseException:
+        destination = capture_diagnostics("worker-independence")
+        print(f"reliability diagnostics: {destination}")
+        raise
     finally:
-        compose(
-            "up",
-            "-d",
-            "--wait",
-            "atlas-ingestion-worker",
-            "atlas-materialization-worker",
-        )
+        try:
+            compose(
+                "up",
+                "-d",
+                "atlas-ingestion-worker",
+                "atlas-materialization-worker",
+            )
+        except Exception as exc:
+            print(f"warning: worker restoration failed: {exc}")
         if graph_id is not None:
             try:
                 api("DELETE", f"/crawl-graphs/{graph_id}")
             except Exception as exc:
                 print(f"warning: disposable smoke graph cleanup failed: {exc}")
+        try:
+            cleanup_materialization_fixture(materialization_fixture)
+        except Exception as exc:
+            print(f"warning: disposable materialization cleanup failed: {exc}")
 
 
 if __name__ == "__main__":

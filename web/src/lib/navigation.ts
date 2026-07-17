@@ -2,13 +2,11 @@ import {
   ChartNoAxesCombinedIcon,
   BoxesIcon,
   BracesIcon,
-  FlaskConicalIcon,
   GitForkIcon,
-  GaugeIcon,
   FileCode2Icon,
   ShieldCheckIcon,
+  Globe2Icon,
   SquareTerminalIcon,
-  TablePropertiesIcon,
   ViewIcon,
 } from "lucide-react"
 
@@ -26,13 +24,6 @@ export const navigationGroups: NavigationGroup[] = [
         title: "Catalogue Workbench",
         description:
           "Explore the DuckLake catalogue in an interactive SQL session.",
-      },
-      {
-        name: "SQL",
-        href: "/catalogue/sql",
-        icon: TablePropertiesIcon,
-        title: "Catalogue SQL",
-        description: "Run or explain read-only SQL and inspect its results.",
       },
       {
         name: "Queries",
@@ -83,27 +74,19 @@ export const navigationGroups: NavigationGroup[] = [
     slug: "settings",
     items: [
       {
-        name: "Policies",
+        name: "Content policies",
         href: "/crawl-policies",
         icon: ShieldCheckIcon,
         title: "Policies",
         description:
-          "Choose how Atlas crawls each website or path.",
+          "Control response handling and rendered-content completion.",
       },
       {
-        name: "Profiles",
-        href: "/crawl-profiles",
-        icon: GaugeIcon,
-        title: "Profiles",
-        description: "Define reusable ways to fetch and retain pages.",
-      },
-      {
-        name: "Trials",
-        href: "/crawl-policies/trials",
-        icon: FlaskConicalIcon,
-        title: "Trials",
-        description:
-          "See whether a more capable profile finds better evidence.",
+        name: "Domain politeness",
+        href: "/domain-policies",
+        icon: Globe2Icon,
+        title: "Domain Politeness",
+        description: "Limit concurrent and paced requests to websites.",
       },
     ],
   },
@@ -160,18 +143,10 @@ export function findNavigationItem(pathname: string) {
         .find((item) => item.href === href)
     }
   }
-  if (
-    pathname.startsWith("/crawl-policies/") &&
-    pathname !== "/crawl-policies/trials"
-  ) {
+  if (pathname.startsWith("/crawl-policies/")) {
     return navigationGroups
       .flatMap((group) => group.items)
       .find((item) => item.href === "/crawl-policies")
-  }
-  if (pathname.startsWith("/crawl-profiles/")) {
-    return navigationGroups
-      .flatMap((group) => group.items)
-      .find((item) => item.href === "/crawl-profiles")
   }
   return navigationGroups
     .flatMap((group) => group.items)

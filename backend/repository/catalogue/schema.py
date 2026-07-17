@@ -6,7 +6,10 @@ from ducklake_client import ColumnDef
 
 from dom.schema import ELEMENT_COLUMNS
 
-CATALOGUE_SCHEMA_VERSION = 15
+CATALOGUE_SCHEMA_VERSION = "v0.0.2"
+INTERNAL_SCHEMA = "_atlas"
+CRAWL_STEPS_TABLE = "crawl_steps"
+MATERIALIZATION_COVERAGE_TABLE = "materialization_coverage"
 
 ARTIFACT_COLUMNS: dict[str, ColumnDef] = {
     "artifact_id": ColumnDef("VARCHAR", nullable=False),
@@ -30,18 +33,6 @@ DOCUMENT_COLUMNS: dict[str, ColumnDef] = {
     "parser_version": ColumnDef("VARCHAR", nullable=False),
     "parser_options_hash": ColumnDef("VARCHAR", nullable=False),
     "element_count": ColumnDef("BIGINT", nullable=False),
-    "quality_schema_version": ColumnDef("INTEGER", nullable=False),
-    "html_character_count": ColumnDef("BIGINT", nullable=False),
-    "visible_text_chars": ColumnDef("BIGINT", nullable=False),
-    "script_count": ColumnDef("BIGINT", nullable=False),
-    "app_marker_count": ColumnDef("BIGINT", nullable=False),
-    "lazy_marker_count": ColumnDef("BIGINT", nullable=False),
-    "interaction_marker_count": ColumnDef("BIGINT", nullable=False),
-    "button_count": ColumnDef("BIGINT", nullable=False),
-    "form_count": ColumnDef("BIGINT", nullable=False),
-    "input_count": ColumnDef("BIGINT", nullable=False),
-    "anchor_count": ColumnDef("BIGINT", nullable=False),
-    "quality_flags_json": ColumnDef("JSON", nullable=False),
     "created_at": ColumnDef("TIMESTAMPTZ", nullable=False),
 }
 
@@ -53,8 +44,6 @@ CRAWL_COLUMNS: dict[str, ColumnDef] = {
     "graph_run_id": ColumnDef("UUID", nullable=False),
     "graph_node_id": ColumnDef("UUID", nullable=False),
     "crawl_request_id": ColumnDef("UUID", nullable=False),
-    "purpose": ColumnDef("VARCHAR", nullable=False),
-    "trial_id": ColumnDef("UUID"),
     "source_crawl_id": ColumnDef("UUID"),
     "source_edge_id": ColumnDef("UUID"),
     "requested_url": ColumnDef("VARCHAR", nullable=False),
@@ -72,27 +61,40 @@ CRAWL_COLUMNS: dict[str, ColumnDef] = {
     "duration_ms": ColumnDef("BIGINT"),
     "response_media_type": ColumnDef("VARCHAR"),
     "response_filename": ColumnDef("VARCHAR"),
-    "profile": ColumnDef("VARCHAR", nullable=False),
-    "crawl_profile_id": ColumnDef("UUID"),
-    "crawl_profile_slug": ColumnDef("VARCHAR", nullable=False),
-    "remote_concurrency": ColumnDef("INTEGER", nullable=False),
-    "config_hash": ColumnDef("VARCHAR", nullable=False),
-    "config_json": ColumnDef("JSON", nullable=False),
+    "policy_config_hash": ColumnDef("VARCHAR", nullable=False),
+    "policy_config_json": ColumnDef("JSON", nullable=False),
     "crawl_policy_id": ColumnDef("UUID"),
     "outcome": ColumnDef("VARCHAR", nullable=False),
     "failure_code": ColumnDef("VARCHAR"),
     "failure_stage": ColumnDef("VARCHAR"),
     "failure_retryable": ColumnDef("BOOLEAN"),
     "failure_detail": ColumnDef("VARCHAR"),
-    "trial_sampler_version": ColumnDef("INTEGER"),
-    "trial_sample_rate": ColumnDef("DOUBLE"),
-    "trial_candidate_strategy": ColumnDef("VARCHAR"),
-    "trial_candidate_profile_id": ColumnDef("UUID"),
-    "trial_candidate_profile_slug": ColumnDef("VARCHAR"),
-    "trial_candidate_profile_config_hash": ColumnDef("VARCHAR"),
+    "acquisition_attempts_json": ColumnDef("JSON", nullable=False),
 }
 
-MATERIALIZATION_SCOPE_RESULT_COLUMNS: dict[str, ColumnDef] = {
+CRAWL_STEP_COLUMNS: dict[str, ColumnDef] = {
+    "crawl_id": ColumnDef("UUID", nullable=False),
+    "attempt_number": ColumnDef("INTEGER", nullable=False),
+    "step_ordinal": ColumnDef("INTEGER", nullable=False),
+    "method": ColumnDef("VARCHAR", nullable=False),
+    "method_version": ColumnDef("INTEGER", nullable=False),
+    "config_hash": ColumnDef("VARCHAR", nullable=False),
+    "config_json": ColumnDef("JSON", nullable=False),
+    "started_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+    "duration_ms": ColumnDef("BIGINT", nullable=False),
+    "iterations": ColumnDef("INTEGER", nullable=False),
+    "stop_reason": ColumnDef("VARCHAR", nullable=False),
+    "before_element_count": ColumnDef("BIGINT", nullable=False),
+    "after_element_count": ColumnDef("BIGINT", nullable=False),
+    "before_text_chars": ColumnDef("BIGINT", nullable=False),
+    "after_text_chars": ColumnDef("BIGINT", nullable=False),
+    "before_link_count": ColumnDef("BIGINT", nullable=False),
+    "after_link_count": ColumnDef("BIGINT", nullable=False),
+    "before_scroll_height": ColumnDef("BIGINT", nullable=False),
+    "after_scroll_height": ColumnDef("BIGINT", nullable=False),
+}
+
+MATERIALIZATION_COVERAGE_COLUMNS: dict[str, ColumnDef] = {
     "materialization_id": ColumnDef("UUID", nullable=False),
     "definition_revision_id": ColumnDef("UUID", nullable=False),
     "scope_kind": ColumnDef("VARCHAR", nullable=False),
@@ -107,11 +109,18 @@ MATERIALIZATION_SCOPE_RESULT_COLUMNS: dict[str, ColumnDef] = {
     "partition_value": ColumnDef("DATE"),
 }
 
+
 def expected_columns() -> dict[str, dict[str, ColumnDef]]:
     return {
         "artifacts": ARTIFACT_COLUMNS,
         "documents": DOCUMENT_COLUMNS,
         "crawls": CRAWL_COLUMNS,
         "elements": ELEMENT_COLUMNS,
-        "materialization_scope_results": MATERIALIZATION_SCOPE_RESULT_COLUMNS,
+    }
+
+
+def expected_internal_columns() -> dict[str, dict[str, ColumnDef]]:
+    return {
+        CRAWL_STEPS_TABLE: CRAWL_STEP_COLUMNS,
+        MATERIALIZATION_COVERAGE_TABLE: MATERIALIZATION_COVERAGE_COLUMNS,
     }

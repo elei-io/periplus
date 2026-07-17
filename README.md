@@ -34,9 +34,10 @@ make check
 make compose-up
 ```
 
-Compose starts the complete local stack and exposes the API at `http://127.0.0.1:8000`. The accepted
-target topology separates transport-specific acquisition, ingestion, materialization, and
-maintenance failure domains while resource permits cap their combined dependency pressure.
+Compose starts the complete local stack, exposes the web UI at `http://127.0.0.1:8080`, and exposes
+the API at `http://127.0.0.1:8000`. The accepted
+target topology separates CDP acquisition, ingestion, materialization, and maintenance failure
+domains. The configured CDP service owns acquisition transport and browser-farm capacity.
 [AUDIT.md](AUDIT.md) tracks the direct greenfield cutover.
 
 Compose does not bind-mount the application source tree. After changing Atlas code, rebuild and
@@ -62,6 +63,10 @@ Useful development commands:
 
 ```sh
 make check                  # compile backend modules and run unit tests
+make acquisition-worker     # run `atlas-worker acquisition`
+make ingestion-worker       # run `atlas-worker ingestion`
+make materialization-worker # run `atlas-worker materialization`
+make maintenance-worker     # run `atlas-worker maintenance`
 make setup                  # create databases, migrate, and bootstrap the catalogue
 make catalogue-check        # validate the DuckLake catalogue
 make catalogue-benchmark    # benchmark service reads and partition/DOM SQL paths

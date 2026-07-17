@@ -60,7 +60,7 @@ class DomEncoderTests(unittest.TestCase):
                 )
             self.assertFalse(path.exists())
 
-    def test_parquet_projection_collects_versioned_document_quality_once(self) -> None:
+    def test_parquet_projection_only_records_structural_output(self) -> None:
         scripts = "".join("<script></script>" for _ in range(12))
         html = (
             '<html><body><div id="root">Visible text</div>'
@@ -74,17 +74,8 @@ class DomEncoderTests(unittest.TestCase):
                 path=Path(temp_dir) / "document.parquet",
             )
 
-        self.assertEqual(result.quality.quality_schema_version, 1)
-        self.assertEqual(result.quality.html_character_count, len(html))
-        self.assertGreaterEqual(result.quality.visible_text_chars, len("Visible textDocs"))
-        self.assertEqual(result.quality.script_count, 12)
-        self.assertEqual(result.quality.anchor_count, 1)
-        self.assertEqual(result.quality.form_count, 1)
-        self.assertEqual(result.quality.input_count, 1)
-        self.assertEqual(
-            result.quality.flag_codes,
-            ("app_shell", "lazy_load", "interaction_required"),
-        )
+        self.assertGreater(result.element_count, 0)
+        self.assertGreater(result.size_bytes, 0)
 
     def test_schema_version_starts_at_one(self) -> None:
         self.assertEqual(DOM_SCHEMA_VERSION, 1)
