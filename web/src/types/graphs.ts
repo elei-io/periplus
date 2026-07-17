@@ -26,17 +26,19 @@ export type CrawlGraphEdge = {
 
 export type CrawlGraphSummary = {
   id: string
-  name: string
+  slug: string
   description: string | null
   root_node_id: string | null
+  system_owned: boolean
   created_at: string
 }
 
 export type CrawlGraphDetail = {
   id: string
-  name: string
+  slug: string
   description: string | null
   root_node_id: string | null
+  system_owned: boolean
   created_at: string
   nodes: CrawlGraphNode[]
   edges: CrawlGraphEdge[]
@@ -45,6 +47,44 @@ export type CrawlGraphDetail = {
 export type CrawlGraphListResponse = {
   items: CrawlGraphSummary[]
   total: number
+}
+
+export type ScheduleTiming =
+  | { kind: "interval"; seconds: number }
+  | { kind: "cron"; expression: string; timezone: string }
+
+export type CrawlScheduleInput = {
+  name: string
+  enabled: boolean
+  timing: ScheduleTiming
+  starts_at: string | null
+  ends_at: string | null
+  maximum_run_count: number | null
+  root_urls: string[]
+  overlap_policy: "skip" | "allow"
+  misfire_policy: "skip" | "run_once"
+}
+
+export type CrawlSchedule = CrawlScheduleInput & {
+  id: string
+  graph_id: string
+  status: "active" | "paused" | "not_started" | "exhausted" | "ended"
+  run_count: number
+  next_run_at: string | null
+  last_occurrence_at: string | null
+  last_run_id: string | null
+  last_error: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type CrawlScheduleListResponse = {
+  items: CrawlSchedule[]
+  total: number
+}
+
+export type SchedulePreviewResponse = {
+  occurrences: string[]
 }
 
 export type GraphRunSubmission = {
@@ -64,14 +104,14 @@ export type GraphRunStatus =
 export type GraphRunRecord = {
   id: string
   graph_id: string
-  graph_name?: string | null
+  graph_slug?: string | null
   status: GraphRunStatus
-  trigger_kind: "manual"
+  trigger_kind: "manual" | "schedule"
+  trigger_schedule_id: string | null
   trigger_urls: string[]
   request_count: number
   pending_request_count: number
   failed_request_count: number
-  warning_count: number
   error_count: number
   queued_request_count?: number
   fetching_request_count?: number
@@ -89,31 +129,26 @@ export type GraphRunListResponse = {
   total: number
 }
 
-export type GraphRunWarningSummary = {
-  run_id: string
-  warning_count: number
-  observed_count: number
-  awaiting_evidence_count: number
-  truncated_group_count: number
-  items: Array<{
-    failure_code: string
-    status_code: number | null
-    response_media_type: string | null
-    retryable: boolean | null
-    count: number
-    detail: string | null
-    domains: Array<{
-      domain: string
-      count: number
-    }>
-  }>
+export type GraphRunFailure = {
+  crawl_id: string
+  requested_url: string
+  final_url: string | null
+  status_code: number | null
+  failure_code: string | null
+  failure_stage: string | null
+  failure_detail: string | null
+  captured_at: string
+}
+
+export type GraphRunFailureList = {
+  items: GraphRunFailure[]
+  total: number
 }
 
 export type CrawlConcurrencyLimits = {
   worker_count: number
   runtime_capacity: number
   runtime_active: number
-  browser_capacity: number
   resource_acquire_timeout_seconds: number
   resources: Array<{
     name: string
@@ -132,16 +167,9 @@ export type CrawlConcurrencyLimits = {
   }>
   workers: Array<{
     worker_id: string
-    transport: "http" | "browser" | "firecrawl"
     capacity: number
     active_request_count: number
     last_seen_at: string
-  }>
-  transports: Array<{
-    transport: "http" | "browser" | "firecrawl"
-    worker_count: number
-    capacity: number
-    active: number
   }>
   catalogue_executors: Array<{
     capability: "ingestion" | "materialization"
@@ -153,9 +181,7 @@ export type CrawlConcurrencyLimits = {
     catalogue_max_concurrency: number
     effective_catalogue_concurrency: number
     object_io_max_concurrency: number
-    http_lanes_per_replica: number
-    browser_lanes_per_replica: number
-    provider_lanes_per_replica: number
+    crawl_lanes_per_replica: number
     catalogue_lanes_per_replica: number
     graph_consumer_delivery_ceiling: number
     duckdb_threads_per_executor: number
@@ -173,21 +199,4 @@ export type GraphRunMaterializationLag = {
 
 export type GraphRunMaterializationLagList = {
   items: GraphRunMaterializationLag[]
-}
-
-export type PolicyPressureHours = 1 | 6 | 24 | 72
-
-export type PolicyPressureResponse = {
-  hours: PolicyPressureHours
-  range_start: string
-  range_end: string
-  bucket_seconds: number
-  items: Array<{
-    remote_domain: string
-    points: Array<{
-      captured_at: string
-      peak_concurrency: number
-      limit: number
-    }>
-  }>
 }

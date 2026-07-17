@@ -58,7 +58,7 @@ def list_(session: Annotated[Session, Depends(get_session)]) -> CrawlGraphListRe
 def create(payload: CrawlGraphCreate, session: Annotated[Session, Depends(get_session)]) -> CrawlGraphDetail:
     try:
         return create_graph(session, payload)
-    except CrawlGraphValidationError as exc:
+    except (CrawlGraphConflictError, CrawlGraphValidationError) as exc:
         raise _translate(exc) from exc
 
 
@@ -74,7 +74,7 @@ def get(graph_id: UUID, session: Annotated[Session, Depends(get_session)]) -> Cr
 def update(graph_id: UUID, payload: CrawlGraphUpdate, session: Annotated[Session, Depends(get_session)]) -> CrawlGraphDetail:
     try:
         return update_graph(session, graph_id, payload)
-    except (CrawlGraphNotFoundError, CrawlGraphValidationError) as exc:
+    except (CrawlGraphConflictError, CrawlGraphNotFoundError, CrawlGraphValidationError) as exc:
         raise _translate(exc) from exc
 
 
@@ -82,7 +82,7 @@ def update(graph_id: UUID, payload: CrawlGraphUpdate, session: Annotated[Session
 def delete(graph_id: UUID, session: Annotated[Session, Depends(get_session)]) -> None:
     try:
         delete_graph(session, graph_id)
-    except CrawlGraphNotFoundError as exc:
+    except (CrawlGraphConflictError, CrawlGraphNotFoundError) as exc:
         raise _translate(exc) from exc
 
 
@@ -106,7 +106,7 @@ def update_node_(graph_id: UUID, node_id: UUID, payload: CrawlGraphNodeUpdate, s
 def update_node_position_(graph_id: UUID, node_id: UUID, payload: CrawlGraphNodePositionUpdate, session: Annotated[Session, Depends(get_session)]) -> CrawlGraphNodeRecord:
     try:
         return update_node_position(session, graph_id, node_id, payload)
-    except CrawlGraphNotFoundError as exc:
+    except (CrawlGraphConflictError, CrawlGraphNotFoundError) as exc:
         raise _translate(exc) from exc
 
 
@@ -114,7 +114,7 @@ def update_node_position_(graph_id: UUID, node_id: UUID, payload: CrawlGraphNode
 def delete_node_(graph_id: UUID, node_id: UUID, session: Annotated[Session, Depends(get_session)]) -> None:
     try:
         delete_node(session, graph_id, node_id)
-    except CrawlGraphNotFoundError as exc:
+    except (CrawlGraphConflictError, CrawlGraphNotFoundError) as exc:
         raise _translate(exc) from exc
 
 
@@ -138,5 +138,5 @@ def update_edge_(graph_id: UUID, edge_id: UUID, payload: CrawlGraphEdgeUpdate, s
 def delete_edge_(graph_id: UUID, edge_id: UUID, session: Annotated[Session, Depends(get_session)]) -> None:
     try:
         delete_edge(session, graph_id, edge_id)
-    except CrawlGraphNotFoundError as exc:
+    except (CrawlGraphConflictError, CrawlGraphNotFoundError) as exc:
         raise _translate(exc) from exc

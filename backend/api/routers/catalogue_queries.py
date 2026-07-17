@@ -45,6 +45,8 @@ def create(
 ) -> CatalogueQueryDetail:
     try:
         return create_query(session, **payload.model_dump())
+    except CatalogueQueryConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except CatalogueQueryError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -74,7 +76,7 @@ def update(
             query,
             expected_revision_id=payload.expected_current_revision_id,
             sql=payload.sql,
-            name=payload.name,
+            slug=payload.slug,
             description=payload.description,
             change_note=payload.change_note,
         )

@@ -21,9 +21,14 @@ from ducklake_client import (
 )
 
 from repository.catalogue import Catalogue, CatalogueConfig, CatalogueConfigError, catalogue_config_from_env
-from repository.catalogue import CrawlRecord
+from repository.catalogue import CrawlRecord, CrawlStepRecord
 from repository.catalogue.service import CatalogueService
-from repository.catalogue.schema import CRAWL_COLUMNS, expected_columns
+from repository.catalogue.schema import (
+    CRAWL_COLUMNS,
+    INTERNAL_SCHEMA,
+    expected_columns,
+    expected_internal_columns,
+)
 from repository import (
     ArtifactIdentity,
     FileObjectStore,
@@ -152,11 +157,8 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 status_code=200,
                 response_media_type="application/pdf",
                 response_filename="atlas.pdf",
-                profile="http",
-                crawl_profile_slug="direct",
-                remote_concurrency=4,
-                config_hash="a" * 64,
-                config_json={"profile": "http"},
+                policy_config_hash="a" * 64,
+                policy_config_json={},
                 outcome="success",
             )
             prepared = ingestor.prepare_from_raw(crawl=crawl)
@@ -177,7 +179,7 @@ class CatalogueBootstrapTests(unittest.TestCase):
         self.assertIsNotNone(stored)
         self.assertEqual(unique_pdfs, 1)
 
-    def test_ingestion_persists_typed_outcome_and_document_quality(self) -> None:
+    def test_ingestion_persists_typed_outcome_and_document_projection(self) -> None:
         html = (
             '<html><body><div id="root">Atlas</div><a href="/docs">Docs</a>'
             '<button class="load-more">Load more</button><form><input></form>'
@@ -213,38 +215,68 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 captured_at=datetime(2026, 7, 14, tzinfo=UTC),
                 status_code=200,
                 duration_ms=12,
-                profile="http",
-                crawl_profile_slug="direct",
-                remote_concurrency=4,
-                config_hash="a" * 64,
-                config_json={"profile": "http"},
+                policy_config_hash="a" * 64,
+                policy_config_json={},
                 outcome="success",
             )
-            prepared = ingestor.prepare_from_raw(crawl=crawl)
+            step = CrawlStepRecord(
+                crawl_id=crawl.crawl_id,
+                attempt_number=1,
+                step_ordinal=1,
+                method="wait_dynamic",
+                method_version=1,
+                config_hash="b" * 64,
+                config_json={
+                    "enabled": True,
+                    "maximum_wait_ms": 8_000,
+                    "sample_interval_ms": 250,
+                    "stable_samples": 3,
+                },
+                started_at=datetime(2026, 7, 14, tzinfo=UTC),
+                duration_ms=750,
+                iterations=3,
+                stop_reason="stable",
+                before_element_count=3,
+                after_element_count=18,
+                before_text_chars=0,
+                after_text_chars=25,
+                before_link_count=0,
+                after_link_count=1,
+                before_scroll_height=100,
+                after_scroll_height=200,
+            )
+            prepared = ingestor.prepare_from_raw(
+                crawl=crawl,
+                crawl_steps=(step,),
+            )
             ingestor.commit_prepared_batch([prepared])
             stored_crawl = ingestor.catalogue_service.get_crawl(crawl.crawl_id)
+            stored_step = catalogue.connection.execute(
+                "SELECT method, duration_ms, before_element_count, "
+                "after_element_count FROM atlas._atlas.crawl_steps "
+                "WHERE crawl_id = ?",
+                [crawl.crawl_id],
+            ).fetchone()
             document = ingestor.catalogue_service.get_document(crawl.document_id)
             catalogue.connection.execute(
                 "UPDATE atlas.main.documents SET parser_version = 'stale' "
                 "WHERE document_id = ?",
                 [crawl.document_id],
             )
-            rebuilt = ingestor.prepare_from_raw(crawl=crawl)
+            rebuilt = ingestor.prepare_from_raw(
+                crawl=crawl,
+                crawl_steps=None,
+            )
             self.assertTrue(rebuilt.replace_projection)
             ingestor.commit_prepared_batch([rebuilt])
             rebuilt_document = ingestor.catalogue_service.get_document(crawl.document_id)
             ingestor.close()
 
         self.assertEqual(stored_crawl, crawl)
+        self.assertEqual(stored_step, ("wait_dynamic", 750, 3, 18))
         self.assertIsNotNone(document)
         assert document is not None
-        self.assertEqual(document.quality_schema_version, 1)
-        self.assertEqual(document.script_count, 12)
-        self.assertEqual(document.anchor_count, 1)
-        self.assertEqual(
-            document.quality_flags_json,
-            ("app_shell", "lazy_load", "interaction_required"),
-        )
+        self.assertGreater(document.element_count, 0)
         self.assertEqual(rebuilt_document, document)
 
     def test_current_connection_snapshot_and_commit_metadata_are_available(self) -> None:
@@ -260,18 +292,18 @@ class CatalogueBootstrapTests(unittest.TestCase):
                     catalogue.connection.execute(
                         "INSERT INTO atlas.main.crawls ("
                         "crawl_id, document_id, graph_id, graph_run_id, graph_node_id, "
-                        "crawl_request_id, purpose, trial_id, source_crawl_id, source_edge_id, "
+                        "crawl_request_id, source_crawl_id, source_edge_id, "
                         "requested_url, normalized_url, final_url, page_url, "
                         "url_scheme, url_host, url_port, url_registrable_domain, "
                         "url_path, url_query, captured_at, status_code, duration_ms, "
-                        "profile, crawl_profile_slug, remote_concurrency, config_hash, config_json, crawl_policy_id, "
+                        "policy_config_hash, policy_config_json, crawl_policy_id, "
                         "outcome, failure_code, failure_stage, "
-                        "failure_retryable, failure_detail"
-                        ") SELECT uuid(), NULL, uuid(), uuid(), uuid(), uuid(), 'use', NULL, NULL, NULL, 'https://x', "
+                        "failure_retryable, failure_detail, acquisition_attempts_json"
+                        ") SELECT uuid(), NULL, uuid(), uuid(), uuid(), uuid(), NULL, NULL, 'https://x', "
                         "'https://x/', NULL, 'https://x/', 'https', 'x', 443, 'x', '/', "
-                        "'', now(), NULL, NULL, 'http', 'direct', 4, repeat('a', 64), "
+                        "'', now(), NULL, NULL, repeat('a', 64), "
                         "'{}', NULL, 'failed', 'expected_failure', 'request', "
-                        "false, 'expected failure'"
+                        "false, 'expected failure', '[]'"
                     )
                     catalogue.set_commit_message(
                         author="Atlas test",
@@ -490,6 +522,12 @@ class CatalogueBootstrapTests(unittest.TestCase):
                     table.table_name
                     for table in catalogue.lake.table.list(schema_name="main")
                 }
+                internal_tables = {
+                    table.table_name
+                    for table in catalogue.lake.table.list(
+                        schema_name=INTERNAL_SCHEMA
+                    )
+                }
                 elements = catalogue.lake.table.info(
                     "elements",
                     schema_name="main",
@@ -499,6 +537,7 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 )
 
             self.assertEqual(tables, set(expected_columns()))
+            self.assertEqual(internal_tables, set(expected_internal_columns()))
             self.assertEqual(href, "/docs")
             self.assertIsNotNone(first_snapshot)
             self.assertTrue(all(column.summary is None for column in elements.columns))
@@ -637,11 +676,8 @@ class CatalogueBootstrapTests(unittest.TestCase):
             normalized_url="https://docs.example.co.jp/start",
             final_url="https://www.example.co.jp:8443/guides/sql?q=ducklake",
             captured_at=datetime(2026, 7, 11, tzinfo=UTC),
-            profile="http",
-            crawl_profile_slug="direct",
-            remote_concurrency=4,
-            config_json={},
-            config_hash="a" * 64,
+            policy_config_json={},
+            policy_config_hash="a" * 64,
             outcome="failed",
             failure_code="expected_failure",
             failure_stage="request",

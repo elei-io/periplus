@@ -8,6 +8,10 @@ from uuid import UUID
 
 from repository.catalogue.client import Catalogue
 from repository.catalogue.query import classify_select
+from repository.catalogue.schema import (
+    INTERNAL_SCHEMA,
+    MATERIALIZATION_COVERAGE_TABLE,
+)
 from repository.catalogue.views import DuckLakeView
 
 MATERIALIZED_SCHEMA = "_atlas_materializations"
@@ -101,8 +105,8 @@ class MaterializationStore:
             f'"{part}"'
             for part in (
                 self.catalogue.config.alias,
-                self.catalogue.config.schema,
-                "materialization_scope_results",
+                INTERNAL_SCHEMA,
+                MATERIALIZATION_COVERAGE_TABLE,
             )
         )
         with self.catalogue.lake.transaction():

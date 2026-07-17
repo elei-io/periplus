@@ -14,7 +14,7 @@ from config.performance import (
     INGEST_BATCH_MAX_WAIT_SECONDS,
 )
 
-from repository.catalogue import CatalogueWriteResult, CrawlRecord
+from repository.catalogue import CatalogueWriteResult, CrawlRecord, CrawlStepRecord
 from observability import repository_metrics
 from repository.objects.html import HtmlIdentity
 from repository.objects.artifact import ArtifactIdentity
@@ -125,10 +125,15 @@ class RepositoryPipeline:
         crawl: CrawlRecord,
         *,
         request_id: str | None = None,
+        crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
     ) -> CatalogueWriteResult:
         if not self._running:
             raise RuntimeError("repository pipeline is not running")
-        return await self.queue.submit(crawl, request_id=request_id)
+        return await self.queue.submit(
+            crawl,
+            request_id=request_id,
+            crawl_steps=crawl_steps,
+        )
 
     async def store_artifact(
         self,
@@ -163,10 +168,15 @@ class RepositoryPipeline:
         crawl: CrawlRecord,
         *,
         request_id: str | None = None,
+        crawl_steps: tuple[CrawlStepRecord, ...] = (),
     ) -> None:
         if not self._running:
             raise RuntimeError("repository pipeline is not running")
-        await self.queue.enqueue(crawl, request_id=request_id)
+        await self.queue.enqueue(
+            crawl,
+            request_id=request_id,
+            crawl_steps=crawl_steps,
+        )
 
     async def resolve_cached_page(self, **kwargs: object):
         """Read cache state, delegating stale projection repair to the writer."""
@@ -189,6 +199,7 @@ class RepositoryPipeline:
                 await self.submit_stored(
                     exc.crawl,
                     request_id=projection_ingestion_request_id(exc.crawl.document_id),
+                    crawl_steps=None,
                 )
 
     async def resolve_crawl(self, crawl_id: UUID, **kwargs: object):
@@ -227,6 +238,7 @@ class RepositoryPipeline:
                 await self.submit_stored(
                     exc.crawl,
                     request_id=projection_ingestion_request_id(exc.crawl.document_id),
+                    crawl_steps=None,
                 )
 
     async def projected_links(self, document_id: str, *, page_url: str):

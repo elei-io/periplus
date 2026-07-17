@@ -74,7 +74,7 @@ def create(
     session: Annotated[Session, Depends(get_session)],
 ) -> CatalogueTableMacroRecord:
     try:
-        with _catalogue_mutation(f"catalogue-table-macro-create:{payload.name}") as catalogue:
+        with _catalogue_mutation(f"catalogue-table-macro-create:{payload.slug}") as catalogue:
             return create_definition(
                 session, CatalogueTableMacroStore(catalogue), **payload.model_dump()
             )
@@ -100,7 +100,7 @@ def update(
                 expected_revision_id=payload.expected_definition_revision_id,
                 parameters=payload.parameters,
                 sql=payload.sql,
-                display_name=payload.display_name,
+                slug=payload.slug,
                 description=payload.description,
             )
     except (CatalogueTableMacroError, CatalogueQueryError, duckdb.Error) as exc:

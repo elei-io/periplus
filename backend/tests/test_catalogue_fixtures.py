@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from ducklake_client import DiskStorage, DuckDBCatalog
 from sqlalchemy import create_engine, select
@@ -12,9 +15,15 @@ from control.catalogue_fixtures import seed_catalogue_fixtures
 from control.catalogue_materializations.models import CatalogueMaterialization
 from control.catalogue_queries.models import CatalogueQuery, CatalogueQueryRevision
 from control.catalogue_table_macros.models import CatalogueTableMacroDefinition
+from control.catalogue_table_macros.service import create_definition
 from control.catalogue_views.models import CatalogueViewReference
 from db import Base
-from repository.catalogue import Catalogue, CatalogueConfig
+from repository import (
+    FileObjectStore,
+    RawHtmlRepository,
+    RepositoryIngestor,
+)
+from repository.catalogue import Catalogue, CatalogueConfig, CrawlRecord
 from repository.catalogue.table_macros import CatalogueTableMacroStore
 from repository.catalogue.views import CatalogueViewStore
 
@@ -50,24 +59,415 @@ class CatalogueFixtureTests(unittest.TestCase):
                             for macro in CatalogueTableMacroStore(catalogue).list()
                         ],
                         [
-                            "record_candidates",
-                            "record_field_candidates",
-                            "selector_stats",
-                            "selector_stats_history",
+                            "extract_records",
+                            "suggest_records",
                         ],
                     )
                     self.assertEqual(
                         catalogue.connection.execute(
-                            "SELECT * FROM atlas.macros.record_candidates('%')"
+                            "SELECT * FROM atlas.macros.suggest_records('missing')"
                         ).fetchall(),
                         [],
                     )
                     self.assertEqual(
                         catalogue.connection.execute(
-                            "SELECT * FROM atlas.macros.record_field_candidates('%', 'x > y')"
+                            "SELECT * FROM atlas.macros.extract_records('missing', 'x > y')"
                         ).fetchall(),
                         [],
                     )
+            finally:
+                session.close()
+                engine.dispose()
+
+    def test_drops_retired_fixture_owned_macros_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fixtures = root / "fixtures"
+            for kind in ("queries", "views", "macros"):
+                (fixtures / kind).mkdir(parents=True)
+            fixture = fixtures / "macros" / "temporary.sql"
+            fixture.write_text(
+                "CREATE MACRO macros.temporary() AS TABLE (SELECT 1 AS value);",
+                encoding="utf-8",
+            )
+
+            engine = create_engine("sqlite://")
+            Base.metadata.create_all(
+                engine,
+                tables=[
+                    CatalogueQuery.__table__,
+                    CatalogueQueryRevision.__table__,
+                    CatalogueViewReference.__table__,
+                    CatalogueMaterialization.__table__,
+                    CatalogueTableMacroDefinition.__table__,
+                ],
+            )
+            session = Session(engine, expire_on_commit=False)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            try:
+                with Catalogue(config) as catalogue:
+                    catalogue.bootstrap()
+                    store = CatalogueTableMacroStore(catalogue)
+                    seed_catalogue_fixtures(session, catalogue, fixtures)
+                    create_definition(
+                        session,
+                        store,
+                        slug="user_owned",
+                        parameters=[],
+                        sql="SELECT 2 AS value",
+                        description=None,
+                    )
+
+                    fixture.unlink()
+                    seed_catalogue_fixtures(session, catalogue, fixtures)
+
+                    self.assertEqual(
+                        [macro.macro_name for macro in store.list()],
+                        ["user_owned"],
+                    )
+                    definitions = list(
+                        session.scalars(select(CatalogueTableMacroDefinition))
+                    )
+                    self.assertEqual(len(definitions), 1)
+                    self.assertEqual(definitions[0].macro_name, "user_owned")
+                    self.assertIsNone(definitions[0].fixture_path)
+            finally:
+                session.close()
+                engine.dispose()
+
+    def test_record_macros_use_stable_anchors_and_semantic_class_tokens(
+        self,
+    ) -> None:
+        url = "https://example.com/products"
+        html = """
+        <html><body><ul class="products layout-grid">
+          <li class="product post-101"><a data-testid="item-tile" href="/one">
+            <p class="star-rating One"></p><h3>Alpha</h3><span class="badge">£1.00</span>
+          </a></li>
+          <li class="product post-102"><a data-testid="item-tile" href="/two">
+            <p class="star-rating Two"></p><h3>Beta</h3><span class="badge">£2.00</span>
+          </a></li>
+        </ul><ul class="products layout-grid">
+          <li class="product post-103"><a data-testid="item-tile" href="/three">
+            <p class="star-rating Three"></p><h3>Gamma</h3><span>£3.00</span>
+          </a></li>
+        </ul>
+        <div class="cards">
+          <a class="card" href="/member/a"><span>Ada</span></a>
+          <a class="card" href="/member/b"><span>Bea</span></a>
+          <a class="card" href="/member/c"><span>Cy</span></a>
+        </div>
+        <dl>
+          <dt><a href="/paper/1">paper-1</a></dt><dd><h3>First paper</h3><p>Alice</p></dd>
+          <dt><a href="/paper/2">paper-2</a></dt><dd><h3>Second paper</h3><p>Bob</p></dd>
+          <dt><a href="/paper/3">paper-3</a></dt><dd><h3>Third paper</h3><p>Carol</p></dd>
+        </dl>
+        <ol><li>First list A</li><li>First list B</li></ol>
+        <ol><li>Second list A</li><li>Second list B</li></ol>
+        </body></html>
+        """
+        fixtures = Path(__file__).parents[2] / "fixtures"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            engine = create_engine("sqlite://")
+            Base.metadata.create_all(
+                engine,
+                tables=[
+                    CatalogueQuery.__table__,
+                    CatalogueQueryRevision.__table__,
+                    CatalogueViewReference.__table__,
+                    CatalogueMaterialization.__table__,
+                    CatalogueTableMacroDefinition.__table__,
+                ],
+            )
+            session = Session(engine, expire_on_commit=False)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            try:
+                with Catalogue(config) as catalogue:
+                    catalogue.bootstrap()
+                    seed_catalogue_fixtures(session, catalogue, fixtures)
+                    ingestor = RepositoryIngestor(
+                        html_repository=RawHtmlRepository(
+                            FileObjectStore(root / "objects")
+                        ),
+                        catalogue=catalogue,
+                        staging_root=root / "staging",
+                    )
+                    ingestor.store_raw(html)
+                    crawl = CrawlRecord(
+                        crawl_id=uuid4(),
+                        document_id=f"sha256:{hashlib.sha256(html.encode()).hexdigest()}",
+                        graph_id=uuid4(),
+                        graph_run_id=uuid4(),
+                        graph_node_id=uuid4(),
+                        crawl_request_id=uuid4(),
+                        requested_url=url,
+                        normalized_url=url,
+                        final_url=url,
+                        captured_at=datetime(2026, 7, 17, tzinfo=UTC),
+                        status_code=200,
+                        duration_ms=1,
+                        policy_config_hash="a" * 64,
+                        policy_config_json={},
+                        outcome="success",
+                    )
+                    ingestor.commit_prepared_batch(
+                        [ingestor.prepare_from_raw(crawl=crawl)]
+                    )
+
+                    suggestion = catalogue.connection.execute(
+                        "SELECT record_selector, fields, matched_record_count "
+                        "FROM atlas.macros.suggest_records(?) "
+                        "WHERE record_selector = "
+                        "'ul.products > li.product'",
+                        [url],
+                    ).fetchone()
+                    self.assertIsNotNone(suggestion)
+                    assert suggestion is not None
+                    self.assertEqual(
+                        suggestion[0],
+                        "ul.products > li.product",
+                    )
+                    self.assertEqual(suggestion[2], 3)
+                    sources = [field["source"] for field in suggestion[1]]
+                    self.assertIn("derived:class_token", sources)
+                    self.assertNotIn("attribute:class", sources)
+                    self.assertNotIn(
+                        "badge",
+                        [
+                            example
+                            for field in suggestion[1]
+                            if field["source"] == "derived:class_token"
+                            for example in field["examples"]
+                        ],
+                    )
+
+                    extracted = catalogue.connection.execute(
+                        "SELECT field_definitions, field_1, field_2, field_3, "
+                        "field_4, field_5, field_6, field_7, field_8, field_9, "
+                        "field_10, field_11, field_12 "
+                        "FROM atlas.macros.extract_records(?, ?) "
+                        "ORDER BY record_number",
+                        [url, suggestion[0]],
+                    ).fetchall()
+                    self.assertEqual(len(extracted), 3)
+                    class_field = next(
+                        index
+                        for index, definition in enumerate(extracted[0][0], start=1)
+                        if definition.endswith(" :: class_token")
+                    )
+                    self.assertEqual(
+                        {row[class_field] for row in extracted},
+                        {"One", "Two", "Three"},
+                    )
+
+                    member = catalogue.connection.execute(
+                        "SELECT field_definitions, field_1, field_2, field_3, "
+                        "field_4, field_5, field_6, field_7, field_8, field_9, "
+                        "field_10, field_11, field_12 "
+                        "FROM atlas.macros.extract_records("
+                        "?, 'div.cards > a.card') ORDER BY record_number LIMIT 1",
+                        [url],
+                    ).fetchone()
+                    self.assertIsNotNone(member)
+                    assert member is not None
+                    root_href_field = next(
+                        index
+                        for index, definition in enumerate(member[0], start=1)
+                        if definition == ":scope :: resolved_href"
+                    )
+                    self.assertEqual(
+                        member[root_href_field],
+                        "https://example.com/member/a",
+                    )
+
+                    paper = catalogue.connection.execute(
+                        "SELECT record_json FROM atlas.macros.extract_records("
+                        "?, 'body > dl > dt') ORDER BY record_number LIMIT 1",
+                        [url],
+                    ).fetchone()
+                    self.assertIsNotNone(paper)
+                    assert paper is not None
+                    self.assertIn("First paper", paper[0])
+                    self.assertIn("Alice", paper[0])
+
+                    scoped_lists = catalogue.connection.execute(
+                        "SELECT record_selector, matched_record_count "
+                        "FROM atlas.macros.suggest_records(?) "
+                        "WHERE record_selector LIKE "
+                        "'body > ol:nth-of-type(%) > li' "
+                        "ORDER BY record_selector",
+                        [url],
+                    ).fetchall()
+                    self.assertEqual(
+                        scoped_lists,
+                        [
+                            ("body > ol:nth-of-type(1) > li", 2),
+                            ("body > ol:nth-of-type(2) > li", 2),
+                        ],
+                    )
+                    ingestor.close()
+            finally:
+                session.close()
+                engine.dispose()
+
+    def test_record_macros_match_url_patterns_across_crawl_history(self) -> None:
+        first_url = "https://example.com/catalogue?page=1"
+        second_url = "https://example.com/catalogue?page=2"
+        first_capture = datetime(2026, 7, 15, tzinfo=UTC)
+        second_capture = datetime(2026, 7, 16, tzinfo=UTC)
+        third_capture = datetime(2026, 7, 17, tzinfo=UTC)
+        observations = [
+            (
+                first_url,
+                first_capture,
+                "<html><body><ul class='items'>"
+                "<li class='item'>A</li><li class='item'>B</li>"
+                "</ul></body></html>",
+            ),
+            (
+                first_url,
+                second_capture,
+                "<html><body><ul class='items'>"
+                "<li class='item'>A2</li><li class='item'>B2</li>"
+                "<li class='item'>C2</li></ul></body></html>",
+            ),
+            (
+                second_url,
+                third_capture,
+                "<html><body><ul class='items'>"
+                "<li class='item'>D</li><li class='item'>E</li>"
+                "</ul></body></html>",
+            ),
+        ]
+        fixtures = Path(__file__).parents[2] / "fixtures"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            engine = create_engine("sqlite://")
+            Base.metadata.create_all(
+                engine,
+                tables=[
+                    CatalogueQuery.__table__,
+                    CatalogueQueryRevision.__table__,
+                    CatalogueViewReference.__table__,
+                    CatalogueMaterialization.__table__,
+                    CatalogueTableMacroDefinition.__table__,
+                ],
+            )
+            session = Session(engine, expire_on_commit=False)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            try:
+                with Catalogue(config) as catalogue:
+                    catalogue.bootstrap()
+                    seed_catalogue_fixtures(session, catalogue, fixtures)
+                    ingestor = RepositoryIngestor(
+                        html_repository=RawHtmlRepository(
+                            FileObjectStore(root / "objects")
+                        ),
+                        catalogue=catalogue,
+                        staging_root=root / "staging",
+                    )
+                    for url, captured_at, html in observations:
+                        ingestor.store_raw(html)
+                        crawl = CrawlRecord(
+                            crawl_id=uuid4(),
+                            document_id=(
+                                "sha256:"
+                                f"{hashlib.sha256(html.encode()).hexdigest()}"
+                            ),
+                            graph_id=uuid4(),
+                            graph_run_id=uuid4(),
+                            graph_node_id=uuid4(),
+                            crawl_request_id=uuid4(),
+                            requested_url=url,
+                            normalized_url=url,
+                            final_url=url,
+                            captured_at=captured_at,
+                            status_code=200,
+                            duration_ms=1,
+                            policy_config_hash="a" * 64,
+                            policy_config_json={},
+                            outcome="success",
+                        )
+                        ingestor.commit_prepared_batch(
+                            [ingestor.prepare_from_raw(crawl=crawl)]
+                        )
+
+                    selector = "ul.items > li.item"
+                    exact = catalogue.connection.execute(
+                        "SELECT crawl_id, captured_at, matched_record_count "
+                        "FROM atlas.macros.extract_records(?, ?) "
+                        "ORDER BY captured_at, record_number",
+                        [first_url, selector],
+                    ).fetchall()
+                    self.assertEqual(len(exact), 5)
+                    self.assertEqual(
+                        {(row[1], row[2]) for row in exact},
+                        {(first_capture, 2), (second_capture, 3)},
+                    )
+
+                    pattern = "HTTPS://EXAMPLE.COM/CATALOGUE?PAGE=%"
+                    patterned = catalogue.connection.execute(
+                        "SELECT crawl_id, page_url, captured_at, "
+                        "matched_record_count, records_truncated "
+                        "FROM atlas.macros.extract_records(?, ?) "
+                        "ORDER BY captured_at, record_number",
+                        [pattern, selector],
+                    ).fetchall()
+                    self.assertEqual(len(patterned), 7)
+                    self.assertEqual(len({row[0] for row in patterned}), 3)
+                    self.assertEqual(
+                        {(row[1], row[2], row[3]) for row in patterned},
+                        {
+                            (first_url, first_capture, 2),
+                            (first_url, second_capture, 3),
+                            (second_url, third_capture, 2),
+                        },
+                    )
+                    self.assertFalse(any(row[4] for row in patterned))
+
+                    at_first_capture = catalogue.connection.execute(
+                        "SELECT record_number "
+                        "FROM atlas.macros.extract_records(?, ?) "
+                        "WHERE captured_at = ?",
+                        [pattern, selector, first_capture],
+                    ).fetchall()
+                    self.assertEqual(at_first_capture, [(1,), (2,)])
+
+                    exact_case_mismatch = catalogue.connection.execute(
+                        "SELECT * FROM atlas.macros.extract_records(?, ?)",
+                        [first_url.upper(), selector],
+                    ).fetchall()
+                    self.assertEqual(exact_case_mismatch, [])
+
+                    suggestion = catalogue.connection.execute(
+                        "SELECT matched_crawl_count, matched_page_count, "
+                        "first_captured_at, last_captured_at, "
+                        "matched_record_count "
+                        "FROM atlas.macros.suggest_records(?) "
+                        "WHERE record_selector = ?",
+                        [pattern, selector],
+                    ).fetchone()
+                    self.assertEqual(
+                        suggestion,
+                        (
+                            3,
+                            2,
+                            first_capture,
+                            third_capture,
+                            7,
+                        ),
+                    )
+                    ingestor.close()
             finally:
                 session.close()
                 engine.dispose()

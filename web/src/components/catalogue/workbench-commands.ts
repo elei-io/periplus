@@ -16,6 +16,7 @@ export type WorkbenchCommandName =
   | "\\history"
   | "\\x"
   | "\\status"
+  | "\\crawl"
 
 export type WorkbenchCommand = {
   name: WorkbenchCommandName
@@ -27,6 +28,7 @@ export type WorkbenchCommandOutcome =
   | { kind: "result"; result: CatalogueQueryResult }
   | { kind: "message"; message: string }
   | { kind: "toggle-expanded" }
+  | { kind: "crawl"; argument: string }
   | { kind: "error"; error: string }
 
 export const WORKBENCH_COMMANDS = [
@@ -39,6 +41,10 @@ export const WORKBENCH_COMMANDS = [
   { command: "\\history", description: "Show command history" },
   { command: "\\x", description: "Toggle expanded result display" },
   { command: "\\status", description: "Show catalogue and API status" },
+  {
+    command: "\\crawl [--graph <graph>] [url | --column name]",
+    description: "Start a crawl from a URL or the last query result",
+  },
   { command: "clear", description: "Clear the transcript" },
 ] as const
 
@@ -52,6 +58,7 @@ const commandNames = new Set<WorkbenchCommandName>([
   "\\history",
   "\\x",
   "\\status",
+  "\\crawl",
 ])
 
 export function parseWorkbenchCommand(value: string): WorkbenchCommand | null {
@@ -103,6 +110,8 @@ export function runWorkbenchCommand(
       }
     case "\\status":
       return statusResult(context.status)
+    case "\\crawl":
+      return { kind: "crawl", argument: command.argument }
     case "\\d":
       return describeRelation(command.argument, context.metadata)
     case "\\dt":
@@ -224,7 +233,7 @@ function statusResult(
         ["active Parquet files", status.active_file_count.toLocaleString()],
         ["catalogue storage", formatBytes(status.active_storage_bytes)],
         ["DuckLake version", status.ducklake_version ?? "unknown"],
-        ["Atlas schema", status.catalogue_schema_version.toLocaleString()],
+        ["Atlas schema", status.catalogue_schema_version],
         ["API latency", `${Math.round(status.apiLatencyMs)} ms`],
       ]
     ),
@@ -236,7 +245,7 @@ function result(
   columnTypes: string[],
   rows: unknown[][]
 ): CatalogueQueryResult {
-  return { columns, columnTypes, rows }
+  return { statementKind: "query", columns, columnTypes, rows }
 }
 
 function metadataUnavailable(): WorkbenchCommandOutcome {

@@ -1,11 +1,11 @@
-export type CatalogueQueryMode = "run" | "explain" | "explain_analyze"
+export type CatalogueStatementKind = "query" | "explain" | "explain_analyze"
 
 export type CatalogueQueryRequest = {
   sql: string
-  mode: CatalogueQueryMode
 }
 
 export type CatalogueQueryResult = {
+  statementKind: CatalogueStatementKind
   columns: string[]
   columnTypes: string[]
   rows: unknown[][]
@@ -61,7 +61,13 @@ export type CatalogueLintResult = {
 
 export type CatalogueMaterializationSummary = {
   id: string
-  status: "live" | "backfilling" | "paused" | "dematerializing" | "degraded" | "source_changed"
+  status:
+    | "live"
+    | "backfilling"
+    | "paused"
+    | "dematerializing"
+    | "degraded"
+    | "source_changed"
   row_count: number
   storage_bytes: number
   definition_is_current: boolean
@@ -77,7 +83,7 @@ export type CatalogueViewRecord = {
   schema_name: string
   view_name: string
   qualified_name: string
-  display_name: string
+  slug: string
   description: string | null
   fixture_path: string | null
   sql: string
@@ -98,7 +104,7 @@ export type CatalogueTableMacroRecord = {
   schema_name: string
   macro_name: string
   qualified_name: string
-  display_name: string
+  slug: string
   description: string | null
   parameters: string[]
   sql: string
@@ -124,7 +130,7 @@ export type SavedQueryRevision = {
 
 export type SavedQuery = {
   id: string
-  name: string
+  slug: string
   description: string | null
   fixture_path: string | null
   current_revision_id: string
@@ -155,7 +161,13 @@ export type CatalogueMaterializationRecord = {
   backfill_scopes_per_minute: number
   partition_column: string | null
   partitioning: string[]
-  status: "live" | "backfilling" | "paused" | "dematerializing" | "degraded" | "source_changed"
+  status:
+    | "live"
+    | "backfilling"
+    | "paused"
+    | "dematerializing"
+    | "degraded"
+    | "source_changed"
   source_state: "current" | "source_changed"
   completed_scopes: number | null
   total_scopes: number | null
@@ -173,4 +185,7 @@ export type CatalogueMaterializationRecord = {
   created_at: string
   updated_at: string
 }
-export type CatalogueMaterializationList = { items: CatalogueMaterializationRecord[]; total: number }
+export type CatalogueMaterializationList = {
+  items: CatalogueMaterializationRecord[]
+  total: number
+}

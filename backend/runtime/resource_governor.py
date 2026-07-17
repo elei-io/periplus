@@ -278,7 +278,7 @@ def _bundle_fits(
         ]
         for _grant, need in existing:
             if limits.capacity(need) != capacity:
-                # A CrawlPolicy limit may change while frozen work from the old
+                # A DomainPolicy limit may change while frozen work from the old
                 # revision is still in flight. Drain the old grants before the
                 # stable remote-domain resource adopts its new capacity.
                 return False

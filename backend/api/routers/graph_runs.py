@@ -3,8 +3,7 @@
 import asyncio
 import json
 import time
-from datetime import UTC, datetime, timedelta
-from enum import IntEnum
+from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -17,14 +16,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.catalogue_pool import CatalogueReadPool, CatalogueReadPoolExhausted
+from api.graph_submission import submit_graph_run
 from config import get_float, get_int
 from config.performance import (
-    BROWSER_ACQUISITION_LANES,
     CATALOGUE_READ_MAX_ATTEMPTS,
     CATALOGUE_READ_RETRY_SECONDS,
     GRAPH_CONSUMER_MAX_ACK_PENDING,
-    HTTP_ACQUISITION_LANES,
-    PROVIDER_ACQUISITION_LANES,
+    CRAWL_ACQUISITION_LANES,
     RESOURCE_ACQUIRE_TIMEOUT_SECONDS,
     catalogue_max_concurrency,
     catalogue_read_pool_size,
@@ -34,15 +32,20 @@ from config.performance import (
 )
 from control.catalogue_materializations.models import CatalogueMaterialization
 from control.crawl_graphs.models import CrawlGraph
-from control.crawl_graphs.service import CrawlGraphNotFoundError, CrawlGraphValidationError, freeze_graph
+from control.crawl_graphs.service import (
+    CrawlGraphNotFoundError,
+    CrawlGraphValidationError,
+)
 from db.session import get_session
 from repository.catalogue import Catalogue
-from runtime.graph_queue import CrawlTransport, GraphRun, connect_nats, ensure_graph_progress_storage, ensure_graph_storage, get_graph_run, list_graph_runs, list_worker_states
+from repository.catalogue.schema import (
+    INTERNAL_SCHEMA,
+    MATERIALIZATION_COVERAGE_TABLE,
+)
+from runtime.graph_queue import GraphRun, connect_nats, ensure_graph_progress_storage, ensure_graph_storage, get_graph_run, list_graph_runs, list_worker_states
 from runtime.graph_runs import (
     GraphRunNotFoundError,
-    create_graph_run,
     request_cancellation,
-    resolve_policy_snapshot,
 )
 from runtime.catalogue_workers import (
     CatalogueCapability,
@@ -80,14 +83,14 @@ class GraphRunSubmission(BaseModel):
 class GraphRunSummary(BaseModel):
     id: UUID
     graph_id: UUID
-    graph_name: str | None
+    graph_slug: str | None
     status: Literal["queued", "running", "completed", "completed_with_errors", "failed", "cancelled"]
-    trigger_kind: Literal["manual"]
+    trigger_kind: Literal["manual", "schedule"]
+    trigger_schedule_id: UUID | None
     trigger_urls: tuple[str, ...]
     request_count: int
     pending_request_count: int
     failed_request_count: int
-    warning_count: int
     error_count: int
     queued_request_count: int
     fetching_request_count: int
@@ -105,19 +108,27 @@ class GraphRunList(BaseModel):
     total: int
 
 
+class GraphRunFailure(BaseModel):
+    crawl_id: UUID
+    requested_url: str
+    final_url: str | None
+    status_code: int | None
+    failure_code: str | None
+    failure_stage: str | None
+    failure_detail: str | None
+    captured_at: datetime
+
+
+class GraphRunFailureList(BaseModel):
+    items: list[GraphRunFailure]
+    total: int
+
+
 class RuntimeWorkerCapacity(BaseModel):
     worker_id: str
-    transport: CrawlTransport
     capacity: int
     active_request_count: int
     last_seen_at: datetime
-
-
-class TransportCapacity(BaseModel):
-    transport: CrawlTransport
-    worker_count: int
-    capacity: int
-    active: int
 
 
 class CatalogueExecutorCapacity(BaseModel):
@@ -131,11 +142,9 @@ class CrawlConcurrencyLimits(BaseModel):
     worker_count: int
     runtime_capacity: int
     runtime_active: int
-    browser_capacity: int
     resource_acquire_timeout_seconds: float
     resources: list[ResourceUsage]
     workers: list[RuntimeWorkerCapacity]
-    transports: list[TransportCapacity]
     catalogue_executors: list[CatalogueExecutorCapacity]
     tuning: RuntimeSizing
 
@@ -144,9 +153,7 @@ class RuntimeSizing(BaseModel):
     catalogue_max_concurrency: int
     effective_catalogue_concurrency: int
     object_io_max_concurrency: int
-    http_lanes_per_replica: int
-    browser_lanes_per_replica: int
-    provider_lanes_per_replica: int
+    crawl_lanes_per_replica: int
     catalogue_lanes_per_replica: int
     graph_consumer_delivery_ceiling: int
     duckdb_threads_per_executor: int
@@ -165,65 +172,15 @@ class GraphRunMaterializationLagList(BaseModel):
     items: list[GraphRunMaterializationLag]
 
 
-class WarningDomainCount(BaseModel):
-    domain: str
-    count: int
-
-
-class GraphRunWarningGroup(BaseModel):
-    failure_code: str
-    status_code: int | None
-    response_media_type: str | None
-    retryable: bool | None
-    count: int
-    detail: str | None
-    domains: list[WarningDomainCount]
-
-
-class GraphRunWarningSummary(BaseModel):
-    run_id: UUID
-    warning_count: int
-    observed_count: int
-    awaiting_evidence_count: int
-    truncated_group_count: int
-    items: list[GraphRunWarningGroup]
-
-
-class PolicyPressurePoint(BaseModel):
-    captured_at: datetime
-    peak_concurrency: int
-    limit: int
-
-
-class PolicyPressureSeries(BaseModel):
-    remote_domain: str
-    points: list[PolicyPressurePoint]
-
-
-class PolicyPressureResponse(BaseModel):
-    hours: Literal[1, 6, 24, 72]
-    range_start: datetime
-    range_end: datetime
-    bucket_seconds: int
-    items: list[PolicyPressureSeries]
-
-
-class PolicyPressureHours(IntEnum):
-    one_hour = 1
-    six_hours = 6
-    one_day = 24
-    three_days = 72
-
-
 async def _run_summaries(
     session: Session,
     progress,
     runs: list[GraphRun],
 ) -> list[GraphRunSummary]:
     graph_ids = {run.graph_id for run in runs}
-    names = dict(
+    slugs = dict(
         session.execute(
-            select(CrawlGraph.id, CrawlGraph.name).where(CrawlGraph.id.in_(graph_ids))
+            select(CrawlGraph.id, CrawlGraph.slug).where(CrawlGraph.id.in_(graph_ids))
         ).all()
     ) if graph_ids else {}
     stage_counts = await asyncio.gather(
@@ -232,7 +189,7 @@ async def _run_summaries(
     return [
         GraphRunSummary(
             **run.model_dump(),
-            graph_name=names.get(run.graph_id),
+            graph_slug=slugs.get(run.graph_id),
             queued_request_count=counts[0],
             fetching_request_count=counts[1],
             processing_request_count=counts[2],
@@ -285,20 +242,6 @@ async def capacity() -> CrawlConcurrencyLimits:
         resources = await resource_usage(resource_grants)
     finally:
         await client.drain()
-    transports = [
-        TransportCapacity(
-            transport=transport,
-            worker_count=sum(worker.transport == transport for worker in workers),
-            capacity=sum(worker.capacity for worker in workers if worker.transport == transport),
-            active=sum(
-                worker.active_request_count
-                for worker in workers
-                if worker.transport == transport
-            ),
-        )
-        for transport in ("http", "browser", "firecrawl")
-    ]
-    browser = next(item for item in transports if item.transport == "browser")
     catalogue_executors = [
         CatalogueExecutorCapacity(
             capability=capability,
@@ -324,11 +267,9 @@ async def capacity() -> CrawlConcurrencyLimits:
         worker_count=len(workers),
         runtime_capacity=sum(worker.capacity for worker in workers),
         runtime_active=sum(worker.active_request_count for worker in workers),
-        browser_capacity=browser.capacity,
         resource_acquire_timeout_seconds=RESOURCE_ACQUIRE_TIMEOUT_SECONDS,
         resources=resources,
         workers=[RuntimeWorkerCapacity.model_validate(worker, from_attributes=True) for worker in workers],
-        transports=transports,
         catalogue_executors=catalogue_executors,
         tuning=RuntimeSizing(
             catalogue_max_concurrency=catalogue_max_concurrency(),
@@ -336,9 +277,7 @@ async def capacity() -> CrawlConcurrencyLimits:
                 catalogue_max_concurrency(), executor_capacity
             ),
             object_io_max_concurrency=object_io_max_concurrency(),
-            http_lanes_per_replica=HTTP_ACQUISITION_LANES,
-            browser_lanes_per_replica=BROWSER_ACQUISITION_LANES,
-            provider_lanes_per_replica=PROVIDER_ACQUISITION_LANES,
+            crawl_lanes_per_replica=CRAWL_ACQUISITION_LANES,
             catalogue_lanes_per_replica=1,
             graph_consumer_delivery_ceiling=GRAPH_CONSUMER_MAX_ACK_PENDING,
             duckdb_threads_per_executor=duckdb_threads(),
@@ -408,13 +347,14 @@ def _graph_run_materialization_lag_rows(
     catalogue: Catalogue, active_definitions: list[tuple[UUID, UUID, str]]
 ) -> list[tuple]:
     crawls = _catalogue_table(catalogue, "crawls")
-    results = _catalogue_table(catalogue, "materialization_scope_results")
+    results = _catalogue_table(
+        catalogue, MATERIALIZATION_COVERAGE_TABLE, schema=INTERNAL_SCHEMA
+    )
     if not active_definitions:
         return catalogue.connection.execute(
             f"""
             SELECT graph_run_id, 0, 0, 0
             FROM {crawls}
-            WHERE purpose = 'use'
             GROUP BY graph_run_id
             ORDER BY max(captured_at) DESC
             """
@@ -439,8 +379,7 @@ def _graph_run_materialization_lag_rows(
                    END AS scope_id
             FROM {crawls} AS c
             CROSS JOIN active AS a
-            WHERE c.purpose = 'use'
-              AND (a.scope_kind = 'crawl' OR c.document_id IS NOT NULL)
+            WHERE (a.scope_kind = 'crawl' OR c.document_id IS NOT NULL)
         ),
         scope_state AS (
             SELECT e.*,
@@ -470,7 +409,6 @@ def _graph_run_materialization_lag_rows(
         JOIN (
             SELECT graph_run_id, max(captured_at) AS last_captured_at
             FROM {crawls}
-            WHERE purpose = 'use'
             GROUP BY graph_run_id
         ) AS r USING (graph_run_id)
         ORDER BY r.last_captured_at DESC
@@ -479,309 +417,14 @@ def _graph_run_materialization_lag_rows(
     ).fetchall()
 
 
-@router.get("/policy-pressure", response_model=PolicyPressureResponse)
-def policy_pressure(
-    request: Request,
-    hours: PolicyPressureHours = PolicyPressureHours.one_day,
-) -> PolicyPressureResponse:
-    range_end = datetime.now(UTC)
-    range_start = range_end - timedelta(hours=hours)
-    bucket_seconds = {1: 60, 6: 300, 24: 900, 72: 3600}[hours]
-    pool: CatalogueReadPool = request.app.state.catalogue_read_pool
-    try:
-        catalogue = pool.acquire()
-    except CatalogueReadPoolExhausted as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    try:
-        rows = _policy_pressure_rows(
-            catalogue,
-            range_start=range_start,
-            range_end=range_end,
-            bucket_seconds=bucket_seconds,
-        )
-    except duckdb.IOException as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Policy pressure is temporarily unavailable.",
-        ) from exc
-    finally:
-        pool.release(catalogue)
 
-    series: dict[str, list[PolicyPressurePoint]] = {}
-    for remote_domain, captured_at, peak_concurrency, limit in rows:
-        series.setdefault(str(remote_domain), []).append(
-            PolicyPressurePoint(
-                captured_at=captured_at,
-                peak_concurrency=int(peak_concurrency),
-                limit=int(limit),
-            )
-        )
-    return PolicyPressureResponse(
-        hours=int(hours),
-        range_start=range_start,
-        range_end=range_end,
-        bucket_seconds=bucket_seconds,
-        items=[
-            PolicyPressureSeries(remote_domain=remote_domain, points=points)
-            for remote_domain, points in sorted(series.items())
-        ],
-    )
-
-
-def _policy_pressure_rows(
-    catalogue: Catalogue,
-    *,
-    range_start: datetime,
-    range_end: datetime,
-    bucket_seconds: int,
-) -> list[tuple]:
-    crawls = _catalogue_table(catalogue, "crawls")
-    return catalogue.connection.execute(
-        f"""
-        WITH source AS (
-            SELECT url_registrable_domain AS remote_domain,
-                   remote_concurrency,
-                   greatest(
-                       captured_at - duration_ms * INTERVAL '1 millisecond',
-                       $range_start
-                   ) AS started_at,
-                   least(captured_at, $range_end) AS finished_at
-            FROM {crawls}
-            WHERE purpose = 'use'
-              AND duration_ms IS NOT NULL
-              AND duration_ms > 0
-              AND captured_at > $range_start
-              AND captured_at - duration_ms * INTERVAL '1 millisecond'
-                  < $range_end
-        ),
-        events AS (
-            SELECT remote_domain, started_at AS event_at, 1 AS delta,
-                   remote_concurrency
-            FROM source
-            UNION ALL
-            SELECT remote_domain, finished_at AS event_at, -1 AS delta,
-                   remote_concurrency
-            FROM source
-        ),
-        grouped_events AS (
-            SELECT remote_domain, event_at, sum(delta) AS delta,
-                   max(remote_concurrency) AS remote_concurrency
-            FROM events
-            GROUP BY ALL
-        ),
-        states AS (
-            SELECT remote_domain,
-                   event_at,
-                   remote_concurrency,
-                   sum(delta) OVER (
-                       PARTITION BY remote_domain
-                       ORDER BY event_at
-                       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                   ) AS concurrency
-            FROM grouped_events
-        ),
-        groups AS (
-            SELECT remote_domain,
-                   arg_min(remote_concurrency, started_at) AS initial_limit
-            FROM source
-            GROUP BY remote_domain
-        ),
-        buckets AS (
-            SELECT unnest(generate_series(
-                $range_start,
-                $range_end - $bucket_seconds * INTERVAL '1 second',
-                $bucket_seconds * INTERVAL '1 second'
-            )) AS bucket_at
-        ),
-        bucket_grid AS (
-            SELECT remote_domain, initial_limit, bucket_at
-            FROM groups CROSS JOIN buckets
-        ),
-        bucket_starts AS (
-            SELECT bucket_grid.remote_domain,
-                   bucket_grid.bucket_at,
-                   coalesce(states.concurrency, 0) AS concurrency,
-                   coalesce(
-                       states.remote_concurrency,
-                       bucket_grid.initial_limit
-                   ) AS remote_concurrency
-            FROM bucket_grid
-            ASOF LEFT JOIN states
-              ON bucket_grid.remote_domain = states.remote_domain
-             AND bucket_grid.bucket_at >= states.event_at
-        ),
-        event_peaks AS (
-            SELECT remote_domain,
-                   time_bucket(
-                       $bucket_seconds * INTERVAL '1 second',
-                       event_at,
-                       $range_start
-                   ) AS bucket_at,
-                   arg_max(
-                       concurrency,
-                       struct_pack(
-                           pressure := concurrency::DOUBLE / remote_concurrency,
-                           concurrency := concurrency,
-                           event_at := event_at
-                       )
-                   ) AS concurrency,
-                   arg_max(
-                       remote_concurrency,
-                       struct_pack(
-                           pressure := concurrency::DOUBLE / remote_concurrency,
-                           concurrency := concurrency,
-                           event_at := event_at
-                       )
-                   ) AS remote_concurrency
-            FROM states
-            WHERE event_at >= $range_start AND event_at < $range_end
-            GROUP BY ALL
-        )
-        SELECT bucket_starts.remote_domain,
-               bucket_starts.bucket_at,
-               CASE
-                   WHEN coalesce(event_peaks.concurrency::DOUBLE
-                        / event_peaks.remote_concurrency, -1)
-                        > bucket_starts.concurrency::DOUBLE
-                          / bucket_starts.remote_concurrency
-                   THEN event_peaks.concurrency
-                   ELSE bucket_starts.concurrency
-               END AS peak_concurrency,
-               CASE
-                   WHEN coalesce(event_peaks.concurrency::DOUBLE
-                        / event_peaks.remote_concurrency, -1)
-                        > bucket_starts.concurrency::DOUBLE
-                          / bucket_starts.remote_concurrency
-                   THEN event_peaks.remote_concurrency
-                   ELSE bucket_starts.remote_concurrency
-               END AS remote_concurrency
-        FROM bucket_starts
-        LEFT JOIN event_peaks USING (remote_domain, bucket_at)
-        ORDER BY remote_domain, bucket_at
-        """,
-        {
-            "range_start": range_start,
-            "range_end": range_end,
-            "bucket_seconds": bucket_seconds,
-        },
-    ).fetchall()
-
-
-def _catalogue_table(catalogue: Catalogue, name: str) -> str:
+def _catalogue_table(
+    catalogue: Catalogue, name: str, *, schema: str | None = None
+) -> str:
     return ".".join(
         '"' + value.replace('"', '""') + '"'
-        for value in (catalogue.config.alias, catalogue.config.schema, name)
+        for value in (catalogue.config.alias, schema or catalogue.config.schema, name)
     )
-
-
-def _warning_rows(catalogue: Catalogue, run_id: UUID) -> tuple[list[tuple], int, int]:
-    crawls = _catalogue_table(catalogue, "crawls")
-    rows = catalogue.connection.execute(
-        f"""
-        WITH domain_counts AS (
-            SELECT coalesce(failure_code, 'acquisition_failure') AS failure_code,
-                   status_code,
-                   response_media_type,
-                   failure_retryable,
-                   coalesce(url_registrable_domain, 'unknown') AS domain,
-                   any_value(nullif(failure_detail, '')) AS representative_detail,
-                   count(*) AS domain_count
-            FROM {crawls}
-            WHERE graph_run_id = $run_id
-              AND purpose = 'use'
-              AND outcome IN ('partial', 'failed')
-            GROUP BY failure_code, status_code, response_media_type,
-                     failure_retryable, domain
-        ), group_counts AS (
-            SELECT failure_code, status_code, response_media_type,
-                   failure_retryable, sum(domain_count) AS warning_count
-            FROM domain_counts
-            GROUP BY failure_code, status_code, response_media_type,
-                     failure_retryable
-        ), ranked_groups AS (
-            SELECT *,
-                   row_number() OVER (
-                       ORDER BY warning_count DESC, failure_code, status_code
-                   ) AS group_rank,
-                   count(*) OVER () AS total_groups,
-                   sum(warning_count) OVER () AS observed_count
-            FROM group_counts
-        ), ranked_domains AS (
-            SELECT *,
-                   row_number() OVER (
-                       PARTITION BY failure_code, status_code,
-                                    response_media_type, failure_retryable
-                       ORDER BY domain_count DESC, domain
-                   ) AS domain_rank,
-                   first_value(representative_detail) OVER (
-                       PARTITION BY failure_code, status_code,
-                                    response_media_type, failure_retryable
-                       ORDER BY domain_count DESC, domain
-                   ) AS representative_detail_for_group
-            FROM domain_counts
-        )
-        SELECT groups.failure_code, groups.status_code,
-               groups.response_media_type, groups.failure_retryable,
-               groups.warning_count,
-               domains.representative_detail_for_group,
-               domains.domain, domains.domain_count,
-               groups.observed_count, groups.total_groups
-        FROM ranked_groups AS groups
-        JOIN ranked_domains AS domains
-          ON groups.failure_code = domains.failure_code
-         AND groups.status_code IS NOT DISTINCT FROM domains.status_code
-         AND groups.response_media_type IS NOT DISTINCT FROM domains.response_media_type
-         AND groups.failure_retryable IS NOT DISTINCT FROM domains.failure_retryable
-        WHERE groups.group_rank <= 50 AND domains.domain_rank <= 5
-        ORDER BY groups.group_rank, domains.domain_rank
-        """,
-        {"run_id": run_id},
-    ).fetchall()
-    if not rows:
-        return [], 0, 0
-    return rows, int(rows[0][8]), int(rows[0][9])
-
-
-def _warning_groups(rows: list[tuple]) -> list[GraphRunWarningGroup]:
-    grouped: dict[
-        tuple[str, int | None, str | None, bool | None], GraphRunWarningGroup
-    ] = {}
-    for code, status, media_type, retryable, count, detail, domain, domain_count, *_ in rows:
-        key = (
-            str(code or "acquisition_failure"),
-            int(status) if status is not None else None,
-            str(media_type) if media_type is not None else None,
-            bool(retryable) if retryable is not None else None,
-        )
-        group = grouped.get(key)
-        if group is None:
-            group = GraphRunWarningGroup(
-                failure_code=key[0],
-                status_code=key[1],
-                response_media_type=key[2],
-                retryable=key[3],
-                count=int(count),
-                detail=str(detail) if detail else None,
-                domains=[],
-            )
-            grouped[key] = group
-        group.domains.append(
-            WarningDomainCount(
-                domain=str(domain or "unknown"), count=int(domain_count)
-            )
-        )
-    return list(grouped.values())
-
-
-def _read_warning_summary(
-    pool: CatalogueReadPool, run_id: UUID
-) -> tuple[list[GraphRunWarningGroup], int, int]:
-    catalogue = pool.acquire()
-    try:
-        rows, observed_count, total_groups = _warning_rows(catalogue, run_id)
-        return _warning_groups(rows), observed_count, total_groups
-    finally:
-        pool.release(catalogue)
 
 
 @trigger_router.post("/{graph_id}/runs", response_model=GraphRunSubmission, status_code=202)
@@ -791,29 +434,18 @@ async def trigger(
     session: Annotated[Session, Depends(get_session)],
 ) -> GraphRunSubmission:
     try:
-        snapshot = freeze_graph(session, graph_id)
+        run = await submit_graph_run(
+            session,
+            graph_id=graph_id,
+            urls=payload.urls,
+        )
     except CrawlGraphNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except CrawlGraphValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    # Component immutability is authoritative before the NATS execution snapshot is published.
-    session.commit()
-    client, runs, requests, progress = await _storage()
-    try:
-        run = await create_graph_run(
-            runs=runs,
-            requests=requests,
-            progress=progress,
-            jetstream=client.jetstream(),
-            snapshot=snapshot,
-            urls=payload.urls,
-            policy_resolver=lambda url: resolve_policy_snapshot(session, url),
-        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    finally:
-        await client.drain()
     return GraphRunSubmission(graph_id=graph_id, run_id=run.id)
 
 
@@ -839,36 +471,52 @@ async def active_graph_runs(
     )
 
 
-@router.get("/{run_id}/warnings", response_model=GraphRunWarningSummary)
-async def warning_summary(run_id: UUID, request: Request) -> GraphRunWarningSummary:
-    client, runs, _requests, _progress = await _storage()
-    try:
-        run = await get_graph_run(runs, run_id)
-    finally:
-        await client.drain()
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"Graph run {run_id} was not found.")
-
+@router.get("/{run_id}/failures", response_model=GraphRunFailureList)
+def run_failures(run_id: UUID, request: Request) -> GraphRunFailureList:
     pool: CatalogueReadPool = request.app.state.catalogue_read_pool
     try:
-        items, observed, total_groups = await asyncio.to_thread(
-            _read_warning_summary, pool, run_id
-        )
+        catalogue = pool.acquire()
     except CatalogueReadPoolExhausted as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except duckdb.Error as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Warning evidence is temporarily unavailable.",
-        ) from exc
-    return GraphRunWarningSummary(
-        run_id=run_id,
-        warning_count=run.warning_count,
-        observed_count=observed,
-        awaiting_evidence_count=max(0, run.warning_count - observed),
-        truncated_group_count=max(0, total_groups - len(items)),
-        items=items,
-    )
+    try:
+        rows = _graph_run_failure_rows(catalogue, run_id)
+    finally:
+        pool.release(catalogue)
+    items = [
+        GraphRunFailure(
+            crawl_id=UUID(str(row[0])),
+            requested_url=str(row[1]),
+            final_url=str(row[2]) if row[2] is not None else None,
+            status_code=int(row[3]) if row[3] is not None else None,
+            failure_code=str(row[4]) if row[4] is not None else None,
+            failure_stage=str(row[5]) if row[5] is not None else None,
+            failure_detail=str(row[6]) if row[6] is not None else None,
+            captured_at=row[7],
+        )
+        for row in rows
+    ]
+    return GraphRunFailureList(items=items, total=len(items))
+
+
+def _graph_run_failure_rows(catalogue: Catalogue, run_id: UUID) -> list[tuple]:
+    crawls = _catalogue_table(catalogue, "crawls")
+    return catalogue.connection.execute(
+        f"""
+        SELECT crawl_id,
+               requested_url,
+               final_url,
+               status_code,
+               failure_code,
+               failure_stage,
+               failure_detail,
+               captured_at
+        FROM {crawls}
+        WHERE graph_run_id = ?
+          AND outcome = 'failed'
+        ORDER BY captured_at, crawl_id
+        """,
+        [run_id],
+    ).fetchall()
 
 
 @router.get("/{run_id}", response_model=GraphRun)

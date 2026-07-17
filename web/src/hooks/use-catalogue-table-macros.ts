@@ -26,8 +26,7 @@ export function useCreateCatalogueTableMacro() {
   const client = useQueryClient()
   return useMutation({
     mutationFn: (input: {
-      name: string
-      display_name?: string
+      slug: string
       description?: string
       parameters: string[]
       sql: string
@@ -51,7 +50,7 @@ export function useUpdateCatalogueTableMacro() {
   return useMutation({
     mutationFn: (input: {
       macro: CatalogueTableMacroRecord
-      display_name: string
+      slug: string
       description: string
       parameters: string[]
       sql: string
@@ -60,9 +59,8 @@ export function useUpdateCatalogueTableMacro() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          expected_definition_revision_id:
-            input.macro.definition_revision_id,
-          display_name: input.display_name,
+          expected_definition_revision_id: input.macro.definition_revision_id,
+          slug: input.slug,
           description: input.description || null,
           parameters: input.parameters,
           sql: input.sql,

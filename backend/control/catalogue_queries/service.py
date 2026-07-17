@@ -7,6 +7,7 @@ from hashlib import sha256
 from uuid import UUID
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from repository.catalogue.query import classify_select
@@ -25,15 +26,15 @@ class CatalogueQueryConflictError(ValueError):
 def create_query(
     session: Session,
     *,
-    name: str,
+    slug: str,
     description: str | None,
     sql: str,
     change_note: str | None,
 ) -> CatalogueQueryDetail:
     classify_select(sql)
-    query = CatalogueQuery(name=name.strip(), description=description)
+    query = CatalogueQuery(slug=slug, description=description)
     session.add(query)
-    session.flush()
+    _flush_slug(session)
     revision = _append_revision(query, sql=sql, change_note=change_note, number=1)
     session.add(revision)
     session.flush()
@@ -77,7 +78,7 @@ def update_query(
     *,
     expected_revision_id: UUID,
     sql: str,
-    name: str | None,
+    slug: str | None,
     description: str | None,
     change_note: str | None,
 ) -> CatalogueQueryDetail:
@@ -85,8 +86,8 @@ def update_query(
     _expect_revision(locked, expected_revision_id)
     classify_select(sql)
     current = _current_revision(locked)
-    if name is not None:
-        locked.name = name.strip()
+    if slug is not None:
+        locked.slug = slug
     locked.description = description
     if _hash(sql) != current.sql_hash:
         next_number = int(
@@ -103,7 +104,7 @@ def update_query(
         session.add(revision)
         session.flush()
         locked.current_revision_id = revision.id
-    session.flush()
+    _flush_slug(session)
     return detail(locked)
 
 
@@ -120,7 +121,7 @@ def restore_revision(
         query,
         expected_revision_id=expected_revision_id,
         sql=revision.sql,
-        name=None,
+        slug=None,
         description=query.description,
         change_note=change_note or f"Restore revision {revision.revision}",
     )
@@ -141,7 +142,7 @@ def record(query: CatalogueQuery) -> CatalogueQueryRecord:
     current = _current_revision(query)
     return CatalogueQueryRecord(
         id=query.id,
-        name=query.name,
+        slug=query.slug,
         description=query.description,
         fixture_path=query.fixture_path,
         current_revision_id=current.id,
@@ -214,3 +215,12 @@ def _append_revision(
 
 def _hash(sql: str) -> str:
     return sha256(sql.strip().encode()).hexdigest()
+
+
+def _flush_slug(session: Session) -> None:
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        raise CatalogueQueryConflictError(
+            "A saved query with this slug already exists."
+        ) from exc

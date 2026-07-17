@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 
 import { GraphCanvas } from "@/components/crawl-graph/graph-canvas"
+import { SchedulesPanel } from "@/components/crawl-graph/schedules-panel"
 import { SqlEditor } from "@/components/catalogue/sql-editor"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -30,6 +31,12 @@ import {
   SelectTrigger,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs"
 import {
   useCreateCrawlGraph,
   useCreateCrawlGraphEdge,
@@ -58,22 +65,22 @@ export function CrawlGraphsPage({
 }) {
   const graphsQuery = useCrawlGraphs()
   const createGraph = useCreateCrawlGraph()
-  const [name, setName] = useState("")
+  const [slug, setSlug] = useState("")
   const [description, setDescription] = useState("")
 
   const graphs = graphsQuery.data?.items ?? []
 
   const submitGraph = () => {
-    const nextName = name.trim()
-    if (!nextName) {
-      toast.error("Graph name is required.")
+    const nextSlug = slug.trim()
+    if (!nextSlug) {
+      toast.error("Graph slug is required.")
       return
     }
     createGraph.mutate(
-      { name: nextName, description: description.trim() },
+      { slug: nextSlug, description: description.trim() },
       {
         onSuccess: (graph) => {
-          setName("")
+          setSlug("")
           setDescription("")
           onNavigate(`/crawls/graphs/${graph.id}`)
         },
@@ -102,9 +109,13 @@ export function CrawlGraphsPage({
 
         <div className="grid gap-2 border-y py-4 md:grid-cols-[minmax(12rem,1fr)_minmax(16rem,2fr)_auto]">
           <Input
-            value={name}
-            placeholder="Graph name"
-            onChange={(event) => setName(event.target.value)}
+            value={slug}
+            placeholder="graph-slug"
+            onChange={(event) =>
+              setSlug(
+                event.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "-")
+              )
+            }
           />
           <Input
             value={description}
@@ -126,7 +137,12 @@ export function CrawlGraphsPage({
               onClick={() => onNavigate(`/crawls/graphs/${graph.id}`)}
             >
               <span className="block truncate text-sm font-medium">
-                {graph.name}
+                {graph.slug}
+                {graph.system_owned ? (
+                  <Badge variant="secondary" className="ml-2">
+                    System
+                  </Badge>
+                ) : null}
               </span>
               <span className="block truncate text-xs text-muted-foreground">
                 Created {new Date(graph.created_at).toLocaleDateString()}
@@ -243,31 +259,35 @@ function GraphDetail({
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-xl font-semibold tracking-tight">
-              {graph.name}
+              {graph.slug}
             </h2>
             <Badge variant="secondary">
               {graph.root_node_id ? "Root set" : "No root"}
             </Badge>
-            <Select
-              value={graph.root_node_id}
-              onValueChange={(nodeId) => nodeId && setRoot.mutate(nodeId)}
-              disabled={graph.nodes.length === 0 || setRoot.isPending}
-            >
-              <SelectTrigger className="w-48">
-                <span className="truncate">
-                  Root:{" "}
-                  {graph.nodes.find((node) => node.id === graph.root_node_id)
-                    ?.name ?? "Not set"}
-                </span>
-              </SelectTrigger>
-              <SelectContent>
-                {graph.nodes.map((node) => (
-                  <SelectItem key={node.id} value={node.id}>
-                    {node.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {graph.system_owned ? (
+              <Badge variant="outline">System</Badge>
+            ) : (
+              <Select
+                value={graph.root_node_id}
+                onValueChange={(nodeId) => nodeId && setRoot.mutate(nodeId)}
+                disabled={graph.nodes.length === 0 || setRoot.isPending}
+              >
+                <SelectTrigger className="w-48">
+                  <span className="truncate">
+                    Root:{" "}
+                    {graph.nodes.find((node) => node.id === graph.root_node_id)
+                      ?.name ?? "Not set"}
+                  </span>
+                </SelectTrigger>
+                <SelectContent>
+                  {graph.nodes.map((node) => (
+                    <SelectItem key={node.id} value={node.id}>
+                      {node.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
             {graph.description || "No description"}
@@ -308,18 +328,35 @@ function GraphDetail({
             <RefreshCwIcon />
             Refresh
           </Button>
-          <Button
-            variant="destructive"
-            disabled={isDeleting}
-            onClick={onDelete}
-          >
-            <Trash2Icon />
-            Delete
-          </Button>
+          {!graph.system_owned ? (
+            <Button
+              variant="destructive"
+              disabled={isDeleting}
+              onClick={onDelete}
+            >
+              <Trash2Icon />
+              Delete
+            </Button>
+          ) : null}
         </div>
       </header>
 
-      <GraphCanvas graph={graph} runId={activeRunId} />
+      <Tabs defaultValue="graph">
+        <TabsList>
+          <TabsTrigger value="graph">Graph</TabsTrigger>
+          <TabsTrigger value="schedules">Schedules</TabsTrigger>
+        </TabsList>
+        <TabsContent value="graph" className="pt-4">
+          <GraphCanvas
+            graph={graph}
+            runId={activeRunId}
+            readOnly={graph.system_owned}
+          />
+        </TabsContent>
+        <TabsContent value="schedules">
+          <SchedulesPanel graph={graph} />
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

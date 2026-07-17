@@ -148,10 +148,9 @@ class CatalogueTableMacroDefinitionTests(unittest.TestCase):
         created = create_definition(
             self.session,
             store,
-            name="selector_stats",
+            slug="selector_stats",
             parameters=["hostname"],
             sql="SELECT hostname AS host",
-            display_name="Selector statistics",
             description=None,
         )
         definition = self.session.get(CatalogueTableMacroDefinition, created.id)
@@ -165,7 +164,7 @@ class CatalogueTableMacroDefinitionTests(unittest.TestCase):
                 expected_revision_id=uuid4(),
                 parameters=["hostname"],
                 sql="SELECT hostname AS host",
-                display_name=None,
+                slug="selector_stats",
                 description=None,
             )
 
@@ -181,7 +180,7 @@ class CatalogueTableMacroDefinitionTests(unittest.TestCase):
             expected_revision_id=created.definition_revision_id,
             parameters=["hostname", "path_pattern"],
             sql="SELECT hostname AS host, path_pattern AS path",
-            display_name="Selector profiles",
+            slug="selector-profiles",
             description="Updated",
         )
         self.assertNotEqual(

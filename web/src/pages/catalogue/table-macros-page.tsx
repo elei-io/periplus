@@ -15,6 +15,7 @@ import {
 } from "@/components/catalogue/catalogue-workspace"
 import { formatSql } from "@/components/catalogue/sql-format"
 import { SqlEditor } from "@/components/catalogue/sql-editor"
+import { SaveTableMacroDialog } from "@/components/catalogue/save-table-macro-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -35,11 +36,10 @@ import {
 import type { CatalogueTableMacroRecord } from "@/types/catalogue"
 
 export function CatalogueTableMacrosPage({ macroId }: { macroId?: string }) {
+  const [createOpen, setCreateOpen] = useState(false)
   const macrosQuery = useCatalogueTableMacros()
   const macros = macrosQuery.data?.items ?? []
-  const selected = macroId
-    ? macros.find((macro) => macro.id === macroId)
-    : null
+  const selected = macroId ? macros.find((macro) => macro.id === macroId) : null
 
   if (macroId) {
     if (!selected) {
@@ -47,7 +47,11 @@ export function CatalogueTableMacrosPage({ macroId }: { macroId?: string }) {
         <CataloguePanel>
           <CatalogueEmptyState
             icon={BracesIcon}
-            title={macrosQuery.isLoading ? "Loading table macro…" : "Table macro not found"}
+            title={
+              macrosQuery.isLoading
+                ? "Loading table macro…"
+                : "Table macro not found"
+            }
             description={
               macrosQuery.isLoading
                 ? "Fetching its definition and parameters."
@@ -55,7 +59,10 @@ export function CatalogueTableMacrosPage({ macroId }: { macroId?: string }) {
             }
             action={
               !macrosQuery.isLoading ? (
-                <Button nativeButton={false} render={<a href="/catalogue/macros" />}>
+                <Button
+                  nativeButton={false}
+                  render={<a href="/catalogue/macros" />}
+                >
                   Back to macros
                 </Button>
               ) : undefined
@@ -93,11 +100,10 @@ export function CatalogueTableMacrosPage({ macroId }: { macroId?: string }) {
           {macros.length} macros
         </Badge>
         <Button
-          nativeButton={false}
-          render={<a href="/catalogue/sql" />}
+          onClick={() => setCreateOpen(true)}
           className="rounded-full px-4"
         >
-          <SparklesIcon /> Create in SQL
+          <SparklesIcon /> Create macro
         </Button>
       </CatalogueHero>
       <div className="flex justify-end">
@@ -107,7 +113,9 @@ export function CatalogueTableMacrosPage({ macroId }: { macroId?: string }) {
           onClick={() => void macrosQuery.refetch()}
           disabled={macrosQuery.isFetching}
         >
-          <RefreshCwIcon className={macrosQuery.isFetching ? "animate-spin" : ""} />
+          <RefreshCwIcon
+            className={macrosQuery.isFetching ? "animate-spin" : ""}
+          />
           Refresh
         </Button>
       </div>
@@ -129,13 +137,19 @@ export function CatalogueTableMacrosPage({ macroId }: { macroId?: string }) {
                 return (
                   <TableRow key={macro.id} className="group">
                     <TableCell className="max-w-sm py-3 pl-4">
-                      <a href={href} className="flex min-w-0 items-center gap-3">
+                      <a
+                        href={href}
+                        className="flex min-w-0 items-center gap-3"
+                      >
                         <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
                           <BracesIcon className="size-3.5" />
                         </span>
                         <span className="min-w-0">
                           <span className="block truncate font-medium group-hover:text-primary">
-                            {macro.display_name} {macro.fixture_path ? <Badge className="ml-1">Fixture</Badge> : null}
+                            {macro.slug}{" "}
+                            {macro.fixture_path ? (
+                              <Badge className="ml-1">Fixture</Badge>
+                            ) : null}
                           </span>
                           <span className="block truncate font-mono text-[10px] text-muted-foreground">
                             {macro.qualified_name}
@@ -186,21 +200,24 @@ export function CatalogueTableMacrosPage({ macroId }: { macroId?: string }) {
             title="No table macros yet"
             description="Turn useful SQL into a reusable, parameterized relation."
             action={
-              <Button nativeButton={false} render={<a href="/catalogue/sql" />}>
-                Open SQL workbench
-              </Button>
+              <Button onClick={() => setCreateOpen(true)}>Create macro</Button>
             }
             className="min-h-[28rem]"
           />
         </CataloguePanel>
       ) : null}
+      <SaveTableMacroDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        sql={"SELECT *\nFROM documents\nLIMIT 100;"}
+      />
     </div>
   )
 }
 
 function MacroDetail({ macro }: { macro: CatalogueTableMacroRecord }) {
   const [sql, setSql] = useState(() => formatSql(macro.sql))
-  const [displayName, setDisplayName] = useState(macro.display_name)
+  const [slug, setSlug] = useState(macro.slug)
   const [description, setDescription] = useState(macro.description ?? "")
   const [parameters, setParameters] = useState(macro.parameters.join(", "))
   const update = useUpdateCatalogueTableMacro()
@@ -208,7 +225,7 @@ function MacroDetail({ macro }: { macro: CatalogueTableMacroRecord }) {
   const parsedParameters = parseParameters(parameters)
   const dirty =
     sql !== formatSql(macro.sql) ||
-    displayName !== macro.display_name ||
+    slug !== macro.slug ||
     description !== (macro.description ?? "") ||
     parameters !== macro.parameters.join(", ")
 
@@ -216,7 +233,7 @@ function MacroDetail({ macro }: { macro: CatalogueTableMacroRecord }) {
     update.mutate({
       macro,
       sql,
-      display_name: displayName,
+      slug,
       description,
       parameters: parsedParameters,
     })
@@ -231,7 +248,7 @@ function MacroDetail({ macro }: { macro: CatalogueTableMacroRecord }) {
       <div className="flex flex-wrap items-start justify-between gap-4 border-b bg-gradient-to-r from-primary/5 to-transparent px-5 py-4">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-base font-semibold">{macro.display_name}</h2>
+            <h2 className="text-base font-semibold">{macro.slug}</h2>
             <Badge variant={macro.available ? "secondary" : "destructive"}>
               {macro.available ? "Available" : "Missing"}
             </Badge>
@@ -264,7 +281,14 @@ function MacroDetail({ macro }: { macro: CatalogueTableMacroRecord }) {
         <div className="grid gap-3 md:grid-cols-2">
           <div className="grid gap-1.5">
             <Label>Display name</Label>
-            <Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+            <Input
+              value={slug}
+              onChange={(event) =>
+                setSlug(
+                  event.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "-")
+                )
+              }
+            />
           </div>
           <div className="grid gap-1.5">
             <Label>Description</Label>

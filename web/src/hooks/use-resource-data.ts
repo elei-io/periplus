@@ -3,128 +3,69 @@ import { toast } from "sonner"
 
 import { apiErrorFromResponse, apiUrl, extractApiError } from "@/lib/api"
 import type {
-  CrawlPolicyDetailRecord,
   CrawlPolicyCreateRequest,
+  CrawlPolicyDetailRecord,
   CrawlPolicyFilters,
   CrawlPolicyListResponse,
   CrawlPolicyUpdateRequest,
-  CrawlProfileListResponse,
-  CrawlProfileCreateRequest,
-  CrawlProfileRecord,
-  CrawlProfileUpdateRequest,
   PageParams,
-  PolicyTrialApplyRequest,
-  PolicyTrialReport,
+  DomainPolicyCreateRequest,
+  DomainPolicyListResponse,
+  DomainPolicyRecord,
+  DomainPolicyUpdateRequest,
 } from "@/types/resources"
 
-function appendParam(params: URLSearchParams, name: string, value: string) {
-  const trimmed = value.trim()
-  if (trimmed) {
-    params.set(name, trimmed)
-  }
+function params(filters: CrawlPolicyFilters, page: PageParams) {
+  const value = new URLSearchParams({ limit: String(page.limit), offset: String(page.offset) })
+  if (filters.matchPattern.trim()) value.set("match_pattern", filters.matchPattern.trim())
+  if (filters.enabled !== "all") value.set("enabled", String(filters.enabled === "enabled"))
+  return value
 }
 
-function pageParams(page: PageParams) {
-  return {
-    limit: String(page.limit),
-    offset: String(page.offset),
-  }
-}
-
-function crawlPolicyParams(filters: CrawlPolicyFilters, page?: PageParams) {
-  const params = new URLSearchParams(page ? pageParams(page) : undefined)
-  appendParam(params, "match_pattern", filters.matchPattern)
-  appendParam(params, "profile_slug", filters.profileSlug)
-  if (filters.enabled !== "all") {
-    params.set("enabled", String(filters.enabled === "enabled"))
-  }
-  if (filters.transport !== "all") {
-    params.set("transport", filters.transport)
-  }
-  return params
-}
-
-export function useCrawlProfiles(page: PageParams = { limit: 100, offset: 0 }) {
+export function useDomainPolicies(page: PageParams) {
   return useQuery({
-    queryKey: ["crawl-profiles", page],
+    queryKey: ["domain-policies", page],
     queryFn: async () => {
-      const params = new URLSearchParams(pageParams(page))
-      const response = await fetch(apiUrl(`/crawl-profiles/?${params.toString()}`))
+      const query = new URLSearchParams({ limit: String(page.limit), offset: String(page.offset) })
+      const response = await fetch(apiUrl(`/domain-policies/?${query}`))
       if (!response.ok) throw await apiErrorFromResponse(response)
-      return (await response.json()) as CrawlProfileListResponse
+      return (await response.json()) as DomainPolicyListResponse
     },
   })
 }
 
-export function useCrawlProfile(id: string | null) {
-  return useQuery({
-    enabled: Boolean(id),
-    queryKey: ["crawl-profile", id],
-    queryFn: async () => {
-      const response = await fetch(apiUrl(`/crawl-profiles/${id}`))
-      if (!response.ok) throw await apiErrorFromResponse(response)
-      return (await response.json()) as CrawlProfileRecord
-    },
-  })
-}
-
-export function useUpdateCrawlProfile(id: string) {
-  const queryClient = useQueryClient()
+export function useCreateDomainPolicy() {
+  const client = useQueryClient()
   return useMutation({
-    mutationFn: async (request: CrawlProfileUpdateRequest) => {
-      const response = await fetch(apiUrl(`/crawl-profiles/${id}`), {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(request),
-      })
+    mutationFn: async (request: DomainPolicyCreateRequest) => {
+      const response = await fetch(apiUrl("/domain-policies/"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) })
       if (!response.ok) throw await apiErrorFromResponse(response)
-      return (await response.json()) as CrawlProfileRecord
+      return (await response.json()) as DomainPolicyRecord
     },
-    onSuccess: () => {
-      toast.success("Updated crawl profile.")
-      void queryClient.invalidateQueries({ queryKey: ["crawl-profile", id] })
-      void queryClient.invalidateQueries({ queryKey: ["crawl-profiles"] })
-      void queryClient.invalidateQueries({ queryKey: ["crawl-policies"] })
-    },
+    onSuccess: () => { toast.success("Created domain policy."); void client.invalidateQueries({ queryKey: ["domain-policies"] }) },
     onError: (error) => toast.error(extractApiError(error)),
   })
 }
 
-export function useCreateCrawlProfile() {
-  const queryClient = useQueryClient()
+export function useUpdateDomainPolicy(id: string) {
+  const client = useQueryClient()
   return useMutation({
-    mutationFn: async (request: CrawlProfileCreateRequest) => {
-      const response = await fetch(apiUrl("/crawl-profiles/"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(request),
-      })
+    mutationFn: async (request: DomainPolicyUpdateRequest) => {
+      const response = await fetch(apiUrl(`/domain-policies/${id}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) })
       if (!response.ok) throw await apiErrorFromResponse(response)
-      return (await response.json()) as CrawlProfileRecord
+      return (await response.json()) as DomainPolicyRecord
     },
-    onSuccess: () => {
-      toast.success("Created crawl profile.")
-      void queryClient.invalidateQueries({ queryKey: ["crawl-profiles"] })
-    },
+    onSuccess: () => { toast.success("Updated domain policy."); void client.invalidateQueries({ queryKey: ["domain-policies"] }) },
     onError: (error) => toast.error(extractApiError(error)),
   })
 }
 
-export function useCrawlPolicies(
-  filters: CrawlPolicyFilters,
-  page: PageParams
-) {
+export function useCrawlPolicies(filters: CrawlPolicyFilters, page: PageParams) {
   return useQuery({
     queryKey: ["crawl-policies", filters, page],
     queryFn: async () => {
-      const response = await fetch(
-        apiUrl(
-          `/crawl-policies/?${crawlPolicyParams(filters, page).toString()}`
-        )
-      )
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
+      const response = await fetch(apiUrl(`/crawl-policies/?${params(filters, page)}`))
+      if (!response.ok) throw await apiErrorFromResponse(response)
       return (await response.json()) as CrawlPolicyListResponse
     },
   })
@@ -132,127 +73,46 @@ export function useCrawlPolicies(
 
 export function useCrawlPolicy(id: string | null) {
   return useQuery({
-    enabled: Boolean(id),
-    queryKey: ["crawl-policy", id],
+    enabled: Boolean(id), queryKey: ["crawl-policy", id],
     queryFn: async () => {
       const response = await fetch(apiUrl(`/crawl-policies/${id}`))
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
+      if (!response.ok) throw await apiErrorFromResponse(response)
       return (await response.json()) as CrawlPolicyDetailRecord
-    },
-  })
-}
-
-export function usePolicyTrials(page: PageParams) {
-  return useQuery({
-    queryKey: ["policy-trials", page],
-    queryFn: async () => {
-      const params = new URLSearchParams(pageParams(page))
-      const response = await fetch(
-        apiUrl(`/crawl-policies/trials?${params.toString()}`)
-      )
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as PolicyTrialReport
-    },
-  })
-}
-
-export function useApplyPolicyTrial() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (request: PolicyTrialApplyRequest) => {
-      const response = await fetch(apiUrl("/crawl-policies/trials/apply"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(request),
-      })
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-      return (await response.json()) as CrawlPolicyDetailRecord
-    },
-    onSuccess: () => {
-      toast.success("Applied sampled crawl policy.")
-      void queryClient.invalidateQueries({ queryKey: ["policy-trials"] })
-      void queryClient.invalidateQueries({ queryKey: ["crawl-policies"] })
-    },
-    onError: (error) => {
-      toast.error(extractApiError(error))
     },
   })
 }
 
 export function useUpdateCrawlPolicy(id: string) {
-  const queryClient = useQueryClient()
-
+  const client = useQueryClient()
   return useMutation({
     mutationFn: async (request: CrawlPolicyUpdateRequest) => {
-      const response = await fetch(apiUrl(`/crawl-policies/${id}`), {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(request),
-      })
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
+      const response = await fetch(apiUrl(`/crawl-policies/${id}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) })
+      if (!response.ok) throw await apiErrorFromResponse(response)
       return (await response.json()) as CrawlPolicyDetailRecord
     },
-    onSuccess: () => {
-      toast.success("Updated crawl policy.")
-      void queryClient.invalidateQueries({ queryKey: ["crawl-policy", id] })
-      void queryClient.invalidateQueries({ queryKey: ["crawl-policies"] })
-    },
-    onError: (error) => {
-      toast.error(extractApiError(error))
-    },
+    onSuccess: () => { toast.success("Updated crawl policy."); void client.invalidateQueries({ queryKey: ["crawl-policy", id] }); void client.invalidateQueries({ queryKey: ["crawl-policies"] }) },
+    onError: (error) => toast.error(extractApiError(error)),
   })
 }
 
 export function useCreateCrawlPolicy() {
-  const queryClient = useQueryClient()
+  const client = useQueryClient()
   return useMutation({
     mutationFn: async (request: CrawlPolicyCreateRequest) => {
-      const response = await fetch(apiUrl("/crawl-policies/"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(request),
-      })
+      const response = await fetch(apiUrl("/crawl-policies/"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) })
       if (!response.ok) throw await apiErrorFromResponse(response)
       return (await response.json()) as CrawlPolicyDetailRecord
     },
-    onSuccess: () => {
-      toast.success("Created crawl policy.")
-      void queryClient.invalidateQueries({ queryKey: ["crawl-policies"] })
-    },
+    onSuccess: () => { toast.success("Created crawl policy."); void client.invalidateQueries({ queryKey: ["crawl-policies"] }) },
     onError: (error) => toast.error(extractApiError(error)),
   })
 }
 
 export function useDeleteCrawlPolicy(id: string) {
-  const queryClient = useQueryClient()
-
+  const client = useQueryClient()
   return useMutation({
-    mutationFn: async () => {
-      const response = await fetch(apiUrl(`/crawl-policies/${id}`), {
-        method: "DELETE",
-      })
-      if (!response.ok) {
-        throw await apiErrorFromResponse(response)
-      }
-    },
-    onSuccess: () => {
-      toast.success("Deleted crawl policy.")
-      void queryClient.invalidateQueries({ queryKey: ["crawl-policy", id] })
-      void queryClient.invalidateQueries({ queryKey: ["crawl-policies"] })
-    },
-    onError: (error) => {
-      toast.error(extractApiError(error))
-    },
+    mutationFn: async () => { const response = await fetch(apiUrl(`/crawl-policies/${id}`), { method: "DELETE" }); if (!response.ok) throw await apiErrorFromResponse(response) },
+    onSuccess: () => { toast.success("Deleted crawl policy."); void client.invalidateQueries({ queryKey: ["crawl-policies"] }) },
+    onError: (error) => toast.error(extractApiError(error)),
   })
 }

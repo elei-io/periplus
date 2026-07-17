@@ -39,11 +39,7 @@ async def _run_snapshot(bucket, run_id: UUID) -> _RunProgressSnapshot:
             list_crawl_requests(bucket, graph_run_id=run_id),
             list_edge_evaluations(bucket, graph_run_id=run_id),
         )
-        snapshot = _RunProgressSnapshot(
-            monotonic(),
-            [request for request in requests if request.purpose == "use"],
-            evaluations,
-        )
+        snapshot = _RunProgressSnapshot(monotonic(), requests, evaluations)
         _snapshot_cache[run_id] = snapshot
         if len(_snapshot_cache) > 128:
             oldest = min(_snapshot_cache, key=lambda value: _snapshot_cache[value].captured_at)

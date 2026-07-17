@@ -1,9 +1,7 @@
 """Low-level analytical access to the DuckLake catalogue."""
 
-from enum import StrEnum
-
 import duckdb
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
@@ -14,10 +12,11 @@ from repository.catalogue.metadata import (
 )
 from repository.catalogue.query import (
     CatalogueQueryError,
-    classify_select,
+    CatalogueStatementKind,
+    classify_catalogue_statement,
     execute_arrow_query,
     explain_arrow_query,
-    lint_select,
+    lint_catalogue_statement,
     stream_arrow_reader,
 )
 from repository.catalogue.status import read_catalogue_status
@@ -25,15 +24,10 @@ from repository.catalogue.status import read_catalogue_status
 router = APIRouter(prefix="/catalogue", tags=["catalogue"])
 
 
-class CatalogueQueryMode(StrEnum):
-    RUN = "run"
-    EXPLAIN = "explain"
-    EXPLAIN_ANALYZE = "explain_analyze"
-
-
 class CatalogueSqlRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     sql: str = Field(min_length=1, max_length=100_000)
-    mode: CatalogueQueryMode = CatalogueQueryMode.RUN
 
 
 class CatalogueLintDiagnosticResponse(BaseModel):
@@ -50,7 +44,7 @@ class CatalogueStatusResponse(BaseModel):
     active_file_count: int
     active_storage_bytes: int
     ducklake_version: str | None
-    catalogue_schema_version: int
+    catalogue_schema_version: str
 
 
 class CatalogueMetadataColumnResponse(BaseModel):
@@ -100,7 +94,7 @@ def lint_sql(payload: CatalogueSqlRequest) -> CatalogueLintResponse:
                 severity=item.severity,
                 message=item.message,
             )
-            for item in lint_select(payload.sql)
+            for item in lint_catalogue_statement(payload.sql)
         ]
     )
 
@@ -192,7 +186,7 @@ def catalogue_metadata(request: Request) -> CatalogueMetadataResponse:
 @router.post("/sql", response_class=StreamingResponse)
 def sql_query(payload: CatalogueSqlRequest, request: Request) -> StreamingResponse:
     try:
-        classify_select(payload.sql)
+        statement = classify_catalogue_statement(payload.sql)
     except CatalogueQueryError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -202,13 +196,13 @@ def sql_query(payload: CatalogueSqlRequest, request: Request) -> StreamingRespon
     except CatalogueReadPoolExhausted as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     try:
-        if payload.mode == CatalogueQueryMode.RUN:
-            reader = execute_arrow_query(catalogue, payload.sql)
+        if statement.kind == CatalogueStatementKind.QUERY:
+            reader = execute_arrow_query(catalogue, statement.sql)
         else:
             reader = explain_arrow_query(
                 catalogue,
-                payload.sql,
-                analyze=payload.mode == CatalogueQueryMode.EXPLAIN_ANALYZE,
+                statement.sql,
+                analyze=statement.kind == CatalogueStatementKind.EXPLAIN_ANALYZE,
             )
     except (CatalogueQueryError, duckdb.Error) as exc:
         pool.release(catalogue)
@@ -226,5 +220,8 @@ def sql_query(payload: CatalogueSqlRequest, request: Request) -> StreamingRespon
     return StreamingResponse(
         body(),
         media_type="application/vnd.apache.arrow.stream",
-        headers={"Content-Disposition": 'inline; filename="catalogue.arrow"'},
+        headers={
+            "Content-Disposition": 'inline; filename="catalogue.arrow"',
+            "X-Atlas-Statement-Kind": statement.kind.value,
+        },
     )

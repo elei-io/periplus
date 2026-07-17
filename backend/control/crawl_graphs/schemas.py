@@ -13,7 +13,7 @@ class EdgeDedupeMode(StrEnum):
 
 class CrawlGraphCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    name: str = Field(min_length=1, max_length=200)
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,62}$")
     description: str | None = Field(default=None, max_length=2_000)
 
 
@@ -70,6 +70,7 @@ class CrawlGraphEdgeRecord(CrawlGraphEdgeCreate):
 class CrawlGraphRecord(CrawlGraphCreate):
     id: UUID
     root_node_id: UUID | None
+    system_owned: bool
     created_at: datetime
 
 

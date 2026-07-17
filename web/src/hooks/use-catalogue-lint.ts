@@ -2,19 +2,18 @@ import { useQuery } from "@tanstack/react-query"
 import { useEffect, useState } from "react"
 
 import { apiErrorFromResponse, apiUrl } from "@/lib/api"
-import type { CatalogueLintResult, CatalogueQueryMode } from "@/types/catalogue"
+import type { CatalogueLintResult } from "@/types/catalogue"
 
 const lintDebounceMs = 700
 
 async function lintCatalogueQuery(
   sql: string,
-  mode: CatalogueQueryMode,
   signal: AbortSignal
 ): Promise<CatalogueLintResult> {
   const response = await fetch(apiUrl("/catalogue/sql/lint"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sql, mode }),
+    body: JSON.stringify({ sql }),
     signal,
   })
   if (!response.ok) {
@@ -25,7 +24,6 @@ async function lintCatalogueQuery(
 
 export function useCatalogueLint(
   sql: string,
-  mode: CatalogueQueryMode,
   enabled = true
 ) {
   const [debouncedSql, setDebouncedSql] = useState("")
@@ -39,8 +37,8 @@ export function useCatalogueLint(
   }, [enabled, sql])
 
   const query = useQuery({
-    queryKey: ["catalogue-sql-lint", debouncedSql, mode],
-    queryFn: ({ signal }) => lintCatalogueQuery(debouncedSql, mode, signal),
+    queryKey: ["catalogue-sql-lint", debouncedSql],
+    queryFn: ({ signal }) => lintCatalogueQuery(debouncedSql, signal),
     enabled: enabled && Boolean(debouncedSql.trim()),
     staleTime: Number.POSITIVE_INFINITY,
     retry: false,

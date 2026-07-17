@@ -12,7 +12,6 @@ from uuid import UUID, uuid4
 from actions.crawl.schemas import CrawlPage
 from actions.crawl.service import RetryableAcquisitionError
 from control.crawl_graphs.schemas import EdgeDedupeMode, FrozenGraphEdge, FrozenGraphNode, FrozenGraphSnapshot
-from control.crawl_policies.schemas import DEFAULT_HTTP_USER_AGENT
 from runtime.graph_queue import EdgeWork, ReadinessWork, edge_evaluation_identity, get_crawl_request, get_graph_run, new_graph_run, normalize_request_url, request_identity, update_crawl_request
 from runtime.graph_runs import EdgeEvaluationFailed, admit_request, deterministic_request_id, evaluate_edge, expire_graph_run, handle_readiness, reconcile_pending_admissions, request_cancellation, settle_request
 from runtime.graph_progress import EdgeProgress, edge_progress_key, initialize_run_progress
@@ -65,31 +64,23 @@ def navigation_package() -> NavigationPackage:
     )
 
 
-def policy_snapshot(profile: str = "http") -> dict:
-    config = {"user_agent": DEFAULT_HTTP_USER_AGENT} if profile == "http" else {}
+def policy_snapshot(_variant: str = "default") -> dict:
     return {
-        "id": str(uuid4()),
-        "slug": f"{profile}-test",
-        "scheme": "*",
-        "host": "*",
-        "path_prefix": "/",
-        "path_mode": "prefix",
-        "max_concurrency": 4,
-        "profile": {
+        "crawl": {
             "id": str(uuid4()),
-            "slug": f"{profile}-profile",
-            "name": f"{profile.title()} test",
-            "transport": profile,
-            "config": config,
-            "cost_rank": 10,
+            "slug": "content-policy-test",
+            "scheme": "*",
+            "host": "*",
+            "path_prefix": "/",
+            "path_mode": "prefix",
+            "content": {},
         },
-        "trial_candidate": {
+        "domain": {
             "id": str(uuid4()),
-            "slug": "rendered",
-            "name": "Rendered",
-            "transport": "browser",
-            "config": {"mode": "static", "wait": "none"},
-            "cost_rank": 20,
+            "slug": "domain-policy-test",
+            "host_match": "*",
+            "maximum_concurrency": 4,
+            "minimum_request_interval_seconds": 0,
         },
     }
 
@@ -115,11 +106,6 @@ def snapshot(*, entry: bool = True, self_edge: bool = False, dedupe_mode: EdgeDe
 
 
 class GraphRuntimeTests(unittest.TestCase):
- def setUp(self) -> None:
-    trial_patch = patch("runtime.graph_runs._trial_for_request", return_value=None)
-    trial_patch.start()
-    self.addCleanup(trial_patch.stop)
-
  def test_invalid_acquisition_work_is_terminated(self) -> None:
     async def scenario() -> None:
         message = SimpleNamespace(
@@ -160,15 +146,14 @@ class GraphRuntimeTests(unittest.TestCase):
             graph_run_id=run.id,
             node_id=graph.root_node_id,
             url="https://example.com/",
-            transport="http",
-            effective_policy_snapshot_json=policy_snapshot(),
+             effective_policy_snapshot_json=policy_snapshot(),
             created_at=run.created_at,
             updated_at=run.created_at,
         )
         await requests.create(request.id.hex, request.model_dump_json().encode())
 
         class Message:
-            data = CrawlWork(crawl_request_id=request.id, transport="http").model_dump_json().encode()
+            data = CrawlWork(crawl_request_id=request.id, ).model_dump_json().encode()
             ack = AsyncMock()
 
         failure = SimpleNamespace(
@@ -206,8 +191,7 @@ class GraphRuntimeTests(unittest.TestCase):
             graph_run_id=run.id,
             node_id=graph.root_node_id,
             url="https://example.com/",
-            transport="http",
-            effective_policy_snapshot_json=policy_snapshot(),
+             effective_policy_snapshot_json=policy_snapshot(),
             status="crawling",
             claim_token=uuid4(),
             claim_expires_at=datetime.now(UTC) - timedelta(seconds=1),
@@ -217,7 +201,7 @@ class GraphRuntimeTests(unittest.TestCase):
         await requests.create(request.id.hex, request.model_dump_json().encode())
 
         class Message:
-            data = CrawlWork(crawl_request_id=request.id, transport="http").model_dump_json().encode()
+            data = CrawlWork(crawl_request_id=request.id, ).model_dump_json().encode()
             ack = AsyncMock()
             nak = AsyncMock()
 
@@ -256,15 +240,14 @@ class GraphRuntimeTests(unittest.TestCase):
             graph_run_id=run.id,
             node_id=graph.root_node_id,
             url="https://example.com/",
-            transport="http",
-            effective_policy_snapshot_json=policy_snapshot(),
+             effective_policy_snapshot_json=policy_snapshot(),
             created_at=run.created_at,
             updated_at=run.created_at,
         )
         await requests.create(request.id.hex, request.model_dump_json().encode())
 
         class Message:
-            data = CrawlWork(crawl_request_id=request.id, transport="http").model_dump_json().encode()
+            data = CrawlWork(crawl_request_id=request.id, ).model_dump_json().encode()
             metadata = SimpleNamespace(num_delivered=50)
             ack = AsyncMock()
             nak = AsyncMock()
@@ -302,15 +285,14 @@ class GraphRuntimeTests(unittest.TestCase):
             graph_run_id=run.id,
             node_id=graph.root_node_id,
             url="https://example.com/",
-            transport="http",
-            effective_policy_snapshot_json=policy_snapshot(),
+             effective_policy_snapshot_json=policy_snapshot(),
             created_at=run.created_at,
             updated_at=run.created_at,
         )
         await requests.create(request.id.hex, request.model_dump_json().encode())
 
         class Message:
-            data = CrawlWork(crawl_request_id=request.id, transport="http").model_dump_json().encode()
+            data = CrawlWork(crawl_request_id=request.id, ).model_dump_json().encode()
             metadata = SimpleNamespace(num_delivered=50)
             ack = AsyncMock()
             nak = AsyncMock()
@@ -386,8 +368,7 @@ class GraphRuntimeTests(unittest.TestCase):
         assert first is not None and second is not None and first.id == second.id
         assert first_admitted and not second_admitted
         assert first.effective_policy_snapshot_json is not None
-        assert first.transport == "browser"
-        assert jetstream.messages[0][0] == "atlas.graph.crawl.browser"
+        assert jetstream.messages[0][0] == "atlas.graph.crawl"
         assert len(jetstream.messages) == 1
         current = await get_graph_run(runs, run.id)
         assert current is not None and current.last_progress_at is not None
@@ -412,8 +393,7 @@ class GraphRuntimeTests(unittest.TestCase):
             graph_run_id=run.id,
             node_id=graph.root_node_id,
             url="https://example.com/",
-            transport="http",
-            effective_policy_snapshot_json=policy_snapshot(),
+             effective_policy_snapshot_json=policy_snapshot(),
             status="awaiting_navigation",
             created_at=started,
             updated_at=started,
@@ -452,8 +432,7 @@ class GraphRuntimeTests(unittest.TestCase):
             graph_run_id=run.id,
             node_id=graph.root_node_id,
             url="https://example.com/",
-            transport="http",
-            effective_policy_snapshot_json=policy_snapshot(),
+             effective_policy_snapshot_json=policy_snapshot(),
             status="awaiting_navigation",
             created_at=run.created_at,
             updated_at=run.created_at,
@@ -501,8 +480,7 @@ class GraphRuntimeTests(unittest.TestCase):
             graph_run_id=run.id,
             node_id=graph.root_node_id,
             url="https://example.com/report.pdf",
-            transport="http",
-            artifact_id="sha256:" + "a" * 64,
+             artifact_id="sha256:" + "a" * 64,
             effective_policy_snapshot_json=policy_snapshot(),
             status="awaiting_navigation",
             created_at=run.created_at,
@@ -532,7 +510,7 @@ class GraphRuntimeTests(unittest.TestCase):
 
     asyncio.run(scenario())
 
- def test_settlement_separates_external_warnings_from_atlas_errors(self) -> None:
+ def test_settlement_counts_every_failed_request_as_an_error(self) -> None:
     async def scenario() -> None:
         runs, requests, progress = FakeKV(), FakeKV(), FakeKV()
         graph = snapshot()
@@ -551,8 +529,7 @@ class GraphRuntimeTests(unittest.TestCase):
                 graph_run_id=run.id,
                 node_id=graph.root_node_id,
                 url=f"https://example.com/{path}",
-                transport="http",
-                effective_policy_snapshot_json=policy_snapshot(),
+                 effective_policy_snapshot_json=policy_snapshot(),
                 status="crawling",
                 created_at=now,
                 updated_at=now,
@@ -585,8 +562,7 @@ class GraphRuntimeTests(unittest.TestCase):
         assert current is not None
         self.assertEqual(current.status, "completed_with_errors")
         self.assertEqual(current.failed_request_count, 2)
-        self.assertEqual(current.warning_count, 1)
-        self.assertEqual(current.error_count, 1)
+        self.assertEqual(current.error_count, 2)
 
     asyncio.run(scenario())
 
@@ -612,8 +588,7 @@ class GraphRuntimeTests(unittest.TestCase):
                 graph_run_id=run.id,
                 node_id=graph.root_node_id,
                 url=url,
-                transport="http",
-                effective_policy_snapshot_json=policy_snapshot(),
+                 effective_policy_snapshot_json=policy_snapshot(),
                 status=status,
                 created_at=run.created_at,
                 updated_at=run.created_at,

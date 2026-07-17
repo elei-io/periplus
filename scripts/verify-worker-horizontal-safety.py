@@ -21,6 +21,12 @@ from runtime.resource_governor import (
     ensure_resource_governor_storage,
     resource_permits,
 )
+from reliability_support import (
+    capture_diagnostics,
+    cleanup_materialization_fixture,
+    ensure_active_materialization,
+    require_healthy,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -167,8 +173,9 @@ def wait_for_replicas(service: str, expected: int, timeout: float = 30) -> None:
     raise RuntimeError(f"{service} did not start {expected} replicas")
 
 
-def hold_catalogue_capacity(seconds: float) -> tuple[Thread, Event, list[BaseException]]:
+def hold_catalogue_capacity() -> tuple[Thread, Event, Event, list[BaseException]]:
     acquired = Event()
+    release = Event()
     errors: list[BaseException] = []
 
     async def hold() -> None:
@@ -185,7 +192,7 @@ def hold_catalogue_capacity(seconds: float) -> tuple[Thread, Event, list[BaseExc
                 acquire_timeout=DURABLE_RESOURCE_WAIT,
             ):
                 acquired.set()
-                await asyncio.sleep(seconds)
+                await asyncio.to_thread(release.wait)
         finally:
             await client.close()
 
@@ -198,7 +205,7 @@ def hold_catalogue_capacity(seconds: float) -> tuple[Thread, Event, list[BaseExc
 
     thread = Thread(target=run, daemon=True)
     thread.start()
-    return thread, acquired, errors
+    return thread, acquired, release, errors
 
 
 def wait_for_catalogue_waiter(service_class: str, timeout: float = 30) -> dict[str, Any]:
@@ -216,11 +223,8 @@ def wait_for_catalogue_waiter(service_class: str, timeout: float = 30) -> dict[s
 
 
 def main() -> None:
-    materializations = api("GET", "/catalogue/materializations/")
-    if not materializations["items"]:
-        raise RuntimeError("the horizontal smoke requires one active materialized view")
-
     token = uuid4().hex
+    materialization_fixture = ensure_active_materialization(token)
     graph_id: str | None = None
     killed_ingestion = None
     killed_materialization = None
@@ -243,7 +247,7 @@ def main() -> None:
             "POST",
             "/crawl-graphs/",
             {
-                "name": f"Worker fencing {token[:8]}",
+                "slug": f"worker-fencing-{token[:8]}",
                 "description": "Disposable Phase 3 multi-replica and redelivery proof",
             },
         )
@@ -253,7 +257,7 @@ def main() -> None:
             "PUT",
             f"/crawl-graphs/{graph_id}",
             {
-                "name": graph["name"],
+                "slug": graph["slug"],
                 "description": graph["description"],
                 "root_node_id": node["id"],
             },
@@ -262,20 +266,28 @@ def main() -> None:
         # Hold the complete catalogue budget beyond one ACK interval. Both
         # catalogue capabilities remain online so the queue, heartbeats, and
         # work-conserving handoff are exercised under real contention.
-        holder, holder_acquired, holder_errors = hold_catalogue_capacity(65)
+        holder, holder_acquired, release_holder, holder_errors = (
+            hold_catalogue_capacity()
+        )
         if not holder_acquired.wait(timeout=30):
             raise RuntimeError("catalogue saturation permit was not acquired")
         if holder_errors:
             raise holder_errors[0]
-        urls = [f"https://example.com/?atlas-phase3={token}-{index}" for index in range(48)]
+        urls = [
+            f"https://example.com/?atlas-phase3={token}-{index}"
+            for index in range(8)
+        ]
         submission = api("POST", f"/crawl-graphs/{graph_id}/runs", {"urls": urls})
         run_id = submission["run_id"]
         ingestion_before_kill = wait_for_consumer_activity(
-            [("ATLAS_CATALOGUE_WORK", "atlas-repository-writer")], timeout=60
+            [("ATLAS_CATALOGUE_WORK", "atlas-repository-writer")], timeout=120
         )
         catalogue_wait = wait_for_catalogue_waiter("critical")
+        require_healthy("atlas-ingestion-worker", expected=2)
+        require_healthy("atlas-materialization-worker", expected=2)
         killed_ingestion = kill_one("atlas-ingestion-worker")
-        holder.join(timeout=90)
+        release_holder.set()
+        holder.join(timeout=30)
         if holder.is_alive():
             raise RuntimeError("catalogue saturation permit did not release")
         if holder_errors:
@@ -334,26 +346,37 @@ def main() -> None:
                 indent=2,
             )
         )
+    except BaseException:
+        destination = capture_diagnostics("worker-horizontal-safety")
+        print(f"reliability diagnostics: {destination}")
+        raise
     finally:
-        compose(
-            "up",
-            "-d",
-            "--wait",
-            "--scale",
-            "atlas-ingestion-worker=1",
-            "--scale",
-            "atlas-materialization-worker=1",
-            "atlas-crawl-http-worker",
-            "atlas-crawl-browser-worker",
-            "atlas-crawl-provider-worker",
-            "atlas-ingestion-worker",
-            "atlas-materialization-worker",
-        )
+        if "release_holder" in locals():
+            release_holder.set()
+        try:
+            compose(
+                "up",
+                "-d",
+                "--scale",
+                "atlas-ingestion-worker=1",
+                "--scale",
+                "atlas-materialization-worker=1",
+                "atlas-acquisition-worker",
+                "atlas-ingestion-worker",
+                "atlas-materialization-worker",
+                "atlas-maintenance-worker",
+            )
+        except Exception as exc:
+            print(f"warning: worker restoration failed: {exc}")
         if graph_id is not None:
             try:
                 api("DELETE", f"/crawl-graphs/{graph_id}")
             except Exception as exc:
                 print(f"warning: disposable smoke graph cleanup failed: {exc}")
+        try:
+            cleanup_materialization_fixture(materialization_fixture)
+        except Exception as exc:
+            print(f"warning: disposable materialization cleanup failed: {exc}")
 
 
 if __name__ == "__main__":

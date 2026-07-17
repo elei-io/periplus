@@ -5,6 +5,7 @@ from __future__ import annotations
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from repository.catalogue.table_macros import (
@@ -52,35 +53,39 @@ def create_definition(
     session: Session,
     store: CatalogueTableMacroStore,
     *,
-    name: str,
+    slug: str,
     parameters: list[str],
     sql: str,
-    display_name: str | None,
     description: str | None,
     created_from_query_revision_id: UUID | None = None,
 ) -> CatalogueTableMacroRecord:
     existing = session.scalar(
         select(CatalogueTableMacroDefinition).where(
             CatalogueTableMacroDefinition.schema_name == TABLE_MACRO_SCHEMA,
-            CatalogueTableMacroDefinition.macro_name == name,
+            CatalogueTableMacroDefinition.macro_name == slug,
         )
     )
     if existing is not None:
         raise CatalogueTableMacroConflictError(
-            f"Table macro {TABLE_MACRO_SCHEMA}.{name} is already managed by Atlas."
+            f"Table macro {TABLE_MACRO_SCHEMA}.{slug} is already managed by Atlas."
         )
-    macro = store.create(name=name, parameters=parameters, sql=sql)
+    macro = store.create(name=slug, parameters=parameters, sql=sql)
     definition = CatalogueTableMacroDefinition(
         schema_name=TABLE_MACRO_SCHEMA,
-        macro_name=name,
-        display_name=(display_name or "").strip() or name,
+        macro_name=slug,
+        slug=slug,
         description=description,
         parameters=list(macro.parameters),
         sql=sql.strip(),
         created_from_query_revision_id=created_from_query_revision_id,
     )
     session.add(definition)
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        raise CatalogueTableMacroConflictError(
+            "A table macro with this slug already exists."
+        ) from exc
     return _record(definition, True)
 
 
@@ -92,7 +97,7 @@ def update_definition(
     expected_revision_id: UUID,
     parameters: list[str],
     sql: str,
-    display_name: str | None,
+    slug: str,
     description: str | None,
 ) -> CatalogueTableMacroRecord:
     locked = session.scalar(
@@ -109,10 +114,15 @@ def update_definition(
     macro = store.replace(name=locked.macro_name, parameters=parameters, sql=sql)
     locked.parameters = list(macro.parameters)
     locked.sql = sql.strip()
-    locked.display_name = (display_name or "").strip() or locked.macro_name
+    locked.slug = slug
     locked.description = description
     locked.definition_revision_id = uuid4()
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        raise CatalogueTableMacroConflictError(
+            "A table macro with this slug already exists."
+        ) from exc
     return _record(locked, True)
 
 
@@ -147,7 +157,7 @@ def _record(
         schema_name=definition.schema_name,
         macro_name=definition.macro_name,
         qualified_name=f"{definition.schema_name}.{definition.macro_name}",
-        display_name=definition.display_name,
+        slug=definition.slug,
         description=definition.description,
         parameters=list(definition.parameters),
         sql=definition.sql,

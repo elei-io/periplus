@@ -20,51 +20,21 @@ from control.urls import normalize_url
 from runtime.navigation_contract import NavigationPackage
 
 GRAPH_STREAM = "ATLAS_GRAPH_WORK"
-CRAWL_HTTP_SUBJECT = "atlas.graph.crawl.http"
-CRAWL_BROWSER_SUBJECT = "atlas.graph.crawl.browser"
-CRAWL_FIRECRAWL_SUBJECT = "atlas.graph.crawl.provider.firecrawl"
+CRAWL_SUBJECT = "atlas.graph.crawl"
 EDGE_SUBJECT = "atlas.graph.edge"
 READINESS_SUBJECT = "atlas.graph.readiness"
-CRAWL_HTTP_CONSUMER = "atlas-graph-crawl-http-workers"
-CRAWL_BROWSER_CONSUMER = "atlas-graph-crawl-browser-workers"
-CRAWL_FIRECRAWL_CONSUMER = "atlas-graph-crawl-firecrawl-workers"
+CRAWL_CONSUMER = "atlas-graph-crawl-workers"
 EDGE_CONSUMER = "atlas-graph-edge-workers"
 READINESS_CONSUMER = "atlas-graph-readiness-workers"
 RUNS_BUCKET = "atlas_graph_runs"
 REQUESTS_BUCKET = "atlas_crawl_requests"
 WORKERS_BUCKET = "atlas_graph_workers"
 PROGRESS_BUCKET = "atlas_graph_progress"
-POLICY_TRIAL_BUDGET_BUCKET = "atlas_policy_trial_budget"
-POLICY_TRIAL_BUDGET_KEY = "active"
 
 GraphRunStatus = Literal["queued", "running", "completed", "completed_with_errors", "failed", "cancelled"]
 CrawlRequestStatus = Literal["queued", "crawling", "awaiting_ingestion", "awaiting_navigation", "evaluating_edges", "completed", "failed", "cancelled"]
 FailureStage = Literal["admission", "acquisition", "enrichment", "edge", "lifecycle"]
-TriggerKind = Literal["manual"]
-CrawlTransport = Literal["http", "browser", "firecrawl"]
-CrawlPurpose = Literal["use", "sample"]
-
-CRAWL_SUBJECTS: dict[CrawlTransport, str] = {
-    "http": CRAWL_HTTP_SUBJECT,
-    "browser": CRAWL_BROWSER_SUBJECT,
-    "firecrawl": CRAWL_FIRECRAWL_SUBJECT,
-}
-CRAWL_CONSUMERS: dict[CrawlTransport, str] = {
-    "http": CRAWL_HTTP_CONSUMER,
-    "browser": CRAWL_BROWSER_CONSUMER,
-    "firecrawl": CRAWL_FIRECRAWL_CONSUMER,
-}
-
-
-class PolicyTrialMetadata(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    trial_id: UUID
-    sampler_version: int = Field(ge=1)
-    sample_share: float = Field(ge=0, le=1)
-    candidate_strategy: Literal["next_higher_cost_profile"]
-    candidate_profile_id: UUID
-    candidate_profile_slug: str
-    candidate_profile_config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+TriggerKind = Literal["manual", "schedule"]
 
 
 class PendingAdmission(BaseModel):
@@ -75,12 +45,7 @@ class PendingAdmission(BaseModel):
     identity: str
     node_id: UUID
     url: str
-    transport: CrawlTransport
     effective_policy_snapshot_json: dict
-    sample_request_id: UUID | None = None
-    sample_transport: CrawlTransport | None = None
-    sample_policy_snapshot_json: dict | None = None
-    trial: PolicyTrialMetadata | None = None
     source_crawl_id: UUID | None = None
     source_edge_id: UUID | None = None
     parent_request_id: UUID | None = None
@@ -92,6 +57,7 @@ class GraphRun(BaseModel):
     id: UUID
     graph_id: UUID
     trigger_kind: TriggerKind
+    trigger_schedule_id: UUID | None = None
     status: GraphRunStatus = "queued"
     snapshot: FrozenGraphSnapshot
     trigger_urls: tuple[str, ...]
@@ -100,7 +66,6 @@ class GraphRun(BaseModel):
     request_count: int = 0
     pending_request_count: int = 0
     failed_request_count: int = 0
-    warning_count: int = 0
     error_count: int = 0
     created_at: datetime
     started_at: datetime | None = None
@@ -116,11 +81,7 @@ class CrawlRequest(BaseModel):
     graph_run_id: UUID
     node_id: UUID
     url: str
-    transport: CrawlTransport
-    purpose: CrawlPurpose = "use"
-    trial: PolicyTrialMetadata | None = None
     document_id: str | None = None
-    artifact_id: str | None = None
     effective_policy_snapshot_json: dict
     source_crawl_id: UUID | None = None
     source_edge_id: UUID | None = None
@@ -133,17 +94,12 @@ class CrawlRequest(BaseModel):
     error: str | None = None
     failure_stage: FailureStage | None = None
     processing_failure_count: int = Field(default=0, ge=0)
-
-
-class PolicyTrialBudget(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    active_sample_request_ids: tuple[UUID, ...] = ()
+    acquisition_attempts_json: tuple[dict, ...] = ()
 
 
 class CrawlWork(BaseModel):
     model_config = ConfigDict(frozen=True)
     crawl_request_id: UUID
-    transport: CrawlTransport
 
 
 class EdgeWork(BaseModel):
@@ -184,7 +140,6 @@ class ReadinessWork(BaseModel):
 class WorkerState(BaseModel):
     model_config = ConfigDict(frozen=True)
     worker_id: str
-    transport: CrawlTransport
     started_at: datetime
     last_seen_at: datetime
     capacity: int
@@ -226,14 +181,30 @@ def edge_evaluation_identity(graph_run_id: UUID, crawl_request_id: UUID, crawl_i
     return hashlib.sha256(f"{graph_run_id}:{crawl_request_id}:{crawl_id}:{edge_id}".encode()).hexdigest()
 
 
-def new_graph_run(snapshot: FrozenGraphSnapshot, urls: list[str], trigger_kind: TriggerKind = "manual", now: datetime | None = None) -> GraphRun:
+def new_graph_run(
+    snapshot: FrozenGraphSnapshot,
+    urls: list[str],
+    trigger_kind: TriggerKind = "manual",
+    now: datetime | None = None,
+    *,
+    run_id: UUID | None = None,
+    trigger_schedule_id: UUID | None = None,
+) -> GraphRun:
     now = now or datetime.now(UTC)
     normalized = tuple(normalize_request_url(url) for url in urls)
     if not normalized:
         raise ValueError("A graph run requires at least one URL.")
     if not any(node.id == snapshot.root_node_id for node in snapshot.nodes):
         raise ValueError("A graph run requires a valid root node.")
-    return GraphRun(id=uuid4(), graph_id=snapshot.graph_id, trigger_kind=trigger_kind, snapshot=snapshot, trigger_urls=normalized, created_at=now)
+    return GraphRun(
+        id=run_id or uuid4(),
+        graph_id=snapshot.graph_id,
+        trigger_kind=trigger_kind,
+        trigger_schedule_id=trigger_schedule_id,
+        snapshot=snapshot,
+        trigger_urls=normalized,
+        created_at=now,
+    )
 
 
 async def connect_nats():
@@ -252,7 +223,7 @@ async def _bucket(jetstream, config: KeyValueConfig):
 
 async def ensure_graph_storage(jetstream):
     replicas = get_int("ATLAS_GRAPH_STREAM_REPLICAS")
-    subjects = [*CRAWL_SUBJECTS.values(), EDGE_SUBJECT, READINESS_SUBJECT]
+    subjects = [CRAWL_SUBJECT, EDGE_SUBJECT, READINESS_SUBJECT]
     stream = StreamConfig(name=GRAPH_STREAM, subjects=subjects, retention=RetentionPolicy.WORK_QUEUE, storage=StorageType.FILE, num_replicas=replicas)
     try:
         info = await jetstream.stream_info(GRAPH_STREAM)
@@ -271,21 +242,7 @@ async def ensure_graph_storage(jetstream):
             )
     ack_wait = GRAPH_ACK_WAIT_SECONDS
     consumers = (
-        (
-            CRAWL_HTTP_CONSUMER,
-            CRAWL_HTTP_SUBJECT,
-            GRAPH_CONSUMER_MAX_ACK_PENDING,
-        ),
-        (
-            CRAWL_BROWSER_CONSUMER,
-            CRAWL_BROWSER_SUBJECT,
-            GRAPH_CONSUMER_MAX_ACK_PENDING,
-        ),
-        (
-            CRAWL_FIRECRAWL_CONSUMER,
-            CRAWL_FIRECRAWL_SUBJECT,
-            GRAPH_CONSUMER_MAX_ACK_PENDING,
-        ),
+        (CRAWL_CONSUMER, CRAWL_SUBJECT, GRAPH_CONSUMER_MAX_ACK_PENDING),
         (EDGE_CONSUMER, EDGE_SUBJECT, GRAPH_CONSUMER_MAX_ACK_PENDING),
         (
             READINESS_CONSUMER,
@@ -318,7 +275,17 @@ async def ensure_graph_storage(jetstream):
     state_bytes = get_int("ATLAS_GRAPH_STATE_MAX_BYTES")
     runs = await _bucket(jetstream, KeyValueConfig(bucket=RUNS_BUCKET, description="Current Atlas graph-run state", history=1, max_bytes=state_bytes, storage=StorageType.FILE, replicas=replicas))
     requests = await _bucket(jetstream, KeyValueConfig(bucket=REQUESTS_BUCKET, description="Current Atlas crawl-request state", history=1, max_bytes=state_bytes, storage=StorageType.FILE, replicas=replicas))
-    workers = await _bucket(jetstream, KeyValueConfig(bucket=WORKERS_BUCKET, description="Ephemeral Atlas crawl-worker presence", history=1, ttl=get_float("ATLAS_CRAWL_WORKER_PRESENCE_TTL_SECONDS"), storage=StorageType.FILE, replicas=replicas))
+    workers = await _bucket(
+        jetstream,
+        KeyValueConfig(
+            bucket=WORKERS_BUCKET,
+            description="Ephemeral Atlas acquisition-worker presence",
+            history=1,
+            ttl=get_float("ATLAS_ACQUISITION_WORKER_PRESENCE_TTL_SECONDS"),
+            storage=StorageType.FILE,
+            replicas=replicas,
+        ),
+    )
     return runs, requests, workers
 
 
@@ -335,174 +302,6 @@ async def ensure_graph_progress_storage(jetstream):
             replicas=get_int("ATLAS_GRAPH_STREAM_REPLICAS"),
         ),
     )
-
-
-async def ensure_policy_trial_budget_storage(jetstream):
-    return await _bucket(
-        jetstream,
-        KeyValueConfig(
-            bucket=POLICY_TRIAL_BUDGET_BUCKET,
-            description="Active Atlas crawl-policy sample reservations",
-            history=1,
-            max_bytes=get_int("ATLAS_GRAPH_STATE_MAX_BYTES"),
-            storage=StorageType.FILE,
-            replicas=get_int("ATLAS_GRAPH_STREAM_REPLICAS"),
-        ),
-    )
-
-
-async def reserve_policy_trial_slot(bucket, request_id: UUID, maximum: int) -> bool:
-    if maximum < 1:
-        return False
-    while True:
-        try:
-            entry = await bucket.get(POLICY_TRIAL_BUDGET_KEY)
-        except (KeyNotFoundError, KeyDeletedError):
-            initial = PolicyTrialBudget(active_sample_request_ids=(request_id,))
-            try:
-                await bucket.create(
-                    POLICY_TRIAL_BUDGET_KEY, initial.model_dump_json().encode()
-                )
-                return True
-            except KeyWrongLastSequenceError:
-                continue
-        current = PolicyTrialBudget.model_validate_json(entry.value)
-        if request_id in current.active_sample_request_ids:
-            return True
-        if len(current.active_sample_request_ids) >= maximum:
-            return False
-        updated = current.model_copy(
-            update={
-                "active_sample_request_ids": (
-                    *current.active_sample_request_ids,
-                    request_id,
-                )
-            }
-        )
-        try:
-            await bucket.update(
-                POLICY_TRIAL_BUDGET_KEY,
-                updated.model_dump_json().encode(),
-                last=entry.revision,
-            )
-            return True
-        except KeyWrongLastSequenceError:
-            continue
-
-
-async def release_policy_trial_slot(bucket, request_id: UUID) -> None:
-    while True:
-        try:
-            entry = await bucket.get(POLICY_TRIAL_BUDGET_KEY)
-        except (KeyNotFoundError, KeyDeletedError):
-            return
-        current = PolicyTrialBudget.model_validate_json(entry.value)
-        if request_id not in current.active_sample_request_ids:
-            return
-        updated = current.model_copy(
-            update={
-                "active_sample_request_ids": tuple(
-                    value
-                    for value in current.active_sample_request_ids
-                    if value != request_id
-                )
-            }
-        )
-        try:
-            await bucket.update(
-                POLICY_TRIAL_BUDGET_KEY,
-                updated.model_dump_json().encode(),
-                last=entry.revision,
-            )
-            return
-        except KeyWrongLastSequenceError:
-            continue
-
-
-async def reconcile_policy_trial_budget(bucket, runs, requests) -> PolicyTrialBudget:
-    """Repair reservations from authoritative current run and request state."""
-
-    active_runs, crawl_requests = await asyncio.gather(
-        list_graph_runs(runs), list_crawl_requests(requests)
-    )
-    valid_pending = {
-        pending.sample_request_id
-        for run in active_runs
-        if run.status in {"queued", "running"}
-        for pending in run.pending_admissions
-        if pending.trial is not None and pending.sample_request_id is not None
-    }
-    active_requests = {
-        request.id
-        for request in crawl_requests
-        if request.purpose == "sample"
-        and request.status not in {"completed", "failed", "cancelled"}
-    }
-    while True:
-        try:
-            entry = await bucket.get(POLICY_TRIAL_BUDGET_KEY)
-        except (KeyNotFoundError, KeyDeletedError):
-            repaired = PolicyTrialBudget(
-                active_sample_request_ids=tuple(sorted(active_requests, key=str))
-            )
-            try:
-                await bucket.create(
-                    POLICY_TRIAL_BUDGET_KEY, repaired.model_dump_json().encode()
-                )
-                return repaired
-            except KeyWrongLastSequenceError:
-                continue
-        current = PolicyTrialBudget.model_validate_json(entry.value)
-        valid = active_requests | (
-            set(current.active_sample_request_ids) & valid_pending
-        )
-        repaired = PolicyTrialBudget(
-            active_sample_request_ids=tuple(sorted(valid, key=str))
-        )
-        try:
-            await bucket.update(
-                POLICY_TRIAL_BUDGET_KEY,
-                repaired.model_dump_json().encode(),
-                last=entry.revision,
-            )
-            return repaired
-        except KeyWrongLastSequenceError:
-            continue
-
-
-async def settle_sample_request(
-    jetstream,
-    requests,
-    request_id: UUID,
-    *,
-    status: Literal["completed", "failed", "cancelled"],
-    error: str | None = None,
-    failure_stage: FailureStage | None = None,
-    expected_claim_token: UUID | None = None,
-) -> CrawlRequest:
-    def settle(current: CrawlRequest) -> CrawlRequest:
-        if current.purpose != "sample":
-            raise ValueError("only sample crawl requests use sample settlement")
-        if current.status in {"completed", "failed", "cancelled"}:
-            return current
-        if expected_claim_token is not None and current.claim_token != expected_claim_token:
-            return current
-        return current.model_copy(
-            update={
-                "status": status,
-                "error": error,
-                "failure_stage": failure_stage if status == "failed" else None,
-                "claim_token": None,
-                "claim_expires_at": None,
-                "updated_at": datetime.now(UTC),
-            }
-        )
-
-    request = await update_crawl_request(requests, request_id, settle)
-    if request.status in {"completed", "failed", "cancelled"}:
-        budget = await ensure_policy_trial_budget_storage(jetstream)
-        await release_policy_trial_slot(budget, request_id)
-    return request
 
 
 async def _get(bucket, key: str, model):
@@ -629,18 +428,10 @@ async def _list_keys(bucket) -> list[str]:
                 pass
 
 
-def crawl_transport_from_policy(
-    policy_snapshot_json: dict,
-) -> CrawlTransport:
-    snapshot = CrawlPolicySnapshot.model_validate(policy_snapshot_json)
-    return snapshot.profile.transport
-
-
 async def publish_crawl(jetstream, request: CrawlRequest) -> None:
-    subject = CRAWL_SUBJECTS[request.transport]
-    work = CrawlWork(crawl_request_id=request.id, transport=request.transport)
+    work = CrawlWork(crawl_request_id=request.id)
     await jetstream.publish(
-        subject,
+        CRAWL_SUBJECT,
         work.model_dump_json().encode(),
         stream=GRAPH_STREAM,
         headers={"Nats-Msg-Id": request.id.hex},

@@ -12,9 +12,8 @@ import time
 import nats
 from ducklake_cdc_client import RetryableCDCError
 from nats.errors import TimeoutError as NatsTimeoutError
-from prometheus_client import start_http_server
 
-from config import get_bool, get_float, get_int, get_str
+from config import get_float, get_int, get_str
 from config.performance import MATERIALIZATION_ACK_WAIT_SECONDS
 from materialization.backfill import run_backfill
 from materialization.commit import commit_scope, record_scope_failure
@@ -38,13 +37,17 @@ from materialization.queue import (
     record_materialization_processing_failure,
 )
 from observability import materialization_metrics
+from repository.catalogue.schema import (
+    INTERNAL_SCHEMA,
+    MATERIALIZATION_COVERAGE_TABLE,
+)
 from repository.catalogue import catalogue_from_env
 from repository.catalogue.operations import (
     is_retryable_catalogue_unavailability,
     operation_lock,
     run_with_catalogue_retry,
 )
-from repository.ingestion.health import HealthMonitor, start_health_server
+from repository.ingestion.health import HealthMonitor
 from runtime.catalogue_lane import catalogue_operation_lane, run_catalogue_operation
 from runtime.catalogue_workers import (
     catalogue_worker_presence,
@@ -64,6 +67,11 @@ from runtime.resource_governor import (
     ensure_resource_governor_storage,
     object_units,
     resource_permits,
+)
+from workers.lifecycle import (
+    WorkerEndpointConfig,
+    WorkerEndpoints,
+    monitor_heartbeat,
 )
 
 
@@ -107,23 +115,15 @@ async def run(
     )
     monitor.dependencies_ready()
     monitor.subsystem_ready("materialization_scope")
-    health_server, _health_thread = start_health_server(
-        address=get_str("ATLAS_MATERIALIZATION_WORKER_HEALTH_HOST"),
-        port=get_int("ATLAS_MATERIALIZATION_WORKER_HEALTH_PORT"),
-        monitor=monitor,
-    )
-    metrics_server = None
-    if get_bool("ATLAS_METRICS_ENABLED"):
-        metrics_server, _metrics_thread = start_http_server(
-            get_int("ATLAS_MATERIALIZATION_WORKER_METRICS_PORT"),
-            addr=get_str("ATLAS_METRICS_HOST"),
-        )
+    endpoints = WorkerEndpoints(WorkerEndpointConfig.from_env("materialization"))
+    endpoints.start_health(monitor)
+    endpoints.start_metrics()
     if initialized is not None:
         initialized.set()
     active_operation_count = [0]
     try:
         async with asyncio.TaskGroup() as tasks:
-            tasks.create_task(_heartbeat(monitor, stop))
+            tasks.create_task(monitor_heartbeat(monitor, stop))
             tasks.create_task(
                 catalogue_worker_presence(
                     catalogue_workers,
@@ -200,11 +200,7 @@ async def run(
         stop.set()
         await asyncio.to_thread(catalogue.close)
         await client.close()
-        await asyncio.to_thread(health_server.shutdown)
-        health_server.server_close()
-        if metrics_server is not None:
-            await asyncio.to_thread(metrics_server.shutdown)
-            metrics_server.server_close()
+        await endpoints.close()
 
 
 async def _consume_scopes(
@@ -353,8 +349,8 @@ def _scope_succeeded(catalogue, job: MaterializationScopeJob) -> bool:
         '"' + part.replace('"', '""') + '"'
         for part in (
             catalogue.config.alias,
-            catalogue.config.schema,
-            "materialization_scope_results",
+            INTERNAL_SCHEMA,
+            MATERIALIZATION_COVERAGE_TABLE,
         )
     )
     return (
@@ -691,12 +687,6 @@ async def _wait(stop: asyncio.Event, seconds: float) -> None:
         await asyncio.wait_for(stop.wait(), timeout=seconds)
     except TimeoutError:
         pass
-
-
-async def _heartbeat(monitor: HealthMonitor, stop: asyncio.Event) -> None:
-    while not stop.is_set():
-        monitor.heartbeat()
-        await _wait(stop, 1)
 
 
 async def _ack_heartbeat(message) -> None:

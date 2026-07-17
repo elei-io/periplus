@@ -31,7 +31,7 @@ the published release; version control retains the history.
 
 ### Persisted table macros cannot round-trip optional NULL defaults
 
-- **Atlas caller:** fixture-seeded catalogue table macros used for time-bounded selector history.
+- **Former Atlas caller:** fixture-seeded selector-history table macros.
 - **Evidence:** DuckDB accepts `CREATE MACRO example(required, optional := NULL)`, but committing
   the macro to DuckLake fails with `unsupported type "NULL"`. Using
   `optional := CAST(NULL AS VARCHAR)` commits, but reopening the catalogue substitutes the string
@@ -40,8 +40,9 @@ the published release; version control retains the history.
 - **Smallest useful upstream contract:** DuckLake should persist and restore typed nullable macro
   defaults without changing their value, with a regression that invokes the macro both with and
   without the optional argument after reopening the catalogue.
-- **Atlas status:** no workaround. `macros.selector_stats` keeps its single required URL pattern,
-  while the separate `macros.selector_stats_history` macro takes explicit time bounds.
+- **Atlas status:** the selector-history fixtures were superseded by the required-parameter
+  `macros.suggest_records` and `macros.extract_records` helpers. Atlas has no active caller needing
+  optional macro defaults and carries no workaround; the persistence gap remains valid upstream.
 
 ### DuckLake crash when replacing an update-fragmented table from itself
 

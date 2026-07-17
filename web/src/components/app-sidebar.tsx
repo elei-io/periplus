@@ -1,4 +1,5 @@
-import atlasLogo from "@/assets/atlas-logo.svg"
+import atlasMark from "@/assets/atlas-mark.svg"
+import atlasWordmark from "@/assets/atlas-wordmark.svg"
 import { navigationGroups } from "@/lib/navigation"
 import {
   Sidebar,
@@ -25,14 +26,15 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" tooltip="Atlas">
               <img
-                src={atlasLogo}
-                alt=""
-                aria-hidden="true"
-                className="size-5 shrink-0"
+                src={atlasWordmark}
+                alt="Atlas"
+                className="h-5 w-auto group-data-[collapsible=icon]:hidden"
               />
-              <span className="font-medium group-data-[collapsible=icon]:hidden">
-                Atlas
-              </span>
+              <img
+                src={atlasMark}
+                alt="Atlas"
+                className="hidden size-5 shrink-0 group-data-[collapsible=icon]:block"
+              />
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

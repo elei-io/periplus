@@ -6,22 +6,25 @@ readme = { text = "Atlas backend services and command-line tools.", content-type
 requires-python = ">=3.14"
 dependencies = [
     "alembic>=1.18",
-    "crawl4ai>=0.9.0",
     "fastapi[standard]>=0.139.0",
     "httpx>=0.28",
     "nats-py>=2.11",
+    "numpy>=2.0",
+    "playwright==1.55.0",
     "psycopg[binary]>=3.2",
     "prometheus-client>=0.22",
     "pydantic>=2.12",
     "python-dotenv>=1.2",
     "sqlalchemy>=2.0",
     "typer>=0.26.8",
+    "tldextract>=5.3",
     "rich>=14.0",
     "ducklake-client>=0.8.2",
     "boto3>=1.42",
     "zstandard>=0.25",
     "html5lib>=1.1",
     "cssselect2>=0.9",
+    "croniter>=6.0",
     "pyarrow>=21",
     "sqlglot>=27",
     "ducklake-cdc-client==0.6.1",
@@ -36,12 +39,7 @@ dev = [
 [project.scripts]
 atlas = "cli.app:app"
 atlas-setup = "deployment:main"
-atlas-crawl-http-worker = "workers.crawl_http:main"
-atlas-crawl-browser-worker = "workers.crawl_browser:main"
-atlas-crawl-provider-worker = "workers.crawl_provider:main"
-atlas-ingestion-worker = "workers.ingestion:main"
-atlas-materialization-worker = "workers.materialization:main"
-atlas-maintenance-worker = "workers.maintenance:main"
+atlas-worker = "workers.cli:main"
 
 [build-system]
 requires = ["setuptools"]

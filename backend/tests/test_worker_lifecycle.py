@@ -1,0 +1,116 @@
+from __future__ import annotations
+
+import asyncio
+import unittest
+from unittest.mock import MagicMock, patch
+
+from repository.ingestion.health import HealthMonitor
+from workers.lifecycle import (
+    WorkerEndpointConfig,
+    WorkerEndpoints,
+    cancel_task,
+    monitor_heartbeat,
+    supervise_until_stopped,
+)
+
+
+class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_supervisor_cancels_other_tasks_and_propagates_failure(self) -> None:
+        cancelled = asyncio.Event()
+
+        async def failing() -> None:
+            raise RuntimeError("worker failed")
+
+        async def waiting() -> None:
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+
+        with self.assertRaisesRegex(RuntimeError, "worker failed"):
+            await supervise_until_stopped(
+                {"failing": failing(), "waiting": waiting()},
+                asyncio.Event(),
+            )
+
+        self.assertTrue(cancelled.is_set())
+
+    async def test_supervisor_cancels_tasks_after_stop(self) -> None:
+        stop = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def waiting() -> None:
+            try:
+                stop.set()
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+
+        await supervise_until_stopped({"waiting": waiting()}, stop)
+
+        self.assertTrue(cancelled.is_set())
+
+    async def test_heartbeat_stops_cooperatively(self) -> None:
+        monitor = HealthMonitor(heartbeat_timeout_seconds=0.01)
+        monitor.dependencies_ready()
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            monitor_heartbeat(monitor, stop, interval_seconds=0.001)
+        )
+        await asyncio.sleep(0.003)
+        stop.set()
+        await task
+
+        self.assertEqual(monitor.status(), (True, "ready"))
+
+    async def test_cancel_task_reaps_the_task(self) -> None:
+        async def waiting() -> None:
+            await asyncio.Future()
+
+        task = asyncio.create_task(waiting())
+
+        await cancel_task(task)
+
+        self.assertTrue(task.cancelled())
+
+    async def test_endpoints_own_and_close_both_servers(self) -> None:
+        health_server = MagicMock()
+        metrics_server = MagicMock()
+        config = WorkerEndpointConfig(
+            health_address="127.0.0.1",
+            health_port=9001,
+            metrics_enabled=True,
+            metrics_address="127.0.0.1",
+            metrics_port=9002,
+        )
+        monitor = HealthMonitor()
+        with (
+            patch(
+                "workers.lifecycle.start_health_server",
+                return_value=(health_server, MagicMock()),
+            ) as start_health,
+            patch(
+                "workers.lifecycle.start_http_server",
+                return_value=(metrics_server, MagicMock()),
+            ) as start_metrics,
+        ):
+            endpoints = WorkerEndpoints(config)
+            endpoints.start_health(monitor)
+            endpoints.start_metrics()
+            await endpoints.close()
+            await endpoints.close()
+
+        start_health.assert_called_once_with(
+            address="127.0.0.1",
+            port=9001,
+            monitor=monitor,
+        )
+        start_metrics.assert_called_once_with(9002, addr="127.0.0.1")
+        health_server.shutdown.assert_called_once_with()
+        health_server.server_close.assert_called_once_with()
+        metrics_server.shutdown.assert_called_once_with()
+        metrics_server.server_close.assert_called_once_with()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -16,6 +16,7 @@ from repository.catalogue.records import (
     ArtifactRecord,
     CatalogueWriteResult,
     CrawlRecord,
+    CrawlStepRecord,
     DocumentRecord,
     ElementRecord,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "CatalogueValidationError",
     "CatalogueWriteResult",
     "CrawlRecord",
+    "CrawlStepRecord",
     "DocumentRecord",
     "ElementRecord",
     "catalogue_config_from_env",

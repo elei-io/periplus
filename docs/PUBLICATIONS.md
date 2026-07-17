@@ -209,7 +209,7 @@ after that boundary. Historical backfill enumerates scopes visible at the activa
 
 Live discovery and activation backfill are independent internal stages:
 
-- one crawl-table CDC discovery loop consumes newly committed `purpose = 'use'` crawls and derives both
+- one crawl-table CDC discovery loop consumes newly committed crawls and derives both
   crawl- and document-scoped work; Atlas does not maintain a second document-table CDC fleet;
 - backfill pages through historical scope IDs at a configurable rate;
 - live work is prioritized so a long backfill does not block freshness;
@@ -231,7 +231,7 @@ connection, or health state with base ingestion, while both deployments consume 
 shares of the same governed catalogue and object-store resources.
 
 CDC and backfill may rediscover the same scope. They publish the same deterministic job identity,
-and successful `materialization_scope_results` coverage is the sole completion authority. Pending
+and successful `_atlas.materialization_coverage` is the sole completion authority. Pending
 work and lag are derived from eligible active-definition scopes minus successful coverage; queue
 position and planning records are diagnostics, never analytical truth.
 
@@ -315,6 +315,8 @@ Atlas reserves these DuckLake schemas:
 
 - `main` contains retained web evidence and catalogue helpers;
 - `views` contains persistent user-defined DuckLake views, whether virtual or materialized;
+- `_atlas` contains private repository metadata, including crawl completion-step evidence and
+  authoritative materialization coverage;
 - `_atlas_materializations` contains private backing tables for materialized views; and
 - `published` is reserved for future publication-facing aliases or contract objects and never holds
   a second data copy.

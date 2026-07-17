@@ -139,7 +139,6 @@ async def _run_active_crawl_planner(
                 for change in batch.changes
                 if change.kind.value in {"insert", "update_postimage"}
                 and change.values.get("crawl_id")
-                and change.values.get("purpose") == "use"
             }
             for crawl_id, document_id in crawl_scopes:
                 for scope in _crawl_triggered_scopes(

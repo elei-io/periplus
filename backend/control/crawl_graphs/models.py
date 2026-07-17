@@ -28,7 +28,7 @@ class CrawlGraph(Base):
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    name: Mapped[str] = mapped_column(Text)
+    slug: Mapped[str] = mapped_column(Text, unique=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     root_node_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), nullable=True

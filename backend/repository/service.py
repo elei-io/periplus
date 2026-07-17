@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import TracebackType
-from typing import Any
 from uuid import UUID, uuid4
 from config import get_int
 
@@ -20,6 +19,7 @@ from repository.catalogue import (
     CatalogueValidationError,
     CatalogueWriteResult,
     CrawlRecord,
+    CrawlStepRecord,
     DocumentRecord,
     catalogue_from_env,
 )
@@ -28,8 +28,6 @@ from dom import (
     PARSER_NAME,
     PARSER_OPTIONS_HASH,
     PARSER_VERSION,
-    QUALITY_SCHEMA_VERSION,
-    DocumentQuality,
     GroupedLinkPayload,
     write_dom_parquet,
 )
@@ -106,6 +104,7 @@ class RepositoryIngestor:
         self,
         *,
         crawl: CrawlRecord,
+        crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
         known_documents: Mapping[str, DocumentRecord] | None = None,
     ) -> PreparedIngestion:
         """Prepare a queued ingestion using only its durable raw object reference."""
@@ -134,12 +133,14 @@ class RepositoryIngestor:
                 document=None,
                 artifact=artifact,
                 crawl=crawl,
+                crawl_steps=crawl_steps,
             )
 
         if crawl.document_id is None:
             return PreparedIngestion(
                 document=None,
                 crawl=crawl,
+                crawl_steps=crawl_steps,
             )
 
         prefix = "sha256:"
@@ -174,6 +175,7 @@ class RepositoryIngestor:
             return PreparedIngestion(
                 document=existing,
                 crawl=crawl,
+                crawl_steps=crawl_steps,
                 navigation_payload=navigation_payload,
                 navigation_row_count=navigation_row_count,
             )
@@ -206,7 +208,6 @@ class RepositoryIngestor:
                 parser_version=PARSER_VERSION,
                 parser_options_hash=PARSER_OPTIONS_HASH,
                 element_count=projection.element_count,
-                **_quality_values(projection.quality),
                 created_at=crawl.captured_at,
             )
         else:
@@ -218,12 +219,12 @@ class RepositoryIngestor:
                     "parser_version": PARSER_VERSION,
                     "parser_options_hash": PARSER_OPTIONS_HASH,
                     "element_count": projection.element_count,
-                    **_quality_values(projection.quality),
                 }
             )
         return PreparedIngestion(
             document=document,
             crawl=crawl,
+            crawl_steps=crawl_steps,
             elements_path=projection.path,
             element_count=projection.element_count,
             staged_bytes=projection.size_bytes,
@@ -248,6 +249,7 @@ class RepositoryIngestor:
                         document=value.document,
                         artifact=value.artifact,
                         crawl=value.crawl,
+                        crawl_steps=value.crawl_steps,
                         elements_path=value.elements_path,
                         replace_projection=value.replace_projection,
                     )
@@ -352,8 +354,7 @@ class RepositoryIngestor:
         self,
         *,
         normalized_url: str,
-        config_hash: str,
-        cache_block_rules: dict[str, Any] | None = None,
+        policy_config_hash: str,
         captured_after: datetime | None = None,
         captured_before: datetime | None = None,
         include_html: bool = True,
@@ -364,7 +365,7 @@ class RepositoryIngestor:
 
         for crawl in self.catalogue_service.find_cached_crawls(
             normalized_url=normalized_url,
-            config_hash=config_hash,
+            policy_config_hash=policy_config_hash,
             captured_after=captured_after,
             captured_before=captured_before,
         ):
@@ -375,9 +376,7 @@ class RepositoryIngestor:
                 repair_projection=repair_projection,
                 require_complete=False,
             )
-            if hit is not None and not _blocked_by_cache_rules(
-                hit.document, cache_block_rules
-            ):
+            if hit is not None:
                 return hit
         return None
 
@@ -492,7 +491,6 @@ class RepositoryIngestor:
                     "parser_version": PARSER_VERSION,
                     "parser_options_hash": PARSER_OPTIONS_HASH,
                     "element_count": projection.element_count,
-                    **_quality_values(projection.quality),
                 }
             )
             repository_snapshot = self.commit_prepared_batch(
@@ -500,6 +498,7 @@ class RepositoryIngestor:
                     PreparedIngestion(
                         document=document,
                         crawl=crawl,
+                        crawl_steps=None,
                         elements_path=projection.path,
                         element_count=projection.element_count,
                         staged_bytes=projection.size_bytes,
@@ -539,7 +538,6 @@ class RepositoryIngestor:
             and document.parser_name == PARSER_NAME
             and document.parser_version == PARSER_VERSION
             and document.parser_options_hash == PARSER_OPTIONS_HASH
-            and document.quality_schema_version == QUALITY_SCHEMA_VERSION
         )
 
     def close(self) -> None:
@@ -584,6 +582,7 @@ class RepositoryCacheHit:
 class PreparedIngestion:
     document: DocumentRecord | None
     crawl: CrawlRecord
+    crawl_steps: tuple[CrawlStepRecord, ...] | None = ()
     artifact: ArtifactRecord | None = None
     elements_path: Path | None = None
     element_count: int = 0
@@ -591,35 +590,6 @@ class PreparedIngestion:
     replace_projection: bool = False
     navigation_payload: bytes | None = None
     navigation_row_count: int = 0
-
-
-def _blocked_by_cache_rules(
-    document: DocumentRecord | None,
-    cache_block_rules: dict[str, Any] | None,
-) -> bool:
-    configured = (cache_block_rules or {}).get("quality_flag_codes", [])
-    blocking = {value for value in configured if isinstance(value, str)}
-    if not blocking:
-        return False
-    present = set(document.quality_flags_json) if document is not None else set()
-    return bool(blocking & present)
-
-
-def _quality_values(quality: DocumentQuality) -> dict[str, object]:
-    return {
-        "quality_schema_version": quality.quality_schema_version,
-        "html_character_count": quality.html_character_count,
-        "visible_text_chars": quality.visible_text_chars,
-        "script_count": quality.script_count,
-        "app_marker_count": quality.app_marker_count,
-        "lazy_marker_count": quality.lazy_marker_count,
-        "interaction_marker_count": quality.interaction_marker_count,
-        "button_count": quality.button_count,
-        "form_count": quality.form_count,
-        "input_count": quality.input_count,
-        "anchor_count": quality.anchor_count,
-        "quality_flags_json": quality.flag_codes,
-    }
 
 
 def _positive_env_int(name: str, default: int) -> int:

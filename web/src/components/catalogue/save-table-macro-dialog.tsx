@@ -27,27 +27,26 @@ export function SaveTableMacroDialog({
   sql: string
   queryRevisionId?: string
 }) {
-  const [name, setName] = useState("")
-  const [displayName, setDisplayName] = useState("")
+  const [slug, setSlug] = useState("")
   const [description, setDescription] = useState("")
   const [parameters, setParameters] = useState("")
+  const [draftSql, setDraftSql] = useState(() => formatSql(sql))
   const create = useCreateCatalogueTableMacro()
 
   function reset() {
-    setName("")
-    setDisplayName("")
+    setSlug("")
     setDescription("")
     setParameters("")
+    setDraftSql(formatSql(sql))
   }
 
   function submit() {
     create.mutate(
       {
-        name,
-        display_name: displayName || undefined,
+        slug,
         description: description || undefined,
         parameters: parseParameters(parameters),
-        sql,
+        sql: draftSql,
         created_from_query_revision_id: queryRevisionId,
       },
       {
@@ -69,7 +68,7 @@ export function SaveTableMacroDialog({
     >
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Save as table macro</DialogTitle>
+          <DialogTitle>Create table macro</DialogTitle>
           <DialogDescription>
             Turn this query into a reusable, parameterized relation in the
             macros schema.
@@ -78,18 +77,18 @@ export function SaveTableMacroDialog({
         <div className="grid gap-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-1.5">
-              <Label htmlFor="macro-name">Macro name</Label>
+              <Label htmlFor="macro-slug">Slug</Label>
               <Input
-                id="macro-name"
-                value={name}
+                id="macro-slug"
+                value={slug}
                 onChange={(event) =>
-                  setName(
+                  setSlug(
                     event.target.value
                       .toLowerCase()
-                      .replace(/[^a-z0-9_]/g, "_")
+                      .replace(/[^a-z0-9_-]/g, "-")
                   )
                 }
-                placeholder="selector_stats"
+                placeholder="selector-stats"
               />
             </div>
             <div className="grid gap-1.5">
@@ -105,16 +104,7 @@ export function SaveTableMacroDialog({
               </p>
             </div>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="grid gap-1.5">
-              <Label htmlFor="macro-display-name">Display name</Label>
-              <Input
-                id="macro-display-name"
-                value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
-                placeholder="Selector statistics"
-              />
-            </div>
+          <div className="grid gap-3">
             <div className="grid gap-1.5">
               <Label htmlFor="macro-description">Description</Label>
               <Textarea
@@ -127,19 +117,23 @@ export function SaveTableMacroDialog({
             </div>
           </div>
           <div className="overflow-hidden rounded-xl border bg-card">
-            <div className="border-b bg-muted/20 px-3 py-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-              Table macro query · read only
+            <div className="border-b bg-muted/20 px-3 py-2 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+              Table macro query
             </div>
             <SqlEditor
-              value={formatSql(sql)}
-              readOnly
-              height="180px"
-              ariaLabel="Read-only SQL for the new table macro"
+              value={draftSql}
+              onChange={setDraftSql}
+              height="260px"
+              ariaLabel="SQL for the new table macro"
+              enableCssSelect
             />
           </div>
         </div>
         <DialogFooter showCloseButton>
-          <Button onClick={submit} disabled={!name || create.isPending}>
+          <Button
+            onClick={submit}
+            disabled={!slug || !draftSql.trim() || create.isPending}
+          >
             {create.isPending ? "Creating…" : "Create table macro"}
           </Button>
         </DialogFooter>

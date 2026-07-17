@@ -1,8 +1,7 @@
 """Deterministic link projections derived from Atlas DOM rows.
 
-Fresh acquisitions and repository cache hits must expose the same link payload.  This module is
-the single semantic owner: Crawl4AI's transient link output is deliberately replaced with a
-projection that can be reproduced from the durable element rows.
+Fresh acquisitions and durable reprocessing must expose the same link payload. This module is the
+single semantic owner, so projections can always be reproduced from retained element rows.
 """
 
 from __future__ import annotations
@@ -12,10 +11,19 @@ from dataclasses import dataclass, field
 from io import StringIO
 from typing import Protocol
 from urllib.parse import urljoin, urlparse
-
-from crawl4ai.utils import get_base_domain, is_external_url, normalize_url
+import tldextract
 
 from dom.encoder import iter_html_elements
+from control.urls import normalize_url
+
+
+_TLD_EXTRACT = tldextract.TLDExtract(suffix_list_urls=())
+
+
+def _base_domain(url: str) -> str:
+    host = (urlparse(url).hostname or "").lower()
+    value = _TLD_EXTRACT(host)
+    return value.top_domain_under_public_suffix or host
 
 
 class ElementLike(Protocol):
@@ -69,24 +77,27 @@ def links_from_elements(
     *,
     page_url: str,
 ) -> GroupedLinkPayload:
-    """Project Crawl4AI-compatible link payloads from durable DOM rows."""
+    """Project canonical link payloads from durable DOM rows."""
 
     anchors, document_base_url = _scan_elements(elements, page_url=page_url)
-    page_base_domain = get_base_domain(page_url)
+    page_base_domain = _base_domain(page_url)
     grouped: GroupedLinkPayload = {"internal": [], "external": []}
     seen: set[str] = set()
 
     for anchor in anchors:
         try:
-            href = normalize_url(anchor.href, document_base_url)
+            href = normalize_url(urljoin(document_base_url or page_url, anchor.href))
+            parsed = urlparse(href)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                continue
         except (TypeError, ValueError):
             continue
         if not href or href in seen:
             continue
         seen.add(href)
 
-        external = is_external_url(href, page_base_domain)
-        base_domain = get_base_domain(href) if external else page_base_domain
+        external = _base_domain(href) != page_base_domain
+        base_domain = _base_domain(href) if external else page_base_domain
         payload: LinkPayload = {
             "href": href,
             "text": anchor.text,

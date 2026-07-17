@@ -101,6 +101,37 @@ const atlasFunctionCompletions = [
   }),
 ]
 
+const sqlSyntaxCompletions = [
+  snippetCompletion("coalesce(${value}, ${fallback})", {
+    label: "coalesce",
+    displayLabel: "coalesce(…, …)",
+    type: "function",
+    detail: "SQL expression",
+    boost: 4,
+  }),
+  snippetCompletion("nullif(${left}, ${right})", {
+    label: "nullif",
+    displayLabel: "nullif(…, …)",
+    type: "function",
+    detail: "SQL expression",
+    boost: 4,
+  }),
+  snippetCompletion("cast(${value} AS ${type})", {
+    label: "cast",
+    displayLabel: "cast(… AS …)",
+    type: "function",
+    detail: "SQL expression",
+    boost: 4,
+  }),
+  snippetCompletion("try_cast(${value} AS ${type})", {
+    label: "try_cast",
+    displayLabel: "try_cast(… AS …)",
+    type: "function",
+    detail: "DuckDB expression",
+    boost: 4,
+  }),
+]
+
 const clauseKeywords: Record<string, string[]> = {
   START: ["SELECT", "WITH", "EXPLAIN"],
   SELECT: ["AS", "DISTINCT", "FROM"],
@@ -205,11 +236,14 @@ export function createCatalogueCompletionSource(
         qualifier
       )
     } else {
-      options = [
-        ...scopeColumnCompletions(context.state.doc.toString(), metadata),
-        ...functionCompletions(metadata),
-        ...keywordCompletions(before),
-      ]
+      const keywords = keywordCompletions(before)
+      options = isStatementStart(before, word?.from ?? context.pos)
+        ? keywords
+        : [
+            ...keywords,
+            ...scopeColumnCompletions(context.state.doc.toString(), metadata),
+            ...functionCompletions(metadata),
+          ]
     }
 
     const matching = uniqueCompletions(options).filter((option) =>
@@ -224,6 +258,12 @@ export function createCatalogueCompletionSource(
       validFor: /^[\w$]*$/,
     }
   }
+}
+
+function isStatementStart(before: string, wordFrom: number) {
+  const beforeWord = maskSql(before.slice(0, wordFrom))
+  const currentStatement = beforeWord.slice(beforeWord.lastIndexOf(";") + 1)
+  return currentStatement.trim() === ""
 }
 
 function isSqlCode(context: CompletionContext) {
@@ -456,6 +496,7 @@ function normalizeIdentifier(value: string) {
 function functionCompletions(metadata: CatalogueMetadata | undefined) {
   const completions = new Map<string, Completion>()
   for (const item of atlasFunctionCompletions) completions.set(item.label, item)
+  for (const item of sqlSyntaxCompletions) completions.set(item.label, item)
   if (!metadata) return [...completions.values()]
 
   for (const item of metadata.functions) {
@@ -500,7 +541,8 @@ function functionSignature(
 }
 
 function keywordCompletions(before: string): Completion[] {
-  const masked = maskSql(before)
+  const maskedDocument = maskSql(before)
+  const masked = maskedDocument.slice(maskedDocument.lastIndexOf(";") + 1)
   let clause = "START"
   clausePattern.lastIndex = 0
   for (

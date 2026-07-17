@@ -42,18 +42,18 @@ class CatalogueBenchmarkTests(unittest.TestCase):
                     """
                     INSERT INTO atlas.main.crawls (
                         crawl_id, document_id, graph_id, graph_run_id, graph_node_id,
-                        crawl_request_id, purpose, requested_url, normalized_url,
+                        crawl_request_id, requested_url, normalized_url,
                         final_url, page_url, url_scheme, url_host, url_port,
                         url_registrable_domain, url_path, url_query, captured_at,
-                        status_code, profile, crawl_profile_slug, remote_concurrency,
-                        config_hash, config_json, outcome
+                        status_code, policy_config_hash,
+                        policy_config_json, outcome, acquisition_attempts_json
                     ) VALUES (
-                        uuid(), 'doc', uuid(), uuid(), uuid(), uuid(), 'use',
+                        uuid(), 'doc', uuid(), uuid(), uuid(), uuid(),
                         'https://example.com/', 'https://example.com/',
                         'https://example.com/', 'https://example.com/', 'https',
                         'example.com', 443, 'example.com', '/', '',
-                        TIMESTAMPTZ '2026-07-14 12:00:00+00', 200, 'http',
-                        'direct', 4, repeat('a', 64), '{}', 'success'
+                        TIMESTAMPTZ '2026-07-14 12:00:00+00', 200,
+                        repeat('a', 64), '{}', 'success', '[]'
                     )
                     """
                 )

@@ -30,6 +30,7 @@ import zstandard
 from repository.catalogue import (
     CatalogueWriteResult,
     CrawlRecord,
+    CrawlStepRecord,
 )
 from runtime.navigation_contract import NavigationPackage
 from runtime.catalogue_queue import (
@@ -51,6 +52,7 @@ class IngestionJob(BaseModel):
     request_id: str
     enqueued_at: datetime
     crawl: CrawlRecord
+    crawl_steps: tuple[CrawlStepRecord, ...] | None = ()
 
 
 class DeadLetterEntry(BaseModel):
@@ -81,6 +83,7 @@ class IngestionState(BaseModel):
     request_id: str
     status: Literal["pending", "succeeded", "failed"]
     crawl: CrawlRecord
+    crawl_steps: tuple[CrawlStepRecord, ...] | None = ()
     enqueued_at: datetime
     updated_at: datetime
     published_at: datetime | None = None
@@ -253,6 +256,7 @@ async def ensure_pending_ingestion(
     *,
     request_id: str,
     crawl: CrawlRecord,
+    crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
 ) -> IngestionState:
     """Create pending state once, retaining the first frozen crawl envelope."""
 
@@ -261,6 +265,7 @@ async def ensure_pending_ingestion(
         request_id=request_id,
         status="pending",
         crawl=crawl,
+        crawl_steps=crawl_steps,
         enqueued_at=now,
         updated_at=now,
     )
@@ -423,6 +428,7 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
                 results,
                 request_id=dead_letter.job.request_id,
                 crawl=dead_letter.job.crawl,
+                crawl_steps=dead_letter.job.crawl_steps,
             )
             if recovered.status == "succeeded":
                 raise RuntimeError("the ingestion has already succeeded")
@@ -508,6 +514,7 @@ class IngestionQueueClient:
         crawl: CrawlRecord,
         *,
         request_id: str | None = None,
+        crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
     ) -> CatalogueWriteResult:
         """Publish or resume one operation and wait on its durable state."""
 
@@ -515,6 +522,7 @@ class IngestionQueueClient:
         state = await self._pending_state(
             request_id=request_id,
             crawl=crawl,
+            crawl_steps=crawl_steps,
         )
         if state.status != "pending":
             return result_from_ingestion_state(state)
@@ -526,17 +534,23 @@ class IngestionQueueClient:
         crawl: CrawlRecord,
         *,
         request_id: str | None = None,
+        crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
     ) -> None:
         """Durably publish one operation without occupying acquisition capacity."""
 
         request_id = request_id or crawl_ingestion_request_id(crawl.crawl_id)
-        state = await self._pending_state(request_id=request_id, crawl=crawl)
+        state = await self._pending_state(
+            request_id=request_id,
+            crawl=crawl,
+            crawl_steps=crawl_steps,
+        )
         if state.status != "pending" or state.published_at is not None:
             return
         job = IngestionJob(
             request_id=state.request_id,
             enqueued_at=state.enqueued_at,
             crawl=state.crawl,
+            crawl_steps=state.crawl_steps,
         )
         payload = job.model_dump_json().encode()
         _validate_envelope(payload, label="repository ingestion job")
@@ -565,12 +579,14 @@ class IngestionQueueClient:
         *,
         request_id: str,
         crawl: CrawlRecord,
+        crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
     ) -> IngestionState:
         self._require_connected()
         return await ensure_pending_ingestion(
             self.results,
             request_id=request_id,
             crawl=crawl,
+            crawl_steps=crawl_steps,
         )
 
     async def _publish_and_wait(
@@ -581,6 +597,7 @@ class IngestionQueueClient:
             request_id=state.request_id,
             enqueued_at=state.enqueued_at,
             crawl=state.crawl,
+            crawl_steps=state.crawl_steps,
         )
         poll_seconds = get_float("ATLAS_INGEST_RESULT_POLL_SECONDS")
         while True:

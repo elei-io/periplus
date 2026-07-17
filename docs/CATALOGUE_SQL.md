@@ -105,6 +105,52 @@ WHERE e.tag = 'a'
   AND has_attribute(e.attributes, 'href');
 ```
 
+## Automatic record discovery
+
+Atlas seeds two deterministic table macros for turning captured directory pages into records.
+The URL argument uses exact matching unless it contains `%`; a value containing `%` is an `ILIKE`
+pattern matched against both the requested normalized URL and the effective final page URL. The
+macros include every successful matching crawl observation across graph runs.
+
+`macros.suggest_records(url)` ranks repeated sibling structures and returns up to ten candidates.
+Each candidate includes its record selector, total matched record count, matched crawl and page
+counts, history bounds, score, example HTML, twelve ranked field definitions, and a ready-to-run
+`extract_sql` query. The ranking rewards structural consistency, information density, stable field
+coverage, safe relative selectors, and useful value shapes such as prices and URLs. It penalizes
+fragmented structures, presentation classes, duplicate-equivalent fields, and positional image
+labels.
+
+```sql
+SELECT *
+FROM macros.suggest_records(
+  'https://books.toscrape.com/catalogue/category/books/%'
+);
+```
+
+Pass one returned `record_selector` to `macros.extract_records(url, record_selector)`. It returns
+one row per record observation with its `crawl_id`, `graph_run_id`, `captured_at`, and `page_url`,
+plus stable `field_1` through `field_12` columns. `field_definitions` maps those positions to their
+relative selector and value source; `record_json`, `record_text`, and `record_html` retain lossless
+and diagnostic forms. A field with one value is returned as plain text, while a genuinely
+multi-valued field is returned as a JSON array string.
+
+```sql
+SELECT *
+FROM macros.extract_records(
+  'https://books.toscrape.com/catalogue/category/books/%',
+  'ol.row > li.col-lg-3.col-md-3.col-sm-4.col-xs-6'
+)
+WHERE captured_at >= TIMESTAMPTZ '2026-07-01 00:00:00+00'
+  AND captured_at <  TIMESTAMPTZ '2026-08-01 00:00:00+00';
+```
+
+These macros infer structure and value sources; they do not assign semantic names such as `price`
+or `title`. Numbered fields keep extraction free of site-specific rules and runtime model calls.
+The selectors are schematic, include values from the record root, group adjacent companion
+siblings, and restrict class-derived values to mutually exclusive semantic variants. Extraction
+returns at most 2,000 records per crawl observation. Its `matched_record_count` and
+`records_truncated` columns make that per-observation safety bound explicit.
+
 ## Crawl graph edges
 
 The crawl-graph target model uses bounded SQL over a verified navigation package derived from

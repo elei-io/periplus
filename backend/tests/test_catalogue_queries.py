@@ -32,7 +32,7 @@ class CatalogueQueryRevisionTests(unittest.TestCase):
     def test_edit_and_restore_append_linear_revisions(self) -> None:
         created = create_query(
             self.session,
-            name="Example",
+            slug="example",
             description=None,
             sql="SELECT 1 AS value",
             change_note="Initial",
@@ -43,7 +43,7 @@ class CatalogueQueryRevisionTests(unittest.TestCase):
             query,
             expected_revision_id=created.current_revision_id,
             sql="SELECT 2 AS value",
-            name="Example",
+            slug="example",
             description=None,
             change_note="Second",
         )
@@ -61,7 +61,7 @@ class CatalogueQueryRevisionTests(unittest.TestCase):
     def test_identical_sql_does_not_create_revision_and_stale_save_conflicts(self) -> None:
         created = create_query(
             self.session,
-            name="Example",
+            slug="example",
             description=None,
             sql="SELECT 1",
             change_note=None,
@@ -72,7 +72,7 @@ class CatalogueQueryRevisionTests(unittest.TestCase):
             query,
             expected_revision_id=created.current_revision_id,
             sql="SELECT 1",
-            name="Renamed",
+            slug="renamed",
             description=None,
             change_note=None,
         )
@@ -83,7 +83,7 @@ class CatalogueQueryRevisionTests(unittest.TestCase):
                 query,
                 expected_revision_id=uuid4(),
                 sql="SELECT 2",
-                name=None,
+                slug=None,
                 description=None,
                 change_note=None,
             )

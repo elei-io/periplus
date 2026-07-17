@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from nats.js.errors import NotFoundError
 from uuid import UUID
 
@@ -32,6 +32,24 @@ def document(document_id: str) -> DocumentRecord:
     return record
 
 
+@router.get("/documents/{document_id}/content", response_class=Response)
+def document_content(document_id: str) -> Response:
+    with repository_ingestor_from_env() as repository:
+        repository.validate()
+        record = repository.catalogue_service.get_document(document_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="document was not found")
+        content = repository.html_repository.read_bytes(record.html_object_key)
+
+    return Response(
+        content=content,
+        media_type=record.html_content_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{record.html_sha256}.html"',
+        },
+    )
+
+
 @router.get("/artifacts/{artifact_id}", response_model=ArtifactRecord)
 def artifact(artifact_id: str) -> ArtifactRecord:
     with repository_ingestor_from_env() as repository:
@@ -40,6 +58,24 @@ def artifact(artifact_id: str) -> ArtifactRecord:
     if record is None:
         raise HTTPException(status_code=404, detail="artifact was not found")
     return record
+
+
+@router.get("/artifacts/{artifact_id}/content", response_class=Response)
+def artifact_content(artifact_id: str) -> Response:
+    with repository_ingestor_from_env() as repository:
+        repository.validate()
+        record = repository.catalogue_service.get_artifact(artifact_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="artifact was not found")
+        content = repository.artifact_repository.read_bytes(record.object_key)
+
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'inline; filename="{record.sha256}"',
+        },
+    )
 
 
 @router.get("/crawls/{crawl_id}", response_model=CrawlRecord)
