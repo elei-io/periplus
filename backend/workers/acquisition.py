@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from nats.errors import TimeoutError as NatsTimeoutError
+from playwright.async_api import Playwright, async_playwright
 
 from actions.crawl.service import RetryableAcquisitionError, crawl_graph_request
 from config import get_float, get_int, get_optional
@@ -81,6 +82,8 @@ async def _process_crawl(
     resource_grants=None,
     domain_pacing=None,
     jetstream=None,
+    *,
+    playwright: Playwright,
 ) -> None:
     try:
         work = CrawlWork.model_validate_json(message.data)
@@ -176,6 +179,7 @@ async def _process_crawl(
                 session=None,
                 url=request.url,
                 context=context,
+                playwright=playwright,
                 resource_grants=resource_grants,
                 domain_pacing=domain_pacing,
                 repository_pipeline=repository_pipeline,
@@ -447,37 +451,59 @@ async def run() -> None:
 
     presence_task = asyncio.create_task(presence())
     try:
-        async with AcquisitionPipeline() as repository_pipeline:
-            while not stop.is_set():
-                completed = {task for task in active if task.done()}
-                for task in completed:
-                    if task.cancelled():
+        async with (
+            async_playwright() as playwright,
+            AcquisitionPipeline() as repository_pipeline,
+        ):
+            try:
+                while not stop.is_set():
+                    completed = {task for task in active if task.done()}
+                    for task in completed:
+                        if task.cancelled():
+                            continue
+                        error = task.exception()
+                        if error is not None:
+                            logging.error(
+                                "acquisition task exited unexpectedly",
+                                exc_info=(type(error), error, error.__traceback__),
+                            )
+                    active.difference_update(completed)
+                    available = capacity - len(active)
+                    if available <= 0:
+                        await asyncio.sleep(0.05)
                         continue
-                    error = task.exception()
-                    if error is not None:
-                        logging.error(
-                            "acquisition task exited unexpectedly",
-                            exc_info=(type(error), error, error.__traceback__),
+                    try:
+                        messages = await crawl_subscription.fetch(
+                            batch=available,
+                            timeout=0.1,
                         )
-                active.difference_update(completed)
-                available = capacity - len(active)
-                if available <= 0:
-                    await asyncio.sleep(0.05)
-                    continue
-                try:
-                    messages = await crawl_subscription.fetch(batch=available, timeout=0.1)
-                except (NatsTimeoutError, asyncio.TimeoutError):
-                    messages = []
-                for message in messages:
-                    task = asyncio.create_task(
-                        _process_crawl(
-                            message, runs, requests, progress, repository_pipeline,
-                            resource_grants, domain_pacing, jetstream,
+                    except (NatsTimeoutError, asyncio.TimeoutError):
+                        messages = []
+                    for message in messages:
+                        task = asyncio.create_task(
+                            _process_crawl(
+                                message,
+                                runs,
+                                requests,
+                                progress,
+                                repository_pipeline,
+                                resource_grants,
+                                domain_pacing,
+                                jetstream,
+                                playwright=playwright,
+                            )
                         )
-                    )
-                    active.add(task)
-                if not messages:
-                    await asyncio.sleep(0.05)
+                        active.add(task)
+                    if not messages:
+                        await asyncio.sleep(0.05)
+            finally:
+                stop.set()
+                presence_task.cancel()
+                await asyncio.gather(
+                    presence_task,
+                    *active,
+                    return_exceptions=True,
+                )
     finally:
         stop.set()
         presence_task.cancel()

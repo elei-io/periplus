@@ -3,6 +3,11 @@ import { DatabaseZapIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -151,52 +156,56 @@ export function MaterializeViewDialog({
               {scopeKind}. It is usually <code>{scopeKind}_id</code>.
             </p>
           </div>
-          <details className="group rounded-xl border">
-            <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium marker:hidden">
+          <Collapsible className="rounded-xl border">
+            <CollapsibleTrigger className="w-full cursor-pointer px-4 py-3 text-left text-sm font-medium">
               Advanced settings{" "}
-              <span className="ml-1 text-xs font-normal text-muted-foreground group-open:hidden">
+              <span className="ml-1 text-xs font-normal text-muted-foreground">
                 · optional
               </span>
-            </summary>
-            <div className="grid gap-4 border-t p-4">
-              <div className="grid gap-1.5">
-                <Label>Backfill units per minute</Label>
-                <Input
-                  type="number"
-                  min={1}
-                  max={10_000}
-                  value={rate}
-                  onChange={(event) => setRate(Number(event.target.value) || 1)}
-                />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Daily partition column</Label>
-                <Select
-                  value={partitionColumn || "__none__"}
-                  onValueChange={(value) =>
-                    setPartitionColumn(
-                      value === "__none__" || value === null ? "" : value
-                    )
-                  }
-                >
-                  <SelectTrigger
-                    className="w-full"
-                    aria-label="Daily partition column"
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="grid gap-4 border-t p-4">
+                <div className="grid gap-1.5">
+                  <Label>Backfill units per minute</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={10_000}
+                    value={rate}
+                    onChange={(event) =>
+                      setRate(Number(event.target.value) || 1)
+                    }
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label>Daily partition column</Label>
+                  <Select
+                    value={partitionColumn || "__none__"}
+                    onValueChange={(value) =>
+                      setPartitionColumn(
+                        value === "__none__" || value === null ? "" : value
+                      )
+                    }
                   >
-                    <span>{partitionColumn || "No partitioning"}</span>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">No partitioning</SelectItem>
-                    {partitionCandidates.map((column) => (
-                      <SelectItem key={column} value={column}>
-                        {column}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                    <SelectTrigger
+                      className="w-full"
+                      aria-label="Daily partition column"
+                    >
+                      <span>{partitionColumn || "No partitioning"}</span>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">No partitioning</SelectItem>
+                      {partitionCandidates.map((column) => (
+                        <SelectItem key={column} value={column}>
+                          {column}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
-            </div>
-          </details>
+            </CollapsibleContent>
+          </Collapsible>
         </div>
         <DialogFooter
           showCloseButton

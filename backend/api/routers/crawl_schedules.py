@@ -18,6 +18,8 @@ from control.crawl_schedules.schemas import (
     CrawlScheduleCreate,
     CrawlScheduleList,
     CrawlScheduleRecord,
+    CrawlScheduleResource,
+    CrawlScheduleResourceList,
     CrawlScheduleUpdate,
     SchedulePreviewRequest,
     SchedulePreviewResponse,
@@ -29,7 +31,9 @@ from control.crawl_schedules.service import (
     create_schedule,
     delete_schedule,
     get_schedule,
+    get_schedule_resource,
     list_schedules,
+    list_schedule_resources,
     preview_occurrences,
     record,
     set_schedule_enabled,
@@ -39,11 +43,33 @@ from db.session import get_session
 
 
 router = APIRouter(prefix="/crawl-graphs", tags=["crawl-schedules"])
+resource_router = APIRouter(prefix="/crawl-schedules", tags=["crawl-schedules"])
 
 
 class ScheduleEnabledUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool
+
+
+@resource_router.get("/", response_model=CrawlScheduleResourceList)
+def list_resources(
+    session: Annotated[Session, Depends(get_session)],
+) -> CrawlScheduleResourceList:
+    items = list_schedule_resources(session)
+    return CrawlScheduleResourceList(items=items, total=len(items))
+
+
+@resource_router.get(
+    "/{schedule_id}", response_model=CrawlScheduleResource
+)
+def get_resource(
+    schedule_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+) -> CrawlScheduleResource:
+    try:
+        return get_schedule_resource(session, schedule_id)
+    except CrawlScheduleNotFoundError as exc:
+        raise _translate(exc) from exc
 
 
 def _translate(exc: Exception) -> HTTPException:

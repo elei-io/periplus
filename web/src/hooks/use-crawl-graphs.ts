@@ -17,6 +17,8 @@ import type {
   CrawlSchedule,
   CrawlScheduleInput,
   CrawlScheduleListResponse,
+  CrawlScheduleResource,
+  CrawlScheduleResourceListResponse,
   SchedulePreviewResponse,
   ScheduleTiming,
 } from "@/types/graphs"
@@ -400,6 +402,27 @@ export function useCrawlSchedules(graphId: string) {
   })
 }
 
+export function useAllCrawlSchedules() {
+  return useQuery({
+    queryKey: ["crawl-schedules"],
+    refetchInterval: 15_000,
+    queryFn: async () =>
+      jsonResponse<CrawlScheduleResourceListResponse>(
+        await fetch(apiUrl("/crawl-schedules/"))
+      ),
+  })
+}
+
+export function useCrawlSchedule(scheduleId: string) {
+  return useQuery({
+    queryKey: ["crawl-schedules", scheduleId],
+    queryFn: async () =>
+      jsonResponse<CrawlScheduleResource>(
+        await fetch(apiUrl(`/crawl-schedules/${scheduleId}`))
+      ),
+  })
+}
+
 function useScheduleMutation<TVariables, TResult>(
   graphId: string,
   mutationFn: (variables: TVariables) => Promise<TResult>
@@ -411,6 +434,7 @@ function useScheduleMutation<TVariables, TResult>(
       await queryClient.invalidateQueries({
         queryKey: schedulesKey(graphId),
       })
+      await queryClient.invalidateQueries({ queryKey: ["crawl-schedules"] })
     },
     onError: (error) => toast.error(extractApiError(error)),
   })

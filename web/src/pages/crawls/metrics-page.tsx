@@ -78,6 +78,7 @@ export function CrawlMetricsPage() {
         materializationBacklog={materializationBacklog}
       />
       <SharedPressure capacity={capacityQuery.data} />
+      <DomainPoliteness capacity={capacityQuery.data} />
       <LatestRuns runs={runs} lagByRun={lagByRun} />
     </div>
   )
@@ -255,6 +256,79 @@ function SharedPressure({ capacity }: { capacity?: CrawlConcurrencyLimits }) {
             </p>
           </div>
         ))}
+      </CardContent>
+    </Card>
+  )
+}
+
+function DomainPoliteness({
+  capacity,
+}: {
+  capacity?: CrawlConcurrencyLimits
+}) {
+  const domains = (capacity?.resources ?? [])
+    .filter(
+      (resource) =>
+        resource.name.startsWith("remote:") &&
+        (resource.used > 0 || resource.waiting > 0)
+    )
+    .sort(
+      (left, right) =>
+        Number(right.waiting > 0) - Number(left.waiting > 0) ||
+        right.used / right.capacity - left.used / left.capacity ||
+        domainName(left.name).localeCompare(domainName(right.name))
+    )
+
+  if (domains.length === 0) return null
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Live domain politeness</CardTitle>
+        <CardDescription>
+          Current page acquisitions governed by each domain&apos;s maximum
+          concurrency. Limits disappear after their permits and waiters drain.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto rounded-md border">
+          <Table>
+            <TableHeader className="bg-muted/30">
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="pl-4">Domain</TableHead>
+                <TableHead className="w-[12rem]">Concurrency</TableHead>
+                <TableHead className="w-[10rem] pr-4 text-right">
+                  Waiting
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {domains.map((resource) => (
+                <TableRow key={resource.name}>
+                  <TableCell className="py-3 pl-4 font-medium">
+                    {domainName(resource.name)}
+                  </TableCell>
+                  <TableCell className="py-3 tabular-nums">
+                    {resource.used.toLocaleString()} /{" "}
+                    {resource.capacity.toLocaleString()} active
+                  </TableCell>
+                  <TableCell className="py-3 pr-4 text-right tabular-nums">
+                    {resource.waiting > 0 ? (
+                      <span className="font-medium text-amber-700 dark:text-amber-400">
+                        {resource.waiting.toLocaleString()}
+                        {resource.oldest_wait_seconds > 0
+                          ? ` · oldest ${formatAge(resource.oldest_wait_seconds * 1_000)}`
+                          : ""}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">0</span>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       </CardContent>
     </Card>
   )
@@ -553,6 +627,10 @@ function resourceLabel(name: string) {
   if (name === "object:read") return "Object reads"
   if (name === "object:write") return "Object writes"
   return name
+}
+
+function domainName(resourceName: string) {
+  return resourceName.slice("remote:".length)
 }
 
 function isActiveRun(run: GraphRunRecord) {

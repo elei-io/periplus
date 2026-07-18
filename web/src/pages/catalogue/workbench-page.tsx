@@ -956,9 +956,20 @@ function CrawlLaunchOutput({
         <span className="text-primary" aria-hidden="true">
           {active ? "›" : "✓"}
         </span>
-        {runId
-          ? `Graph run ${status.replaceAll("_", " ")}`
-          : `Starting ${graphSlug}`}
+        {runId ? (
+          <>
+            Graph{" "}
+            <a
+              href={`/crawls/graphs/${selectedGraph.id}`}
+              className="text-link hover:underline"
+            >
+              {selectedGraph.slug}
+            </a>{" "}
+            · {status.replaceAll("_", " ")}
+          </>
+        ) : (
+          `Starting ${graphSlug}`
+        )}
         {active && <TerminalSpinner />}
       </p>
       {runId && (

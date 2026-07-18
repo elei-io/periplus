@@ -15,6 +15,8 @@ Each delivery represents one page. The worker claims the request, obtains Atlas 
 capacity, obtains the URL's domain concurrency permit, observes its minimum request interval,
 connects to the configured CDP endpoint, navigates, applies the enabled content-completion moves,
 captures final HTML or an accepted artifact, stores it, and publishes ingestion work.
+Each worker process owns one Playwright driver, while every delivery opens and closes its own CDP
+connection and page so crawl state is not shared between deliveries.
 When every method is disabled it sends no browser-only script or page-completion commands and
 performs no page evaluation or interaction. It then ACKs. It never opens DuckLake, evaluates edges,
 or chooses a provider.

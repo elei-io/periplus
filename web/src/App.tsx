@@ -54,6 +54,16 @@ const CrawlMetricsPage = lazy(() =>
     default: module.CrawlMetricsPage,
   }))
 )
+const CrawlSchedulesPage = lazy(() =>
+  import("@/pages/crawls/schedules-page").then((module) => ({
+    default: module.CrawlSchedulesPage,
+  }))
+)
+const CrawlScheduleDetailPage = lazy(() =>
+  import("@/pages/crawls/schedules-page").then((module) => ({
+    default: module.CrawlScheduleDetailPage,
+  }))
+)
 const CrawlPoliciesPage = lazy(() =>
   import("@/pages/settings/crawl-policies-page").then((module) => ({
     default: module.CrawlPoliciesPage,
@@ -181,6 +191,21 @@ export function App() {
 
     if (activeItem.href === "/crawls/metrics") {
       return <CrawlMetricsPage />
+    }
+
+    if (activeItem.href === "/crawls/schedules") {
+      const scheduleId = pathname.match(
+        /^\/crawls\/schedules\/([^/]+)$/
+      )?.[1]
+      if (scheduleId) {
+        return (
+          <CrawlScheduleDetailPage
+            scheduleId={decodeURIComponent(scheduleId)}
+            onNavigate={handleNavigate}
+          />
+        )
+      }
+      return <CrawlSchedulesPage onNavigate={handleNavigate} />
     }
 
     if (activeItem.href === "/crawl-policies") {

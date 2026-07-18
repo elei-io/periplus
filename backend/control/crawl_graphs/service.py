@@ -1,6 +1,5 @@
 """Postgres-backed crawl-graph definitions and frozen execution snapshots."""
 
-from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import delete, select
@@ -182,7 +181,6 @@ def create_node(session: Session, graph_id: UUID, request: CrawlGraphNodeCreate)
 def update_node(session: Session, graph_id: UUID, node_id: UUID, request: CrawlGraphNodeUpdate) -> CrawlGraphNodeRecord:
     _require_user_owned(get_graph(session, graph_id, lock=True))
     node = _get_node(session, graph_id, node_id, lock=True)
-    _require_unused(node.used_at, "node")
     node.name = _clean(request.name)
     node.description = request.description
     _flush_conflict(session, "A node with this name already exists in the graph.")
@@ -243,7 +241,6 @@ def create_edge(session: Session, graph_id: UUID, request: CrawlGraphEdgeCreate)
 def update_edge(session: Session, graph_id: UUID, edge_id: UUID, request: CrawlGraphEdgeUpdate) -> CrawlGraphEdgeRecord:
     _require_user_owned(get_graph(session, graph_id, lock=True))
     edge = _get_edge(session, graph_id, edge_id, lock=True)
-    _require_unused(edge.used_at, "edge")
     _require_endpoints(session, graph_id, request.source_node_id, request.target_node_id)
     validate_edge_sql(request.sql)
     edge.source_node_id = request.source_node_id
@@ -268,13 +265,8 @@ def freeze_graph(session: Session, graph_id: UUID) -> FrozenGraphSnapshot:
         raise CrawlGraphValidationError("A crawl graph run requires a root node.")
     if not any(node.id == graph.root_node_id for node in graph.nodes):
         raise CrawlGraphValidationError("The crawl graph root node does not belong to the graph.")
-    now = datetime.now(UTC)
     nodes = sorted(graph.nodes, key=lambda item: (item.created_at, str(item.id)))
     edges = sorted(graph.edges, key=lambda item: (item.created_at, str(item.id)))
-    for component in [*nodes, *edges]:
-        if component.used_at is None:
-            component.used_at = now
-    session.flush()
     return FrozenGraphSnapshot(
         graph_id=graph.id,
         root_node_id=graph.root_node_id,
@@ -348,11 +340,6 @@ def _require_endpoints(session: Session, graph_id: UUID, source_id: UUID, target
     found = set(session.scalars(select(CrawlGraphNode.id).where(CrawlGraphNode.graph_id == graph_id, CrawlGraphNode.id.in_({source_id, target_id}))))
     if found != {source_id, target_id}:
         raise CrawlGraphValidationError("Edge source and target nodes must belong to this graph.")
-
-
-def _require_unused(used_at: datetime | None, kind: str) -> None:
-    if used_at is not None:
-        raise CrawlGraphConflictError(f"A used crawl graph {kind} cannot be edited.")
 
 
 def _require_user_owned(graph: CrawlGraph) -> None:

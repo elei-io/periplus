@@ -15,8 +15,8 @@ from typing import Awaitable, Callable, TypeVar
 from urllib.parse import urlparse
 
 from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Playwright
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-from playwright.async_api import async_playwright
 from sqlalchemy.orm import Session
 
 from config import get_str
@@ -388,173 +388,61 @@ def _attempt(
     )
 
 
-async def _acquire(url: str, policy, *, attempt_number: int) -> CrawlPage:
+async def _acquire(
+    url: str,
+    policy,
+    *,
+    attempt_number: int,
+    playwright: Playwright,
+) -> CrawlPage:
     started = time.perf_counter()
     started_at = datetime.now(UTC)
     browser = None
     try:
         async with asyncio.timeout(ACQUISITION_TIMEOUT_SECONDS):
-            async with async_playwright() as playwright:
+            try:
+                browser = await playwright.chromium.connect_over_cdp(get_str("CDP_URL"))
+            except PlaywrightTimeoutError as exc:
+                return _failed_page(url, started, started_at, attempt_number, str(exc) or "CDP connection timed out", "cdp_connection_timeout", "connection", True)
+            except (OSError, PlaywrightError) as exc:
+                return _failed_page(url, started, started_at, attempt_number, str(exc), "cdp_connection_failed", "connection", True)
+            try:
+                completion = policy.content.completion
+                # A static policy is expressed by omitting browser-only CDP
+                # operations. Explicitly disabling script execution is itself
+                # such an operation and would force a lazy HTTP CDP facade to
+                # promote the request to a browser.
+                page = await browser.new_page()
+                steps: list[CrawlStepEvidence] = []
+                status: int | None = None
+                media_type = "text/html"
+                final_url = page.url
+                html: str | None = None
+                navigation_timed_out = False
+                navigation_timeout_detail = ""
                 try:
-                    browser = await playwright.chromium.connect_over_cdp(get_str("CDP_URL"))
+                    response = await page.goto(
+                        url,
+                        wait_until="domcontentloaded",
+                        timeout=completion.navigation.timeout_ms,
+                    )
                 except PlaywrightTimeoutError as exc:
-                    return _failed_page(url, started, started_at, attempt_number, str(exc) or "CDP connection timed out", "cdp_connection_timeout", "connection", True)
-                except (OSError, PlaywrightError) as exc:
-                    return _failed_page(url, started, started_at, attempt_number, str(exc), "cdp_connection_failed", "connection", True)
-                try:
-                    completion = policy.content.completion
-                    # A static policy is expressed by omitting browser-only CDP
-                    # operations. Explicitly disabling script execution is itself
-                    # such an operation and would force a lazy HTTP CDP facade to
-                    # promote the request to a browser.
-                    page = await browser.new_page()
-                    steps: list[CrawlStepEvidence] = []
-                    status: int | None = None
-                    media_type = "text/html"
-                    final_url = page.url
-                    html: str | None = None
-                    navigation_timed_out = False
-                    navigation_timeout_detail = ""
-                    try:
-                        response = await page.goto(
-                            url,
-                            wait_until="domcontentloaded",
-                            timeout=completion.navigation.timeout_ms,
-                        )
-                    except PlaywrightTimeoutError as exc:
-                        navigation_timed_out = True
-                        navigation_timeout_detail = (
-                            str(exc) or "Page navigation timed out"
-                        )
-                        if completion.browser_interaction_enabled:
-                            meaningful = await _with_context_recovery(
-                                page,
-                                lambda: _document_is_meaningful(page),
-                                completion.navigation,
-                            )
-                        elif not page.url or page.url == "about:blank":
-                            meaningful = False
-                        else:
-                            html = await page.content()
-                            meaningful = _html_is_meaningful(html)
-                        if not meaningful:
-                            return _failed_page(
-                                url,
-                                started,
-                                started_at,
-                                attempt_number,
-                                navigation_timeout_detail,
-                                "navigation_timeout",
-                                "navigation",
-                                True,
-                            )
-                        if completion.browser_interaction_enabled:
-                            await _with_context_recovery(
-                                page,
-                                lambda: _stop_navigation(page),
-                                completion.navigation,
-                            )
-                        response = None
-                    status = response.status if response is not None else None
-                    final_url = page.url
-                    content_type = await response.header_value("content-type") if response is not None else None
-                    media_type = _media_type(content_type)
-                    retry_after = _retry_after(await response.header_value("retry-after") if response is not None else None)
-                    outcome = _status_outcome(status, policy)
-                    if outcome != "accept":
-                        await browser.close()
-                        browser = None
-                        return _response_outcome_page(url=final_url, requested_url=url, started=started, started_at=started_at, attempt_number=attempt_number, status=status, media_type=media_type, outcome=outcome, failure_code="http_status", retry_after=retry_after)
-                    if not _accepted_media_type(media_type, policy.content.accepted_content_types):
-                        outcome = policy.content.response_rules.unsupported_content_type
-                        if outcome != "accept":
-                            await browser.close()
-                            browser = None
-                            return _response_outcome_page(url=final_url, requested_url=url, started=started, started_at=started_at, attempt_number=attempt_number, status=status, media_type=media_type, outcome=outcome, failure_code="unsupported_content_type")
-                    if media_type not in {"text/html", "application/xhtml+xml"}:
-                        artifact = await response.body() if response is not None else b""
-                        evidence = _attempt(number=attempt_number, started_at=started_at, requested_url=url, final_url=final_url, status_code=status, media_type=media_type, outcome="success")
-                        await browser.close()
-                        browser = None
-                        return CrawlPage(url=final_url, success=True, status_code=status, duration_seconds=time.perf_counter() - started, outcome="success", response_media_type=media_type, artifact=artifact, attempt_evidence=evidence)
-                    if completion.wait_dynamic.enabled:
-                        steps.append(
-                            await _with_context_recovery(
-                                page,
-                                lambda: _wait_dynamic(
-                                    page,
-                                    completion.wait_dynamic,
-                                    attempt_number=attempt_number,
-                                    step_ordinal=len(steps) + 1,
-                                ),
-                                completion.navigation,
-                            )
-                        )
-                    if completion.wait_fixed.enabled:
-                        steps.append(
-                            await _with_context_recovery(
-                                page,
-                                lambda: _wait_fixed(
-                                    page,
-                                    completion.wait_fixed,
-                                    attempt_number=attempt_number,
-                                    step_ordinal=len(steps) + 1,
-                                ),
-                                completion.navigation,
-                            )
-                        )
-                    if completion.scroll.enabled:
-                        steps.append(
-                            await _with_context_recovery(
-                                page,
-                                lambda: _scroll(
-                                    page,
-                                    completion.scroll,
-                                    attempt_number=attempt_number,
-                                    step_ordinal=len(steps) + 1,
-                                ),
-                                completion.navigation,
-                            )
-                        )
-                    if completion.expand.enabled:
-                        steps.append(
-                            await _with_context_recovery(
-                                page,
-                                lambda: _expand(
-                                    page,
-                                    completion.expand,
-                                    attempt_number=attempt_number,
-                                    step_ordinal=len(steps) + 1,
-                                ),
-                                completion.navigation,
-                            )
-                        )
-                    if (
-                        completion.scroll.enabled
-                        and steps
-                        and steps[-1].method == "expand"
-                        and steps[-1].changed
-                    ):
-                        steps.append(
-                            await _with_context_recovery(
-                                page,
-                                lambda: _scroll(
-                                    page,
-                                    completion.scroll,
-                                    attempt_number=attempt_number,
-                                    step_ordinal=len(steps) + 1,
-                                ),
-                                completion.navigation,
-                            )
-                        )
-                    if html is None:
-                        html = await _with_context_recovery(
+                    navigation_timed_out = True
+                    navigation_timeout_detail = (
+                        str(exc) or "Page navigation timed out"
+                    )
+                    if completion.browser_interaction_enabled:
+                        meaningful = await _with_context_recovery(
                             page,
-                            lambda: _page_content(page),
+                            lambda: _document_is_meaningful(page),
                             completion.navigation,
                         )
-                    final_url = page.url
-                    if navigation_timed_out and not html.strip():
+                    elif not page.url or page.url == "about:blank":
+                        meaningful = False
+                    else:
+                        html = await page.content()
+                        meaningful = _html_is_meaningful(html)
+                    if not meaningful:
                         return _failed_page(
                             url,
                             started,
@@ -565,20 +453,137 @@ async def _acquire(url: str, policy, *, attempt_number: int) -> CrawlPage:
                             "navigation",
                             True,
                         )
-                except ExecutionContextReplacedError as exc:
-                    try:
-                        html = await page.content()
-                    except PlaywrightError:
-                        return _failed_page(url, started, started_at, attempt_number, str(exc), "execution_context_replaced", "completion", True)
-                    if not _html_is_meaningful(html):
-                        return _failed_page(url, started, started_at, attempt_number, str(exc), "execution_context_replaced", "completion", True)
-                    final_url = page.url
-                except PlaywrightTimeoutError as exc:
-                    return _failed_page(url, started, started_at, attempt_number, str(exc) or "Page navigation timed out", "navigation_timeout", "navigation", True)
-                except PlaywrightError as exc:
-                    return _failed_page(url, started, started_at, attempt_number, str(exc), "navigation_failed", "navigation", True)
-                await browser.close()
-                browser = None
+                    if completion.browser_interaction_enabled:
+                        await _with_context_recovery(
+                            page,
+                            lambda: _stop_navigation(page),
+                            completion.navigation,
+                        )
+                    response = None
+                status = response.status if response is not None else None
+                final_url = page.url
+                content_type = await response.header_value("content-type") if response is not None else None
+                media_type = _media_type(content_type)
+                retry_after = _retry_after(await response.header_value("retry-after") if response is not None else None)
+                outcome = _status_outcome(status, policy)
+                if outcome != "accept":
+                    await browser.close()
+                    browser = None
+                    return _response_outcome_page(url=final_url, requested_url=url, started=started, started_at=started_at, attempt_number=attempt_number, status=status, media_type=media_type, outcome=outcome, failure_code="http_status", retry_after=retry_after)
+                if not _accepted_media_type(media_type, policy.content.accepted_content_types):
+                    outcome = policy.content.response_rules.unsupported_content_type
+                    if outcome != "accept":
+                        await browser.close()
+                        browser = None
+                        return _response_outcome_page(url=final_url, requested_url=url, started=started, started_at=started_at, attempt_number=attempt_number, status=status, media_type=media_type, outcome=outcome, failure_code="unsupported_content_type")
+                if media_type not in {"text/html", "application/xhtml+xml"}:
+                    artifact = await response.body() if response is not None else b""
+                    evidence = _attempt(number=attempt_number, started_at=started_at, requested_url=url, final_url=final_url, status_code=status, media_type=media_type, outcome="success")
+                    await browser.close()
+                    browser = None
+                    return CrawlPage(url=final_url, success=True, status_code=status, duration_seconds=time.perf_counter() - started, outcome="success", response_media_type=media_type, artifact=artifact, attempt_evidence=evidence)
+                if completion.wait_dynamic.enabled:
+                    steps.append(
+                        await _with_context_recovery(
+                            page,
+                            lambda: _wait_dynamic(
+                                page,
+                                completion.wait_dynamic,
+                                attempt_number=attempt_number,
+                                step_ordinal=len(steps) + 1,
+                            ),
+                            completion.navigation,
+                        )
+                    )
+                if completion.wait_fixed.enabled:
+                    steps.append(
+                        await _with_context_recovery(
+                            page,
+                            lambda: _wait_fixed(
+                                page,
+                                completion.wait_fixed,
+                                attempt_number=attempt_number,
+                                step_ordinal=len(steps) + 1,
+                            ),
+                            completion.navigation,
+                        )
+                    )
+                if completion.scroll.enabled:
+                    steps.append(
+                        await _with_context_recovery(
+                            page,
+                            lambda: _scroll(
+                                page,
+                                completion.scroll,
+                                attempt_number=attempt_number,
+                                step_ordinal=len(steps) + 1,
+                            ),
+                            completion.navigation,
+                        )
+                    )
+                if completion.expand.enabled:
+                    steps.append(
+                        await _with_context_recovery(
+                            page,
+                            lambda: _expand(
+                                page,
+                                completion.expand,
+                                attempt_number=attempt_number,
+                                step_ordinal=len(steps) + 1,
+                            ),
+                            completion.navigation,
+                        )
+                    )
+                if (
+                    completion.scroll.enabled
+                    and steps
+                    and steps[-1].method == "expand"
+                    and steps[-1].changed
+                ):
+                    steps.append(
+                        await _with_context_recovery(
+                            page,
+                            lambda: _scroll(
+                                page,
+                                completion.scroll,
+                                attempt_number=attempt_number,
+                                step_ordinal=len(steps) + 1,
+                            ),
+                            completion.navigation,
+                        )
+                    )
+                if html is None:
+                    html = await _with_context_recovery(
+                        page,
+                        lambda: _page_content(page),
+                        completion.navigation,
+                    )
+                final_url = page.url
+                if navigation_timed_out and not html.strip():
+                    return _failed_page(
+                        url,
+                        started,
+                        started_at,
+                        attempt_number,
+                        navigation_timeout_detail,
+                        "navigation_timeout",
+                        "navigation",
+                        True,
+                    )
+            except ExecutionContextReplacedError as exc:
+                try:
+                    html = await page.content()
+                except PlaywrightError:
+                    return _failed_page(url, started, started_at, attempt_number, str(exc), "execution_context_replaced", "completion", True)
+                if not _html_is_meaningful(html):
+                    return _failed_page(url, started, started_at, attempt_number, str(exc), "execution_context_replaced", "completion", True)
+                final_url = page.url
+            except PlaywrightTimeoutError as exc:
+                return _failed_page(url, started, started_at, attempt_number, str(exc) or "Page navigation timed out", "navigation_timeout", "navigation", True)
+            except PlaywrightError as exc:
+                return _failed_page(url, started, started_at, attempt_number, str(exc), "navigation_failed", "navigation", True)
+            await browser.close()
+            browser = None
         evidence = _attempt(number=attempt_number, started_at=started_at, requested_url=url, final_url=final_url, status_code=status, media_type=media_type, outcome="success")
         return CrawlPage(url=final_url, success=True, status_code=status, duration_seconds=time.perf_counter() - started, html=html, outcome="success", response_media_type=media_type, attempt_evidence=evidence, steps=tuple(steps))
     except TimeoutError as exc:
@@ -606,7 +611,18 @@ def _failed_page(url: str, started: float, started_at: datetime, attempt_number:
     return CrawlPage(url=url, success=False, duration_seconds=time.perf_counter() - started, error=error, failure_code=code, failure_stage=stage, failure_retryable=retryable, outcome="failed", attempt_evidence=evidence)
 
 
-async def crawl_graph_request(*, session: Session | None, url: str, context: GraphExecutionContext, repository_pipeline: AcquisitionPipeline | None = None, resource_grants=None, domain_pacing=None, persist_retryable_failure: bool = True, **_kwargs) -> CrawlPage:
+async def crawl_graph_request(
+    *,
+    session: Session | None,
+    url: str,
+    context: GraphExecutionContext,
+    playwright: Playwright,
+    repository_pipeline: AcquisitionPipeline | None = None,
+    resource_grants=None,
+    domain_pacing=None,
+    persist_retryable_failure: bool = True,
+    **_kwargs,
+) -> CrawlPage:
     del session
     effective = EffectivePolicySnapshot.model_validate(context.effective_policy_snapshot_json)
     policy = effective.crawl
@@ -620,12 +636,22 @@ async def crawl_graph_request(*, session: Session | None, url: str, context: Gra
         if resource_grants is None:
             if domain_pacing is not None:
                 await wait_for_domain_interval(domain_pacing, domain=remote_domain, interval_seconds=domain.minimum_request_interval_seconds)
-            page = await _acquire(normalized, policy, attempt_number=attempt_number)
+            page = await _acquire(
+                normalized,
+                policy,
+                attempt_number=attempt_number,
+                playwright=playwright,
+            )
         else:
             async with resource_permits(resource_grants, remote_request(f"domain:{context.crawl_request_id}:{attempt_number}", remote_domain=remote_domain, concurrency=domain.maximum_concurrency), acquire_timeout=DURABLE_RESOURCE_WAIT):
                 if domain_pacing is not None:
                     await wait_for_domain_interval(domain_pacing, domain=remote_domain, interval_seconds=domain.minimum_request_interval_seconds)
-                page = await _acquire(normalized, policy, attempt_number=attempt_number)
+                page = await _acquire(
+                    normalized,
+                    policy,
+                    attempt_number=attempt_number,
+                    playwright=playwright,
+                )
         if not page.success and page.failure_retryable and not persist_retryable_failure:
             raise RetryableAcquisitionError(page)
         identity = identify_html(page.html) if page.html is not None and page.success else None

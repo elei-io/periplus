@@ -10,7 +10,6 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 
 import { GraphCanvas } from "@/components/crawl-graph/graph-canvas"
-import { SchedulesPanel } from "@/components/crawl-graph/schedules-panel"
 import { SqlEditor } from "@/components/catalogue/sql-editor"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -31,12 +30,6 @@ import {
   SelectTrigger,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs"
 import {
   useCreateCrawlGraph,
   useCreateCrawlGraphEdge,
@@ -341,22 +334,11 @@ function GraphDetail({
         </div>
       </header>
 
-      <Tabs defaultValue="graph">
-        <TabsList>
-          <TabsTrigger value="graph">Graph</TabsTrigger>
-          <TabsTrigger value="schedules">Schedules</TabsTrigger>
-        </TabsList>
-        <TabsContent value="graph" className="pt-4">
-          <GraphCanvas
-            graph={graph}
-            runId={activeRunId}
-            readOnly={graph.system_owned}
-          />
-        </TabsContent>
-        <TabsContent value="schedules">
-          <SchedulesPanel graph={graph} />
-        </TabsContent>
-      </Tabs>
+      <GraphCanvas
+        graph={graph}
+        runId={activeRunId}
+        readOnly={graph.system_owned}
+      />
     </div>
   )
 }
@@ -442,10 +424,7 @@ function NodeRow({
   return (
     <div className="flex items-center justify-between gap-3 rounded-md border p-3">
       <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium">{node.name}</span>
-          {node.used_at ? <Badge variant="outline">Used</Badge> : null}
-        </div>
+        <span className="truncate text-sm font-medium">{node.name}</span>
         <p className="truncate text-xs text-muted-foreground">
           {node.description || node.id}
         </p>
@@ -627,7 +606,6 @@ function EdgeRow({
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-medium">{edge.name}</span>
             {selfEdge ? <Badge variant="secondary">Self-edge</Badge> : null}
-            {edge.used_at ? <Badge variant="outline">Used</Badge> : null}
           </div>
           <p className="text-xs text-muted-foreground">
             {nodeNames.get(edge.source_node_id) ?? edge.source_node_id} →{" "}

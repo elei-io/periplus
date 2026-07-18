@@ -101,6 +101,15 @@ class CrawlScheduleList(BaseModel):
     total: int
 
 
+class CrawlScheduleResource(CrawlScheduleRecord):
+    graph_slug: str
+
+
+class CrawlScheduleResourceList(BaseModel):
+    items: list[CrawlScheduleResource]
+    total: int
+
+
 class SchedulePreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     timing: ScheduleTiming

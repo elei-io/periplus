@@ -11,6 +11,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from control.crawl_graphs.models import CrawlGraph
 from control.crawl_graphs.service import get_graph
 from control.urls import normalize_url
 
@@ -19,6 +20,7 @@ from .schemas import (
     CronTiming,
     CrawlScheduleCreate,
     CrawlScheduleRecord,
+    CrawlScheduleResource,
     CrawlScheduleUpdate,
     IntervalTiming,
     SchedulePreviewRequest,
@@ -200,6 +202,40 @@ def list_schedules(session: Session, graph_id: UUID) -> list[CrawlScheduleRecord
         .order_by(CrawlSchedule.created_at)
     )
     return [record(schedule) for schedule in schedules]
+
+
+def list_schedule_resources(session: Session) -> list[CrawlScheduleResource]:
+    rows = session.execute(
+        select(CrawlSchedule, CrawlGraph.slug)
+        .join(CrawlGraph, CrawlGraph.id == CrawlSchedule.graph_id)
+        .order_by(CrawlSchedule.created_at.desc())
+    )
+    return [
+        CrawlScheduleResource(
+            **record(schedule).model_dump(),
+            graph_slug=graph_slug,
+        )
+        for schedule, graph_slug in rows
+    ]
+
+
+def get_schedule_resource(
+    session: Session, schedule_id: UUID
+) -> CrawlScheduleResource:
+    row = session.execute(
+        select(CrawlSchedule, CrawlGraph.slug)
+        .join(CrawlGraph, CrawlGraph.id == CrawlSchedule.graph_id)
+        .where(CrawlSchedule.id == schedule_id)
+    ).one_or_none()
+    if row is None:
+        raise CrawlScheduleNotFoundError(
+            f"Crawl schedule {schedule_id} was not found."
+        )
+    schedule, graph_slug = row
+    return CrawlScheduleResource(
+        **record(schedule).model_dump(),
+        graph_slug=graph_slug,
+    )
 
 
 def get_schedule(

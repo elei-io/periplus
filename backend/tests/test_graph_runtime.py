@@ -123,6 +123,7 @@ class GraphRuntimeTests(unittest.TestCase):
             object(),
             object(),
             "http",
+            playwright=object(),
         )
 
         message.term.assert_awaited_once()
@@ -162,15 +163,19 @@ class GraphRuntimeTests(unittest.TestCase):
             error="network failed",
             document_id=None,
         )
+        acquire = AsyncMock(return_value=failure)
+        playwright = object()
         with (
-            patch("workers.acquisition.crawl_graph_request", AsyncMock(return_value=failure)),
+            patch("workers.acquisition.crawl_graph_request", acquire),
             patch("workers.acquisition.transition_node_progress", AsyncMock()),
             patch("workers.acquisition.settle_request", AsyncMock()) as settle,
         ):
             await _process_crawl(
-                Message(), runs, requests, object(), object(), object(), "http"
+                Message(), runs, requests, object(), object(), object(), "http",
+                playwright=playwright,
             )
 
+        self.assertIs(acquire.await_args.kwargs["playwright"], playwright)
         settle.assert_awaited_once()
         self.assertEqual(settle.await_args.kwargs["status"], "failed")
         self.assertEqual(settle.await_args.kwargs["error"], "network failed")
@@ -218,7 +223,8 @@ class GraphRuntimeTests(unittest.TestCase):
             patch("workers.acquisition.settle_request", AsyncMock()),
         ):
             await _process_crawl(
-                Message(), runs, requests, object(), object(), object(), "http"
+                Message(), runs, requests, object(), object(), object(), "http",
+                playwright=object(),
             )
 
         acquire.assert_awaited_once()
@@ -258,7 +264,8 @@ class GraphRuntimeTests(unittest.TestCase):
             patch("workers.acquisition.settle_request", AsyncMock()) as settle,
         ):
             await _process_crawl(
-                Message(), runs, requests, object(), object(), object(), "http"
+                Message(), runs, requests, object(), object(), object(), "http",
+                playwright=object(),
             )
 
         current = await get_crawl_request(requests, request.id)
@@ -317,7 +324,8 @@ class GraphRuntimeTests(unittest.TestCase):
             patch("workers.acquisition.settle_request", AsyncMock()) as settle,
         ):
             await _process_crawl(
-                Message(), runs, requests, object(), object(), object(), "http"
+                Message(), runs, requests, object(), object(), object(), "http",
+                playwright=object(),
             )
 
         current = await get_crawl_request(requests, request.id)

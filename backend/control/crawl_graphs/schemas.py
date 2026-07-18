@@ -56,14 +56,12 @@ class CrawlGraphNodeRecord(CrawlGraphNodeCreate):
     graph_id: UUID
     position_x: float | None = None
     position_y: float | None = None
-    used_at: datetime | None
     created_at: datetime
 
 
 class CrawlGraphEdgeRecord(CrawlGraphEdgeCreate):
     id: UUID
     graph_id: UUID
-    used_at: datetime | None
     created_at: datetime
 
 

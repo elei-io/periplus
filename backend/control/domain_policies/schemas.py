@@ -10,6 +10,12 @@ def normalize_host_match(value: str) -> str:
     host = value.strip().lower()
     if not host or "/" in host or "://" in host or "?" in host or "#" in host:
         raise ValueError("host_match must be * or a hostname")
+    if "*" in host and not (
+        host.startswith("*.") and host.count("*") == 1 and len(host) > 2
+    ) and host != "*":
+        raise ValueError(
+            "host_match must be *, an exact hostname, or a *.domain wildcard"
+        )
     return host
 
 

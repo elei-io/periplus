@@ -4,7 +4,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
+from pydantic import ValidationError
 
+from control.domain_policies.schemas import DomainPolicyCreateRequest
 from control.domain_policies.service import DEFAULT_DOMAIN_POLICY_SLUG, find_domain_policy_for_url
 from runtime.domain_pacing import wait_for_domain_interval
 
@@ -24,6 +26,26 @@ class DomainPolicyResolutionTests(unittest.TestCase):
         self.assertIs(find_domain_policy_for_url(session, url="https://api.example.com/a"), exact)
         self.assertIs(find_domain_policy_for_url(session, url="https://shop.example.com/a"), wildcard)
         self.assertIs(find_domain_policy_for_url(session, url="https://other.test/a"), default)
+
+    def test_request_rejects_unsupported_wildcard_shapes(self):
+        with self.assertRaises(ValidationError):
+            DomainPolicyCreateRequest(
+                slug="books",
+                host_match="*books.toscrape.com*",
+            )
+
+    def test_request_normalizes_supported_host_patterns(self):
+        exact = DomainPolicyCreateRequest(
+            slug="books",
+            host_match=" Books.ToScrape.Com ",
+        )
+        wildcard = DomainPolicyCreateRequest(
+            slug="books-subdomains",
+            host_match=" *.Books.ToScrape.Com ",
+        )
+
+        self.assertEqual(exact.host_match, "books.toscrape.com")
+        self.assertEqual(wildcard.host_match, "*.books.toscrape.com")
 
 
 class FakeBucket:

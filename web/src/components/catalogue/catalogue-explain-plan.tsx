@@ -1,6 +1,11 @@
 import { AlertTriangleIcon, ChevronRightIcon } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
 import type {
   CatalogueQueryResult,
   CatalogueStatementKind,
@@ -65,7 +70,9 @@ export function CatalogueExplainPlan({
         </div>
       ) : null}
 
-      {analyzed && plan.profile ? <ProfileSummary profile={plan.profile} /> : null}
+      {analyzed && plan.profile ? (
+        <ProfileSummary profile={plan.profile} />
+      ) : null}
 
       {plan.nodes.length > 0 ? (
         <div className="p-4">
@@ -80,14 +87,16 @@ export function CatalogueExplainPlan({
         </div>
       ) : null}
 
-      <details className="border-t">
-        <summary className="cursor-pointer px-4 py-3 text-xs font-medium text-muted-foreground hover:text-foreground">
+      <Collapsible className="border-t">
+        <CollapsibleTrigger className="w-full cursor-pointer px-4 py-3 text-left text-xs font-medium text-muted-foreground hover:text-foreground">
           Raw {plan.key || "DuckDB"} JSON
-        </summary>
-        <pre className="overflow-x-auto border-t bg-muted/20 p-4 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
-          {plan.formatted}
-        </pre>
-      </details>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <pre className="overflow-x-auto border-t bg-muted/20 p-4 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+            {plan.formatted}
+          </pre>
+        </CollapsibleContent>
+      </Collapsible>
     </section>
   )
 }
@@ -97,9 +106,15 @@ function ProfileSummary({ profile }: { profile: JsonRecord }) {
     ["Latency", formatSeconds(numberValue(profile.latency))],
     ["CPU time", formatSeconds(numberValue(profile.cpu_time))],
     ["Rows scanned", formatCount(numberValue(profile.cumulative_rows_scanned))],
-    ["Intermediate rows", formatCount(numberValue(profile.cumulative_cardinality))],
+    [
+      "Intermediate rows",
+      formatCount(numberValue(profile.cumulative_cardinality)),
+    ],
     ["Bytes read", formatBytes(numberValue(profile.total_bytes_read))],
-    ["Peak buffer", formatBytes(numberValue(profile.system_peak_buffer_memory))],
+    [
+      "Peak buffer",
+      formatBytes(numberValue(profile.system_peak_buffer_memory)),
+    ],
   ]
 
   return (
@@ -109,7 +124,9 @@ function ProfileSummary({ profile }: { profile: JsonRecord }) {
           <div className="text-[10px] tracking-wide text-muted-foreground uppercase">
             {label}
           </div>
-          <div className="mt-1 font-mono text-sm font-medium tabular-nums">{value}</div>
+          <div className="mt-1 font-mono text-sm font-medium tabular-nums">
+            {value}
+          </div>
         </div>
       ))}
     </div>
@@ -159,7 +176,7 @@ function PlanTreeNode({ node }: { node: PlanNode }) {
 
 function MetricPill({ label, value }: { label: string; value: string }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+    <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground tabular-nums">
       <span>{value}</span>
       <span>{label}</span>
     </span>
@@ -169,19 +186,24 @@ function MetricPill({ label, value }: { label: string; value: string }) {
 function PlanDetail({ label, value }: { label: string; value: unknown }) {
   if (label === "Projections" && Array.isArray(value) && value.length > 4) {
     return (
-      <details className="min-w-0">
-        <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+      <Collapsible className="min-w-0">
+        <CollapsibleTrigger className="cursor-pointer text-left text-muted-foreground hover:text-foreground">
           <span className="font-medium text-foreground">{label}</span>
           <span className="ml-2">{value.length.toLocaleString()} columns</span>
-        </summary>
-        <div className="mt-2 flex flex-wrap gap-1">
-          {value.map((item, index) => (
-            <code key={`${String(item)}-${index}`} className="rounded bg-muted px-1.5 py-0.5 text-[10px]">
-              {String(item)}
-            </code>
-          ))}
-        </div>
-      </details>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="mt-2 flex flex-wrap gap-1">
+            {value.map((item, index) => (
+              <code
+                key={`${String(item)}-${index}`}
+                className="rounded bg-muted px-1.5 py-0.5 text-[10px]"
+              >
+                {String(item)}
+              </code>
+            ))}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
     )
   }
 
@@ -189,7 +211,7 @@ function PlanDetail({ label, value }: { label: string; value: unknown }) {
     <div className="flex min-w-0 items-start gap-2">
       <span className="shrink-0 font-medium">{label}</span>
       <ChevronRightIcon className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 break-words font-mono text-[11px] text-muted-foreground">
+      <span className="min-w-0 font-mono text-[11px] break-words text-muted-foreground">
         {formatDetail(value)}
       </span>
     </div>
@@ -221,7 +243,9 @@ function parseExplainPlan(result: CatalogueQueryResult): ParsedExplainPlan {
       : profile
         ? arrayValue(profile.children)
         : []
-    const nodes = roots.map(normalizeNode).filter((node): node is PlanNode => node !== null)
+    const nodes = roots
+      .map(normalizeNode)
+      .filter((node): node is PlanNode => node !== null)
     return {
       key,
       formatted: JSON.stringify(parsed, null, 2),
@@ -300,7 +324,8 @@ function formatCount(value: number | null): string {
 
 function formatSeconds(value: number | null): string {
   if (value === null) return "—"
-  if (value < 0.001) return `${Math.round(value * 1_000_000).toLocaleString()} µs`
+  if (value < 0.001)
+    return `${Math.round(value * 1_000_000).toLocaleString()} µs`
   if (value < 1) return `${(value * 1_000).toFixed(1)} ms`
   return `${value.toFixed(2)} s`
 }

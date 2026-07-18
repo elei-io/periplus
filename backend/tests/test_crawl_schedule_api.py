@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from api.routers.crawl_schedules import router
+from api.routers.crawl_schedules import resource_router, router
 from control.crawl_graphs.models import CrawlGraph, CrawlGraphEdge, CrawlGraphNode
 from control.crawl_graphs.schemas import CrawlGraphCreate, CrawlGraphNodeCreate
 from control.crawl_graphs.service import create_graph, create_node
@@ -46,6 +46,7 @@ class CrawlScheduleApiTests(unittest.TestCase):
             session.commit()
         app = FastAPI()
         app.include_router(router)
+        app.include_router(resource_router)
 
         def session_override():
             with Session(self.engine, expire_on_commit=False) as session:
@@ -81,6 +82,19 @@ class CrawlScheduleApiTests(unittest.TestCase):
         )
         self.assertEqual(listing.json()["total"], 1)
 
+        resources = self.client.get("/crawl-schedules/")
+        self.assertEqual(resources.status_code, 200, resources.text)
+        self.assertEqual(resources.json()["total"], 1)
+        self.assertEqual(resources.json()["items"][0]["id"], schedule_id)
+        self.assertEqual(
+            resources.json()["items"][0]["graph_slug"], "scheduled"
+        )
+
+        resource = self.client.get(f"/crawl-schedules/{schedule_id}")
+        self.assertEqual(resource.status_code, 200, resource.text)
+        self.assertEqual(resource.json()["graph_id"], str(self.graph_id))
+        self.assertEqual(resource.json()["graph_slug"], "scheduled")
+
         paused = self.client.put(
             f"/crawl-graphs/{self.graph_id}/schedules/{schedule_id}/enabled",
             json={"enabled": False},
@@ -107,6 +121,10 @@ class CrawlScheduleApiTests(unittest.TestCase):
             f"/crawl-graphs/{self.graph_id}/schedules/{schedule_id}"
         )
         self.assertEqual(deleted.status_code, 204)
+        missing_resource = self.client.get(
+            f"/crawl-schedules/{schedule_id}"
+        )
+        self.assertEqual(missing_resource.status_code, 404)
 
     def test_invalid_schedule_url_is_422(self) -> None:
         response = self.client.post(

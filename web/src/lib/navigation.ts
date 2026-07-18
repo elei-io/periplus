@@ -8,6 +8,7 @@ import {
   Globe2Icon,
   SquareTerminalIcon,
   ViewIcon,
+  CalendarClockIcon,
 } from "lucide-react"
 
 import type { NavigationGroup } from "@/types/navigation"
@@ -58,6 +59,13 @@ export const navigationGroups: NavigationGroup[] = [
         icon: GitForkIcon,
         title: "Crawl Graphs",
         description: "Compose crawl nodes with SQL-defined edges.",
+      },
+      {
+        name: "Schedules",
+        href: "/crawls/schedules",
+        icon: CalendarClockIcon,
+        title: "Crawl Schedules",
+        description: "Run crawl graphs automatically on intervals or cron.",
       },
       {
         name: "Metrics",
@@ -131,6 +139,11 @@ export function findNavigationItem(pathname: string) {
     return navigationGroups
       .flatMap((group) => group.items)
       .find((item) => item.href === "/crawls/graphs")
+  }
+  if (pathname.startsWith("/crawls/schedules/")) {
+    return navigationGroups
+      .flatMap((group) => group.items)
+      .find((item) => item.href === "/crawls/schedules")
   }
   for (const href of [
     "/catalogue/queries",

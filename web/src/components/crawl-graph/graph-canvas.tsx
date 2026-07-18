@@ -243,7 +243,7 @@ function GraphCanvasContent({
   const nodesRevision = `${runId ?? "no-run"}|${graph.nodes
     .map(
       (node) =>
-        `${node.id}:${node.name}:${node.description}:${node.used_at}:${graph.root_node_id === node.id}`
+        `${node.id}:${node.name}:${node.description}:${graph.root_node_id === node.id}`
     )
     .join("|")}`
 
@@ -495,7 +495,7 @@ function CrawlNodeCard({ data }: NodeProps<CrawlNode>) {
         </ContextMenuTrigger>
         <ContextMenuContent>
           <ContextMenuItem
-            disabled={data.readOnly || Boolean(node.used_at)}
+            disabled={data.readOnly}
             onClick={() => setEditing(true)}
           >
             <PencilIcon />
@@ -709,7 +709,6 @@ function EdgeEditDialog({
             onValueChange={(value) =>
               value && setDedupeMode(value as EdgeDedupeMode)
             }
-            disabled={Boolean(edge.used_at)}
           >
             <SelectTrigger
               className="w-full"
@@ -727,7 +726,6 @@ function EdgeEditDialog({
             <SqlEditor
               value={sql}
               onChange={setSql}
-              readOnly={Boolean(edge.used_at)}
               height="240px"
               ariaLabel="Edge SQL"
               enableCssSelect
@@ -736,7 +734,6 @@ function EdgeEditDialog({
         </div>
         <DialogFooter>
           <Button
-            disabled={Boolean(edge.used_at)}
             onClick={() => {
               onSave(edge, { name, description, sql, dedupe_mode: dedupeMode })
               onOpenChange(false)

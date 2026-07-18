@@ -5,7 +5,6 @@ export type CrawlGraphNode = {
   description: string | null
   position_x: number | null
   position_y: number | null
-  used_at: string | null
   created_at: string
 }
 
@@ -20,7 +19,6 @@ export type CrawlGraphEdge = {
   description: string | null
   sql: string
   dedupe_mode: EdgeDedupeMode
-  used_at: string | null
   created_at: string
 }
 
@@ -78,8 +76,17 @@ export type CrawlSchedule = CrawlScheduleInput & {
   updated_at: string
 }
 
+export type CrawlScheduleResource = CrawlSchedule & {
+  graph_slug: string
+}
+
 export type CrawlScheduleListResponse = {
   items: CrawlSchedule[]
+  total: number
+}
+
+export type CrawlScheduleResourceListResponse = {
+  items: CrawlScheduleResource[]
   total: number
 }
 

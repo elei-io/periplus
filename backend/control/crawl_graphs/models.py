@@ -58,7 +58,6 @@ class CrawlGraphNode(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     position_x: Mapped[float | None] = mapped_column(Float, nullable=True)
     position_y: Mapped[float | None] = mapped_column(Float, nullable=True)
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     graph: Mapped[CrawlGraph] = relationship(back_populates="nodes", foreign_keys=[graph_id])
 
@@ -95,6 +94,5 @@ class CrawlGraphEdge(Base):
         default=EdgeDedupeMode.graph,
         server_default=EdgeDedupeMode.graph.value,
     )
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     graph: Mapped[CrawlGraph] = relationship(back_populates="edges")

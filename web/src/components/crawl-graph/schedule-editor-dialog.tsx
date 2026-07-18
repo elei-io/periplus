@@ -1,19 +1,8 @@
-import {
-  CalendarClockIcon,
-  LoaderCircleIcon,
-  PauseIcon,
-  PencilIcon,
-  PlayIcon,
-  PlusIcon,
-  Trash2Icon,
-} from "lucide-react"
 import { useState } from "react"
 import type { ReactNode } from "react"
 import { toast } from "sonner"
 
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
   DialogContent,
@@ -33,15 +22,10 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import {
   useCreateCrawlSchedule,
-  useCrawlSchedules,
-  useDeleteCrawlSchedule,
   usePreviewCrawlSchedule,
-  useRunCrawlScheduleNow,
-  useSetCrawlScheduleEnabled,
   useUpdateCrawlSchedule,
 } from "@/hooks/use-crawl-graphs"
 import type {
-  CrawlGraphDetail,
   CrawlSchedule,
   CrawlScheduleInput,
   ScheduleTiming,
@@ -77,169 +61,7 @@ function initialInterval(schedule: CrawlSchedule | null) {
   return { amount: seconds / 60, unit: "minutes" as const }
 }
 
-export function SchedulesPanel({ graph }: { graph: CrawlGraphDetail }) {
-  const schedulesQuery = useCrawlSchedules(graph.id)
-  const enabledMutation = useSetCrawlScheduleEnabled(graph.id)
-  const deleteMutation = useDeleteCrawlSchedule(graph.id)
-  const runNow = useRunCrawlScheduleNow(graph.id)
-  const [creating, setCreating] = useState(false)
-  const [editing, setEditing] = useState<CrawlSchedule | null>(null)
-  const schedules = schedulesQuery.data?.items ?? []
-
-  return (
-    <div className="space-y-4 pt-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h3 className="font-medium">Schedules</h3>
-          <p className="text-sm text-muted-foreground">
-            Create recurring runs using the latest saved graph.
-          </p>
-        </div>
-        <Button
-          disabled={!graph.root_node_id}
-          onClick={() => setCreating(true)}
-        >
-          <PlusIcon />
-          Add schedule
-        </Button>
-      </div>
-
-      {schedulesQuery.isLoading ? (
-        <LoaderCircleIcon className="mx-auto my-10 size-5 animate-spin text-muted-foreground" />
-      ) : schedules.length ? (
-        <div className="grid gap-3 lg:grid-cols-2">
-          {schedules.map((schedule) => (
-            <Card key={schedule.id}>
-              <CardHeader className="gap-2">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <CardTitle className="truncate">{schedule.name}</CardTitle>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {timingLabel(schedule.timing)}
-                    </p>
-                  </div>
-                  <Badge variant={schedule.status === "active" ? "secondary" : "outline"}>
-                    {schedule.status.replaceAll("_", " ")}
-                  </Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-                  <div>
-                    <dt className="text-muted-foreground">Next run</dt>
-                    <dd>{formatDate(schedule.next_run_at)}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-muted-foreground">Runs</dt>
-                    <dd>
-                      {schedule.run_count} /{" "}
-                      {schedule.maximum_run_count ?? "unlimited"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-muted-foreground">Root URLs</dt>
-                    <dd>{schedule.root_urls.length}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-muted-foreground">Last run</dt>
-                    <dd>{formatDate(schedule.last_occurrence_at)}</dd>
-                  </div>
-                </dl>
-                {schedule.last_error ? (
-                  <p className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
-                    {schedule.last_error}
-                  </p>
-                ) : null}
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={runNow.isPending}
-                    onClick={() =>
-                      runNow.mutate(schedule.id, {
-                        onSuccess: () =>
-                          toast.success("Manual graph run queued."),
-                      })
-                    }
-                  >
-                    <PlayIcon />
-                    Run now
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={
-                      enabledMutation.isPending ||
-                      schedule.status === "exhausted" ||
-                      schedule.status === "ended"
-                    }
-                    onClick={() =>
-                      enabledMutation.mutate({
-                        scheduleId: schedule.id,
-                        enabled: !schedule.enabled,
-                      })
-                    }
-                  >
-                    {schedule.enabled ? <PauseIcon /> : <PlayIcon />}
-                    {schedule.enabled ? "Pause" : "Resume"}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => setEditing(schedule)}
-                  >
-                    <PencilIcon />
-                    Edit
-                  </Button>
-                  <Button
-                    size="icon-sm"
-                    variant="ghost"
-                    disabled={deleteMutation.isPending}
-                    onClick={() => {
-                      if (window.confirm(`Delete schedule “${schedule.name}”?`))
-                        deleteMutation.mutate(schedule.id)
-                    }}
-                  >
-                    <Trash2Icon />
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      ) : (
-        <div className="rounded-lg border border-dashed px-6 py-12 text-center">
-          <CalendarClockIcon className="mx-auto size-6 text-muted-foreground" />
-          <p className="mt-3 text-sm font-medium">No schedules yet</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Add an interval or cron schedule to run this graph automatically.
-          </p>
-        </div>
-      )}
-
-      {creating ? (
-        <ScheduleEditorDialog
-          key="create"
-          graphId={graph.id}
-          schedule={null}
-          open
-          onOpenChange={setCreating}
-        />
-      ) : null}
-      {editing ? (
-        <ScheduleEditorDialog
-          key={editing.id}
-          graphId={graph.id}
-          schedule={editing}
-          open
-          onOpenChange={(open) => !open && setEditing(null)}
-        />
-      ) : null}
-    </div>
-  )
-}
-
-function ScheduleEditorDialog({
+export function ScheduleEditorDialog({
   graphId,
   schedule,
   open,
@@ -540,19 +362,4 @@ function Field({
       {children}
     </div>
   )
-}
-
-function timingLabel(timing: ScheduleTiming) {
-  if (timing.kind === "cron")
-    return `${timing.expression} · ${timing.timezone}`
-  const seconds = timing.seconds
-  if (seconds % 86400 === 0)
-    return `Every ${seconds / 86400} day${seconds === 86400 ? "" : "s"}`
-  if (seconds % 3600 === 0)
-    return `Every ${seconds / 3600} hour${seconds === 3600 ? "" : "s"}`
-  return `Every ${seconds / 60} minute${seconds === 60 ? "" : "s"}`
-}
-
-function formatDate(value: string | null) {
-  return value ? new Date(value).toLocaleString() : "—"
 }

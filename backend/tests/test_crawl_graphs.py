@@ -84,7 +84,7 @@ class CrawlGraphTests(unittest.TestCase):
         with self.assertRaises(CrawlGraphConflictError):
             delete_graph(self.session, created.id)
 
-    def test_freeze_returns_complete_snapshot_and_makes_components_immutable(self) -> None:
+    def test_freeze_returns_complete_snapshot_without_locking_components(self) -> None:
         graph, search, result = self._graph_with_nodes()
         edge = create_edge(
             self.session,
@@ -105,13 +105,13 @@ class CrawlGraphTests(unittest.TestCase):
         self.assertEqual({item.id for item in snapshot.nodes}, {search.id, result.id})
         self.assertEqual(snapshot.edges[0].id, edge.id)
         self.assertEqual(snapshot.edges[0].dedupe_mode, EdgeDedupeMode.document)
-        with self.assertRaises(CrawlGraphConflictError):
-            update_node(
-                self.session,
-                graph.id,
-                search.id,
-                CrawlGraphNodeUpdate(name="changed"),
-            )
+        changed_node = update_node(
+            self.session,
+            graph.id,
+            search.id,
+            CrawlGraphNodeUpdate(name="changed"),
+        )
+        self.assertEqual(changed_node.name, "changed")
         positioned = update_node_position(
             self.session,
             graph.id,
@@ -119,18 +119,20 @@ class CrawlGraphTests(unittest.TestCase):
             CrawlGraphNodePositionUpdate(x=640.5, y=-20),
         )
         self.assertEqual((positioned.position_x, positioned.position_y), (640.5, -20))
-        with self.assertRaises(CrawlGraphConflictError):
-            update_edge(
-                self.session,
-                graph.id,
-                edge.id,
-                CrawlGraphEdgeUpdate(
-                    source_node_id=search.id,
-                    target_node_id=result.id,
-                    name="changed",
-                    sql=edge.sql,
-                ),
-            )
+        changed_edge = update_edge(
+            self.session,
+            graph.id,
+            edge.id,
+            CrawlGraphEdgeUpdate(
+                source_node_id=search.id,
+                target_node_id=result.id,
+                name="changed",
+                sql=edge.sql,
+            ),
+        )
+        self.assertEqual(changed_edge.name, "changed")
+        self.assertEqual(snapshot.nodes[0].name, "search_page")
+        self.assertEqual(snapshot.edges[0].name, "results")
 
     def test_edge_endpoints_must_belong_to_graph(self) -> None:
         graph, search, _ = self._graph_with_nodes()

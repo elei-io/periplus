@@ -74,16 +74,14 @@ class CdpAcquisitionTests(unittest.TestCase):
         browser.new_page.return_value = page
         playwright = MagicMock()
         playwright.chromium.connect_over_cdp = AsyncMock(return_value=browser)
-        manager = AsyncMock()
-        manager.__aenter__.return_value = playwright
 
         async def scenario():
-            with patch("actions.crawl.service.async_playwright", return_value=manager):
-                result = await _acquire(
-                    "https://example.com/",
-                    static_policy,
-                    attempt_number=1,
-                )
+            result = await _acquire(
+                "https://example.com/",
+                static_policy,
+                attempt_number=1,
+                playwright=playwright,
+            )
             self.assertTrue(result.success)
             self.assertEqual(result.steps, ())
             browser.new_page.assert_awaited_once_with()
@@ -94,6 +92,8 @@ class CdpAcquisitionTests(unittest.TestCase):
             )
             page.evaluate.assert_not_awaited()
             page.wait_for_timeout.assert_not_awaited()
+            playwright.chromium.connect_over_cdp.assert_awaited_once()
+            browser.close.assert_awaited_once_with()
 
         asyncio.run(scenario())
 
@@ -125,16 +125,14 @@ class CdpAcquisitionTests(unittest.TestCase):
         browser.new_page.return_value = page
         playwright = MagicMock()
         playwright.chromium.connect_over_cdp = AsyncMock(return_value=browser)
-        manager = AsyncMock()
-        manager.__aenter__.return_value = playwright
 
         async def scenario():
-            with patch("actions.crawl.service.async_playwright", return_value=manager):
-                result = await _acquire(
-                    "https://example.com/",
-                    static_policy,
-                    attempt_number=1,
-                )
+            result = await _acquire(
+                "https://example.com/",
+                static_policy,
+                attempt_number=1,
+                playwright=playwright,
+            )
             self.assertTrue(result.success)
             self.assertEqual(result.url, "https://example.com/loaded")
             page.goto.assert_awaited_once_with(
@@ -171,16 +169,14 @@ class CdpAcquisitionTests(unittest.TestCase):
         browser.new_page.return_value = page
         playwright = MagicMock()
         playwright.chromium.connect_over_cdp = AsyncMock(return_value=browser)
-        manager = AsyncMock()
-        manager.__aenter__.return_value = playwright
 
         async def scenario():
-            with patch("actions.crawl.service.async_playwright", return_value=manager):
-                result = await _acquire(
-                    "https://example.com/",
-                    static_policy,
-                    attempt_number=1,
-                )
+            result = await _acquire(
+                "https://example.com/",
+                static_policy,
+                attempt_number=1,
+                playwright=playwright,
+            )
             self.assertFalse(result.success)
             self.assertEqual(result.failure_code, "navigation_timeout")
             self.assertTrue(result.failure_retryable)
@@ -218,8 +214,6 @@ class CdpAcquisitionTests(unittest.TestCase):
         browser.new_page.return_value = page
         playwright = MagicMock()
         playwright.chromium.connect_over_cdp = AsyncMock(return_value=browser)
-        manager = AsyncMock()
-        manager.__aenter__.return_value = playwright
         step = CrawlStepEvidence(
             attempt_number=1,
             step_ordinal=1,
@@ -247,14 +241,12 @@ class CdpAcquisitionTests(unittest.TestCase):
                     step,
                 ]
             )
-            with (
-                patch("actions.crawl.service.async_playwright", return_value=manager),
-                patch("actions.crawl.service._wait_dynamic", wait_dynamic),
-            ):
+            with patch("actions.crawl.service._wait_dynamic", wait_dynamic):
                 result = await _acquire(
                     "https://example.com/",
                     crawl_policy,
                     attempt_number=1,
+                    playwright=playwright,
                 )
             self.assertTrue(result.success)
             self.assertEqual(result.steps, (step,))
@@ -297,25 +289,21 @@ class CdpAcquisitionTests(unittest.TestCase):
         browser.new_page.return_value = page
         playwright = MagicMock()
         playwright.chromium.connect_over_cdp = AsyncMock(return_value=browser)
-        manager = AsyncMock()
-        manager.__aenter__.return_value = playwright
 
         async def scenario():
-            with (
-                patch("actions.crawl.service.async_playwright", return_value=manager),
-                patch(
-                    "actions.crawl.service._wait_dynamic",
-                    AsyncMock(
-                        side_effect=PlaywrightError(
-                            "Execution context was destroyed"
-                        )
-                    ),
+            with patch(
+                "actions.crawl.service._wait_dynamic",
+                AsyncMock(
+                    side_effect=PlaywrightError(
+                        "Execution context was destroyed"
+                    )
                 ),
             ):
                 result = await _acquire(
                     "https://example.com/",
                     crawl_policy,
                     attempt_number=1,
+                    playwright=playwright,
                 )
             self.assertFalse(result.success)
             self.assertEqual(result.failure_code, "execution_context_replaced")
@@ -357,25 +345,21 @@ class CdpAcquisitionTests(unittest.TestCase):
         browser.new_page.return_value = page
         playwright = MagicMock()
         playwright.chromium.connect_over_cdp = AsyncMock(return_value=browser)
-        manager = AsyncMock()
-        manager.__aenter__.return_value = playwright
 
         async def scenario():
-            with (
-                patch("actions.crawl.service.async_playwright", return_value=manager),
-                patch(
-                    "actions.crawl.service._wait_dynamic",
-                    AsyncMock(
-                        side_effect=PlaywrightError(
-                            "Execution context was destroyed"
-                        )
-                    ),
+            with patch(
+                "actions.crawl.service._wait_dynamic",
+                AsyncMock(
+                    side_effect=PlaywrightError(
+                        "Execution context was destroyed"
+                    )
                 ),
             ):
                 result = await _acquire(
                     "https://example.com/",
                     crawl_policy,
                     attempt_number=1,
+                    playwright=playwright,
                 )
             self.assertTrue(result.success)
             self.assertEqual(result.url, "https://example.com/settled")
@@ -432,6 +416,7 @@ class CdpAcquisitionTests(unittest.TestCase):
             with patch("actions.crawl.service._acquire", AsyncMock(return_value=result)):
                 page = await crawl_graph_request(
                     session=None, url="https://example.com/", context=context,
+                    playwright=MagicMock(),
                     repository_pipeline=pipeline,
                 )
             record = pipeline.enqueue_stored.await_args.args[0]
