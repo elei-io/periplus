@@ -61,40 +61,42 @@ const terminalCompletions: Completion[] = [
 ]
 
 const atlasFunctionCompletions = [
-  snippetCompletion("css_select('${selector}')", {
-    label: "css_select",
-    displayLabel: "css_select('…')",
+  snippetCompletion("macros.get_attribute(${attributes}, '${name}')", {
+    label: "macros.get_attribute",
+    displayLabel: "macros.get_attribute(…, …)",
     type: "function",
-    detail: "function · inferred elements source",
-    info: "Matches elements with a CSS selector.",
+    detail: "function · Atlas scalar",
     boost: 20,
   }),
-  snippetCompletion("get_attribute('${attribute}')", {
-    label: "get_attribute",
-    displayLabel: "get_attribute('…')",
+  snippetCompletion("macros.has_attribute(${attributes}, '${name}')", {
+    label: "macros.has_attribute",
+    displayLabel: "macros.has_attribute(…, …)",
     type: "function",
-    detail: "function · inferred element",
-    boost: 20,
-  }),
-  snippetCompletion("has_attribute('${attribute}')", {
-    label: "has_attribute",
-    displayLabel: "has_attribute('…')",
-    type: "function",
-    detail: "function · inferred element",
+    detail: "function · Atlas scalar",
     boost: 20,
   }),
   ...["readable_text", "text_content", "inner_html"].map((name) =>
-    snippetCompletion(`${name}()`, {
-      label: name,
-      displayLabel: `${name}()`,
-      type: "function",
-      detail: "function · inferred element",
-      boost: 20,
-    })
+    snippetCompletion(
+      `macros.${name}(\${document_id}, \${element_index})`,
+      {
+        label: `macros.${name}`,
+        displayLabel: `macros.${name}(…, …)`,
+        type: "function",
+        detail: "function · Atlas scalar",
+        boost: 20,
+      }
+    )
   ),
-  snippetCompletion("resolve_url(${source}, ${href})", {
-    label: "resolve_url",
-    displayLabel: "resolve_url(…, …)",
+  snippetCompletion("macros.resolve_url(${source}, ${href})", {
+    label: "macros.resolve_url",
+    displayLabel: "macros.resolve_url(…, …)",
+    type: "function",
+    detail: "function · Atlas scalar",
+    boost: 15,
+  }),
+  snippetCompletion("macros.has_text(${value})", {
+    label: "macros.has_text",
+    displayLabel: "macros.has_text(…)",
     type: "function",
     detail: "function · Atlas scalar",
     boost: 15,

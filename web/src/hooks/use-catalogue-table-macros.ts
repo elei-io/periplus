@@ -63,6 +63,7 @@ export function useUpdateCatalogueTableMacro() {
           slug: input.slug,
           description: input.description || null,
           parameters: input.parameters,
+          parameter_defaults: input.macro.parameter_defaults,
           sql: input.sql,
         }),
       }),

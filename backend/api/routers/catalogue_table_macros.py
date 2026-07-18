@@ -101,6 +101,7 @@ def update(
                 definition,
                 expected_revision_id=payload.expected_definition_revision_id,
                 parameters=payload.parameters,
+                parameter_defaults=payload.parameter_defaults,
                 sql=payload.sql,
                 slug=payload.slug,
                 description=payload.description,

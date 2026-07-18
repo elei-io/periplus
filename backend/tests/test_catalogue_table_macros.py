@@ -71,7 +71,7 @@ class CatalogueTableMacroStoreTests(unittest.TestCase):
                 store.drop(name="numbers_from")
                 self.assertEqual(store.list(), [])
 
-    def test_compiles_atlas_dom_forms_before_persisting_definition(self) -> None:
+    def test_preserves_canonical_dom_helpers_in_persisted_definition(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = CatalogueConfig(
@@ -86,10 +86,10 @@ class CatalogueTableMacroStoreTests(unittest.TestCase):
                     name="prices",
                     parameters=["p_document_id"],
                     sql=(
-                        "SELECT get_attribute(e, 'class') AS class "
+                        "SELECT macros.get_attribute(e.attributes, 'class') AS class "
                         "FROM elements AS e "
                         "WHERE e.document_id = p_document_id "
-                        "AND css_select(e, 'p.price_color')"
+                        "AND e.tag = 'p'"
                     ),
                 )
                 self.assertEqual(
@@ -97,6 +97,33 @@ class CatalogueTableMacroStoreTests(unittest.TestCase):
                         "SELECT * FROM atlas.macros.prices('missing')"
                     ).fetchall(),
                     [],
+                )
+
+    def test_optional_parameter_defaults_persist_across_connections(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                CatalogueTableMacroStore(catalogue).create(
+                    name="numbers_between",
+                    parameters=["p_minimum", "p_maximum"],
+                    parameter_defaults={"p_maximum": "4"},
+                    sql=(
+                        "SELECT value FROM range(p_maximum) AS values(value) "
+                        "WHERE value >= p_minimum"
+                    ),
+                )
+
+            with Catalogue(config) as catalogue:
+                self.assertEqual(
+                    catalogue.connection.execute(
+                        "SELECT * FROM atlas.macros.numbers_between(2) ORDER BY value"
+                    ).fetchall(),
+                    [(2,), (3,)],
                 )
 
     def test_rejects_invalid_names_duplicate_parameters_and_mutating_sql(self) -> None:
@@ -115,6 +142,13 @@ class CatalogueTableMacroStoreTests(unittest.TestCase):
                     store.create(
                         name="duplicate",
                         parameters=["value", "value"],
+                        sql="SELECT 1",
+                    )
+                with self.assertRaises(CatalogueTableMacroError):
+                    store.create(
+                        name="misordered",
+                        parameters=["optional", "required"],
+                        parameter_defaults={"optional": "1"},
                         sql="SELECT 1",
                     )
                 with self.assertRaises(ValueError):

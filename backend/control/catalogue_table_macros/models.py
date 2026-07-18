@@ -31,6 +31,7 @@ class CatalogueTableMacroDefinition(Base):
     slug: Mapped[str] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     parameters: Mapped[list[str]] = mapped_column(JSON)
+    parameter_defaults: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     sql: Mapped[str] = mapped_column(Text)
     definition_revision_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True), default=uuid4

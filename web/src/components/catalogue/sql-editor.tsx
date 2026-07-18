@@ -22,51 +22,7 @@ type SqlEditorProps = {
   ariaLabel?: string
   views?: Array<{ view_name: string; columns: string[] }>
   macros?: Array<{ macro_name: string; parameters: string[] }>
-  enableCssSelect?: boolean
 }
-
-const cssSelectCompletions = [
-  snippetCompletion("css_select('${selector}')", {
-    label: "css_select",
-    detail: "css_select('selector') → boolean",
-    info: "Targets the only elements source in the outer query.",
-    type: "function",
-    boost: 10,
-  }),
-  snippetCompletion("css_select(${alias}, '${selector}')", {
-    label: "css_select(alias, selector)",
-    detail: "Explicit elements source",
-    info: "Use the explicit form when the query has multiple elements sources.",
-    type: "function",
-    boost: 9,
-  }),
-]
-
-const domHelperCompletions = [
-  snippetCompletion("get_attribute('${attribute}')", {
-    label: "get_attribute",
-    detail: "get_attribute('name') → value or NULL",
-    info: "Infers the only elements source. Pass an alias first when joining elements.",
-    type: "function",
-    boost: 8,
-  }),
-  snippetCompletion("has_attribute('${attribute}')", {
-    label: "has_attribute",
-    detail: "has_attribute('name') → boolean",
-    info: "Infers the only elements source. Pass an alias first when joining elements.",
-    type: "function",
-    boost: 8,
-  }),
-  ...["readable_text", "text_content", "inner_html"].map((name) =>
-    snippetCompletion(`${name}()`, {
-      label: name,
-      detail: `${name}() → inferred element`,
-      info: `Use ${name}(alias) when joining multiple elements sources.`,
-      type: "function",
-      boost: 8,
-    })
-  ),
-]
 
 export function SqlEditor({
   value,
@@ -77,7 +33,6 @@ export function SqlEditor({
   ariaLabel = "Catalogue SQL editor",
   views = [],
   macros = [],
-  enableCssSelect = false,
 }: SqlEditorProps) {
   const sqlLanguage = useMemo(() => {
     const tables = catalogueTables
@@ -104,29 +59,14 @@ export function SqlEditor({
       sqlLanguage,
       sqlLanguage.language.data.of({
         autocomplete: completeFromList([
-          ...(enableCssSelect
-            ? [
-                ...catalogueFunctions.filter(
-                  (item) =>
-                    ![
-                      "get_attribute",
-                      "has_attribute",
-                      "readable_text",
-                      "text_content",
-                      "inner_html",
-                    ].includes(item.label)
-                ),
-                ...domHelperCompletions,
-                ...cssSelectCompletions,
-              ]
-              : catalogueFunctions),
+          ...catalogueFunctions,
           ...macros.map((macro) =>
             snippetCompletion(
               `macros.${macro.macro_name}(${macro.parameters
                 .map((parameter) => `\${${parameter}}`)
                 .join(", ")})`,
               {
-                label: macro.macro_name,
+                label: `macros.${macro.macro_name}`,
                 detail: `macros.${macro.macro_name}(${macro.parameters.join(", ")})`,
                 type: "function",
                 boost: 7,
@@ -139,7 +79,7 @@ export function SqlEditor({
       sqlEditorTheme,
       EditorView.lineWrapping,
     ],
-    [enableCssSelect, macros, sqlLanguage]
+    [macros, sqlLanguage]
   )
 
   return (

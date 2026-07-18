@@ -380,7 +380,6 @@ function TableMacroDetail({ macro }: { macro: CatalogueTableMacroRecord }) {
             readOnly={Boolean(macro.fixture_path)}
             height="360px"
             ariaLabel={`SQL definition for ${macro.qualified_name}`}
-            enableCssSelect
           />
         </div>
         <div className="grid gap-1.5">

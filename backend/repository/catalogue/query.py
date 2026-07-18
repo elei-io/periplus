@@ -6,15 +6,11 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 import re
-from typing import TYPE_CHECKING
 import pyarrow as pa
 from sqlglot import exp, parse
 from sqlglot.errors import ParseError
 
 from repository.catalogue.client import Catalogue
-
-if TYPE_CHECKING:
-    from repository.catalogue.selector_sql import RewrittenSelectorSql
 
 
 class CatalogueQueryError(ValueError):
@@ -49,9 +45,6 @@ class PreparedCatalogueQuery:
 
 
 _DOM_HELPERS = frozenset({"inner_html", "readable_text", "text_content"})
-_DOM_SQL_SPECIAL_FORMS = frozenset(
-    {"css_select", "get_attribute", "has_attribute", *_DOM_HELPERS}
-)
 _MANAGED_ROW_TABLES = frozenset({"artifacts", "crawls", "documents", "elements"})
 _MAX_DOM_HELPER_INPUT_ROWS = 10_000
 _ABSURD_LIMIT = 100_000
@@ -123,42 +116,7 @@ def lint_select(sql: str) -> list[CatalogueLintDiagnostic]:
     except CatalogueQueryError:
         return []
 
-    rewritten = None
-    anonymous_names = {
-        function.name.lower() for function in statement.find_all(exp.Anonymous)
-    }
-    if anonymous_names & _DOM_SQL_SPECIAL_FORMS:
-        try:
-            rewritten = _rewrite_select(sql)
-        except CatalogueQueryError as exc:
-            return [
-                CatalogueLintDiagnostic(
-                    code=(
-                        "invalid_css_select"
-                        if "css_select" in anonymous_names
-                        else "invalid_dom_helper"
-                    ),
-                    severity="error",
-                    message=str(exc),
-                )
-            ]
-
     diagnostics: list[CatalogueLintDiagnostic] = []
-    if rewritten is not None and rewritten.unbounded_structural_selectors:
-        selectors = ", ".join(
-            repr(selector) for selector in rewritten.unbounded_structural_selectors
-        )
-        diagnostics.append(
-            CatalogueLintDiagnostic(
-                code="unbounded_structural_css",
-                severity="warning",
-                message=(
-                    f"Structural CSS selector {selectors} has no document or crawl bound. "
-                    "Atlas will run it globally, which may scan and partition billions of "
-                    "element rows. Add a document_id or crawl_id predicate when practical."
-                ),
-            )
-        )
     bounded_ctes = _bounded_materialized_ctes(statement)
     uses_bounded_source = _uses_outer_cte(statement, bounded_ctes)
 
@@ -170,7 +128,8 @@ def lint_select(sql: str) -> list[CatalogueLintDiagnostic]:
                 message=(
                     "DOM helpers may expand across every matching element before an outer "
                     "LIMIT is applied. Select at most 10,000 elements in a MATERIALIZED CTE "
-                    "before calling text_content(), readable_text(), or inner_html()."
+                    "before calling macros.text_content(), macros.readable_text(), or "
+                    "macros.inner_html()."
                 ),
             )
         )
@@ -307,12 +266,14 @@ def prepare_catalogue_query(
     sql: str,
     parameters: dict[str, object] | None = None,
 ) -> PreparedCatalogueQuery:
-    """Validate and rewrite public catalogue SQL without executing it."""
+    """Validate public catalogue SQL without executing or rewriting it."""
 
-    rewritten = _rewrite_select(sql)
+    statement = classify_select(sql)
     bindings = dict(parameters or {})
-    bindings.update(rewritten.parameters)
-    missing = set(rewritten.required_parameters) - set(bindings)
+    required = {
+        placeholder.name for placeholder in statement.find_all(exp.Placeholder)
+    }
+    missing = required - set(bindings)
     if missing:
         names = ", ".join(f"${name}" for name in sorted(missing))
         raise CatalogueQueryError(f"missing required SQL parameter: {names}")
@@ -321,52 +282,29 @@ def prepare_catalogue_query(
         for part in (catalogue.config.alias, catalogue.config.schema)
     )
     return PreparedCatalogueQuery(
-        sql=rewritten.sql,
+        sql=sql,
         bindings=bindings,
         namespace=namespace,
     )
 
 
 def compile_catalogue_definition(sql: str) -> str:
-    """Compile public Atlas SQL into a self-contained persistent query definition.
+    """Validate and normalize a self-contained persistent query definition.
 
-    Interactive execution can bind generated selector values separately. Persistent
-    views and table macros cannot retain those connection-local bindings, so generated
-    values are rendered as SQL literals while user placeholders remain forbidden.
+    Persistent views and table macros cannot retain connection-local user bindings,
+    so placeholders remain forbidden.
     """
 
-    rewritten = _rewrite_select(sql)
-    if rewritten.required_parameters:
-        names = ", ".join(f"${name}" for name in rewritten.required_parameters)
+    statement = classify_select(sql)
+    required = sorted(
+        {placeholder.name for placeholder in statement.find_all(exp.Placeholder)}
+    )
+    if required:
+        names = ", ".join(f"${name}" for name in required)
         raise CatalogueQueryError(
             f"persistent SQL definitions cannot contain query parameters: {names}"
         )
-    statement = classify_select(rewritten.sql)
-
-    def inline_generated_parameter(node: exp.Expression) -> exp.Expression:
-        if isinstance(node, exp.Placeholder) and node.name in rewritten.parameters:
-            return exp.convert(rewritten.parameters[node.name])
-        return node
-
-    return statement.transform(inline_generated_parameter).sql(dialect="duckdb")
-
-
-def _rewrite_select(sql: str) -> RewrittenSelectorSql:
-    # Local import keeps the standalone AST layer dependent on query classification without
-    # introducing a module-import cycle when execution opts into the rewrite.
-    from repository.catalogue.selector_sql import (
-        SelectorSqlRewriteError,
-        rewrite_css_select,
-    )
-    from repository.catalogue.helper_sql import (
-        HelperSqlRewriteError,
-        rewrite_dom_helpers,
-    )
-
-    try:
-        return rewrite_css_select(rewrite_dom_helpers(sql))
-    except (HelperSqlRewriteError, SelectorSqlRewriteError) as exc:
-        raise CatalogueQueryError(str(exc)) from exc
+    return statement.sql(dialect="duckdb")
 
 
 def stream_arrow_reader(reader: pa.RecordBatchReader) -> Iterator[bytes]:

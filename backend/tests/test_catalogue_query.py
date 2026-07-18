@@ -28,6 +28,7 @@ from repository.catalogue.query import (
     execute_arrow_query,
     explain_arrow_query,
     lint_select,
+    prepare_catalogue_query,
     stream_arrow_reader,
 )
 from repository.catalogue.metadata import read_catalogue_metadata
@@ -73,7 +74,7 @@ class CatalogueQueryLintTests(unittest.TestCase):
 
     def test_warns_when_dom_helper_is_not_fed_by_bounded_materialized_cte(self) -> None:
         diagnostics = lint_select(
-            "SELECT inner_html(e.document_id, e.element_index) "
+            "SELECT macros.inner_html(e.document_id, e.element_index) "
             "FROM elements e LIMIT 100"
         )
         self.assertEqual([item.code for item in diagnostics], ["unbounded_dom_helper"])
@@ -86,7 +87,7 @@ class CatalogueQueryLintTests(unittest.TestCase):
                 FROM elements
                 LIMIT 100
             )
-            SELECT inner_html(document_id, element_index)
+            SELECT macros.inner_html(document_id, element_index)
             FROM selected
             """
         )
@@ -105,42 +106,6 @@ class CatalogueQueryLintTests(unittest.TestCase):
 
     def test_incomplete_sql_has_no_transient_lint_diagnostics(self) -> None:
         self.assertEqual(lint_select("SELECT * FROM"), [])
-
-    def test_reports_invalid_css_select_before_execution(self) -> None:
-        diagnostics = lint_select(
-            "SELECT * FROM elements e WHERE e.document_id='doc' "
-            "AND css_select(':hover')"
-        )
-        self.assertEqual([item.code for item in diagnostics], ["invalid_css_select"])
-        self.assertEqual(diagnostics[0].severity, "error")
-
-    def test_unbounded_structural_css_is_advisory_but_row_local_css_is_not(self) -> None:
-        self.assertEqual(
-            lint_select(
-                "SELECT * FROM elements WHERE css_select('a') LIMIT 100"
-            ),
-            [],
-        )
-        diagnostics = lint_select(
-            "SELECT * FROM elements WHERE css_select('article > a') LIMIT 100"
-        )
-        self.assertEqual(
-            [item.code for item in diagnostics],
-            ["unbounded_structural_css"],
-        )
-        self.assertEqual(diagnostics[0].severity, "warning")
-
-        self.assertNotIn(
-            "unbounded_structural_css",
-            [
-                item.code
-                for item in lint_select(
-                    "SELECT * FROM elements e WHERE e.document_id='doc' "
-                    "AND css_select('article > a') LIMIT 100"
-                )
-            ],
-        )
-
 
 class CatalogueQueryExecutionTests(unittest.TestCase):
     def test_catalogue_metadata_includes_typed_views_and_macros(self) -> None:
@@ -265,31 +230,7 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
         result = pa.ipc.open_stream(payload).read_all()
         self.assertEqual(result.to_pylist(), [{"element_count": 0}])
 
-    def test_css_select_is_rewritten_at_the_catalogue_execution_boundary(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            config = CatalogueConfig(
-                catalog=DuckDBCatalog(root / "catalog.ducklake"),
-                storage=DiskStorage(root / "lake"),
-            )
-            with Catalogue(config) as catalogue:
-                catalogue.bootstrap()
-                reader = execute_arrow_query(
-                    catalogue,
-                    """
-                    SELECT count(*) AS matches
-                    FROM elements e
-                    WHERE e.document_id = $document_id
-                      AND css_select('article > a[href]')
-                    """,
-                    {"document_id": "missing"},
-                )
-                payload = b"".join(stream_arrow_reader(reader))
-
-        result = pa.ipc.open_stream(payload).read_all()
-        self.assertEqual(result.to_pylist(), [{"matches": 0}])
-
-    def test_unbounded_row_local_css_runs_through_the_api_execution_path(self) -> None:
+    def test_canonical_dom_helpers_run_through_the_api_execution_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = CatalogueConfig(
@@ -301,21 +242,33 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
                 seed_system_macros(catalogue)
                 reader = execute_arrow_query(
                     catalogue,
-                    "SELECT get_attribute('href'), readable_text() "
-                    "FROM elements WHERE css_select('a') LIMIT 100",
+                    "SELECT macros.get_attribute(attributes, 'href'), "
+                    "macros.readable_text(document_id, element_index) "
+                    "FROM elements LIMIT 100",
                 )
                 payload = b"".join(stream_arrow_reader(reader))
 
         self.assertEqual(pa.ipc.open_stream(payload).read_all().num_rows, 0)
 
-    def test_invalid_css_select_is_a_catalogue_query_error(self) -> None:
-        catalogue = MagicMock(spec=Catalogue)
-        with self.assertRaisesRegex(CatalogueQueryError, "browser state"):
-            execute_arrow_query(
-                catalogue,
-                "SELECT * FROM elements e WHERE e.document_id='doc' "
-                "AND css_select(':hover')",
+    def test_query_preparation_does_not_rewrite_submitted_sql(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
             )
+            with Catalogue(config) as catalogue:
+                sql = (
+                    "SELECT macros.readable_text(document_id, element_index)\n"
+                    "FROM elements LIMIT $limit"
+                )
+                prepared = prepare_catalogue_query(
+                    catalogue,
+                    sql,
+                    {"limit": 100},
+                )
+
+        self.assertEqual(prepared.sql, sql)
 
     @patch("api.routers.catalogue.execute_arrow_query")
     def test_duckdb_errors_are_returned_before_streaming_starts(
@@ -374,31 +327,6 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
         self.assertEqual(analyzed.sql, "SELECT 1")
         with self.assertRaises(CatalogueQueryError):
             classify_catalogue_statement("EXPLAIN DELETE FROM documents")
-
-    @patch("api.routers.catalogue.execute_arrow_query")
-    def test_css_rewrite_errors_are_returned_before_streaming_starts(
-        self,
-        execute_query: MagicMock,
-    ) -> None:
-        request = MagicMock()
-        pool = request.app.state.catalogue_read_pool
-        catalogue = pool.acquire.return_value
-        execute_query.side_effect = CatalogueQueryError(
-            "pseudo-class :hover depends on browser runtime state"
-        )
-
-        with self.assertRaises(HTTPException) as raised:
-            sql_query(
-                CatalogueSqlRequest(
-                    sql="SELECT * FROM elements e WHERE e.document_id='doc' "
-                    "AND css_select(':hover')"
-                ),
-                request,
-            )
-
-        self.assertEqual(raised.exception.status_code, 422)
-        self.assertIn(":hover", raised.exception.detail)
-        pool.release.assert_called_once_with(catalogue)
 
     def test_pool_wait_timeout_is_returned_as_service_unavailable(self) -> None:
         request = MagicMock()

@@ -4,7 +4,6 @@ from sqlglot import exp, parse_one
 
 _CATALOGUE_DOM_FUNCTIONS = frozenset(
     {
-        "css_select",
         "get_attribute",
         "has_attribute",
         "inner_html",

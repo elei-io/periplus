@@ -65,38 +65,39 @@ export const catalogueTables = {
 
 export const catalogueFunctions = [
   {
-    label: "resolve_url",
+    label: "macros.resolve_url",
     type: "function",
-    detail: "resolve_url(source, href) → absolute URL",
+    detail: "macros.resolve_url(source, href) → absolute URL",
   },
   {
-    label: "get_attribute",
+    label: "macros.get_attribute",
     type: "function",
-    detail: "get_attribute(attributes, name) → value or NULL",
+    detail: "macros.get_attribute(attributes, name) → value or NULL",
   },
   {
-    label: "has_attribute",
+    label: "macros.has_attribute",
     type: "function",
-    detail: "has_attribute(attributes, name) → boolean",
+    detail: "macros.has_attribute(attributes, name) → boolean",
   },
   {
-    label: "has_text",
+    label: "macros.has_text",
     type: "function",
-    detail: "has_text(value) → contains non-whitespace text",
+    detail: "macros.has_text(value) → contains non-whitespace text",
   },
   {
-    label: "text_content",
+    label: "macros.text_content",
     type: "function",
-    detail: "text_content(document_id, element_index) → DOM textContent",
+    detail: "macros.text_content(document_id, element_index) → DOM textContent",
   },
   {
-    label: "inner_html",
+    label: "macros.inner_html",
     type: "function",
-    detail: "inner_html(document_id, element_index) → canonical child HTML",
+    detail: "macros.inner_html(document_id, element_index) → canonical child HTML",
   },
   {
-    label: "readable_text",
+    label: "macros.readable_text",
     type: "function",
-    detail: "readable_text(document_id, element_index) → normalized reading text",
+    detail:
+      "macros.readable_text(document_id, element_index) → normalized reading text",
   },
 ] as const

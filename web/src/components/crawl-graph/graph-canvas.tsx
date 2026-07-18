@@ -728,7 +728,6 @@ function EdgeEditDialog({
               onChange={setSql}
               height="240px"
               ariaLabel="Edge SQL"
-              enableCssSelect
             />
           </div>
         </div>

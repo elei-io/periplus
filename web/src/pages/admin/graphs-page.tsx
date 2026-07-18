@@ -627,7 +627,6 @@ function EdgeRow({
           readOnly
           height={`${Math.max(80, Math.min(128, edge.sql.split("\n").length * 20 + 28))}px`}
           ariaLabel={`Read-only SQL for edge ${edge.name}`}
-          enableCssSelect
         />
       </div>
     </div>

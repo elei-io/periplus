@@ -10,6 +10,7 @@ class CatalogueTableMacroCreate(BaseModel):
     slug: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,62}$")
     description: str | None = Field(default=None, max_length=2_000)
     parameters: list[str] = Field(default_factory=list, max_length=32)
+    parameter_defaults: dict[str, str] = Field(default_factory=dict, max_length=32)
     sql: str = Field(min_length=1, max_length=100_000)
     created_from_query_revision_id: UUID | None = None
 
@@ -21,6 +22,7 @@ class CatalogueTableMacroUpdate(BaseModel):
     slug: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,62}$")
     description: str | None = Field(default=None, max_length=2_000)
     parameters: list[str] = Field(default_factory=list, max_length=32)
+    parameter_defaults: dict[str, str] = Field(default_factory=dict, max_length=32)
     sql: str = Field(min_length=1, max_length=100_000)
 
 
@@ -33,6 +35,7 @@ class CatalogueTableMacroRecord(BaseModel):
     slug: str
     description: str | None
     parameters: list[str]
+    parameter_defaults: dict[str, str]
     sql: str
     definition_revision_id: UUID
     fixture_path: str | None

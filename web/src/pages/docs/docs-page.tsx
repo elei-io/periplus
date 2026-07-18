@@ -240,12 +240,15 @@ ORDER BY captured_at DESC;`}
   FROM crawls AS c
   JOIN elements AS e USING (document_id)
   WHERE e.tag = 'a'
-    AND has_attribute(e.attributes, 'href')
+    AND macros.has_attribute(e.attributes, 'href')
   LIMIT 1000
 )
 SELECT
-  readable_text(document_id, element_index) AS label,
-  resolve_url(page_url, get_attribute(attributes, 'href')) AS url
+  macros.readable_text(document_id, element_index) AS label,
+  macros.resolve_url(
+    page_url,
+    macros.get_attribute(attributes, 'href')
+  ) AS url
 FROM links;`}
         />
 
@@ -254,46 +257,50 @@ FROM links;`}
           rows={[
             [
               <InlineCode key="get">
-                get_attribute(attributes, name)
+                macros.get_attribute(attributes, name)
               </InlineCode>,
               "Attribute value or NULL",
               "You need the stored href, src, class or data attribute",
             ],
             [
               <InlineCode key="has">
-                has_attribute(attributes, name)
+                macros.has_attribute(attributes, name)
               </InlineCode>,
               "Boolean",
               "Presence differs from an empty attribute value",
             ],
             [
-              <InlineCode key="css">css_select('selector')</InlineCode>,
-              "Boolean",
-              "DOM structure is clearer as a CSS selector",
+              <InlineCode key="selector">
+                macros.query_selector_all(selector, document_id)
+              </InlineCode>,
+              "Element rows",
+              "DOM structure is clearer as a query selector",
             ],
             [
               <InlineCode key="read">
-                readable_text(document_id, element_index)
+                macros.readable_text(document_id, element_index)
               </InlineCode>,
               "Whitespace-normalized subtree text",
               "You want text for reading or search",
             ],
             [
               <InlineCode key="text">
-                text_content(document_id, element_index)
+                macros.text_content(document_id, element_index)
               </InlineCode>,
               "DOM textContent semantics",
               "Exact parsed character data matters",
             ],
             [
               <InlineCode key="html">
-                inner_html(document_id, element_index)
+                macros.inner_html(document_id, element_index)
               </InlineCode>,
               "Canonical child HTML",
               "You need deterministic projected markup, not source bytes",
             ],
             [
-              <InlineCode key="resolve">resolve_url(source, href)</InlineCode>,
+              <InlineCode key="resolve">
+                macros.resolve_url(source, href)
+              </InlineCode>,
               "Absolute URL",
               "A stored link may be relative to its source page",
             ],
@@ -1228,7 +1235,6 @@ function CodeExample({ title, code }: { title: string; code: string }) {
         readOnly
         height={`${height}px`}
         ariaLabel={`Read-only SQL example: ${title}`}
-        enableCssSelect
       />
     </figure>
   )

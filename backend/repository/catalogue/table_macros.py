@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import re
 
 from repository.catalogue.client import Catalogue
-from repository.catalogue.query import compile_catalogue_definition
+from repository.catalogue.query import CatalogueQueryError, compile_catalogue_definition
 
 TABLE_MACRO_SCHEMA = "macros"
 _SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
@@ -59,21 +59,43 @@ class CatalogueTableMacroStore:
     def get(self, name: str) -> DuckLakeTableMacro | None:
         return next((macro for macro in self.list() if macro.macro_name == name), None)
 
-    def create(self, *, name: str, parameters: list[str], sql: str) -> DuckLakeTableMacro:
-        normalized = _validate(name, parameters)
+    def create(
+        self,
+        *,
+        name: str,
+        parameters: list[str],
+        sql: str,
+        parameter_defaults: dict[str, str] | None = None,
+    ) -> DuckLakeTableMacro:
+        normalized, defaults = _validate(name, parameters, parameter_defaults)
         if self.get(name) is not None:
             raise CatalogueTableMacroConflictError(
                 f"Table macro {TABLE_MACRO_SCHEMA}.{name} already exists."
             )
         self._execute_definition(
-            "CREATE MACRO", name=name, parameters=normalized, sql=sql
+            "CREATE MACRO",
+            name=name,
+            parameters=normalized,
+            parameter_defaults=defaults,
+            sql=sql,
         )
         return self._require(name)
 
-    def replace(self, *, name: str, parameters: list[str], sql: str) -> DuckLakeTableMacro:
-        normalized = _validate(name, parameters)
+    def replace(
+        self,
+        *,
+        name: str,
+        parameters: list[str],
+        sql: str,
+        parameter_defaults: dict[str, str] | None = None,
+    ) -> DuckLakeTableMacro:
+        normalized, defaults = _validate(name, parameters, parameter_defaults)
         self._execute_definition(
-            "CREATE OR REPLACE MACRO", name=name, parameters=normalized, sql=sql
+            "CREATE OR REPLACE MACRO",
+            name=name,
+            parameters=normalized,
+            parameter_defaults=defaults,
+            sql=sql,
         )
         return self._require(name)
 
@@ -89,10 +111,18 @@ class CatalogueTableMacroStore:
         *,
         name: str,
         parameters: tuple[str, ...],
+        parameter_defaults: dict[str, str],
         sql: str,
     ) -> None:
         compiled = compile_catalogue_definition(sql)
-        signature = ", ".join(_quote_identifier(value) for value in parameters)
+        signature = ", ".join(
+            (
+                f"{_quote_identifier(value)} := {parameter_defaults[value]}"
+                if value in parameter_defaults
+                else _quote_identifier(value)
+            )
+            for value in parameters
+        )
         namespace = ".".join(
             _quote_identifier(part)
             for part in (self.catalogue.config.alias, self.catalogue.config.schema)
@@ -112,16 +142,49 @@ class CatalogueTableMacroStore:
         return macro
 
 
-def _validate(name: str, parameters: list[str]) -> tuple[str, ...]:
+def _validate(
+    name: str,
+    parameters: list[str],
+    parameter_defaults: dict[str, str] | None = None,
+) -> tuple[tuple[str, ...], dict[str, str]]:
     _validate_name(name, "Table macro name")
     normalized = tuple(value.strip() for value in parameters)
+    defaults = {
+        key.strip(): value.strip()
+        for key, value in (parameter_defaults or {}).items()
+    }
     if len(normalized) > 32:
         raise CatalogueTableMacroError("Table macros may have at most 32 parameters.")
     for parameter in normalized:
         _validate_name(parameter, "Parameter name")
     if len(set(normalized)) != len(normalized):
         raise CatalogueTableMacroError("Table macro parameter names must be unique.")
-    return normalized
+    unknown_defaults = set(defaults) - set(normalized)
+    if unknown_defaults:
+        names = ", ".join(sorted(unknown_defaults))
+        raise CatalogueTableMacroError(
+            f"Defaults reference unknown table macro parameters: {names}."
+        )
+    for parameter, expression in defaults.items():
+        if not expression:
+            raise CatalogueTableMacroError(
+                f"Default expression for {parameter} must not be empty."
+            )
+        try:
+            compile_catalogue_definition(f"SELECT {expression}")
+        except CatalogueQueryError as exc:
+            raise CatalogueTableMacroError(
+                f"Invalid default expression for {parameter}: {exc}"
+            ) from exc
+    seen_default = False
+    for parameter in normalized:
+        if parameter in defaults:
+            seen_default = True
+        elif seen_default:
+            raise CatalogueTableMacroError(
+                "Required parameters cannot follow parameters with defaults."
+            )
+    return normalized, defaults
 
 
 def _validate_name(value: str, label: str) -> None:

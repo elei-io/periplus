@@ -155,12 +155,10 @@ def _representative_queries(
             """,
             window_parameters,
         ),
-        "document_css_selector": (
+        "document_query_selector": (
             """
-            SELECT element_index, get_attribute('href') AS href
-            FROM elements
-            WHERE document_id = $document_id
-              AND css_select('a[href]')
+            SELECT element_index, macros.get_attribute(attributes, 'href') AS href
+            FROM macros.query_selector_all('a[href]', $document_id)
             ORDER BY element_index
             LIMIT $limit
             """,
@@ -178,13 +176,15 @@ def _representative_queries(
                 LIMIT $limit
             )
             SELECT c.crawl_id, c.captured_at, e.element_index,
-                   get_attribute(e, 'href') AS href
+                   macros.get_attribute(e.attributes, 'href') AS href
             FROM bounded_crawls AS c
-            JOIN elements AS e USING (document_id)
-            WHERE css_select(e, 'a[href]')
+            JOIN macros.query_selector_all(
+                'a[href]',
+                $document_id
+            ) AS e USING (document_id)
             LIMIT $limit
             """,
-            window_parameters,
+            {**window_parameters, "document_id": document_id},
         ),
         "bounded_readable_text": (
             """
@@ -196,7 +196,7 @@ def _representative_queries(
                 LIMIT $text_limit
             )
             SELECT document_id, element_index,
-                   readable_text(document_id, element_index) AS text
+                   macros.readable_text(document_id, element_index) AS text
             FROM selected
             """,
             {"document_id": document_id, "text_limit": _TEXT_EXTRACTION_LIMIT},

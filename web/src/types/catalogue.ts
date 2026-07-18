@@ -108,6 +108,7 @@ export type CatalogueTableMacroRecord = {
   slug: string
   description: string | null
   parameters: string[]
+  parameter_defaults: Record<string, string>
   sql: string
   definition_revision_id: string
   fixture_path: string | null

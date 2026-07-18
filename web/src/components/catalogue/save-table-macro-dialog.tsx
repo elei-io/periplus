@@ -125,7 +125,6 @@ export function SaveTableMacroDialog({
               onChange={setDraftSql}
               height="260px"
               ariaLabel="SQL for the new table macro"
-              enableCssSelect
             />
           </div>
         </div>

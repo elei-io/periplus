@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -52,6 +53,14 @@ class RelationFixture:
     name: str
     sql: str
     parameters: tuple[str, ...] = ()
+    parameter_defaults: tuple[tuple[str, str], ...] = ()
+
+
+_FIXTURE_PARAMETER_DEFAULT = re.compile(
+    r"(?P<name>[a-z_][a-z0-9_]*)\s*:=\s*"
+    r"(?P<expression>NULL\s*::\s*[a-z_][a-z0-9_]*|'(?:''|[^'])*')",
+    re.IGNORECASE,
+)
 
 
 def seed_catalogue_fixtures(
@@ -71,7 +80,7 @@ def seed_catalogue_fixtures(
             _parse_relation_fixture(fixtures_root, path, kind="VIEW", schema=VIEW_SCHEMA),
         )
     macro_paths = _sql_files(fixtures_root / "table_macros")
-    for path in macro_paths:
+    for path in _ordered_table_macro_paths(macro_paths):
         _seed_macro(
             session,
             macro_store,
@@ -362,6 +371,7 @@ def _seed_macro(
             store,
             slug=fixture.name,
             parameters=list(fixture.parameters),
+            parameter_defaults=dict(fixture.parameter_defaults),
             sql=fixture.sql,
             description=None,
         )
@@ -379,6 +389,7 @@ def _seed_macro(
         )
     if (
         tuple(existing.parameters) != fixture.parameters
+        or existing.parameter_defaults != dict(fixture.parameter_defaults)
         or _canonical(existing.sql) != _canonical(fixture.sql)
         or store.get(existing.macro_name) is None
     ):
@@ -388,6 +399,7 @@ def _seed_macro(
             existing,
             expected_revision_id=existing.definition_revision_id,
             parameters=list(fixture.parameters),
+            parameter_defaults=dict(fixture.parameter_defaults),
             sql=fixture.sql,
             slug=fixture.name,
             description=None,
@@ -411,8 +423,27 @@ def _parse_relation_fixture(
     root: Path, path: Path, *, kind: str, schema: str
 ) -> RelationFixture:
     source = path.read_text(encoding="utf-8").strip()
+    signature_end = (
+        re.search(r"\)\s+AS\s+TABLE\b", source, re.IGNORECASE)
+        if kind == "MACRO"
+        else None
+    )
+    signature = source[: signature_end.start() + 1] if signature_end else ""
+    parameter_defaults = tuple(
+        (match.group("name"), match.group("expression"))
+        for match in _FIXTURE_PARAMETER_DEFAULT.finditer(signature)
+    )
+    parse_source = (
+        _FIXTURE_PARAMETER_DEFAULT.sub(
+            lambda match: match.group("name"),
+            signature,
+        )
+        + source[len(signature) :]
+    )
     try:
-        statements = [statement for statement in parse(source, dialect="duckdb") if statement]
+        statements = [
+            statement for statement in parse(parse_source, dialect="duckdb") if statement
+        ]
     except ParseError as exc:
         raise CatalogueFixtureError(f"Invalid fixture {path}: {exc}") from exc
     if len(statements) != 1 or not isinstance(statements[0], exp.Create):
@@ -461,11 +492,51 @@ def _parse_relation_fixture(
         name=name,
         sql=sql,
         parameters=parameters,
+        parameter_defaults=parameter_defaults,
     )
 
 
 def _sql_files(directory: Path) -> list[Path]:
     return sorted(path for path in directory.glob("*.sql") if path.is_file())
+
+
+def _ordered_table_macro_paths(paths: list[Path]) -> list[Path]:
+    """Install fixture macros after the fixture macros they reference."""
+
+    by_name = {path.stem: path for path in paths}
+    dependencies = {
+        name: (
+            {
+                reference.lower()
+                for reference in re.findall(
+                    r"\bmacros\.([a-z_][a-z0-9_]*)\s*\(",
+                    path.read_text(encoding="utf-8"),
+                    re.IGNORECASE,
+                )
+            }
+            & set(by_name)
+        )
+        - {name}
+        for name, path in by_name.items()
+    }
+    remaining = dict(by_name)
+    ordered: list[Path] = []
+    installed: set[str] = set()
+    while remaining:
+        ready = sorted(
+            name
+            for name in remaining
+            if dependencies.get(name, set()).issubset(installed)
+        )
+        if not ready:
+            unresolved = ", ".join(sorted(remaining))
+            raise CatalogueFixtureError(
+                f"Table macro fixtures have unresolved dependencies: {unresolved}."
+            )
+        for name in ready:
+            ordered.append(remaining.pop(name))
+            installed.add(name)
+    return ordered
 
 
 def _canonical(sql: str) -> str:

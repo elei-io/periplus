@@ -55,6 +55,7 @@ def create_definition(
     *,
     slug: str,
     parameters: list[str],
+    parameter_defaults: dict[str, str] | None = None,
     sql: str,
     description: str | None,
     created_from_query_revision_id: UUID | None = None,
@@ -69,13 +70,20 @@ def create_definition(
         raise CatalogueTableMacroConflictError(
             f"Table macro {TABLE_MACRO_SCHEMA}.{slug} is already managed by Atlas."
         )
-    macro = store.create(name=slug, parameters=parameters, sql=sql)
+    defaults = parameter_defaults or {}
+    macro = store.create(
+        name=slug,
+        parameters=parameters,
+        parameter_defaults=defaults,
+        sql=sql,
+    )
     definition = CatalogueTableMacroDefinition(
         schema_name=TABLE_MACRO_SCHEMA,
         macro_name=slug,
         slug=slug,
         description=description,
         parameters=list(macro.parameters),
+        parameter_defaults=defaults,
         sql=sql.strip(),
         created_from_query_revision_id=created_from_query_revision_id,
     )
@@ -96,6 +104,7 @@ def update_definition(
     *,
     expected_revision_id: UUID,
     parameters: list[str],
+    parameter_defaults: dict[str, str] | None = None,
     sql: str,
     slug: str,
     description: str | None,
@@ -111,8 +120,15 @@ def update_definition(
         raise CatalogueTableMacroConflictError(
             "The table macro changed; refresh before editing."
         )
-    macro = store.replace(name=locked.macro_name, parameters=parameters, sql=sql)
+    defaults = parameter_defaults or {}
+    macro = store.replace(
+        name=locked.macro_name,
+        parameters=parameters,
+        parameter_defaults=defaults,
+        sql=sql,
+    )
     locked.parameters = list(macro.parameters)
+    locked.parameter_defaults = defaults
     locked.sql = sql.strip()
     locked.slug = slug
     locked.description = description
@@ -160,6 +176,7 @@ def _record(
         slug=definition.slug,
         description=definition.description,
         parameters=list(definition.parameters),
+        parameter_defaults=dict(definition.parameter_defaults),
         sql=definition.sql,
         definition_revision_id=definition.definition_revision_id,
         fixture_path=definition.fixture_path,

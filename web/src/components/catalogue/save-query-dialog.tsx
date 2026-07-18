@@ -132,7 +132,6 @@ export function SaveQueryDialog({
                   ? "SQL for the new query revision"
                   : "SQL for the new saved query"
               }
-              enableCssSelect
             />
           </div>
         </div>

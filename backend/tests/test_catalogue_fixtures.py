@@ -118,6 +118,8 @@ class CatalogueFixtureTests(unittest.TestCase):
                         [
                             "extract_json_ld",
                             "extract_records",
+                            "query_selector",
+                            "query_selector_all",
                             "suggest_json_ld_schemas",
                             "suggest_records",
                         ],
@@ -133,6 +135,22 @@ class CatalogueFixtureTests(unittest.TestCase):
                             "SELECT * FROM atlas.macros.extract_records('missing', 'x > y')"
                         ).fetchall(),
                         [],
+                    )
+                    selector_definitions = list(
+                        session.scalars(
+                            select(CatalogueTableMacroDefinition).where(
+                                CatalogueTableMacroDefinition.macro_name.in_(
+                                    ("query_selector", "query_selector_all")
+                                )
+                            )
+                        )
+                    )
+                    self.assertEqual(len(selector_definitions), 2)
+                    self.assertTrue(
+                        all(
+                            definition.parameter_defaults == {"document_id": "''"}
+                            for definition in selector_definitions
+                        )
                     )
             finally:
                 session.close()

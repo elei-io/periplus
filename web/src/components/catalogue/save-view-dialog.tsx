@@ -102,7 +102,6 @@ export function SaveViewDialog({
               onChange={setDraftSql}
               height="240px"
               ariaLabel="SQL for the new view"
-              enableCssSelect
             />
           </div>
         </div>

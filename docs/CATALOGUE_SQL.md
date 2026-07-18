@@ -6,7 +6,8 @@ Atlas exposes the managed DuckLake schema as the default SQL namespace. Query `d
 The SQL workbench sends every request in one explicit mode. **Run** executes the query and returns
 its rows, **Explain** returns DuckDB's JSON plan without executing the query, and **Explain analyze**
 executes it and returns the measured JSON plan. Run is the default; changing modes never rewrites
-the SQL saved by the user.
+the SQL saved by the user. Atlas validates that each request is one read-only query, but sends its
+SQL to DuckDB without helper expansion or other semantic rewriting.
 
 ## Content and crawl identity
 
@@ -44,13 +45,13 @@ and preserve parsed whitespace.
 The SQL helpers use snake case while following the corresponding browser DOM read semantics:
 
 ```sql
-get_attribute(attributes, name)
-has_attribute(attributes, name)
-has_text(value)
-text_content(document_id, element_index)
-inner_html(document_id, element_index)
-readable_text(document_id, element_index)
-resolve_url(source, href)
+macros.get_attribute(attributes, name)
+macros.has_attribute(attributes, name)
+macros.has_text(value)
+macros.text_content(document_id, element_index)
+macros.inner_html(document_id, element_index)
+macros.readable_text(document_id, element_index)
+macros.resolve_url(source, href)
 ```
 
 These managed scalar macros are reconciled from `fixtures/scalar_macros/` during Atlas setup,
@@ -63,8 +64,9 @@ attribute from a present attribute whose value is the empty string, as commonly 
 boolean attributes.
 
 `has_text` returns true when a value contains at least one character other than HTML whitespace
-(space, tab, carriage return, line feed, or form feed). Use `has_text(text_direct)` or
-`has_text(text_tail)` to ignore empty and formatting-only DOM text without changing stored values.
+(space, tab, carriage return, line feed, or form feed). Use `macros.has_text(text_direct)` or
+`macros.has_text(text_tail)` to ignore empty and formatting-only DOM text without changing stored
+values.
 
 `text_content` follows DOM `Node.textContent`: it concatenates all parsed descendant character
 data in DOM order, preserves whitespace, includes `script`, `style`, template, and hidden content,
@@ -83,12 +85,12 @@ text a browser user would not see, including hidden, `script`, `style`, and temp
 
 ```sql
 SELECT
-  get_attribute(attributes, 'href') AS href,
-  text_content(document_id, element_index) AS exact_text,
-  readable_text(document_id, element_index) AS readable
+  macros.get_attribute(attributes, 'href') AS href,
+  macros.text_content(document_id, element_index) AS exact_text,
+  macros.readable_text(document_id, element_index) AS readable
 FROM elements
 WHERE tag = 'a'
-  AND has_attribute(attributes, 'href')
+  AND macros.has_attribute(attributes, 'href')
 LIMIT 100;
 ```
 
@@ -102,13 +104,57 @@ queries, and fragments without changing the stored `href` attribute.
 ```sql
 SELECT
   c.page_url AS source,
-  get_attribute(e.attributes, 'href') AS href,
-  resolve_url(c.page_url, get_attribute(e.attributes, 'href')) AS url
+  macros.get_attribute(e.attributes, 'href') AS href,
+  macros.resolve_url(
+    c.page_url,
+    macros.get_attribute(e.attributes, 'href')
+  ) AS url
 FROM crawls c
 JOIN elements e USING (document_id)
 WHERE e.tag = 'a'
-  AND has_attribute(e.attributes, 'href');
+  AND macros.has_attribute(e.attributes, 'href');
 ```
+
+## Query selectors
+
+Atlas provides two pure-SQL table macros over the structural `elements` projection:
+
+```sql
+macros.query_selector_all(selector [, document_id])
+macros.query_selector(selector [, document_id])
+```
+
+`query_selector_all` returns every matching element. `query_selector` returns the first match in
+DOM order for each selected document. Passing a content-addressed `document_id` scopes the work to
+one document; omitting it searches every document in the catalogue. Prefer an explicit document
+scope for interactive queries, and add `ORDER BY document_id, element_index` whenever result order
+matters.
+
+An unscoped selector is an analytical catalogue scan. Structural matching may retain a
+catalogue-sized working set, so run broad selectors with the same memory and concurrency controls
+as other large DuckDB queries rather than using them as a low-cost lookup.
+
+```sql
+SELECT
+  macros.get_attribute(attributes, 'href') AS href,
+  macros.readable_text(document_id, element_index) AS label
+FROM macros.query_selector_all(
+  'main article.card > a[href]',
+  'sha256:0123456789abcdef'
+)
+ORDER BY element_index;
+```
+
+The supported subset covers type and universal selectors, IDs, classes, selector lists,
+descendant/child/adjacent/general-sibling combinators, attribute presence and the `=`, `^=`, `$=`,
+`*=`, `~=`, and `|=` operators, plus `:first-child`, `:last-child`, `:only-child`,
+`:nth-child(<integer>)`, and `:empty`. CSS escaping, namespaces, attribute case flags, general
+`an+b` formulas, and logical or relational pseudo-classes such as `:not()`, `:is()`, and `:has()`
+are intentionally unsupported and produce an error.
+
+The selector is parsed and evaluated inside DuckDB. There is no Atlas AST rewrite or generated
+binding layer in this interface, so the same SQL can be sent unchanged to an embedded DuckDB or a
+remote DuckDB-compatible endpoint with the Atlas catalogue attached.
 
 ## Seeded views
 
@@ -140,7 +186,7 @@ crawl context:
 SELECT
   c.crawl_id,
   c.page_url,
-  resolve_url(c.page_url, m.canonical_href) AS canonical_url,
+  macros.resolve_url(c.page_url, m.canonical_href) AS canonical_url,
   m.title,
   m.description
 FROM crawls AS c
