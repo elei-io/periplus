@@ -11,6 +11,7 @@ vendor, proxy, profile, or transport; the CDP service owns those decisions and t
 | Postgres | Editable graphs, domain politeness, content policies, schedules, matches, schemas, macro definitions, and materialization definitions |
 | NATS JetStream/KV | Graph runs, crawl work, progress, leases, workers, admission, and expiring resource grants |
 | CDP service | Acquisition transport, provider selection, browser farm, and acquisition capacity |
+| Quack service | Interactive analytical DuckDB execution and memory |
 | Object repository | Immutable content-addressed raw HTML and bounded navigation packages |
 | DuckLake | Crawls, documents, DOM, graph provenance, materialized data, snapshots, and coverage |
 
@@ -66,6 +67,21 @@ Maintenance runs off-path with an exclusive background catalogue permit. Each in
 materialization process owns one embedded DuckDB connection and initially executes one catalogue
 operation at a time. Historical graph edges open bounded, read-only, per-operation connections and
 are serialized within each acquisition process.
+
+Interactive catalogue reads do not execute in the API process. The browser loads DuckDB-Wasm,
+attaches the configured Quack endpoint, and drives a server-side session with Atlas's DuckLake
+attached. Only the SQL workbench uses this browser runtime: its queries, completion metadata, and
+catalogue status. Crawl failures, run progress, and worker backlogs come from NATS.
+
+Each API process owns exactly one lightweight embedded DuckDB catalogue-control connection, pinned
+to one thread and one operation at a time. It performs only mandatory definition work such as
+creating or updating views, macros, and materializations, plus pinning the snapshot required by a
+historical graph edge. It never runs analytical UI reads, never polls DuckLake, has no read pool,
+and has no query-proxy fallback. The API validates workbench SQL and supplies typed Quack/DuckLake
+bootstrap configuration, but the browser sends the query directly to Quack. Quack is therefore
+required for the web application.
+Because attached catalogues are Quack-server-global, every Atlas deployment sharing one Quack
+service must configure a distinct `ATLAS_CATALOGUE_ALIAS`; `USE` remains browser-session-local.
 
 ## Repository boundary
 

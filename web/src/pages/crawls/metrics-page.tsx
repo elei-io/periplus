@@ -29,33 +29,33 @@ import {
 import {
   useCrawlConcurrencyLimits,
   useGraphRunFailures,
-  useGraphRunMaterializationLag,
   useGraphRuns,
 } from "@/hooks/use-crawl-graphs"
-import type {
-  CrawlConcurrencyLimits,
-  GraphRunMaterializationLag,
-  GraphRunRecord,
-} from "@/types/graphs"
+import { extractApiError } from "@/lib/api"
+import type { CrawlConcurrencyLimits, GraphRunRecord } from "@/types/graphs"
 
 export function CrawlMetricsPage() {
   const runsQuery = useGraphRuns()
   const capacityQuery = useCrawlConcurrencyLimits()
-  const materializationLagQuery = useGraphRunMaterializationLag()
+  const error = runsQuery.error ?? capacityQuery.error
 
-  if (
-    runsQuery.isLoading ||
-    capacityQuery.isLoading ||
-    materializationLagQuery.isLoading
-  ) {
+  if (runsQuery.isLoading || capacityQuery.isLoading) {
     return (
       <LoaderCircleIcon className="m-auto size-5 animate-spin text-muted-foreground" />
     )
   }
+  if (error) {
+    return (
+      <Card className="border-destructive/40">
+        <CardHeader>
+          <CardTitle>Metrics are unavailable</CardTitle>
+          <CardDescription>{extractApiError(error)}</CardDescription>
+        </CardHeader>
+      </Card>
+    )
+  }
 
   const runs = runsQuery.data?.items ?? []
-  const lag = materializationLagQuery.data?.items ?? []
-  const lagByRun = new Map(lag.map((item) => [item.run_id, item]))
   const acquisitionBacklog = runs.reduce(
     (total, run) => total + run.queued_request_count,
     0
@@ -64,10 +64,10 @@ export function CrawlMetricsPage() {
     capacityQuery.data?.catalogue_executors.find(
       (item) => item.capability === "ingestion"
     )?.backlog ?? 0
-  const materializationBacklog = lag.reduce(
-    (total, item) => total + item.pending_updates,
-    0
-  )
+  const materializationBacklog =
+    capacityQuery.data?.catalogue_executors.find(
+      (item) => item.capability === "materialization"
+    )?.backlog ?? 0
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-4 pb-2">
@@ -79,7 +79,7 @@ export function CrawlMetricsPage() {
       />
       <SharedPressure capacity={capacityQuery.data} />
       <DomainPoliteness capacity={capacityQuery.data} />
-      <LatestRuns runs={runs} lagByRun={lagByRun} />
+      <LatestRuns runs={runs} />
     </div>
   )
 }
@@ -261,11 +261,7 @@ function SharedPressure({ capacity }: { capacity?: CrawlConcurrencyLimits }) {
   )
 }
 
-function DomainPoliteness({
-  capacity,
-}: {
-  capacity?: CrawlConcurrencyLimits
-}) {
+function DomainPoliteness({ capacity }: { capacity?: CrawlConcurrencyLimits }) {
   const domains = (capacity?.resources ?? [])
     .filter(
       (resource) =>
@@ -334,13 +330,7 @@ function DomainPoliteness({
   )
 }
 
-function LatestRuns({
-  runs,
-  lagByRun,
-}: {
-  runs: GraphRunRecord[]
-  lagByRun: Map<string, GraphRunMaterializationLag>
-}) {
+function LatestRuns({ runs }: { runs: GraphRunRecord[] }) {
   return (
     <Card>
       <CardHeader>
@@ -348,19 +338,18 @@ function LatestRuns({
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto rounded-md border">
-          <Table className="min-w-[64rem]">
+          <Table className="min-w-[50rem]">
             <TableHeader className="bg-muted/30">
               <TableRow className="hover:bg-transparent">
                 <TableHead className="w-[8rem] pl-4">Status</TableHead>
                 <TableHead className="w-[15rem]">Graph</TableHead>
                 <TableHead>Pages</TableHead>
                 <TableHead className="w-[6rem] text-right">Errors</TableHead>
-                <TableHead className="w-[14rem] pr-4">View updates</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {runs.map((run) => (
-                <RunRow key={run.id} run={run} lag={lagByRun.get(run.id)} />
+                <RunRow key={run.id} run={run} />
               ))}
             </TableBody>
           </Table>
@@ -375,33 +364,19 @@ function LatestRuns({
   )
 }
 
-function RunRow({
-  run,
-  lag,
-}: {
-  run: GraphRunRecord
-  lag?: GraphRunMaterializationLag
-}) {
+function RunRow({ run }: { run: GraphRunRecord }) {
   const progress = describeRunProgress(run)
-  const coolingDown = isTerminalRun(run) && Boolean(lag?.pending_updates)
   const unhealthy = run.status === "failed" || progress.stalled
-  const errorCount = run.error_count + (lag?.failed_updates ?? 0)
 
   return (
     <TableRow title={`Run ${run.id}`}>
       <TableCell className="py-4 pl-4 align-top whitespace-normal">
-        <Badge
-          variant={
-            unhealthy ? "destructive" : coolingDown ? "secondary" : "outline"
-          }
-        >
+        <Badge variant={unhealthy ? "destructive" : "outline"}>
           {progress.stalled
             ? "Stalled"
-            : coolingDown
-              ? "Cooldown"
-              : run.status === "completed_with_errors"
-                ? "Completed"
-                : sentenceCase(run.status)}
+            : run.status === "completed_with_errors"
+              ? "Completed"
+              : sentenceCase(run.status)}
         </Badge>
       </TableCell>
       <TableCell className="py-4 align-top whitespace-normal">
@@ -433,32 +408,20 @@ function RunRow({
           <p className="mt-1.5 text-xs text-muted-foreground tabular-nums">
             {run.queued_request_count.toLocaleString()} queued ·{" "}
             {run.fetching_request_count.toLocaleString()} acquiring ·{" "}
-            {run.navigating_request_count.toLocaleString()} navigating
-            graph
+            {run.navigating_request_count.toLocaleString()} navigating graph
           </p>
         ) : null}
       </TableCell>
-      <RunErrors run={run} lag={lag} errorCount={errorCount} />
-      <TableCell className="py-4 pr-4 align-top whitespace-normal">
-        <MaterializationLag lag={lag} />
-      </TableCell>
+      <RunErrors run={run} />
     </TableRow>
   )
 }
 
-function RunErrors({
-  run,
-  lag,
-  errorCount,
-}: {
-  run: GraphRunRecord
-  lag?: GraphRunMaterializationLag
-  errorCount: number
-}) {
+function RunErrors({ run }: { run: GraphRunRecord }) {
   const [open, setOpen] = useState(false)
   const failures = useGraphRunFailures(run.id, open && run.error_count > 0)
 
-  if (errorCount === 0) {
+  if (run.error_count === 0) {
     return <CountCell value={0} />
   }
 
@@ -473,13 +436,13 @@ function RunErrors({
             />
           }
         >
-          {errorCount.toLocaleString()}
+          {run.error_count.toLocaleString()}
         </DialogTrigger>
         <DialogContent className="max-h-[85svh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Run errors</DialogTitle>
             <DialogDescription>
-              Crawl and view-update failures recorded for run {run.id}.
+              Crawl failures recorded for run {run.id}.
             </DialogDescription>
           </DialogHeader>
           {run.error ? (
@@ -520,12 +483,6 @@ function RunErrors({
               </div>
             ))
           )}
-          {lag?.failed_updates ? (
-            <ErrorDetail
-              label="View updates"
-              detail={`${lag.failed_updates.toLocaleString()} failed materialization updates`}
-            />
-          ) : null}
         </DialogContent>
       </Dialog>
     </TableCell>
@@ -550,29 +507,6 @@ function CountCell({ value }: { value: number }) {
         {value.toLocaleString()}
       </span>
     </TableCell>
-  )
-}
-
-function MaterializationLag({ lag }: { lag?: GraphRunMaterializationLag }) {
-  if (!lag || lag.materialization_count === 0) {
-    return <span className="text-muted-foreground">None</span>
-  }
-  if (lag.pending_updates === 0 && lag.failed_updates === 0) {
-    return <span className="font-medium">Up to date</span>
-  }
-  return (
-    <div>
-      <p className="font-medium tabular-nums">
-        {lag.pending_updates.toLocaleString()} waiting
-      </p>
-      <p className="mt-1 text-xs text-muted-foreground tabular-nums">
-        {lag.materialization_count.toLocaleString()}{" "}
-        {lag.materialization_count === 1 ? "view" : "views"}
-        {lag.failed_updates
-          ? ` · ${lag.failed_updates.toLocaleString()} failed`
-          : ""}
-      </p>
-    </div>
   )
 }
 
@@ -635,10 +569,6 @@ function domainName(resourceName: string) {
 
 function isActiveRun(run: GraphRunRecord) {
   return run.status === "queued" || run.status === "running"
-}
-
-function isTerminalRun(run: GraphRunRecord) {
-  return !isActiveRun(run)
 }
 
 function relativeTime(value: string) {

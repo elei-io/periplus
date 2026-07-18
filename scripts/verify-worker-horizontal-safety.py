@@ -25,6 +25,7 @@ from reliability_support import (
     capture_diagnostics,
     cleanup_materialization_fixture,
     ensure_active_materialization,
+    materialization_lag,
     require_healthy,
 )
 
@@ -129,24 +130,14 @@ def wait_for_run(run_id: str, timeout: float = 180) -> dict[str, Any]:
     raise RuntimeError(f"graph run {run_id} did not become terminal")
 
 
-def run_lag(run_id: str) -> dict[str, Any]:
-    response = api("GET", "/graph-runs/materialization-lag")
-    return next(
-        (item for item in response["items"] if item["run_id"] == run_id),
-        {"pending_updates": 0, "failed_updates": 0, "materialization_count": 0},
-    )
-
-
 def wait_for_materialization(run_id: str, timeout: float = 180) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            lag = run_lag(run_id)
-        except (TimeoutError, RuntimeError) as exc:
-            # Operational reads may briefly return 503 while object storage or
-            # DuckLake metadata reconnects during a killed worker's handoff.
-            if isinstance(exc, RuntimeError) and "503" not in str(exc):
-                raise
+            lag = materialization_lag(run_id)
+        except (TimeoutError, RuntimeError):
+            # A remote catalogue read may briefly fail while the deployment
+            # recovers from the deliberately killed worker.
             time.sleep(1)
             continue
         if lag["pending_updates"] == 0 and lag["failed_updates"] == 0:

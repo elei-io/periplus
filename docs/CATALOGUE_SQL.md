@@ -3,11 +3,17 @@
 Atlas exposes the managed DuckLake schema as the default SQL namespace. Query `documents`,
 `crawls`, and `elements` directly; the `atlas.main` prefix is optional.
 
-The SQL workbench sends every request in one explicit mode. **Run** executes the query and returns
-its rows, **Explain** returns DuckDB's JSON plan without executing the query, and **Explain analyze**
-executes it and returns the measured JSON plan. Run is the default; changing modes never rewrites
-the SQL saved by the user. Atlas validates that each request is one read-only query, but sends its
-SQL to DuckDB without helper expansion or other semantic rewriting.
+The SQL workbench runs in DuckDB-Wasm in the browser and streams results from the required Quack
+service. Quack owns analytical CPU and memory; API replicas do not open a DuckDB read pool or proxy
+query results. The browser attaches Atlas's configured DuckLake to its server-side Quack session.
+This browser DuckDB runtime belongs only to the workbench; the rest of the UI uses ordinary
+control-plane and NATS-backed API contracts.
+
+Every request uses one explicit mode. **Run** executes the query and returns its rows, **Explain**
+returns DuckDB's JSON plan without executing the query, and **Explain analyze** executes it and
+returns the measured JSON plan. Run is the default; changing modes never rewrites the SQL saved by
+the user. The API validates that each request is one read-only query, but the browser sends its SQL
+to Quack without helper expansion or other semantic rewriting.
 
 ## Content and crawl identity
 
@@ -153,8 +159,8 @@ descendant/child/adjacent/general-sibling combinators, attribute presence and th
 are intentionally unsupported and produce an error.
 
 The selector is parsed and evaluated inside DuckDB. There is no Atlas AST rewrite or generated
-binding layer in this interface, so the same SQL can be sent unchanged to an embedded DuckDB or a
-remote DuckDB-compatible endpoint with the Atlas catalogue attached.
+binding layer in this interface, so the SQL is sent unchanged through Quack with the Atlas
+catalogue attached.
 
 ## Seeded views
 

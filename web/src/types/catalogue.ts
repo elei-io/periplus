@@ -11,6 +11,23 @@ export type CatalogueQueryResult = {
   rows: unknown[][]
 }
 
+export type CatalogueQueryRuntime = {
+  transport: "quack"
+  quack_uri: string
+  quack_token: string
+  catalogue_alias: string
+  catalogue_schema: string
+  metadata_schema: string
+  catalogue_schema_version: string
+  setup_sql: string[]
+  attach_sql: string
+}
+
+export type CataloguePreparedSql = {
+  sql: string
+  statement_kind: CatalogueStatementKind
+}
+
 export type CatalogueMetadataColumn = {
   name: string
   data_type: string
@@ -62,19 +79,8 @@ export type CatalogueLintResult = {
 export type CatalogueMaterializationSummary = {
   id: string
   status:
-    | "live"
-    | "backfilling"
-    | "paused"
-    | "dematerializing"
-    | "degraded"
-    | "source_changed"
-  row_count: number
-  storage_bytes: number
+    "live" | "backfilling" | "paused" | "dematerializing" | "source_changed"
   definition_is_current: boolean
-  pending_live_scopes: number
-  remaining_backfill_scopes: number
-  failed_scopes: number
-  last_scope_completed_at: string | null
 }
 
 export type CatalogueViewRecord = {
@@ -139,8 +145,7 @@ export type CatalogueScalarMacroRecord = {
 
 export type CatalogueScalarMacroList = { items: CatalogueScalarMacroRecord[] }
 export type CatalogueMacroRecord =
-  | CatalogueScalarMacroRecord
-  | CatalogueTableMacroRecord
+  CatalogueScalarMacroRecord | CatalogueTableMacroRecord
 
 export type SavedQueryRevision = {
   id: string
@@ -184,27 +189,12 @@ export type CatalogueMaterializationRecord = {
   backfill_enabled: boolean
   backfill_scopes_per_minute: number
   partition_column: string | null
-  partitioning: string[]
+  definition_revision_id: string
   status:
-    | "live"
-    | "backfilling"
-    | "paused"
-    | "dematerializing"
-    | "degraded"
-    | "source_changed"
+    "live" | "backfilling" | "paused" | "dematerializing" | "source_changed"
   source_state: "current" | "source_changed"
-  completed_scopes: number | null
-  total_scopes: number | null
-  pending_live_scopes: number
-  remaining_backfill_scopes: number
-  failed_scopes: number
-  last_scope_completed_at: string | null
-  active_file_count: number
-  active_storage_bytes: number
   dematerialization_requested_at: string | null
   ducklake_table_uuid: string
-  row_count: number
-  columns: Array<{ name: string; data_type: string; nullable: boolean }>
   last_refreshed_at: string
   created_at: string
   updated_at: string

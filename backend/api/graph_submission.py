@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -21,6 +22,7 @@ async def submit_graph_run(
     *,
     graph_id: UUID,
     urls: list[str],
+    catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]],
     trigger_kind: str = "manual",
     trigger_schedule_id: UUID | None = None,
 ) -> GraphRun:
@@ -39,6 +41,7 @@ async def submit_graph_run(
             snapshot=snapshot,
             urls=urls,
             policy_resolver=lambda url: resolve_policy_snapshot(session, url),
+            catalogue_snapshot_resolver=catalogue_snapshot_resolver,
             trigger_kind=trigger_kind,
             trigger_schedule_id=trigger_schedule_id,
         )

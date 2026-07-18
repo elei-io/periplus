@@ -11,9 +11,8 @@ import type {
   GraphRunSubmission,
   GraphRunListResponse,
   GraphRunRecord,
-  GraphRunFailureList,
   EdgeDedupeMode,
-  GraphRunMaterializationLagList,
+  GraphRunFailureList,
   CrawlSchedule,
   CrawlScheduleInput,
   CrawlScheduleListResponse,
@@ -338,17 +337,6 @@ export function useCrawlConcurrencyLimits() {
   })
 }
 
-export function useGraphRunMaterializationLag() {
-  return useQuery({
-    queryKey: ["graph-runs", "materialization-lag"],
-    refetchInterval: 5_000,
-    queryFn: async () =>
-      jsonResponse<GraphRunMaterializationLagList>(
-        await fetch(apiUrl("/graph-runs/materialization-lag"))
-      ),
-  })
-}
-
 export function useActiveGraphRuns(graphId: string) {
   return useQuery({
     queryKey: ["graph-runs", "active", graphId],
@@ -460,14 +448,11 @@ export function useUpdateCrawlSchedule(graphId: string) {
     CrawlSchedule
   >(graphId, async ({ scheduleId, payload }) =>
     jsonResponse<CrawlSchedule>(
-      await fetch(
-        apiUrl(`/crawl-graphs/${graphId}/schedules/${scheduleId}`),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        }
-      )
+      await fetch(apiUrl(`/crawl-graphs/${graphId}/schedules/${scheduleId}`), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
     )
   )
 }
@@ -479,9 +464,7 @@ export function useSetCrawlScheduleEnabled(graphId: string) {
   >(graphId, async ({ scheduleId, enabled }) =>
     jsonResponse<CrawlSchedule>(
       await fetch(
-        apiUrl(
-          `/crawl-graphs/${graphId}/schedules/${scheduleId}/enabled`
-        ),
+        apiUrl(`/crawl-graphs/${graphId}/schedules/${scheduleId}/enabled`),
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -528,14 +511,11 @@ export function usePreviewCrawlSchedule(graphId: string) {
       count?: number
     }) =>
       jsonResponse<SchedulePreviewResponse>(
-        await fetch(
-          apiUrl(`/crawl-graphs/${graphId}/schedules/preview`),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          }
-        )
+        await fetch(apiUrl(`/crawl-graphs/${graphId}/schedules/preview`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
       ),
     onError: (error) => toast.error(extractApiError(error)),
   })

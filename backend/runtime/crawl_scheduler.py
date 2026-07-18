@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 import logging
 from uuid import UUID, uuid5
@@ -55,12 +56,9 @@ def _next_after(
     )
 
 
-def _active_schedule_run(
-    runs: list[GraphRun], schedule_id: UUID
-) -> bool:
+def _active_schedule_run(runs: list[GraphRun], schedule_id: UUID) -> bool:
     return any(
-        run.trigger_schedule_id == schedule_id
-        and run.status in {"queued", "running"}
+        run.trigger_schedule_id == schedule_id and run.status in {"queued", "running"}
         for run in runs
     )
 
@@ -74,6 +72,7 @@ async def _process_due_schedule(
     progress,
     jetstream,
     now: datetime,
+    catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]],
 ) -> None:
     run_id = scheduled_run_id(schedule_id, expected_occurrence)
     existing = await get_graph_run(runs, run_id)
@@ -111,9 +110,7 @@ async def _process_due_schedule(
         if (
             schedule.maximum_run_count is not None
             and schedule.run_count >= schedule.maximum_run_count
-        ) or (
-            schedule.ends_at is not None and schedule.ends_at <= now
-        ):
+        ) or (schedule.ends_at is not None and schedule.ends_at <= now):
             advance_occurrence(
                 session,
                 schedule,
@@ -139,9 +136,8 @@ async def _process_due_schedule(
             return
 
         current_runs = await list_graph_runs(runs)
-        if (
-            schedule.overlap_policy == "skip"
-            and _active_schedule_run(current_runs, schedule.id)
+        if schedule.overlap_policy == "skip" and _active_schedule_run(
+            current_runs, schedule.id
         ):
             advance_occurrence(
                 session,
@@ -166,9 +162,8 @@ async def _process_due_schedule(
                 jetstream=jetstream,
                 snapshot=snapshot,
                 urls=urls,
-                policy_resolver=lambda url: resolve_policy_snapshot(
-                    session, url
-                ),
+                policy_resolver=lambda url: resolve_policy_snapshot(session, url),
+                catalogue_snapshot_resolver=catalogue_snapshot_resolver,
                 trigger_kind="schedule",
                 run_id=run_id,
                 trigger_schedule_id=schedule.id,
@@ -225,16 +220,18 @@ async def _process_due_schedule(
 
 def _schedule_graph_id(session, schedule_id: UUID) -> UUID:
     graph_id = session.scalar(
-        select(CrawlSchedule.graph_id).where(
-            CrawlSchedule.id == schedule_id
-        )
+        select(CrawlSchedule.graph_id).where(CrawlSchedule.id == schedule_id)
     )
     if graph_id is None:
         raise LookupError(f"Crawl schedule {schedule_id} was not found.")
     return graph_id
 
 
-async def run_schedule_tick(*, now: datetime | None = None) -> int:
+async def run_schedule_tick(
+    *,
+    catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]],
+    now: datetime | None = None,
+) -> int:
     now = now or datetime.now(UTC)
     with SessionLocal() as session:
         due = [
@@ -260,6 +257,7 @@ async def run_schedule_tick(*, now: datetime | None = None) -> int:
                     progress=progress,
                     jetstream=jetstream,
                     now=now,
+                    catalogue_snapshot_resolver=catalogue_snapshot_resolver,
                 )
             except Exception:
                 logging.exception(
@@ -272,11 +270,17 @@ async def run_schedule_tick(*, now: datetime | None = None) -> int:
         await client.drain()
 
 
-async def run_scheduler(stop: asyncio.Event) -> None:
+async def run_scheduler(
+    stop: asyncio.Event,
+    *,
+    catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]],
+) -> None:
     interval = get_float("ATLAS_SCHEDULE_POLL_SECONDS")
     while not stop.is_set():
         try:
-            await run_schedule_tick()
+            await run_schedule_tick(
+                catalogue_snapshot_resolver=catalogue_snapshot_resolver
+            )
         except Exception:
             logging.exception("crawl scheduler tick failed")
         try:

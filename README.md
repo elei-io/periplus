@@ -35,8 +35,8 @@ make check
 make compose-up
 ```
 
-Compose starts the complete local stack, exposes the web UI at `http://127.0.0.1:8080`, and exposes
-the API at `http://127.0.0.1:8000`. The accepted
+Compose starts the complete local stack, including a development Quack server, exposes the web UI
+at `http://127.0.0.1:8080`, and exposes the API at `http://127.0.0.1:8000`. The accepted
 target topology separates CDP acquisition, ingestion, materialization, and maintenance failure
 domains. The configured CDP service owns acquisition transport and browser-farm capacity.
 [AUDIT.md](AUDIT.md) tracks the direct greenfield cutover.
@@ -50,6 +50,11 @@ Run the API without Compose:
 ```sh
 make api
 ```
+
+`ATLAS_QUACK_URI` and `ATLAS_QUACK_TOKEN` must identify a Quack endpoint reachable by the browser.
+The API owns one lightweight serialized DuckDB connection for mandatory catalogue definitions, not
+an analytical read pool. Workbench queries run from browser DuckDB-Wasm directly against Quack;
+other UI features do not use browser DuckDB.
 
 Use the CLI for configuration and repository administration:
 

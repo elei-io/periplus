@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4, uuid5
 
@@ -11,13 +11,43 @@ from config import get_float, get_int
 from config.performance import GRAPH_ACK_WAIT_SECONDS
 from control.crawl_policies.schemas import EffectivePolicySnapshot
 from control.crawl_policies.service import find_crawl_policy_for_url, policy_snapshot
-from control.domain_policies.service import find_domain_policy_for_url, domain_policy_snapshot
+from control.domain_policies.service import (
+    find_domain_policy_for_url,
+    domain_policy_snapshot,
+)
 from control.crawl_graphs.schemas import EdgeDedupeMode
 from nats.js.errors import KeyWrongLastSequenceError
-from repository.catalogue import latest_catalogue_snapshot_from_env
 
-from .graph_queue import CrawlRequest, EdgeEvaluation, EdgeWork, FrozenGraphSnapshot, GraphRun, NavigationReadinessWork, PendingAdmission, edge_evaluation_identity, edge_evaluation_key, get_crawl_request, get_edge_evaluation, get_graph_run, list_crawl_requests, new_graph_run, normalize_request_url, publish_crawl, publish_edge, request_identity, update_crawl_request, update_edge_evaluation, update_graph_run
-from .graph_progress import add_edge_output_progress, initialize_run_progress, mark_run_progress_settled, transition_edge_evaluation_progress, transition_node_progress
+from .graph_queue import (
+    CrawlRequest,
+    EdgeEvaluation,
+    EdgeWork,
+    FrozenGraphSnapshot,
+    GraphRun,
+    NavigationReadinessWork,
+    PendingAdmission,
+    edge_evaluation_identity,
+    edge_evaluation_key,
+    get_crawl_request,
+    get_edge_evaluation,
+    get_graph_run,
+    list_crawl_requests,
+    new_graph_run,
+    normalize_request_url,
+    publish_crawl,
+    publish_edge,
+    request_identity,
+    update_crawl_request,
+    update_edge_evaluation,
+    update_graph_run,
+)
+from .graph_progress import (
+    add_edge_output_progress,
+    initialize_run_progress,
+    mark_run_progress_settled,
+    transition_edge_evaluation_progress,
+    transition_node_progress,
+)
 from .edge_sql import edge_uses_catalogue
 
 _REQUEST_NAMESPACE = UUID("869ee36c-76ad-46f0-a1b7-9b28f4b71386")
@@ -73,7 +103,23 @@ def _ceiling_error(run: GraphRun, now: datetime) -> str | None:
     return None
 
 
-async def admit_request(*, runs, requests, progress, jetstream, run_id: UUID, node_id: UUID, url: str, policy_resolver: Callable[[str], dict], dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph, source_crawl_id: UUID | None = None, source_document_id: str | None = None, source_edge_id: UUID | None = None, parent_request_id: UUID | None = None, now: datetime | None = None) -> tuple[CrawlRequest | None, bool]:
+async def admit_request(
+    *,
+    runs,
+    requests,
+    progress,
+    jetstream,
+    run_id: UUID,
+    node_id: UUID,
+    url: str,
+    policy_resolver: Callable[[str], dict],
+    dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph,
+    source_crawl_id: UUID | None = None,
+    source_document_id: str | None = None,
+    source_edge_id: UUID | None = None,
+    parent_request_id: UUID | None = None,
+    now: datetime | None = None,
+) -> tuple[CrawlRequest | None, bool]:
     now = now or datetime.now(UTC)
     normalized = normalize_request_url(url)
     identity = request_identity(
@@ -103,29 +149,54 @@ async def admit_request(*, runs, requests, progress, jetstream, run_id: UUID, no
     def reserve(run: GraphRun) -> GraphRun:
         nonlocal admitted
         admitted = False
-        dedupe_identity = graph_identity if dedupe_mode == EdgeDedupeMode.graph else identity
-        if run.status in _TERMINAL_RUNS or run.cancel_requested_at is not None or dedupe_identity in run.seen_request_identities:
+        dedupe_identity = (
+            graph_identity if dedupe_mode == EdgeDedupeMode.graph else identity
+        )
+        if (
+            run.status in _TERMINAL_RUNS
+            or run.cancel_requested_at is not None
+            or dedupe_identity in run.seen_request_identities
+        ):
             return run
         error = _ceiling_error(run, now)
         if error:
-            return run.model_copy(update={
-                "status": "failed",
-                "completed_at": now,
-                "error": error,
-                "error_count": run.error_count + 1,
-            })
+            return run.model_copy(
+                update={
+                    "status": "failed",
+                    "completed_at": now,
+                    "error": error,
+                    "error_count": run.error_count + 1,
+                }
+            )
         admitted = True
         identities = (identity,)
-        if graph_identity != identity and graph_identity not in run.seen_request_identities:
+        if (
+            graph_identity != identity
+            and graph_identity not in run.seen_request_identities
+        ):
             identities = (*identities, graph_identity)
-        return run.model_copy(update={"status": "running", "started_at": run.started_at or now, "last_progress_at": now, "seen_request_identities": (*run.seen_request_identities, *identities), "pending_admissions": (*run.pending_admissions, pending), "request_count": run.request_count + 1, "pending_request_count": run.pending_request_count + 1})
+        return run.model_copy(
+            update={
+                "status": "running",
+                "started_at": run.started_at or now,
+                "last_progress_at": now,
+                "seen_request_identities": (*run.seen_request_identities, *identities),
+                "pending_admissions": (*run.pending_admissions, pending),
+                "request_count": run.request_count + 1,
+                "pending_request_count": run.pending_request_count + 1,
+            }
+        )
 
     run = await update_graph_run(runs, run_id, reserve)
     if not admitted:
         if run.status == "failed" and run.error and "platform ceiling" in run.error:
             raise GraphRunCeilingError(run.error)
         reserved = next(
-            (value for value in run.pending_admissions if value.request_id == request_id),
+            (
+                value
+                for value in run.pending_admissions
+                if value.request_id == request_id
+            ),
             None,
         )
         if reserved is not None:
@@ -151,7 +222,9 @@ async def admit_request(*, runs, requests, progress, jetstream, run_id: UUID, no
     return request, True
 
 
-async def _deliver_pending_admission(*, runs, requests, progress, jetstream, run_id: UUID, pending: PendingAdmission) -> CrawlRequest:
+async def _deliver_pending_admission(
+    *, runs, requests, progress, jetstream, run_id: UUID, pending: PendingAdmission
+) -> CrawlRequest:
     request = await get_crawl_request(requests, pending.request_id)
     if request is None:
         request = CrawlRequest(
@@ -168,7 +241,9 @@ async def _deliver_pending_admission(*, runs, requests, progress, jetstream, run
         )
         try:
             await requests.create(request.id.hex, request.model_dump_json().encode())
-            await _project(transition_node_progress(progress, request, previous_status=None))
+            await _project(
+                transition_node_progress(progress, request, previous_status=None)
+            )
         except Exception:
             existing = await get_crawl_request(requests, request.id)
             if existing is None:
@@ -178,7 +253,8 @@ async def _deliver_pending_admission(*, runs, requests, progress, jetstream, run
 
     def clear(value: GraphRun) -> GraphRun:
         remaining = tuple(
-            item for item in value.pending_admissions
+            item
+            for item in value.pending_admissions
             if item.request_id != pending.request_id
         )
         return value.model_copy(update={"pending_admissions": remaining})
@@ -187,7 +263,9 @@ async def _deliver_pending_admission(*, runs, requests, progress, jetstream, run
     return request
 
 
-async def reconcile_pending_admissions(*, runs, requests, progress, jetstream, run: GraphRun) -> int:
+async def reconcile_pending_admissions(
+    *, runs, requests, progress, jetstream, run: GraphRun
+) -> int:
     """Create and republish every admission durably reserved by a prior process."""
 
     reconciled = 0
@@ -213,6 +291,7 @@ async def create_graph_run(
     snapshot: FrozenGraphSnapshot,
     urls: list[str],
     policy_resolver: Callable[[str], dict],
+    catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]] | None = None,
     trigger_kind: str = "manual",
     run_id: UUID | None = None,
     trigger_schedule_id: UUID | None = None,
@@ -222,13 +301,14 @@ async def create_graph_run(
     catalogue_snapshot_id = (
         existing.catalogue_snapshot_id if existing is not None else None
     )
-    if (
-        existing is None
-        and any(edge_uses_catalogue(edge.sql) for edge in snapshot.edges)
+    if existing is None and any(
+        edge_uses_catalogue(edge.sql) for edge in snapshot.edges
     ):
-        catalogue_snapshot_id = await asyncio.to_thread(
-            latest_catalogue_snapshot_from_env
-        )
+        if catalogue_snapshot_resolver is None:
+            raise RuntimeError(
+                "historical edge SQL requires a catalogue snapshot resolver"
+            )
+        catalogue_snapshot_id = await catalogue_snapshot_resolver()
         if catalogue_snapshot_id is None:
             raise RuntimeError(
                 "historical edge SQL requires an initialized catalogue snapshot"
@@ -275,16 +355,36 @@ async def create_graph_run(
     else:
         await _project(initialize_run_progress(progress, run))
     for url in run.trigger_urls:
-        await admit_request(runs=runs, requests=requests, progress=progress, jetstream=jetstream, run_id=run.id, node_id=snapshot.root_node_id, url=url, policy_resolver=policy_resolver)
+        await admit_request(
+            runs=runs,
+            requests=requests,
+            progress=progress,
+            jetstream=jetstream,
+            run_id=run.id,
+            node_id=snapshot.root_node_id,
+            url=url,
+            policy_resolver=policy_resolver,
+        )
     return await get_graph_run(runs, run.id) or run
 
 
-async def request_cancellation(runs, requests, run_id: UUID, *, progress, now: datetime | None = None) -> GraphRun:
+async def request_cancellation(
+    runs, requests, run_id: UUID, *, progress, now: datetime | None = None
+) -> GraphRun:
     now = now or datetime.now(UTC)
+
     def cancel(run: GraphRun) -> GraphRun:
         if run.status in _TERMINAL_RUNS:
             return run
-        return run.model_copy(update={"status": "cancelled", "cancel_requested_at": now, "completed_at": now, "error": "Graph run cancelled."})
+        return run.model_copy(
+            update={
+                "status": "cancelled",
+                "cancel_requested_at": now,
+                "completed_at": now,
+                "error": "Graph run cancelled.",
+            }
+        )
+
     try:
         run = await update_graph_run(runs, run_id, cancel)
         if run.status == "cancelled":
@@ -305,24 +405,33 @@ async def request_cancellation(runs, requests, run_id: UUID, *, progress, now: d
         raise GraphRunNotFoundError(f"Graph run {run_id} was not found.") from exc
 
 
-async def expire_graph_run(*, runs, requests, progress, run: GraphRun, now: datetime | None = None) -> GraphRun:
+async def expire_graph_run(
+    *, runs, requests, progress, run: GraphRun, now: datetime | None = None
+) -> GraphRun:
     """Enforce the deployment wall clock even when no later admission occurs."""
 
     now = now or datetime.now(UTC)
     max_seconds = get_int("ATLAS_GRAPH_MAX_RUN_SECONDS")
-    if run.status in _TERMINAL_RUNS or (now - run.created_at).total_seconds() < max_seconds:
+    if (
+        run.status in _TERMINAL_RUNS
+        or (now - run.created_at).total_seconds() < max_seconds
+    ):
         return run
-    error = f"Graph run reached platform ceiling ATLAS_GRAPH_MAX_RUN_SECONDS={max_seconds}."
+    error = (
+        f"Graph run reached platform ceiling ATLAS_GRAPH_MAX_RUN_SECONDS={max_seconds}."
+    )
 
     def fail(value: GraphRun) -> GraphRun:
         if value.status in _TERMINAL_RUNS:
             return value
-        return value.model_copy(update={
-            "status": "failed",
-            "completed_at": now,
-            "error": error,
-            "error_count": value.error_count + 1,
-        })
+        return value.model_copy(
+            update={
+                "status": "failed",
+                "completed_at": now,
+                "error": error,
+                "error_count": value.error_count + 1,
+            }
+        )
 
     run = await update_graph_run(runs, run.id, fail)
     for request in await list_crawl_requests(requests, graph_run_id=run.id):
@@ -340,32 +449,55 @@ async def expire_graph_run(*, runs, requests, progress, run: GraphRun, now: date
     return await get_graph_run(runs, run.id) or run
 
 
-async def settle_request(*, runs, requests, progress, request_id: UUID, status: str, error: str | None = None, now: datetime | None = None, expected_claim_token: UUID | None = None, failure_stage: str | None = None) -> CrawlRequest:
+async def settle_request(
+    *,
+    runs,
+    requests,
+    progress,
+    request_id: UUID,
+    status: str,
+    error: str | None = None,
+    now: datetime | None = None,
+    expected_claim_token: UUID | None = None,
+    failure_stage: str | None = None,
+) -> CrawlRequest:
     now = now or datetime.now(UTC)
     became_terminal = False
+
     def settle(request: CrawlRequest) -> CrawlRequest:
         nonlocal became_terminal
         if request.status in _TERMINAL_REQUESTS:
             return request
-        if expected_claim_token is not None and request.claim_token != expected_claim_token:
+        if (
+            expected_claim_token is not None
+            and request.claim_token != expected_claim_token
+        ):
             return request
         became_terminal = True
-        return request.model_copy(update={
-            "status": status,
-            "error": error,
-            "failure_stage": failure_stage if status == "failed" else None,
-            "claim_token": None,
-            "claim_expires_at": None,
-            "updated_at": now,
-        })
+        return request.model_copy(
+            update={
+                "status": status,
+                "error": error,
+                "failure_stage": failure_stage if status == "failed" else None,
+                "claim_token": None,
+                "claim_expires_at": None,
+                "updated_at": now,
+            }
+        )
+
     previous_status: str | None = None
+
     def tracked_settle(request: CrawlRequest) -> CrawlRequest:
         nonlocal previous_status
         previous_status = request.status
         return settle(request)
+
     request = await update_crawl_request(requests, request_id, tracked_settle)
     if became_terminal:
-        await _project(transition_node_progress(progress, request, previous_status=previous_status))
+        await _project(
+            transition_node_progress(progress, request, previous_status=previous_status)
+        )
+
         def account(run: GraphRun) -> GraphRun:
             pending = max(0, run.pending_request_count - 1)
             failures = run.failed_request_count + (1 if status == "failed" else 0)
@@ -382,13 +514,16 @@ async def settle_request(*, runs, requests, progress, request_id: UUID, status: 
                     update={**update, "status": final, "completed_at": now}
                 )
             return run.model_copy(update=update)
+
         run = await update_graph_run(runs, request.graph_run_id, account)
         if run.status in _TERMINAL_RUNS:
             await _project(mark_run_progress_settled(progress, run))
     return request
 
 
-async def handle_navigation_readiness(*, runs, requests, progress, jetstream, event: NavigationReadinessWork) -> None:
+async def handle_navigation_readiness(
+    *, runs, requests, progress, jetstream, event: NavigationReadinessWork
+) -> None:
     request = await get_crawl_request(requests, event.crawl_request_id)
     if request is None:
         return
@@ -399,11 +534,20 @@ async def handle_navigation_readiness(*, runs, requests, progress, jetstream, ev
         return
     if run.status in _TERMINAL_RUNS:
         return
-    outgoing = [edge for edge in run.snapshot.edges if edge.source_node_id == request.node_id]
+    outgoing = [
+        edge for edge in run.snapshot.edges if edge.source_node_id == request.node_id
+    ]
     if event.navigation is None or not outgoing:
-        await settle_request(runs=runs, requests=requests, progress=progress, request_id=request.id, status="completed")
+        await settle_request(
+            runs=runs,
+            requests=requests,
+            progress=progress,
+            request_id=request.id,
+            status="completed",
+        )
         return
     previous_status: str | None = None
+
     def evaluate(current: CrawlRequest) -> CrawlRequest:
         nonlocal previous_status
         previous_status = current.status
@@ -417,9 +561,12 @@ async def handle_navigation_readiness(*, runs, requests, progress, jetstream, ev
                 "updated_at": datetime.now(UTC),
             }
         )
+
     request = await update_crawl_request(requests, request.id, evaluate)
     if previous_status != request.status:
-        await _project(transition_node_progress(progress, request, previous_status=previous_status))
+        await _project(
+            transition_node_progress(progress, request, previous_status=previous_status)
+        )
     for edge in outgoing:
         assert event.navigation is not None
         work = EdgeWork(
@@ -429,16 +576,28 @@ async def handle_navigation_readiness(*, runs, requests, progress, jetstream, ev
             edge_id=edge.id,
             navigation=event.navigation,
             catalogue_snapshot_id=(
-                run.catalogue_snapshot_id
-                if edge_uses_catalogue(edge.sql)
-                else None
+                run.catalogue_snapshot_id if edge_uses_catalogue(edge.sql) else None
             ),
         )
         identity = edge_evaluation_identity(run.id, request.id, event.crawl_id, edge.id)
-        evaluation = EdgeEvaluation(identity=identity, graph_run_id=run.id, crawl_request_id=request.id, crawl_id=event.crawl_id, edge_id=edge.id, created_at=datetime.now(UTC), updated_at=datetime.now(UTC))
+        evaluation = EdgeEvaluation(
+            identity=identity,
+            graph_run_id=run.id,
+            crawl_request_id=request.id,
+            crawl_id=event.crawl_id,
+            edge_id=edge.id,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
         try:
-            await requests.create(edge_evaluation_key(identity), evaluation.model_dump_json().encode())
-            await _project(transition_edge_evaluation_progress(progress, evaluation, previous_status=None))
+            await requests.create(
+                edge_evaluation_key(identity), evaluation.model_dump_json().encode()
+            )
+            await _project(
+                transition_edge_evaluation_progress(
+                    progress, evaluation, previous_status=None
+                )
+            )
         except Exception:
             existing = await get_edge_evaluation(requests, identity)
             if existing is None:
@@ -446,34 +605,75 @@ async def handle_navigation_readiness(*, runs, requests, progress, jetstream, ev
         await publish_edge(jetstream, work)
 
 
-async def evaluate_edge(*, runs, requests, progress, jetstream, work: EdgeWork, execute_urls: Callable[[str, Mapping[str, object]], Iterable[str]], policy_resolver: Callable[[str], dict], claim_token: UUID | None = None) -> int:
+async def evaluate_edge(
+    *,
+    runs,
+    requests,
+    progress,
+    jetstream,
+    work: EdgeWork,
+    execute_urls: Callable[[str, Mapping[str, object]], Iterable[str]],
+    policy_resolver: Callable[[str], dict],
+    claim_token: UUID | None = None,
+) -> int:
     claim_token = claim_token or uuid4()
-    identity = edge_evaluation_identity(work.graph_run_id, work.crawl_request_id, work.crawl_id, work.edge_id)
+    identity = edge_evaluation_identity(
+        work.graph_run_id, work.crawl_request_id, work.crawl_id, work.edge_id
+    )
     existing = await get_edge_evaluation(requests, identity)
     if existing is not None and existing.status == "completed":
         return existing.output_count
     run = await get_graph_run(runs, work.graph_run_id)
     request = await get_crawl_request(requests, work.crawl_request_id)
-    if run is None or request is None or request.status in _TERMINAL_REQUESTS or run.status in _TERMINAL_RUNS:
+    if (
+        run is None
+        or request is None
+        or request.status in _TERMINAL_REQUESTS
+        or run.status in _TERMINAL_RUNS
+    ):
         return 0
-    edge = next((value for value in run.snapshot.edges if value.id == work.edge_id and value.source_node_id == request.node_id), None)
+    edge = next(
+        (
+            value
+            for value in run.snapshot.edges
+            if value.id == work.edge_id and value.source_node_id == request.node_id
+        ),
+        None,
+    )
     if edge is None:
-        raise ValueError(f"Frozen edge {work.edge_id} is not outgoing from node {request.node_id}.")
+        raise ValueError(
+            f"Frozen edge {work.edge_id} is not outgoing from node {request.node_id}."
+        )
     evaluation = await get_edge_evaluation(requests, identity)
     if evaluation is not None and evaluation.status == "completed":
         return evaluation.output_count
     if evaluation is None:
         now = datetime.now(UTC)
-        evaluation = EdgeEvaluation(identity=identity, graph_run_id=run.id, crawl_request_id=request.id, crawl_id=work.crawl_id, edge_id=edge.id, created_at=now, updated_at=now)
+        evaluation = EdgeEvaluation(
+            identity=identity,
+            graph_run_id=run.id,
+            crawl_request_id=request.id,
+            crawl_id=work.crawl_id,
+            edge_id=edge.id,
+            created_at=now,
+            updated_at=now,
+        )
         try:
-            await requests.create(edge_evaluation_key(identity), evaluation.model_dump_json().encode())
-            await _project(transition_edge_evaluation_progress(progress, evaluation, previous_status=None))
+            await requests.create(
+                edge_evaluation_key(identity), evaluation.model_dump_json().encode()
+            )
+            await _project(
+                transition_edge_evaluation_progress(
+                    progress, evaluation, previous_status=None
+                )
+            )
         except Exception:
             evaluation = await get_edge_evaluation(requests, identity)
             if evaluation is None:
                 raise
     previous_evaluation_status: str | None = None
     claimed = False
+
     def start_evaluation(value: EdgeEvaluation) -> EdgeEvaluation:
         nonlocal previous_evaluation_status, claimed
         previous_evaluation_status = value.status
@@ -486,19 +686,24 @@ async def evaluate_edge(*, runs, requests, progress, jetstream, work: EdgeWork, 
         if value.status == "running" and not reclaimable:
             return value
         claimed = True
-        return value.model_copy(update={
-            "status": "running",
-            "claim_token": claim_token,
-            "claim_expires_at": now + timedelta(
-                seconds=GRAPH_ACK_WAIT_SECONDS * 2
-            ),
-            "updated_at": now,
-        })
+        return value.model_copy(
+            update={
+                "status": "running",
+                "claim_token": claim_token,
+                "claim_expires_at": now + timedelta(seconds=GRAPH_ACK_WAIT_SECONDS * 2),
+                "updated_at": now,
+            }
+        )
+
     evaluation = await update_edge_evaluation(requests, identity, start_evaluation)
     if not claimed:
         raise EdgeEvaluationBusy(f"edge evaluation {identity} is already claimed")
     if previous_evaluation_status != evaluation.status:
-        await _project(transition_edge_evaluation_progress(progress, evaluation, previous_status=previous_evaluation_status))
+        await _project(
+            transition_edge_evaluation_progress(
+                progress, evaluation, previous_status=previous_evaluation_status
+            )
+        )
     count = evaluation.output_count
     seen = 0
     batch_selected = 0
@@ -506,18 +711,20 @@ async def evaluate_edge(*, runs, requests, progress, jetstream, work: EdgeWork, 
     try:
         if "$crawl_id" not in edge.sql:
             raise ValueError("Edge SQL must contain $crawl_id.")
-        query = asyncio.create_task(asyncio.to_thread(
-            lambda: list(
-                execute_urls(
-                    edge.sql,
-                    {
-                        "crawl_id": work.crawl_id,
-                        "_page_url": request.url,
-                        "_document_id": request.document_id,
-                    },
+        query = asyncio.create_task(
+            asyncio.to_thread(
+                lambda: list(
+                    execute_urls(
+                        edge.sql,
+                        {
+                            "crawl_id": work.crawl_id,
+                            "_page_url": request.url,
+                            "_document_id": request.document_id,
+                        },
+                    )
                 )
             )
-        ))
+        )
         try:
             urls = await asyncio.wait_for(
                 asyncio.shield(query),
@@ -535,7 +742,21 @@ async def evaluate_edge(*, runs, requests, progress, jetstream, work: EdgeWork, 
                 continue
             count += 1
             batch_selected += 1
-            _target, newly_admitted = await admit_request(runs=runs, requests=requests, progress=progress, jetstream=jetstream, run_id=run.id, node_id=edge.target_node_id, url=str(url), policy_resolver=policy_resolver, dedupe_mode=edge.dedupe_mode, source_crawl_id=work.crawl_id, source_document_id=request.document_id, source_edge_id=edge.id, parent_request_id=request.id)
+            _target, newly_admitted = await admit_request(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                jetstream=jetstream,
+                run_id=run.id,
+                node_id=edge.target_node_id,
+                url=str(url),
+                policy_resolver=policy_resolver,
+                dedupe_mode=edge.dedupe_mode,
+                source_crawl_id=work.crawl_id,
+                source_document_id=request.document_id,
+                source_edge_id=edge.id,
+                parent_request_id=request.id,
+            )
             batch_admitted += int(newly_admitted)
             if batch_selected == 10:
                 progress_count = count
@@ -543,47 +764,120 @@ async def evaluate_edge(*, runs, requests, progress, jetstream, work: EdgeWork, 
                     requests,
                     identity,
                     lambda value: value.model_copy(
-                        update={"output_count": progress_count, "updated_at": datetime.now(UTC)}
+                        update={
+                            "output_count": progress_count,
+                            "updated_at": datetime.now(UTC),
+                        }
                     ),
                 )
-                await _project(add_edge_output_progress(
-                    progress,
-                    run.id,
-                    edge.id,
-                    selected=batch_selected,
-                    admitted=batch_admitted,
-                    deduplicated=batch_selected - batch_admitted,
-                ))
+                await _project(
+                    add_edge_output_progress(
+                        progress,
+                        run.id,
+                        edge.id,
+                        selected=batch_selected,
+                        admitted=batch_admitted,
+                        deduplicated=batch_selected - batch_admitted,
+                    )
+                )
                 batch_selected = 0
                 batch_admitted = 0
     except Exception as exc:
         previous_evaluation_status = evaluation.status
-        evaluation = await update_edge_evaluation(requests, identity, lambda value: value if value.claim_token != claim_token else value.model_copy(update={"status": "failed", "error": str(exc), "claim_token": None, "claim_expires_at": None, "updated_at": datetime.now(UTC)}))
+        error_message = str(exc)
+        evaluation = await update_edge_evaluation(
+            requests,
+            identity,
+            lambda value: (
+                value
+                if value.claim_token != claim_token
+                else value.model_copy(
+                    update={
+                        "status": "failed",
+                        "error": error_message,
+                        "claim_token": None,
+                        "claim_expires_at": None,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+            ),
+        )
         if evaluation.status != "failed":
             raise EdgeEvaluationBusy(
                 f"edge evaluation {identity} was reclaimed while failing"
             ) from exc
-        await _project(transition_edge_evaluation_progress(progress, evaluation, previous_status=previous_evaluation_status))
-        await settle_request(runs=runs, requests=requests, progress=progress, request_id=request.id, status="failed", error=f"Edge {edge.name} failed: {exc}", failure_stage="edge")
+        await _project(
+            transition_edge_evaluation_progress(
+                progress, evaluation, previous_status=previous_evaluation_status
+            )
+        )
+        await settle_request(
+            runs=runs,
+            requests=requests,
+            progress=progress,
+            request_id=request.id,
+            status="failed",
+            error=f"Edge {edge.name} failed: {exc}",
+            failure_stage="edge",
+        )
         raise EdgeEvaluationFailed(str(exc)) from exc
     previous_evaluation_status = evaluation.status
-    evaluation = await update_edge_evaluation(requests, identity, lambda value: value if value.claim_token != claim_token else value.model_copy(update={"status": "completed", "output_count": count, "error": None, "claim_token": None, "claim_expires_at": None, "updated_at": datetime.now(UTC)}))
+    evaluation = await update_edge_evaluation(
+        requests,
+        identity,
+        lambda value: (
+            value
+            if value.claim_token != claim_token
+            else value.model_copy(
+                update={
+                    "status": "completed",
+                    "output_count": count,
+                    "error": None,
+                    "claim_token": None,
+                    "claim_expires_at": None,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+        ),
+    )
     if evaluation.status != "completed":
         raise EdgeEvaluationBusy(
             f"edge evaluation {identity} was reclaimed before completion"
         )
     if batch_selected:
-        await _project(add_edge_output_progress(
-            progress,
-            run.id,
-            edge.id,
-            selected=batch_selected,
-            admitted=batch_admitted,
-            deduplicated=batch_selected - batch_admitted,
-        ))
-    await _project(transition_edge_evaluation_progress(progress, evaluation, previous_status=previous_evaluation_status))
-    outgoing = [value for value in run.snapshot.edges if value.source_node_id == request.node_id]
-    evaluations = [await get_edge_evaluation(requests, edge_evaluation_identity(run.id, request.id, work.crawl_id, value.id)) for value in outgoing]
-    if evaluations and all(value is not None and value.status == "completed" for value in evaluations):
-        await settle_request(runs=runs, requests=requests, progress=progress, request_id=request.id, status="completed")
+        await _project(
+            add_edge_output_progress(
+                progress,
+                run.id,
+                edge.id,
+                selected=batch_selected,
+                admitted=batch_admitted,
+                deduplicated=batch_selected - batch_admitted,
+            )
+        )
+    await _project(
+        transition_edge_evaluation_progress(
+            progress, evaluation, previous_status=previous_evaluation_status
+        )
+    )
+    outgoing = [
+        value for value in run.snapshot.edges if value.source_node_id == request.node_id
+    ]
+    evaluations = [
+        await get_edge_evaluation(
+            requests,
+            edge_evaluation_identity(run.id, request.id, work.crawl_id, value.id),
+        )
+        for value in outgoing
+    ]
+    if evaluations and all(
+        value is not None and value.status == "completed" for value in evaluations
+    ):
+        await settle_request(
+            runs=runs,
+            requests=requests,
+            progress=progress,
+            request_id=request.id,
+            status="completed",
+        )
     return count

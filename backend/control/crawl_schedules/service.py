@@ -17,7 +17,6 @@ from control.urls import normalize_url
 
 from .models import CrawlSchedule
 from .schemas import (
-    CronTiming,
     CrawlScheduleCreate,
     CrawlScheduleRecord,
     CrawlScheduleResource,
@@ -51,9 +50,7 @@ def _utc(value: datetime) -> datetime:
 def _clean_name(value: str) -> str:
     cleaned = value.strip()
     if not cleaned:
-        raise CrawlScheduleValidationError(
-            "Schedule name must not be blank."
-        )
+        raise CrawlScheduleValidationError("Schedule name must not be blank.")
     return cleaned
 
 
@@ -100,9 +97,11 @@ def next_occurrence(
     else:
         timezone = ZoneInfo(timing.timezone)
         base = max(after, start) if start is not None else after
-        candidate = croniter(
-            timing.expression, base.astimezone(timezone)
-        ).get_next(datetime).astimezone(UTC)
+        candidate = (
+            croniter(timing.expression, base.astimezone(timezone))
+            .get_next(datetime)
+            .astimezone(UTC)
+        )
     if start is not None and candidate < start:
         candidate = start
     if end is not None and candidate >= end:
@@ -170,7 +169,9 @@ def schedule_status(
     return "active"
 
 
-def record(schedule: CrawlSchedule) -> CrawlScheduleRecord:
+def record(
+    schedule: CrawlSchedule, *, now: datetime | None = None
+) -> CrawlScheduleRecord:
     return CrawlScheduleRecord(
         id=schedule.id,
         graph_id=schedule.graph_id,
@@ -183,7 +184,7 @@ def record(schedule: CrawlSchedule) -> CrawlScheduleRecord:
         root_urls=schedule.root_urls,
         overlap_policy=schedule.overlap_policy,  # type: ignore[arg-type]
         misfire_policy=schedule.misfire_policy,  # type: ignore[arg-type]
-        status=schedule_status(schedule),
+        status=schedule_status(schedule, now=now),
         run_count=schedule.run_count,
         next_run_at=schedule.next_run_at,
         last_occurrence_at=schedule.last_occurrence_at,
@@ -219,18 +220,14 @@ def list_schedule_resources(session: Session) -> list[CrawlScheduleResource]:
     ]
 
 
-def get_schedule_resource(
-    session: Session, schedule_id: UUID
-) -> CrawlScheduleResource:
+def get_schedule_resource(session: Session, schedule_id: UUID) -> CrawlScheduleResource:
     row = session.execute(
         select(CrawlSchedule, CrawlGraph.slug)
         .join(CrawlGraph, CrawlGraph.id == CrawlSchedule.graph_id)
         .where(CrawlSchedule.id == schedule_id)
     ).one_or_none()
     if row is None:
-        raise CrawlScheduleNotFoundError(
-            f"Crawl schedule {schedule_id} was not found."
-        )
+        raise CrawlScheduleNotFoundError(f"Crawl schedule {schedule_id} was not found.")
     schedule, graph_slug = row
     return CrawlScheduleResource(
         **record(schedule).model_dump(),
@@ -253,9 +250,7 @@ def get_schedule(
         statement = statement.with_for_update()
     schedule = session.scalar(statement)
     if schedule is None:
-        raise CrawlScheduleNotFoundError(
-            f"Crawl schedule {schedule_id} was not found."
-        )
+        raise CrawlScheduleNotFoundError(f"Crawl schedule {schedule_id} was not found.")
     return schedule
 
 
@@ -300,7 +295,7 @@ def create_schedule(
     )
     session.add(schedule)
     _flush(session)
-    return record(schedule)
+    return record(schedule, now=now)
 
 
 def update_schedule(
@@ -341,7 +336,7 @@ def update_schedule(
     schedule.last_error = None
     schedule.updated_at = now
     _flush(session)
-    return record(schedule)
+    return record(schedule, now=now)
 
 
 def set_schedule_enabled(
@@ -355,12 +350,9 @@ def set_schedule_enabled(
     schedule = get_schedule(session, graph_id, schedule_id, lock=True)
     now = _utc(now or datetime.now(UTC))
     schedule.enabled = enabled
-    if (
-        enabled
-        and (
-            schedule.maximum_run_count is None
-            or schedule.run_count < schedule.maximum_run_count
-        )
+    if enabled and (
+        schedule.maximum_run_count is None
+        or schedule.run_count < schedule.maximum_run_count
     ):
         timing = schedule_timing_adapter.validate_python(schedule.timing)
         schedule.next_run_at = next_occurrence(
@@ -374,12 +366,10 @@ def set_schedule_enabled(
         schedule.next_run_at = None
     schedule.updated_at = now
     session.flush()
-    return record(schedule)
+    return record(schedule, now=now)
 
 
-def delete_schedule(
-    session: Session, graph_id: UUID, schedule_id: UUID
-) -> None:
+def delete_schedule(session: Session, graph_id: UUID, schedule_id: UUID) -> None:
     schedule = get_schedule(session, graph_id, schedule_id, lock=True)
     session.delete(schedule)
     session.flush()

@@ -37,25 +37,16 @@ class CatalogueMaterializationRebuild(BaseModel):
     expected_ducklake_table_uuid: UUID
 
 
-class CatalogueMaterializationColumn(BaseModel):
-    name: str
-    data_type: str
-    nullable: bool
-
-
 class CatalogueMaterializationSummary(BaseModel):
     id: UUID
     status: Literal[
-        "live", "backfilling", "paused", "dematerializing", "degraded",
+        "live",
+        "backfilling",
+        "paused",
+        "dematerializing",
         "source_changed",
     ]
-    row_count: int
-    storage_bytes: int
     definition_is_current: bool
-    pending_live_scopes: int
-    remaining_backfill_scopes: int
-    failed_scopes: int
-    last_scope_completed_at: datetime | None
 
 
 class CatalogueMaterializationRecord(BaseModel):
@@ -74,24 +65,17 @@ class CatalogueMaterializationRecord(BaseModel):
     backfill_enabled: bool
     backfill_scopes_per_minute: int
     partition_column: str | None
-    partitioning: list[str]
+    definition_revision_id: UUID
     status: Literal[
-        "live", "backfilling", "paused", "dematerializing", "degraded",
+        "live",
+        "backfilling",
+        "paused",
+        "dematerializing",
         "source_changed",
     ]
     source_state: Literal["current", "source_changed"]
-    completed_scopes: int | None
-    total_scopes: int | None
-    pending_live_scopes: int
-    remaining_backfill_scopes: int
-    failed_scopes: int
-    last_scope_completed_at: datetime | None
-    active_file_count: int
-    active_storage_bytes: int
     dematerialization_requested_at: datetime | None
     ducklake_table_uuid: UUID
-    row_count: int
-    columns: list[CatalogueMaterializationColumn]
     last_refreshed_at: datetime
     created_at: datetime
     updated_at: datetime

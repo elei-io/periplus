@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
+from api.catalogue_control import CatalogueControl, get_catalogue_control
 from api.graph_submission import submit_graph_run
 from api.routers.graph_runs import GraphRunSubmission
 from control.crawl_graphs.service import (
@@ -59,9 +60,7 @@ def list_resources(
     return CrawlScheduleResourceList(items=items, total=len(items))
 
 
-@resource_router.get(
-    "/{schedule_id}", response_model=CrawlScheduleResource
-)
+@resource_router.get("/{schedule_id}", response_model=CrawlScheduleResource)
 def get_resource(
     schedule_id: UUID,
     session: Annotated[Session, Depends(get_session)],
@@ -181,9 +180,7 @@ def set_enabled(
     session: Annotated[Session, Depends(get_session)],
 ) -> CrawlScheduleRecord:
     try:
-        return set_schedule_enabled(
-            session, graph_id, schedule_id, payload.enabled
-        )
+        return set_schedule_enabled(session, graph_id, schedule_id, payload.enabled)
     except (
         CrawlScheduleNotFoundError,
         CrawlScheduleValidationError,
@@ -215,6 +212,7 @@ async def run_now(
     graph_id: UUID,
     schedule_id: UUID,
     session: Annotated[Session, Depends(get_session)],
+    control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
 ) -> GraphRunSubmission:
     try:
         schedule = get_schedule(session, graph_id, schedule_id)
@@ -222,6 +220,7 @@ async def run_now(
             session,
             graph_id=graph_id,
             urls=list(schedule.root_urls),
+            catalogue_snapshot_resolver=control.latest_snapshot,
             trigger_kind="manual",
             trigger_schedule_id=schedule.id,
         )

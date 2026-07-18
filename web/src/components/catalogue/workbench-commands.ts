@@ -40,7 +40,7 @@ export const WORKBENCH_COMMANDS = [
   { command: "\\df [pattern]", description: "List functions" },
   { command: "\\history", description: "Show command history" },
   { command: "\\x", description: "Toggle expanded result display" },
-  { command: "\\status", description: "Show catalogue and API status" },
+  { command: "\\status", description: "Show catalogue and Quack status" },
   {
     command: "\\crawl [--graph <graph>] [url | --column name]",
     description: "Start a crawl from a URL or the last query result",
@@ -234,7 +234,7 @@ function statusResult(
         ["catalogue storage", formatBytes(status.active_storage_bytes)],
         ["DuckLake version", status.ducklake_version ?? "unknown"],
         ["Atlas schema", status.catalogue_schema_version],
-        ["API latency", `${Math.round(status.apiLatencyMs)} ms`],
+        ["Quack latency", `${Math.round(status.quackLatencyMs)} ms`],
       ]
     ),
   }

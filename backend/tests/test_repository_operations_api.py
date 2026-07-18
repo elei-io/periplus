@@ -5,8 +5,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -18,30 +17,6 @@ from repository import (
     RawArtifactRepository,
     RawHtmlRepository,
 )
-
-
-class _RepositoryContext:
-    def __init__(
-        self,
-        store: FileObjectStore,
-        *,
-        document: object | None = None,
-        artifact: object | None = None,
-    ) -> None:
-        self.html_repository = RawHtmlRepository(store)
-        self.artifact_repository = RawArtifactRepository(store)
-        self.catalogue_service = Mock()
-        self.catalogue_service.get_document.return_value = document
-        self.catalogue_service.get_artifact.return_value = artifact
-
-    def validate(self) -> None:
-        pass
-
-    def __enter__(self) -> _RepositoryContext:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        pass
 
 
 class RepositoryOperationsApiTests(unittest.TestCase):
@@ -59,18 +34,9 @@ class RepositoryOperationsApiTests(unittest.TestCase):
             store = FileObjectStore(Path(temp_dir) / "objects")
             html_repository = RawHtmlRepository(store)
             stored = html_repository.put(html, chunk_chars=7)
-            repository = _RepositoryContext(
-                store,
-                document=SimpleNamespace(
-                    html_object_key=stored.object_key,
-                    html_sha256=stored.sha256,
-                    html_content_type="text/html",
-                ),
-            )
-
             with patch(
-                "api.routers.repository_operations.repository_ingestor_from_env",
-                return_value=repository,
+                "api.routers.repository_operations.object_store_from_env",
+                return_value=store,
             ):
                 response = self.client.get(
                     f"/operations/repository/documents/sha256:{stored.sha256}/content"
@@ -86,12 +52,10 @@ class RepositoryOperationsApiTests(unittest.TestCase):
 
     def test_document_content_returns_not_found_for_unknown_document(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            repository = _RepositoryContext(
-                FileObjectStore(Path(temp_dir) / "objects"),
-            )
+            store = FileObjectStore(Path(temp_dir) / "objects")
             with patch(
-                "api.routers.repository_operations.repository_ingestor_from_env",
-                return_value=repository,
+                "api.routers.repository_operations.object_store_from_env",
+                return_value=store,
             ):
                 response = self.client.get(
                     "/operations/repository/documents/sha256:missing/content"
@@ -113,17 +77,9 @@ class RepositoryOperationsApiTests(unittest.TestCase):
                 io.BytesIO(payload),
                 identity=identity,
             )
-            repository = _RepositoryContext(
-                store,
-                artifact=SimpleNamespace(
-                    object_key=stored.object_key,
-                    sha256=stored.sha256,
-                ),
-            )
-
             with patch(
-                "api.routers.repository_operations.repository_ingestor_from_env",
-                return_value=repository,
+                "api.routers.repository_operations.object_store_from_env",
+                return_value=store,
             ):
                 response = self.client.get(
                     f"/operations/repository/artifacts/{stored.artifact_id}/content"
@@ -139,12 +95,10 @@ class RepositoryOperationsApiTests(unittest.TestCase):
 
     def test_artifact_content_returns_not_found_for_unknown_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            repository = _RepositoryContext(
-                FileObjectStore(Path(temp_dir) / "objects"),
-            )
+            store = FileObjectStore(Path(temp_dir) / "objects")
             with patch(
-                "api.routers.repository_operations.repository_ingestor_from_env",
-                return_value=repository,
+                "api.routers.repository_operations.object_store_from_env",
+                return_value=store,
             ):
                 response = self.client.get(
                     "/operations/repository/artifacts/sha256:missing/content"

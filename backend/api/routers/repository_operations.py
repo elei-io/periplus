@@ -2,8 +2,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from nats.js.errors import NotFoundError
-from uuid import UUID
 
+from repository.exceptions import RepositoryObjectNotFound
 from repository.ingestion.admin import (
     DeadLetterList,
     DeadLetterRecord,
@@ -16,76 +16,59 @@ from materialization.admin import (
     list_dead_letters as list_materialization_dead_letters,
     requeue_dead_letter as requeue_materialization_dead_letter,
 )
-from repository import repository_ingestor_from_env
-from repository.catalogue import ArtifactRecord, CrawlRecord, DocumentRecord
+from repository.objects.artifact import RawArtifactRepository, artifact_object_key
+from repository.objects.config import object_store_from_env
+from repository.objects.html import RawHtmlRepository, html_object_key
 
 router = APIRouter(prefix="/operations/repository", tags=["operations"])
 
 
-@router.get("/documents/{document_id}", response_model=DocumentRecord)
-def document(document_id: str) -> DocumentRecord:
-    with repository_ingestor_from_env() as repository:
-        repository.validate()
-        record = repository.catalogue_service.get_document(document_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="document was not found")
-    return record
-
-
 @router.get("/documents/{document_id}/content", response_class=Response)
 def document_content(document_id: str) -> Response:
-    with repository_ingestor_from_env() as repository:
-        repository.validate()
-        record = repository.catalogue_service.get_document(document_id)
-        if record is None:
-            raise HTTPException(status_code=404, detail="document was not found")
-        content = repository.html_repository.read_bytes(record.html_object_key)
+    sha256 = _content_sha256(document_id, kind="document")
+    try:
+        content = RawHtmlRepository(object_store_from_env()).read_bytes(
+            html_object_key(sha256)
+        )
+    except RepositoryObjectNotFound as exc:
+        raise HTTPException(status_code=404, detail="document was not found") from exc
 
     return Response(
         content=content,
-        media_type=record.html_content_type,
+        media_type="text/html",
         headers={
-            "Content-Disposition": f'inline; filename="{record.html_sha256}.html"',
+            "Content-Disposition": f'inline; filename="{sha256}.html"',
         },
     )
 
 
-@router.get("/artifacts/{artifact_id}", response_model=ArtifactRecord)
-def artifact(artifact_id: str) -> ArtifactRecord:
-    with repository_ingestor_from_env() as repository:
-        repository.validate()
-        record = repository.catalogue_service.get_artifact(artifact_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="artifact was not found")
-    return record
-
-
 @router.get("/artifacts/{artifact_id}/content", response_class=Response)
 def artifact_content(artifact_id: str) -> Response:
-    with repository_ingestor_from_env() as repository:
-        repository.validate()
-        record = repository.catalogue_service.get_artifact(artifact_id)
-        if record is None:
-            raise HTTPException(status_code=404, detail="artifact was not found")
-        content = repository.artifact_repository.read_bytes(record.object_key)
+    sha256 = _content_sha256(artifact_id, kind="artifact")
+    try:
+        content = RawArtifactRepository(object_store_from_env()).read_bytes(
+            artifact_object_key(sha256)
+        )
+    except RepositoryObjectNotFound as exc:
+        raise HTTPException(status_code=404, detail="artifact was not found") from exc
 
     return Response(
         content=content,
         media_type="application/octet-stream",
         headers={
-            "Content-Disposition": f'inline; filename="{record.sha256}"',
+            "Content-Disposition": f'inline; filename="{sha256}"',
         },
     )
 
 
-@router.get("/crawls/{crawl_id}", response_model=CrawlRecord)
-def crawl(crawl_id: UUID) -> CrawlRecord:
-    with repository_ingestor_from_env() as repository:
-        repository.validate()
-        record = repository.catalogue_service.get_crawl(crawl_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="crawl was not found")
-    return record
+def _content_sha256(identity: str, *, kind: str) -> str:
+    prefix = "sha256:"
+    value = identity[len(prefix) :] if identity.startswith(prefix) else ""
+    if len(value) != 64 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        raise HTTPException(status_code=404, detail=f"{kind} was not found")
+    return value
 
 
 @router.get("/dead-letters", response_model=DeadLetterList)
@@ -98,11 +81,15 @@ async def dead_letters(
 @router.post("/dead-letters/{sequence}/requeue", response_model=DeadLetterRecord)
 async def requeue(sequence: int) -> DeadLetterRecord:
     if sequence < 1:
-        raise HTTPException(status_code=422, detail="sequence must be greater than zero")
+        raise HTTPException(
+            status_code=422, detail="sequence must be greater than zero"
+        )
     try:
         return await requeue_repository_dead_letter(sequence)
     except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail="repository dead letter was not found") from exc
+        raise HTTPException(
+            status_code=404, detail="repository dead letter was not found"
+        ) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -123,7 +110,9 @@ async def materialization_dead_letters(
 )
 async def requeue_materialization(sequence: int) -> MaterializationDeadLetterRecord:
     if sequence < 1:
-        raise HTTPException(status_code=422, detail="sequence must be greater than zero")
+        raise HTTPException(
+            status_code=422, detail="sequence must be greater than zero"
+        )
     try:
         return await requeue_materialization_dead_letter(sequence)
     except NotFoundError as exc:

@@ -11,31 +11,44 @@ from sqlalchemy.orm import Session
 
 from control.catalogue_materializations.models import CatalogueMaterialization
 from control.catalogue_materializations.schemas import CatalogueMaterializationSummary
-from control.catalogue_materializations.service import summary as materialization_summary
-from repository.catalogue.materializations import MaterializationStore
+from control.catalogue_materializations.service import (
+    summary as materialization_summary,
+)
 from repository.catalogue.query import classify_select
-from repository.catalogue.views import CatalogueViewConflictError, CatalogueViewStore, DuckLakeView
+from repository.catalogue.views import (
+    CatalogueViewConflictError,
+    CatalogueViewStore,
+    DuckLakeView,
+)
 
 from .models import CatalogueViewReference
 from .schemas import CatalogueViewRecord
 
 
-def list_records(session: Session, store: CatalogueViewStore) -> list[CatalogueViewRecord]:
+def list_records(
+    session: Session, store: CatalogueViewStore
+) -> list[CatalogueViewRecord]:
     references = list(
         session.scalars(
-            select(CatalogueViewReference).where(CatalogueViewReference.archived_at.is_(None))
-        )
-    )
-    materializations = list(
-        session.scalars(
-            select(CatalogueMaterialization).where(
-                CatalogueMaterialization.view_reference_id.in_(
-                    [reference.id for reference in references]
-                ),
-                CatalogueMaterialization.archived_at.is_(None),
+            select(CatalogueViewReference).where(
+                CatalogueViewReference.archived_at.is_(None)
             )
         )
-    ) if references else []
+    )
+    materializations = (
+        list(
+            session.scalars(
+                select(CatalogueMaterialization).where(
+                    CatalogueMaterialization.view_reference_id.in_(
+                        [reference.id for reference in references]
+                    ),
+                    CatalogueMaterialization.archived_at.is_(None),
+                )
+            )
+        )
+        if references
+        else []
+    )
     by_reference: dict[UUID, CatalogueMaterialization] = {}
     for materialization in materializations:
         if materialization.view_reference_id is not None:
@@ -44,10 +57,8 @@ def list_records(session: Session, store: CatalogueViewStore) -> list[CatalogueV
     references_by_id = {reference.id: reference for reference in references}
     views = store.list()
     present = {view.view_uuid for view in views}
-    materialization_store = MaterializationStore(store.catalogue)
     summaries = {
         reference_id: materialization_summary(
-            materialization_store,
             materialization,
             definition_is_current=(
                 materialization.source_state == "current"
@@ -63,8 +74,15 @@ def list_records(session: Session, store: CatalogueViewStore) -> list[CatalogueV
         _record(
             view,
             by_uuid.get(view.view_uuid),
-            summaries.get(by_uuid[view.view_uuid].id) if view.view_uuid in by_uuid else None,
-            definition_sql=(by_reference[by_uuid[view.view_uuid].id].source_sql if view.view_uuid in by_uuid and by_uuid[view.view_uuid].id in by_reference else None),
+            summaries.get(by_uuid[view.view_uuid].id)
+            if view.view_uuid in by_uuid
+            else None,
+            definition_sql=(
+                by_reference[by_uuid[view.view_uuid].id].source_sql
+                if view.view_uuid in by_uuid
+                and by_uuid[view.view_uuid].id in by_reference
+                else None
+            ),
         )
         for view in views
     ]
@@ -76,12 +94,18 @@ def list_records(session: Session, store: CatalogueViewStore) -> list[CatalogueV
     return sorted(records, key=lambda item: item.qualified_name)
 
 
-def get_reference(session: Session, reference_id: UUID) -> CatalogueViewReference | None:
+def get_reference(
+    session: Session, reference_id: UUID
+) -> CatalogueViewReference | None:
     reference = session.get(CatalogueViewReference, reference_id)
-    return reference if reference is not None and reference.archived_at is None else None
+    return (
+        reference if reference is not None and reference.archived_at is None else None
+    )
 
 
-def get_record(session: Session, store: CatalogueViewStore, reference_id: UUID) -> CatalogueViewRecord | None:
+def get_record(
+    session: Session, store: CatalogueViewStore, reference_id: UUID
+) -> CatalogueViewRecord | None:
     reference = get_reference(session, reference_id)
     if reference is None:
         return None
@@ -89,7 +113,6 @@ def get_record(session: Session, store: CatalogueViewStore, reference_id: UUID) 
     materialization = _attached_materialization(session, reference.id)
     summary = (
         materialization_summary(
-            MaterializationStore(store.catalogue),
             materialization,
             definition_is_current=(
                 materialization.source_state == "current"
@@ -102,13 +125,26 @@ def get_record(session: Session, store: CatalogueViewStore, reference_id: UUID) 
         else None
     )
     return (
-        _record(view, reference, summary, definition_sql=materialization.source_sql if materialization else None)
+        _record(
+            view,
+            reference,
+            summary,
+            definition_sql=materialization.source_sql if materialization else None,
+        )
         if view is not None
         else _missing_record(reference, summary)
     )
 
 
-def create_reference(session: Session, store: CatalogueViewStore, *, slug: str, sql: str, description: str | None, created_from_query_revision_id: UUID | None = None) -> CatalogueViewRecord:
+def create_reference(
+    session: Session,
+    store: CatalogueViewStore,
+    *,
+    slug: str,
+    sql: str,
+    description: str | None,
+    created_from_query_revision_id: UUID | None = None,
+) -> CatalogueViewRecord:
     view = store.create(name=slug, sql=sql)
     reference = _new_or_revived_reference(
         session, view, slug=slug, description=description
@@ -118,7 +154,14 @@ def create_reference(session: Session, store: CatalogueViewStore, *, slug: str, 
     return _record(view, reference)
 
 
-def adopt_reference(session: Session, store: CatalogueViewStore, *, view_uuid: UUID, slug: str, description: str | None) -> CatalogueViewRecord:
+def adopt_reference(
+    session: Session,
+    store: CatalogueViewStore,
+    *,
+    view_uuid: UUID,
+    slug: str,
+    description: str | None,
+) -> CatalogueViewRecord:
     view = store.get(view_uuid)
     if view is None:
         raise CatalogueViewConflictError("The DuckLake view no longer exists.")
@@ -129,7 +172,16 @@ def adopt_reference(session: Session, store: CatalogueViewStore, *, view_uuid: U
     return _record(view, reference)
 
 
-def update_reference(session: Session, store: CatalogueViewStore, reference: CatalogueViewReference, *, expected_uuid: UUID, sql: str, slug: str, description: str | None) -> CatalogueViewRecord:
+def update_reference(
+    session: Session,
+    store: CatalogueViewStore,
+    reference: CatalogueViewReference,
+    *,
+    expected_uuid: UUID,
+    sql: str,
+    slug: str,
+    description: str | None,
+) -> CatalogueViewRecord:
     locked_reference = session.scalar(
         select(CatalogueViewReference)
         .where(
@@ -149,7 +201,9 @@ def update_reference(session: Session, store: CatalogueViewStore, reference: Cat
         .with_for_update()
     )
     if locked_reference.ducklake_view_uuid != expected_uuid:
-        raise CatalogueViewConflictError("The view reference changed; refresh before editing.")
+        raise CatalogueViewConflictError(
+            "The view reference changed; refresh before editing."
+        )
     classify_select(sql)
     locked_reference.slug = slug
     locked_reference.description = description
@@ -163,7 +217,9 @@ def update_reference(session: Session, store: CatalogueViewStore, reference: Cat
         view = store.get(expected_uuid)
         if view is None:
             raise CatalogueViewConflictError("The materialized view is missing.")
-        return _record_with_materialization(session, store, view, locked_reference, materialization)
+        return _record_with_materialization(
+            session, store, view, locked_reference, materialization
+        )
     view = store.replace(current_uuid=expected_uuid, sql=sql)
     _update_reference_identity(locked_reference, view)
     _flush_reference(session)
@@ -187,7 +243,6 @@ def _record_with_materialization(
 ) -> CatalogueViewRecord:
     summary = (
         materialization_summary(
-            MaterializationStore(store.catalogue),
             materialization,
             definition_is_current=(
                 materialization.source_state == "current"
@@ -197,7 +252,12 @@ def _record_with_materialization(
         if materialization is not None
         else None
     )
-    return _record(view, reference, summary, definition_sql=materialization.source_sql if materialization else None)
+    return _record(
+        view,
+        reference,
+        summary,
+        definition_sql=materialization.source_sql if materialization else None,
+    )
 
 
 def detach_reference(session: Session, reference: CatalogueViewReference) -> None:
@@ -206,9 +266,17 @@ def detach_reference(session: Session, reference: CatalogueViewReference) -> Non
     session.flush()
 
 
-def drop_referenced_view(session: Session, store: CatalogueViewStore, reference: CatalogueViewReference, *, expected_uuid: UUID) -> None:
+def drop_referenced_view(
+    session: Session,
+    store: CatalogueViewStore,
+    reference: CatalogueViewReference,
+    *,
+    expected_uuid: UUID,
+) -> None:
     if reference.ducklake_view_uuid != expected_uuid:
-        raise CatalogueViewConflictError("The view reference changed; refresh before dropping.")
+        raise CatalogueViewConflictError(
+            "The view reference changed; refresh before dropping."
+        )
     _require_no_materialization(session, reference)
     store.drop(current_uuid=expected_uuid)
     reference.archived_at = datetime.now(UTC)
@@ -246,7 +314,9 @@ def _record(
         available=True,
         created_at=reference.created_at if reference else None,
         updated_at=reference.updated_at if reference else None,
-        created_from_query_revision_id=(reference.created_from_query_revision_id if reference else None),
+        created_from_query_revision_id=(
+            reference.created_from_query_revision_id if reference else None
+        ),
         materialization=materialization,
     )
 
@@ -311,7 +381,9 @@ def _new_or_revived_reference(
         session.add(reference)
         return reference
     if reference.archived_at is None:
-        raise CatalogueViewConflictError("An Atlas reference for this view already exists.")
+        raise CatalogueViewConflictError(
+            "An Atlas reference for this view already exists."
+        )
     reference.ducklake_view_uuid = view.view_uuid
     reference.slug = slug
     reference.description = description

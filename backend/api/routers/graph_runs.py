@@ -2,12 +2,10 @@
 
 import asyncio
 import json
-import time
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from nats.errors import TimeoutError as NatsTimeoutError
@@ -16,40 +14,46 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from api.catalogue_pool import CatalogueReadPool, CatalogueReadPoolExhausted
 from api.graph_submission import submit_graph_run
-from config import get_float, get_int
+from api.catalogue_control import CatalogueControl, get_catalogue_control
 from config.performance import (
-    CATALOGUE_READ_MAX_ATTEMPTS,
-    CATALOGUE_READ_RETRY_SECONDS,
     GRAPH_CONSUMER_MAX_ACK_PENDING,
     CRAWL_ACQUISITION_LANES,
     RESOURCE_ACQUIRE_TIMEOUT_SECONDS,
     catalogue_max_concurrency,
-    catalogue_read_pool_size,
     duckdb_memory_limit,
     duckdb_threads,
     object_io_max_concurrency,
 )
-from control.catalogue_materializations.models import CatalogueMaterialization
 from control.crawl_graphs.models import CrawlGraph
 from control.crawl_graphs.service import (
     CrawlGraphNotFoundError,
     CrawlGraphValidationError,
 )
 from db.session import get_session
-from repository.catalogue import Catalogue
-from repository.catalogue.schema import (
-    INTERNAL_SCHEMA,
-    MATERIALIZATION_COVERAGE_TABLE,
+from repository.ingestion.queue import (
+    DURABLE as INGESTION_DURABLE,
+    IngestionState,
+    crawl_ingestion_request_id,
+    ensure_ingestion_results,
+    get_ingestion_state,
 )
-from repository.ingestion.queue import DURABLE as INGESTION_DURABLE
 from materialization.queue import (
     SCOPE_BACKFILL_DURABLE,
     SCOPE_LIVE_DURABLE,
 )
 from runtime.catalogue_queue import WORK_STREAM
-from runtime.graph_queue import GraphRun, connect_nats, ensure_graph_progress_storage, ensure_graph_storage, get_graph_run, list_graph_runs, list_worker_states
+from runtime.graph_queue import (
+    CrawlRequest,
+    GraphRun,
+    connect_nats,
+    ensure_graph_progress_storage,
+    ensure_graph_storage,
+    get_graph_run,
+    list_crawl_requests,
+    list_graph_runs,
+    list_worker_states,
+)
 from runtime.graph_runs import (
     GraphRunNotFoundError,
     request_cancellation,
@@ -91,7 +95,9 @@ class GraphRunSummary(BaseModel):
     id: UUID
     graph_id: UUID
     graph_slug: str | None
-    status: Literal["queued", "running", "completed", "completed_with_errors", "failed", "cancelled"]
+    status: Literal[
+        "queued", "running", "completed", "completed_with_errors", "failed", "cancelled"
+    ]
     trigger_kind: Literal["manual", "schedule"]
     trigger_schedule_id: UUID | None
     trigger_urls: tuple[str, ...]
@@ -112,22 +118,6 @@ class GraphRunSummary(BaseModel):
 
 class GraphRunList(BaseModel):
     items: list[GraphRunSummary]
-    total: int
-
-
-class GraphRunFailure(BaseModel):
-    crawl_id: UUID
-    requested_url: str
-    final_url: str | None
-    status_code: int | None
-    failure_code: str | None
-    failure_stage: str | None
-    failure_detail: str | None
-    captured_at: datetime
-
-
-class GraphRunFailureList(BaseModel):
-    items: list[GraphRunFailure]
     total: int
 
 
@@ -166,18 +156,22 @@ class RuntimeSizing(BaseModel):
     graph_consumer_delivery_ceiling: int
     duckdb_threads_per_executor: int
     duckdb_memory_limit_per_executor: str
-    catalogue_read_pool_size: int
 
 
-class GraphRunMaterializationLag(BaseModel):
-    run_id: UUID
-    materialization_count: int
-    pending_updates: int
-    failed_updates: int
+class GraphRunFailure(BaseModel):
+    crawl_id: UUID
+    requested_url: str
+    final_url: str | None
+    status_code: int | None
+    failure_code: str | None
+    failure_stage: str | None
+    failure_detail: str | None
+    captured_at: datetime
 
 
-class GraphRunMaterializationLagList(BaseModel):
-    items: list[GraphRunMaterializationLag]
+class GraphRunFailureList(BaseModel):
+    items: list[GraphRunFailure]
+    total: int
 
 
 async def _run_summaries(
@@ -186,11 +180,17 @@ async def _run_summaries(
     runs: list[GraphRun],
 ) -> list[GraphRunSummary]:
     graph_ids = {run.graph_id for run in runs}
-    slugs = dict(
-        session.execute(
-            select(CrawlGraph.id, CrawlGraph.slug).where(CrawlGraph.id.in_(graph_ids))
-        ).all()
-    ) if graph_ids else {}
+    slugs = (
+        dict(
+            session.execute(
+                select(CrawlGraph.id, CrawlGraph.slug).where(
+                    CrawlGraph.id.in_(graph_ids)
+                )
+            ).all()
+        )
+        if graph_ids
+        else {}
+    )
     stage_counts = await asyncio.gather(
         *(_run_stage_counts(progress, run) for run in runs)
     )
@@ -242,12 +242,15 @@ async def capacity() -> CrawlConcurrencyLimits:
         _runs, _requests, workers_bucket = await ensure_graph_storage(jetstream)
         resource_grants = await ensure_resource_governor_storage(jetstream)
         catalogue_workers_bucket = await ensure_catalogue_worker_storage(jetstream)
-        workers = sorted(await list_worker_states(workers_bucket), key=lambda value: value.worker_id)
+        workers = sorted(
+            await list_worker_states(workers_bucket), key=lambda value: value.worker_id
+        )
         catalogue_workers = sorted(
             await list_catalogue_worker_states(catalogue_workers_bucket),
             key=lambda value: value.worker_id,
         )
         resources = await resource_usage(resource_grants)
+
         async def consumer_backlog(durable: str) -> int:
             try:
                 info = await jetstream.consumer_info(WORK_STREAM, durable)
@@ -292,7 +295,10 @@ async def capacity() -> CrawlConcurrencyLimits:
         runtime_active=sum(worker.active_request_count for worker in workers),
         resource_acquire_timeout_seconds=RESOURCE_ACQUIRE_TIMEOUT_SECONDS,
         resources=resources,
-        workers=[RuntimeWorkerCapacity.model_validate(worker, from_attributes=True) for worker in workers],
+        workers=[
+            RuntimeWorkerCapacity.model_validate(worker, from_attributes=True)
+            for worker in workers
+        ],
         catalogue_executors=catalogue_executors,
         tuning=RuntimeSizing(
             catalogue_max_concurrency=catalogue_max_concurrency(),
@@ -305,162 +311,25 @@ async def capacity() -> CrawlConcurrencyLimits:
             graph_consumer_delivery_ceiling=GRAPH_CONSUMER_MAX_ACK_PENDING,
             duckdb_threads_per_executor=duckdb_threads(),
             duckdb_memory_limit_per_executor=duckdb_memory_limit(),
-            catalogue_read_pool_size=catalogue_read_pool_size(),
         ),
     )
 
 
-@router.get(
-    "/materialization-lag", response_model=GraphRunMaterializationLagList
+@trigger_router.post(
+    "/{graph_id}/runs", response_model=GraphRunSubmission, status_code=202
 )
-def materialization_lag(
-    request: Request,
-    session: Annotated[Session, Depends(get_session)],
-) -> GraphRunMaterializationLagList:
-    active_definitions = list(
-        session.execute(
-            select(
-                CatalogueMaterialization.id,
-                CatalogueMaterialization.definition_revision_id,
-                CatalogueMaterialization.scope_kind,
-            ).where(
-                CatalogueMaterialization.archived_at.is_(None),
-                CatalogueMaterialization.dematerialization_requested_at.is_(None),
-                CatalogueMaterialization.source_state == "current",
-                CatalogueMaterialization.live_enabled.is_(True),
-            )
-        ).all()
-    )
-    pool: CatalogueReadPool = request.app.state.catalogue_read_pool
-    try:
-        catalogue = pool.acquire()
-    except CatalogueReadPoolExhausted as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    try:
-        attempts = CATALOGUE_READ_MAX_ATTEMPTS
-        for attempt in range(1, attempts + 1):
-            try:
-                rows = _graph_run_materialization_lag_rows(
-                    catalogue, active_definitions
-                )
-                break
-            except duckdb.IOException as exc:
-                if attempt == attempts:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="Materialization lag is temporarily unavailable.",
-                    ) from exc
-                time.sleep(CATALOGUE_READ_RETRY_SECONDS)
-    finally:
-        pool.release(catalogue)
-    items: list[GraphRunMaterializationLag] = []
-    for row in rows:
-        items.append(
-            GraphRunMaterializationLag(
-                run_id=UUID(str(row[0])),
-                materialization_count=int(row[1]),
-                pending_updates=int(row[2]),
-                failed_updates=int(row[3]),
-            )
-        )
-    return GraphRunMaterializationLagList(items=items)
-
-
-def _graph_run_materialization_lag_rows(
-    catalogue: Catalogue, active_definitions: list[tuple[UUID, UUID, str]]
-) -> list[tuple]:
-    crawls = _catalogue_table(catalogue, "crawls")
-    results = _catalogue_table(
-        catalogue, MATERIALIZATION_COVERAGE_TABLE, schema=INTERNAL_SCHEMA
-    )
-    if not active_definitions:
-        return catalogue.connection.execute(
-            f"""
-            SELECT graph_run_id, 0, 0, 0
-            FROM {crawls}
-            GROUP BY graph_run_id
-            ORDER BY max(captured_at) DESC
-            """
-        ).fetchall()
-    active_values = ", ".join("(?, ?, ?)" for _ in active_definitions)
-    parameters: list[object] = [
-        value for definition in active_definitions for value in definition
-    ]
-    return catalogue.connection.execute(
-        f"""
-        WITH active(materialization_id, definition_revision_id, scope_kind) AS (
-            VALUES {active_values}
-        ),
-        expected_scopes AS (
-            SELECT DISTINCT c.graph_run_id,
-                   a.materialization_id,
-                   a.definition_revision_id,
-                   a.scope_kind,
-                   CASE WHEN a.scope_kind = 'crawl'
-                        THEN CAST(c.crawl_id AS VARCHAR)
-                        ELSE c.document_id
-                   END AS scope_id
-            FROM {crawls} AS c
-            CROSS JOIN active AS a
-            WHERE (a.scope_kind = 'crawl' OR c.document_id IS NOT NULL)
-        ),
-        scope_state AS (
-            SELECT e.*,
-                   r.status AS result_status
-            FROM expected_scopes AS e
-            LEFT JOIN {results} AS r
-              ON r.materialization_id = e.materialization_id
-             AND r.definition_revision_id = e.definition_revision_id
-             AND r.scope_kind = e.scope_kind
-             AND r.scope_id = e.scope_id
-        ),
-        run_summary AS (
-            SELECT graph_run_id,
-                   count(DISTINCT materialization_id) AS materialization_count,
-                   count(*) FILTER (
-                       WHERE result_status IS NULL
-                   ) AS pending_updates,
-                   count(*) FILTER (
-                       WHERE result_status = 'failed'
-                   ) AS failed_updates
-            FROM scope_state
-            GROUP BY graph_run_id
-        )
-        SELECT s.graph_run_id, s.materialization_count,
-               s.pending_updates, s.failed_updates
-        FROM run_summary AS s
-        JOIN (
-            SELECT graph_run_id, max(captured_at) AS last_captured_at
-            FROM {crawls}
-            GROUP BY graph_run_id
-        ) AS r USING (graph_run_id)
-        ORDER BY r.last_captured_at DESC
-        """,
-        parameters,
-    ).fetchall()
-
-
-
-def _catalogue_table(
-    catalogue: Catalogue, name: str, *, schema: str | None = None
-) -> str:
-    return ".".join(
-        '"' + value.replace('"', '""') + '"'
-        for value in (catalogue.config.alias, schema or catalogue.config.schema, name)
-    )
-
-
-@trigger_router.post("/{graph_id}/runs", response_model=GraphRunSubmission, status_code=202)
 async def trigger(
     graph_id: UUID,
     payload: GraphRunTrigger,
     session: Annotated[Session, Depends(get_session)],
+    control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
 ) -> GraphRunSubmission:
     try:
         run = await submit_graph_run(
             session,
             graph_id=graph_id,
             urls=payload.urls,
+            catalogue_snapshot_resolver=control.latest_snapshot,
         )
     except CrawlGraphNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -494,54 +363,6 @@ async def active_graph_runs(
     )
 
 
-@router.get("/{run_id}/failures", response_model=GraphRunFailureList)
-def run_failures(run_id: UUID, request: Request) -> GraphRunFailureList:
-    pool: CatalogueReadPool = request.app.state.catalogue_read_pool
-    try:
-        catalogue = pool.acquire()
-    except CatalogueReadPoolExhausted as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    try:
-        rows = _graph_run_failure_rows(catalogue, run_id)
-    finally:
-        pool.release(catalogue)
-    items = [
-        GraphRunFailure(
-            crawl_id=UUID(str(row[0])),
-            requested_url=str(row[1]),
-            final_url=str(row[2]) if row[2] is not None else None,
-            status_code=int(row[3]) if row[3] is not None else None,
-            failure_code=str(row[4]) if row[4] is not None else None,
-            failure_stage=str(row[5]) if row[5] is not None else None,
-            failure_detail=str(row[6]) if row[6] is not None else None,
-            captured_at=row[7],
-        )
-        for row in rows
-    ]
-    return GraphRunFailureList(items=items, total=len(items))
-
-
-def _graph_run_failure_rows(catalogue: Catalogue, run_id: UUID) -> list[tuple]:
-    crawls = _catalogue_table(catalogue, "crawls")
-    return catalogue.connection.execute(
-        f"""
-        SELECT crawl_id,
-               requested_url,
-               final_url,
-               status_code,
-               failure_code,
-               failure_stage,
-               failure_detail,
-               captured_at
-        FROM {crawls}
-        WHERE graph_run_id = ?
-          AND outcome = 'failed'
-        ORDER BY captured_at, crawl_id
-        """,
-        [run_id],
-    ).fetchall()
-
-
 @router.get("/{run_id}", response_model=GraphRun)
 async def get(run_id: UUID) -> GraphRun:
     client, runs, _requests, _progress = await _storage()
@@ -550,8 +371,86 @@ async def get(run_id: UUID) -> GraphRun:
     finally:
         await client.drain()
     if run is None:
-        raise HTTPException(status_code=404, detail=f"Graph run {run_id} was not found.")
+        raise HTTPException(
+            status_code=404, detail=f"Graph run {run_id} was not found."
+        )
     return run
+
+
+@router.get("/{run_id}/failures", response_model=GraphRunFailureList)
+async def failures(run_id: UUID) -> GraphRunFailureList:
+    client, runs, requests, _progress = await _storage()
+    try:
+        run = await get_graph_run(runs, run_id)
+        if run is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Graph run {run_id} was not found.",
+            )
+        failed_requests = [
+            request
+            for request in await list_crawl_requests(requests, graph_run_id=run_id)
+            if request.status == "failed"
+        ]
+        results = await ensure_ingestion_results(client.jetstream())
+        states = await asyncio.gather(
+            *(
+                get_ingestion_state(
+                    results,
+                    crawl_ingestion_request_id(request.id),
+                )
+                for request in failed_requests
+            )
+        )
+    finally:
+        await client.drain()
+    items = [
+        _failure_record(request, state)
+        for request, state in zip(failed_requests, states, strict=True)
+    ]
+    items.sort(key=lambda item: item.captured_at, reverse=True)
+    return GraphRunFailureList(items=items, total=len(items))
+
+
+def _failure_record(
+    request: CrawlRequest,
+    state: IngestionState | None,
+) -> GraphRunFailure:
+    if state is not None:
+        crawl = state.crawl
+        return GraphRunFailure(
+            crawl_id=crawl.crawl_id,
+            requested_url=crawl.requested_url,
+            final_url=crawl.final_url,
+            status_code=crawl.status_code,
+            failure_code=crawl.failure_code,
+            failure_stage=crawl.failure_stage or request.failure_stage,
+            failure_detail=crawl.failure_detail or request.error,
+            captured_at=crawl.captured_at,
+        )
+    attempt = (
+        request.acquisition_attempts_json[-1]
+        if request.acquisition_attempts_json
+        else {}
+    )
+    return GraphRunFailure(
+        crawl_id=request.id,
+        requested_url=request.url,
+        final_url=_optional_string(attempt.get("final_url")),
+        status_code=_optional_int(attempt.get("status_code")),
+        failure_code=_optional_string(attempt.get("failure_code")),
+        failure_stage=request.failure_stage,
+        failure_detail=request.error,
+        captured_at=request.updated_at,
+    )
+
+
+def _optional_string(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _optional_int(value: object) -> int | None:
+    return value if isinstance(value, int) else None
 
 
 @router.get("/", response_model=GraphRunList)
@@ -595,7 +494,9 @@ async def _run_events(request: Request, client, runs, progress, run: GraphRun):
             value = _progress_value(entry)
             snapshot_revision = max(snapshot_revision, entry.revision)
             target = nodes if isinstance(value, NodeProgress) else edges
-            target[str(value.node_id if isinstance(value, NodeProgress) else value.edge_id)] = value.model_dump(mode="json")
+            target[
+                str(value.node_id if isinstance(value, NodeProgress) else value.edge_id)
+            ] = value.model_dump(mode="json")
         payload = json.dumps(
             {"graph_run_id": str(run.id), "nodes": nodes, "edges": edges},
             separators=(",", ":"),
@@ -634,7 +535,9 @@ async def run_events(run_id: UUID, request: Request) -> StreamingResponse:
     run = await get_graph_run(runs, run_id)
     if run is None:
         await client.drain()
-        raise HTTPException(status_code=404, detail=f"Graph run {run_id} was not found.")
+        raise HTTPException(
+            status_code=404, detail=f"Graph run {run_id} was not found."
+        )
     await bootstrap_run_progress(progress, requests, run)
     return StreamingResponse(
         _run_events(request, client, runs, progress, run),

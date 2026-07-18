@@ -1,4 +1,4 @@
-# Upstream DuckLake Feedback
+# Upstream DuckLake and Quack Feedback
 
 This is Atlas's focused wishlist and issue log for the DuckLake libraries maintained alongside it.
 Atlas intentionally dogfoods these packages, so friction found here should improve the shared
@@ -11,6 +11,7 @@ library instead of becoming a permanent Atlas-specific workaround.
 | `ducklake-client` | Typed DuckLake configuration, attachment, schema, transactions, and catalogue access | `/Users/ekku/Code/quack/ducklake-python-client` |
 | `ducklake-cdc` | Durable DDL/DML change consumption for publication tables | `/Users/ekku/Code/quack/ducklake-cdc-extension` |
 | `ducklake-cdc-client` | Python consumer API for publication CDC, replay, and bootstrap | `/Users/ekku/Code/quack/ducklake-cdc-python-client` |
+| `quack` | Browser-to-server analytical DuckDB transport | `/Users/ekku/Code/quack/duckdb-quack` |
 
 ## How to add an item
 
@@ -104,8 +105,45 @@ the published release; version control retains the history.
   pools. The remaining `listen` behavior is not on Atlas's active path but remains worth a focused
   upstream reproduction.
 
-Atlas deliberately embeds DuckDB in each ingestion and materialization worker. Remote Quack support
-is not an Atlas deployment direction and is not tracked as an Atlas upstream requirement.
+### Public DuckLake connection bootstrap statements
+
+- **Atlas caller:** the browser catalogue workbench when DuckDB-Wasm connects directly to a
+  platform-provided Quack server and attaches Atlas's configured DuckLake.
+- **Evidence:** `ducklake-client` already has the complete typed rendering implementation in
+  private `ducklake_client._attach.build_attach_sql`, while public catalogue and storage config
+  types expose the remaining setup inputs. Atlas currently has to import that private helper to
+  return the authoritative bootstrap statements to its browser client.
+- **Smallest useful upstream contract:** expose a public typed function returning the ordered
+  connection setup statements (storage secrets followed by DuckLake `ATTACH`) for a
+  `CatalogConfig`, `StorageConfig`, alias, and `DuckLakeAttachConfig`.
+- **Atlas status:** browser Quack configuration temporarily calls the existing private renderer;
+  replace that import once the same contract is published.
+
+### Remote query cancellation
+
+- **Atlas caller:** DuckDB-Wasm catalogue workbench queries executed through a sticky Quack
+  attachment.
+- **Evidence:** `AsyncDuckDBConnection.cancelSent()` does not stop an active
+  `quack_query_by_name` request. The workbench client returns `false` while
+  `quack_active_connections()` continues to report the server-side query as `active`. Quack's
+  protocol currently has no cancellation message or public server-side cancellation function.
+- **Smallest useful upstream contract:** add connection-scoped cancellation that interrupts the
+  active server-side DuckDB query and makes the pending client stream terminate with a typed
+  cancellation error.
+- **Atlas status:** the workbench does not display a cancel action it cannot honor. Queries remain
+  read-only, but operator-side Quack limits are still required until cancellation is available.
+
+### Public Wasm client lacks variadic remote bound parameters
+
+- **Atlas caller:** typed workbench-only browser metadata and catalogue-status queries.
+- **Evidence:** the local Quack source accepts extra parameters after the SQL argument, but the
+  public DuckDB-Wasm 1.5.4 extension exposes only
+  `quack_query_by_name(VARCHAR, VARCHAR)`. Passing a third argument fails at bind time.
+- **Smallest useful upstream contract:** publish the variadic bound-parameter overload for Wasm
+  alongside native clients and cover it with a browser test.
+- **Atlas status:** arbitrary workbench SQL remains one bound opaque string. Atlas temporarily
+  renders only its own typed workbench metadata/status parameters as escaped SQL literals before
+  sending those fixed query templates. Crawl failures and worker backlog no longer use Quack.
 
 ## In progress
 

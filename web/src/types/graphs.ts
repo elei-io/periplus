@@ -194,17 +194,5 @@ export type CrawlConcurrencyLimits = {
     graph_consumer_delivery_ceiling: number
     duckdb_threads_per_executor: number
     duckdb_memory_limit_per_executor: string
-    catalogue_read_pool_size: number
   }
-}
-
-export type GraphRunMaterializationLag = {
-  run_id: string
-  materialization_count: number
-  pending_updates: number
-  failed_updates: number
-}
-
-export type GraphRunMaterializationLagList = {
-  items: GraphRunMaterializationLag[]
 }

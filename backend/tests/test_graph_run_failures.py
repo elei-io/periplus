@@ -3,56 +3,62 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 from uuid import uuid4
 
-from api.routers.graph_runs import run_failures
+from api.routers.graph_runs import _failure_record
+from runtime.graph_queue import CrawlRequest
 
 
 class GraphRunFailureApiTests(unittest.TestCase):
-    def test_returns_durable_crawl_failure_details(self) -> None:
-        run_id = uuid4()
-        crawl_id = uuid4()
+    def test_prefers_durable_ingestion_failure_provenance(self) -> None:
+        request = _failed_request()
         captured_at = datetime(2026, 7, 17, tzinfo=UTC)
-        catalogue = MagicMock()
-        catalogue.config.alias = "atlas"
-        catalogue.config.schema = "main"
-        catalogue.connection.execute.return_value.fetchall.return_value = [
-            (
-                crawl_id,
-                "https://example.com/",
-                "https://example.com/",
-                None,
-                "navigation_failed",
-                "navigation",
-                "Execution context was destroyed.",
-                captured_at,
-            )
-        ]
-        pool = MagicMock()
-        pool.acquire.return_value = catalogue
-        request = SimpleNamespace(
-            app=SimpleNamespace(
-                state=SimpleNamespace(catalogue_read_pool=pool),
+        crawl_id = uuid4()
+        state = SimpleNamespace(
+            crawl=SimpleNamespace(
+                crawl_id=crawl_id,
+                requested_url=request.url,
+                final_url="https://example.com/final",
+                status_code=503,
+                failure_code="navigation_failed",
+                failure_stage="navigation",
+                failure_detail="Execution context was destroyed.",
+                captured_at=captured_at,
             )
         )
 
-        result = run_failures(run_id, request)
+        result = _failure_record(request, state)
 
-        self.assertEqual(result.total, 1)
-        self.assertEqual(result.items[0].crawl_id, crawl_id)
-        self.assertEqual(result.items[0].failure_code, "navigation_failed")
-        self.assertEqual(
-            result.items[0].failure_detail,
-            "Execution context was destroyed.",
-        )
-        sql = catalogue.connection.execute.call_args.args[0]
-        self.assertIn("outcome = 'failed'", sql)
-        self.assertEqual(
-            catalogue.connection.execute.call_args.args[1],
-            [run_id],
-        )
-        pool.release.assert_called_once_with(catalogue)
+        self.assertEqual(result.crawl_id, crawl_id)
+        self.assertEqual(result.failure_code, "navigation_failed")
+        self.assertEqual(result.failure_detail, "Execution context was destroyed.")
+        self.assertEqual(result.captured_at, captured_at)
+
+    def test_falls_back_to_failed_request_when_ingestion_state_expired(self) -> None:
+        request = _failed_request()
+
+        result = _failure_record(request, None)
+
+        self.assertEqual(result.crawl_id, request.id)
+        self.assertEqual(result.requested_url, request.url)
+        self.assertEqual(result.failure_stage, "acquisition")
+        self.assertEqual(result.failure_detail, "browser unavailable")
+
+
+def _failed_request() -> CrawlRequest:
+    now = datetime.now(UTC)
+    return CrawlRequest(
+        id=uuid4(),
+        graph_run_id=uuid4(),
+        node_id=uuid4(),
+        url="https://example.com/",
+        effective_policy_snapshot_json={},
+        status="failed",
+        created_at=now,
+        updated_at=now,
+        error="browser unavailable",
+        failure_stage="acquisition",
+    )
 
 
 if __name__ == "__main__":

@@ -3,21 +3,16 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import duckdb
 import pyarrow as pa
 from ducklake_client import DiskStorage, DuckDBCatalog
-from fastapi import HTTPException
 
 from api.routers.catalogue import (
     CatalogueSqlRequest,
-    catalogue_metadata,
-    catalogue_status,
     lint_sql,
-    sql_query,
+    prepare_sql,
 )
-from api.catalogue_pool import CatalogueReadPool, CatalogueReadPoolExhausted
 from tests.catalogue_helpers import seed_system_macros
 from repository.catalogue import Catalogue, CatalogueConfig
 from repository.catalogue.query import (
@@ -31,10 +26,6 @@ from repository.catalogue.query import (
     prepare_catalogue_query,
     stream_arrow_reader,
 )
-from repository.catalogue.metadata import read_catalogue_metadata
-from repository.catalogue.schema import CATALOGUE_SCHEMA_VERSION
-from repository.catalogue.status import read_catalogue_status
-
 
 
 class CatalogueQueryClassificationTests(unittest.TestCase):
@@ -62,15 +53,19 @@ class CatalogueQueryClassificationTests(unittest.TestCase):
 
 class CatalogueQueryLintTests(unittest.TestCase):
     def test_lint_endpoint_reports_unbounded_interactive_query(self) -> None:
-        response = lint_sql(
-            CatalogueSqlRequest(sql="SELECT * FROM documents")
-        )
+        response = lint_sql(CatalogueSqlRequest(sql="SELECT * FROM documents"))
 
         self.assertEqual(
             [diagnostic.code for diagnostic in response.diagnostics],
             ["missing_limit"],
         )
         self.assertEqual(response.diagnostics[0].severity, "warning")
+
+    def test_prepare_endpoint_returns_validated_canonical_statement(self) -> None:
+        response = prepare_sql(CatalogueSqlRequest(sql=" EXPLAIN ANALYZE SELECT 1; "))
+
+        self.assertEqual(response.sql, "SELECT 1;")
+        self.assertEqual(response.statement_kind, "explain_analyze")
 
     def test_warns_when_dom_helper_is_not_fed_by_bounded_materialized_cte(self) -> None:
         diagnostics = lint_select(
@@ -107,83 +102,8 @@ class CatalogueQueryLintTests(unittest.TestCase):
     def test_incomplete_sql_has_no_transient_lint_diagnostics(self) -> None:
         self.assertEqual(lint_select("SELECT * FROM"), [])
 
+
 class CatalogueQueryExecutionTests(unittest.TestCase):
-    def test_catalogue_metadata_includes_typed_views_and_macros(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            config = CatalogueConfig(
-                catalog=DuckDBCatalog(root / "catalog.ducklake"),
-                storage=DiskStorage(root / "lake"),
-            )
-            with Catalogue(config) as catalogue:
-                catalogue.bootstrap()
-                catalogue.connection.execute(
-                    "CREATE VIEW atlas.views.recent_documents AS "
-                    "SELECT document_id, created_at FROM atlas.main.documents"
-                )
-                catalogue.connection.execute("USE atlas.main")
-                catalogue.connection.execute(
-                    "CREATE MACRO atlas.macros.sample_documents(limit_rows) AS TABLE "
-                    "SELECT * FROM documents LIMIT limit_rows"
-                )
-                metadata = read_catalogue_metadata(catalogue)
-
-        relations = {
-            (relation.schema_name, relation.name): relation
-            for relation in metadata.relations
-        }
-        view = relations[("views", "recent_documents")]
-        self.assertEqual(view.kind, "view")
-        self.assertEqual(
-            [(column.name, column.data_type) for column in view.columns],
-            [
-                ("document_id", "VARCHAR"),
-                ("created_at", "TIMESTAMP WITH TIME ZONE"),
-            ],
-        )
-        table_macro = next(
-            function
-            for function in metadata.functions
-            if function.schema_name == "macros"
-            and function.name == "sample_documents"
-        )
-        self.assertEqual(table_macro.kind, "table_macro")
-        self.assertEqual(
-            [parameter.name for parameter in table_macro.parameters],
-            ["limit_rows"],
-        )
-        self.assertEqual(
-            [(column.name, column.data_type) for column in table_macro.result_columns],
-            [
-                (column.name, column.data_type)
-                for column in relations[("main", "documents")].columns
-            ],
-        )
-        builtin_names = {
-            function.name
-            for function in metadata.functions
-            if function.schema_name == metadata.default_schema
-        }
-        self.assertTrue(
-            {"count", "sum", "avg", "min", "max"}.issubset(builtin_names)
-        )
-
-    def test_catalogue_status_reports_active_storage_and_ducklake_version(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            config = CatalogueConfig(
-                catalog=DuckDBCatalog(root / "catalog.ducklake"),
-                storage=DiskStorage(root / "lake"),
-            )
-            with Catalogue(config) as catalogue:
-                catalogue.bootstrap()
-                status = read_catalogue_status(catalogue)
-
-        self.assertEqual(status.active_file_count, 0)
-        self.assertEqual(status.active_storage_bytes, 0)
-        self.assertTrue(status.ducklake_version)
-        self.assertEqual(status.catalogue_schema_version, CATALOGUE_SCHEMA_VERSION)
-
     def test_explain_does_not_execute_but_explain_analyze_does(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -270,53 +190,6 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
 
         self.assertEqual(prepared.sql, sql)
 
-    @patch("api.routers.catalogue.execute_arrow_query")
-    def test_duckdb_errors_are_returned_before_streaming_starts(
-        self,
-        execute_query: MagicMock,
-    ) -> None:
-        request = MagicMock()
-        pool = request.app.state.catalogue_read_pool
-        catalogue = pool.acquire.return_value
-        execute_query.side_effect = duckdb.CatalogException(
-            "Catalog Error: Table with name missing does not exist!"
-        )
-
-        with self.assertRaises(HTTPException) as raised:
-            sql_query(CatalogueSqlRequest(sql="SELECT * FROM missing"), request)
-
-        self.assertEqual(raised.exception.status_code, 422)
-        self.assertEqual(
-            raised.exception.detail,
-            "Catalog Error: Table with name missing does not exist!",
-        )
-        pool.release.assert_called_once_with(catalogue)
-
-    @patch("api.routers.catalogue.explain_arrow_query")
-    def test_api_dispatches_native_explain_statements(self, explain_query: MagicMock) -> None:
-        request = MagicMock()
-        catalogue = request.app.state.catalogue_read_pool.acquire.return_value
-        explain_query.return_value = MagicMock()
-
-        response = sql_query(
-            CatalogueSqlRequest(sql="EXPLAIN SELECT 1"),
-            request,
-        )
-        explain_query.assert_called_once_with(catalogue, "SELECT 1", analyze=False)
-        self.assertEqual(response.headers["x-atlas-statement-kind"], "explain")
-
-        explain_query.reset_mock()
-        response = sql_query(
-            CatalogueSqlRequest(
-                sql="EXPLAIN ANALYZE SELECT 1",
-            ),
-            request,
-        )
-        explain_query.assert_called_once_with(catalogue, "SELECT 1", analyze=True)
-        self.assertEqual(
-            response.headers["x-atlas-statement-kind"], "explain_analyze"
-        )
-
     def test_native_explain_classification_validates_the_inner_query(self) -> None:
         explained = classify_catalogue_statement("EXPLAIN SELECT 1")
         analyzed = classify_catalogue_statement("EXPLAIN ANALYZE SELECT 1")
@@ -327,106 +200,6 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
         self.assertEqual(analyzed.sql, "SELECT 1")
         with self.assertRaises(CatalogueQueryError):
             classify_catalogue_statement("EXPLAIN DELETE FROM documents")
-
-    def test_pool_wait_timeout_is_returned_as_service_unavailable(self) -> None:
-        request = MagicMock()
-        pool = request.app.state.catalogue_read_pool
-        pool.acquire.side_effect = CatalogueReadPoolExhausted(
-            "catalogue SQL is busy; no read connection became available within 5 seconds"
-        )
-
-        with self.assertRaises(HTTPException) as raised:
-            sql_query(CatalogueSqlRequest(sql="SELECT 1"), request)
-
-        self.assertEqual(raised.exception.status_code, 503)
-        self.assertEqual(
-            raised.exception.detail,
-            "catalogue SQL is busy; no read connection became available within 5 seconds",
-        )
-
-    @patch("api.routers.catalogue.read_catalogue_status")
-    def test_status_endpoint_releases_its_catalogue(self, read_status: MagicMock) -> None:
-        request = MagicMock()
-        pool = request.app.state.catalogue_read_pool
-        catalogue = pool.acquire.return_value
-        read_status.return_value.active_file_count = 4
-        read_status.return_value.active_storage_bytes = 1_024
-        read_status.return_value.ducklake_version = "1.3.0"
-        read_status.return_value.catalogue_schema_version = CATALOGUE_SCHEMA_VERSION
-
-        response = catalogue_status(request)
-
-        self.assertEqual(response.active_file_count, 4)
-        self.assertEqual(response.active_storage_bytes, 1_024)
-        self.assertEqual(response.ducklake_version, "1.3.0")
-        self.assertEqual(response.catalogue_schema_version, CATALOGUE_SCHEMA_VERSION)
-        pool.release.assert_called_once_with(catalogue)
-
-    @patch("api.routers.catalogue.read_catalogue_metadata")
-    def test_metadata_endpoint_releases_its_catalogue(
-        self, read_metadata: MagicMock
-    ) -> None:
-        request = MagicMock()
-        pool = request.app.state.catalogue_read_pool
-        catalogue = pool.acquire.return_value
-        read_metadata.return_value.catalog_name = "atlas"
-        read_metadata.return_value.default_schema = "main"
-        read_metadata.return_value.relations = ()
-        read_metadata.return_value.functions = ()
-
-        response = catalogue_metadata(request)
-
-        self.assertEqual(response.catalog_name, "atlas")
-        self.assertEqual(response.default_schema, "main")
-        self.assertEqual(response.relations, [])
-        self.assertEqual(response.functions, [])
-        pool.release.assert_called_once_with(catalogue)
-
-
-class CatalogueReadPoolTests(unittest.TestCase):
-    def test_connections_are_validated_once_and_reused(self) -> None:
-        catalogues = [MagicMock(spec=Catalogue), MagicMock(spec=Catalogue)]
-        pending = iter(catalogues)
-        pool = CatalogueReadPool(
-            2,
-            threads=2,
-            wait_timeout_seconds=1,
-            factory=lambda: next(pending),
-        )
-
-        pool.open()
-        first = pool.acquire()
-        pool.release(first)
-        reused = pool.acquire()
-        pool.release(reused)
-        pool.close()
-
-        self.assertIn(first, catalogues)
-        self.assertIn(reused, catalogues)
-        for catalogue in catalogues:
-            catalogue.connection.execute.assert_called_once_with("SET threads = 2")
-            catalogue.validate_schema.assert_called_once_with()
-            catalogue.close.assert_called_once_with()
-
-    def test_acquire_times_out_when_every_connection_is_leased(self) -> None:
-        catalogue = MagicMock(spec=Catalogue)
-        pool = CatalogueReadPool(
-            1,
-            threads=2,
-            wait_timeout_seconds=0.01,
-            factory=lambda: catalogue,
-        )
-        pool.open()
-        leased = pool.acquire()
-
-        with self.assertRaisesRegex(
-            CatalogueReadPoolExhausted,
-            "no read connection became available",
-        ):
-            pool.acquire()
-
-        pool.release(leased)
-        pool.close()
 
 
 if __name__ == "__main__":

@@ -3,12 +3,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from api.catalogue_pool import CatalogueReadPool
-from config.performance import (
-    CATALOGUE_READ_POOL_WAIT_SECONDS,
-    catalogue_read_pool_size,
-    catalogue_read_threads,
-)
+from api.catalogue_control import CatalogueControl
+from repository.catalogue.browser_runtime import browser_quack_runtime_from_env
 from api.routers import (
     catalogue,
     catalogue_queries,
@@ -29,16 +25,18 @@ from runtime.crawl_scheduler import run_scheduler
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    pool = CatalogueReadPool(
-        catalogue_read_pool_size(),
-        threads=catalogue_read_threads(),
-        wait_timeout_seconds=CATALOGUE_READ_POOL_WAIT_SECONDS,
-    )
-    pool.open()
-    app.state.catalogue_read_pool = pool
+    # Fail startup if the browser cannot be given a complete Quack runtime.
+    browser_quack_runtime_from_env()
+    catalogue_control = CatalogueControl()
+    await catalogue_control.start()
+    app.state.catalogue_control = catalogue_control
     scheduler_stop = asyncio.Event()
     scheduler_task = asyncio.create_task(
-        run_scheduler(scheduler_stop), name="crawl-scheduler"
+        run_scheduler(
+            scheduler_stop,
+            catalogue_snapshot_resolver=catalogue_control.latest_snapshot,
+        ),
+        name="crawl-scheduler",
     )
     try:
         yield
@@ -46,7 +44,7 @@ async def lifespan(app: FastAPI):
         scheduler_stop.set()
         scheduler_task.cancel()
         await asyncio.gather(scheduler_task, return_exceptions=True)
-        pool.close()
+        await catalogue_control.close()
 
 
 app = FastAPI(title="Atlas API", lifespan=lifespan)

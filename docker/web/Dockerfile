@@ -7,6 +7,7 @@ RUN npm ci
 
 COPY web/ ./
 RUN npm run build
+RUN find dist/assets -name '*.wasm' -exec gzip -9 -k '{}' ';'
 
 
 FROM nginx:1.27-alpine

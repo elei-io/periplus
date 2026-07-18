@@ -38,6 +38,10 @@ x-atlas-resource-environment: &atlas-resource-environment
   ATLAS_CATALOGUE_MAX_CONCURRENCY: ${ATLAS_CATALOGUE_MAX_CONCURRENCY:-64}
   ATLAS_OBJECT_IO_MAX_CONCURRENCY: ${ATLAS_OBJECT_IO_MAX_CONCURRENCY:-64}
 
+x-atlas-quack-environment: &atlas-quack-environment
+  ATLAS_QUACK_URI: ${ATLAS_QUACK_URI:-quack:127.0.0.1:9494}
+  ATLAS_QUACK_TOKEN: ${ATLAS_QUACK_TOKEN:-atlas-local-quack}
+
 services:
   atlas-web:
     build:
@@ -49,6 +53,8 @@ services:
       - "127.0.0.1:${ATLAS_WEB_PORT:-8080}:80"
     depends_on:
       atlas-api:
+        condition: service_healthy
+      atlas-quack:
         condition: service_healthy
     restart: unless-stopped
 
@@ -76,6 +82,7 @@ services:
           *atlas-nats-environment,
           *atlas-repository-environment,
           *atlas-resource-environment,
+          *atlas-quack-environment,
         ]
     depends_on:
       atlas-postgres:
@@ -84,6 +91,34 @@ services:
         condition: service_completed_successfully
       atlas-nats:
         condition: service_healthy
+      atlas-quack:
+        condition: service_healthy
+    restart: unless-stopped
+
+  atlas-quack:
+    image: duckdb/duckdb:1.5.4
+    container_name: atlas-quack
+    command: ["/duckdb", "-init", "/opt/atlas/quack-init.sql"]
+    stdin_open: true
+    tty: true
+    ports:
+      - "127.0.0.1:9494:9494"
+    environment:
+      ATLAS_QUACK_TOKEN: ${ATLAS_QUACK_TOKEN:-atlas-local-quack}
+    healthcheck:
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+      test:
+        [
+          "CMD",
+          "/duckdb",
+          "-c",
+          "FROM quack_query('quack:127.0.0.1:9494', 'SELECT 1', token=getenv('ATLAS_QUACK_TOKEN'));",
+        ]
+    volumes:
+      - ./docker/quack/init.sql:/opt/atlas/quack-init.sql:ro
     restart: unless-stopped
 
   atlas-acquisition-worker:

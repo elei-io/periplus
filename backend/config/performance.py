@@ -26,9 +26,6 @@ INGESTION_CONSUMER_MAX_ACK_PENDING = 1024
 GRAPH_ACK_WAIT_SECONDS = 60.0
 INGESTION_ACK_WAIT_SECONDS = 60.0
 MATERIALIZATION_ACK_WAIT_SECONDS = 60.0
-CATALOGUE_READ_POOL_WAIT_SECONDS = 5.0
-CATALOGUE_READ_MAX_ATTEMPTS = 3
-CATALOGUE_READ_RETRY_SECONDS = 0.1
 
 # Resource-governor mechanics are protocol constants.  Operators size only the
 # shared maximum pressure accepted by their state/storage platform.
@@ -77,14 +74,6 @@ def duckdb_threads() -> int:
     """Bound an embedded executor so adding replicas remains predictable."""
 
     return min(2, process_cpu_count())
-
-
-def catalogue_read_pool_size() -> int:
-    return min(4, max(1, process_cpu_count() // 2))
-
-
-def catalogue_read_threads() -> int:
-    return 1
 
 
 def duckdb_memory_limit() -> str:

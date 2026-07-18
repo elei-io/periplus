@@ -159,10 +159,7 @@ export function CatalogueViewsPage({ viewId }: { viewId?: string }) {
                 <TableHead>Ownership</TableHead>
                 <TableHead className="text-right">Columns</TableHead>
                 <TableHead>Materialization</TableHead>
-                <TableHead className="text-right">Rows</TableHead>
-                <TableHead className="text-right">Storage</TableHead>
                 <TableHead>Availability</TableHead>
-                <TableHead>Last update</TableHead>
                 <TableHead className="w-20" />
               </TableRow>
             </TableHeader>
@@ -214,14 +211,6 @@ export function CatalogueViewsPage({ viewId }: { viewId?: string }) {
                         materialization={view.materialization}
                       />
                     </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums">
-                      {view.materialization?.row_count.toLocaleString() ?? "—"}
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums">
-                      {view.materialization
-                        ? formatBytes(view.materialization.storage_bytes)
-                        : "—"}
-                    </TableCell>
                     <TableCell>
                       <Badge
                         variant={view.available ? "outline" : "destructive"}
@@ -233,13 +222,6 @@ export function CatalogueViewsPage({ viewId }: { viewId?: string }) {
                       >
                         {view.available ? "Available" : "Missing"}
                       </Badge>
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {view.materialization?.last_scope_completed_at
-                        ? new Date(
-                            view.materialization.last_scope_completed_at
-                          ).toLocaleString()
-                        : "—"}
                     </TableCell>
                     <TableCell className="pr-4 text-right">
                       <Button
@@ -573,17 +555,13 @@ function MaterializationStatus({
   const label =
     status === "backfilling"
       ? "Backfilling"
-      : status === "degraded"
-        ? "Needs attention"
-        : status === "source_changed"
-          ? "Source changed"
-          : status[0].toUpperCase() + status.slice(1)
+      : status === "source_changed"
+        ? "Source changed"
+        : status[0].toUpperCase() + status.slice(1)
   return (
     <Badge
       variant={
-        status === "degraded" ||
-        status === "dematerializing" ||
-        status === "source_changed"
+        status === "dematerializing" || status === "source_changed"
           ? "destructive"
           : status === "live" || status === "backfilling"
             ? "default"
@@ -612,22 +590,13 @@ function MaterializationCell({
   return (
     <div>
       <MaterializationStatus status={materialization.status} />
-      <div
-        className={`mt-1 text-[10px] ${materialization.failed_scopes ? "text-destructive" : "text-muted-foreground"}`}
-      >
-        {materialization.pending_live_scopes.toLocaleString()} live pending ·{" "}
-        {materialization.remaining_backfill_scopes.toLocaleString()} backfill
-        {materialization.failed_scopes
-          ? ` · ${materialization.failed_scopes.toLocaleString()} failed`
-          : ""}
+      <div className="mt-1 text-[10px] text-muted-foreground">
+        {materialization.status === "backfilling"
+          ? "Historical maintenance enabled"
+          : materialization.status === "live"
+            ? "Live maintenance enabled"
+            : "Maintenance paused"}
       </div>
     </div>
   )
-}
-
-function formatBytes(value: number): string {
-  if (value < 1024) return `${value} B`
-  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`
-  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`
-  return `${(value / 1024 ** 3).toFixed(1)} GB`
 }

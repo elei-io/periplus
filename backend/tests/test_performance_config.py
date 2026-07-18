@@ -5,7 +5,6 @@ from unittest.mock import patch
 
 from config.performance import (
     GRAPH_CONSUMER_MAX_ACK_PENDING,
-    catalogue_read_pool_size,
     duckdb_memory_limit,
     duckdb_threads,
 )
@@ -32,7 +31,6 @@ class PerformanceConfigTests(unittest.TestCase):
     def test_local_sizing_is_bounded_and_replica_friendly(self) -> None:
         with patch("config.performance.os.process_cpu_count", return_value=32):
             self.assertEqual(duckdb_threads(), 2)
-            self.assertEqual(catalogue_read_pool_size(), 4)
 
         self.assertGreater(GRAPH_CONSUMER_MAX_ACK_PENDING, 1)
 

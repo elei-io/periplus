@@ -16,6 +16,7 @@ from reliability_support import (
     capture_diagnostics,
     cleanup_materialization_fixture,
     ensure_active_materialization,
+    materialization_lag,
     require_healthy,
 )
 
@@ -78,23 +79,10 @@ def wait_for_run(run_id: str, timeout: float = 90) -> dict[str, Any]:
     raise RuntimeError(f"graph run {run_id} did not become terminal")
 
 
-def run_lag(run_id: str) -> dict[str, Any]:
-    response = api("GET", "/graph-runs/materialization-lag")
-    return next(
-        (item for item in response["items"] if item["run_id"] == run_id),
-        {
-            "run_id": run_id,
-            "materialization_count": 0,
-            "pending_updates": 0,
-            "failed_updates": 0,
-        },
-    )
-
-
 def wait_for_materialization(run_id: str, timeout: float = 90) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        lag = run_lag(run_id)
+        lag = materialization_lag(run_id)
         if lag["pending_updates"] == 0 and lag["failed_updates"] == 0:
             return lag
         time.sleep(1)
@@ -146,7 +134,7 @@ def main() -> None:
             )
         require_healthy("atlas-acquisition-worker")
         require_healthy("atlas-ingestion-worker")
-        offline_lag = run_lag(run_id)
+        offline_lag = materialization_lag(run_id)
         if (
             offline_lag["materialization_count"] < 1
             or offline_lag["pending_updates"] < 1
