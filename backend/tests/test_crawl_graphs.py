@@ -188,6 +188,11 @@ class CrawlGraphTests(unittest.TestCase):
             "SELECT url FROM page.links LIMIT 10",
             "SELECT url FROM page.links WHERE crawl_id = $crawl_id",
             "SELECT host FROM page.links WHERE crawl_id = $crawl_id LIMIT 10",
+            (
+                "SELECT p.url FROM page.links AS p, "
+                "read_csv_auto('/etc/passwd') AS leaked "
+                "WHERE p.crawl_id = $crawl_id LIMIT 10"
+            ),
             "SELECT url FROM page.forms WHERE crawl_id = $crawl_id LIMIT 10",
             "SELECT url FROM nav.links WHERE crawl_id = $crawl_id LIMIT 10",
             "SELECT url FROM t WHERE crawl_id = $crawl_id LIMIT 0",

@@ -27,7 +27,7 @@ class IngestionWorkerConfig:
     max_items: int = 100
     max_element_rows: int = 250_000
     max_staged_bytes: int = 256 * 1024 * 1024
-    max_wait_seconds: float = 5.0
+    max_wait_seconds: float = 10.0
 
     def __post_init__(self) -> None:
         if self.max_items <= 0:

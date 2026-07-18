@@ -5,16 +5,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from nats.errors import TimeoutError as NatsTimeoutError
 from playwright.async_api import Playwright, async_playwright
 
+from actions.crawl.schemas import CrawlPage
 from actions.crawl.service import RetryableAcquisitionError, crawl_graph_request
 from config import get_float, get_int, get_optional
 from config.performance import CRAWL_ACQUISITION_LANES, GRAPH_ACK_WAIT_SECONDS
-from observability import crawl_metrics
+from observability import crawl_metrics, navigation_metrics
 from repository.ingestion.acquisition import AcquisitionPipeline
 from repository.ingestion.health import HealthMonitor
 from runtime.context import GraphExecutionContext
@@ -23,8 +25,10 @@ from runtime.graph_queue import (
     CRAWL_CONSUMER,
     CRAWL_SUBJECT,
     GRAPH_STREAM,
+    NAVIGATION_READINESS_SUBJECT,
     CrawlRequest,
     CrawlWork,
+    NavigationReadinessWork,
     WorkerState,
     connect_nats,
     ensure_graph_storage,
@@ -35,14 +39,28 @@ from runtime.graph_queue import (
     list_graph_runs,
     update_crawl_request,
 )
+from runtime.graph_navigation import run as run_graph_navigation
+from runtime.graph_progress import bootstrap_run_progress, transition_node_progress
+from runtime.graph_runs import (
+    expire_graph_run,
+    reconcile_pending_admissions,
+    settle_request,
+)
+from runtime.navigation import (
+    build_navigation_package,
+    navigation_event_id,
+    navigation_object_name,
+    put_navigation_package,
+)
+from runtime.navigation_contract import NavigationPackage
 from runtime.resource_governor import (
+    DURABLE_RESOURCE_WAIT,
     ResourceCapacityUnavailable,
     ResourcePermitLost,
     ensure_resource_governor_storage,
     object_request,
+    resource_permits,
 )
-from runtime.graph_runs import expire_graph_run, reconcile_pending_admissions, settle_request
-from runtime.graph_progress import bootstrap_run_progress, transition_node_progress
 from workers.lifecycle import (
     WorkerEndpointConfig,
     WorkerEndpoints,
@@ -52,6 +70,85 @@ from workers.lifecycle import (
 
 class AcquisitionClaimLost(RuntimeError):
     """The delivery or crawl-request claim was lost before work could settle."""
+
+
+async def _derive_navigation_package(
+    page: CrawlPage,
+    *,
+    graph_run_id: UUID,
+    crawl_request_id: UUID,
+    repository_pipeline: AcquisitionPipeline,
+    resource_grants,
+) -> NavigationPackage:
+    if page.document_id is None or page.html is None:
+        raise ValueError("navigation package requires retained HTML identity and content")
+    generation_started = time.perf_counter()
+    try:
+        payload, row_count = await asyncio.to_thread(
+            build_navigation_package,
+            page.html,
+            document_id=page.document_id,
+            page_url=page.url,
+        )
+    except BaseException:
+        navigation_metrics.package(
+            phase="generation",
+            outcome="failed",
+            duration_seconds=time.perf_counter() - generation_started,
+        )
+        raise
+    navigation_metrics.package(
+        phase="generation",
+        outcome="succeeded",
+        duration_seconds=time.perf_counter() - generation_started,
+        rows=row_count,
+        byte_count=len(payload),
+    )
+
+    write_started = time.perf_counter()
+    try:
+        request = object_request(
+            f"navigation-write:{crawl_request_id}",
+            direction="write",
+            byte_count=len(payload),
+            service_class="critical",
+        )
+        object_name = navigation_object_name(
+            graph_run_id,
+            page.document_id,
+            page.url,
+        )
+
+        def write_package() -> NavigationPackage:
+            return put_navigation_package(
+                repository_pipeline.html_repository.store,
+                name=object_name,
+                payload=payload,
+                row_count=row_count,
+            )
+
+        if resource_grants is None:
+            package = await asyncio.to_thread(write_package)
+        else:
+            async with resource_permits(
+                resource_grants,
+                request,
+                acquire_timeout=DURABLE_RESOURCE_WAIT,
+            ):
+                package = await asyncio.to_thread(write_package)
+    except BaseException:
+        navigation_metrics.package(
+            phase="write",
+            outcome="failed",
+            duration_seconds=time.perf_counter() - write_started,
+        )
+        raise
+    navigation_metrics.package(
+        phase="write",
+        outcome="succeeded",
+        duration_seconds=time.perf_counter() - write_started,
+    )
+    return package
 
 
 async def _keep_alive(message, requests, request_id: UUID, claim_token: UUID) -> None:
@@ -174,6 +271,9 @@ async def _process_crawl(
             source_crawl_id=request.source_crawl_id,
             source_edge_id=request.source_edge_id,
         )
+        has_outgoing_edges = any(
+            edge.source_node_id == request.node_id for edge in run.snapshot.edges
+        )
         acquisition = asyncio.create_task(
             crawl_graph_request(
                 session=None,
@@ -186,6 +286,7 @@ async def _process_crawl(
                 persist_retryable_failure=(
                     request.processing_failure_count + 1 >= max_deliver
                 ),
+                include_html=has_outgoing_edges,
             )
         )
         done, _pending = await asyncio.wait(
@@ -219,13 +320,53 @@ async def _process_crawl(
             await message.ack()
             return
 
-        def await_navigation(current: CrawlRequest) -> CrawlRequest:
+        def record_document(current: CrawlRequest) -> CrawlRequest:
             if current.status != "crawling" or current.claim_token != claim_token:
                 return current
             return current.model_copy(
                 update={
-                    "status": "awaiting_navigation",
                     "document_id": page.document_id,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+
+        request = await update_crawl_request(requests, request.id, record_document)
+        navigation = (
+            await _derive_navigation_package(
+                page,
+                graph_run_id=run.id,
+                crawl_request_id=request.id,
+                repository_pipeline=repository_pipeline,
+                resource_grants=resource_grants,
+            )
+            if has_outgoing_edges and page.document_id is not None
+            else None
+        )
+        identity = navigation.sha256 if navigation is not None else "contentless"
+        readiness = NavigationReadinessWork(
+            event_id=navigation_event_id(request.id, identity),
+            crawl_id=request.id,
+            graph_run_id=run.id,
+            crawl_request_id=request.id,
+            navigation=navigation,
+            occurred_at=datetime.now(UTC),
+        )
+        await jetstream.publish(
+            NAVIGATION_READINESS_SUBJECT,
+            readiness.model_dump_json().encode(),
+            headers={"Nats-Msg-Id": str(readiness.event_id)},
+        )
+
+        transitioned_to_navigation = False
+
+        def mark_awaiting_navigation(current: CrawlRequest) -> CrawlRequest:
+            nonlocal transitioned_to_navigation
+            if current.status != "crawling" or current.claim_token != claim_token:
+                return current
+            transitioned_to_navigation = True
+            return current.model_copy(
+                update={
+                    "status": "awaiting_navigation",
                     "claim_token": None,
                     "claim_expires_at": None,
                     "updated_at": datetime.now(UTC),
@@ -233,10 +374,14 @@ async def _process_crawl(
             )
 
         previous_status = request.status
-        request = await update_crawl_request(requests, request.id, await_navigation)
-        if previous_status != request.status:
+        request = await update_crawl_request(
+            requests, request.id, mark_awaiting_navigation
+        )
+        if transitioned_to_navigation:
             try:
-                await transition_node_progress(progress, request, previous_status=previous_status)
+                await transition_node_progress(
+                    progress, request, previous_status=previous_status
+                )
             except Exception:
                 pass
         await message.ack()
@@ -377,6 +522,11 @@ async def run() -> None:
     monitor.subsystem_ready("acquisition")
     endpoints.start_health(monitor)
 
+    graph_navigation_task = asyncio.create_task(
+        _run_graph_navigation_until_stopped(monitor),
+        name="acquisition-graph-navigation",
+    )
+
     async def presence() -> None:
         while not stop.is_set():
             monitor.heartbeat()
@@ -499,14 +649,41 @@ async def run() -> None:
             finally:
                 stop.set()
                 presence_task.cancel()
+                graph_navigation_task.cancel()
                 await asyncio.gather(
                     presence_task,
+                    graph_navigation_task,
                     *active,
                     return_exceptions=True,
                 )
     finally:
         stop.set()
         presence_task.cancel()
-        await asyncio.gather(presence_task, *active, return_exceptions=True)
+        graph_navigation_task.cancel()
+        await asyncio.gather(
+            presence_task,
+            graph_navigation_task,
+            *active,
+            return_exceptions=True,
+        )
         await client.drain()
         await endpoints.close()
+
+
+async def _run_graph_navigation_until_stopped(monitor: HealthMonitor) -> None:
+    delay = 1.0
+    while True:
+        try:
+            await run_graph_navigation(monitor=monitor)
+            raise RuntimeError("graph navigation runtime exited unexpectedly")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            monitor.subsystem_unavailable(
+                "navigation", str(exc) or type(exc).__name__
+            )
+            logging.exception(
+                "graph navigation runtime unavailable; retrying in %.1fs", delay
+            )
+            await asyncio.sleep(delay)
+            delay = min(30.0, delay * 2)

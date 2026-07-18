@@ -7,6 +7,11 @@ _attempts = Counter("atlas_repository_ingestion_attempts_total", "Repository ing
 _batches = Counter("atlas_repository_ingestion_batches_total", "Repository batch outcomes.", ("outcome",))
 _duration = Histogram("atlas_repository_ingestion_duration_seconds", "Repository ingestion phase duration.", ("phase", "outcome"))
 _batch_items = Histogram("atlas_repository_ingestion_batch_items", "Items per repository batch.")
+_batch_flushes = Counter(
+    "atlas_repository_ingestion_batch_flushes_total",
+    "Reasons an ingestion batch was flushed.",
+    ("reason",),
+)
 _pending = Gauge("atlas_repository_ingestion_jobs_pending", "Repository jobs waiting in JetStream.")
 _ack_pending = Gauge("atlas_repository_ingestion_jobs_ack_pending", "Delivered repository jobs awaiting acknowledgement.")
 _redelivered = Gauge("atlas_repository_ingestion_jobs_redelivered", "Redelivered repository jobs.")
@@ -14,7 +19,16 @@ _oldest_pending_age = Gauge(
     "atlas_repository_ingestion_oldest_pending_age_seconds",
     "Lower-bound age of an ingestion queue that has not made progress.",
 )
-_compactions = Counter("atlas_repository_compactions_total", "Repository compaction checks.", ("outcome",))
+_compactions = Counter(
+    "atlas_repository_compactions_total",
+    "Repository compaction pass outcomes.",
+    ("outcome",),
+)
+_compaction_duration = Histogram(
+    "atlas_repository_compaction_duration_seconds",
+    "Repository compaction pass duration.",
+    ("outcome",),
+)
 _compaction_files = Counter("atlas_repository_compaction_files_total", "Repository files involved in compaction.", ("kind",))
 
 
@@ -38,6 +52,10 @@ def batch(*, outcome: str, duration_seconds: float, items: int, element_rows: in
     _batch_items.observe(items)
 
 
+def batch_flush(*, reason: str) -> None:
+    _batch_flushes.labels(reason).inc()
+
+
 def queue_state(
     *,
     pending: int,
@@ -59,6 +77,6 @@ def compaction(
     files_created: int,
 ) -> None:
     _compactions.labels(outcome).inc()
-    _duration.labels("compaction", outcome).observe(max(0.0, duration_seconds))
+    _compaction_duration.labels(outcome).observe(max(0.0, duration_seconds))
     _compaction_files.labels("processed").inc(files_processed)
     _compaction_files.labels("created").inc(files_created)

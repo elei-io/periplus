@@ -38,7 +38,6 @@ from repository.objects.artifact import (
     RawArtifactRepository,
     artifact_object_key,
 )
-from runtime.navigation import build_navigation_package
 
 
 class ProjectionRebuildRequired(RuntimeError):
@@ -100,6 +99,11 @@ class RepositoryIngestor:
 
         self.catalogue.validate_schema()
 
+    def probe(self) -> None:
+        """Verify the attached DuckLake catalogue with one cheap metadata read."""
+
+        self.catalogue.latest_snapshot()
+
     def prepare_from_raw(
         self,
         *,
@@ -156,14 +160,6 @@ class RepositoryIngestor:
             else known_documents.get(crawl.document_id)
         )
         captured_html = self.html_repository.read(object_key)
-        navigation_payload = None
-        navigation_row_count = 0
-        if crawl.graph_run_id is not None and crawl.crawl_request_id is not None:
-            navigation_payload, navigation_row_count = build_navigation_package(
-                captured_html,
-                document_id=crawl.document_id,
-                page_url=crawl.page_url,
-            )
         if existing is not None and self._projection_is_current(existing):
             self.html_repository.verify(
                 object_key,
@@ -176,8 +172,6 @@ class RepositoryIngestor:
                 document=existing,
                 crawl=crawl,
                 crawl_steps=crawl_steps,
-                navigation_payload=navigation_payload,
-                navigation_row_count=navigation_row_count,
             )
 
         identity = self.html_repository.identify(captured_html)
@@ -229,8 +223,6 @@ class RepositoryIngestor:
             element_count=projection.element_count,
             staged_bytes=projection.size_bytes,
             replace_projection=existing is not None,
-            navigation_payload=navigation_payload,
-            navigation_row_count=navigation_row_count,
         )
 
     def commit_prepared_batch(
@@ -588,8 +580,6 @@ class PreparedIngestion:
     element_count: int = 0
     staged_bytes: int = 0
     replace_projection: bool = False
-    navigation_payload: bytes | None = None
-    navigation_row_count: int = 0
 
 
 def _positive_env_int(name: str, default: int) -> int:

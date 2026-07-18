@@ -22,18 +22,18 @@ from runtime.navigation_contract import NavigationPackage
 GRAPH_STREAM = "ATLAS_GRAPH_WORK"
 CRAWL_SUBJECT = "atlas.graph.crawl"
 EDGE_SUBJECT = "atlas.graph.edge"
-READINESS_SUBJECT = "atlas.graph.readiness"
+NAVIGATION_READINESS_SUBJECT = "atlas.graph.navigation.readiness"
 CRAWL_CONSUMER = "atlas-graph-crawl-workers"
 EDGE_CONSUMER = "atlas-graph-edge-workers"
-READINESS_CONSUMER = "atlas-graph-readiness-workers"
+NAVIGATION_READINESS_CONSUMER = "atlas-graph-navigation-readiness-workers"
 RUNS_BUCKET = "atlas_graph_runs"
 REQUESTS_BUCKET = "atlas_crawl_requests"
 WORKERS_BUCKET = "atlas_graph_workers"
 PROGRESS_BUCKET = "atlas_graph_progress"
 
 GraphRunStatus = Literal["queued", "running", "completed", "completed_with_errors", "failed", "cancelled"]
-CrawlRequestStatus = Literal["queued", "crawling", "awaiting_ingestion", "awaiting_navigation", "evaluating_edges", "completed", "failed", "cancelled"]
-FailureStage = Literal["admission", "acquisition", "enrichment", "edge", "lifecycle"]
+CrawlRequestStatus = Literal["queued", "crawling", "awaiting_navigation", "evaluating_edges", "completed", "failed", "cancelled"]
+FailureStage = Literal["admission", "acquisition", "edge", "lifecycle"]
 TriggerKind = Literal["manual", "schedule"]
 
 
@@ -58,6 +58,7 @@ class GraphRun(BaseModel):
     graph_id: UUID
     trigger_kind: TriggerKind
     trigger_schedule_id: UUID | None = None
+    catalogue_snapshot_id: int | None = Field(default=None, ge=0)
     status: GraphRunStatus = "queued"
     snapshot: FrozenGraphSnapshot
     trigger_urls: tuple[str, ...]
@@ -109,6 +110,7 @@ class EdgeWork(BaseModel):
     crawl_id: UUID
     edge_id: UUID
     navigation: NavigationPackage
+    catalogue_snapshot_id: int | None = Field(default=None, ge=0)
 
 
 class EdgeEvaluation(BaseModel):
@@ -127,7 +129,7 @@ class EdgeEvaluation(BaseModel):
     error: str | None = None
 
 
-class ReadinessWork(BaseModel):
+class NavigationReadinessWork(BaseModel):
     model_config = ConfigDict(frozen=True)
     event_id: UUID
     crawl_id: UUID
@@ -189,6 +191,7 @@ def new_graph_run(
     *,
     run_id: UUID | None = None,
     trigger_schedule_id: UUID | None = None,
+    catalogue_snapshot_id: int | None = None,
 ) -> GraphRun:
     now = now or datetime.now(UTC)
     normalized = tuple(normalize_request_url(url) for url in urls)
@@ -201,6 +204,7 @@ def new_graph_run(
         graph_id=snapshot.graph_id,
         trigger_kind=trigger_kind,
         trigger_schedule_id=trigger_schedule_id,
+        catalogue_snapshot_id=catalogue_snapshot_id,
         snapshot=snapshot,
         trigger_urls=normalized,
         created_at=now,
@@ -223,7 +227,7 @@ async def _bucket(jetstream, config: KeyValueConfig):
 
 async def ensure_graph_storage(jetstream):
     replicas = get_int("ATLAS_GRAPH_STREAM_REPLICAS")
-    subjects = [CRAWL_SUBJECT, EDGE_SUBJECT, READINESS_SUBJECT]
+    subjects = [CRAWL_SUBJECT, EDGE_SUBJECT, NAVIGATION_READINESS_SUBJECT]
     stream = StreamConfig(name=GRAPH_STREAM, subjects=subjects, retention=RetentionPolicy.WORK_QUEUE, storage=StorageType.FILE, num_replicas=replicas)
     try:
         info = await jetstream.stream_info(GRAPH_STREAM)
@@ -245,8 +249,8 @@ async def ensure_graph_storage(jetstream):
         (CRAWL_CONSUMER, CRAWL_SUBJECT, GRAPH_CONSUMER_MAX_ACK_PENDING),
         (EDGE_CONSUMER, EDGE_SUBJECT, GRAPH_CONSUMER_MAX_ACK_PENDING),
         (
-            READINESS_CONSUMER,
-            READINESS_SUBJECT,
+            NAVIGATION_READINESS_CONSUMER,
+            NAVIGATION_READINESS_SUBJECT,
             GRAPH_CONSUMER_MAX_ACK_PENDING,
         ),
     )

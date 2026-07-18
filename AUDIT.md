@@ -17,7 +17,7 @@ supported alternatives.
 Atlas scales capabilities and governs shared resources:
 
 - HTTP, browser, and provider replicas supply acquisition capacity;
-- ingestion replicas supply graph-critical catalogue executors;
+- ingestion replicas supply critical base-catalogue executors;
 - materialization replicas supply live/backfill catalogue executors;
 - one fixed maintenance deployment owns off-path upkeep; and
 - a shared KV-backed Resource Governor contract bounds remote, DuckLake, and object-store pressure

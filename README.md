@@ -13,7 +13,8 @@ Atlas is organized around crawl graphs:
 
 - a graph groups user metadata, nodes, and edges;
 - a node accepts URL inputs and maps admitted inputs to the single `crawl` acquisition primitive;
-- an edge runs bounded, crawl-scoped SQL against DuckLake and passes returned URLs to another node;
+- an edge runs bounded, crawl-scoped SQL over the current page package, optionally joins the
+  graph run's pinned DuckLake snapshot, and passes returned URLs to another node;
   and
 - self-edges express bounded recursion such as pagination or site walking.
 

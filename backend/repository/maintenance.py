@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from config import get_float, get_int
+from observability import repository_metrics
 from repository.service import repository_ingestor_from_env
 
 
@@ -37,15 +39,31 @@ class MaintenanceConfig:
 
 
 def compact(config: MaintenanceConfig) -> None:
-    with repository_ingestor_from_env() as ingestor:
-        ingestor.catalogue_service.compact_small_files(
-            minimum_files=config.minimum_files,
-            maximum_input_file_bytes=config.maximum_input_file_bytes,
-            target_file_bytes=config.target_file_bytes,
-            maximum_compacted_files=config.maximum_compacted_files,
-            maximum_operation_bytes=config.maximum_operation_bytes,
-            cleanup_older_than_seconds=config.cleanup_older_than_seconds,
+    started = time.perf_counter()
+    try:
+        with repository_ingestor_from_env() as ingestor:
+            results = ingestor.catalogue_service.compact_small_files(
+                minimum_files=config.minimum_files,
+                maximum_input_file_bytes=config.maximum_input_file_bytes,
+                target_file_bytes=config.target_file_bytes,
+                maximum_compacted_files=config.maximum_compacted_files,
+                maximum_operation_bytes=config.maximum_operation_bytes,
+                cleanup_older_than_seconds=config.cleanup_older_than_seconds,
+            )
+    except BaseException:
+        repository_metrics.compaction(
+            outcome="failed",
+            duration_seconds=time.perf_counter() - started,
+            files_processed=0,
+            files_created=0,
         )
+        raise
+    repository_metrics.compaction(
+        outcome="succeeded",
+        duration_seconds=time.perf_counter() - started,
+        files_processed=sum(result.files_processed for result in results),
+        files_created=sum(result.files_created for result in results),
+    )
 
 
 def cleanup_staging(config: MaintenanceConfig) -> None:

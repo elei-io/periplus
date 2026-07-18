@@ -40,11 +40,14 @@ bridges for disposable development state.
 
 ## Work ownership
 
-**Letting acquisition wait for ingestion.** An acquisition worker retains HTML, durably publishes ingestion,
-and ACKs. It never opens DuckLake or waits for downstream completion.
+**Letting acquisition wait for ingestion.** An acquisition worker retains HTML, durably publishes
+ingestion, derives branch navigation, and ACKs after readiness publication. The crawl handler never
+opens DuckLake or waits for catalogue completion; only an explicit historical edge join may open a
+bounded read-only catalogue connection.
 
-**Evaluating graph edges in acquisition.** Ingestion owns navigation readiness and outgoing scoped SQL
-edges. Acquisition handles exactly one page.
+**Putting graph traversal behind catalogue ingestion.** Acquisition owns navigation readiness and
+outgoing scoped SQL edges from the current page package. Ingestion evolves the catalogue
+independently and must not settle or fail graph traversal.
 
 **Creating action-specific traversal loops.** `crawl` is the only acquisition primitive. Express
 navigation with nodes and scoped SQL edges.
@@ -60,6 +63,10 @@ ledger, materialization orchestrator, or catalogue RPC service.
 
 **Sharing embedded DuckDB connections.** Each ingestion or materialization process owns its connection
 and initially runs one catalogue operation at a time. Scale with replicas under shared permits.
+
+**Letting historical edge joins drift during a run.** Page-only edges use their current immutable
+navigation package. Catalogue-reading edges use the snapshot pinned before the run; never silently
+switch them to the latest snapshot on retry.
 
 **Publishing unbounded materialization work.** Discovery emits deterministic bounded scopes. One worker
 commits one authoritative scope; do not add a fan-out ledger or settlement queue.

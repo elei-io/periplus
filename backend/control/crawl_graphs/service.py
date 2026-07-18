@@ -309,6 +309,13 @@ def validate_edge_sql(sql: str) -> None:
         raise CrawlGraphValidationError("Edge SQL LIMIT must be between 1 and 100000.")
     if "url" not in {selection.alias_or_name.lower() for selection in statement.selects}:
         raise CrawlGraphValidationError("Edge SQL must project a column named url.")
+    if any(
+        not isinstance(table.this, exp.Identifier)
+        for table in statement.find_all(exp.Table)
+    ):
+        raise CrawlGraphValidationError(
+            "Edge SQL may only read page.links and catalogue relations."
+        )
     if not any(
         table.db.lower() == "page" and table.name.lower() == "links"
         for table in statement.find_all(exp.Table)

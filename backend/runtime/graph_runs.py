@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
 import asyncio
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4, uuid5
 
@@ -14,9 +14,11 @@ from control.crawl_policies.service import find_crawl_policy_for_url, policy_sna
 from control.domain_policies.service import find_domain_policy_for_url, domain_policy_snapshot
 from control.crawl_graphs.schemas import EdgeDedupeMode
 from nats.js.errors import KeyWrongLastSequenceError
+from repository.catalogue import latest_catalogue_snapshot_from_env
 
-from .graph_queue import CrawlRequest, EdgeEvaluation, EdgeWork, FrozenGraphSnapshot, GraphRun, PendingAdmission, ReadinessWork, edge_evaluation_identity, edge_evaluation_key, get_crawl_request, get_edge_evaluation, get_graph_run, list_crawl_requests, new_graph_run, normalize_request_url, publish_crawl, publish_edge, request_identity, update_crawl_request, update_edge_evaluation, update_graph_run
+from .graph_queue import CrawlRequest, EdgeEvaluation, EdgeWork, FrozenGraphSnapshot, GraphRun, NavigationReadinessWork, PendingAdmission, edge_evaluation_identity, edge_evaluation_key, get_crawl_request, get_edge_evaluation, get_graph_run, list_crawl_requests, new_graph_run, normalize_request_url, publish_crawl, publish_edge, request_identity, update_crawl_request, update_edge_evaluation, update_graph_run
 from .graph_progress import add_edge_output_progress, initialize_run_progress, mark_run_progress_settled, transition_edge_evaluation_progress, transition_node_progress
+from .edge_sql import edge_uses_catalogue
 
 _REQUEST_NAMESPACE = UUID("869ee36c-76ad-46f0-a1b7-9b28f4b71386")
 _TERMINAL_RUNS = {"completed", "completed_with_errors", "failed", "cancelled"}
@@ -216,6 +218,21 @@ async def create_graph_run(
     trigger_schedule_id: UUID | None = None,
     now: datetime | None = None,
 ) -> GraphRun:
+    existing = await get_graph_run(runs, run_id) if run_id is not None else None
+    catalogue_snapshot_id = (
+        existing.catalogue_snapshot_id if existing is not None else None
+    )
+    if (
+        existing is None
+        and any(edge_uses_catalogue(edge.sql) for edge in snapshot.edges)
+    ):
+        catalogue_snapshot_id = await asyncio.to_thread(
+            latest_catalogue_snapshot_from_env
+        )
+        if catalogue_snapshot_id is None:
+            raise RuntimeError(
+                "historical edge SQL requires an initialized catalogue snapshot"
+            )
     run = new_graph_run(
         snapshot,
         urls,
@@ -223,8 +240,10 @@ async def create_graph_run(
         now=now,
         run_id=run_id,
         trigger_schedule_id=trigger_schedule_id,
+        catalogue_snapshot_id=catalogue_snapshot_id,
     )
-    existing = await get_graph_run(runs, run.id)
+    if existing is None:
+        existing = await get_graph_run(runs, run.id)
     if existing is None:
         try:
             await runs.create(run.id.hex, run.model_dump_json().encode())
@@ -239,6 +258,7 @@ async def create_graph_run(
             or existing.trigger_urls != run.trigger_urls
             or existing.trigger_kind != run.trigger_kind
             or existing.trigger_schedule_id != run.trigger_schedule_id
+            or existing.catalogue_snapshot_id != run.catalogue_snapshot_id
         ):
             raise ValueError(
                 f"Graph run identity {run.id} is already used by another trigger."
@@ -368,7 +388,7 @@ async def settle_request(*, runs, requests, progress, request_id: UUID, status: 
     return request
 
 
-async def handle_readiness(*, runs, requests, progress, jetstream, event: ReadinessWork) -> None:
+async def handle_navigation_readiness(*, runs, requests, progress, jetstream, event: NavigationReadinessWork) -> None:
     request = await get_crawl_request(requests, event.crawl_request_id)
     if request is None:
         return
@@ -387,7 +407,16 @@ async def handle_readiness(*, runs, requests, progress, jetstream, event: Readin
     def evaluate(current: CrawlRequest) -> CrawlRequest:
         nonlocal previous_status
         previous_status = current.status
-        return current if current.status == "evaluating_edges" else current.model_copy(update={"status": "evaluating_edges", "updated_at": datetime.now(UTC)})
+        if current.status == "evaluating_edges":
+            return current
+        return current.model_copy(
+            update={
+                "status": "evaluating_edges",
+                "claim_token": None,
+                "claim_expires_at": None,
+                "updated_at": datetime.now(UTC),
+            }
+        )
     request = await update_crawl_request(requests, request.id, evaluate)
     if previous_status != request.status:
         await _project(transition_node_progress(progress, request, previous_status=previous_status))
@@ -399,6 +428,11 @@ async def handle_readiness(*, runs, requests, progress, jetstream, event: Readin
             crawl_id=event.crawl_id,
             edge_id=edge.id,
             navigation=event.navigation,
+            catalogue_snapshot_id=(
+                run.catalogue_snapshot_id
+                if edge_uses_catalogue(edge.sql)
+                else None
+            ),
         )
         identity = edge_evaluation_identity(run.id, request.id, event.crawl_id, edge.id)
         evaluation = EdgeEvaluation(identity=identity, graph_run_id=run.id, crawl_request_id=request.id, crawl_id=event.crawl_id, edge_id=edge.id, created_at=datetime.now(UTC), updated_at=datetime.now(UTC))

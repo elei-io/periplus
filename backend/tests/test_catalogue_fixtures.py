@@ -79,6 +79,116 @@ class CatalogueFixtureTests(unittest.TestCase):
                 session.close()
                 engine.dispose()
 
+    def test_page_metadata_fixture_extracts_document_scoped_metadata(self) -> None:
+        url = "https://example.com/catalogue/widget"
+        html = """
+        <!doctype html>
+        <html lang="en-GB">
+          <head>
+            <base href="/catalogue/">
+            <title> Example Widget </title>
+            <meta name="Description" content="A useful widget.">
+            <meta name="robots" content="index,follow">
+            <link rel="alternate CANONICAL" href="../widget">
+            <meta property="OG:TITLE" content="Widget preview">
+            <meta property="og:description" content="Preview description">
+            <meta property="og:image" content="/images/widget.png">
+          </head>
+          <body><h1>Example Widget</h1></body>
+        </html>
+        """
+        document_id = f"sha256:{hashlib.sha256(html.encode()).hexdigest()}"
+        fixtures = Path(__file__).parents[2] / "fixtures"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            engine = create_engine("sqlite://")
+            Base.metadata.create_all(
+                engine,
+                tables=[
+                    CatalogueQuery.__table__,
+                    CatalogueQueryRevision.__table__,
+                    CatalogueViewReference.__table__,
+                    CatalogueMaterialization.__table__,
+                    CatalogueTableMacroDefinition.__table__,
+                ],
+            )
+            session = Session(engine, expire_on_commit=False)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            try:
+                with Catalogue(config) as catalogue:
+                    catalogue.bootstrap()
+                    seed_catalogue_fixtures(session, catalogue, fixtures)
+                    ingestor = RepositoryIngestor(
+                        html_repository=RawHtmlRepository(
+                            FileObjectStore(root / "objects")
+                        ),
+                        catalogue=catalogue,
+                        staging_root=root / "staging",
+                    )
+                    ingestor.store_raw(html)
+                    crawl = CrawlRecord(
+                        crawl_id=uuid4(),
+                        document_id=document_id,
+                        graph_id=uuid4(),
+                        graph_run_id=uuid4(),
+                        graph_node_id=uuid4(),
+                        crawl_request_id=uuid4(),
+                        requested_url=url,
+                        normalized_url=url,
+                        final_url=url,
+                        captured_at=datetime(2026, 7, 18, tzinfo=UTC),
+                        status_code=200,
+                        duration_ms=1,
+                        policy_config_hash="a" * 64,
+                        policy_config_json={},
+                        outcome="success",
+                    )
+                    ingestor.commit_prepared_batch(
+                        [ingestor.prepare_from_raw(crawl=crawl)]
+                    )
+
+                    row = catalogue.connection.execute(
+                        """
+                        SELECT
+                            document_id,
+                            language,
+                            title,
+                            description,
+                            canonical_href,
+                            base_href,
+                            robots,
+                            open_graph_title,
+                            open_graph_description,
+                            open_graph_image
+                        FROM atlas.views.page_metadata
+                        WHERE document_id = ?
+                        """,
+                        [document_id],
+                    ).fetchone()
+
+                    self.assertEqual(
+                        row,
+                        (
+                            document_id,
+                            "en-GB",
+                            "Example Widget",
+                            "A useful widget.",
+                            "../widget",
+                            "/catalogue/",
+                            "index,follow",
+                            "Widget preview",
+                            "Preview description",
+                            "/images/widget.png",
+                        ),
+                    )
+                    ingestor.close()
+            finally:
+                session.close()
+                engine.dispose()
+
     def test_drops_retired_fixture_owned_macros_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

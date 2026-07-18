@@ -107,6 +107,8 @@ services:
     environment:
       <<:
         [
+          *atlas-control-environment,
+          *atlas-catalogue-environment,
           *atlas-nats-environment,
           *atlas-repository-environment,
           *atlas-resource-environment,
@@ -115,6 +117,10 @@ services:
       ATLAS_GRAPH_MAX_REQUESTS_PER_RUN: ${ATLAS_GRAPH_MAX_REQUESTS_PER_RUN:-10000}
       ATLAS_GRAPH_MAX_RUN_SECONDS: ${ATLAS_GRAPH_MAX_RUN_SECONDS:-3600}
     depends_on:
+      atlas-postgres:
+        condition: service_healthy
+      atlas-setup:
+        condition: service_completed_successfully
       atlas-nats:
         condition: service_healthy
     restart: unless-stopped

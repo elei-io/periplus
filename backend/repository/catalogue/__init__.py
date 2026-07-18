@@ -38,6 +38,13 @@ def catalogue_from_env():
         )
     return Catalogue(config, temporary_directory=temporary_directory)
 
+
+def latest_catalogue_snapshot_from_env() -> int | None:
+    """Read the current DuckLake snapshot through a short-lived connection."""
+
+    with catalogue_from_env() as catalogue:
+        return catalogue.latest_snapshot()
+
 __all__ = [
     "Catalogue",
     "ArtifactRecord",
@@ -56,4 +63,5 @@ __all__ = [
     "ElementRecord",
     "catalogue_config_from_env",
     "catalogue_from_env",
+    "latest_catalogue_snapshot_from_env",
 ]

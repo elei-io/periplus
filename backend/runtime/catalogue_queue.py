@@ -1,7 +1,7 @@
 """Shared JetStream topology for typed catalogue work and dead letters."""
 
 from config import get_float, get_int
-from nats.js.api import RetentionPolicy, StorageType, StreamConfig
+from nats.js.api import DiscardPolicy, RetentionPolicy, StorageType, StreamConfig
 from nats.js.errors import NotFoundError
 
 
@@ -33,7 +33,8 @@ async def ensure_catalogue_work_stream(jetstream) -> None:
         storage=StorageType.FILE,
         num_replicas=replicas,
         max_age=0,
-        max_bytes=-1,
+        max_bytes=get_int("ATLAS_CATALOGUE_WORK_MAX_BYTES"),
+        discard=DiscardPolicy.NEW,
     )
     await _ensure_stream(jetstream, config)
 
@@ -71,6 +72,8 @@ async def _ensure_stream(jetstream, expected: StreamConfig) -> None:
         mismatches.append(f"max_age={expected.max_age:g}s")
     if actual.max_bytes != expected.max_bytes:
         mismatches.append(f"max_bytes={expected.max_bytes}")
+    if actual.discard != expected.discard:
+        mismatches.append(f"discard={expected.discard.value}")
     if mismatches:
         raise RuntimeError(
             f"JetStream {expected.name} must use " + ", ".join(mismatches)

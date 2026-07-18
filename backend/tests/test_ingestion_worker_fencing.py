@@ -25,7 +25,7 @@ async def _admitted(*_args, **_kwargs):
 class IngestionFenceFailureTests(unittest.IsolatedAsyncioTestCase):
     async def test_health_probe_does_not_request_work_capacity(self) -> None:
         client = SimpleNamespace(flush=AsyncMock())
-        ingestor = SimpleNamespace(validate=MagicMock())
+        ingestor = SimpleNamespace(probe=MagicMock())
         monitor = HealthMonitor()
 
         async def stop_after_probe(_interval: float) -> None:
@@ -52,7 +52,7 @@ class IngestionFenceFailureTests(unittest.IsolatedAsyncioTestCase):
                 await _dependency_probe(client, ingestor, monitor)
 
         client.flush.assert_awaited_once()
-        ingestor.validate.assert_called_once_with()
+        ingestor.probe.assert_called_once_with()
         self.assertEqual(monitor.status(), (True, "ready"))
 
     async def test_preparation_heartbeats_while_waiting_for_capacity(self) -> None:
@@ -150,7 +150,6 @@ class IngestionFenceFailureTests(unittest.IsolatedAsyncioTestCase):
                 messages,
                 prepared,
                 asyncio.Lock(),
-                MagicMock(),
                 MagicMock(),
                 MagicMock(),
             )

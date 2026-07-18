@@ -29,6 +29,22 @@ the published release; version control retains the history.
 
 ## Wishlist
 
+### Typed snapshot-pinned attachment configuration
+
+- **Atlas caller:** crawl-graph edges that join the current `page.links` Arrow package to
+  historical catalogue tables at the graph run's frozen pre-run snapshot.
+- **Evidence:** DuckLake supports `ATTACH ... (SNAPSHOT_VERSION n)`, but
+  `ducklake_client.DuckLakeAttachConfig` has no `snapshot_version` or `snapshot_time` field. Atlas
+  can discover a snapshot through `SnapshotsModule.latest()` but cannot open the typed client at
+  that snapshot.
+- **Smallest useful upstream contract:** add mutually exclusive typed `snapshot_version: int | None`
+  and `snapshot_time` attachment options, render them in the generated `ATTACH`, and test a
+  read-only client that consistently reads several joined tables from the chosen snapshot.
+- **Atlas status:** graph runs durably pin the snapshot ID. Edge execution temporarily creates
+  bounded connection-local views using `AT (VERSION => n)` for each catalogue source before
+  executing the join. A published typed attachment option would make the whole attached namespace
+  snapshot-consistent and remove that per-query source rewrite.
+
 ### Persisted table macros cannot round-trip optional NULL defaults
 
 - **Former Atlas caller:** fixture-seeded selector-history table macros.

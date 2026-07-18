@@ -32,7 +32,6 @@ from repository.catalogue import (
     CrawlRecord,
     CrawlStepRecord,
 )
-from runtime.navigation_contract import NavigationPackage
 from runtime.catalogue_queue import (
     DEAD_LETTER_STREAM,
     INGEST_DEAD_LETTER_SUBJECT as DEAD_LETTER_SUBJECT,
@@ -88,20 +87,19 @@ class IngestionState(BaseModel):
     updated_at: datetime
     published_at: datetime | None = None
     result: CatalogueWriteResult | None = None
-    navigation: NavigationPackage | None = None
     error: str | None = None
     processing_failure_count: int = 0
 
     @model_validator(mode="after")
     def validate_state(self) -> IngestionState:
         if self.status == "pending" and (
-            self.result is not None or self.navigation is not None or self.error is not None
+            self.result is not None or self.error is not None
         ):
             raise ValueError("pending ingestion cannot contain a terminal result")
         if self.status == "succeeded" and (self.result is None or self.error is not None):
             raise ValueError("succeeded ingestion requires only a result")
         if self.status == "failed" and (
-            self.error is None or self.result is not None or self.navigation is not None
+            self.error is None or self.result is not None
         ):
             raise ValueError("failed ingestion requires only an error")
         return self
@@ -288,7 +286,6 @@ async def store_ingestion_response(
     *,
     job: IngestionJob,
     result: CatalogueWriteResult | None = None,
-    navigation: NavigationPackage | None = None,
     error: str | None = None,
 ) -> IngestionState:
     """Revision-fence a terminal transition before acknowledging the work message.
@@ -314,7 +311,6 @@ async def store_ingestion_response(
                 "status": "succeeded" if result is not None else "failed",
                 "updated_at": datetime.now(UTC),
                 "result": result,
-                "navigation": navigation if result is not None else None,
                 "error": error,
             }
         )

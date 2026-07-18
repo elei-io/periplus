@@ -4,8 +4,8 @@ Atlas deploys four worker roles:
 
 | Worker | Input | Output | Scaling dimension |
 |---|---|---|---|
-| Acquisition | `atlas.graph.crawl` | Immutable HTML and ingestion job | CDP coordination |
-| Ingestion | repository ingestion queue | Crawl/DOM evidence and graph readiness | Critical catalogue capacity |
+| Acquisition | graph crawl/readiness/edge work | Immutable HTML, ingestion job, and graph readiness | CDP and traversal coordination |
+| Ingestion | repository ingestion queue | Crawl/DOM catalogue evidence | Critical catalogue capacity |
 | Materialization | live/backfill scope queues | Authoritative materialized scopes | Live/backfill catalogue capacity |
 | Maintenance | maintenance triggers | Compaction and cleanup | Exclusive maintenance capacity |
 
@@ -14,12 +14,16 @@ Atlas deploys four worker roles:
 Each delivery represents one page. The worker claims the request, obtains Atlas object-write
 capacity, obtains the URL's domain concurrency permit, observes its minimum request interval,
 connects to the configured CDP endpoint, navigates, applies the enabled content-completion moves,
-captures final HTML or an accepted artifact, stores it, and publishes ingestion work.
+captures final HTML or an accepted artifact, stores it, and publishes ingestion work. Branch nodes
+then derive a bounded navigation package and publish readiness; leaf nodes publish readiness
+without generating a package. Page-only edges execute in standalone memory-limited DuckDB
+connections. Historical joins use a read-only DuckLake connection at the run's pinned snapshot.
 Each worker process owns one Playwright driver, while every delivery opens and closes its own CDP
 connection and page so crawl state is not shared between deliveries.
 When every method is disabled it sends no browser-only script or page-completion commands and
-performs no page evaluation or interaction. It then ACKs. It never opens DuckLake, evaluates edges,
-or chooses a provider.
+performs no page evaluation or interaction. It then ACKs. It never opens DuckLake for acquisition
+or chooses a provider; historical edge evaluation is a separate bounded read-only navigation
+operation in the same worker role.
 
 There is one acquisition deployment and one durable crawl consumer. The CDP service owns the browser
 farm, transport selection, proxy/profile concerns, and external scaling. Atlas retains website
@@ -28,11 +32,11 @@ provider-specific queues, browser slots, direct HTTP clients, or transport fallb
 
 ## Ingestion worker
 
-The ingestion worker verifies immutable HTML, prepares DOM and navigation data, commits base
-evidence and private `_atlas.crawl_steps` rows under the catalogue fence, publishes readiness, and
-ACKs. It does not calculate quality flags; periodic analysis derives quality findings from committed
-step and element rows. It is critical work. One process owns one embedded DuckDB connection and
-runs one catalogue operation at a time.
+The ingestion worker verifies immutable HTML, prepares DOM data, commits base evidence and private
+`_atlas.crawl_steps` rows under the catalogue fence, records terminal ingestion state, and ACKs. It
+does not publish graph readiness or alter traversal status. It does not calculate quality flags;
+periodic analysis derives quality findings from committed step and element rows. It is critical
+work. One process owns one embedded DuckDB connection and runs one catalogue operation at a time.
 
 ## Materialization and maintenance
 

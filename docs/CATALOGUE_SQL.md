@@ -105,6 +105,43 @@ WHERE e.tag = 'a'
   AND has_attribute(e.attributes, 'href');
 ```
 
+## Seeded views
+
+`views.page_metadata` returns one row per document with common metadata extracted from the projected
+DOM:
+
+```sql
+SELECT
+  document_id,
+  language,
+  title,
+  description,
+  canonical_href,
+  robots,
+  open_graph_title
+FROM views.page_metadata;
+```
+
+The view also exposes `base_href`, `open_graph_description`, and `open_graph_image`. Empty metadata
+values become `NULL`, and when a document repeats a metadata field the first non-empty value in DOM
+order wins.
+
+`canonical_href`, `base_href`, and `open_graph_image` retain the attribute value from the document;
+they are not resolved automatically. A content-addressed document can be observed under more than
+one page URL, so URL resolution requires crawl context:
+
+```sql
+SELECT
+  c.crawl_id,
+  c.page_url,
+  resolve_url(c.page_url, m.canonical_href) AS canonical_url,
+  m.title,
+  m.description
+FROM crawls AS c
+JOIN views.page_metadata AS m USING (document_id)
+WHERE c.outcome = 'success';
+```
+
 ## Automatic record discovery
 
 Atlas seeds two deterministic table macros for turning captured directory pages into records.
@@ -169,14 +206,17 @@ LIMIT 10;
 
 `page.links` is an ephemeral relation derived from the current source page. It exists only while
 evaluating that page's outgoing graph edges and is independent of every user-owned `views.*`
-definition.
+definition. Page-only SQL runs in a standalone memory-limited DuckDB connection. An edge may join
+catalogue relations; Atlas pins those reads to the graph run's pre-run DuckLake snapshot so
+redelivery cannot observe catalogue ingestion arriving midway through the run. Edge SQL may not
+open external files or table functions.
 
 SQL `LIMIT` expresses the intended number of candidates. Catalogue execution still applies hard
 row, byte, memory, and timeout limits. Returned URLs become independently claimable crawl requests;
 URL matching selects their crawl policy, and deployment hard ceilings protect against runaway graph
 runs. See [Crawl Graphs](CRAWL_GRAPHS.md) for readiness, recursion, messaging, and state ownership.
-Catalogue execution also requests Resource Governor capacity before starting; SQL bounds do not
-replace global DuckLake or object-store admission.
+Page-only execution requests object-read capacity. Historical joins request catalogue and
+object-read capacity before starting; SQL bounds do not replace shared infrastructure admission.
 
 ## Physical layout
 

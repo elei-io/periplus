@@ -12,7 +12,7 @@ from runtime.graph_progress import NodeProgress, node_progress_key
 
 
 class GraphRunStageMetricsTests(unittest.IsolatedAsyncioTestCase):
-    async def test_pending_requests_are_split_into_fetch_and_downstream_work(self) -> None:
+    async def test_pending_requests_are_split_into_acquisition_and_navigation(self) -> None:
         run_id = uuid4()
         node_id = uuid4()
         progress = NodeProgress(

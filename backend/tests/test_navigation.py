@@ -8,12 +8,12 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-import duckdb
 import pyarrow as pa
 
 from repository.objects.store import FileObjectStore
 from repository.objects.html import RawHtmlRepository, identify_html
-from runtime.catalog_navigation import EdgeUrlExecutor
+from runtime.graph_navigation import EdgeUrlExecutor
+from runtime.edge_sql import edge_uses_catalogue
 from runtime.navigation import (
     build_navigation_package,
     delete_run_navigation,
@@ -24,6 +24,21 @@ from runtime.navigation import (
 
 
 class NavigationPackageTests(unittest.TestCase):
+    def test_edge_sql_classifies_page_only_and_historical_joins(self) -> None:
+        self.assertFalse(
+            edge_uses_catalogue(
+                "SELECT url FROM page.links "
+                "WHERE crawl_id = $crawl_id LIMIT 10"
+            )
+        )
+        self.assertTrue(
+            edge_uses_catalogue(
+                "SELECT p.url FROM page.links AS p "
+                "JOIN crawls AS c USING (document_id) "
+                "WHERE p.crawl_id = $crawl_id LIMIT 10"
+            )
+        )
+
     def test_package_is_verified_and_deleted_with_its_run(self) -> None:
         run_id = uuid4()
         document_id = "sha256:" + "a" * 64
@@ -66,19 +81,6 @@ class NavigationPackageTests(unittest.TestCase):
             page_url="https://example.com/start",
         )
 
-        class FakeCatalogue:
-            def __init__(self) -> None:
-                self.connection = duckdb.connect()
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args) -> None:
-                self.connection.close()
-
-        def execute(catalogue, sql, parameters):
-            return catalogue.connection.execute(sql, parameters).to_arrow_reader()
-
         with tempfile.TemporaryDirectory() as directory:
             store = FileObjectStore(Path(directory))
             package = put_navigation_package(
@@ -91,18 +93,14 @@ class NavigationPackageTests(unittest.TestCase):
             )
             RawHtmlRepository(store).put(html)
             store.delete(package.object_name)
-            with (
-                patch("runtime.catalog_navigation.catalogue_from_env", FakeCatalogue),
-                patch("runtime.catalog_navigation.execute_arrow_query", execute),
-            ):
-                urls = EdgeUrlExecutor(store, package)(
-                    "SELECT url FROM page.links WHERE crawl_id = $crawl_id",
-                    {
-                        "crawl_id": crawl_id,
-                        "_page_url": "https://example.com/start",
-                        "_document_id": document_id,
-                    },
-                )
+            urls = EdgeUrlExecutor(store, package)(
+                "SELECT url FROM page.links WHERE crawl_id = $crawl_id",
+                {
+                    "crawl_id": crawl_id,
+                    "_page_url": "https://example.com/start",
+                    "_document_id": document_id,
+                },
+            )
             self.assertEqual(urls, ["https://example.com/next"])
             self.assertTrue(store.exists(package.object_name))
 

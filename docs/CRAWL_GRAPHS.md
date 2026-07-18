@@ -12,9 +12,12 @@ scoped SQL edges derive later URL inputs from durable crawl evidence.
 5. An acquisition worker connects to the configured standard CDP endpoint.
 6. Atlas enforces domain politeness, navigates, applies enabled content-completion moves, captures
    HTML or an accepted artifact, and retains it immutably.
-7. Ingestion commits the crawl and DOM, then publishes readiness.
-8. Each outgoing edge runs against that crawl's bounded navigation package and admits returned URLs.
-9. The request settles after its edges settle; the run settles after all requests settle.
+7. Atlas durably publishes frozen ingestion work. For a branch node, acquisition then builds and
+   stores the bounded navigation package; leaf nodes skip that work.
+8. Acquisition publishes readiness. Each outgoing edge runs against the current page package and
+   may join the read-only catalogue snapshot pinned before the run.
+9. The request settles after its edges settle; the run settles after all requests settle. Catalogue
+   ingestion proceeds independently and does not hold the run open.
 
 There are no action-specific traversal loops, transport routes, provider profiles, shadow trials,
 or direct-HTTP fallback in Atlas.
@@ -51,16 +54,18 @@ The CDP service decides how the page is transported and how browser-fleet capaci
 
 - `CrawlRequest`: current NATS-owned request state and frozen policy snapshot.
 - `CrawlWork`: one delivery of one page request.
-- `ReadinessWork`: retained crawl plus optional navigation package.
-- `EdgeWork`: one bounded SQL evaluation for one source crawl and edge.
+- `NavigationReadinessWork`: acquired crawl plus optional acquisition-owned navigation package.
+- `EdgeWork`: one bounded SQL evaluation for one source crawl and edge, with a pinned catalogue
+  snapshot only when the SQL reads historical state.
 - `CrawlRecord`: immutable DuckLake observation pointing at content plus bounded acquisition-attempt evidence.
 - `_atlas.crawl_steps`: private per-method duration, configuration, stopping, and content-change
   evidence committed atomically with its crawl.
 
 Acquisition failures may be retried by redelivery. Retry evidence is retained with the final logical
 crawl so successful recovery does not erase earlier 429 or navigation observations. Invalid work is terminated. A successful worker
-ACK requires retained HTML and durable ingestion publication. A run cancellation settles every
-nonterminal request.
+ACK requires retained HTML, durable ingestion publication, and durable navigation-readiness
+publication. A run cancellation settles every nonterminal request. Ingestion terminal state and
+dead letters remain independently observable and never retroactively rewrite traversal status.
 
 ## Scaling
 

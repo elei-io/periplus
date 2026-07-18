@@ -365,11 +365,13 @@ export function CrawlGraphsDocsPage({ onNavigate }: DocsPageProps) {
         <div className="grid gap-x-10 gap-y-6 sm:grid-cols-2">
           <Rule title="Acquisition owns one page">
             The worker retains immutable HTML or an allowed artifact, publishes
-            ingestion work, and moves on. It does not wait for navigation.
+            ingestion work, then publishes navigation readiness. It never waits
+            for the catalogue commit.
           </Rule>
-          <Rule title="Navigation starts from durable HTML">
-            Only after ingestion may outgoing edges evaluate the completed crawl
-            with a bound <InlineCode>$crawl_id</InlineCode>.
+          <Rule title="Navigation starts from the current page">
+            Branch nodes evaluate their bounded page package immediately with a
+            bound <InlineCode>$crawl_id</InlineCode>. Historical joins use the
+            run&apos;s pinned catalogue snapshot.
           </Rule>
         </div>
       </DocsSection>
@@ -680,8 +682,8 @@ export function ResourcesScalingDocsPage({ onNavigate }: DocsPageProps) {
               <ServiceName key="critical" tone="critical">
                 critical
               </ServiceName>,
-              "Acquisition persistence, base ingestion and graph navigation",
-              "A reserved catalogue share keeps graph-critical work moving",
+              "Acquisition persistence, base ingestion and historical graph joins",
+              "Reserved shared capacity protects critical durable work",
             ],
             [
               <ServiceName key="live" tone="live">
@@ -719,8 +721,8 @@ export function ResourcesScalingDocsPage({ onNavigate }: DocsPageProps) {
             Domain policies remain Atlas-owned correctness constraints.
           </LifecycleRow>
           <LifecycleRow title="Keep graph-critical work independent of view freshness">
-            Slow materialization may make views stale, but it must not hold
-            browser capacity, delay base ingestion or keep a graph run active.
+            Slow ingestion or materialization may make catalogue state stale,
+            but neither may hold browser capacity or keep a graph run active.
           </LifecycleRow>
           <LifecycleRow title="Change budgets from measured evidence">
             Static budgets are intentional. Compare permit utilization, wait
@@ -842,7 +844,7 @@ function GraphExecutionDiagram() {
     [Globe2Icon, "URL candidate", "offered to the graph"],
     [GitForkIcon, "Node admission", "one crawl request"],
     [ServerCogIcon, "Acquire", "one remote page"],
-    [DatabaseIcon, "Durable evidence", "ingestion complete"],
+    [DatabaseIcon, "Navigate", "ingestion accepted"],
   ] as const
 
   return (
@@ -1046,7 +1048,7 @@ function ScalingModelDiagram() {
           <DiagramEntity
             icon={DatabaseIcon}
             name="Ingestion workers"
-            detail="base evidence · navigation"
+            detail="base evidence · DOM"
           />
           <DiagramEntity
             icon={Layers3Icon}

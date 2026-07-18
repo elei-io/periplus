@@ -11,6 +11,7 @@ import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from nats.errors import TimeoutError as NatsTimeoutError
+from nats.js.errors import NotFoundError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -42,6 +43,12 @@ from repository.catalogue.schema import (
     INTERNAL_SCHEMA,
     MATERIALIZATION_COVERAGE_TABLE,
 )
+from repository.ingestion.queue import DURABLE as INGESTION_DURABLE
+from materialization.queue import (
+    SCOPE_BACKFILL_DURABLE,
+    SCOPE_LIVE_DURABLE,
+)
+from runtime.catalogue_queue import WORK_STREAM
 from runtime.graph_queue import GraphRun, connect_nats, ensure_graph_progress_storage, ensure_graph_storage, get_graph_run, list_graph_runs, list_worker_states
 from runtime.graph_runs import (
     GraphRunNotFoundError,
@@ -94,7 +101,7 @@ class GraphRunSummary(BaseModel):
     error_count: int
     queued_request_count: int
     fetching_request_count: int
-    processing_request_count: int
+    navigating_request_count: int
     created_at: datetime
     started_at: datetime | None
     last_progress_at: datetime | None
@@ -136,6 +143,7 @@ class CatalogueExecutorCapacity(BaseModel):
     worker_count: int
     capacity: int
     active: int
+    backlog: int
 
 
 class CrawlConcurrencyLimits(BaseModel):
@@ -192,7 +200,7 @@ async def _run_summaries(
             graph_slug=slugs.get(run.graph_id),
             queued_request_count=counts[0],
             fetching_request_count=counts[1],
-            processing_request_count=counts[2],
+            navigating_request_count=counts[2],
         )
         for run, counts in zip(runs, stage_counts, strict=True)
     ]
@@ -214,8 +222,8 @@ async def _run_stage_counts(progress, run: GraphRun) -> tuple[int, int, int]:
     pending = run.pending_request_count
     queued = min(pending, sum(node.queued for node in nodes))
     fetching = min(pending - queued, sum(node.crawling for node in nodes))
-    processing = max(0, pending - queued - fetching)
-    return queued, fetching, processing
+    navigating = max(0, pending - queued - fetching)
+    return queued, fetching, navigating
 
 
 async def _storage():
@@ -240,6 +248,20 @@ async def capacity() -> CrawlConcurrencyLimits:
             key=lambda value: value.worker_id,
         )
         resources = await resource_usage(resource_grants)
+        async def consumer_backlog(durable: str) -> int:
+            try:
+                info = await jetstream.consumer_info(WORK_STREAM, durable)
+            except NotFoundError:
+                return 0
+            return int(info.num_pending or 0) + int(info.num_ack_pending or 0)
+
+        catalogue_backlogs = {
+            "ingestion": await consumer_backlog(INGESTION_DURABLE),
+            "materialization": (
+                await consumer_backlog(SCOPE_LIVE_DURABLE)
+                + await consumer_backlog(SCOPE_BACKFILL_DURABLE)
+            ),
+        }
     finally:
         await client.drain()
     catalogue_executors = [
@@ -259,6 +281,7 @@ async def capacity() -> CrawlConcurrencyLimits:
                 for worker in catalogue_workers
                 if worker.capability == capability and worker.healthy
             ),
+            backlog=catalogue_backlogs[capability],
         )
         for capability in ("ingestion", "materialization")
     ]

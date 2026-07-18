@@ -17,7 +17,8 @@ vendor, proxy, profile, or transport; the CDP service owns those decisions and t
 The durable path is:
 
 ```text
-URL -> crawl request -> CDP session -> immutable HTML -> ingestion -> DOM -> scoped SQL edges
+URL -> crawl request -> CDP session -> immutable HTML -> navigation package -> scoped SQL edges
+                                             \-> durable ingestion -> DOM/catalogue
 ```
 
 ## Acquisition boundary
@@ -28,30 +29,43 @@ content types, response outcomes, and four content-completion methods: dynamic w
 waiting, scrolling, and expansion. Playwright remains an implementation detail. With every method
 disabled Atlas emits only the navigation and content calls supported by a static HTTP capture. The
 acquisition worker applies those policies through the configured CDP endpoint, captures immutable
-HTML or an accepted raw artifact, and publishes frozen ingestion work.
+HTML or an accepted raw artifact, publishes frozen ingestion work, and derives the bounded
+navigation package only when the node has outgoing edges.
 
 A crawl succeeds only when Atlas captures and retains the page HTML. The CDP service may internally
 satisfy a request with plain HTTP, a local browser, a remote browser, or a future strategy without
 changing the Atlas contract.
 
-Acquisition workers never open DuckLake or wait for downstream processing. Atlas has one crawl
+The acquisition handler never opens DuckLake or waits for catalogue processing. The co-located
+graph-navigation runtime opens a bounded read-only connection only for edges that explicitly join
+historical catalogue state. Acquisition publishes navigation readiness after ingestion work has a
+durable JetStream PubAck, so traversal completion means every catalogue job was accepted, not that
+DuckLake has committed it. Atlas has one crawl
 subject and one horizontally scalable acquisition-worker deployment. The CDP service, not Atlas, is
 responsible for transport-specific queues and browser capacity.
 
-## Ingestion and navigation
+## Navigation and ingestion
 
-An ingestion worker verifies retained HTML, commits the crawl and base DOM evidence, creates the
-bounded navigation package, evaluates outgoing graph edges, and settles the crawl request. An edge
-must use `$crawl_id` and returns URL values for its target node. Ingestion does not score content
-quality. It atomically commits each method execution to private `_atlas.crawl_steps` with its frozen
-knobs, duration, stopping reason, and bounded before/after content metrics. Periodic DuckLake
-analysis derives quality findings from immutable crawls, step evidence, and element rows.
+Acquisition-owned navigation evaluates outgoing graph edges and settles the crawl request. An edge
+must use `$crawl_id` and returns URL values for its target node. `page.links` is the current page's
+Arrow package and uses a standalone memory-limited DuckDB connection. Edges may also join read-only
+catalogue tables; those reads use the DuckLake snapshot pinned before the graph run starts, so
+retries cannot observe ingestion arriving midway through the run.
+
+Independently, an ingestion worker verifies retained HTML and commits the crawl and base DOM
+evidence. It atomically commits each method execution to private `_atlas.crawl_steps` with its
+frozen knobs, duration, stopping reason, and bounded before/after content metrics. Its queue,
+terminal results, and dead letters expose catalogue lag and failures without changing a completed
+graph traversal. Ingestion does not score content quality. Periodic DuckLake analysis derives
+quality findings from immutable crawls, step evidence, and element rows.
 
 ## Catalogue work
 
 Ingestion is `critical`. Live and backfill materializations publish bounded authoritative scopes.
-Maintenance runs off-path with an exclusive background catalogue permit. Each process owns one
-embedded DuckDB connection and initially executes one catalogue operation at a time.
+Maintenance runs off-path with an exclusive background catalogue permit. Each ingestion or
+materialization process owns one embedded DuckDB connection and initially executes one catalogue
+operation at a time. Historical graph edges open bounded, read-only, per-operation connections and
+are serialized within each acquisition process.
 
 ## Repository boundary
 

@@ -621,6 +621,7 @@ async def crawl_graph_request(
     resource_grants=None,
     domain_pacing=None,
     persist_retryable_failure: bool = True,
+    include_html: bool = False,
     **_kwargs,
 ) -> CrawlPage:
     del session
@@ -708,7 +709,14 @@ async def crawl_graph_request(
                     async with resource_permits(resource_grants, request, acquire_timeout=DURABLE_RESOURCE_WAIT):
                         await pipeline.store_artifact(content=io.BytesIO(page.artifact or b""), identity=artifact_identity)
             await pipeline.enqueue_stored(record, crawl_steps=crawl_steps)
-            return page.model_copy(update={"crawl_id": context.crawl_request_id, "document_id": record.document_id, "html": None, "artifact": None})
+            return page.model_copy(
+                update={
+                    "crawl_id": context.crawl_request_id,
+                    "document_id": record.document_id,
+                    "html": page.html if include_html else None,
+                    "artifact": None,
+                }
+            )
 
         if repository_pipeline is not None:
             return await persist(repository_pipeline)

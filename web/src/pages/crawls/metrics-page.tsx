@@ -57,13 +57,13 @@ export function CrawlMetricsPage() {
   const lag = materializationLagQuery.data?.items ?? []
   const lagByRun = new Map(lag.map((item) => [item.run_id, item]))
   const acquisitionBacklog = runs.reduce(
-    (total, run) => total + (run.queued_request_count ?? 0),
+    (total, run) => total + run.queued_request_count,
     0
   )
-  const ingestionBacklog = runs.reduce(
-    (total, run) => total + (run.processing_request_count ?? 0),
-    0
-  )
+  const ingestionBacklog =
+    capacityQuery.data?.catalogue_executors.find(
+      (item) => item.capability === "ingestion"
+    )?.backlog ?? 0
   const materializationBacklog = lag.reduce(
     (total, item) => total + item.pending_updates,
     0
@@ -126,7 +126,7 @@ function WorkerCapacity({
           capacity={ingestion?.capacity ?? 0}
           replicas={ingestion?.worker_count ?? 0}
           backlog={ingestionBacklog}
-          backlogLabel="pages awaiting ingestion / graph"
+          backlogLabel="catalogue jobs waiting"
         />
         <WorkerCapacityCard
           label="Materialization"
@@ -431,9 +431,9 @@ function RunRow({
         <RunProgress run={run} className="mt-2" />
         {isActiveRun(run) && run.pending_request_count > 0 ? (
           <p className="mt-1.5 text-xs text-muted-foreground tabular-nums">
-            {(run.queued_request_count ?? 0).toLocaleString()} queued ·{" "}
-            {(run.fetching_request_count ?? 0).toLocaleString()} acquiring ·{" "}
-            {(run.processing_request_count ?? 0).toLocaleString()} ingesting /
+            {run.queued_request_count.toLocaleString()} queued ·{" "}
+            {run.fetching_request_count.toLocaleString()} acquiring ·{" "}
+            {run.navigating_request_count.toLocaleString()} navigating
             graph
           </p>
         ) : null}

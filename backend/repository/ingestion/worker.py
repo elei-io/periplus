@@ -47,19 +47,6 @@ from runtime.catalogue_workers import (
     catalogue_worker_presence,
     ensure_catalogue_worker_storage,
 )
-from runtime.graph_queue import (
-    READINESS_SUBJECT,
-    ReadinessWork,
-    ensure_graph_progress_storage,
-    ensure_graph_storage,
-)
-from runtime.graph_runs import settle_request
-from runtime.navigation import (
-    navigation_event_id,
-    navigation_object_name,
-    put_navigation_package,
-)
-from runtime.navigation_contract import NavigationPackage
 from runtime.operation_leases import (
     OperationLeaseLost,
     OperationLeaseUnavailable,
@@ -82,47 +69,6 @@ from workers.lifecycle import (
     cancel_task,
     monitor_heartbeat,
 )
-
-
-async def _publish_crawl_readiness(
-    client, job: IngestionJob, package: NavigationPackage | None
-) -> None:
-    crawl = job.crawl
-    if crawl.graph_run_id is None or crawl.crawl_request_id is None:
-        raise ValueError("crawl readiness requires graph runtime provenance")
-    identity = package.sha256 if package is not None else "contentless"
-    event = ReadinessWork(
-        event_id=navigation_event_id(crawl.crawl_id, identity),
-        crawl_id=crawl.crawl_id,
-        graph_run_id=crawl.graph_run_id,
-        crawl_request_id=crawl.crawl_request_id,
-        navigation=package,
-        occurred_at=datetime.now(UTC),
-    )
-    await client.jetstream().publish(
-        READINESS_SUBJECT,
-        event.model_dump_json().encode(),
-        headers={"Nats-Msg-Id": str(event.event_id)},
-    )
-
-
-async def _settle_graph_ingestion_failure(
-    client, job: IngestionJob, error: str
-) -> None:
-    """Make a terminal repository failure terminal in graph execution too."""
-
-    jetstream = client.jetstream()
-    runs, requests, _workers = await ensure_graph_storage(jetstream)
-    progress = await ensure_graph_progress_storage(jetstream)
-    await settle_request(
-        runs=runs,
-        requests=requests,
-        progress=progress,
-        request_id=job.crawl.crawl_request_id,
-        status="failed",
-        error=f"Repository ingestion failed: {error}",
-        failure_stage="enrichment",
-    )
 
 
 async def run(
@@ -151,7 +97,6 @@ async def run(
         stream=STREAM,
     )
     ingestor = repository_ingestor_from_env()
-    navigation_store = ingestor.html_repository.store
     await asyncio.to_thread(ingestor.validate)
     health_ingestor = repository_ingestor_from_env()
     await asyncio.to_thread(health_ingestor.validate)
@@ -200,10 +145,11 @@ async def run(
     accepted_messages = []
     batch_started_at: float | None = None
 
-    async def flush_prepared() -> None:
+    async def flush_prepared(reason: str) -> None:
         nonlocal heartbeat_task, batch_started_at, active_operation_count
         if not prepared:
             return
+        repository_metrics.batch_flush(reason=reason)
         await _commit_batch_isolated(
             client,
             results_store,
@@ -212,7 +158,6 @@ async def run(
             list(accepted_messages),
             list(prepared),
             catalogue_connection_lock,
-            navigation_store,
             operation_lease_store,
             resource_grants,
         )
@@ -232,7 +177,7 @@ async def run(
                 and batch_started_at is not None
                 and time.monotonic() - batch_started_at >= config.max_wait_seconds
             ):
-                await flush_prepared()
+                await flush_prepared("max_wait")
                 continue
             if time.monotonic() >= next_queue_snapshot:
                 try:
@@ -263,8 +208,10 @@ async def run(
                         exc_info=True,
                     )
                 next_queue_snapshot = time.monotonic() + 5
-            available = max(1, config.max_items - len(prepared))
-            fetch_timeout = config.max_wait_seconds
+            available = (
+                max(1, config.max_items - len(prepared)) if prepared else 1
+            )
+            fetch_timeout = 1.0
             if batch_started_at is not None:
                 fetch_timeout = max(
                     0.001,
@@ -277,7 +224,7 @@ async def run(
                 )
             except (NatsTimeoutError, asyncio.TimeoutError):
                 if prepared:
-                    await flush_prepared()
+                    await flush_prepared("max_wait")
                 continue
 
             decoded_messages = []
@@ -334,19 +281,6 @@ async def run(
                 )
                 if durable_state.status != "pending":
                     if durable_state.status == "succeeded":
-                        try:
-                            if (
-                                job.crawl.outcome == "success"
-                            ):
-                                await _publish_crawl_readiness(
-                                    client, job, durable_state.navigation
-                                )
-                        except Exception:
-                            logging.exception(
-                                "durable repository success notification failed"
-                            )
-                            await message.nak(delay=1)
-                            continue
                         await message.ack()
                     else:
                         await _notify(client, job, durable_state)
@@ -392,7 +326,6 @@ async def run(
                         client,
                         results_store,
                         ingestor,
-                        navigation_store,
                         message,
                         job,
                         exc,
@@ -405,7 +338,9 @@ async def run(
                     duration_seconds=time.perf_counter() - preparation_started,
                 )
                 if _would_exceed_batch(prepared, value, config=config):
-                    await flush_prepared()
+                    await flush_prepared(
+                        _batch_limit_reason(prepared, value, config=config)
+                    )
                 jobs.append(job)
                 prepared.append(value)
                 accepted_messages.append(message)
@@ -414,8 +349,16 @@ async def run(
                     heartbeat_task = asyncio.create_task(
                         _heartbeat_messages(accepted_messages)
                     )
-                if _batch_reached_limit(prepared, config=config):
-                    await flush_prepared()
+                if (
+                    batch_started_at is not None
+                    and time.monotonic() - batch_started_at
+                    >= config.max_wait_seconds
+                ):
+                    await flush_prepared("max_wait")
+                elif _batch_reached_limit(prepared, config=config):
+                    await flush_prepared(
+                        _batch_reached_reason(prepared, config=config)
+                    )
             await cancel_task(fetched_heartbeat_task)
             fetched_heartbeat_task = None
             active_operation_count = 1 if prepared else 0
@@ -463,6 +406,30 @@ def _batch_reached_limit(prepared, *, config: IngestionWorkerConfig) -> bool:
     )
 
 
+def _batch_limit_reason(
+    prepared, value, *, config: IngestionWorkerConfig
+) -> str:
+    if len(prepared) >= config.max_items:
+        return "max_items"
+    if (
+        sum(item.element_count for item in prepared) + value.element_count
+        > config.max_element_rows
+    ):
+        return "max_element_rows"
+    return "max_staged_bytes"
+
+
+def _batch_reached_reason(prepared, *, config: IngestionWorkerConfig) -> str:
+    if len(prepared) >= config.max_items:
+        return "max_items"
+    if (
+        sum(item.element_count for item in prepared)
+        >= config.max_element_rows
+    ):
+        return "max_element_rows"
+    return "max_staged_bytes"
+
+
 async def _commit_batch_isolated(
     client,
     results_store,
@@ -471,7 +438,6 @@ async def _commit_batch_isolated(
     messages,
     prepared,
     catalogue_connection_lock: asyncio.Lock,
-    navigation_store,
     operation_lease_store,
     resource_grants,
 ) -> None:
@@ -574,7 +540,6 @@ async def _commit_batch_isolated(
                 messages[:midpoint],
                 prepared[:midpoint],
                 catalogue_connection_lock,
-                navigation_store,
                 operation_lease_store,
                 resource_grants,
             )
@@ -586,7 +551,6 @@ async def _commit_batch_isolated(
                 messages[midpoint:],
                 prepared[midpoint:],
                 catalogue_connection_lock,
-                navigation_store,
                 operation_lease_store,
                 resource_grants,
             )
@@ -606,7 +570,6 @@ async def _commit_batch_isolated(
                     client,
                     results_store,
                     ingestor,
-                    navigation_store,
                     message,
                     job,
                     exc,
@@ -626,7 +589,6 @@ async def _commit_batch_isolated(
             client,
             results_store,
             ingestor,
-            navigation_store,
             messages[0],
             job,
             exc,
@@ -642,54 +604,15 @@ async def _commit_batch_isolated(
         element_rows=element_rows,
         staged_bytes=staged_bytes,
     )
-    for job, message, result, value in zip(
-        jobs, messages, results, prepared, strict=True
-    ):
+    for job, message, result in zip(jobs, messages, results, strict=True):
         repository_metrics.attempt(
             outcome="succeeded",
             queue_seconds=(datetime.now(UTC) - job.enqueued_at).total_seconds(),
         )
         try:
-            package = None
-            if value.navigation_payload is not None:
-                if job.crawl.graph_run_id is None or job.crawl.document_id is None:
-                    raise ValueError("graph crawl ingestion requires runtime provenance")
-                name = navigation_object_name(
-                    job.crawl.graph_run_id,
-                    job.crawl.document_id,
-                    job.crawl.page_url,
-                )
-                async with resource_permits(
-                    resource_grants,
-                    object_request(
-                        f"navigation-write:{job.request_id}",
-                        direction="write",
-                        byte_count=len(value.navigation_payload),
-                        service_class="critical",
-                    ),
-                    acquire_timeout=DURABLE_RESOURCE_WAIT,
-                ):
-                    package = await asyncio.to_thread(
-                        put_navigation_package,
-                        navigation_store,
-                        name=name,
-                        payload=value.navigation_payload,
-                        row_count=value.navigation_row_count,
-                    )
-            durable_state = await store_ingestion_response(
-                results_store,
-                job=job,
-                result=result,
-                navigation=package,
-            )
-            if job.crawl.outcome == "success":
-                await _publish_crawl_readiness(
-                    client, job, durable_state.navigation
-                )
+            await store_ingestion_response(results_store, job=job, result=result)
         except Exception:
-            logging.exception(
-                "repository ingestion committed but navigation publication failed"
-            )
+            logging.exception("repository ingestion result publication failed")
             await message.nak(delay=1)
             continue
         await message.ack()
@@ -699,7 +622,6 @@ async def _retry_or_fail(
     client,
     results_store,
     ingestor,
-    navigation_store,
     message,
     job: IngestionJob,
     exc: Exception,
@@ -712,7 +634,6 @@ async def _retry_or_fail(
             client,
             results_store,
             ingestor,
-            navigation_store,
             message,
             job,
             exc,
@@ -727,7 +648,6 @@ async def _retry_or_fail_with_heartbeat(
     client,
     results_store,
     ingestor,
-    navigation_store,
     message,
     job: IngestionJob,
     exc: Exception,
@@ -776,85 +696,12 @@ async def _retry_or_fail_with_heartbeat(
             await message.nak(delay=30)
             return
 
-        package = None
-        if (
-            reconciled is not None
-            and job.crawl.graph_run_id is not None
-        ):
-            try:
-                known_documents = await _known_document_for_crawl(
-                    ingestor,
-                    job.crawl,
-                    catalogue_connection_lock,
-                    resource_grants,
-                )
-                async with resource_permits(
-                    resource_grants,
-                    object_request(
-                        f"ingestion-recovery-read:{job.request_id}",
-                        direction="read",
-                        byte_count=1,
-                        service_class="critical",
-                    ),
-                    acquire_timeout=DURABLE_RESOURCE_WAIT,
-                ):
-                    prepared = await asyncio.to_thread(
-                        ingestor.prepare_from_raw,
-                        crawl=job.crawl,
-                        known_documents=known_documents,
-                    )
-                try:
-                    if prepared.navigation_payload is not None:
-                        if job.crawl.document_id is None:
-                            raise ValueError(
-                                "navigation package requires a document identity"
-                            )
-                        async with resource_permits(
-                            resource_grants,
-                            object_request(
-                                f"navigation-recovery-write:{job.request_id}",
-                                direction="write",
-                                byte_count=len(prepared.navigation_payload),
-                                service_class="critical",
-                            ),
-                            acquire_timeout=DURABLE_RESOURCE_WAIT,
-                        ):
-                            package = await asyncio.to_thread(
-                                put_navigation_package,
-                                navigation_store,
-                                name=navigation_object_name(
-                                    job.crawl.graph_run_id,
-                                    job.crawl.document_id,
-                                    job.crawl.page_url,
-                                ),
-                                payload=prepared.navigation_payload,
-                                row_count=prepared.navigation_row_count,
-                            )
-                finally:
-                    await asyncio.to_thread(ingestor.discard_prepared, [prepared])
-            except Exception as navigation_exc:
-                logging.exception("navigation package recovery failed")
-                exc = navigation_exc
-                reconciled = None
         durable_state = await store_ingestion_response(
             results_store,
             job=job,
             result=reconciled,
-            navigation=package,
             error=None if reconciled is not None else _exception_message(exc),
         )
-        if (
-            job.crawl.outcome == "success"
-            and durable_state.status == "succeeded"
-        ):
-            try:
-                await _publish_crawl_readiness(
-                    client, job, durable_state.navigation
-                )
-            except Exception:
-                logging.exception("recovered navigation readiness publication failed")
-                await message.nak(delay=1)
-                return
         if durable_state.status == "succeeded":
             await message.ack()
         else:
@@ -893,15 +740,6 @@ async def _dead_letter_or_retry(
 ) -> None:
     """Only remove terminal work after its durable failure copy is acknowledged."""
 
-    try:
-        await _settle_graph_ingestion_failure(client, job, error)
-    except Exception:
-        logging.warning(
-            "repository failure could not settle graph request; retaining work",
-            exc_info=True,
-        )
-        await message.nak(delay=30)
-        return
     try:
         await publish_dead_letter(
             client.jetstream(),
@@ -1018,12 +856,12 @@ async def _dependency_probe(
         except Exception as exc:
             monitor.dependencies_unavailable(str(exc) or type(exc).__name__)
         else:
-            validation = asyncio.create_task(asyncio.to_thread(ingestor.validate))
+            validation = asyncio.create_task(asyncio.to_thread(ingestor.probe))
             try:
                 await asyncio.wait_for(asyncio.shield(validation), timeout=timeout)
             except TimeoutError:
                 monitor.dependencies_unavailable(
-                    f"catalogue health validation exceeded {timeout:g}s"
+                    f"catalogue readiness query exceeded {timeout:g}s"
                 )
                 # This connection has one owner. Do not overlap another probe
                 # while the timed-out native call is still unwinding.

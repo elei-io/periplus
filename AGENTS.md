@@ -22,19 +22,23 @@ changing worker ownership, queue routing, embedded DuckDB use, or deployment sca
 - Raw HTML is immutable, content-addressed, and stored through `backend/repository/`.
 - `crawl` is the only page-acquisition primitive. Graph nodes map admitted URL inputs to crawl work;
   scoped SQL edges derive URL inputs for subsequent nodes from durable crawl evidence.
-- Acquisition workers only acquire one page, store immutable raw HTML, and publish frozen ingestion
-  jobs. They never open DuckLake or wait for downstream work. Deployment-wide remote pressure and
-  object-store writes use Resource Governor permits; local browser slots remain process-local.
+- Acquisition workers acquire one page, store immutable raw HTML, publish frozen ingestion jobs,
+  and own navigation readiness plus outgoing edge evaluation. Branch nodes derive a bounded
+  navigation package; leaf nodes skip it. They never wait for catalogue ingestion. Deployment-wide
+  remote pressure and object-store writes use Resource Governor permits; local browser slots remain
+  process-local.
 - A standard CDP endpoint is the sole acquisition boundary. Atlas has one crawl queue; the CDP
   service owns transport choice, browser-farm capacity, profiles, and acquisition strategy.
-- Ingestion workers own base crawl/DOM/system-projection writes, navigation readiness, and outgoing
-  edge evaluation. They are `critical` catalogue work and never wait for user materialization.
+- Ingestion workers own base crawl/DOM/system-projection writes. They are independently observable
+  `critical` catalogue work, never settle graph traversal, and never wait for user materialization.
 - Materialization discovery publishes deterministic live/backfill scope jobs directly. One worker
   evaluates and commits one bounded scope through authoritative coverage; there is no fan-out
   ledger, settlement workflow, or separate commit queue.
 - Each ingestion or materialization process owns its embedded DuckDB connection and initially runs
   one catalogue operation at a time. Horizontal replicas provide executor capacity; Resource
   Governor budgets cap combined DuckLake and object-store pressure across replicas.
+- Page-only graph edges use bounded standalone DuckDB connections. Historical edge joins use a
+  pinned snapshot through one serialized, read-only catalogue operation per acquisition process.
 - The maintenance worker performs off-path upkeep only after receiving an exclusive background
   catalogue permit. It does not use a bespoke maintenance-active polling protocol.
 - Capacity permits, operation leases, and PostgreSQL advisory commit locks are distinct. Permits
@@ -68,11 +72,11 @@ changing worker ownership, queue routing, embedded DuckDB use, or deployment sca
 - `web/` — React frontend.
 
 Keep editable graph and policy definitions under `control/`, current graph execution under
-`runtime/`, acquisition behavior in the shared crawl path, ingestion/navigation under the
-ingestion worker, user materialization under the materialization worker, and generic Postgres
-infrastructure under `backend/db/`. Resource-allocation algorithms belong in the governor, not in
-API adapters or work messages. Do not add a task, action primitive, or action-specific traversal
-loop when a node and scoped SQL edge express the behavior.
+`runtime/`, acquisition behavior in the shared crawl path, navigation in the acquisition worker,
+catalogue ingestion under the ingestion worker, user materialization under the materialization
+worker, and generic Postgres infrastructure under `backend/db/`. Resource-allocation algorithms
+belong in the governor, not in API adapters or work messages. Do not add a task, action primitive,
+or action-specific traversal loop when a node and scoped SQL edge express the behavior.
 
 ## Workflow
 

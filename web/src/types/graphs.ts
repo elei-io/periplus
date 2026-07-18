@@ -120,9 +120,9 @@ export type GraphRunRecord = {
   pending_request_count: number
   failed_request_count: number
   error_count: number
-  queued_request_count?: number
-  fetching_request_count?: number
-  processing_request_count?: number
+  queued_request_count: number
+  fetching_request_count: number
+  navigating_request_count: number
   created_at: string
   started_at: string | null
   last_progress_at: string | null
@@ -183,6 +183,7 @@ export type CrawlConcurrencyLimits = {
     worker_count: number
     capacity: number
     active: number
+    backlog: number
   }>
   tuning: {
     catalogue_max_concurrency: number

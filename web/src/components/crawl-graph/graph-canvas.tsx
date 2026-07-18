@@ -568,7 +568,7 @@ function activityLabel(status: string) {
     {
       queued: "Queued",
       crawling: "Crawling",
-      awaiting_navigation: "Materializing",
+      awaiting_navigation: "Activating links",
       evaluating_edges: "Following links",
       completed: "Crawled",
       failed: "Failed",

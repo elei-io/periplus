@@ -364,8 +364,8 @@ general downstream transformation graphs.
 - Scope replacement and coverage recording are atomic and idempotent.
 - One scope message owns evaluation through coverage; there is no fan-out settlement or separate
   materialization commit-delivery contract.
-- Ingestion workers write base evidence and publish the independent navigation package;
-  materialization workers alone write user-materialized view scopes.
+- Acquisition workers publish the independent navigation package; ingestion workers write base
+  evidence, and materialization workers alone write user-materialized view scopes.
 - Materialization never gates ingestion, navigation readiness, graph edges, or graph-run completion.
 - Restarting workers does not lose the activation boundary, CDC cursor, or completed coverage.
 - Dematerialization fences queued work before dropping the durable table.
