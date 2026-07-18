@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -12,6 +13,10 @@ from sqlglot.errors import ParseError
 
 from control.catalogue_queries.models import CatalogueQuery
 from control.catalogue_queries.service import create_query, detail, restore_query, update_query
+from control.catalogue_scalar_macros.models import CatalogueScalarMacroDefinition
+from control.catalogue_scalar_macros.service import (
+    create_definition as create_scalar_macro,
+)
 from control.catalogue_table_macros.models import CatalogueTableMacroDefinition
 from control.catalogue_table_macros.service import (
     create_definition as create_macro,
@@ -26,6 +31,10 @@ from control.catalogue_views.service import (
 )
 from repository.catalogue.client import Catalogue
 from repository.catalogue.query import CatalogueQueryError, classify_select
+from repository.catalogue.scalar_macros import (
+    SCALAR_MACRO_SCHEMA,
+    CatalogueScalarMacroStore,
+)
 from repository.catalogue.table_macros import (
     TABLE_MACRO_SCHEMA,
     CatalogueTableMacroStore,
@@ -50,6 +59,7 @@ def seed_catalogue_fixtures(
 ) -> None:
     """Seed every SQL fixture without overwriting a user-owned name collision."""
 
+    seed_system_catalogue_fixtures(session, catalogue, fixtures_root)
     macro_store = CatalogueTableMacroStore(catalogue)
     view_store = CatalogueViewStore(catalogue)
     for path in _sql_files(fixtures_root / "queries"):
@@ -60,7 +70,7 @@ def seed_catalogue_fixtures(
             view_store,
             _parse_relation_fixture(fixtures_root, path, kind="VIEW", schema=VIEW_SCHEMA),
         )
-    macro_paths = _sql_files(fixtures_root / "macros")
+    macro_paths = _sql_files(fixtures_root / "table_macros")
     for path in macro_paths:
         _seed_macro(
             session,
@@ -76,6 +86,121 @@ def seed_catalogue_fixtures(
             path.relative_to(fixtures_root).as_posix() for path in macro_paths
         },
     )
+    catalogue.validate_schema()
+
+
+def seed_system_catalogue_fixtures(
+    session: Session, catalogue: Catalogue, fixtures_root: Path
+) -> None:
+    """Install fixed system SQL fixtures before dependent catalogue fixtures."""
+
+    directory = fixtures_root / "scalar_macros"
+    store = CatalogueScalarMacroStore(catalogue)
+    paths = _sql_files(directory)
+    for path in paths:
+        source = path.read_text(encoding="utf-8").strip()
+        try:
+            statements = [
+                statement for statement in parse(source, dialect="duckdb") if statement
+            ]
+        except ParseError as exc:
+            raise CatalogueFixtureError(
+                f"Invalid scalar macro fixture {path}: {exc}"
+            ) from exc
+        if len(statements) != 1 or not isinstance(statements[0], exp.Create):
+            raise CatalogueFixtureError(
+                f"{path} must contain exactly one CREATE OR REPLACE MACRO statement."
+            )
+        statement = statements[0]
+        if (
+            str(statement.args.get("kind", "")).upper() != "MACRO"
+            or not statement.args.get("replace")
+            or next(statement.find_all(exp.ReturnsProperty), None) is not None
+        ):
+            raise CatalogueFixtureError(
+                f"{path} must contain exactly one CREATE OR REPLACE scalar MACRO."
+            )
+        target = statement.this
+        if not isinstance(target, exp.UserDefinedFunction):
+            raise CatalogueFixtureError(f"{path} has an invalid scalar macro signature.")
+        name = target.this
+        if not isinstance(name, exp.Table) or name.db:
+            raise CatalogueFixtureError(
+                f"{path} must declare an unqualified scalar macro name."
+            )
+        if name.name != path.stem:
+            raise CatalogueFixtureError(
+                f"{path} must declare {path.stem}, not {name.name}."
+            )
+        fixture_path = path.relative_to(fixtures_root).as_posix()
+        if not all(isinstance(parameter, exp.Identifier) for parameter in target.expressions):
+            raise CatalogueFixtureError(
+                f"{path} scalar macro parameters must be simple identifiers."
+            )
+        parameters = [parameter.name for parameter in target.expressions]
+        expression = statement.expression
+        if expression is None:
+            raise CatalogueFixtureError(f"{path} has no scalar macro expression.")
+        sql = expression.unnest().sql(dialect="duckdb")
+        existing = session.scalar(
+            select(CatalogueScalarMacroDefinition).where(
+                CatalogueScalarMacroDefinition.fixture_path == fixture_path
+            )
+        )
+        if existing is None:
+            collision = session.scalar(
+                select(CatalogueScalarMacroDefinition).where(
+                    CatalogueScalarMacroDefinition.schema_name == SCALAR_MACRO_SCHEMA,
+                    CatalogueScalarMacroDefinition.macro_name == path.stem,
+                )
+            )
+            if collision is not None:
+                raise CatalogueFixtureError(
+                    f"{fixture_path} conflicts with user-owned scalar macro "
+                    f"{SCALAR_MACRO_SCHEMA}.{path.stem}."
+                )
+            created = create_scalar_macro(
+                session,
+                store,
+                slug=path.stem,
+                parameters=parameters,
+                sql=sql,
+                description=None,
+            )
+            existing = session.get(CatalogueScalarMacroDefinition, created.id)
+            if existing is None:
+                raise RuntimeError("Seeded scalar macro was not found after creation.")
+            existing.fixture_path = fixture_path
+            session.flush()
+        elif (
+            existing.parameters != parameters
+            or _canonical_expression(existing.sql) != _canonical_expression(sql)
+            or store.get(existing.macro_name) is None
+        ):
+            macro = store.replace(
+                name=existing.macro_name, parameters=parameters, sql=sql
+            )
+            existing.parameters = list(macro.parameters)
+            existing.sql = sql
+            existing.definition_revision_id = uuid4()
+            session.flush()
+    active_fixture_paths = {
+        path.relative_to(fixtures_root).as_posix() for path in paths
+    }
+    retired = list(
+        session.scalars(
+            select(CatalogueScalarMacroDefinition).where(
+                CatalogueScalarMacroDefinition.fixture_path.is_not(None),
+                CatalogueScalarMacroDefinition.fixture_path.not_in(
+                    active_fixture_paths
+                ),
+            )
+        )
+    )
+    for definition in retired:
+        store.drop(name=definition.macro_name)
+        session.delete(definition)
+    session.flush()
 
 
 def _drop_retired_macros(
@@ -345,3 +470,7 @@ def _sql_files(directory: Path) -> list[Path]:
 
 def _canonical(sql: str) -> str:
     return classify_select(sql).sql(dialect="duckdb")
+
+
+def _canonical_expression(sql: str) -> str:
+    return parse(f"SELECT ({sql})", dialect="duckdb")[0].sql(dialect="duckdb")

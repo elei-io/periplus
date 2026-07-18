@@ -91,6 +91,8 @@ def update(
     definition = get_definition(session, definition_id)
     if definition is None:
         raise HTTPException(status_code=404, detail="Table macro not found.")
+    if definition.fixture_path is not None:
+        raise HTTPException(status_code=409, detail="System table macros are read-only.")
     try:
         with _catalogue_mutation(f"catalogue-table-macro-update:{definition_id}") as catalogue:
             return update_definition(
@@ -116,6 +118,10 @@ def drop(
     definition = get_definition(session, definition_id)
     if definition is None:
         raise HTTPException(status_code=404, detail="Table macro not found.")
+    if definition.fixture_path is not None:
+        raise HTTPException(
+            status_code=409, detail="System table macros cannot be deleted."
+        )
     try:
         with _catalogue_mutation(f"catalogue-table-macro-drop:{definition_id}") as catalogue:
             drop_definition(

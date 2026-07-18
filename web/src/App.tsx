@@ -34,9 +34,9 @@ const CatalogueQueriesPage = lazy(() =>
     default: module.CatalogueQueriesPage,
   }))
 )
-const CatalogueTableMacrosPage = lazy(() =>
-  import("@/pages/catalogue/table-macros-page").then((module) => ({
-    default: module.CatalogueTableMacrosPage,
+const CatalogueMacrosPage = lazy(() =>
+  import("@/pages/catalogue/macros-page").then((module) => ({
+    default: module.CatalogueMacrosPage,
   }))
 )
 const CrawlGraphsPage = lazy(() =>
@@ -170,7 +170,7 @@ export function App() {
     if (activeItem.href === "/catalogue/macros") {
       const macroId = pathname.match(/^\/catalogue\/macros\/([^/]+)$/)?.[1]
       return (
-        <CatalogueTableMacrosPage
+        <CatalogueMacrosPage
           macroId={macroId ? decodeURIComponent(macroId) : undefined}
         />
       )

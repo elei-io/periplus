@@ -7,8 +7,10 @@ from unittest.mock import MagicMock
 
 from ducklake_client import DiskStorage, DuckDBCatalog
 
+from tests.catalogue_helpers import seed_system_macros
 from repository.catalogue import Catalogue, CatalogueConfig
 from repository.catalogue.benchmark import run_hot_path_benchmark
+
 
 
 class CatalogueBenchmarkTests(unittest.TestCase):
@@ -38,6 +40,7 @@ class CatalogueBenchmarkTests(unittest.TestCase):
             )
             with Catalogue(config) as catalogue:
                 catalogue.bootstrap()
+                seed_system_macros(catalogue)
                 catalogue.connection.execute(
                     """
                     INSERT INTO atlas.main.crawls (

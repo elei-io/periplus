@@ -101,6 +101,7 @@ export type CatalogueViewList = { items: CatalogueViewRecord[] }
 
 export type CatalogueTableMacroRecord = {
   id: string
+  kind: "table"
   schema_name: string
   macro_name: string
   qualified_name: string
@@ -117,6 +118,28 @@ export type CatalogueTableMacroRecord = {
 }
 
 export type CatalogueTableMacroList = { items: CatalogueTableMacroRecord[] }
+
+export type CatalogueScalarMacroRecord = {
+  id: string
+  kind: "scalar"
+  schema_name: string
+  macro_name: string
+  qualified_name: string
+  slug: string
+  description: string | null
+  parameters: string[]
+  sql: string
+  definition_revision_id: string
+  fixture_path: string | null
+  available: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type CatalogueScalarMacroList = { items: CatalogueScalarMacroRecord[] }
+export type CatalogueMacroRecord =
+  | CatalogueScalarMacroRecord
+  | CatalogueTableMacroRecord
 
 export type SavedQueryRevision = {
   id: string

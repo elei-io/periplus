@@ -18,6 +18,7 @@ from api.routers.catalogue import (
     sql_query,
 )
 from api.catalogue_pool import CatalogueReadPool, CatalogueReadPoolExhausted
+from tests.catalogue_helpers import seed_system_macros
 from repository.catalogue import Catalogue, CatalogueConfig
 from repository.catalogue.query import (
     CatalogueQueryError,
@@ -32,6 +33,7 @@ from repository.catalogue.query import (
 from repository.catalogue.metadata import read_catalogue_metadata
 from repository.catalogue.schema import CATALOGUE_SCHEMA_VERSION
 from repository.catalogue.status import read_catalogue_status
+
 
 
 class CatalogueQueryClassificationTests(unittest.TestCase):
@@ -296,6 +298,7 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
             )
             with Catalogue(config) as catalogue:
                 catalogue.bootstrap()
+                seed_system_macros(catalogue)
                 reader = execute_arrow_query(
                     catalogue,
                     "SELECT get_attribute('href'), readable_text() "

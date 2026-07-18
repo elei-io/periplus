@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
+from tempfile import TemporaryDirectory
 from types import TracebackType
 from typing import TYPE_CHECKING
-from tempfile import TemporaryDirectory
-from urllib.parse import urljoin
 
 from ducklake_client import ColumnDef, DuckLake, DuckLakeError, PostgresCatalog, SQLType
 
@@ -42,7 +41,6 @@ class Catalogue:
     ) -> None:
         self.config = config
         self._temporary_directory = temporary_directory
-        self._scalar_functions_registered = False
         self.lake = DuckLake(
             catalog=config.catalog,
             storage=config.storage,
@@ -50,19 +48,11 @@ class Catalogue:
             duckdb=config.duckdb,
             attach=config.attach,
         )
+        self._use_catalogue_schema_if_available()
 
     @property
     def connection(self) -> duckdb.DuckDBPyConnection:
-        connection = self.lake.connection
-        if not self._scalar_functions_registered:
-            connection.create_function(
-                "resolve_url",
-                _resolve_url,
-                ["VARCHAR", "VARCHAR"],
-                "VARCHAR",
-            )
-            self._scalar_functions_registered = True
-        return connection
+        return self.lake.connection
 
     @property
     def metadata_schema(self) -> str:
@@ -109,14 +99,30 @@ class Catalogue:
                 schema_name=INTERNAL_SCHEMA,
                 **MATERIALIZATION_COVERAGE_COLUMNS,
             )
+        self._use_catalogue_schema_if_available()
         self._migrate_schema()
         self._configure_layout()
         self._migrate_layout()
         self._configure_inlining()
-        from repository.catalogue.macros import install_catalogue_macros
+        self._validate_physical_schema()
 
-        install_catalogue_macros(self)
-        self.validate_schema()
+    def _use_catalogue_schema_if_available(self) -> None:
+        """Make unqualified names resolve within the attached Atlas catalogue."""
+
+        exists = self.connection.execute(
+            """
+            SELECT count(*)
+            FROM information_schema.schemata
+            WHERE catalog_name = ? AND schema_name = ?
+            """,
+            [self.config.alias, self.config.schema],
+        ).fetchone()
+        if exists is not None and int(exists[0]) > 0:
+            namespace = ".".join(
+                _quote_identifier(value)
+                for value in (self.config.alias, self.config.schema)
+            )
+            self.connection.execute(f"USE {namespace}")
 
     def _configure_layout(self) -> None:
         """Apply the one physical partition contract for new crawl data."""
@@ -267,10 +273,13 @@ class Catalogue:
     def validate_schema(self) -> None:
         """Validate columns without scanning catalogue data."""
 
+        self._validate_physical_schema()
+        self._validate_macros()
+
+    def _validate_physical_schema(self) -> None:
         self._validate_schema_tables(self.config.schema, expected_columns())
         self._validate_schema_tables(INTERNAL_SCHEMA, expected_internal_columns())
         self._validate_layout()
-        self._validate_macros()
 
     def _validate_schema_tables(
         self,
@@ -357,15 +366,15 @@ class Catalogue:
             SELECT function_name
             FROM duckdb_functions()
             WHERE database_name = ?
-              AND schema_name = ?
+              AND schema_name = 'macros'
               AND function_type = 'macro'
               AND function_name IN (
                   'get_attribute', 'has_attribute', 'has_text', 'text_content',
-                  'inner_html', 'readable_text'
+                  'inner_html', 'readable_text', 'resolve_url'
               )
             ORDER BY function_name
             """,
-            [self.config.alias, self.config.schema],
+            [self.config.alias],
         ).fetchall()
         actual = [str(row[0]) for row in rows]
         expected = [
@@ -374,11 +383,12 @@ class Catalogue:
             "has_text",
             "inner_html",
             "readable_text",
+            "resolve_url",
             "text_content",
         ]
         if actual != expected:
             raise CatalogueSchemaError(
-                f"catalogue DOM macros do not match the managed contract: "
+                f"catalogue scalar macros do not match the managed contract: "
                 f"expected {expected!r}, got {actual!r}"
             )
 
@@ -442,7 +452,3 @@ def _type_sql(value: str | SQLType) -> str:
 
 def _quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
-
-
-def _resolve_url(source: str, href: str) -> str:
-    return urljoin(source, href)

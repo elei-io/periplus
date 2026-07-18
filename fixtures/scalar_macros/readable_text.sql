@@ -1,0 +1,73 @@
+CREATE OR REPLACE MACRO readable_text(p_document_id, p_element_index) AS (
+    WITH parameters AS (
+        SELECT
+            p_document_id AS requested_document_id,
+            p_element_index AS requested_element_index
+    ),
+    root AS (
+        SELECT
+            parameters.requested_document_id,
+            source.element_index,
+            source.subtree_end_index
+        FROM elements AS source, parameters
+        WHERE source.document_id = parameters.requested_document_id
+          AND source.element_index = parameters.requested_element_index
+    ),
+    fragments AS (
+        SELECT
+            child.element_index AS event_index,
+            0 AS event_phase,
+            child.depth,
+            0 AS depth_phase,
+            child.text_direct AS fragment
+        FROM elements AS child, root
+        WHERE child.document_id = root.requested_document_id
+          AND child.element_index BETWEEN root.element_index AND root.subtree_end_index
+
+        UNION ALL
+
+        SELECT
+            child.subtree_end_index AS event_index,
+            1 AS event_phase,
+            child.depth,
+            0 AS depth_phase,
+            CASE
+                WHEN child.tag IN (
+                    'address', 'article', 'aside', 'blockquote', 'br', 'dd',
+                    'div', 'dl', 'dt', 'fieldset', 'figcaption', 'figure',
+                    'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                    'header', 'hr', 'li', 'main', 'nav', 'ol', 'p', 'pre',
+                    'section', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead',
+                    'tr', 'ul'
+                ) THEN ' '
+                ELSE ''
+            END AS fragment
+        FROM elements AS child, root
+        WHERE child.document_id = root.requested_document_id
+          AND child.element_index > root.element_index
+          AND child.element_index <= root.subtree_end_index
+
+        UNION ALL
+
+        SELECT
+            child.subtree_end_index AS event_index,
+            1 AS event_phase,
+            child.depth,
+            1 AS depth_phase,
+            child.text_tail AS fragment
+        FROM elements AS child, root
+        WHERE child.document_id = root.requested_document_id
+          AND child.element_index > root.element_index
+          AND child.element_index <= root.subtree_end_index
+    )
+    SELECT trim(regexp_replace(
+        coalesce(string_agg(
+            fragment,
+            '' ORDER BY event_index, event_phase, depth DESC, depth_phase
+        ), ''),
+        '\s+',
+        ' ',
+        'g'
+    ))
+    FROM fragments
+);

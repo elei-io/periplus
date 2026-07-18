@@ -233,6 +233,22 @@ function formatCell(value: unknown) {
   return String(value)
 }
 
+async function copyCellValue(value: unknown) {
+  try {
+    await navigator.clipboard.writeText(formatCell(value))
+    toast.success("Cell copied.", {
+      id: "workbench-cell-copy",
+      duration: 1_200,
+    })
+  } catch (error) {
+    toast.error(extractApiError(error))
+  }
+}
+
+function isInteractiveCellTarget(target: EventTarget | null) {
+  return target instanceof Element && Boolean(target.closest("a, button"))
+}
+
 function webUrl(value: unknown) {
   if (typeof value !== "string") return null
   try {
@@ -639,7 +655,27 @@ function ExpandedResult({
                         {result.columnTypes[columnIndex] ?? "unknown"}
                       </span>
                     </div>
-                    <div className="px-3 py-1.5 break-words whitespace-pre-wrap text-foreground/85">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Copy ${column} cell value`}
+                      title="Click to copy cell value"
+                      className="px-3 py-1.5 break-words whitespace-pre-wrap text-foreground/85 hover:bg-muted/20 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+                      onClick={(event) => {
+                        if (isInteractiveCellTarget(event.target)) return
+                        void copyCellValue(row[columnIndex])
+                      }}
+                      onKeyDown={(event) => {
+                        if (
+                          event.target !== event.currentTarget ||
+                          (event.key !== "Enter" && event.key !== " ")
+                        ) {
+                          return
+                        }
+                        event.preventDefault()
+                        void copyCellValue(row[columnIndex])
+                      }}
+                    >
                       <ResultCellValue
                         value={row[columnIndex]}
                         column={column}
@@ -826,8 +862,25 @@ function ResultTable({
                     return (
                       <div
                         key={columnIndex}
-                        title={formatted}
-                        className="truncate border-r border-b px-3 py-1.5 text-foreground/85 first:border-l"
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Copy ${result.columns[columnIndex]} cell value`}
+                        title={`${formatted}\nClick to copy cell value`}
+                        className="truncate border-r border-b px-3 py-1.5 text-foreground/85 first:border-l hover:bg-muted/25 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+                        onClick={(event) => {
+                          if (isInteractiveCellTarget(event.target)) return
+                          void copyCellValue(value)
+                        }}
+                        onKeyDown={(event) => {
+                          if (
+                            event.target !== event.currentTarget ||
+                            (event.key !== "Enter" && event.key !== " ")
+                          ) {
+                            return
+                          }
+                          event.preventDefault()
+                          void copyCellValue(value)
+                        }}
                       >
                         <ResultCellValue
                           value={value}

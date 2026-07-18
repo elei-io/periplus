@@ -8,7 +8,7 @@ vendor, proxy, profile, or transport; the CDP service owns those decisions and t
 
 | System | Owns |
 |---|---|
-| Postgres | Editable graphs, domain politeness, content policies, schedules, matches, schemas, and materialization definitions |
+| Postgres | Editable graphs, domain politeness, content policies, schedules, matches, schemas, macro definitions, and materialization definitions |
 | NATS JetStream/KV | Graph runs, crawl work, progress, leases, workers, admission, and expiring resource grants |
 | CDP service | Acquisition transport, provider selection, browser farm, and acquisition capacity |
 | Object repository | Immutable content-addressed raw HTML and bounded navigation packages |

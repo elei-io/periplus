@@ -10,6 +10,7 @@ from ducklake_client import DiskStorage, DuckDBCatalog
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from tests.catalogue_helpers import seed_system_macros
 from control.catalogue_queries.models import CatalogueQuery, CatalogueQueryRevision
 from control.catalogue_table_macros.models import CatalogueTableMacroDefinition
 from control.catalogue_table_macros.service import (
@@ -25,6 +26,7 @@ from repository.catalogue.table_macros import (
     CatalogueTableMacroStore,
     DuckLakeTableMacro,
 )
+
 
 
 class CatalogueTableMacroStoreTests(unittest.TestCase):
@@ -78,6 +80,7 @@ class CatalogueTableMacroStoreTests(unittest.TestCase):
             )
             with Catalogue(config) as catalogue:
                 catalogue.bootstrap()
+                seed_system_macros(catalogue)
                 store = CatalogueTableMacroStore(catalogue)
                 store.create(
                     name="prices",

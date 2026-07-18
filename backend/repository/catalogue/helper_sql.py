@@ -9,6 +9,14 @@ from repository.catalogue.query import CatalogueQueryError, classify_select
 
 _ATTRIBUTE_HELPERS = frozenset({"get_attribute", "has_attribute"})
 _ELEMENT_HELPERS = frozenset({"inner_html", "readable_text", "text_content"})
+_SYSTEM_SCALAR_MACROS = frozenset(
+    {
+        *_ATTRIBUTE_HELPERS,
+        *_ELEMENT_HELPERS,
+        "has_text",
+        "resolve_url",
+    }
+)
 
 
 class HelperSqlRewriteError(ValueError):
@@ -72,6 +80,18 @@ def rewrite_dom_helpers(sql: str) -> str:
             alias = _element_alias(arguments[0], tables)
             if alias is not None:
                 function.replace(_element_function(name, alias))
+
+    for function in list(statement.find_all(exp.Anonymous)):
+        if (
+            function.name.lower() in _SYSTEM_SCALAR_MACROS
+            and not isinstance(function.parent, exp.Dot)
+        ):
+            function.replace(
+                exp.Dot(
+                    this=exp.to_identifier("macros"),
+                    expression=function.copy(),
+                )
+            )
 
     return statement.sql(dialect="duckdb")
 

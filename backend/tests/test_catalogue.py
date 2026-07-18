@@ -8,6 +8,7 @@ import unittest
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urljoin
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -20,6 +21,8 @@ from ducklake_client import (
     S3Storage,
 )
 
+from tests.catalogue_helpers import seed_system_macros
+from dom import encode_html
 from repository.catalogue import Catalogue, CatalogueConfig, CatalogueConfigError, catalogue_config_from_env
 from repository.catalogue import CrawlRecord, CrawlStepRecord
 from repository.catalogue.service import CatalogueService
@@ -36,8 +39,6 @@ from repository import (
     RawHtmlRepository,
     RepositoryIngestor,
 )
-from dom import encode_html
-
 
 class CatalogueConfigTests(unittest.TestCase):
     def test_default_configuration_uses_local_ducklake(self) -> None:
@@ -423,6 +424,13 @@ class CatalogueBootstrapTests(unittest.TestCase):
         self.assertEqual(compacted[0].files_created, 1)
 
     def test_resolve_url_uses_standard_reference_resolution(self) -> None:
+        base = "http://a/b/c/d;p?q"
+        references = (
+            "g:h", "g", "./g", "g/", "/g", "//g", "?y", "g?y", "#s",
+            "g#s", "g?y#s", ";x", "g;x", "g;x?y#s", "", ".", "./",
+            "..", "../", "../g", "../..", "../../", "../../g", "../../../g",
+            "/./g", "/../g", "g/./h", "g/../h", "http:g", "x??y#z#q",
+        )
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = CatalogueConfig(
@@ -430,27 +438,20 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 storage=DiskStorage(root / "lake"),
             )
             with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                seed_system_macros(catalogue)
+                placeholders = ", ".join("(?, ?)" for _ in references)
                 result = catalogue.connection.execute(
-                    """
-                    SELECT resolve_url(source, href)
-                    FROM (VALUES
-                        ('https://books.toscrape.com/catalogue/item/index.html',
-                         '../category/books_1/index.html'),
-                        ('https://example.com/a/b', '/root'),
-                        ('https://example.com/a/b', '//cdn.example.com/image.jpg'),
-                        ('https://example.com/a/b?old=1', '?new=2')
-                    ) AS examples(source, href)
-                    """
+                    f"""
+                    SELECT macros.resolve_url(source, href)
+                    FROM (VALUES {placeholders}) AS examples(source, href)
+                    """,
+                    [value for reference in references for value in (base, reference)],
                 ).fetchall()
 
         self.assertEqual(
-            result,
-            [
-                ("https://books.toscrape.com/catalogue/category/books_1/index.html",),
-                ("https://example.com/root",),
-                ("https://cdn.example.com/image.jpg",),
-                ("https://example.com/a/b?new=2",),
-            ],
+            [row[0] for row in result],
+            [urljoin(base, reference) for reference in references],
         )
     def test_bootstrap_migrates_v1_crawl_document_id_to_nullable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -612,6 +613,7 @@ class CatalogueBootstrapTests(unittest.TestCase):
             div = next(row for row in rows if row.tag == "div")
             with Catalogue(config) as catalogue:
                 catalogue.bootstrap()
+                seed_system_macros(catalogue)
                 catalogue.lake.table.append(
                     "elements",
                     [
@@ -625,20 +627,20 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 result = catalogue.connection.execute(
                     """
                     SELECT
-                        atlas.main.text_content('sha256:test', $element_index),
-                        atlas.main.readable_text('sha256:test', $element_index),
-                        atlas.main.inner_html('sha256:test', $element_index),
-                        atlas.main.get_attribute(MAP {'disabled': '', 'href': '/docs'}, 'HREF'),
-                        atlas.main.has_attribute(MAP {'disabled': ''}, 'disabled'),
-                        atlas.main.has_text(' \n\t'),
-                        atlas.main.has_text(' useful '),
-                        atlas.main.has_text(NULL)
+                        atlas.macros.text_content('sha256:test', $element_index),
+                        atlas.macros.readable_text('sha256:test', $element_index),
+                        atlas.macros.inner_html('sha256:test', $element_index),
+                        atlas.macros.get_attribute(MAP {'disabled': '', 'href': '/docs'}, 'HREF'),
+                        atlas.macros.has_attribute(MAP {'disabled': ''}, 'disabled'),
+                        atlas.macros.has_text(' \n\t'),
+                        atlas.macros.has_text(' useful '),
+                        atlas.macros.has_text(NULL)
                     """,
                     {"element_index": div.element_index},
                 ).fetchone()
                 row_results = catalogue.connection.execute(
                     """
-                    SELECT tag, atlas.main.text_content(document_id, element_index)
+                    SELECT tag, atlas.macros.text_content(document_id, element_index)
                     FROM atlas.main.elements
                     WHERE document_id = 'sha256:test'
                       AND tag IN ('b', 'script')

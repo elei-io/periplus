@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -11,9 +12,13 @@ from ducklake_client import DiskStorage, DuckDBCatalog
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from control.catalogue_fixtures import seed_catalogue_fixtures
+from control.catalogue_fixtures import (
+    seed_catalogue_fixtures,
+    seed_system_catalogue_fixtures,
+)
 from control.catalogue_materializations.models import CatalogueMaterialization
 from control.catalogue_queries.models import CatalogueQuery, CatalogueQueryRevision
+from control.catalogue_scalar_macros.models import CatalogueScalarMacroDefinition
 from control.catalogue_table_macros.models import CatalogueTableMacroDefinition
 from control.catalogue_table_macros.service import create_definition
 from control.catalogue_views.models import CatalogueViewReference
@@ -29,6 +34,57 @@ from repository.catalogue.views import CatalogueViewStore
 
 
 class CatalogueFixtureTests(unittest.TestCase):
+    def test_system_macros_are_seeded_explicitly_from_fixture_files(self) -> None:
+        fixtures = Path(__file__).parents[2] / "fixtures"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            engine = create_engine("sqlite://")
+            Base.metadata.create_all(
+                engine, tables=[CatalogueScalarMacroDefinition.__table__]
+            )
+            session = Session(engine)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                before = catalogue.connection.execute(
+                    """
+                    SELECT function_name
+                    FROM duckdb_functions()
+                    WHERE database_name = 'atlas' AND schema_name = 'macros'
+                      AND function_type = 'macro'
+                    ORDER BY function_name
+                    """
+                ).fetchall()
+                seed_system_catalogue_fixtures(session, catalogue, fixtures)
+                after = catalogue.connection.execute(
+                    """
+                    SELECT function_name
+                    FROM duckdb_functions()
+                    WHERE database_name = 'atlas' AND schema_name = 'macros'
+                      AND function_type = 'macro'
+                    ORDER BY function_name
+                    """
+                ).fetchall()
+            session.close()
+            engine.dispose()
+
+        self.assertEqual(before, [])
+        self.assertEqual(
+            [row[0] for row in after],
+            [
+                "get_attribute",
+                "has_attribute",
+                "has_text",
+                "inner_html",
+                "readable_text",
+                "resolve_url",
+                "text_content",
+            ],
+        )
+
     def test_bundled_fixtures_compile_against_the_catalogue(self) -> None:
         fixtures = Path(__file__).parents[2] / "fixtures"
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -42,6 +98,7 @@ class CatalogueFixtureTests(unittest.TestCase):
                     CatalogueViewReference.__table__,
                     CatalogueMaterialization.__table__,
                     CatalogueTableMacroDefinition.__table__,
+                    CatalogueScalarMacroDefinition.__table__,
                 ],
             )
             session = Session(engine, expire_on_commit=False)
@@ -59,7 +116,9 @@ class CatalogueFixtureTests(unittest.TestCase):
                             for macro in CatalogueTableMacroStore(catalogue).list()
                         ],
                         [
+                            "extract_json_ld",
                             "extract_records",
+                            "suggest_json_ld_schemas",
                             "suggest_records",
                         ],
                     )
@@ -136,6 +195,7 @@ class CatalogueFixtureTests(unittest.TestCase):
                     CatalogueViewReference.__table__,
                     CatalogueMaterialization.__table__,
                     CatalogueTableMacroDefinition.__table__,
+                    CatalogueScalarMacroDefinition.__table__,
                 ],
             )
             session = Session(engine, expire_on_commit=False)
@@ -291,6 +351,7 @@ class CatalogueFixtureTests(unittest.TestCase):
                     CatalogueViewReference.__table__,
                     CatalogueMaterialization.__table__,
                     CatalogueTableMacroDefinition.__table__,
+                    CatalogueScalarMacroDefinition.__table__,
                 ],
             )
             session = Session(engine, expire_on_commit=False)
@@ -426,6 +487,79 @@ class CatalogueFixtureTests(unittest.TestCase):
                             ),
                         ],
                     )
+
+                    suggestions = catalogue.connection.execute(
+                        """
+                        SELECT entity_type, matched_node_count
+                        FROM atlas.macros.suggest_json_ld_schemas(?)
+                        """,
+                        [url],
+                    ).fetchall()
+                    self.assertEqual(
+                        suggestions,
+                        [
+                            ("Product", 2),
+                            ("Thing", 2),
+                            ("Offer", 1),
+                            ("Organization", 1),
+                            ("WebSite", 1),
+                        ],
+                    )
+
+                    suggestion = catalogue.connection.execute(
+                        """
+                        SELECT
+                            entity_type,
+                            matched_crawl_count,
+                            matched_document_count,
+                            matched_node_count,
+                            first_captured_at,
+                            last_captured_at,
+                            inferred_schema,
+                            example_node,
+                            extract_sql
+                        FROM atlas.macros.suggest_json_ld_schemas(?)
+                        WHERE entity_type = 'Product'
+                        """,
+                        [url],
+                    ).fetchone()
+                    self.assertIsNotNone(suggestion)
+                    assert suggestion is not None
+                    self.assertEqual(suggestion[:4], ("Product", 1, 1, 2))
+                    self.assertEqual(
+                        suggestion[4:6],
+                        (
+                            datetime(2026, 7, 18, tzinfo=UTC),
+                            datetime(2026, 7, 18, tzinfo=UTC),
+                        ),
+                    )
+                    self.assertIn('"name":"VARCHAR"', suggestion[6])
+                    self.assertIn('"offers":', suggestion[6])
+                    self.assertIn('"Widget"', str(suggestion[7]))
+                    self.assertIn(
+                        "FROM macros.extract_json_ld(",
+                        suggestion[8],
+                    )
+
+                    extracted_cursor = catalogue.connection.execute(suggestion[8])
+                    extracted_columns = [
+                        str(column[0]) for column in extracted_cursor.description
+                    ]
+                    extracted = extracted_cursor.fetchall()
+                    self.assertEqual(len(extracted), 2)
+                    self.assertNotIn("entity", extracted_columns)
+                    self.assertIn("crawl_id", extracted_columns)
+                    self.assertIn("page_url", extracted_columns)
+                    self.assertIn("node_json", extracted_columns)
+                    name_index = extracted_columns.index("name")
+                    offers_index = extracted_columns.index("offers")
+                    by_name = {row[name_index]: row for row in extracted}
+                    self.assertEqual(set(by_name), {"Widget", "Array widget"})
+                    self.assertEqual(
+                        by_name["Widget"][offers_index]["price"],
+                        "12.50",
+                    )
+                    self.assertIsNone(by_name["Array widget"][offers_index])
                     ingestor.close()
             finally:
                 session.close()
@@ -435,9 +569,13 @@ class CatalogueFixtureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             fixtures = root / "fixtures"
-            for kind in ("queries", "views", "macros"):
+            for kind in ("queries", "views", "table_macros"):
                 (fixtures / kind).mkdir(parents=True)
-            fixture = fixtures / "macros" / "temporary.sql"
+            shutil.copytree(
+                Path(__file__).parents[2] / "fixtures" / "scalar_macros",
+                fixtures / "scalar_macros",
+            )
+            fixture = fixtures / "table_macros" / "temporary.sql"
             fixture.write_text(
                 "CREATE MACRO macros.temporary() AS TABLE (SELECT 1 AS value);",
                 encoding="utf-8",
@@ -452,6 +590,7 @@ class CatalogueFixtureTests(unittest.TestCase):
                     CatalogueViewReference.__table__,
                     CatalogueMaterialization.__table__,
                     CatalogueTableMacroDefinition.__table__,
+                    CatalogueScalarMacroDefinition.__table__,
                 ],
             )
             session = Session(engine, expire_on_commit=False)
@@ -462,6 +601,9 @@ class CatalogueFixtureTests(unittest.TestCase):
             try:
                 with Catalogue(config) as catalogue:
                     catalogue.bootstrap()
+                    seed_system_catalogue_fixtures(
+                        session, catalogue, Path(__file__).parents[2] / "fixtures"
+                    )
                     store = CatalogueTableMacroStore(catalogue)
                     seed_catalogue_fixtures(session, catalogue, fixtures)
                     create_definition(
@@ -533,6 +675,7 @@ class CatalogueFixtureTests(unittest.TestCase):
                     CatalogueViewReference.__table__,
                     CatalogueMaterialization.__table__,
                     CatalogueTableMacroDefinition.__table__,
+                    CatalogueScalarMacroDefinition.__table__,
                 ],
             )
             session = Session(engine, expire_on_commit=False)
@@ -710,6 +853,7 @@ class CatalogueFixtureTests(unittest.TestCase):
                     CatalogueViewReference.__table__,
                     CatalogueMaterialization.__table__,
                     CatalogueTableMacroDefinition.__table__,
+                    CatalogueScalarMacroDefinition.__table__,
                 ],
             )
             session = Session(engine, expire_on_commit=False)
@@ -828,8 +972,12 @@ class CatalogueFixtureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             fixtures = root / "fixtures"
-            for kind in ("queries", "views", "macros"):
+            for kind in ("queries", "views", "table_macros"):
                 (fixtures / kind).mkdir(parents=True)
+            shutil.copytree(
+                Path(__file__).parents[2] / "fixtures" / "scalar_macros",
+                fixtures / "scalar_macros",
+            )
             (fixtures / "queries" / "recent_documents.sql").write_text(
                 "SELECT document_id FROM documents LIMIT 10;", encoding="utf-8"
             )
@@ -838,7 +986,7 @@ class CatalogueFixtureTests(unittest.TestCase):
                 "SELECT document_id FROM documents;",
                 encoding="utf-8",
             )
-            (fixtures / "macros" / "numbers_from.sql").write_text(
+            (fixtures / "table_macros" / "numbers_from.sql").write_text(
                 "CREATE MACRO macros.numbers_from(p_minimum) AS TABLE ("
                 "SELECT value FROM range(5) AS values(value) "
                 "WHERE value >= p_minimum);",
@@ -854,6 +1002,7 @@ class CatalogueFixtureTests(unittest.TestCase):
                     CatalogueViewReference.__table__,
                     CatalogueMaterialization.__table__,
                     CatalogueTableMacroDefinition.__table__,
+                    CatalogueScalarMacroDefinition.__table__,
                 ],
             )
             session = Session(engine, expire_on_commit=False)
@@ -864,13 +1013,16 @@ class CatalogueFixtureTests(unittest.TestCase):
             try:
                 with Catalogue(config) as catalogue:
                     catalogue.bootstrap()
+                    seed_system_catalogue_fixtures(
+                        session, catalogue, Path(__file__).parents[2] / "fixtures"
+                    )
                     seed_catalogue_fixtures(session, catalogue, fixtures)
                     query = session.scalar(select(CatalogueQuery))
                     view = session.scalar(select(CatalogueViewReference))
                     macro = session.scalar(select(CatalogueTableMacroDefinition))
                     self.assertEqual(query.fixture_path, "queries/recent_documents.sql")
                     self.assertEqual(view.fixture_path, "views/document_ids.sql")
-                    self.assertEqual(macro.fixture_path, "macros/numbers_from.sql")
+                    self.assertEqual(macro.fixture_path, "table_macros/numbers_from.sql")
                     self.assertEqual(len(CatalogueViewStore(catalogue).list()), 1)
                     self.assertEqual(len(CatalogueTableMacroStore(catalogue).list()), 1)
                     self.assertEqual(

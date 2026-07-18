@@ -48,8 +48,10 @@ class DomHelperSqlRewriteTests(unittest.TestCase):
             "readable_text(e.document_id, e.element_index) FROM elements e"
         )
         rewritten = rewrite_dom_helpers(sql)
-        self.assertIn("GET_ATTRIBUTE(e.attributes, 'href')", rewritten)
-        self.assertIn("READABLE_TEXT(e.document_id, e.element_index)", rewritten)
+        self.assertIn("macros.get_attribute(e.attributes, 'href')", rewritten)
+        self.assertIn(
+            "macros.readable_text(e.document_id, e.element_index)", rewritten
+        )
 
     def test_rewritten_helpers_execute_as_normal_duckdb_macros(self) -> None:
         connection = duckdb.connect(":memory:")
@@ -62,8 +64,10 @@ class DomHelperSqlRewriteTests(unittest.TestCase):
                     attributes MAP(VARCHAR, VARCHAR)
                 );
                 INSERT INTO elements VALUES ('doc', 7, map(['href'], ['/target']));
-                CREATE MACRO get_attribute(attrs, name) AS map_extract_value(attrs, name);
-                CREATE MACRO readable_text(document_id, element_index)
+                CREATE SCHEMA macros;
+                CREATE MACRO macros.get_attribute(attrs, name)
+                    AS map_extract_value(attrs, name);
+                CREATE MACRO macros.readable_text(document_id, element_index)
                     AS document_id || ':' || element_index::VARCHAR;
                 """
             )

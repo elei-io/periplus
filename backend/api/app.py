@@ -12,6 +12,7 @@ from config.performance import (
 from api.routers import (
     catalogue,
     catalogue_queries,
+    catalogue_scalar_macros,
     catalogue_table_macros,
     catalogue_views,
     crawl_graphs,
@@ -51,6 +52,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Atlas API", lifespan=lifespan)
 app.include_router(catalogue.router)
 app.include_router(catalogue_queries.router)
+app.include_router(catalogue_scalar_macros.router)
 app.include_router(catalogue_table_macros.router)
 app.include_router(catalogue_views.router)
 app.include_router(catalogue_materializations.router)

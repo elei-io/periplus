@@ -53,6 +53,11 @@ readable_text(document_id, element_index)
 resolve_url(source, href)
 ```
 
+These managed scalar macros are reconciled from `fixtures/scalar_macros/` during Atlas setup,
+shown as read-only system definitions in the Macros UI, and deployed into the `macros` schema.
+Catalogue bootstrap itself only establishes the physical schema. User-defined scalar and table
+macros share this schema; DuckDB distinguishes their kinds even when their names are identical.
+
 `get_attribute` returns `NULL` for an absent attribute. `has_attribute` distinguishes an absent
 attribute from a present attribute whose value is the empty string, as commonly occurs with HTML
 boolean attributes.
@@ -168,6 +173,42 @@ WHERE list_contains(node_types, 'Product');
 Nested objects remain inside their containing node. Atlas does not recursively flatten every JSON
 path or claim to perform full JSON-LD context expansion. Use DuckDB's `json_tree` against
 `json_ld_scripts.json_value` when a path/value representation is useful for a specific query.
+
+Atlas seeds two table macros for typed JSON-LD extraction. Start with
+`macros.suggest_json_ld_schemas(url)`. It returns one row per discovered `@type`, combining the
+structure of every matching node of that type. Each row includes `entity_type`, matched crawl,
+document, and node counts, history bounds, the inferred DuckDB JSON schema, an example node, and a
+ready-to-run `extract_sql` query.
+
+```sql
+SELECT *
+FROM macros.suggest_json_ld_schemas(
+  'https://scrapeme.live/shop/%'
+);
+```
+
+The URL follows the same rules as the record macros: it is an exact match unless it contains `%`,
+in which case it is an `ILIKE` pattern. Untyped nodes are omitted. A node with multiple normalized
+values in `views.json_ld_nodes.node_types` contributes to each corresponding schema row.
+
+The returned query passes `inferred_schema` to
+`macros.extract_json_ld(url, type, schema)`. That macro parses each complete node into a typed
+row whose columns are the JSON-LD fields, alongside its crawl and node provenance. `SELECT *`
+therefore produces clean structured output without writing JSON paths or expanding an intermediate
+struct:
+
+```sql
+SELECT *
+FROM macros.extract_json_ld(
+  'https://scrapeme.live/shop/%',
+  'Product',
+  '{"name":"VARCHAR","sku":"VARCHAR","description":"VARCHAR"}'
+);
+```
+
+Use the complete suggested schema when data varies across pages; DuckDB fills absent fields with
+`NULL` and retains nested objects and arrays as nested typed values. The result begins with crawl
+and node provenance, continues with the inferred entity fields, and ends with raw `node_json`.
 
 ## Automatic record discovery
 

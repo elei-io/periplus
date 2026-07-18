@@ -7,7 +7,7 @@ import re
 from uuid import UUID
 
 from repository.catalogue.client import Catalogue
-from repository.catalogue.query import classify_select
+from repository.catalogue.query import classify_select, compile_catalogue_definition
 
 VIEW_SCHEMA = "views"
 _SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
@@ -90,17 +90,17 @@ class CatalogueViewStore:
 
     def create(self, *, name: str, sql: str) -> DuckLakeView:
         _validate_name(name)
-        classify_select(sql)
+        compiled = compile_catalogue_definition(sql)
         if any(view.view_name == name for view in self.list()):
             raise CatalogueViewConflictError(f"View {VIEW_SCHEMA}.{name} already exists.")
         self._use_main()
         self.catalogue.connection.execute(
-            f"CREATE VIEW {_qualified(self.catalogue, name)} AS {sql}"
+            f"CREATE VIEW {_qualified(self.catalogue, name)} AS {compiled}"
         )
         return self._require_name(name)
 
     def replace(self, *, current_uuid: UUID, sql: str) -> DuckLakeView:
-        classify_select(sql)
+        compiled = compile_catalogue_definition(sql)
         current = self.get(current_uuid)
         if current is None:
             raise CatalogueViewConflictError(
@@ -108,7 +108,8 @@ class CatalogueViewStore:
             )
         self._use_main()
         self.catalogue.connection.execute(
-            f"CREATE OR REPLACE VIEW {_qualified(self.catalogue, current.view_name)} AS {sql}"
+            f"CREATE OR REPLACE VIEW {_qualified(self.catalogue, current.view_name)} "
+            f"AS {compiled}"
         )
         return self._require_name(current.view_name)
 
