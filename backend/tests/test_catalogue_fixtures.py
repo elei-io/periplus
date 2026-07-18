@@ -85,16 +85,197 @@ class CatalogueFixtureTests(unittest.TestCase):
         <!doctype html>
         <html lang="en-GB">
           <head>
-            <base href="/catalogue/">
-            <title> Example Widget </title>
-            <meta name="Description" content="A useful widget.">
+            <base href="
+              /catalogue/
+            ">
+            <title>
+              Example   Widget
+            </title>
+            <meta name="Description" content="
+              A useful   widget.
+            ">
             <meta name="robots" content="index,follow">
-            <link rel="alternate CANONICAL" href="../widget">
+            <link rel="alternate CANONICAL" href="
+              ../widget
+            ">
             <meta property="OG:TITLE" content="Widget preview">
-            <meta property="og:description" content="Preview description">
-            <meta property="og:image" content="/images/widget.png">
+            <meta property="og:description" content="
+              Preview   description
+            ">
+            <meta property="og:image" content="
+              /images/widget.png
+            ">
           </head>
           <body><h1>Example Widget</h1></body>
+        </html>
+        """
+        blank_html = """
+        <!doctype html>
+        <html>
+          <head>
+            <title>Metadata-free page</title>
+            <meta name="description" content="
+            ">
+          </head>
+          <body></body>
+        </html>
+        """
+        document_id = f"sha256:{hashlib.sha256(html.encode()).hexdigest()}"
+        blank_document_id = (
+            f"sha256:{hashlib.sha256(blank_html.encode()).hexdigest()}"
+        )
+        fixtures = Path(__file__).parents[2] / "fixtures"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            engine = create_engine("sqlite://")
+            Base.metadata.create_all(
+                engine,
+                tables=[
+                    CatalogueQuery.__table__,
+                    CatalogueQueryRevision.__table__,
+                    CatalogueViewReference.__table__,
+                    CatalogueMaterialization.__table__,
+                    CatalogueTableMacroDefinition.__table__,
+                ],
+            )
+            session = Session(engine, expire_on_commit=False)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            try:
+                with Catalogue(config) as catalogue:
+                    catalogue.bootstrap()
+                    seed_catalogue_fixtures(session, catalogue, fixtures)
+                    ingestor = RepositoryIngestor(
+                        html_repository=RawHtmlRepository(
+                            FileObjectStore(root / "objects")
+                        ),
+                        catalogue=catalogue,
+                        staging_root=root / "staging",
+                    )
+                    for index, (captured_html, captured_document_id) in enumerate(
+                        (
+                            (html, document_id),
+                            (blank_html, blank_document_id),
+                        )
+                    ):
+                        ingestor.store_raw(captured_html)
+                        crawl = CrawlRecord(
+                            crawl_id=uuid4(),
+                            document_id=captured_document_id,
+                            graph_id=uuid4(),
+                            graph_run_id=uuid4(),
+                            graph_node_id=uuid4(),
+                            crawl_request_id=uuid4(),
+                            requested_url=f"{url}/{index}",
+                            normalized_url=f"{url}/{index}",
+                            final_url=f"{url}/{index}",
+                            captured_at=datetime(2026, 7, 18, tzinfo=UTC),
+                            status_code=200,
+                            duration_ms=1,
+                            policy_config_hash="a" * 64,
+                            policy_config_json={},
+                            outcome="success",
+                        )
+                        ingestor.commit_prepared_batch(
+                            [
+                                ingestor.prepare_from_raw(
+                                    crawl=crawl,
+                                )
+                            ]
+                        )
+
+                    row = catalogue.connection.execute(
+                        """
+                        SELECT
+                            document_id,
+                            language,
+                            title,
+                            description,
+                            canonical_href,
+                            base_href,
+                            robots,
+                            open_graph_title,
+                            open_graph_description,
+                            open_graph_image
+                        FROM atlas.views.page_metadata
+                        WHERE document_id = ?
+                        """,
+                        [document_id],
+                    ).fetchone()
+
+                    self.assertEqual(
+                        row,
+                        (
+                            document_id,
+                            "en-GB",
+                            "Example Widget",
+                            "A useful widget.",
+                            "../widget",
+                            "/catalogue/",
+                            "index,follow",
+                            "Widget preview",
+                            "Preview description",
+                            "/images/widget.png",
+                        ),
+                    )
+                    blank_description = catalogue.connection.execute(
+                        """
+                        SELECT description
+                        FROM atlas.views.page_metadata
+                        WHERE document_id = ?
+                        """,
+                        [blank_document_id],
+                    ).fetchone()
+                    self.assertEqual(blank_description, (None,))
+                    ingestor.close()
+            finally:
+                session.close()
+                engine.dispose()
+
+    def test_json_ld_fixtures_preserve_scripts_and_expand_top_level_nodes(
+        self,
+    ) -> None:
+        url = "https://example.com/products/widget"
+        html = """
+        <!doctype html>
+        <html>
+          <head>
+            <script type=" Application/LD+JSON ">
+              {
+                "@context": "https://schema.org",
+                "@id": "https://example.com/products/widget",
+                "@type": "Product",
+                "name": "Widget",
+                "offers": {"@type": "Offer", "price": "12.50"}
+              }
+            </script>
+            <script type="application/ld+json">
+              [
+                {"@type": "Product", "name": "Array widget"},
+                17,
+                {
+                  "@context": {"schema": "https://schema.org"},
+                  "@type": ["Thing", "Offer"],
+                  "name": "Bundle"
+                }
+              ]
+            </script>
+            <script type="application/ld+json">
+              {
+                "@context": "https://schema.org",
+                "@graph": [
+                  {"@id": "#site", "@type": "WebSite"},
+                  {"@id": "#org", "@type": ["Organization", "Thing"]}
+                ]
+              }
+            </script>
+            <script type="application/ld+json">{not valid JSON}</script>
+            <script type="application/ld+json">
+            </script>
+          </head>
+          <body></body>
         </html>
         """
         document_id = f"sha256:{hashlib.sha256(html.encode()).hexdigest()}"
@@ -150,39 +331,100 @@ class CatalogueFixtureTests(unittest.TestCase):
                         [ingestor.prepare_from_raw(crawl=crawl)]
                     )
 
-                    row = catalogue.connection.execute(
+                    scripts = catalogue.connection.execute(
                         """
-                        SELECT
-                            document_id,
-                            language,
-                            title,
-                            description,
-                            canonical_href,
-                            base_href,
-                            robots,
-                            open_graph_title,
-                            open_graph_description,
-                            open_graph_image
-                        FROM atlas.views.page_metadata
+                        SELECT script_ordinal, is_valid, root_type
+                        FROM atlas.views.json_ld_scripts
                         WHERE document_id = ?
+                        ORDER BY script_ordinal
                         """,
                         [document_id],
-                    ).fetchone()
-
+                    ).fetchall()
                     self.assertEqual(
-                        row,
-                        (
-                            document_id,
-                            "en-GB",
-                            "Example Widget",
-                            "A useful widget.",
-                            "../widget",
-                            "/catalogue/",
-                            "index,follow",
-                            "Widget preview",
-                            "Preview description",
-                            "/images/widget.png",
-                        ),
+                        scripts,
+                        [
+                            (1, True, "OBJECT"),
+                            (2, True, "ARRAY"),
+                            (3, True, "OBJECT"),
+                            (4, False, None),
+                            (5, False, None),
+                        ],
+                    )
+
+                    nodes = catalogue.connection.execute(
+                        """
+                        SELECT
+                            script_ordinal,
+                            node_ordinal,
+                            json_path,
+                            json_extract_string(context_json, '$') AS context,
+                            node_id,
+                            node_types,
+                            json_extract_string(node_json, '$.name') AS name,
+                            json_extract_string(
+                                node_json,
+                                '$.offers.price'
+                            ) AS price
+                        FROM atlas.views.json_ld_nodes
+                        WHERE document_id = ?
+                        ORDER BY script_ordinal, node_ordinal
+                        """,
+                        [document_id],
+                    ).fetchall()
+                    self.assertEqual(
+                        nodes,
+                        [
+                            (
+                                1,
+                                1,
+                                "$",
+                                "https://schema.org",
+                                "https://example.com/products/widget",
+                                ["Product"],
+                                "Widget",
+                                "12.50",
+                            ),
+                            (
+                                2,
+                                1,
+                                "$[0]",
+                                None,
+                                None,
+                                ["Product"],
+                                "Array widget",
+                                None,
+                            ),
+                            (
+                                2,
+                                3,
+                                "$[2]",
+                                '{"schema":"https://schema.org"}',
+                                None,
+                                ["Thing", "Offer"],
+                                "Bundle",
+                                None,
+                            ),
+                            (
+                                3,
+                                1,
+                                '$."@graph"[0]',
+                                "https://schema.org",
+                                "#site",
+                                ["WebSite"],
+                                None,
+                                None,
+                            ),
+                            (
+                                3,
+                                2,
+                                '$."@graph"[1]',
+                                "https://schema.org",
+                                "#org",
+                                ["Organization", "Thing"],
+                                None,
+                                None,
+                            ),
+                        ],
                     )
                     ingestor.close()
             finally:

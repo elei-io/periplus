@@ -123,12 +123,13 @@ FROM views.page_metadata;
 ```
 
 The view also exposes `base_href`, `open_graph_description`, and `open_graph_image`. Empty metadata
-values become `NULL`, and when a document repeats a metadata field the first non-empty value in DOM
-order wins.
+values become `NULL`, HTML whitespace is collapsed in human-readable fields, and when a document
+repeats a metadata field the first non-empty value in DOM order wins.
 
 `canonical_href`, `base_href`, and `open_graph_image` retain the attribute value from the document;
-they are not resolved automatically. A content-addressed document can be observed under more than
-one page URL, so URL resolution requires crawl context:
+apart from surrounding HTML whitespace, they are not rewritten or resolved automatically. A
+content-addressed document can be observed under more than one page URL, so URL resolution requires
+crawl context:
 
 ```sql
 SELECT
@@ -141,6 +142,32 @@ FROM crawls AS c
 JOIN views.page_metadata AS m USING (document_id)
 WHERE c.outcome = 'success';
 ```
+
+`views.json_ld_scripts` preserves one row per
+`<script type="application/ld+json">`. `json_text` contains the exact script text, while
+`is_valid`, `json_value`, and `root_type` expose its parse state without dropping malformed or empty
+scripts.
+
+`views.json_ld_nodes` provides the object-level analytical surface for valid scripts. A root object
+without an `@graph` array produces one node, a root array produces one node per object item, and an
+`@graph` array produces one node per object member. Scalar array items are not nodes. Each row
+retains its source `document_id`, `element_index`, script and node ordinals, JSON path, effective
+top-level context, optional `@id`, normalized `@type` list, and complete `node_json`.
+
+```sql
+SELECT
+  document_id,
+  node_id,
+  json_extract_string(node_json, '$.name') AS name,
+  json_extract_string(node_json, '$.offers.price') AS price,
+  json_extract_string(node_json, '$.offers.priceCurrency') AS currency
+FROM views.json_ld_nodes
+WHERE list_contains(node_types, 'Product');
+```
+
+Nested objects remain inside their containing node. Atlas does not recursively flatten every JSON
+path or claim to perform full JSON-LD context expansion. Use DuckDB's `json_tree` against
+`json_ld_scripts.json_value` when a path/value representation is useful for a specific query.
 
 ## Automatic record discovery
 

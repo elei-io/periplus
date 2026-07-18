@@ -1,28 +1,32 @@
 CREATE VIEW views.page_metadata AS
-WITH candidates AS (
+WITH raw_candidates AS (
     SELECT
         document_id,
         element_index,
         CASE
             WHEN tag = 'html'
-            THEN nullif(
-                trim(
-                    coalesce(
-                        get_attribute(attributes, 'lang'),
-                        get_attribute(attributes, 'xml:lang')
-                    )
-                ),
-                ''
+            THEN coalesce(
+                get_attribute(attributes, 'lang'),
+                get_attribute(attributes, 'xml:lang')
             )
         END AS language,
         CASE
             WHEN tag = 'title'
-            THEN nullif(trim(text_content(document_id, element_index)), '')
+            THEN text_content(document_id, element_index)
         END AS title,
         CASE
             WHEN tag = 'meta'
-             AND lower(trim(coalesce(get_attribute(attributes, 'name'), ''))) = 'description'
-            THEN nullif(trim(get_attribute(attributes, 'content')), '')
+             AND lower(
+                    trim(
+                        regexp_replace(
+                            coalesce(get_attribute(attributes, 'name'), ''),
+                            '[ \t\r\n\f]+',
+                            ' ',
+                            'g'
+                        )
+                    )
+                 ) = 'description'
+            THEN get_attribute(attributes, 'content')
         END AS description,
         CASE
             WHEN tag = 'link'
@@ -30,34 +34,131 @@ WITH candidates AS (
                     lower(coalesce(get_attribute(attributes, 'rel'), '')),
                     '(^|[[:space:]])canonical([[:space:]]|$)'
                  )
-            THEN nullif(trim(get_attribute(attributes, 'href')), '')
+            THEN get_attribute(attributes, 'href')
         END AS canonical_href,
         CASE
             WHEN tag = 'base'
-            THEN nullif(trim(get_attribute(attributes, 'href')), '')
+            THEN get_attribute(attributes, 'href')
         END AS base_href,
         CASE
             WHEN tag = 'meta'
-             AND lower(trim(coalesce(get_attribute(attributes, 'name'), ''))) = 'robots'
-            THEN nullif(trim(get_attribute(attributes, 'content')), '')
+             AND lower(
+                    trim(
+                        regexp_replace(
+                            coalesce(get_attribute(attributes, 'name'), ''),
+                            '[ \t\r\n\f]+',
+                            ' ',
+                            'g'
+                        )
+                    )
+                 ) = 'robots'
+            THEN get_attribute(attributes, 'content')
         END AS robots,
         CASE
             WHEN tag = 'meta'
-             AND lower(trim(coalesce(get_attribute(attributes, 'property'), ''))) = 'og:title'
-            THEN nullif(trim(get_attribute(attributes, 'content')), '')
+             AND lower(
+                    trim(
+                        regexp_replace(
+                            coalesce(get_attribute(attributes, 'property'), ''),
+                            '[ \t\r\n\f]+',
+                            ' ',
+                            'g'
+                        )
+                    )
+                 ) = 'og:title'
+            THEN get_attribute(attributes, 'content')
         END AS open_graph_title,
         CASE
             WHEN tag = 'meta'
-             AND lower(trim(coalesce(get_attribute(attributes, 'property'), ''))) = 'og:description'
-            THEN nullif(trim(get_attribute(attributes, 'content')), '')
+             AND lower(
+                    trim(
+                        regexp_replace(
+                            coalesce(get_attribute(attributes, 'property'), ''),
+                            '[ \t\r\n\f]+',
+                            ' ',
+                            'g'
+                        )
+                    )
+                 ) = 'og:description'
+            THEN get_attribute(attributes, 'content')
         END AS open_graph_description,
         CASE
             WHEN tag = 'meta'
-             AND lower(trim(coalesce(get_attribute(attributes, 'property'), ''))) = 'og:image'
-            THEN nullif(trim(get_attribute(attributes, 'content')), '')
+             AND lower(
+                    trim(
+                        regexp_replace(
+                            coalesce(get_attribute(attributes, 'property'), ''),
+                            '[ \t\r\n\f]+',
+                            ' ',
+                            'g'
+                        )
+                    )
+                 ) = 'og:image'
+            THEN get_attribute(attributes, 'content')
         END AS open_graph_image
     FROM elements
     WHERE tag IN ('html', 'title', 'meta', 'link', 'base')
+),
+candidates AS (
+    SELECT
+        document_id,
+        element_index,
+        nullif(
+            trim(regexp_replace(language, '[ \t\r\n\f]+', ' ', 'g')),
+            ''
+        ) AS language,
+        nullif(
+            trim(regexp_replace(title, '[ \t\r\n\f]+', ' ', 'g')),
+            ''
+        ) AS title,
+        nullif(
+            trim(regexp_replace(description, '[ \t\r\n\f]+', ' ', 'g')),
+            ''
+        ) AS description,
+        nullif(
+            regexp_replace(
+                regexp_replace(canonical_href, '^[ \t\r\n\f]+', ''),
+                '[ \t\r\n\f]+$',
+                ''
+            ),
+            ''
+        ) AS canonical_href,
+        nullif(
+            regexp_replace(
+                regexp_replace(base_href, '^[ \t\r\n\f]+', ''),
+                '[ \t\r\n\f]+$',
+                ''
+            ),
+            ''
+        ) AS base_href,
+        nullif(
+            trim(regexp_replace(robots, '[ \t\r\n\f]+', ' ', 'g')),
+            ''
+        ) AS robots,
+        nullif(
+            trim(regexp_replace(open_graph_title, '[ \t\r\n\f]+', ' ', 'g')),
+            ''
+        ) AS open_graph_title,
+        nullif(
+            trim(
+                regexp_replace(
+                    open_graph_description,
+                    '[ \t\r\n\f]+',
+                    ' ',
+                    'g'
+                )
+            ),
+            ''
+        ) AS open_graph_description,
+        nullif(
+            regexp_replace(
+                regexp_replace(open_graph_image, '^[ \t\r\n\f]+', ''),
+                '[ \t\r\n\f]+$',
+                ''
+            ),
+            ''
+        ) AS open_graph_image
+    FROM raw_candidates
 ),
 metadata AS (
     SELECT
