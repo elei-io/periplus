@@ -7,13 +7,13 @@ WITH scripts AS (
             PARTITION BY document_id
             ORDER BY element_index
         )::BIGINT AS script_ordinal,
-        text_content(document_id, element_index) AS json_text
+        macros.text_content(document_id, element_index) AS json_text
     FROM elements
     WHERE tag = 'script'
       AND lower(
             trim(
                 regexp_replace(
-                    coalesce(get_attribute(attributes, 'type'), ''),
+                    coalesce(macros.get_attribute(attributes, 'type'), ''),
                     '[ \t\r\n\f]+',
                     ' ',
                     'g'

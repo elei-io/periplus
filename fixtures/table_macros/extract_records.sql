@@ -72,7 +72,7 @@ CREATE MACRO macros.extract_records(p_url, p_record_selector) AS TABLE (
         FROM element_base AS element
         CROSS JOIN UNNEST(
             regexp_split_to_array(
-                trim(coalesce(get_attribute(element.attributes, 'class'), '')),
+                trim(coalesce(macros.get_attribute(element.attributes, 'class'), '')),
                 '[ \t\r\n\f]+'
             )
         ) WITH ORDINALITY AS tokens(token, token_ordinal)
@@ -224,7 +224,7 @@ CREATE MACRO macros.extract_records(p_url, p_record_selector) AS TABLE (
             CASE
                 WHEN field.tag NOT IN (
                     'script', 'style', 'template', 'noscript', 'svg', 'path'
-                ) AND has_text(field.text_direct)
+                ) AND macros.has_text(field.text_direct)
                     THEN nullif(
                         trim(regexp_replace(
                             field.text_direct,
@@ -238,7 +238,7 @@ CREATE MACRO macros.extract_records(p_url, p_record_selector) AS TABLE (
             CASE
                 WHEN field.tag NOT IN (
                     'script', 'style', 'template', 'noscript', 'svg', 'path'
-                ) AND has_text(field.text_tail)
+                ) AND macros.has_text(field.text_tail)
                     THEN nullif(
                         trim(regexp_replace(
                             field.text_tail,
@@ -278,7 +278,7 @@ CREATE MACRO macros.extract_records(p_url, p_record_selector) AS TABLE (
             CASE
                 WHEN root.tag NOT IN (
                     'script', 'style', 'template', 'noscript', 'svg', 'path'
-                ) AND has_text(root.text_direct)
+                ) AND macros.has_text(root.text_direct)
                     THEN nullif(
                         trim(regexp_replace(
                             root.text_direct,
@@ -292,7 +292,7 @@ CREATE MACRO macros.extract_records(p_url, p_record_selector) AS TABLE (
             CASE
                 WHEN root.tag NOT IN (
                     'script', 'style', 'template', 'noscript', 'svg', 'path'
-                ) AND has_text(root.text_tail)
+                ) AND macros.has_text(root.text_tail)
                     THEN nullif(
                         trim(regexp_replace(
                             root.text_tail,
@@ -321,7 +321,7 @@ CREATE MACRO macros.extract_records(p_url, p_record_selector) AS TABLE (
         FROM field_instances AS field
         CROSS JOIN UNNEST(
             regexp_split_to_array(
-                trim(coalesce(get_attribute(field.attributes, 'class'), '')),
+                trim(coalesce(macros.get_attribute(field.attributes, 'class'), '')),
                 '[ \t\r\n\f]+'
             )
         ) AS tokens(token)
@@ -407,15 +407,15 @@ CREATE MACRO macros.extract_records(p_url, p_record_selector) AS TABLE (
         CROSS JOIN LATERAL (
             SELECT 'direct_text' AS value_source, field.direct_text AS value
             UNION ALL SELECT 'tail_text', field.tail_text
-            UNION ALL SELECT 'attribute:title', get_attribute(field.attributes, 'title')
-            UNION ALL SELECT 'attribute:alt', get_attribute(field.attributes, 'alt')
-            UNION ALL SELECT 'attribute:href', get_attribute(field.attributes, 'href')
-            UNION ALL SELECT 'attribute:src', get_attribute(field.attributes, 'src')
-            UNION ALL SELECT 'attribute:datetime', get_attribute(field.attributes, 'datetime')
-            UNION ALL SELECT 'attribute:content', get_attribute(field.attributes, 'content')
-            UNION ALL SELECT 'attribute:value', get_attribute(field.attributes, 'value')
-            UNION ALL SELECT 'attribute:itemprop', get_attribute(field.attributes, 'itemprop')
-            UNION ALL SELECT 'attribute:aria-label', get_attribute(field.attributes, 'aria-label')
+            UNION ALL SELECT 'attribute:title', macros.get_attribute(field.attributes, 'title')
+            UNION ALL SELECT 'attribute:alt', macros.get_attribute(field.attributes, 'alt')
+            UNION ALL SELECT 'attribute:href', macros.get_attribute(field.attributes, 'href')
+            UNION ALL SELECT 'attribute:src', macros.get_attribute(field.attributes, 'src')
+            UNION ALL SELECT 'attribute:datetime', macros.get_attribute(field.attributes, 'datetime')
+            UNION ALL SELECT 'attribute:content', macros.get_attribute(field.attributes, 'content')
+            UNION ALL SELECT 'attribute:value', macros.get_attribute(field.attributes, 'value')
+            UNION ALL SELECT 'attribute:itemprop', macros.get_attribute(field.attributes, 'itemprop')
+            UNION ALL SELECT 'attribute:aria-label', macros.get_attribute(field.attributes, 'aria-label')
         ) AS source
         WHERE nullif(trim(source.value), '') IS NOT NULL
 
@@ -559,7 +559,7 @@ CREATE MACRO macros.extract_records(p_url, p_record_selector) AS TABLE (
             list(
                 CASE
                     WHEN source.value_source IN ('attribute:href', 'attribute:src')
-                        THEN resolve_url(source.page_url, source.value)
+                        THEN macros.resolve_url(source.page_url, source.value)
                     ELSE source.value
                 END
                 ORDER BY source.field_element_index
@@ -668,8 +668,8 @@ CREATE MACRO macros.extract_records(p_url, p_record_selector) AS TABLE (
         rollup.field_12,
         rollup.field_definitions,
         rollup.record_json,
-        readable_text(rollup.document_id, rollup.element_index) AS record_text,
-        inner_html(rollup.document_id, rollup.element_index) AS record_html
+        macros.readable_text(rollup.document_id, rollup.element_index) AS record_text,
+        macros.inner_html(rollup.document_id, rollup.element_index) AS record_html
     FROM rollup
     JOIN pages AS page USING (crawl_id)
     JOIN matched_totals USING (crawl_id)

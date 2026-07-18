@@ -6,95 +6,95 @@ WITH raw_candidates AS (
         CASE
             WHEN tag = 'html'
             THEN coalesce(
-                get_attribute(attributes, 'lang'),
-                get_attribute(attributes, 'xml:lang')
+                macros.get_attribute(attributes, 'lang'),
+                macros.get_attribute(attributes, 'xml:lang')
             )
         END AS language,
         CASE
             WHEN tag = 'title'
-            THEN text_content(document_id, element_index)
+            THEN macros.text_content(document_id, element_index)
         END AS title,
         CASE
             WHEN tag = 'meta'
              AND lower(
                     trim(
                         regexp_replace(
-                            coalesce(get_attribute(attributes, 'name'), ''),
+                            coalesce(macros.get_attribute(attributes, 'name'), ''),
                             '[ \t\r\n\f]+',
                             ' ',
                             'g'
                         )
                     )
                  ) = 'description'
-            THEN get_attribute(attributes, 'content')
+            THEN macros.get_attribute(attributes, 'content')
         END AS description,
         CASE
             WHEN tag = 'link'
              AND regexp_matches(
-                    lower(coalesce(get_attribute(attributes, 'rel'), '')),
+                    lower(coalesce(macros.get_attribute(attributes, 'rel'), '')),
                     '(^|[[:space:]])canonical([[:space:]]|$)'
                  )
-            THEN get_attribute(attributes, 'href')
+            THEN macros.get_attribute(attributes, 'href')
         END AS canonical_href,
         CASE
             WHEN tag = 'base'
-            THEN get_attribute(attributes, 'href')
+            THEN macros.get_attribute(attributes, 'href')
         END AS base_href,
         CASE
             WHEN tag = 'meta'
              AND lower(
                     trim(
                         regexp_replace(
-                            coalesce(get_attribute(attributes, 'name'), ''),
+                            coalesce(macros.get_attribute(attributes, 'name'), ''),
                             '[ \t\r\n\f]+',
                             ' ',
                             'g'
                         )
                     )
                  ) = 'robots'
-            THEN get_attribute(attributes, 'content')
+            THEN macros.get_attribute(attributes, 'content')
         END AS robots,
         CASE
             WHEN tag = 'meta'
              AND lower(
                     trim(
                         regexp_replace(
-                            coalesce(get_attribute(attributes, 'property'), ''),
+                            coalesce(macros.get_attribute(attributes, 'property'), ''),
                             '[ \t\r\n\f]+',
                             ' ',
                             'g'
                         )
                     )
                  ) = 'og:title'
-            THEN get_attribute(attributes, 'content')
+            THEN macros.get_attribute(attributes, 'content')
         END AS open_graph_title,
         CASE
             WHEN tag = 'meta'
              AND lower(
                     trim(
                         regexp_replace(
-                            coalesce(get_attribute(attributes, 'property'), ''),
+                            coalesce(macros.get_attribute(attributes, 'property'), ''),
                             '[ \t\r\n\f]+',
                             ' ',
                             'g'
                         )
                     )
                  ) = 'og:description'
-            THEN get_attribute(attributes, 'content')
+            THEN macros.get_attribute(attributes, 'content')
         END AS open_graph_description,
         CASE
             WHEN tag = 'meta'
              AND lower(
                     trim(
                         regexp_replace(
-                            coalesce(get_attribute(attributes, 'property'), ''),
+                            coalesce(macros.get_attribute(attributes, 'property'), ''),
                             '[ \t\r\n\f]+',
                             ' ',
                             'g'
                         )
                     )
                  ) = 'og:image'
-            THEN get_attribute(attributes, 'content')
+            THEN macros.get_attribute(attributes, 'content')
         END AS open_graph_image
     FROM elements
     WHERE tag IN ('html', 'title', 'meta', 'link', 'base')
