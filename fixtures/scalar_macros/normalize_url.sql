@@ -55,18 +55,22 @@ CREATE OR REPLACE MACRO normalize_url(value) AS (
             authority_parts.*,
             item,
             ordinal,
-            url_decode(
-                replace(split_part(item, '=', 1), '+', ' ')
+            try(
+                url_decode(
+                    replace(split_part(item, '=', 1), '+', ' ')
+                )
             ) AS name,
-            url_decode(
-                replace(
-                    CASE
-                        WHEN strpos(item, '=') > 0
-                        THEN substring(item FROM strpos(item, '=') + 1)
-                        ELSE ''
-                    END,
-                    '+',
-                    ' '
+            try(
+                url_decode(
+                    replace(
+                        CASE
+                            WHEN strpos(item, '=') > 0
+                            THEN substring(item FROM strpos(item, '=') + 1)
+                            ELSE ''
+                        END,
+                        '+',
+                        ' '
+                    )
                 )
             ) AS item_value
         FROM authority_parts

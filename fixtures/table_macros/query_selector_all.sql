@@ -4,9 +4,7 @@ CREATE MACRO macros.query_selector_all(
 ) AS TABLE (
     WITH RECURSIVE
     parameters AS MATERIALIZED (
-        SELECT
-            trim(selector) AS selector_text,
-            nullif(document_id, '') AS scoped_document_id
+        SELECT trim(selector) AS selector_text
     ),
     scan (
         position,
@@ -277,9 +275,13 @@ CREATE MACRO macros.query_selector_all(
     document_elements AS MATERIALIZED (
         SELECT element.*
         FROM elements AS element
-        CROSS JOIN parameters
-        WHERE parameters.scoped_document_id IS NULL
-           OR element.document_id = parameters.scoped_document_id
+        WHERE element.document_id = nullif(document_id, '')
+
+        UNION ALL
+
+        SELECT element.*
+        FROM elements AS element
+        WHERE nullif(document_id, '') IS NULL
     ),
     selector_features AS MATERIALIZED (
         SELECT coalesce(

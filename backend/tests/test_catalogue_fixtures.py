@@ -94,6 +94,15 @@ class CatalogueFixtureTests(unittest.TestCase):
                     ).fetchone()[0]
                     for value in invalid_urls
                 ]
+                malformed_query_urls = [
+                    catalogue.connection.execute(
+                        "SELECT atlas.macros.normalize_url(?)", [value]
+                    ).fetchone()[0]
+                    for value in [
+                        "https://example.com/path?q=Rond%F3",
+                        "https://example.com/path?Rond%F3=value&ok=yes",
+                    ]
+                ]
                 absent_optional_parts = catalogue.connection.execute(
                     """
                     SELECT
@@ -125,6 +134,13 @@ class CatalogueFixtureTests(unittest.TestCase):
             [normalize_runtime_url(value) for value in valid_urls],
         )
         self.assertEqual(rejected_urls, [None] * len(invalid_urls))
+        self.assertEqual(
+            malformed_query_urls,
+            [
+                "https://example.com/path",
+                "https://example.com/path?ok=yes",
+            ],
+        )
         self.assertEqual(absent_optional_parts, (None, None))
 
     def test_bundled_fixtures_compile_against_the_catalogue(self) -> None:

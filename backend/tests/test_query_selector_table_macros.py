@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -38,6 +39,16 @@ HTML = """
   </body>
 </html>
 """
+
+
+def _plan_nodes(value: object):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _plan_nodes(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _plan_nodes(child)
 
 
 class QuerySelectorTableMacroTests(unittest.TestCase):
@@ -148,6 +159,31 @@ class QuerySelectorTableMacroTests(unittest.TestCase):
                 """
             ).fetchall(),
             [("first-link",)],
+        )
+
+    def test_document_scope_is_pushed_into_the_element_scan(self) -> None:
+        row = self.catalogue.connection.execute(
+            """
+            EXPLAIN (FORMAT JSON)
+            SELECT count(*)
+            FROM atlas.macros.query_selector_all('a[href]', 'doc-two')
+            """
+        ).fetchone()
+        self.assertIsNotNone(row)
+        assert row is not None
+        plan = json.loads(row[1])
+        element_scans = [
+            node
+            for node in _plan_nodes(plan)
+            if node.get("name") == "DUCKLAKE_SCAN"
+            and node.get("extra_info", {}).get("Table") == "elements"
+        ]
+        self.assertTrue(element_scans)
+        self.assertTrue(
+            all(
+                scan["extra_info"].get("Filters") == "document_id='doc-two'"
+                for scan in element_scans
+            )
         )
 
     def test_rejects_unsupported_and_unbalanced_selectors(self) -> None:
