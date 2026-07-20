@@ -4,6 +4,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from nats.js.errors import KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError
 
@@ -38,6 +39,7 @@ class FakeBucket:
     def __init__(self) -> None:
         self.values: dict[str, tuple[int, bytes]] = {}
         self.revision = 0
+        self.fail_next_updates = 0
 
     async def get(self, key: str):
         try:
@@ -55,6 +57,9 @@ class FakeBucket:
 
     async def update(self, key: str, value: bytes, *, last: int) -> int:
         if key not in self.values or self.values[key][0] != last:
+            raise KeyWrongLastSequenceError
+        if self.fail_next_updates:
+            self.fail_next_updates -= 1
             raise KeyWrongLastSequenceError
         self.revision += 1
         self.values[key] = (self.revision, value)
@@ -92,16 +97,52 @@ class ResourceGovernorTests(unittest.IsolatedAsyncioTestCase):
             limits=self.limits,
         )
         async with resource_permits(bucket, first, limits=self.limits):
+            revision_before_probe = bucket.revision
             with self.assertRaises(ResourceCapacityUnavailable):
                 async with resource_permits(
                     bucket, second, limits=self.limits, acquire_timeout=0
                 ):
                     pass
+            self.assertEqual(bucket.revision, revision_before_probe)
             state = ResourceState.model_validate_json(
                 (await bucket.get(RESOURCE_STATE_KEY)).value
             )
             self.assertEqual(len(state.grants), 1)
             self.assertEqual(state.waiters, ())
+
+    async def test_heartbeat_retries_transient_cas_contention(self) -> None:
+        bucket = FakeBucket()
+        request = catalogue_request(
+            "renewed",
+            service_class="live",
+            limits=self.limits,
+        )
+        with (
+            patch("runtime.resource_governor.RESOURCE_LEASE_SECONDS", 0.2),
+            patch("runtime.resource_governor.RESOURCE_HEARTBEAT_SECONDS", 0.01),
+            patch(
+                "runtime.resource_governor.RESOURCE_RENEW_RETRY_INITIAL_SECONDS",
+                0.001,
+            ),
+            patch(
+                "runtime.resource_governor.RESOURCE_RENEW_RETRY_MAX_SECONDS",
+                0.002,
+            ),
+        ):
+            async with resource_permits(
+                bucket,
+                request,
+                limits=self.limits,
+            ) as guard:
+                revision_before_renewal = bucket.revision
+                bucket.fail_next_updates = 1
+                for _ in range(100):
+                    if bucket.revision > revision_before_renewal:
+                        break
+                    await asyncio.sleep(0.002)
+
+                self.assertGreater(bucket.revision, revision_before_renewal)
+                self.assertFalse(guard.lost)
 
     async def test_live_work_borrows_idle_critical_reserve(self) -> None:
         bucket = FakeBucket()
@@ -318,6 +359,8 @@ class ResourceGovernorTests(unittest.IsolatedAsyncioTestCase):
                 catalogue_request(
                     "maintenance",
                     service_class="maintenance",
+                    object_read_units=self.limits.object_read,
+                    object_write_units=self.limits.object_write,
                     limits=self.limits,
                     exclusive=True,
                 ),
@@ -337,6 +380,20 @@ class ResourceGovernorTests(unittest.IsolatedAsyncioTestCase):
                         "late-critical",
                         service_class="critical",
                         limits=self.limits,
+                    ),
+                    limits=self.limits,
+                    acquire_timeout=0,
+                ):
+                    pass
+            with self.assertRaises(ResourceCapacityUnavailable):
+                async with resource_permits(
+                    bucket,
+                    ResourceRequest(
+                        operation_id="late-object-writer",
+                        service_class="critical",
+                        resources=(
+                            ResourceNeed(name="object:write", units=1),
+                        ),
                     ),
                     limits=self.limits,
                     acquire_timeout=0,

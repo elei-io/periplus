@@ -1,4 +1,5 @@
 from . import (
+    catalogue_query_metrics,
     crawl_metrics,
     materialization_metrics,
     navigation_metrics,
@@ -7,6 +8,7 @@ from . import (
 )
 
 __all__ = [
+    "catalogue_query_metrics",
     "crawl_metrics",
     "materialization_metrics",
     "navigation_metrics",

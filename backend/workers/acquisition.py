@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 import logging
 import os
 import time
 from datetime import UTC, datetime, timedelta
+from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from nats.errors import TimeoutError as NatsTimeoutError
@@ -15,7 +20,13 @@ from playwright.async_api import Playwright, async_playwright
 from actions.crawl.schemas import CrawlPage
 from actions.crawl.service import RetryableAcquisitionError, crawl_graph_request
 from config import get_float, get_int, get_optional
-from config.performance import CRAWL_ACQUISITION_LANES, GRAPH_ACK_WAIT_SECONDS
+from config.performance import (
+    CRAWL_ACQUISITION_LANES,
+    CRAWL_DISPATCH_WINDOW,
+    CRAWL_DOMAIN_PERMIT_RETRY_SECONDS,
+    GRAPH_ACK_WAIT_SECONDS,
+)
+from control.crawl_policies.schemas import EffectivePolicySnapshot
 from observability import crawl_metrics, navigation_metrics
 from repository.ingestion.acquisition import AcquisitionPipeline
 from repository.ingestion.health import HealthMonitor
@@ -30,15 +41,14 @@ from runtime.graph_queue import (
     CrawlWork,
     NavigationReadinessWork,
     WorkerState,
-    connect_nats,
     ensure_graph_storage,
     ensure_graph_progress_storage,
     get_crawl_request,
     get_graph_run,
-    list_crawl_requests,
     list_graph_runs,
     update_crawl_request,
 )
+from runtime.nats_client import connect_nats
 from runtime.graph_navigation import run as run_graph_navigation
 from runtime.graph_progress import bootstrap_run_progress, transition_node_progress
 from runtime.graph_runs import (
@@ -59,6 +69,7 @@ from runtime.resource_governor import (
     ResourcePermitLost,
     ensure_resource_governor_storage,
     object_request,
+    remote_request,
     resource_permits,
 )
 from workers.lifecycle import (
@@ -70,6 +81,359 @@ from workers.lifecycle import (
 
 class AcquisitionClaimLost(RuntimeError):
     """The delivery or crawl-request claim was lost before work could settle."""
+
+
+@dataclass(slots=True)
+class _BufferedCrawl:
+    message: Any
+    request: CrawlRequest
+    hostname: str
+    domain_concurrency: int
+    attempt_number: int
+    domain_policy_valid: bool = True
+
+
+class _HostnameDispatchBuffer:
+    """Bounded worker-local look-ahead with per-host FIFO ordering."""
+
+    def __init__(self, maximum_size: int) -> None:
+        if maximum_size < 1:
+            raise ValueError("dispatch buffer size must be positive")
+        self.maximum_size = maximum_size
+        self._queues: dict[str, deque[_BufferedCrawl]] = {}
+        self._rotation: deque[str] = deque()
+        self._retry_after: dict[str, float] = {}
+        self._size = 0
+
+    def __len__(self) -> int:
+        return self._size
+
+    def add(self, item: _BufferedCrawl) -> None:
+        if self._size >= self.maximum_size:
+            raise RuntimeError("acquisition dispatch buffer is full")
+        queue = self._queues.get(item.hostname)
+        if queue is None:
+            queue = deque()
+            self._queues[item.hostname] = queue
+            self._rotation.append(item.hostname)
+        queue.append(item)
+        self._size += 1
+
+    def defer_hostname(self, hostname: str, *, retry_at: float) -> None:
+        if hostname in self._queues:
+            self._retry_after[hostname] = max(
+                retry_at,
+                self._retry_after.get(hostname, retry_at),
+            )
+
+    def pop(
+        self,
+        *,
+        excluded_hostnames: set[str] | None = None,
+        now: float | None = None,
+    ) -> _BufferedCrawl | None:
+        excluded = excluded_hostnames or set()
+        current_time = time.monotonic() if now is None else now
+        for _ in range(len(self._rotation)):
+            hostname = self._rotation.popleft()
+            queue = self._queues[hostname]
+            retry_at = self._retry_after.get(hostname)
+            if hostname in excluded or (
+                retry_at is not None and retry_at > current_time
+            ):
+                self._rotation.append(hostname)
+                continue
+            self._retry_after.pop(hostname, None)
+            item = queue.popleft()
+            self._size -= 1
+            if queue:
+                self._rotation.append(hostname)
+            else:
+                del self._queues[hostname]
+                self._retry_after.pop(hostname, None)
+            return item
+        return None
+
+    def messages(self) -> list[Any]:
+        return [
+            item.message
+            for hostname in self._rotation
+            for item in self._queues[hostname]
+        ]
+
+    def drain(self) -> list[_BufferedCrawl]:
+        items: list[_BufferedCrawl] = []
+        self._retry_after.clear()
+        while (item := self.pop()) is not None:
+            items.append(item)
+        return items
+
+
+class _PreAcquiredDomainPermit:
+    """Adopt an already-entered permit context at the acquisition boundary."""
+
+    def __init__(self, context, guard) -> None:
+        self._context = context
+        self._guard = guard
+        self._entered = False
+        self._released = False
+
+    async def __aenter__(self):
+        if self._entered or self._released:
+            raise RuntimeError("domain permit can only be consumed once")
+        self._entered = True
+        return self._guard
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        self._released = True
+        return await self._context.__aexit__(exc_type, exc, traceback)
+
+    async def release_if_unused(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        await self._context.__aexit__(None, None, None)
+
+
+async def _classify_crawl_message(message, requests) -> _BufferedCrawl | None:
+    try:
+        work = CrawlWork.model_validate_json(message.data)
+    except Exception:
+        logging.exception("discarding invalid acquisition work")
+        await message.term()
+        return None
+    request = await get_crawl_request(requests, work.crawl_request_id)
+    if request is None or request.status in {"completed", "failed", "cancelled"}:
+        await message.ack()
+        return None
+    try:
+        effective = EffectivePolicySnapshot.model_validate(
+            request.effective_policy_snapshot_json
+        )
+        hostname = (urlsplit(request.url).hostname or "unknown").lower()
+    except Exception:
+        # Let the authoritative processor record malformed frozen work through
+        # its existing retry and terminal-failure path.
+        hostname = f"invalid-{request.id.hex}"
+        concurrency = 1
+        domain_policy_valid = False
+    else:
+        concurrency = effective.domain.maximum_concurrency
+        domain_policy_valid = True
+    return _BufferedCrawl(
+        message=message,
+        request=request,
+        hostname=hostname,
+        domain_concurrency=concurrency,
+        attempt_number=len(request.acquisition_attempts_json) + 1,
+        domain_policy_valid=domain_policy_valid,
+    )
+
+
+async def _try_domain_permit(resource_grants, item: _BufferedCrawl):
+    if resource_grants is None or not item.domain_policy_valid:
+        return None
+    context = resource_permits(
+        resource_grants,
+        remote_request(
+            f"domain:{item.request.id}:{item.attempt_number}",
+            remote_domain=item.hostname,
+            concurrency=item.domain_concurrency,
+        ),
+        acquire_timeout=0,
+    )
+    guard = await context.__aenter__()
+    return _PreAcquiredDomainPermit(context, guard)
+
+
+async def _process_dispatched_crawl(
+    item: _BufferedCrawl,
+    runs,
+    requests,
+    progress,
+    repository_pipeline,
+    resource_grants,
+    domain_pacing,
+    jetstream,
+    *,
+    playwright: Playwright,
+    domain_permit: _PreAcquiredDomainPermit | None,
+) -> None:
+    try:
+        await _process_crawl(
+            item.message,
+            runs,
+            requests,
+            progress,
+            repository_pipeline,
+            resource_grants,
+            domain_pacing,
+            jetstream,
+            playwright=playwright,
+            domain_permit=domain_permit,
+        )
+    finally:
+        if domain_permit is not None:
+            try:
+                await domain_permit.release_if_unused()
+            except ResourcePermitLost:
+                pass
+
+
+async def _dispatch_buffered_crawls(
+    buffer: _HostnameDispatchBuffer,
+    active: set[asyncio.Task],
+    *,
+    capacity: int,
+    runs,
+    requests,
+    progress,
+    repository_pipeline,
+    resource_grants,
+    domain_pacing,
+    jetstream,
+    playwright: Playwright,
+) -> bool:
+    launched = False
+    blocked_hostnames: set[str] = set()
+    while len(active) < capacity and len(buffer) > 0:
+        item = buffer.pop(excluded_hostnames=blocked_hostnames)
+        if item is None:
+            break
+        try:
+            domain_permit = await _try_domain_permit(resource_grants, item)
+        except ResourceCapacityUnavailable:
+            buffer.add(item)
+            buffer.defer_hostname(
+                item.hostname,
+                retry_at=time.monotonic() + CRAWL_DOMAIN_PERMIT_RETRY_SECONDS,
+            )
+            blocked_hostnames.add(item.hostname)
+            continue
+        except Exception:
+            buffer.add(item)
+            buffer.defer_hostname(
+                item.hostname,
+                retry_at=time.monotonic() + CRAWL_DOMAIN_PERMIT_RETRY_SECONDS,
+            )
+            blocked_hostnames.add(item.hostname)
+            logging.exception(
+                "domain admission failed before acquisition dispatch",
+                extra={
+                    "crawl_request_id": str(item.request.id),
+                    "hostname": item.hostname,
+                },
+            )
+            continue
+        task = asyncio.create_task(
+            _process_dispatched_crawl(
+                item,
+                runs,
+                requests,
+                progress,
+                repository_pipeline,
+                resource_grants,
+                domain_pacing,
+                jetstream,
+                playwright=playwright,
+                domain_permit=domain_permit,
+            )
+        )
+        active.add(task)
+        launched = True
+    return launched
+
+
+async def _keep_buffered_deliveries_alive(
+    buffer: _HostnameDispatchBuffer,
+) -> None:
+    interval = max(1.0, GRAPH_ACK_WAIT_SECONDS / 3)
+    while True:
+        await asyncio.sleep(interval)
+        messages = buffer.messages()
+        if not messages:
+            continue
+        results = await asyncio.gather(
+            *(message.in_progress() for message in messages),
+            return_exceptions=True,
+        )
+        failures = sum(isinstance(result, BaseException) for result in results)
+        if failures:
+            logging.warning(
+                "failed to heartbeat %d buffered acquisition deliveries", failures
+            )
+
+
+async def _release_buffered_deliveries(buffer: _HostnameDispatchBuffer) -> None:
+    items = buffer.drain()
+    if not items:
+        return
+    await asyncio.gather(
+        *(item.message.nak() for item in items),
+        return_exceptions=True,
+    )
+
+
+async def _monitor_event_loop(monitor: HealthMonitor) -> None:
+    """Keep liveness independent from NATS presence and recovery work."""
+
+    while True:
+        monitor.heartbeat()
+        await asyncio.sleep(1)
+
+
+async def _wait_until_stopped(stop: asyncio.Event, delay: float) -> None:
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=delay)
+    except TimeoutError:
+        pass
+
+
+async def _run_presence_until_stopped(
+    *,
+    stop: asyncio.Event,
+    monitor: HealthMonitor,
+    iteration: Callable[[], Awaitable[None]],
+    interval_seconds: float = 5.0,
+    timeout_seconds: float = 15.0,
+    retry_initial_seconds: float = 1.0,
+) -> None:
+    """Retry transient presence failures without silently losing capacity."""
+
+    retry_delay = retry_initial_seconds
+    while not stop.is_set():
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                await iteration()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            monitor.subsystem_unavailable(
+                "presence", str(exc) or type(exc).__name__
+            )
+            logging.exception(
+                "acquisition presence unavailable; retrying in %.1fs",
+                retry_delay,
+            )
+            await _wait_until_stopped(stop, retry_delay)
+            retry_delay = min(30.0, max(1.0, retry_delay * 2))
+        else:
+            monitor.subsystem_ready("presence")
+            retry_delay = retry_initial_seconds
+            await _wait_until_stopped(stop, interval_seconds)
+
+
+def _raise_background_failure(tasks: tuple[asyncio.Task, ...]) -> None:
+    for task in tasks:
+        if not task.done():
+            continue
+        name = task.get_name()
+        if task.cancelled():
+            raise RuntimeError(f"{name} was cancelled unexpectedly")
+        error = task.exception()
+        if error is None:
+            raise RuntimeError(f"{name} exited unexpectedly")
+        raise RuntimeError(f"{name} failed") from error
 
 
 async def _derive_navigation_package(
@@ -181,6 +545,7 @@ async def _process_crawl(
     jetstream=None,
     *,
     playwright: Playwright,
+    domain_permit=None,
 ) -> None:
     try:
         work = CrawlWork.model_validate_json(message.data)
@@ -282,6 +647,7 @@ async def _process_crawl(
                 playwright=playwright,
                 resource_grants=resource_grants,
                 domain_pacing=domain_pacing,
+                domain_permit=domain_permit,
                 repository_pipeline=repository_pipeline,
                 persist_retryable_failure=(
                     request.processing_failure_count + 1 >= max_deliver
@@ -512,6 +878,11 @@ async def run() -> None:
         stream=GRAPH_STREAM,
     )
     active: set[asyncio.Task] = set()
+    dispatch_buffer = _HostnameDispatchBuffer(CRAWL_DISPATCH_WINDOW)
+    buffered_heartbeat_task = asyncio.create_task(
+        _keep_buffered_deliveries_alive(dispatch_buffer),
+        name="acquisition-buffer-heartbeats",
+    )
     started = datetime.now(UTC)
     monitor = HealthMonitor(
         heartbeat_timeout_seconds=get_float(
@@ -520,86 +891,106 @@ async def run() -> None:
     )
     monitor.dependencies_ready()
     monitor.subsystem_ready("acquisition")
+    monitor.subsystem_unavailable("presence", "starting")
     endpoints.start_health(monitor)
 
+    event_loop_heartbeat_task = asyncio.create_task(
+        _monitor_event_loop(monitor),
+        name="acquisition-event-loop-heartbeat",
+    )
     graph_navigation_task = asyncio.create_task(
         _run_graph_navigation_until_stopped(monitor),
         name="acquisition-graph-navigation",
     )
 
-    async def presence() -> None:
-        while not stop.is_set():
-            monitor.heartbeat()
-            for active_run in await list_graph_runs(runs):
-                if active_run.status in {"queued", "running"}:
-                    active_run = await expire_graph_run(
+    async def release_dispatch_buffer() -> None:
+        await _release_buffered_deliveries(dispatch_buffer)
+        buffered_heartbeat_task.cancel()
+        await asyncio.gather(buffered_heartbeat_task, return_exceptions=True)
+
+    pending_since: float | None = None
+
+    async def publish_presence() -> None:
+        nonlocal pending_since
+        now = datetime.now(UTC)
+        observed_at = time.monotonic()
+        state = WorkerState(
+            worker_id=worker_id,
+            started_at=started,
+            last_seen_at=now,
+            capacity=capacity,
+            active_request_count=len(active),
+            stopping=False,
+        )
+        await workers.put(
+            worker_id.replace(":", "-"), state.model_dump_json().encode()
+        )
+        consumer = await jetstream.consumer_info(GRAPH_STREAM, CRAWL_CONSUMER)
+        pending = max(0, consumer.num_pending) + max(
+            0, consumer.num_ack_pending
+        )
+        if pending > 0:
+            pending_since = pending_since or observed_at
+        else:
+            pending_since = None
+        marker = (
+            consumer.ack_floor.stream_seq,
+            consumer.ack_floor.consumer_seq,
+            consumer.num_pending,
+            consumer.num_ack_pending,
+        )
+        monitor.queue_observed(
+            "crawl_acquisition",
+            pending=pending,
+            progress_marker=marker,
+            stalled_after_seconds=get_float("ATLAS_WORKER_QUEUE_STALL_SECONDS"),
+        )
+        crawl_metrics.queue_state(
+            pending=pending,
+            oldest_age_seconds=(
+                max(0.0, observed_at - pending_since)
+                if pending_since is not None
+                else 0.0
+            ),
+        )
+        for active_run in await list_graph_runs(runs):
+            if active_run.status in {"queued", "running"}:
+                active_run = await expire_graph_run(
+                    runs=runs,
+                    requests=requests,
+                    progress=progress,
+                    run=active_run,
+                )
+                if (
+                    active_run.status in {"queued", "running"}
+                    and active_run.pending_admissions
+                ):
+                    await reconcile_pending_admissions(
                         runs=runs,
                         requests=requests,
                         progress=progress,
+                        jetstream=jetstream,
                         run=active_run,
                     )
-                    if active_run.status in {"queued", "running"} and active_run.pending_admissions:
-                        await reconcile_pending_admissions(
-                            runs=runs,
-                            requests=requests,
-                            progress=progress,
-                            jetstream=jetstream,
-                            run=active_run,
-                        )
-            state = WorkerState(
-                worker_id=worker_id,
-                started_at=started,
-                last_seen_at=datetime.now(UTC),
-                capacity=capacity,
-                active_request_count=len(active),
-                stopping=False,
-            )
-            await workers.put(
-                worker_id.replace(":", "-"), state.model_dump_json().encode()
-            )
-            all_requests = await list_crawl_requests(requests)
-            pending_requests = [
-                item
-                for item in all_requests
-                if item.status in {"queued", "crawling"}
-            ]
-            now = datetime.now(UTC)
-            oldest_age = (
-                max(
-                    0.0,
-                    (
-                        now
-                        - min(item.created_at for item in pending_requests)
-                    ).total_seconds(),
-                )
-                if pending_requests
-                else 0.0
-            )
-            completed_acquisitions = [
-                item
-                for item in all_requests
-                if item.status not in {"queued", "crawling"}
-            ]
-            marker = (
-                len(completed_acquisitions),
-                max(
-                    (item.updated_at for item in completed_acquisitions),
-                    default=started,
-                ).isoformat(),
-            )
-            monitor.queue_observed(
-                "crawl_acquisition",
-                pending=len(pending_requests),
-                progress_marker=marker,
-                stalled_after_seconds=get_float("ATLAS_WORKER_QUEUE_STALL_SECONDS"),
-            )
-            crawl_metrics.queue_state(
-                pending=len(pending_requests),
-                oldest_age_seconds=oldest_age,
-            )
-            await asyncio.sleep(5)
 
-    presence_task = asyncio.create_task(presence())
+    presence_task = asyncio.create_task(
+        _run_presence_until_stopped(
+            stop=stop,
+            monitor=monitor,
+            iteration=publish_presence,
+            timeout_seconds=max(
+                1.0,
+                get_float("ATLAS_ACQUISITION_WORKER_PRESENCE_TTL_SECONDS") / 2,
+            ),
+        ),
+        name="acquisition-presence",
+    )
+    background_tasks = (
+        buffered_heartbeat_task,
+        event_loop_heartbeat_task,
+        graph_navigation_task,
+        presence_task,
+    )
     try:
         async with (
             async_playwright() as playwright,
@@ -607,6 +998,7 @@ async def run() -> None:
         ):
             try:
                 while not stop.is_set():
+                    _raise_background_failure(background_tasks)
                     completed = {task for task in active if task.done()}
                     for task in completed:
                         if task.cancelled():
@@ -618,50 +1010,75 @@ async def run() -> None:
                                 exc_info=(type(error), error, error.__traceback__),
                             )
                     active.difference_update(completed)
-                    available = capacity - len(active)
-                    if available <= 0:
-                        await asyncio.sleep(0.05)
-                        continue
-                    try:
-                        messages = await crawl_subscription.fetch(
-                            batch=available,
-                            timeout=0.1,
-                        )
-                    except (NatsTimeoutError, asyncio.TimeoutError):
-                        messages = []
-                    for message in messages:
-                        task = asyncio.create_task(
-                            _process_crawl(
-                                message,
-                                runs,
-                                requests,
-                                progress,
-                                repository_pipeline,
-                                resource_grants,
-                                domain_pacing,
-                                jetstream,
-                                playwright=playwright,
+                    delivery_room = (
+                        CRAWL_DISPATCH_WINDOW - len(dispatch_buffer) - len(active)
+                    )
+                    messages = []
+                    if delivery_room > 0:
+                        try:
+                            messages = await crawl_subscription.fetch(
+                                batch=delivery_room,
+                                timeout=0.1,
                             )
+                        except (NatsTimeoutError, asyncio.TimeoutError):
+                            messages = []
+                        classified = await asyncio.gather(
+                            *(
+                                _classify_crawl_message(message, requests)
+                                for message in messages
+                            ),
+                            return_exceptions=True,
                         )
-                        active.add(task)
-                    if not messages:
+                        for item in classified:
+                            if isinstance(item, BaseException):
+                                logging.error(
+                                    "acquisition delivery classification failed",
+                                    exc_info=(
+                                        type(item),
+                                        item,
+                                        item.__traceback__,
+                                    ),
+                                )
+                            elif item is not None:
+                                dispatch_buffer.add(item)
+
+                    launched = await _dispatch_buffered_crawls(
+                        dispatch_buffer,
+                        active,
+                        capacity=capacity,
+                        runs=runs,
+                        requests=requests,
+                        progress=progress,
+                        repository_pipeline=repository_pipeline,
+                        resource_grants=resource_grants,
+                        domain_pacing=domain_pacing,
+                        jetstream=jetstream,
+                        playwright=playwright,
+                    )
+                    if not messages and not launched:
                         await asyncio.sleep(0.05)
             finally:
                 stop.set()
+                await release_dispatch_buffer()
                 presence_task.cancel()
+                event_loop_heartbeat_task.cancel()
                 graph_navigation_task.cancel()
                 await asyncio.gather(
                     presence_task,
+                    event_loop_heartbeat_task,
                     graph_navigation_task,
                     *active,
                     return_exceptions=True,
                 )
     finally:
         stop.set()
+        await release_dispatch_buffer()
         presence_task.cancel()
+        event_loop_heartbeat_task.cancel()
         graph_navigation_task.cancel()
         await asyncio.gather(
             presence_task,
+            event_loop_heartbeat_task,
             graph_navigation_task,
             *active,
             return_exceptions=True,

@@ -12,7 +12,7 @@ from typing import Any, Callable, TypeVar
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-import duckdb
+import pyarrow as pa
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,8 +24,6 @@ TERMINAL_RUN_STATES = {
     "cancelled",
 }
 T = TypeVar("T")
-_QUACK_CONNECTION: duckdb.DuckDBPyConnection | None = None
-_QUACK_RUNTIME: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -59,7 +57,6 @@ def api_text(path: str) -> str:
 
 
 def materialization_lag(run_id: str) -> dict[str, Any]:
-    connection, runtime = _catalogue_quack_connection()
     definitions = [
         {
             "materialization_id": item["id"],
@@ -87,18 +84,7 @@ def materialization_lag(run_id: str) -> dict[str, Any]:
         )
         for item in definitions
     )
-    crawls = _quote_qualified(
-        runtime["catalogue_alias"],
-        runtime["catalogue_schema"],
-        "crawls",
-    )
-    coverage = _quote_qualified(
-        runtime["catalogue_alias"],
-        "_atlas",
-        "materialization_coverage",
-    )
-    rows = _quack_rows(
-        connection,
+    rows = catalogue_rows(
         f"""
         WITH active(materialization_id, definition_revision_id, scope_kind) AS (
             VALUES {active_values}
@@ -111,7 +97,7 @@ def materialization_lag(run_id: str) -> dict[str, Any]:
                         THEN CAST(c.crawl_id AS VARCHAR)
                         ELSE c.document_id
                    END AS scope_id
-            FROM {crawls} AS c
+            FROM crawls AS c
             CROSS JOIN active AS a
             WHERE c.graph_run_id = {_quote_literal(run_id)}
               AND (a.scope_kind = 'crawl' OR c.document_id IS NOT NULL)
@@ -120,7 +106,7 @@ def materialization_lag(run_id: str) -> dict[str, Any]:
                count(*) FILTER (WHERE r.status IS NULL),
                count(*) FILTER (WHERE r.status = 'failed')
         FROM expected_scopes AS e
-        LEFT JOIN {coverage} AS r
+        LEFT JOIN _atlas.materialization_coverage AS r
           ON r.materialization_id = e.materialization_id
          AND r.definition_revision_id = e.definition_revision_id
          AND r.scope_kind = e.scope_kind
@@ -136,83 +122,38 @@ def materialization_lag(run_id: str) -> dict[str, Any]:
     }
 
 
-def _catalogue_quack_connection() -> tuple[duckdb.DuckDBPyConnection, dict[str, Any]]:
-    global _QUACK_CONNECTION, _QUACK_RUNTIME
-    if _QUACK_CONNECTION is not None and _QUACK_RUNTIME is not None:
-        return _QUACK_CONNECTION, _QUACK_RUNTIME
-
-    runtime = api("GET", "/catalogue/query-runtime")
-    connection = duckdb.connect()
+def catalogue_rows(sql: str) -> list[tuple[Any, ...]]:
+    data = json.dumps({"sql": sql}).encode()
+    request = Request(
+        f"{API}/catalogue/query-executions",
+        data=data,
+        method="POST",
+        headers={"content-type": "application/json"},
+    )
     try:
-        connection.install_extension("quack")
-        connection.load_extension("quack")
-        connection.execute(
-            "ATTACH "
-            f"{_quote_literal(runtime['quack_uri'])} AS _atlas_quack "
-            f"(TYPE quack, TOKEN {_quote_literal(runtime['quack_token'])})"
+        with urlopen(request, timeout=60) as response:
+            query_id = response.headers["X-Atlas-Query-ID"]
+            payload = response.read()
+    except HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        raise RuntimeError(
+            f"POST /catalogue/query-executions failed: {exc.code} {detail}"
+        ) from exc
+    status = api("GET", f"/catalogue/query-executions/{query_id}")
+    if status["status"] != "succeeded":
+        raise RuntimeError(status["error"] or f"catalogue query {status['status']}")
+    table = pa.ipc.open_stream(payload).read_all()
+    return [
+        tuple(
+            table.column(column_index)[row_index].as_py()
+            for column_index in range(table.num_columns)
         )
-        alias = runtime["catalogue_alias"]
-        exists = bool(
-            _quack_rows(
-                connection,
-                (
-                    "SELECT database_name FROM duckdb_databases() "
-                    f"WHERE database_name = {_quote_literal(alias)}"
-                ),
-            )
-        )
-        if not exists:
-            for statement in runtime["setup_sql"]:
-                _quack_rows(connection, statement)
-            try:
-                _quack_rows(connection, runtime["attach_sql"])
-            except duckdb.Error:
-                exists = bool(
-                    _quack_rows(
-                        connection,
-                        (
-                            "SELECT database_name FROM duckdb_databases() "
-                            f"WHERE database_name = {_quote_literal(alias)}"
-                        ),
-                    )
-                )
-                if not exists:
-                    raise
-        _quack_rows(
-            connection,
-            (
-                f"USE {_quote_identifier(alias)}."
-                f"{_quote_identifier(runtime['catalogue_schema'])}"
-            ),
-        )
-    except BaseException:
-        connection.close()
-        raise
-    _QUACK_CONNECTION = connection
-    _QUACK_RUNTIME = runtime
-    return connection, runtime
-
-
-def _quack_rows(
-    connection: duckdb.DuckDBPyConnection,
-    sql: str,
-) -> list[tuple[Any, ...]]:
-    return connection.execute(
-        "FROM quack_query_by_name('_atlas_quack', ?)",
-        [sql],
-    ).fetchall()
+        for row_index in range(table.num_rows)
+    ]
 
 
 def _quote_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
-
-
-def _quote_identifier(value: str) -> str:
-    return '"' + value.replace('"', '""') + '"'
-
-
-def _quote_qualified(*values: str) -> str:
-    return ".".join(_quote_identifier(value) for value in values)
 
 
 def compose(*arguments: str, capture: bool = False) -> str:

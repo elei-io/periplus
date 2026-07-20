@@ -9,7 +9,6 @@ import logging
 import os
 import time
 
-import nats
 from ducklake_cdc_client import RetryableCDCError
 from nats.errors import TimeoutError as NatsTimeoutError
 
@@ -49,6 +48,7 @@ from repository.catalogue.operations import (
 )
 from repository.ingestion.health import HealthMonitor
 from runtime.catalogue_lane import catalogue_operation_lane, run_catalogue_operation
+from runtime.nats_client import connect_nats
 from runtime.catalogue_workers import (
     catalogue_worker_presence,
     ensure_catalogue_worker_storage,
@@ -92,7 +92,7 @@ async def run(
         object_read_units=maximum_scope_units,
         object_write_units=maximum_scope_units,
     )
-    client = await nats.connect(get_str("NATS_URL"), max_reconnect_attempts=-1)
+    client = await connect_nats()
     jetstream = client.jetstream()
     await ensure_streams(jetstream)
     materialization_attempts = await ensure_materialization_attempts(jetstream)

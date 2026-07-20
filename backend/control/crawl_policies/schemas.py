@@ -10,12 +10,29 @@ from control.domain_policies.schemas import DomainPolicySnapshot
 
 PathMode = Literal["exact", "prefix"]
 ResponseOutcome = Literal["retry", "fail", "skip", "accept"]
+ContentVarianceArm = Literal["lower", "baseline", "higher"]
+ContentVarianceSetting = Literal[
+    "wait_dynamic.maximum_wait_ms",
+    "wait_dynamic.stable_samples",
+    "wait_fixed.duration_ms",
+    "scroll.maximum_iterations",
+    "scroll.wait_ms",
+    "scroll.stable_bottom_samples",
+    "expand.maximum_actions",
+    "expand.wait_ms",
+]
 
 
 def _normalize_match_host(value: str) -> str:
     host = value.strip().lower()
     if not host or "/" in host or "://" in host or "?" in host or "#" in host:
         raise ValueError("host must be * or a hostname with an optional port")
+    if "*" in host and not (
+        host.startswith("*.") and host.count("*") == 1 and len(host) > 2
+    ) and host != "*":
+        raise ValueError(
+            "host must be *, an exact hostname, or a *.domain wildcard"
+        )
     return host
 
 
@@ -150,6 +167,15 @@ class ContentPolicy(BaseModel):
         return normalized
 
 
+class ContentPolicyVariance(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    setting: ContentVarianceSetting
+    arm: ContentVarianceArm
+    configured_value: int
+    effective_value: int
+
+
 class CrawlPolicySnapshot(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -160,6 +186,7 @@ class CrawlPolicySnapshot(BaseModel):
     path_prefix: str
     path_mode: PathMode
     content: ContentPolicy = Field(default_factory=ContentPolicy)
+    content_variance: ContentPolicyVariance | None = None
 
 
 class EffectivePolicySnapshot(BaseModel):

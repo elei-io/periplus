@@ -46,12 +46,14 @@ class GraphRepositoryContractTests(unittest.TestCase):
             scope_kind="crawl",
             scope_column="crawl_id",
             scope_id=str(crawl_id),
+            document_id="sha256:document",
             operation_id="operation",
             source="live",
             enqueued_at=datetime.now(UTC),
         )
         self.assertEqual(job.scope_kind, "crawl")
         self.assertEqual(job.scope_id, str(crawl_id))
+        self.assertEqual(job.document_id, "sha256:document")
 
 if __name__ == "__main__":
     unittest.main()

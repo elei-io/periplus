@@ -450,11 +450,10 @@ export function CrawlGraphsDocsPage({ onNavigate }: DocsPageProps) {
       >
         <CodeExample
           title="Select external result links"
-          code={`SELECT url
-FROM page.links
+          code={`SELECT target_url AS url
+FROM edge.page_links
 WHERE crawl_id = $crawl_id
-  AND is_http
-  AND NOT is_internal
+  AND relation_kind = 'external'
 ORDER BY element_index
 LIMIT 10;`}
         />

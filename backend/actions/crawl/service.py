@@ -620,6 +620,7 @@ async def crawl_graph_request(
     repository_pipeline: AcquisitionPipeline | None = None,
     resource_grants=None,
     domain_pacing=None,
+    domain_permit=None,
     persist_retryable_failure: bool = True,
     include_html: bool = False,
     **_kwargs,
@@ -634,7 +635,17 @@ async def crawl_graph_request(
     remote_domain = (urlparse(normalized).hostname or "unknown").lower()
     attempt_number = len(context.prior_attempts_json) + 1
     with graph_execution_scope(context):
-        if resource_grants is None:
+        if domain_permit is not None:
+            async with domain_permit:
+                if domain_pacing is not None:
+                    await wait_for_domain_interval(domain_pacing, domain=remote_domain, interval_seconds=domain.minimum_request_interval_seconds)
+                page = await _acquire(
+                    normalized,
+                    policy,
+                    attempt_number=attempt_number,
+                    playwright=playwright,
+                )
+        elif resource_grants is None:
             if domain_pacing is not None:
                 await wait_for_domain_interval(domain_pacing, domain=remote_domain, interval_seconds=domain.minimum_request_interval_seconds)
             page = await _acquire(

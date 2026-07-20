@@ -34,13 +34,13 @@ from runtime.graph_queue import (
     NAVIGATION_READINESS_SUBJECT,
     EdgeWork,
     NavigationReadinessWork,
-    connect_nats,
     edge_evaluation_identity,
     ensure_graph_progress_storage,
     ensure_graph_storage,
     list_graph_runs,
     update_edge_evaluation,
 )
+from runtime.nats_client import connect_nats
 from runtime.graph_runs import (
     EdgeEvaluationBusy,
     EdgeEvaluationFailed,
@@ -107,7 +107,10 @@ class EdgeUrlExecutor:
         )
         statement = parse_one(sql, dialect="duckdb")
         for source in statement.find_all(exp.Table):
-            if source.db.lower() == "page" and source.name.lower() == "links":
+            if (
+                source.db.lower() == "edge"
+                and source.name.lower() == "page_links"
+            ):
                 source.set("db", None)
                 source.set("this", exp.to_identifier("atlas_navigation_links"))
 

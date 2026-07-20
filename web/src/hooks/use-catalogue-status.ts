@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 
-import { readQuackCatalogueStatus } from "@/components/catalogue/workbench-query-runtime"
+import { apiErrorFromResponse, apiUrl } from "@/lib/api"
 
 type CatalogueStatusResponse = {
   active_file_count: number
@@ -15,7 +15,9 @@ export type CatalogueStatus = CatalogueStatusResponse & {
 
 async function fetchCatalogueStatus(): Promise<CatalogueStatus> {
   const startedAt = performance.now()
-  const status = await readQuackCatalogueStatus()
+  const response = await fetch(apiUrl("/catalogue/status"))
+  if (!response.ok) throw await apiErrorFromResponse(response)
+  const status = (await response.json()) as CatalogueStatusResponse
 
   return {
     ...status,

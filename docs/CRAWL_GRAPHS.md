@@ -22,6 +22,15 @@ scoped SQL edges derive later URL inputs from durable crawl evidence.
 There are no action-specific traversal loops, transport routes, provider profiles, shadow trials,
 or direct-HTTP fallback in Atlas.
 
+### Historical consistency contract
+
+Historical edge SQL reads only the DuckLake snapshot pinned before the graph run. Atlas never waits
+for ingestion commits, live materialization, or backfill coverage before starting or settling graph
+traversal. That snapshot may therefore omit recently retained crawls and materialized scopes even
+though their durable work has already been accepted. This bounded staleness is intentional:
+current-page navigation remains available from retained HTML, historical edge SQL must tolerate
+incomplete recent catalogue coverage, and every retry within the run observes the same snapshot.
+
 ## Content policies
 
 Domain policies match hosts and independently control maximum concurrency and minimum request
@@ -66,12 +75,20 @@ crawl so successful recovery does not erase earlier 429 or navigation observatio
 ACK requires retained HTML, durable ingestion publication, and durable navigation-readiness
 publication. A run cancellation settles every nonterminal request. Ingestion terminal state and
 dead letters remain independently observable and never retroactively rewrite traversal status.
+Execution state is operational rather than historical: request and edge-evaluation detail has a
+seven-day default retention window, and compact run summaries and progress have a thirty-day
+default window. The durable crawl and DOM evidence remains in DuckLake after those NATS records
+expire.
 
 ## Scaling
 
 Scale Atlas acquisition-worker replicas for coordination throughput. Domain policies limit website
 pressure independently. Scale the CDP service and its browser farm for transport capacity. Atlas
 continues to govern its own object-store, ingestion, DuckLake, and materialization pressure.
+Mixed-host runs interleave initial roots and each bounded edge result by normalized hostname.
+Acquisition workers retain a bounded hostname-aware delivery window and assign local execution
+lanes only after the distributed domain permit is available, preventing one saturated hostname's
+politeness waiters from blocking ready work for another hostname.
 
 ## Schedules
 

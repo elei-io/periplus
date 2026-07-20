@@ -21,7 +21,11 @@ from control.catalogue_materializations.service import (
     summary,
 )
 from materialization.commit import commit_scope
-from materialization.compute import _write_bounded_arrow, compute_scope
+from materialization.compute import (
+    _set_scope_variables,
+    _write_bounded_arrow,
+    compute_scope,
+)
 from materialization.definitions import publish_scope
 from materialization.fencing import StaleMaterializationJob
 from materialization.queue import MaterializationCommitJob, MaterializationScopeJob
@@ -98,13 +102,20 @@ class CatalogueMaterializationTests(unittest.TestCase):
             jetstream = MagicMock()
             jetstream.publish = unittest.mock.AsyncMock()
 
-            await publish_scope(jetstream, definition, str(uuid4()), "live")
+            await publish_scope(
+                jetstream,
+                definition,
+                str(uuid4()),
+                "live",
+                document_id="sha256:document",
+            )
 
             published = jetstream.publish.await_args
             payload = MaterializationScopeJob.model_validate_json(published.args[1])
             self.assertEqual(
                 published.kwargs["headers"]["Nats-Msg-Id"], payload.operation_id
             )
+            self.assertEqual(payload.document_id, "sha256:document")
 
         import asyncio
 
@@ -197,6 +208,7 @@ class CatalogueMaterializationTests(unittest.TestCase):
             scope_kind="document",
             scope_column="document_id",
             scope_id="sha256:paused",
+            document_id="sha256:paused",
             operation_id="c" * 64,
             source="live",
             enqueued_at=datetime.now(UTC),
@@ -224,6 +236,38 @@ class CatalogueMaterializationTests(unittest.TestCase):
             with self.assertRaises(StaleMaterializationJob):
                 compute_scope(job)
         catalogue.assert_not_called()
+
+    def test_crawl_scope_exposes_direct_physical_pruning_bindings(self) -> None:
+        crawl_id = str(uuid4())
+        job = MaterializationScopeJob(
+            materialization_id=uuid4(),
+            definition_revision_id=uuid4(),
+            target_table="page_links",
+            scope_kind="crawl",
+            scope_column="crawl_id",
+            scope_id=crawl_id,
+            document_id="sha256:document",
+            operation_id="d" * 64,
+            source="live",
+            enqueued_at=datetime.now(UTC),
+        )
+        catalogue = SimpleNamespace(connection=MagicMock())
+
+        _set_scope_variables(catalogue, job)
+
+        self.assertEqual(
+            catalogue.connection.execute.call_args_list,
+            [
+                unittest.mock.call(
+                    "SET VARIABLE atlas_materialization_document_id = ?",
+                    ["sha256:document"],
+                ),
+                unittest.mock.call(
+                    "SET VARIABLE atlas_materialization_crawl_id = ?",
+                    [crawl_id],
+                ),
+            ],
+        )
 
     def test_dematerialization_request_stops_work_without_removing_source(self) -> None:
         view_reference_id = uuid4()
@@ -431,6 +475,7 @@ class CatalogueMaterializationTests(unittest.TestCase):
                     scope_kind="document",
                     scope_column="document_id",
                     scope_id="sha256:example",
+                    document_id="sha256:example",
                     operation_id="a" * 64,
                     source="backfill",
                     enqueued_at=now,
@@ -554,6 +599,7 @@ class CatalogueMaterializationTests(unittest.TestCase):
                     scope_kind="document",
                     scope_column="document_id",
                     scope_id="sha256:stale",
+                    document_id="sha256:stale",
                     operation_id="b" * 64,
                     source="live",
                     enqueued_at=datetime.now(UTC),

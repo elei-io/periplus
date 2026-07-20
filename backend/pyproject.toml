@@ -8,7 +8,7 @@ dependencies = [
     "alembic>=1.18",
     "fastapi[standard]>=0.139.0",
     "httpx>=0.28",
-    "nats-py>=2.11",
+    "nats-py[nkeys]>=2.11",
     "numpy>=2.0",
     "playwright==1.55.0",
     "psycopg[binary]>=3.2",

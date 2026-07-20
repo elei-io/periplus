@@ -10,7 +10,7 @@ from config import get_float
 
 from repository.ingestion.health import HealthMonitor
 from repository.maintenance import MaintenanceConfig, cleanup_staging, compact
-from runtime.graph_queue import connect_nats
+from runtime.nats_client import connect_nats
 from runtime.operation_leases import (
     OperationLeaseLost,
     OperationLeaseUnavailable,

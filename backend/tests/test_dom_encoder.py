@@ -223,18 +223,25 @@ class DomEncoderTests(unittest.TestCase):
             {
                 "internal": [
                     _link_payload(
-                        href="https://www.example.com/assets/guide?a=1&b=2",
-                        text="Nested bold after tail",
-                        title="Read",
-                        base_domain="example.com",
+                        raw_href="guide?utm_source=mail&b=2&a=1#section",
+                        target_url="https://www.example.com/assets/guide?a=1&b=2",
+                        target_fragment="section",
+                        element_index=4,
+                        relation_kind="same_origin",
+                    ),
+                    _link_payload(
+                        raw_href="guide?a=1&b=2",
+                        target_url="https://www.example.com/assets/guide?a=1&b=2",
+                        element_index=8,
+                        relation_kind="same_origin",
                     )
                 ],
                 "external": [
                     _link_payload(
-                        href="https://outside.example/path",
-                        text="External",
-                        title="",
-                        base_domain="outside.example",
+                        raw_href="//outside.example/path",
+                        target_url="https://outside.example/path",
+                        element_index=7,
+                        relation_kind="external",
                     )
                 ],
             },
@@ -250,22 +257,33 @@ class DomEncoderTests(unittest.TestCase):
 
 def _link_payload(
     *,
-    href: str,
-    text: str,
-    title: str,
-    base_domain: str,
+    raw_href: str,
+    target_url: str,
+    element_index: int,
+    relation_kind: str,
+    target_fragment: str | None = None,
 ) -> dict[str, object]:
+    from urllib.parse import urlsplit
+
+    target_parts = urlsplit(target_url)
     return {
-        "href": href,
-        "text": text,
-        "title": title,
-        "base_domain": base_domain,
-        "head_data": None,
-        "head_extraction_status": None,
-        "head_extraction_error": None,
-        "intrinsic_score": 0.0,
-        "contextual_score": None,
-        "total_score": None,
+        "raw_href": raw_href,
+        "source_url": "https://www.example.com/dir/page",
+        "source_scheme": "https",
+        "source_host": "www.example.com",
+        "source_port": 443,
+        "source_registrable_domain": "example.com",
+        "source_path": "/dir/page",
+        "source_query": None,
+        "target_url": target_url,
+        "target_scheme": target_parts.scheme,
+        "target_host": target_parts.hostname,
+        "target_port": 443,
+        "target_path": target_parts.path,
+        "target_query": target_parts.query or None,
+        "target_fragment": target_fragment,
+        "relation_kind": relation_kind,
+        "element_index": element_index,
     }
 
 

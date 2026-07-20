@@ -26,7 +26,6 @@ from repository.ingestion.queue import (
     SUBJECT,
     IngestionJob,
     ack_wait_seconds,
-    connect_repository_nats,
     ensure_dead_letter_stream,
     ensure_ingestion_results,
     ensure_repository_consumer,
@@ -37,6 +36,7 @@ from repository.ingestion.queue import (
     record_ingestion_processing_failure,
     store_ingestion_response,
 )
+from runtime.nats_client import connect_nats
 from repository.catalogue.operations import (
     is_retryable_catalogue_unavailability,
     run_with_catalogue_retry,
@@ -82,7 +82,7 @@ async def run(
         object_read_units=object_units(config.max_staged_bytes),
         object_write_units=object_units(config.max_staged_bytes),
     )
-    client = await connect_repository_nats()
+    client = await connect_nats()
     jetstream = client.jetstream()
     await ensure_repository_stream(jetstream)
     await ensure_dead_letter_stream(jetstream)

@@ -27,6 +27,7 @@ def scope_job() -> MaterializationScopeJob:
         scope_kind="crawl",
         scope_column="crawl_id",
         scope_id=str(uuid4()),
+        document_id="sha256:document",
         operation_id="a" * 64,
         source="live",
         enqueued_at=datetime.now(UTC),

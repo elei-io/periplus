@@ -14,6 +14,11 @@ from sqlglot.errors import ParseError
 
 from control.catalogue_queries.models import CatalogueQuery
 from control.catalogue_queries.service import create_query, detail, restore_query, update_query
+from control.catalogue_materializations.models import CatalogueMaterialization
+from control.catalogue_materializations.service import (
+    put_for_view as materialize_view,
+    rebuild as rebuild_materialization,
+)
 from control.catalogue_scalar_macros.models import CatalogueScalarMacroDefinition
 from control.catalogue_scalar_macros.service import (
     create_definition as create_scalar_macro,
@@ -31,6 +36,10 @@ from control.catalogue_views.service import (
     update_reference as update_view,
 )
 from repository.catalogue.client import Catalogue
+from repository.catalogue.materializations import (
+    MaterializationSchemaChangeError,
+    MaterializationStore,
+)
 from repository.catalogue.query import CatalogueQueryError, classify_select
 from repository.catalogue.scalar_macros import (
     SCALAR_MACRO_SCHEMA,
@@ -54,12 +63,18 @@ class RelationFixture:
     sql: str
     parameters: tuple[str, ...] = ()
     parameter_defaults: tuple[tuple[str, str], ...] = ()
+    partition_column: str | None = None
 
 
 _FIXTURE_PARAMETER_DEFAULT = re.compile(
     r"(?P<name>[a-z_][a-z0-9_]*)\s*:=\s*"
     r"(?P<expression>NULL\s*::\s*[a-z_][a-z0-9_]*|'(?:''|[^'])*')",
     re.IGNORECASE,
+)
+_FIXTURE_DAILY_PARTITION = re.compile(
+    r"^\s*--\s*atlas:partition-by-day\s*=\s*"
+    r"(?P<column>[a-z_][a-z0-9_]*)\s*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
@@ -78,6 +93,25 @@ def seed_catalogue_fixtures(
             session,
             view_store,
             _parse_relation_fixture(fixtures_root, path, kind="VIEW", schema=VIEW_SCHEMA),
+        )
+    materialized_fixtures: list[tuple[str, RelationFixture]] = []
+    for scope_kind in ("document", "crawl"):
+        for path in _sql_files(fixtures_root / "materialized_views" / scope_kind):
+            fixture = _parse_relation_fixture(
+                fixtures_root,
+                path,
+                kind="VIEW",
+                schema=VIEW_SCHEMA,
+                materialized=True,
+            )
+            _seed_view(session, view_store, fixture)
+            materialized_fixtures.append((scope_kind, fixture))
+    for scope_kind, fixture in materialized_fixtures:
+        _seed_materialization(
+            session,
+            catalogue,
+            fixture,
+            scope_kind=scope_kind,
         )
     macro_paths = _sql_files(fixtures_root / "table_macros")
     for path in _ordered_table_macro_paths(macro_paths):
@@ -346,6 +380,126 @@ def _seed_view(
         )
 
 
+def _seed_materialization(
+    session: Session,
+    catalogue: Catalogue,
+    fixture: RelationFixture,
+    *,
+    scope_kind: str,
+) -> None:
+    reference = session.scalar(
+        select(CatalogueViewReference).where(
+            CatalogueViewReference.fixture_path == fixture.fixture_path
+        )
+    )
+    if reference is None:
+        raise RuntimeError("Seeded materialized view reference was not found.")
+    scope_column = f"{scope_kind}_id"
+    existing = session.scalar(
+        select(CatalogueMaterialization).where(
+            CatalogueMaterialization.view_reference_id == reference.id,
+            CatalogueMaterialization.archived_at.is_(None),
+        )
+    )
+    store = MaterializationStore(catalogue)
+    if existing is None:
+        _create_seeded_materialization(
+            session, store, reference, fixture, scope_kind=scope_kind
+        )
+        return
+    if existing.scope_kind != scope_kind or existing.scope_column != scope_column:
+        raise CatalogueFixtureError(
+            f"{fixture.fixture_path} changed its materialization scope from "
+            f"{existing.scope_kind}:{existing.scope_column} to "
+            f"{scope_kind}:{scope_column}; use a new fixture filename."
+        )
+    if existing.partition_column != fixture.partition_column:
+        _replace_seeded_materialization(
+            session,
+            catalogue,
+            store,
+            reference,
+            fixture,
+            existing,
+            scope_kind=scope_kind,
+        )
+        return
+    if existing.source_state == "source_changed":
+        try:
+            rebuild_materialization(
+                session,
+                store,
+                existing,
+                expected_uuid=existing.ducklake_table_uuid,
+            )
+        except MaterializationSchemaChangeError:
+            _replace_seeded_materialization(
+                session,
+                catalogue,
+                store,
+                reference,
+                fixture,
+                existing,
+                scope_kind=scope_kind,
+            )
+
+
+def _create_seeded_materialization(
+    session: Session,
+    store: MaterializationStore,
+    reference: CatalogueViewReference,
+    fixture: RelationFixture,
+    *,
+    scope_kind: str,
+) -> None:
+    created = materialize_view(
+        session,
+        store,
+        view_reference_id=reference.id,
+        name=fixture.name,
+        display_name=None,
+        description=None,
+        scope_kind=scope_kind,
+        scope_column=f"{scope_kind}_id",
+        backfill_scopes_per_minute=60,
+        partition_column=fixture.partition_column,
+    )
+    model = session.get(CatalogueMaterialization, created.id)
+    if model is None:
+        raise RuntimeError("Seeded materialization was not found after creation.")
+    # DuckLake returns a catalogue-qualified form of a newly created view.
+    # The fixture itself remains the authoritative, portable source query.
+    model.source_sql = fixture.sql
+    session.flush()
+
+
+def _replace_seeded_materialization(
+    session: Session,
+    catalogue: Catalogue,
+    store: MaterializationStore,
+    reference: CatalogueViewReference,
+    fixture: RelationFixture,
+    existing: CatalogueMaterialization,
+    *,
+    scope_kind: str,
+) -> None:
+    restored = CatalogueViewStore(catalogue).replace(
+        current_uuid=reference.ducklake_view_uuid,
+        sql=fixture.sql,
+    )
+    reference.ducklake_view_uuid = restored.view_uuid
+    store.drop_managed(
+        name=existing.name,
+        expected_uuid=existing.ducklake_table_uuid,
+        materialization_id=existing.id,
+    )
+    session.delete(existing)
+    session.flush()
+    _create_seeded_materialization(
+        session, store, reference, fixture, scope_kind=scope_kind
+    )
+
+
 def _seed_macro(
     session: Session, store: CatalogueTableMacroStore, fixture: RelationFixture
 ) -> None:
@@ -420,9 +574,28 @@ def _parse_query_fixture(root: Path, path: Path) -> RelationFixture:
 
 
 def _parse_relation_fixture(
-    root: Path, path: Path, *, kind: str, schema: str
+    root: Path,
+    path: Path,
+    *,
+    kind: str,
+    schema: str,
+    materialized: bool = False,
 ) -> RelationFixture:
     source = path.read_text(encoding="utf-8").strip()
+    partition_directives = list(_FIXTURE_DAILY_PARTITION.finditer(source))
+    if len(partition_directives) > 1:
+        raise CatalogueFixtureError(
+            f"{path} may declare atlas:partition-by-day at most once."
+        )
+    if partition_directives and not materialized:
+        raise CatalogueFixtureError(
+            f"{path} may only declare atlas:partition-by-day as a materialized view."
+        )
+    partition_column = (
+        partition_directives[0].group("column").lower()
+        if partition_directives
+        else None
+    )
     signature_end = (
         re.search(r"\)\s+AS\s+TABLE\b", source, re.IGNORECASE)
         if kind == "MACRO"
@@ -493,6 +666,7 @@ def _parse_relation_fixture(
         sql=sql,
         parameters=parameters,
         parameter_defaults=parameter_defaults,
+        partition_column=partition_column,
     )
 
 

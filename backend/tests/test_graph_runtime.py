@@ -141,7 +141,7 @@ def snapshot(
         name="links",
         source_node_id=source.id,
         target_node_id=target.id,
-        sql="SELECT url FROM page.links WHERE crawl_id = $crawl_id LIMIT 10",
+        sql="SELECT target_url AS url FROM edge.page_links WHERE crawl_id = $crawl_id LIMIT 10",
         dedupe_mode=dedupe_mode,
     )
     return FrozenGraphSnapshot(
@@ -157,7 +157,7 @@ class GraphRuntimeTests(unittest.TestCase):
         async def scenario() -> None:
             graph = snapshot()
             graph.edges[0].sql = (
-                "SELECT p.url FROM page.links AS p "
+                "SELECT p.target_url AS url FROM edge.page_links AS p "
                 "JOIN crawls AS c USING (document_id) "
                 "WHERE p.crawl_id = $crawl_id LIMIT 10"
             )
@@ -683,6 +683,53 @@ class GraphRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(payload.navigation, package)
 
+    def test_initial_urls_are_published_round_robin_by_hostname(self) -> None:
+        async def scenario() -> None:
+            runs, requests, progress, jetstream = (
+                FakeKV(),
+                FakeKV(),
+                FakeKV(),
+                FakeJetStream(),
+            )
+            urls = [
+                "https://a.example/1",
+                "https://a.example/2",
+                "https://b.example/1",
+                "https://b.example/2",
+                "https://c.example/1",
+            ]
+            run = await create_graph_run(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                jetstream=jetstream,
+                snapshot=snapshot(),
+                urls=urls,
+                policy_resolver=lambda _url: policy_snapshot(),
+            )
+            from runtime.graph_queue import CrawlWork
+
+            published_urls: list[str] = []
+            for _subject, payload in jetstream.messages:
+                work = CrawlWork.model_validate_json(payload)
+                request = await get_crawl_request(requests, work.crawl_request_id)
+                assert request is not None
+                published_urls.append(request.url)
+
+            self.assertEqual(run.trigger_urls, tuple(urls))
+            self.assertEqual(
+                published_urls,
+                [
+                    "https://a.example/1",
+                    "https://b.example/1",
+                    "https://c.example/1",
+                    "https://a.example/2",
+                    "https://b.example/2",
+                ],
+            )
+
+        asyncio.run(scenario())
+
     def test_admission_is_idempotent_and_freezes_policy(self) -> None:
         async def scenario() -> None:
             runs, requests, progress, jetstream = (
@@ -953,6 +1000,7 @@ class GraphRuntimeTests(unittest.TestCase):
             run = new_graph_run(graph, ["https://example.com"], now=now).model_copy(
                 update={
                     "status": "running",
+                    "seen_request_identities": ("a" * 64, "b" * 64),
                     "request_count": 2,
                     "pending_request_count": 2,
                 }
@@ -1002,6 +1050,8 @@ class GraphRuntimeTests(unittest.TestCase):
             self.assertEqual(current.status, "completed_with_errors")
             self.assertEqual(current.failed_request_count, 2)
             self.assertEqual(current.error_count, 2)
+            self.assertEqual(current.seen_request_identities, ())
+            self.assertEqual(current.pending_admissions, ())
 
         asyncio.run(scenario())
 

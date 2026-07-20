@@ -21,14 +21,17 @@ from control.catalogue_queries.models import CatalogueQuery, CatalogueQueryRevis
 from control.catalogue_scalar_macros.models import CatalogueScalarMacroDefinition
 from control.catalogue_table_macros.models import CatalogueTableMacroDefinition
 from control.catalogue_table_macros.service import create_definition
+from control.urls import normalize_url as normalize_runtime_url
 from control.catalogue_views.models import CatalogueViewReference
 from db import Base
+from dom import links_from_html
 from repository import (
     FileObjectStore,
     RawHtmlRepository,
     RepositoryIngestor,
 )
 from repository.catalogue import Catalogue, CatalogueConfig, CrawlRecord
+from repository.catalogue.materializations import MaterializationStore
 from repository.catalogue.table_macros import CatalogueTableMacroStore
 from repository.catalogue.views import CatalogueViewStore
 
@@ -68,6 +71,37 @@ class CatalogueFixtureTests(unittest.TestCase):
                     ORDER BY function_name
                     """
                 ).fetchall()
+                valid_urls = [
+                    " HTTPS://Example.COM:443/a?utm_source=x&b=2&a=hello%20world#fragment ",
+                    "http://[2001:db8::1]:80/x?q=a+b",
+                    "https://example.com/path?empty=&bare",
+                ]
+                normalized_urls = [
+                    catalogue.connection.execute(
+                        "SELECT atlas.macros.normalize_url(?)", [value]
+                    ).fetchone()[0]
+                    for value in valid_urls
+                ]
+                invalid_urls = [
+                    "mailto:a@example.com",
+                    "https://user:pass@example.com/x",
+                    "https://example.com:not-a-port/x",
+                    "https://example.com:999999999999999999999/x",
+                ]
+                rejected_urls = [
+                    catalogue.connection.execute(
+                        "SELECT atlas.macros.normalize_url(?)", [value]
+                    ).fetchone()[0]
+                    for value in invalid_urls
+                ]
+                absent_optional_parts = catalogue.connection.execute(
+                    """
+                    SELECT
+                        (atlas.macros.url_parts(?)).query,
+                        (atlas.macros.url_parts(?)).fragment
+                    """,
+                    ["https://example.com/path", "https://example.com/path"],
+                ).fetchone()
             session.close()
             engine.dispose()
 
@@ -79,11 +113,19 @@ class CatalogueFixtureTests(unittest.TestCase):
                 "has_attribute",
                 "has_text",
                 "inner_html",
+                "normalize_url",
                 "readable_text",
                 "resolve_url",
                 "text_content",
+                "url_parts",
             ],
         )
+        self.assertEqual(
+            normalized_urls,
+            [normalize_runtime_url(value) for value in valid_urls],
+        )
+        self.assertEqual(rejected_urls, [None] * len(invalid_urls))
+        self.assertEqual(absent_optional_parts, (None, None))
 
     def test_bundled_fixtures_compile_against_the_catalogue(self) -> None:
         fixtures = Path(__file__).parents[2] / "fixtures"
@@ -110,6 +152,16 @@ class CatalogueFixtureTests(unittest.TestCase):
                 with Catalogue(config) as catalogue:
                     catalogue.bootstrap()
                     seed_catalogue_fixtures(session, catalogue, fixtures)
+                    first_page_links = session.scalar(
+                        select(CatalogueMaterialization).where(
+                            CatalogueMaterialization.name == "page_links"
+                        )
+                    )
+                    self.assertIsNotNone(first_page_links)
+                    assert first_page_links is not None
+                    first_revision_id = first_page_links.definition_revision_id
+                    first_activation_snapshot = first_page_links.activation_snapshot
+                    seed_catalogue_fixtures(session, catalogue, fixtures)
                     self.assertEqual(
                         [
                             macro.macro_name
@@ -135,6 +187,55 @@ class CatalogueFixtureTests(unittest.TestCase):
                             "SELECT * FROM atlas.macros.extract_records('missing', 'x > y')"
                         ).fetchall(),
                         [],
+                    )
+                    page_links = session.scalar(
+                        select(CatalogueMaterialization).where(
+                            CatalogueMaterialization.name == "page_links"
+                        )
+                    )
+                    self.assertIsNotNone(page_links)
+                    assert page_links is not None
+                    self.assertEqual(
+                        page_links.definition_revision_id, first_revision_id
+                    )
+                    self.assertEqual(
+                        page_links.activation_snapshot, first_activation_snapshot
+                    )
+                    self.assertEqual(
+                        len(
+                            list(
+                                session.scalars(
+                                    select(CatalogueMaterialization).where(
+                                        CatalogueMaterialization.archived_at.is_(None)
+                                    )
+                                )
+                            )
+                        ),
+                        1,
+                    )
+                    self.assertEqual(page_links.scope_kind, "crawl")
+                    self.assertEqual(page_links.scope_column, "crawl_id")
+                    self.assertEqual(page_links.partition_column, "captured_at")
+                    self.assertEqual(
+                        MaterializationStore(catalogue)
+                        .inspect("page_links")
+                        .partitioning,
+                        (
+                            "year(captured_at)",
+                            "month(captured_at)",
+                            "day(captured_at)",
+                        ),
+                    )
+                    self.assertTrue(page_links.live_enabled)
+                    self.assertTrue(page_links.backfill_enabled)
+                    reference = session.get(
+                        CatalogueViewReference, page_links.view_reference_id
+                    )
+                    self.assertIsNotNone(reference)
+                    assert reference is not None
+                    self.assertEqual(
+                        reference.fixture_path,
+                        "materialized_views/crawl/page_links.sql",
                     )
                     selector_definitions = list(
                         session.scalars(
@@ -308,6 +409,86 @@ class CatalogueFixtureTests(unittest.TestCase):
                     ).fetchone()
                     self.assertEqual(blank_description, (None,))
                     ingestor.close()
+            finally:
+                session.close()
+            engine.dispose()
+
+    def test_materialized_fixture_schema_change_recreates_its_backing_table(
+        self,
+    ) -> None:
+        source_fixtures = Path(__file__).parents[2] / "fixtures"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fixtures = root / "fixtures"
+            shutil.copytree(source_fixtures, fixtures)
+            engine = create_engine("sqlite://")
+            Base.metadata.create_all(
+                engine,
+                tables=[
+                    CatalogueQuery.__table__,
+                    CatalogueQueryRevision.__table__,
+                    CatalogueViewReference.__table__,
+                    CatalogueMaterialization.__table__,
+                    CatalogueTableMacroDefinition.__table__,
+                    CatalogueScalarMacroDefinition.__table__,
+                ],
+            )
+            session = Session(engine, expire_on_commit=False)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            try:
+                with Catalogue(config) as catalogue:
+                    catalogue.bootstrap()
+                    seed_catalogue_fixtures(session, catalogue, fixtures)
+                    original = session.scalar(
+                        select(CatalogueMaterialization).where(
+                            CatalogueMaterialization.name == "page_links",
+                            CatalogueMaterialization.archived_at.is_(None),
+                        )
+                    )
+                    self.assertIsNotNone(original)
+                    assert original is not None
+                    original_id = original.id
+                    original_table_uuid = original.ducklake_table_uuid
+
+                    (
+                        fixtures
+                        / "materialized_views"
+                        / "crawl"
+                        / "page_links.sql"
+                    ).write_text(
+                        "CREATE VIEW views.page_links AS "
+                        "SELECT crawl_id FROM crawls;",
+                        encoding="utf-8",
+                    )
+                    seed_catalogue_fixtures(session, catalogue, fixtures)
+
+                    replacement = session.scalar(
+                        select(CatalogueMaterialization).where(
+                            CatalogueMaterialization.name == "page_links",
+                            CatalogueMaterialization.archived_at.is_(None),
+                        )
+                    )
+                    self.assertIsNotNone(replacement)
+                    assert replacement is not None
+                    self.assertNotEqual(replacement.id, original_id)
+                    self.assertNotEqual(
+                        replacement.ducklake_table_uuid, original_table_uuid
+                    )
+                    self.assertIsNone(
+                        session.get(CatalogueMaterialization, original_id)
+                    )
+                    self.assertEqual(
+                        [
+                            column[0]
+                            for column in MaterializationStore(catalogue)
+                            .inspect("page_links")
+                            .columns
+                        ],
+                        ["crawl_id"],
+                    )
             finally:
                 session.close()
                 engine.dispose()
@@ -679,6 +860,11 @@ class CatalogueFixtureTests(unittest.TestCase):
         </dl>
         <ol><li>First list A</li><li>First list B</li></ol>
         <ol><li>Second list A</li><li>Second list B</li></ol>
+        <a href="#details">Details</a>
+        <a href="?page=2&amp;utm_source=mail&amp;b=2&amp;a=1">Next</a>
+        <a href="https://blog.example.com/post">Blog</a>
+        <a href="http://example.com/other">HTTP</a>
+        <a href="//outside.test/x#section">Outside</a>
         </body></html>
         """
         fixtures = Path(__file__).parents[2] / "fixtures"
@@ -733,6 +919,93 @@ class CatalogueFixtureTests(unittest.TestCase):
                     ingestor.commit_prepared_batch(
                         [ingestor.prepare_from_raw(crawl=crawl)]
                     )
+
+                    self.assertEqual(
+                        catalogue.connection.execute(
+                            "SELECT * FROM atlas.views.page_links "
+                            "WHERE crawl_id = ?",
+                            [crawl.crawl_id],
+                        ).fetchall(),
+                        [],
+                    )
+                    materialization = session.scalar(
+                        select(CatalogueMaterialization).where(
+                            CatalogueMaterialization.name == "page_links"
+                        )
+                    )
+                    self.assertIsNotNone(materialization)
+                    assert materialization is not None
+                    page_links = catalogue.connection.execute(
+                        f"""
+                        SELECT
+                            target_url,
+                            source_host,
+                            target_path,
+                            relation_kind
+                        FROM ({materialization.source_sql}) AS page_links_source
+                        WHERE crawl_id = ?
+                        ORDER BY element_index
+                        LIMIT 2
+                        """,
+                        [crawl.crawl_id],
+                    ).fetchall()
+                    self.assertEqual(
+                        page_links,
+                        [
+                            (
+                                "https://example.com/one",
+                                "example.com",
+                                "/one",
+                                "same_origin",
+                            ),
+                            (
+                                "https://example.com/two",
+                                "example.com",
+                                "/two",
+                                "same_origin",
+                            ),
+                        ],
+                    )
+                    durable_rows = catalogue.connection.execute(
+                        f"""
+                        SELECT *
+                        FROM ({materialization.source_sql}) AS page_links_source
+                        WHERE crawl_id = ?
+                        ORDER BY element_index
+                        """,
+                        [crawl.crawl_id],
+                    ).fetchall()
+                    projected = links_from_html(html, page_url=url)
+                    expected_rows = []
+                    for link in sorted(
+                        projected["internal"] + projected["external"],
+                        key=lambda item: int(item["element_index"]),
+                    ):
+                        expected_rows.append(
+                            (
+                                crawl.document_id,
+                                crawl.captured_at,
+                                link["source_url"],
+                                link["source_scheme"],
+                                link["source_host"],
+                                link["source_port"],
+                                link["source_registrable_domain"],
+                                link["source_path"],
+                                link["source_query"],
+                                link["target_url"],
+                                link["target_scheme"],
+                                link["target_host"],
+                                link["target_port"],
+                                link["target_path"],
+                                link["target_query"],
+                                link["target_fragment"],
+                                link["relation_kind"],
+                                link["raw_href"],
+                                link["element_index"],
+                                crawl.crawl_id,
+                            )
+                        )
+                    self.assertEqual(durable_rows, expected_rows)
 
                     suggestion = catalogue.connection.execute(
                         "SELECT record_selector, fields, matched_record_count "

@@ -5,6 +5,7 @@ import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 from ducklake_cdc_client import LeaseContentionError
 
@@ -15,6 +16,7 @@ from materialization.executor import (
 )
 from materialization.live import (
     _close_consumer,
+    _crawl_triggered_scopes,
     _open_crawl_planner_consumer,
     _run_blocking,
     run_crawl_planner,
@@ -126,6 +128,7 @@ class MaterializationSupervisionTests(unittest.IsolatedAsyncioTestCase):
     def test_crawl_planner_consumer_owns_a_dedicated_connection(self) -> None:
         catalogue = SimpleNamespace(
             lake=MagicMock(),
+            connection=MagicMock(),
             config=SimpleNamespace(schema="main"),
         )
         with patch("materialization.live.DMLConsumer") as consumer_type:
@@ -138,6 +141,7 @@ class MaterializationSupervisionTests(unittest.IsolatedAsyncioTestCase):
         consumer_type.assert_called_once_with(
             catalogue.lake,
             "atlas-crawl-materialization-planner",
+            connection=catalogue.connection,
             table="main.crawls",
             mode="changes",
             start_at=42,
@@ -145,6 +149,24 @@ class MaterializationSupervisionTests(unittest.IsolatedAsyncioTestCase):
             lease_policy="error",
         )
         consumer.open.assert_called_once_with()
+
+    def test_crawl_scope_preserves_cdc_document_identity(self) -> None:
+        definition = SimpleNamespace(
+            id=uuid4(),
+            definition_revision_id=uuid4(),
+            name="page_links",
+            scope_kind="crawl",
+            scope_column="crawl_id",
+        )
+
+        scopes = _crawl_triggered_scopes(
+            [definition],
+            crawl_id="79a83bee-38a3-4dd8-8fe3-4f89a43c7f79",
+            document_id="sha256:document",
+        )
+
+        self.assertEqual(len(scopes), 1)
+        self.assertEqual(scopes[0].document_id, "sha256:document")
 
     async def test_crawl_planner_stays_idle_without_live_definitions(self) -> None:
         stop = asyncio.Event()

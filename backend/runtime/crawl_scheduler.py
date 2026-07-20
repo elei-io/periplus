@@ -23,12 +23,12 @@ from control.crawl_schedules.service import (
 from db.session import SessionLocal
 from runtime.graph_queue import (
     GraphRun,
-    connect_nats,
     ensure_graph_progress_storage,
     ensure_graph_storage,
     get_graph_run,
     list_graph_runs,
 )
+from runtime.nats_client import connect_nats
 from runtime.graph_runs import create_graph_run, resolve_policy_snapshot
 
 

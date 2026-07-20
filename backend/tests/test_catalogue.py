@@ -109,7 +109,7 @@ class CatalogueConfigTests(unittest.TestCase):
             config.duckdb.config,
             {
                 "pg_pool_acquire_mode": "wait",
-                "pg_pool_max_connections": "2",
+                "pg_pool_max_connections": "4",
                 "pg_pool_idle_timeout_millis": "5000",
                 "pg_pool_max_lifetime_millis": "60000",
                 "pg_pool_wait_timeout_millis": "10000",
@@ -597,6 +597,68 @@ class CatalogueBootstrapTests(unittest.TestCase):
             self.assertEqual(row_count, 1)
             self.assertGreater(files[0], 0)
             self.assertEqual(files[0], files[1])
+
+    def test_bootstrap_rewrites_previous_element_bucket_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                catalogue.connection.execute(
+                    """
+                    INSERT INTO atlas.main.elements VALUES
+                    ('sha256:legacy-bucket', 0, NULL, 0, 0, 'p', NULL,
+                     MAP {}, 'text', '')
+                    """
+                )
+                with catalogue.lake.transaction():
+                    catalogue.connection.execute(
+                        "CREATE TABLE atlas.main.elements_bucket16 AS "
+                        "SELECT * FROM atlas.main.elements WHERE false"
+                    )
+                    catalogue.connection.execute(
+                        "ALTER TABLE atlas.main.elements_bucket16 "
+                        "SET PARTITIONED BY (bucket(16, document_id))"
+                    )
+                    catalogue.connection.execute(
+                        "INSERT INTO atlas.main.elements_bucket16 "
+                        "SELECT * FROM atlas.main.elements"
+                    )
+                    catalogue.connection.execute(
+                        "DROP TABLE atlas.main.elements"
+                    )
+                    catalogue.connection.execute(
+                        "ALTER TABLE atlas.main.elements_bucket16 "
+                        "RENAME TO elements"
+                    )
+
+                catalogue.bootstrap()
+                partitioning = catalogue.connection.execute(
+                    """
+                    SELECT pc.transform
+                    FROM __ducklake_metadata_atlas.ducklake_partition_info AS pi
+                    JOIN __ducklake_metadata_atlas.ducklake_partition_column AS pc
+                      USING (partition_id, table_id)
+                    JOIN __ducklake_metadata_atlas.ducklake_table AS t
+                      USING (table_id)
+                    JOIN __ducklake_metadata_atlas.ducklake_schema AS s
+                      USING (schema_id)
+                    WHERE s.schema_name = 'main'
+                      AND t.table_name = 'elements'
+                      AND s.end_snapshot IS NULL
+                      AND t.end_snapshot IS NULL
+                      AND pi.end_snapshot IS NULL
+                    """
+                ).fetchall()
+                row_count = catalogue.connection.execute(
+                    "SELECT count(*) FROM atlas.main.elements"
+                ).fetchone()[0]
+
+            self.assertEqual(partitioning, [("bucket(256)",)])
+            self.assertEqual(row_count, 1)
 
     def test_dom_macros_are_persistent_and_follow_projected_dom_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

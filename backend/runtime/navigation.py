@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from typing import cast
 from uuid import UUID, uuid5
 
 import pyarrow as pa
@@ -12,19 +13,29 @@ from repository.objects.store import ObjectStore
 from runtime.navigation_contract import NavigationPackage
 
 NAVIGATION_RECIPE = sha256(
-    f"{PARSER_NAME}:{PARSER_VERSION}:{PARSER_OPTIONS_HASH}:links-v1".encode()
+    f"{PARSER_NAME}:{PARSER_VERSION}:{PARSER_OPTIONS_HASH}:page-links-v5".encode()
 ).hexdigest()
 _EVENT_NAMESPACE = UUID("f0d15d8a-a735-48b7-a576-a08f85ecac74")
 
 LINKS_SCHEMA = pa.schema(
     [
         ("document_id", pa.string()),
-        ("url", pa.string()),
-        ("text", pa.string()),
-        ("title", pa.string()),
-        ("base_domain", pa.string()),
-        ("is_internal", pa.bool_()),
-        ("is_http", pa.bool_()),
+        ("source_url", pa.string()),
+        ("source_scheme", pa.string()),
+        ("source_host", pa.string()),
+        ("source_port", pa.int32()),
+        ("source_registrable_domain", pa.string()),
+        ("source_path", pa.string()),
+        ("source_query", pa.string()),
+        ("target_url", pa.string()),
+        ("target_scheme", pa.string()),
+        ("target_host", pa.string()),
+        ("target_port", pa.int32()),
+        ("target_path", pa.string()),
+        ("target_query", pa.string()),
+        ("target_fragment", pa.string()),
+        ("relation_kind", pa.string()),
+        ("raw_href", pa.string()),
         ("element_index", pa.int64()),
     ]
 )
@@ -35,21 +46,33 @@ def build_navigation_package(
 ) -> tuple[bytes, int]:
     grouped = links_from_html(html, page_url=page_url)
     rows = []
-    for group, links in grouped.items():
+    for links in grouped.values():
         for link in links:
-            url = str(link["href"])
             rows.append(
                 {
                     "document_id": document_id,
-                    "url": url,
-                    "text": str(link.get("text") or ""),
-                    "title": str(link.get("title") or ""),
-                    "base_domain": str(link.get("base_domain") or ""),
-                    "is_internal": group == "internal",
-                    "is_http": url.startswith(("http://", "https://")),
-                    "element_index": len(rows),
+                    "source_url": str(link["source_url"]),
+                    "source_scheme": str(link["source_scheme"]),
+                    "source_host": str(link["source_host"]),
+                    "source_port": int(link["source_port"]),
+                    "source_registrable_domain": str(
+                        link["source_registrable_domain"]
+                    ),
+                    "source_path": str(link["source_path"]),
+                    "source_query": link["source_query"],
+                    "target_url": str(link["target_url"]),
+                    "target_scheme": str(link["target_scheme"]),
+                    "target_host": str(link["target_host"]),
+                    "target_port": int(link["target_port"]),
+                    "target_path": str(link["target_path"]),
+                    "target_query": link["target_query"],
+                    "target_fragment": link["target_fragment"],
+                    "relation_kind": str(link["relation_kind"]),
+                    "raw_href": str(link.get("raw_href") or ""),
+                    "element_index": int(link["element_index"]),
                 }
             )
+    rows.sort(key=lambda row: cast(int, row["element_index"]))
     table = pa.Table.from_pylist(rows, schema=LINKS_SCHEMA)
     sink = pa.BufferOutputStream()
     with pa.ipc.new_file(sink, LINKS_SCHEMA) as writer:
@@ -91,7 +114,7 @@ def put_navigation_package(
     return NavigationPackage(
         object_name=name,
         sha256=digest,
-        schema_version=1,
+        schema_version=5,
         recipe=NAVIGATION_RECIPE,
         row_count=row_count,
         byte_size=len(payload),

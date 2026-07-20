@@ -30,9 +30,27 @@ the published release; version control retains the history.
 
 ## Wishlist
 
+### Scoped DuckLake scans do not inherit selective join predicates
+
+- **Atlas caller:** crawl-scoped `views.page_links` materialization over the partitioned
+  `main.elements` table.
+- **Evidence:** wrapping the source query with `WHERE crawl_id = $crawl_id` left the DuckLake plan
+  scanning every crawl and roughly two million elements three times. Adding the crawl predicate
+  inside the reused CTE pruned `crawls`, but joining its one `document_id` to bucket-partitioned
+  `elements` still did not produce a document filter on the DuckLake scans. Only binding the
+  immutable document ID directly on each element scan enabled partition pruning.
+- **Smallest useful upstream contract:** propagate constant equality constraints through a
+  one-row join into DuckLake partition pruning, and push an outer scope predicate through reused
+  CTEs when doing so is semantically safe. Cover both with `EXPLAIN (FORMAT JSON)` regressions over
+  a bucket-partitioned table.
+- **Atlas status:** scope jobs now retain the crawl change's document identity and expose explicit
+  crawl/document session bindings to materialization SQL. `page_links` filters a single
+  materialized element CTE directly. A published optimizer fix would let ordinary scoped views
+  obtain the same pruning without Atlas-specific source predicates.
+
 ### Typed snapshot-pinned attachment configuration
 
-- **Atlas caller:** crawl-graph edges that join the current `page.links` Arrow package to
+- **Atlas caller:** crawl-graph edges that join the current `edge.page_links` Arrow package to
   historical catalogue tables at the graph run's frozen pre-run snapshot.
 - **Evidence:** DuckLake supports `ATTACH ... (SNAPSHOT_VERSION n)`, but
   `ducklake_client.DuckLakeAttachConfig` has no `snapshot_version` or `snapshot_time` field. Atlas

@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from uuid import uuid4
 
+from config import get_int
 from config.performance import (
     CATALOGUE_OPERATION_ACQUIRE_TIMEOUT_SECONDS,
     CATALOGUE_OPERATION_HEARTBEAT_SECONDS,
@@ -71,17 +72,18 @@ def operation_lease_key(phase: str, operation_id: str) -> str:
 async def ensure_operation_lease_storage(jetstream):
     """Attach or create the self-expiring catalogue operation lease bucket."""
 
+    config = KeyValueConfig(
+        bucket=OPERATION_LEASE_BUCKET,
+        description="Expiring Atlas catalogue operation leases",
+        history=1,
+        ttl=CATALOGUE_OPERATION_LEASE_SECONDS,
+        max_bytes=get_int("ATLAS_OPERATION_LEASE_MAX_BYTES"),
+        storage=StorageType.FILE,
+        replicas=CATALOGUE_OPERATION_LEASE_REPLICAS,
+    )
     try:
         bucket = await jetstream.key_value(OPERATION_LEASE_BUCKET)
     except BucketNotFoundError:
-        config = KeyValueConfig(
-            bucket=OPERATION_LEASE_BUCKET,
-            description="Expiring Atlas catalogue operation leases",
-            history=1,
-            ttl=CATALOGUE_OPERATION_LEASE_SECONDS,
-            storage=StorageType.FILE,
-            replicas=CATALOGUE_OPERATION_LEASE_REPLICAS,
-        )
         try:
             bucket = await jetstream.create_key_value(config=config)
         except BadRequestError:
@@ -94,6 +96,7 @@ async def _validate_bucket(bucket) -> None:
     status = await bucket.status()
     config = status.stream_info.config
     expected_ttl = CATALOGUE_OPERATION_LEASE_SECONDS
+    expected_max_bytes = get_int("ATLAS_OPERATION_LEASE_MAX_BYTES")
     expected_replicas = CATALOGUE_OPERATION_LEASE_REPLICAS
     mismatches: list[str] = []
     if config.storage != StorageType.FILE:
@@ -102,6 +105,8 @@ async def _validate_bucket(bucket) -> None:
         mismatches.append("history=1")
     if config.max_age != expected_ttl:
         mismatches.append(f"ttl={expected_ttl:g}s")
+    if config.max_bytes != expected_max_bytes:
+        mismatches.append(f"max_bytes={expected_max_bytes}")
     if config.num_replicas != expected_replicas:
         mismatches.append(f"replicas={expected_replicas}")
     if mismatches:

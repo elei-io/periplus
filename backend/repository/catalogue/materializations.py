@@ -26,6 +26,10 @@ class MaterializationConflictError(MaterializationError):
     pass
 
 
+class MaterializationSchemaChangeError(MaterializationError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class MaterializationTable:
     table_uuid: UUID
@@ -82,7 +86,7 @@ class MaterializationStore:
         proposed = tuple((str(item[0]), str(item[1])) for item in cursor.description)
         existing = tuple((column, data_type) for column, data_type, _ in current.columns)
         if proposed != existing:
-            raise MaterializationError(
+            raise MaterializationSchemaChangeError(
                 "The new query revision changes the durable schema. "
                 "Dematerialize and create it again to accept that schema change."
             )

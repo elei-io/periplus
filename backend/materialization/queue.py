@@ -44,6 +44,7 @@ class MaterializationScopeJob(BaseModel):
     scope_kind: Literal["document", "crawl"]
     scope_column: str
     scope_id: str
+    document_id: str | None
     operation_id: str
     source: Literal["live", "backfill"]
     enqueued_at: datetime

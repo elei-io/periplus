@@ -21,8 +21,10 @@ import { Switch } from "@/components/ui/switch"
 import type { CrawlPolicyRecord, ResponseOutcome } from "@/types/resources"
 
 export type PolicyScope = "site" | "section" | "page"
+export type PolicyHostScope = "exact" | "subdomains"
 export type PolicyDraft = {
   website: string
+  hostScope: PolicyHostScope
   scheme: "*" | "http" | "https"
   scope: PolicyScope
   path: string
@@ -61,7 +63,10 @@ export function policyDraft(policy?: CrawlPolicyRecord): PolicyDraft {
     rules.find((rule) => rule.minimum === minimum && rule.maximum === maximum)
       ?.outcome ?? fallback
   return {
-    website: policy?.host ?? "",
+    website: policy?.host.startsWith("*.")
+      ? policy.host.slice(2)
+      : (policy?.host ?? ""),
+    hostScope: policy?.host.startsWith("*.") ? "subdomains" : "exact",
     scheme: policy?.scheme ?? "*",
     scope: policy
       ? policy.path_prefix === "/" && policy.path_mode === "prefix"
@@ -115,9 +120,14 @@ export function policyDraft(policy?: CrawlPolicyRecord): PolicyDraft {
 }
 
 export function policyValues(draft: PolicyDraft, defaultPolicy = false) {
+  const websiteHost = parseWebsite(draft.website).host
   return {
     scheme: defaultPolicy ? ("*" as const) : draft.scheme,
-    host: defaultPolicy ? "*" : parseWebsite(draft.website).host,
+    host: defaultPolicy
+      ? "*"
+      : draft.hostScope === "subdomains"
+        ? `*.${websiteHost}`
+        : websiteHost,
     path_prefix:
       defaultPolicy || draft.scope === "site"
         ? "/"
@@ -179,6 +189,8 @@ export function policyDraftError(draft: PolicyDraft, defaultPolicy = false) {
   const host = parseWebsite(draft.website).host
   if (!defaultPolicy && (!host || host.includes("/") || host.includes(" ")))
     return "Enter a valid website hostname or * for every website."
+  if (!defaultPolicy && draft.hostScope === "subdomains" && host.includes("*"))
+    return "Enter a root hostname before selecting all subdomains."
   if (!draft.acceptedContentTypes.split(",").some((value) => value.trim()))
     return "Accept at least one content type."
   if (draft.waitFixed && draft.waitFixedDurationMs <= 0)
@@ -221,11 +233,27 @@ export function PolicyForm({
             <>
               <Field label="Website">
                 <Input
-                  placeholder="example.com or *"
+                  placeholder="wikipedia.org or *"
                   value={draft.website}
                   onChange={(event) => patch({ website: event.target.value })}
                 />
+                <p className="text-xs text-muted-foreground">
+                  {draft.hostScope === "subdomains"
+                    ? `Matches subdomains such as en.${parseWebsite(draft.website).host || "wikipedia.org"}; the root hostname is separate.`
+                    : "Matches this exact hostname."}
+                </p>
               </Field>
+              <Choice
+                label="Hosts"
+                value={draft.hostScope}
+                options={[
+                  ["exact", "This hostname"],
+                  ["subdomains", "All subdomains"],
+                ]}
+                onChange={(value) =>
+                  patch({ hostScope: value as PolicyHostScope })
+                }
+              />
               <Choice
                 label="Connection"
                 value={draft.scheme}
@@ -579,7 +607,9 @@ function Choice({
   return (
     <div className="grid gap-2">
       <Label>{label}</Label>
-      <div className="grid grid-cols-3 gap-2">
+      <div
+        className={`grid gap-2 ${options.length === 2 ? "grid-cols-2" : "grid-cols-3"}`}
+      >
         {options.map(([key, name]) => (
           <Button
             key={key}

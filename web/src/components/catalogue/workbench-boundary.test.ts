@@ -23,15 +23,9 @@ function importers(fragment: string): string[] {
     .sort()
 }
 
-test("DuckDB-Wasm is confined to the catalogue workbench", () => {
-  assert.deepEqual(importers("@duckdb/duckdb-wasm"), [
-    "components/catalogue/workbench-query-runtime.ts",
-  ])
-  assert.deepEqual(importers("workbench-query-runtime"), [
-    "hooks/use-catalogue-metadata.ts",
-    "hooks/use-catalogue-query.ts",
-    "hooks/use-catalogue-status.ts",
-  ])
+test("catalogue queries stay behind the Atlas API boundary", () => {
+  assert.deepEqual(importers("@duckdb/duckdb-wasm"), [])
+  assert.deepEqual(importers("workbench-query-runtime"), [])
   assert.deepEqual(importers("use-catalogue-metadata"), [
     "pages/catalogue/workbench-page.tsx",
   ])

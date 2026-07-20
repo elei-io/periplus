@@ -11,21 +11,17 @@ export type CatalogueQueryResult = {
   rows: unknown[][]
 }
 
-export type CatalogueQueryRuntime = {
-  transport: "quack"
-  quack_uri: string
-  quack_token: string
-  catalogue_alias: string
-  catalogue_schema: string
-  metadata_schema: string
-  catalogue_schema_version: string
-  setup_sql: string[]
-  attach_sql: string
-}
-
-export type CataloguePreparedSql = {
-  sql: string
+export type CatalogueQueryState = {
+  id: string
   statement_kind: CatalogueStatementKind
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled"
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  cancel_requested_at: string | null
+  row_count: number
+  result_bytes: number
+  error: string | null
 }
 
 export type CatalogueMetadataColumn = {

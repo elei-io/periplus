@@ -70,6 +70,16 @@ export const catalogueFunctions = [
     detail: "macros.resolve_url(source, href) → absolute URL",
   },
   {
+    label: "macros.normalize_url",
+    type: "function",
+    detail: "macros.normalize_url(value) → normalized HTTP(S) URL or NULL",
+  },
+  {
+    label: "macros.url_parts",
+    type: "function",
+    detail: "macros.url_parts(value) → URL component struct",
+  },
+  {
     label: "macros.get_attribute",
     type: "function",
     detail: "macros.get_attribute(attributes, name) → value or NULL",

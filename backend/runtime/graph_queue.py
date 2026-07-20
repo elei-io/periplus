@@ -8,8 +8,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID, uuid4
 
-import nats
-from config import get_float, get_int, get_str
+from config import get_float, get_int
 from config.performance import GRAPH_ACK_WAIT_SECONDS, GRAPH_CONSUMER_MAX_ACK_PENDING
 from nats.js.api import AckPolicy, ConsumerConfig, KeyValueConfig, RetentionPolicy, StorageType, StreamConfig
 from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError, NotFoundError
@@ -211,24 +210,51 @@ def new_graph_run(
     )
 
 
-async def connect_nats():
-    return await nats.connect(get_str("NATS_URL"), connect_timeout=2, max_reconnect_attempts=-1)
-
-
 async def _bucket(jetstream, config: KeyValueConfig):
+    desired_max_bytes = config.max_bytes
+    if desired_max_bytes is None or desired_max_bytes <= 0:
+        raise ValueError(f"JetStream KV {config.bucket} requires positive max_bytes")
     try:
-        return await jetstream.key_value(config.bucket)
+        bucket = await jetstream.key_value(config.bucket)
     except BucketNotFoundError:
         try:
-            return await jetstream.create_key_value(config=config)
+            bucket = await jetstream.create_key_value(config=config)
         except BadRequestError:
-            return await jetstream.key_value(config.bucket)
+            bucket = await jetstream.key_value(config.bucket)
+    status = await bucket.status()
+    actual = status.stream_info.config
+    if (
+        actual.max_msgs_per_subject != config.history
+        or actual.storage != config.storage
+        or actual.num_replicas != config.replicas
+    ):
+        raise RuntimeError(
+            f"JetStream KV {config.bucket} has a superseded storage contract; "
+            "reset disposable NATS state before starting Atlas"
+        )
+    desired_ttl = float(config.ttl or 0)
+    updates = {}
+    if actual.max_age != desired_ttl:
+        updates["max_age"] = desired_ttl
+    if actual.max_bytes != desired_max_bytes:
+        updates["max_bytes"] = desired_max_bytes
+    if updates:
+        await jetstream.update_stream(config=actual.evolve(**updates))
+    return bucket
 
 
 async def ensure_graph_storage(jetstream):
     replicas = get_int("ATLAS_GRAPH_STREAM_REPLICAS")
     subjects = [CRAWL_SUBJECT, EDGE_SUBJECT, NAVIGATION_READINESS_SUBJECT]
-    stream = StreamConfig(name=GRAPH_STREAM, subjects=subjects, retention=RetentionPolicy.WORK_QUEUE, storage=StorageType.FILE, num_replicas=replicas)
+    max_bytes = get_int("ATLAS_GRAPH_WORK_MAX_BYTES")
+    stream = StreamConfig(
+        name=GRAPH_STREAM,
+        subjects=subjects,
+        retention=RetentionPolicy.WORK_QUEUE,
+        storage=StorageType.FILE,
+        num_replicas=replicas,
+        max_bytes=max_bytes,
+    )
     try:
         info = await jetstream.stream_info(GRAPH_STREAM)
     except NotFoundError:
@@ -239,6 +265,7 @@ async def ensure_graph_storage(jetstream):
             or info.config.retention != RetentionPolicy.WORK_QUEUE
             or info.config.storage != StorageType.FILE
             or info.config.num_replicas != replicas
+            or info.config.max_bytes != max_bytes
         ):
             raise RuntimeError(
                 f"JetStream {GRAPH_STREAM} has the superseded graph-work contract; "
@@ -277,8 +304,30 @@ async def ensure_graph_storage(jetstream):
                 "reset disposable NATS state before starting Atlas"
             )
     state_bytes = get_int("ATLAS_GRAPH_STATE_MAX_BYTES")
-    runs = await _bucket(jetstream, KeyValueConfig(bucket=RUNS_BUCKET, description="Current Atlas graph-run state", history=1, max_bytes=state_bytes, storage=StorageType.FILE, replicas=replicas))
-    requests = await _bucket(jetstream, KeyValueConfig(bucket=REQUESTS_BUCKET, description="Current Atlas crawl-request state", history=1, max_bytes=state_bytes, storage=StorageType.FILE, replicas=replicas))
+    runs = await _bucket(
+        jetstream,
+        KeyValueConfig(
+            bucket=RUNS_BUCKET,
+            description="Recent Atlas graph-run execution state",
+            history=1,
+            ttl=get_float("ATLAS_GRAPH_RUN_TTL_SECONDS"),
+            max_bytes=state_bytes,
+            storage=StorageType.FILE,
+            replicas=replicas,
+        ),
+    )
+    requests = await _bucket(
+        jetstream,
+        KeyValueConfig(
+            bucket=REQUESTS_BUCKET,
+            description="Recent Atlas crawl-request and edge-evaluation state",
+            history=1,
+            ttl=get_float("ATLAS_CRAWL_REQUEST_TTL_SECONDS"),
+            max_bytes=state_bytes,
+            storage=StorageType.FILE,
+            replicas=replicas,
+        ),
+    )
     workers = await _bucket(
         jetstream,
         KeyValueConfig(
@@ -286,6 +335,7 @@ async def ensure_graph_storage(jetstream):
             description="Ephemeral Atlas acquisition-worker presence",
             history=1,
             ttl=get_float("ATLAS_ACQUISITION_WORKER_PRESENCE_TTL_SECONDS"),
+            max_bytes=get_int("ATLAS_GRAPH_WORKER_MAX_BYTES"),
             storage=StorageType.FILE,
             replicas=replicas,
         ),
@@ -363,7 +413,13 @@ async def update_edge_evaluation(bucket, identity: str, mutate) -> EdgeEvaluatio
 
 async def list_graph_runs(bucket) -> list[GraphRun]:
     keys = await _list_keys(bucket)
-    return [value for key in keys if (value := await _get(bucket, key, GraphRun)) is not None]
+    values: list[GraphRun] = []
+    for start in range(0, len(keys), 64):
+        batch = await asyncio.gather(
+            *(_get(bucket, key, GraphRun) for key in keys[start : start + 64])
+        )
+        values.extend(value for value in batch if value is not None)
+    return values
 
 
 async def list_worker_states(bucket) -> list[WorkerState]:

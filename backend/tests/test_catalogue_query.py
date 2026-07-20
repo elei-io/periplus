@@ -11,7 +11,6 @@ from ducklake_client import DiskStorage, DuckDBCatalog
 from api.routers.catalogue import (
     CatalogueSqlRequest,
     lint_sql,
-    prepare_sql,
 )
 from tests.catalogue_helpers import seed_system_macros
 from repository.catalogue import Catalogue, CatalogueConfig
@@ -25,6 +24,7 @@ from repository.catalogue.query import (
     lint_select,
     prepare_catalogue_query,
     stream_arrow_reader,
+    validate_interactive_catalogue_statement,
 )
 
 
@@ -60,12 +60,6 @@ class CatalogueQueryLintTests(unittest.TestCase):
             ["missing_limit"],
         )
         self.assertEqual(response.diagnostics[0].severity, "warning")
-
-    def test_prepare_endpoint_returns_validated_canonical_statement(self) -> None:
-        response = prepare_sql(CatalogueSqlRequest(sql=" EXPLAIN ANALYZE SELECT 1; "))
-
-        self.assertEqual(response.sql, "SELECT 1;")
-        self.assertEqual(response.statement_kind, "explain_analyze")
 
     def test_warns_when_dom_helper_is_not_fed_by_bounded_materialized_cte(self) -> None:
         diagnostics = lint_select(
@@ -200,6 +194,35 @@ class CatalogueQueryExecutionTests(unittest.TestCase):
         self.assertEqual(analyzed.sql, "SELECT 1")
         with self.assertRaises(CatalogueQueryError):
             classify_catalogue_statement("EXPLAIN DELETE FROM documents")
+
+    def test_interactive_queries_are_confined_to_public_catalogue_reads(self) -> None:
+        validate_interactive_catalogue_statement(
+            "SELECT * FROM documents",
+            catalogue_alias="atlas",
+            catalogue_schema="main",
+        )
+        validate_interactive_catalogue_statement(
+            "SELECT * FROM atlas.macros.css_select('a')",
+            catalogue_alias="atlas",
+            catalogue_schema="main",
+        )
+        rejected = (
+            "SELECT * FROM read_csv_auto('/etc/passwd')",
+            "SELECT read_text('/etc/passwd')",
+            "SELECT query('DELETE FROM documents')",
+            "SELECT * FROM duckdb_secrets()",
+            "SELECT getenv('ATLAS_QUACK_TOKEN')",
+            "SELECT http_get('https://example.com')",
+            "SELECT * FROM other.main.documents",
+            "SELECT * FROM atlas.pg_catalog.pg_tables",
+        )
+        for sql in rejected:
+            with self.subTest(sql=sql), self.assertRaises(CatalogueQueryError):
+                validate_interactive_catalogue_statement(
+                    sql,
+                    catalogue_alias="atlas",
+                    catalogue_schema="main",
+                )
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ import math
 from typing import Literal
 from uuid import uuid4
 
+from config import get_int
 from config.performance import (
     OBJECT_IO_UNIT_BYTES,
     RESOURCE_ACQUIRE_TIMEOUT_SECONDS,
@@ -39,6 +40,8 @@ from observability import resource_metrics
 RESOURCE_GRANT_BUCKET = "atlas_resource_grants"
 RESOURCE_STATE_KEY = "global"
 DURABLE_RESOURCE_WAIT = float("inf")
+RESOURCE_RENEW_RETRY_INITIAL_SECONDS = 0.05
+RESOURCE_RENEW_RETRY_MAX_SECONDS = 1.0
 
 ResourceClass = Literal["critical", "live", "backfill", "maintenance"]
 
@@ -203,17 +206,18 @@ class ResourcePermitGuard:
 async def ensure_resource_governor_storage(jetstream):
     """Attach or create the single CAS-fenced resource grant bucket."""
 
+    config = KeyValueConfig(
+        bucket=RESOURCE_GRANT_BUCKET,
+        description="Expiring Atlas shared-resource grants",
+        history=1,
+        ttl=RESOURCE_LEASE_SECONDS * 2,
+        max_bytes=get_int("ATLAS_RESOURCE_GRANT_MAX_BYTES"),
+        storage=StorageType.FILE,
+        replicas=RESOURCE_STATE_REPLICAS,
+    )
     try:
         bucket = await jetstream.key_value(RESOURCE_GRANT_BUCKET)
     except BucketNotFoundError:
-        config = KeyValueConfig(
-            bucket=RESOURCE_GRANT_BUCKET,
-            description="Expiring Atlas shared-resource grants",
-            history=1,
-            ttl=RESOURCE_LEASE_SECONDS * 2,
-            storage=StorageType.FILE,
-            replicas=RESOURCE_STATE_REPLICAS,
-        )
         try:
             bucket = await jetstream.create_key_value(config=config)
         except BadRequestError:
@@ -226,6 +230,7 @@ async def _validate_bucket(bucket) -> None:
     status = await bucket.status()
     config = status.stream_info.config
     expected_ttl = RESOURCE_LEASE_SECONDS * 2
+    expected_max_bytes = get_int("ATLAS_RESOURCE_GRANT_MAX_BYTES")
     expected_replicas = RESOURCE_STATE_REPLICAS
     mismatches: list[str] = []
     if config.storage != StorageType.FILE:
@@ -234,6 +239,8 @@ async def _validate_bucket(bucket) -> None:
         mismatches.append("history=1")
     if config.max_age != expected_ttl:
         mismatches.append(f"ttl={expected_ttl:g}s")
+    if config.max_bytes != expected_max_bytes:
+        mismatches.append(f"max_bytes={expected_max_bytes}")
     if config.num_replicas != expected_replicas:
         mismatches.append(f"replicas={expected_replicas}")
     if mismatches:
@@ -271,6 +278,15 @@ def _bundle_fits(
                 f"resource request for {requested.name!r} needs {requested.units} "
                 f"units but capacity is {capacity}"
             )
+        if request.service_class != "maintenance" and any(
+            waiter.service_class == "maintenance"
+            and _need_for(waiter, requested.name) is not None
+            for waiter in waiters
+        ):
+            # Exclusive maintenance waits on catalogue and object pressure as
+            # one bundle. Stop admitting every overlapping resource so the
+            # complete bundle can drain instead of starving on object-only work.
+            return False
         existing = [
             (grant, need)
             for grant in grants
@@ -287,14 +303,6 @@ def _bundle_fits(
             return False
 
         if requested.name == "catalogue:hot":
-            if request.service_class != "maintenance" and any(
-                waiter.service_class == "maintenance"
-                and _need_for(waiter, "catalogue:hot") is not None
-                for waiter in waiters
-            ):
-                # Once exclusive maintenance is waiting, stop admitting new hot
-                # work so current grants can drain instead of starving it forever.
-                return False
             critical_used = sum(
                 need.units
                 for grant, need in existing
@@ -440,6 +448,7 @@ async def _try_acquire(
     limits: ResourceLimits,
     token: str,
     now: datetime,
+    register_waiter: bool,
 ) -> ResourceGrant | None:
     state, revision = await _read_state(bucket)
     grants = _active_grants(state, now=now)
@@ -463,6 +472,8 @@ async def _try_acquire(
     )
     other_waiters = tuple(waiter for waiter in waiters if waiter.token != token)
     if not _bundle_fits(grants, other_waiters, request, limits):
+        if not register_waiter:
+            return None
         should_refresh = (
             current_waiter is None
             or (now - current_waiter.heartbeat_at).total_seconds()
@@ -508,6 +519,56 @@ async def _try_acquire(
         updated_at=now,
     )
     return grant if await _write_state(bucket, updated, revision) else None
+
+
+async def _renew_grant(
+    bucket,
+    *,
+    request: ResourceRequest,
+    limits: ResourceLimits,
+    token: str,
+    grant: ResourceGrant,
+) -> ResourceGrant | None:
+    """Retry transient renewal contention while the current lease is safe."""
+
+    heartbeat_seconds = RESOURCE_HEARTBEAT_SECONDS
+    loop = asyncio.get_running_loop()
+    now = datetime.now(UTC)
+    safe_remaining = (
+        grant.expires_at - now
+    ).total_seconds() - heartbeat_seconds
+    retry_deadline = loop.time() + min(heartbeat_seconds, max(0.0, safe_remaining))
+    retry_delay = RESOURCE_RENEW_RETRY_INITIAL_SECONDS
+    while True:
+        now = datetime.now(UTC)
+        safe_remaining = (
+            grant.expires_at - now
+        ).total_seconds() - heartbeat_seconds
+        retry_remaining = retry_deadline - loop.time()
+        if safe_remaining <= 0 or retry_remaining <= 0:
+            return None
+        try:
+            renewed = await _try_acquire(
+                bucket,
+                request=request,
+                limits=limits,
+                token=token,
+                now=now,
+                register_waiter=False,
+            )
+        except asyncio.CancelledError:
+            raise
+        except ValueError:
+            raise
+        except Exception:
+            renewed = None
+        if renewed is not None:
+            return renewed
+        await asyncio.sleep(min(retry_delay, safe_remaining, retry_remaining))
+        retry_delay = min(
+            retry_delay * 2,
+            RESOURCE_RENEW_RETRY_MAX_SECONDS,
+        )
 
 
 async def _release(bucket, *, token: str) -> None:
@@ -563,6 +624,7 @@ async def resource_permits(
                     limits=limits,
                     token=token,
                     now=datetime.now(UTC),
+                    register_waiter=timeout > 0,
                 )
             except asyncio.CancelledError:
                 raise
@@ -609,19 +671,21 @@ async def resource_permits(
     lost = asyncio.Event()
 
     async def heartbeat() -> None:
+        current_grant = grant
         try:
             while True:
                 await asyncio.sleep(heartbeat_seconds)
-                renewed = await _try_acquire(
+                renewed = await _renew_grant(
                     bucket,
                     request=request,
                     limits=limits,
                     token=token,
-                    now=datetime.now(UTC),
+                    grant=current_grant,
                 )
                 if renewed is None:
                     lost.set()
                     return
+                current_grant = renewed
         except asyncio.CancelledError:
             raise
         except Exception:

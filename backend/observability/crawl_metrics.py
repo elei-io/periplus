@@ -9,7 +9,7 @@ _queue_pending = Gauge(
 )
 _queue_oldest_age = Gauge(
     "atlas_acquisition_oldest_pending_age_seconds",
-    "Age of the oldest acquisition request.",
+    "Time since this process first observed the current nonempty acquisition queue.",
 )
 
 

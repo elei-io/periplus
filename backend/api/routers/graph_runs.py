@@ -46,7 +46,6 @@ from runtime.catalogue_queue import WORK_STREAM
 from runtime.graph_queue import (
     CrawlRequest,
     GraphRun,
-    connect_nats,
     ensure_graph_progress_storage,
     ensure_graph_storage,
     get_graph_run,
@@ -54,6 +53,7 @@ from runtime.graph_queue import (
     list_graph_runs,
     list_worker_states,
 )
+from runtime.nats_client import connect_nats
 from runtime.graph_runs import (
     GraphRunNotFoundError,
     request_cancellation,

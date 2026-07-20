@@ -16,11 +16,20 @@ from config.environment import get_int
 # Local executor lanes. Catalogue-owning processes remain single-lane by
 # architecture; acquisition workers keep bounded process-local coordination.
 CRAWL_ACQUISITION_LANES = 12
+# Keep a small delivery look-ahead so a saturated hostname cannot hide other
+# ready hostnames behind its own politeness waiters. This is deliberately
+# process-local and bounded well below the durable consumer delivery ceiling.
+CRAWL_DISPATCH_WINDOW = CRAWL_ACQUISITION_LANES * 4
+# A denied nonblocking domain probe is retried soon, but not on every worker
+# loop iteration. Permit release remains responsive while saturated hosts avoid
+# generating avoidable Resource Governor reads and admission metrics.
+CRAWL_DOMAIN_PERMIT_RETRY_SECONDS = 0.25
 CATALOGUE_EXECUTOR_LANES = 1
 
-# Durable consumers use a generous internal delivery ceiling.  Pull loops only
-# claim their local lane count, so replicas add capacity without making this an
-# operator setting or allowing one process to hoard work.
+# Durable consumers use a generous internal delivery ceiling. Most pull loops
+# claim their local lane count; acquisition uses the fixed, bounded hostname
+# look-ahead above. Replicas still add capacity without making either value an
+# operator setting or allowing one process to hoard the consumer ceiling.
 GRAPH_CONSUMER_MAX_ACK_PENDING = 1024
 INGESTION_CONSUMER_MAX_ACK_PENDING = 1024
 GRAPH_ACK_WAIT_SECONDS = 60.0
@@ -42,7 +51,10 @@ CATALOGUE_OPERATION_LEASE_SECONDS = 30.0
 CATALOGUE_OPERATION_HEARTBEAT_SECONDS = 5.0
 CATALOGUE_OPERATION_ACQUIRE_TIMEOUT_SECONDS = 1.0
 CATALOGUE_OPERATION_LEASE_REPLICAS = 1
-CATALOGUE_POSTGRES_POOL_MAX_CONNECTIONS = 2
+# DuckLake CDC schema-boundary reads need three metadata connections with
+# Atlas's two DuckDB execution threads. Keep one additional connection of
+# headroom for catalogue bookkeeping on the same embedded database.
+CATALOGUE_POSTGRES_POOL_MAX_CONNECTIONS = 4
 CATALOGUE_POSTGRES_POOL_IDLE_TIMEOUT_MS = 5_000
 CATALOGUE_POSTGRES_POOL_MAX_LIFETIME_MS = 60_000
 CATALOGUE_POSTGRES_POOL_WAIT_TIMEOUT_MS = 10_000

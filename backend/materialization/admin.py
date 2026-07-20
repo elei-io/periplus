@@ -16,7 +16,7 @@ from materialization.queue import (
     ensure_materialization_attempts,
     ensure_streams,
 )
-from repository.ingestion.queue import connect_repository_nats
+from runtime.nats_client import connect_nats
 
 
 class MaterializationDeadLetterRecord(BaseModel):
@@ -33,7 +33,7 @@ class MaterializationDeadLetterList(BaseModel):
 
 
 async def list_dead_letters(limit: int) -> MaterializationDeadLetterList:
-    client = await connect_repository_nats()
+    client = await connect_nats()
     try:
         jetstream = client.jetstream()
         await ensure_streams(jetstream)
@@ -64,7 +64,7 @@ async def list_dead_letters(limit: int) -> MaterializationDeadLetterList:
 
 
 async def requeue_dead_letter(sequence: int) -> MaterializationDeadLetterRecord:
-    client = await connect_repository_nats()
+    client = await connect_nats()
     try:
         jetstream = client.jetstream()
         await ensure_streams(jetstream)

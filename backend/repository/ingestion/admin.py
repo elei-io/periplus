@@ -9,13 +9,13 @@ from repository.ingestion.queue import (
     DEAD_LETTER_SUBJECT,
     DEAD_LETTER_STREAM,
     DeadLetterEntry,
-    connect_repository_nats,
     decode_dead_letter,
     ensure_dead_letter_stream,
     ensure_ingestion_results,
     ensure_repository_stream,
     requeue_dead_letter,
 )
+from runtime.nats_client import connect_nats
 
 
 class DeadLetterRecord(BaseModel):
@@ -32,7 +32,7 @@ class DeadLetterList(BaseModel):
 
 
 async def list_dead_letters(limit: int) -> DeadLetterList:
-    client = await connect_repository_nats()
+    client = await connect_nats()
     try:
         jetstream = client.jetstream()
         await ensure_dead_letter_stream(jetstream)
@@ -61,7 +61,7 @@ async def list_dead_letters(limit: int) -> DeadLetterList:
 
 
 async def requeue_repository_dead_letter(sequence: int) -> DeadLetterRecord:
-    client = await connect_repository_nats()
+    client = await connect_nats()
     try:
         jetstream = client.jetstream()
         await ensure_repository_stream(jetstream)

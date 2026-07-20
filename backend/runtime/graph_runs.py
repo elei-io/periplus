@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4, uuid5
 
 from config import get_float, get_int
 from config.performance import GRAPH_ACK_WAIT_SECONDS
 from control.crawl_policies.schemas import EffectivePolicySnapshot
 from control.crawl_policies.service import find_crawl_policy_for_url, policy_snapshot
+from control.crawl_policies.variance import vary_content_policy
 from control.domain_policies.service import (
     find_domain_policy_for_url,
     domain_policy_snapshot,
@@ -84,11 +87,37 @@ def deterministic_request_id(identity: str) -> UUID:
     return uuid5(_REQUEST_NAMESPACE, identity)
 
 
+def _interleave_urls_by_hostname(urls: Iterable[str]) -> list[str]:
+    """Preserve per-host order while round-robining across normalized hosts."""
+
+    grouped: dict[str, deque[str]] = {}
+    for url in urls:
+        normalized = normalize_request_url(str(url))
+        hostname = (urlsplit(normalized).hostname or "").lower()
+        grouped.setdefault(hostname, deque()).append(normalized)
+    ordered: list[str] = []
+    active = deque(grouped)
+    while active:
+        hostname = active.popleft()
+        queue = grouped[hostname]
+        ordered.append(queue.popleft())
+        if queue:
+            active.append(hostname)
+    return ordered
+
+
 def resolve_policy_snapshot(session, url: str) -> dict:
     crawl = find_crawl_policy_for_url(session, url=url)
     domain = find_domain_policy_for_url(session, url=url)
+    crawl_snapshot = policy_snapshot(crawl)
+    varied_content, content_variance = vary_content_policy(crawl_snapshot.content)
     return EffectivePolicySnapshot(
-        crawl=policy_snapshot(crawl),
+        crawl=crawl_snapshot.model_copy(
+            update={
+                "content": varied_content,
+                "content_variance": content_variance,
+            }
+        ),
         domain=domain_policy_snapshot(domain),
     ).model_dump(mode="json")
 
@@ -354,7 +383,7 @@ async def create_graph_run(
         )
     else:
         await _project(initialize_run_progress(progress, run))
-    for url in run.trigger_urls:
+    for url in _interleave_urls_by_hostname(run.trigger_urls):
         await admit_request(
             runs=runs,
             requests=requests,
@@ -508,10 +537,21 @@ async def settle_request(
                 "error_count": errors,
                 "last_progress_at": now,
             }
-            if pending == 0 and run.status not in _TERMINAL_RUNS:
+            if pending == 0:
+                terminal_update = {
+                    **update,
+                    "seen_request_identities": (),
+                    "pending_admissions": (),
+                }
+                if run.status in _TERMINAL_RUNS:
+                    return run.model_copy(update=terminal_update)
                 final = "completed_with_errors" if failures else "completed"
                 return run.model_copy(
-                    update={**update, "status": final, "completed_at": now}
+                    update={
+                        **terminal_update,
+                        "status": final,
+                        "completed_at": now,
+                    }
                 )
             return run.model_copy(update=update)
 
@@ -736,7 +776,7 @@ async def evaluate_edge(
                 interrupt()
             await asyncio.gather(query, return_exceptions=True)
             raise ValueError("Edge SQL exceeded its execution-time limit.") from exc
-        for url in urls:
+        for url in _interleave_urls_by_hostname(urls):
             seen += 1
             if seen <= count:
                 continue

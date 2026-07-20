@@ -20,6 +20,19 @@ without generating a package. Page-only edges execute in standalone memory-limit
 connections. Historical joins use a read-only DuckLake connection at the run's pinned snapshot.
 Each worker process owns one Playwright driver, while every delivery opens and closes its own CDP
 connection and page so crawl state is not shared between deliveries.
+The durable crawl consumer uses a fixed, bounded worker-local look-ahead grouped by normalized
+hostname. Buffered deliveries remain queued in crawl-request state and receive JetStream
+heartbeats. A worker probes the deployment-wide domain permit before assigning a process-local
+acquisition lane, so excess work for a saturated hostname cannot occupy every lane while another
+hostname is ready. Ready hostnames are selected round-robin; a single-host backlog remains
+work-conserving. Denied hostname probes receive a short worker-local cooldown, and nonblocking
+capacity misses do not register Resource Governor waiters. Initial roots and each bounded edge
+result preserve per-host order while being interleaved across hostnames before publication.
+Worker presence is renewed before recovery bookkeeping and retries transient NATS failures with
+bounded backoff. Queue health uses the durable crawl consumer counters instead of scanning every
+request record, while an independent heartbeat reports actual event-loop liveness. Unexpected
+termination of any of these background runtimes fails the process so deployment supervision can
+restart it.
 When every method is disabled it sends no browser-only script or page-completion commands and
 performs no page evaluation or interaction. It then ACKs. It never opens DuckLake for acquisition
 or chooses a provider; historical edge evaluation is a separate bounded read-only navigation
@@ -41,11 +54,19 @@ work. One process owns one embedded DuckDB connection and runs one catalogue ope
 ## Materialization and maintenance
 
 Materialization discovery directly publishes deterministic bounded scopes. One worker evaluates and
-commits one scope through authoritative coverage. Maintenance is off-path and requires an exclusive
-background catalogue permit.
+commits one scope through authoritative coverage. Crawl-triggered scope jobs retain the immutable
+document identity already present in the crawl change so source SQL can bind crawl and document
+predicates directly to physical scans. The shared DOM evidence table uses 256 document-hash buckets
+so one scope prunes to a narrow physical partition without creating per-document files.
+Maintenance is off-path and requires an exclusive background
+catalogue and object-pressure permit. Once that bundle is waiting, new overlapping grants pause
+briefly so existing holders can drain and maintenance cannot starve behind continuous object-only
+work.
 
 Permits control shared pressure, operation leases suppress duplicate execution, and PostgreSQL
-advisory locks fence commits. None of these mechanisms owns work delivery or workflow completion.
+advisory locks fence commits. Nonblocking capacity probes are read-only on a miss. Granted permits
+retry transient state contention while sufficient lease time remains instead of treating one
+failed renewal CAS as loss. None of these mechanisms owns work delivery or workflow completion.
 
 ## Packaging and deployment
 
@@ -58,3 +79,15 @@ Local Compose passes only addresses and credentials that differ inside its conta
 the small set of documented deployment safety rails. Runtime mechanics use validated code defaults;
 they are not repeated as Compose interpolation knobs. Shared YAML anchors keep the remaining
 catalogue, repository, NATS, and control-plane contracts consistent across roles.
+
+Atlas accepts a literal NKey seed through `NATS_SEED` and applies it to every application NATS
+connection; omitting it retains unauthenticated local-development behavior. Every Atlas-managed
+JetStream stream and KV bucket declares an explicit positive `max_bytes`. Startup enforces those
+bounds when attaching to pre-provisioned infrastructure and never reconciles an omitted bound to
+unlimited storage.
+
+API replicas also use the file-backed `atlas_catalogue_queries` KV bucket for active and recent
+interactive-query status and cross-replica cancellation. It retains one revision per query for one
+hour by default, is capped at 64 MiB, and uses the same configured operational-state replica count
+as Resource Governor grants. Query result data never enters NATS; Arrow IPC flows directly from the
+executing API response.

@@ -173,6 +173,7 @@ def _open_crawl_planner_consumer(
     return DMLConsumer(
         catalogue.lake,
         "atlas-crawl-materialization-planner",
+        connection=catalogue.connection,
         table=f"{catalogue.config.schema}.crawls",
         mode="changes",
         start_at=start_at,
@@ -223,6 +224,7 @@ def _crawl_triggered_scopes(definitions, *, crawl_id: str, document_id):
             definition,
             crawl_id if definition.scope_kind == "crawl" else str(document_id),
             "live",
+            document_id=str(document_id) if document_id is not None else None,
         )
         for definition in definitions
         if definition.scope_kind == "crawl"

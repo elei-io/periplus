@@ -51,10 +51,10 @@ Run the API without Compose:
 make api
 ```
 
-`ATLAS_QUACK_URI` and `ATLAS_QUACK_TOKEN` must identify a Quack endpoint reachable by the browser.
-The API owns one lightweight serialized DuckDB connection for mandatory catalogue definitions, not
-an analytical read pool. Workbench queries run from browser DuckDB-Wasm directly against Quack;
-other UI features do not use browser DuckDB.
+`ATLAS_QUACK_URI` and `ATLAS_QUACK_TOKEN` identify the private Quack endpoint reachable only by
+Atlas API compute. The API owns a bounded pool of reusable Quack client connections for validated,
+read-only workbench queries and Arrow IPC result streaming. The browser never receives Quack,
+Postgres, DuckLake, or object-store credentials.
 
 Use the CLI for configuration and repository administration:
 

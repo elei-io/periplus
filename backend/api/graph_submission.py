@@ -10,10 +10,10 @@ from sqlalchemy.orm import Session
 from control.crawl_graphs.service import freeze_graph
 from runtime.graph_queue import (
     GraphRun,
-    connect_nats,
     ensure_graph_progress_storage,
     ensure_graph_storage,
 )
+from runtime.nats_client import connect_nats
 from runtime.graph_runs import create_graph_run, resolve_policy_snapshot
 
 

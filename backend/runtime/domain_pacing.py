@@ -10,6 +10,7 @@ from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import BadRequestError, BucketNotFoundError, KeyNotFoundError, KeyWrongLastSequenceError
 from pydantic import BaseModel, ConfigDict
 
+from config import get_int
 from config.performance import RESOURCE_STATE_REPLICAS
 
 DOMAIN_PACING_BUCKET = "atlas_domain_pacing"
@@ -22,20 +23,33 @@ class DomainPacingState(BaseModel):
 
 
 async def ensure_domain_pacing_storage(jetstream):
+    config = KeyValueConfig(
+        bucket=DOMAIN_PACING_BUCKET,
+        description="Atlas per-domain politeness pacing",
+        history=1,
+        max_bytes=get_int("ATLAS_DOMAIN_PACING_MAX_BYTES"),
+        storage=StorageType.FILE,
+        replicas=RESOURCE_STATE_REPLICAS,
+    )
     try:
-        return await jetstream.key_value(DOMAIN_PACING_BUCKET)
+        bucket = await jetstream.key_value(DOMAIN_PACING_BUCKET)
     except BucketNotFoundError:
-        config = KeyValueConfig(
-            bucket=DOMAIN_PACING_BUCKET,
-            description="Atlas per-domain politeness pacing",
-            history=1,
-            storage=StorageType.FILE,
-            replicas=RESOURCE_STATE_REPLICAS,
-        )
         try:
-            return await jetstream.create_key_value(config=config)
+            bucket = await jetstream.create_key_value(config=config)
         except BadRequestError:
-            return await jetstream.key_value(DOMAIN_PACING_BUCKET)
+            bucket = await jetstream.key_value(DOMAIN_PACING_BUCKET)
+    status = await bucket.status()
+    actual = status.stream_info.config
+    if (
+        actual.storage != StorageType.FILE
+        or actual.max_msgs_per_subject != 1
+        or actual.max_bytes != config.max_bytes
+        or actual.num_replicas != config.replicas
+    ):
+        raise RuntimeError(
+            f"JetStream KV {DOMAIN_PACING_BUCKET} has an incompatible contract"
+        )
+    return bucket
 
 
 async def wait_for_domain_interval(bucket, *, domain: str, interval_seconds: float) -> None:

@@ -3,17 +3,18 @@
 Atlas exposes the managed DuckLake schema as the default SQL namespace. Query `documents`,
 `crawls`, and `elements` directly; the `atlas.main` prefix is optional.
 
-The SQL workbench runs in DuckDB-Wasm in the browser and streams results from the required Quack
-service. Quack owns analytical CPU and memory; API replicas do not open a DuckDB read pool or proxy
-query results. The browser attaches Atlas's configured DuckLake to its server-side Quack session.
-This browser DuckDB runtime belongs only to the workbench; the rest of the UI uses ordinary
-control-plane and NATS-backed API contracts.
+The SQL workbench submits queries to Atlas API and consumes Arrow IPC streams. The API owns bounded,
+reusable Quack client connections while the private Quack service owns analytical CPU, memory, and
+DuckLake access. The browser does not load DuckDB or receive Quack, Postgres, object-store, or
+DuckLake attachment credentials.
 
 Every request uses one explicit mode. **Run** executes the query and returns its rows, **Explain**
 returns DuckDB's JSON plan without executing the query, and **Explain analyze** executes it and
 returns the measured JSON plan. Run is the default; changing modes never rewrites the SQL saved by
-the user. The API validates that each request is one read-only query, but the browser sends its SQL
-to Quack without helper expansion or other semantic rewriting.
+the user. The API validates one read-only public-catalogue query and sends it to Quack without
+helper expansion or other semantic rewriting. External file and table scans, dynamic SQL, secret
+inspection, system relations, and non-Atlas catalogues are rejected. Execution also has explicit
+timeouts, deployment-wide concurrency, row, result-byte, and cancellation limits.
 
 ## Content and crawl identity
 
@@ -58,6 +59,8 @@ macros.text_content(document_id, element_index)
 macros.inner_html(document_id, element_index)
 macros.readable_text(document_id, element_index)
 macros.resolve_url(source, href)
+macros.normalize_url(value)
+macros.url_parts(value)
 ```
 
 These managed scalar macros are reconciled from `fixtures/scalar_macros/` during Atlas setup,
@@ -68,6 +71,9 @@ macros share this schema; DuckDB distinguishes their kinds even when their names
 `get_attribute` returns `NULL` for an absent attribute. `has_attribute` distinguishes an absent
 attribute from a present attribute whose value is the empty string, as commonly occurs with HTML
 boolean attributes.
+
+`url_parts` returns `NULL` for absent query and fragment components. A non-empty query or fragment
+is returned without its leading `?` or `#`.
 
 `has_text` returns true when a value contains at least one character other than HTML whitespace
 (space, tab, carriage return, line feed, or form feed). Use `macros.has_text(text_direct)` or
@@ -315,21 +321,55 @@ durable raw HTML. Edge queries are evaluated once per ready source crawl and bin
 do not scan a node's unbounded history to decide what follows one page.
 
 ```sql
-SELECT url
-FROM page.links
+SELECT target_url AS url
+FROM edge.page_links
 WHERE crawl_id = $crawl_id
-  AND is_http
-  AND NOT is_internal
+  AND relation_kind <> 'external'
 ORDER BY element_index
 LIMIT 10;
 ```
 
-`page.links` is an ephemeral relation derived from the current source page. It exists only while
+`edge.page_links` is an ephemeral relation derived from the current source page. It exists only while
 evaluating that page's outgoing graph edges and is independent of every user-owned `views.*`
-definition. Page-only SQL runs in a standalone memory-limited DuckDB connection. An edge may join
-catalogue relations; Atlas pins those reads to the graph run's pre-run DuckLake snapshot so
-redelivery cannot observe catalogue ingestion arriving midway through the run. Edge SQL may not
-open external files or table functions.
+definition. It contains one row per valid HTTP(S) anchor occurrence:
+
+| Column | Meaning |
+|---|---|
+| `crawl_id`, `document_id`, `captured_at` | Source crawl, retained document, and acquisition time |
+| `source_url`, `target_url` | Fragment-free normalized source and crawl destination |
+| `source_*`, `target_*` | Scheme, host, effective port, path, and query components; the source also carries its authoritative registrable domain |
+| `target_fragment` | Fragment retained independently from crawl identity |
+| `relation_kind` | Most-specific URL relationship: `same_url`, `same_path`, `same_origin`, `same_host`, `same_site`, or `external` |
+| `raw_href` | Original anchor `href`, before resolution and URL normalization |
+| `element_index` | Exact source anchor in the durable DOM projection and its document order |
+
+Distinct anchors are not collapsed merely because they produce the same crawl URL. This preserves
+separate fragments and exact DOM provenance; graph admission still normalizes and deduplicates
+returned crawl candidates. Fragment navigation can therefore be inspected without creating
+fragment-specific crawl identities. Link labels and presentation attributes are deliberately absent:
+the relation describes URL topology, not anchor content.
+
+The seeded `views.page_links` relation exposes the same columns and meanings over durable crawl
+history. Its self-contained definition derives links from `crawls` and `elements`, and its placement
+under `fixtures/materialized_views/crawl/` activates the standard crawl-scoped materialization.
+Setup creates the empty backing relation; materialization workers alone populate live and backfill
+scopes. Ingestion writes only the durable crawl and DOM evidence. Historical graph edges never wait
+for either pipeline and may observe incomplete recent materialization coverage at their pinned
+pre-run snapshot; this intentional consistency contract is defined in
+[Crawl graphs](CRAWL_GRAPHS.md#historical-consistency-contract).
+
+```sql
+SELECT source_host, target_host, count(*) AS links
+FROM views.page_links
+WHERE relation_kind <> 'external'
+GROUP BY source_host, target_host
+ORDER BY links DESC;
+```
+
+Page-only SQL runs in a standalone memory-limited DuckDB connection. An edge may join catalogue
+relations; Atlas pins those reads to the graph run's pre-run DuckLake snapshot so redelivery cannot
+observe catalogue ingestion arriving midway through the run. Edge SQL may not open external files
+or table functions.
 
 SQL `LIMIT` expresses the intended number of candidates. Catalogue execution still applies hard
 row, byte, memory, and timeout limits. Returned URLs become independently claimable crawl requests;
@@ -343,7 +383,11 @@ object-read capacity before starting; SQL bounds do not replace shared infrastru
 `crawls` is partitioned by year, month, and day of `captured_at`, matching common site/path/time
 queries. Deduplicated `documents` and `elements` are not date-partitioned because one document can
 be observed by crawls on multiple dates. `elements` is not partitioned by tag so complete
-document-order projections remain physically cohesive.
+document-order projections remain physically cohesive. The seeded `views.page_links` backing table
+also carries `captured_at` and uses its year, month, and day partition transforms. Seeded
+materialized views use the same `_atlas_materializations` backing-table machinery, scope coverage,
+and worker ownership as user-created materializations; there is no private page-links table or
+ingestion exception.
 
 Run `make catalogue-benchmark` against an existing catalogue before changing that layout. The
 benchmark covers day-bounded crawl reads, document-scoped CSS selection, a day-bounded

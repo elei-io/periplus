@@ -44,10 +44,16 @@ async def run_backfill(jetstream, stop: asyncio.Event, resource_grants=None) -> 
                 if not scopes:
                     break
                 delay = 60 / max(1, definition.backfill_scopes_per_minute)
-                for scope_id in scopes:
+                for scope_id, document_id in scopes:
                     if stop.is_set():
                         return
-                    await publish_scope(jetstream, definition, scope_id, "backfill")
+                    await publish_scope(
+                        jetstream,
+                        definition,
+                        scope_id,
+                        "backfill",
+                        document_id=document_id,
+                    )
                     cursor = scope_id
                     await _wait(stop, delay)
             await _wait_for_queues(jetstream, stop)
@@ -76,7 +82,7 @@ async def _wait_for_queues(jetstream, stop: asyncio.Event) -> None:
 
 def _missing_scope_page(
     definition: CatalogueMaterialization, cursor: str | None
-) -> list[str]:
+) -> list[tuple[str, str | None]]:
     limit = get_int("ATLAS_MATERIALIZATION_BACKFILL_PAGE_SIZE")
     with catalogue_from_env() as catalogue:
         source_table = "documents" if definition.scope_kind == "document" else "crawls"
@@ -87,9 +93,14 @@ def _missing_scope_page(
             MATERIALIZATION_COVERAGE_TABLE,
             schema=INTERNAL_SCHEMA,
         )
+        document_expression = (
+            "d.document_id"
+            if definition.scope_kind == "crawl"
+            else f"d.{identity}"
+        )
         rows = catalogue.connection.execute(
             f"""
-            SELECT d.{identity}
+            SELECT d.{identity}, {document_expression}
             FROM {scopes} AS d AT (VERSION => ?)
             LEFT JOIN {coverage} AS r
               ON r.definition_revision_id = ?
@@ -110,7 +121,13 @@ def _missing_scope_page(
                 limit,
             ],
         ).fetchall()
-        return [str(row[0]) for row in rows]
+        return [
+            (
+                str(row[0]),
+                str(row[1]) if row[1] is not None else None,
+            )
+            for row in rows
+        ]
 
 
 def _backfill_terminal(definition: CatalogueMaterialization) -> bool:

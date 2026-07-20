@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -44,6 +45,59 @@ class CdpAcquisitionTests(unittest.TestCase):
         self.assertEqual(_status_outcome(429, crawl_policy), "retry")
         self.assertEqual(_status_outcome(404, crawl_policy), "fail")
         self.assertEqual(_status_outcome(200, crawl_policy), "accept")
+
+    def test_preacquired_domain_permit_wraps_page_acquisition(self):
+        effective = effective_policy()
+        context = GraphExecutionContext(
+            graph_id=uuid4(),
+            graph_run_id=uuid4(),
+            graph_node_id=uuid4(),
+            crawl_request_id=uuid4(),
+            effective_policy_snapshot_json=effective.model_dump(mode="json"),
+        )
+        events: list[str] = []
+
+        @asynccontextmanager
+        async def domain_permit():
+            events.append("permit-enter")
+            try:
+                yield
+            finally:
+                events.append("permit-exit")
+
+        async def acquire(*_args, **_kwargs):
+            events.append("acquire")
+            return CrawlPage(
+                url="https://example.com/",
+                success=False,
+                duration_seconds=0.1,
+                error="failed",
+                failure_code="navigation_failed",
+                failure_stage="navigation",
+                failure_retryable=False,
+                outcome="failed",
+            )
+
+        async def scenario():
+            pipeline = AsyncMock()
+            with (
+                patch("actions.crawl.service._acquire", side_effect=acquire),
+                patch("actions.crawl.service.resource_permits") as permits,
+            ):
+                await crawl_graph_request(
+                    session=None,
+                    url="https://example.com/",
+                    context=context,
+                    playwright=MagicMock(),
+                    repository_pipeline=pipeline,
+                    resource_grants=object(),
+                    domain_permit=domain_permit(),
+                )
+            permits.assert_not_called()
+            self.assertEqual(events, ["permit-enter", "acquire", "permit-exit"])
+            pipeline.enqueue_stored.assert_awaited_once()
+
+        asyncio.run(scenario())
 
     def test_all_completion_methods_disabled_omit_browser_only_cdp_calls(self):
         static_policy = CrawlPolicySnapshot(

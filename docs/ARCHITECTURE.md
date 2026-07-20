@@ -48,10 +48,18 @@ responsible for transport-specific queues and browser capacity.
 ## Navigation and ingestion
 
 Acquisition-owned navigation evaluates outgoing graph edges and settles the crawl request. An edge
-must use `$crawl_id` and returns URL values for its target node. `page.links` is the current page's
-Arrow package and uses a standalone memory-limited DuckDB connection. Edges may also join read-only
-catalogue tables; those reads use the DuckLake snapshot pinned before the graph run starts, so
-retries cannot observe ingestion arriving midway through the run.
+must use `$crawl_id` and returns URL values for its target node. `edge.page_links` is the current
+page's occurrence-level Arrow package. It preserves raw hrefs, fragments, DOM order, anchor
+provenance, normalized source and target URL components, and their most-specific relationship while
+exposing a fragment-free crawl destination. Link text and presentation attributes are not part of
+the navigation contract. It uses a standalone memory-limited DuckDB connection.
+The seeded `views.page_links` definition reproduces those meanings from durable crawl and DOM
+evidence and is declared under `fixtures/materialized_views/crawl/`. Its live and backfill writes
+are ordinary materialization-worker work; ingestion has no link-specific projection. Edges may also
+join read-only catalogue tables; those reads use the DuckLake snapshot pinned before the graph run
+starts, so retries cannot observe ingestion arriving midway through the run. Graph traversal never
+waits for ingestion or materialization coverage; historical edges intentionally tolerate recent
+catalogue omissions in exchange for a stable pre-run snapshot.
 
 Independently, an ingestion worker verifies retained HTML and commits the crawl and base DOM
 evidence. It atomically commits each method execution to private `_atlas.crawl_steps` with its
@@ -68,26 +76,36 @@ materialization process owns one embedded DuckDB connection and initially execut
 operation at a time. Historical graph edges open bounded, read-only, per-operation connections and
 are serialized within each acquisition process.
 
-Interactive catalogue reads do not execute in the API process. The browser loads DuckDB-Wasm,
-attaches the configured Quack endpoint, and drives a server-side session with Atlas's DuckLake
-attached. Only the SQL workbench uses this browser runtime: its queries, completion metadata, and
-catalogue status. Crawl failures, run progress, and worker backlogs come from NATS.
+Interactive catalogue reads enter through the Atlas API. Each API replica owns a bounded pool of
+reusable DuckDB Quack client connections; analytical CPU, memory, and DuckLake access remain on the
+private Quack service. The API validates one read-only statement, rejects external file, dynamic
+SQL, secret, and non-Atlas catalogue access, acquires a deployment-wide `quack:query` permit, and
+streams bounded Arrow IPC results. Query status and cancellation requests use the expiring
+`atlas_catalogue_queries` NATS KV bucket, so another API replica can observe or cancel an execution.
+Timeout, row, encoded-byte, local-pool, and global-concurrency limits are mandatory.
 
 Each API process owns exactly one lightweight embedded DuckDB catalogue-control connection, pinned
 to one thread and one operation at a time. It performs only mandatory definition work such as
 creating or updating views, macros, and materializations, plus pinning the snapshot required by a
-historical graph edge. It never runs analytical UI reads, never polls DuckLake, has no read pool,
-and has no query-proxy fallback. The API validates workbench SQL and supplies typed Quack/DuckLake
-bootstrap configuration, but the browser sends the query directly to Quack. Quack is therefore
-required for the web application.
-Because attached catalogues are Quack-server-global, every Atlas deployment sharing one Quack
-service must configure a distinct `ATLAS_CATALOGUE_ALIAS`; `USE` remains browser-session-local.
+historical graph edge. This control connection remains separate from the API's Quack client pool;
+interactive reads never execute against its embedded local catalogue.
+
+The browser uses ordinary authenticated HTTP to Atlas API for workbench queries, cancellation,
+metadata, and status. It does not load DuckDB-Wasm and never receives the Quack URI or token,
+Postgres DSN, object-store credentials, or DuckLake attachment SQL. Cloudflare Access is the
+single-tenant user authentication boundary. Quack remains private, authenticates the API with the
+dedicated Atlas token, and is restricted at the network boundary to API compute. Because attached
+catalogues are Quack-server-global, every Atlas deployment sharing one Quack service must configure
+a distinct `ATLAS_CATALOGUE_ALIAS`; `USE` remains Quack-client-session-local.
 
 ## Repository boundary
 
 Raw HTML is immutable and content addressed. Object keys are repository-relative. Postgres never
 stores crawl history, NATS never becomes analytical history, and DuckLake never becomes the editable
-control plane.
+control plane. NATS execution records are deliberately bounded operational state: crawl-request and
+edge-evaluation records expire after seven days by default, while compact graph-run summaries and
+progress expire after thirty days. Terminal runs discard their admission deduplication set once all
+requests settle. DuckLake remains the only long-lived crawl history.
 
 ## Scheduled graph runs
 

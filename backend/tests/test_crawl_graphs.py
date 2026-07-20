@@ -93,7 +93,7 @@ class CrawlGraphTests(unittest.TestCase):
                 source_node_id=search.id,
                 target_node_id=result.id,
                 name="results",
-                sql="SELECT url FROM page.links WHERE crawl_id = $crawl_id LIMIT 10",
+                sql="SELECT target_url AS url FROM edge.page_links WHERE crawl_id = $crawl_id LIMIT 10",
                 dedupe_mode=EdgeDedupeMode.document,
             ),
         )
@@ -150,7 +150,7 @@ class CrawlGraphTests(unittest.TestCase):
                     source_node_id=search.id,
                     target_node_id=other.id,
                     name="invalid",
-                    sql="SELECT url FROM page.links WHERE crawl_id = $crawl_id LIMIT 1",
+                    sql="SELECT target_url AS url FROM edge.page_links WHERE crawl_id = $crawl_id LIMIT 1",
                 ),
             )
 
@@ -163,7 +163,7 @@ class CrawlGraphTests(unittest.TestCase):
                 source_node_id=search.id,
                 target_node_id=result.id,
                 name="out",
-                sql="SELECT url FROM page.links WHERE crawl_id = $crawl_id LIMIT 1",
+                sql="SELECT target_url AS url FROM edge.page_links WHERE crawl_id = $crawl_id LIMIT 1",
             ),
         )
         create_edge(
@@ -173,7 +173,7 @@ class CrawlGraphTests(unittest.TestCase):
                 source_node_id=result.id,
                 target_node_id=search.id,
                 name="in",
-                sql="SELECT url FROM page.links WHERE crawl_id = $crawl_id LIMIT 1",
+                sql="SELECT target_url AS url FROM edge.page_links WHERE crawl_id = $crawl_id LIMIT 1",
             ),
         )
         delete_node(self.session, graph.id, search.id)
@@ -181,19 +181,20 @@ class CrawlGraphTests(unittest.TestCase):
 
     def test_edge_sql_contract(self) -> None:
         validate_edge_sql(
-            "SELECT url FROM page.links WHERE crawl_id = $crawl_id LIMIT 10"
+            "SELECT target_url AS url FROM edge.page_links WHERE crawl_id = $crawl_id LIMIT 10"
         )
         invalid = [
-            "DELETE FROM page.links",
-            "SELECT url FROM page.links LIMIT 10",
-            "SELECT url FROM page.links WHERE crawl_id = $crawl_id",
-            "SELECT host FROM page.links WHERE crawl_id = $crawl_id LIMIT 10",
+            "DELETE FROM edge.page_links",
+            "SELECT target_url AS url FROM edge.page_links LIMIT 10",
+            "SELECT target_url AS url FROM edge.page_links WHERE crawl_id = $crawl_id",
+            "SELECT host FROM edge.page_links WHERE crawl_id = $crawl_id LIMIT 10",
             (
-                "SELECT p.url FROM page.links AS p, "
+                "SELECT p.target_url AS url FROM edge.page_links AS p, "
                 "read_csv_auto('/etc/passwd') AS leaked "
                 "WHERE p.crawl_id = $crawl_id LIMIT 10"
             ),
             "SELECT url FROM page.forms WHERE crawl_id = $crawl_id LIMIT 10",
+            "SELECT url FROM page.links WHERE crawl_id = $crawl_id LIMIT 10",
             "SELECT url FROM nav.links WHERE crawl_id = $crawl_id LIMIT 10",
             "SELECT url FROM t WHERE crawl_id = $crawl_id LIMIT 0",
             "SELECT url FROM t WHERE crawl_id = $crawl_id LIMIT 100001",

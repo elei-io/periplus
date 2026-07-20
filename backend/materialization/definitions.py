@@ -19,6 +19,8 @@ def scope_job(
     definition: CatalogueMaterialization,
     scope_id: str,
     source: Literal["live", "backfill"],
+    *,
+    document_id: str | None,
 ) -> MaterializationScopeJob:
     operation_id = sha256(
         f"{definition.definition_revision_id}:{definition.scope_kind}:{scope_id}".encode()
@@ -30,6 +32,7 @@ def scope_job(
         scope_kind=definition.scope_kind,
         scope_column=definition.scope_column,
         scope_id=scope_id,
+        document_id=document_id,
         operation_id=operation_id,
         source=source,
         enqueued_at=datetime.now(UTC),
@@ -60,8 +63,15 @@ async def publish_scope(
     definition: CatalogueMaterialization,
     scope_id: str,
     source: Literal["live", "backfill"],
+    *,
+    document_id: str | None,
 ) -> None:
-    job = scope_job(definition, scope_id, source)
+    job = scope_job(
+        definition,
+        scope_id,
+        source,
+        document_id=document_id,
+    )
     await jetstream.publish(
         SCOPE_LIVE_SUBJECT if source == "live" else SCOPE_BACKFILL_SUBJECT,
         job.model_dump_json().encode(),

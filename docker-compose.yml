@@ -15,32 +15,41 @@ x-atlas-healthcheck: &atlas-healthcheck
   start_period: 10s
 
 x-atlas-control-environment: &atlas-control-environment
-  DATABASE_URL: postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}
+  DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}}
 
 x-atlas-catalogue-environment: &atlas-catalogue-environment
-  ATLAS_CATALOGUE_CATALOG: postgres
-  ATLAS_CATALOGUE_CATALOG_DSN: "host=atlas-postgres port=5432 dbname=${POSTGRES_CATALOGUE_DB:-atlas_catalogue} user=${POSTGRES_USER:-atlas} password=${POSTGRES_PASSWORD:-atlas}"
+  ATLAS_CATALOGUE_CATALOG: ${ATLAS_CATALOGUE_CATALOG:-postgres}
+  ATLAS_CATALOGUE_CATALOG_DSN: ${ATLAS_CATALOGUE_CATALOG_DSN:-host=atlas-postgres port=5432 dbname=${POSTGRES_CATALOGUE_DB:-atlas_catalogue} user=${POSTGRES_USER:-atlas} password=${POSTGRES_PASSWORD:-atlas}}
 
 x-atlas-nats-environment: &atlas-nats-environment
-  NATS_URL: nats://atlas-nats:4222
+  NATS_URL: ${NATS_URL:-nats://atlas-nats:4222}
+  NATS_SEED: ${NATS_SEED:-}
 
 x-atlas-repository-environment: &atlas-repository-environment
-  ATLAS_REPOSITORY_STORAGE: s3
+  ATLAS_REPOSITORY_STORAGE: ${ATLAS_REPOSITORY_STORAGE:-s3}
   ATLAS_REPOSITORY_S3_BUCKET: ${ATLAS_REPOSITORY_S3_BUCKET:-atlas}
-  ATLAS_REPOSITORY_S3_ENDPOINT: http://atlas-minio:9000
-  ATLAS_REPOSITORY_S3_REGION: us-east-1
-  ATLAS_REPOSITORY_S3_KEY_ID: ${MINIO_ROOT_USER:-atlas}
-  ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-atlas-secret}
-  ATLAS_REPOSITORY_S3_URL_STYLE: path
-  ATLAS_REPOSITORY_S3_USE_SSL: "false"
+  ATLAS_REPOSITORY_S3_ENDPOINT: ${ATLAS_REPOSITORY_S3_ENDPOINT:-http://atlas-minio:9000}
+  ATLAS_REPOSITORY_S3_REGION: ${ATLAS_REPOSITORY_S3_REGION:-us-east-1}
+  ATLAS_REPOSITORY_S3_KEY_ID: ${ATLAS_REPOSITORY_S3_KEY_ID:-${MINIO_ROOT_USER:-atlas}}
+  ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY: ${ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY:-${MINIO_ROOT_PASSWORD:-atlas-secret}}
+  ATLAS_REPOSITORY_S3_URL_STYLE: ${ATLAS_REPOSITORY_S3_URL_STYLE:-path}
+  ATLAS_REPOSITORY_S3_USE_SSL: ${ATLAS_REPOSITORY_S3_USE_SSL:-}
 
 x-atlas-resource-environment: &atlas-resource-environment
   ATLAS_CATALOGUE_MAX_CONCURRENCY: ${ATLAS_CATALOGUE_MAX_CONCURRENCY:-64}
   ATLAS_OBJECT_IO_MAX_CONCURRENCY: ${ATLAS_OBJECT_IO_MAX_CONCURRENCY:-64}
 
 x-atlas-quack-environment: &atlas-quack-environment
-  ATLAS_QUACK_URI: ${ATLAS_QUACK_URI:-quack:127.0.0.1:9494}
+  ATLAS_QUACK_URI: ${ATLAS_QUACK_URI:-quack:atlas-quack:9494}
   ATLAS_QUACK_TOKEN: ${ATLAS_QUACK_TOKEN:-atlas-local-quack}
+  ATLAS_QUACK_DISABLE_SSL: ${ATLAS_QUACK_DISABLE_SSL:-true}
+  ATLAS_QUACK_MAX_CONCURRENCY: ${ATLAS_QUACK_MAX_CONCURRENCY:-4}
+  ATLAS_QUACK_POOL_WAIT_SECONDS: ${ATLAS_QUACK_POOL_WAIT_SECONDS:-5}
+  ATLAS_QUACK_QUERY_TIMEOUT_SECONDS: ${ATLAS_QUACK_QUERY_TIMEOUT_SECONDS:-30}
+  ATLAS_QUACK_QUERY_MAX_ROWS: ${ATLAS_QUACK_QUERY_MAX_ROWS:-100000}
+  ATLAS_QUACK_QUERY_MAX_BYTES: ${ATLAS_QUACK_QUERY_MAX_BYTES:-67108864}
+  ATLAS_QUACK_QUERY_STATE_TTL_SECONDS: ${ATLAS_QUACK_QUERY_STATE_TTL_SECONDS:-3600}
+  ATLAS_QUACK_QUERY_STATE_MAX_BYTES: ${ATLAS_QUACK_QUERY_STATE_MAX_BYTES:-67108864}
 
 services:
   atlas-web:
@@ -53,8 +62,6 @@ services:
       - "127.0.0.1:${ATLAS_WEB_PORT:-8080}:80"
     depends_on:
       atlas-api:
-        condition: service_healthy
-      atlas-quack:
         condition: service_healthy
     restart: unless-stopped
 
@@ -125,7 +132,7 @@ services:
     <<: *atlas-backend
     command: atlas-worker acquisition
     deploy:
-      replicas: 1
+      replicas: 2
     volumes: *atlas-repository-volumes
     expose:
       - "9090"
@@ -148,7 +155,7 @@ services:
           *atlas-repository-environment,
           *atlas-resource-environment,
         ]
-      CDP_URL: ${CDP_URL:-ws://host.docker.internal:8411/v1/connect}
+      CDP_URL: ${CDP_URL:-ws://192.168.30.201:8411/v1/connect}
       ATLAS_GRAPH_MAX_REQUESTS_PER_RUN: ${ATLAS_GRAPH_MAX_REQUESTS_PER_RUN:-10000}
       ATLAS_GRAPH_MAX_RUN_SECONDS: ${ATLAS_GRAPH_MAX_RUN_SECONDS:-3600}
     depends_on:
@@ -164,7 +171,7 @@ services:
     <<: *atlas-backend
     command: atlas-worker ingestion
     deploy:
-      replicas: 3
+      replicas: 4
     volumes: *atlas-repository-volumes
     expose:
       - "9091"
@@ -200,6 +207,8 @@ services:
   atlas-materialization-worker:
     <<: *atlas-backend
     command: atlas-worker materialization
+    deploy:
+      replicas: 2
     volumes: *atlas-repository-volumes
     expose:
       - "9093"

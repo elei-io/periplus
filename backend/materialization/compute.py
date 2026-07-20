@@ -19,6 +19,9 @@ from repository.catalogue.query import classify_select
 from repository.objects.config import object_store_from_env, staging_root_from_env
 
 
+_MISSING_DOCUMENT_ID = "__atlas_missing_document__"
+
+
 def compute_scope(job: MaterializationScopeJob) -> MaterializationCommitJob:
     """Evaluate one document and stage a bounded Arrow object for the writer."""
 
@@ -36,6 +39,7 @@ def compute_scope(job: MaterializationScopeJob) -> MaterializationCommitJob:
     output_bytes = 0
     try:
         with catalogue_from_env() as catalogue:
+            _set_scope_variables(catalogue, job)
             sql = scoped_select(
                 source_sql, scope_kind=job.scope_kind, scope_column=job.scope_column
             )
@@ -82,6 +86,32 @@ def compute_scope(job: MaterializationScopeJob) -> MaterializationCommitJob:
         )
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+def _set_scope_variables(
+    catalogue: Catalogue,
+    job: MaterializationScopeJob,
+) -> None:
+    """Expose immutable scope bindings to source SQL for physical pruning."""
+
+    document_id = (
+        job.document_id
+        if job.document_id is not None
+        else (
+            job.scope_id
+            if job.scope_kind == "document"
+            else _MISSING_DOCUMENT_ID
+        )
+    )
+    catalogue.connection.execute(
+        "SET VARIABLE atlas_materialization_document_id = ?",
+        [document_id],
+    )
+    if job.scope_kind == "crawl":
+        catalogue.connection.execute(
+            "SET VARIABLE atlas_materialization_crawl_id = ?",
+            [job.scope_id],
+        )
 
 
 def _temporary_arrow_path(job: MaterializationScopeJob) -> Path:

@@ -94,6 +94,15 @@ const atlasFunctionCompletions = [
     detail: "function · Atlas scalar",
     boost: 15,
   }),
+  ...["normalize_url", "url_parts"].map((name) =>
+    snippetCompletion(`macros.${name}(\${value})`, {
+      label: `macros.${name}`,
+      displayLabel: `macros.${name}(…)`,
+      type: "function",
+      detail: "function · Atlas scalar",
+      boost: 15,
+    })
+  ),
   snippetCompletion("macros.has_text(${value})", {
     label: "macros.has_text",
     displayLabel: "macros.has_text(…)",

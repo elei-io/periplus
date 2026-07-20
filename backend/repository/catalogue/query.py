@@ -48,6 +48,50 @@ _DOM_HELPERS = frozenset({"inner_html", "readable_text", "text_content"})
 _MANAGED_ROW_TABLES = frozenset({"artifacts", "crawls", "documents", "elements"})
 _MAX_DOM_HELPER_INPUT_ROWS = 10_000
 _ABSURD_LIMIT = 100_000
+_INTERACTIVE_SCHEMAS = frozenset(
+    {"main", "macros", "views", "_atlas", "_atlas_materializations"}
+)
+_FORBIDDEN_INTERACTIVE_FUNCTIONS = frozenset(
+    {
+        "current_setting",
+        "duckdb_secrets",
+        "duckdb_settings",
+        "getenv",
+        "glob",
+        "getvariable",
+        "http_get",
+        "http_post",
+        "iceberg_scan",
+        "mysql_query",
+        "mysql_scan",
+        "parquet_scan",
+        "postgres_query",
+        "postgres_scan",
+        "query",
+        "query_table",
+        "quack_query",
+        "quack_query_by_name",
+        "read_blob",
+        "read_csv",
+        "read_csv_auto",
+        "read_json",
+        "read_json_auto",
+        "read_ndjson",
+        "read_parquet",
+        "read_text",
+        "sniff_csv",
+        "sqlite_scan",
+        "which_secret",
+        "write_log",
+    }
+)
+_FORBIDDEN_INTERACTIVE_RELATION_PREFIXES = (
+    "duckdb_",
+    "pg_",
+    "pragma_",
+    "quack_",
+    "sqlite_",
+)
 _EXPLAIN_PREFIX = re.compile(
     r"(?is)\A(?:\s|--[^\n]*(?:\n|\Z)|/\*.*?\*/)*EXPLAIN\b"
 )
@@ -96,6 +140,56 @@ def classify_catalogue_statement(sql: str) -> ClassifiedCatalogueStatement:
         sql=inner_sql,
         query=query,
     )
+
+
+def validate_interactive_catalogue_statement(
+    sql: str,
+    *,
+    catalogue_alias: str,
+    catalogue_schema: str,
+) -> ClassifiedCatalogueStatement:
+    """Require a read-only query confined to Atlas-managed catalogue relations."""
+
+    statement = classify_catalogue_statement(sql)
+    allowed_schemas = _INTERACTIVE_SCHEMAS | {catalogue_schema.lower()}
+    cte_names = {
+        cte.alias_or_name.lower()
+        for cte in statement.query.find_all(exp.CTE)
+        if cte.alias_or_name
+    }
+    for table in statement.query.find_all(exp.Table):
+        catalog = table.catalog.lower()
+        schema = table.db.lower()
+        if catalog and catalog != catalogue_alias.lower():
+            raise CatalogueQueryError(
+                "interactive SQL may only read the Atlas catalogue"
+            )
+        if schema and schema not in allowed_schemas:
+            raise CatalogueQueryError(
+                "interactive SQL may only read Atlas-managed schemas"
+            )
+        if isinstance(table.this, exp.Identifier):
+            name = table.name.lower()
+            if name in cte_names:
+                continue
+            if name.startswith(_FORBIDDEN_INTERACTIVE_RELATION_PREFIXES):
+                raise CatalogueQueryError(
+                    "interactive SQL may not read DuckDB system relations"
+                )
+            continue
+        if isinstance(table.this, exp.GenerateSeries):
+            continue
+        if isinstance(table.this, exp.Anonymous) and schema == "macros":
+            continue
+        raise CatalogueQueryError(
+            "interactive SQL may not read external files or table functions"
+        )
+    for function in statement.query.find_all(exp.Func):
+        if function.name.lower() in _FORBIDDEN_INTERACTIVE_FUNCTIONS:
+            raise CatalogueQueryError(
+                f"interactive SQL may not call {function.name}"
+            )
+    return statement
 
 
 def lint_catalogue_statement(sql: str) -> list[CatalogueLintDiagnostic]:

@@ -4,7 +4,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from api.catalogue_control import CatalogueControl
-from repository.catalogue.browser_runtime import browser_quack_runtime_from_env
 from api.routers import (
     catalogue,
     catalogue_queries,
@@ -20,31 +19,50 @@ from api.routers import (
     operational_metrics,
     repository_operations,
 )
+from repository.catalogue.quack_runtime import QuackQueryRuntime
+from runtime.catalogue_queries import ensure_catalogue_query_storage
 from runtime.crawl_scheduler import run_scheduler
+from runtime.nats_client import connect_nats
+from runtime.resource_governor import ensure_resource_governor_storage
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Fail startup if the browser cannot be given a complete Quack runtime.
-    browser_quack_runtime_from_env()
-    catalogue_control = CatalogueControl()
-    await catalogue_control.start()
-    app.state.catalogue_control = catalogue_control
-    scheduler_stop = asyncio.Event()
-    scheduler_task = asyncio.create_task(
-        run_scheduler(
-            scheduler_stop,
-            catalogue_snapshot_resolver=catalogue_control.latest_snapshot,
-        ),
-        name="crawl-scheduler",
-    )
+    nats_client = await connect_nats()
+    quack_runtime = None
+    catalogue_control = None
+    scheduler_stop = None
+    scheduler_task = None
     try:
+        jetstream = nats_client.jetstream()
+        query_bucket = await ensure_catalogue_query_storage(jetstream)
+        resource_bucket = await ensure_resource_governor_storage(jetstream)
+        quack_runtime = QuackQueryRuntime(query_bucket, resource_bucket)
+        await quack_runtime.start()
+        app.state.quack_runtime = quack_runtime
+        catalogue_control = CatalogueControl()
+        await catalogue_control.start()
+        app.state.catalogue_control = catalogue_control
+        scheduler_stop = asyncio.Event()
+        scheduler_task = asyncio.create_task(
+            run_scheduler(
+                scheduler_stop,
+                catalogue_snapshot_resolver=catalogue_control.latest_snapshot,
+            ),
+            name="crawl-scheduler",
+        )
         yield
     finally:
-        scheduler_stop.set()
-        scheduler_task.cancel()
-        await asyncio.gather(scheduler_task, return_exceptions=True)
-        await catalogue_control.close()
+        if scheduler_stop is not None:
+            scheduler_stop.set()
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            await asyncio.gather(scheduler_task, return_exceptions=True)
+        if catalogue_control is not None:
+            await catalogue_control.close()
+        if quack_runtime is not None:
+            await quack_runtime.close()
+        await nats_client.drain()
 
 
 app = FastAPI(title="Atlas API", lifespan=lifespan)

@@ -6,7 +6,7 @@ import {
   MarkerType,
   Position,
   ReactFlow,
-  getBezierPath,
+  useNodes,
   useNodesState,
   type Connection,
   type Edge,
@@ -69,9 +69,10 @@ import type {
   EdgeDedupeMode,
 } from "@/types/graphs"
 
-const DEFAULT_EDGE_SQL = `SELECT url
-FROM page.links
+const DEFAULT_EDGE_SQL = `SELECT target_url AS url
+FROM edge.page_links
 WHERE crawl_id = $crawl_id
+  AND relation_kind <> 'external'
 LIMIT 100000`
 
 type CrawlNodeData = {
@@ -106,6 +107,10 @@ type EdgeValues = {
 
 const nodeTypes = { crawlNode: CrawlNodeCard }
 const edgeTypes = { crawlEdge: CrawlEdgeEditor }
+const EDGE_NODE_CLEARANCE = 24
+
+type Point = { x: number; y: number }
+type Rect = { left: number; right: number; top: number; bottom: number }
 
 export function GraphCanvas({
   graph,
@@ -587,7 +592,8 @@ function displayUrl(value: string) {
 }
 
 function CrawlEdgeEditor(props: EdgeProps<CrawlFlowEdge>) {
-  const [path, labelX, labelY] = getBezierPath(props)
+  const nodes = useNodes<CrawlNode>()
+  const [path, labelX, labelY] = getOrthogonalPath(props, nodes)
   const edge = props.data!.edge
   const progress = useEdgeProgress(props.data!.runId, edge.id)
   return (
@@ -607,7 +613,7 @@ function CrawlEdgeEditor(props: EdgeProps<CrawlFlowEdge>) {
         >
           <ContextMenu>
             <ContextMenuTrigger
-              className={`${props.data!.readOnly ? "" : "cursor-pointer "}rounded-full border bg-background px-3 py-1 text-xs font-medium shadow-sm`}
+              className={`${props.data!.readOnly ? "" : "cursor-pointer"} rounded-full border bg-background px-3 py-1 text-xs font-medium shadow-sm`}
               onClick={() => !props.data!.readOnly && props.data!.edit(edge.id)}
             >
               {edge.name}
@@ -664,6 +670,187 @@ function CrawlEdgeEditor(props: EdgeProps<CrawlFlowEdge>) {
       </EdgeLabelRenderer>
     </>
   )
+}
+
+function getOrthogonalPath(
+  edge: EdgeProps<CrawlFlowEdge>,
+  nodes: CrawlNode[]
+): [path: string, labelX: number, labelY: number] {
+  const start = { x: edge.sourceX, y: edge.sourceY }
+  const end = { x: edge.targetX, y: edge.targetY }
+  const startOutside = { x: start.x + EDGE_NODE_CLEARANCE, y: start.y }
+  const endOutside = { x: end.x - EDGE_NODE_CLEARANCE, y: end.y }
+  const obstacles = nodes.map(nodeRect)
+  const middle = routeOrthogonally(startOutside, endOutside, obstacles)
+  const points = simplifyPoints([start, ...middle, end])
+  const label = pointHalfwayAlong(points)
+
+  return [
+    `M ${points.map((point) => `${point.x} ${point.y}`).join(" L ")}`,
+    label.x,
+    label.y,
+  ]
+}
+
+function nodeRect(node: CrawlNode): Rect {
+  const width = node.measured?.width ?? node.width ?? 240
+  const height = node.measured?.height ?? node.height ?? 48
+  return {
+    left: node.position.x - EDGE_NODE_CLEARANCE,
+    right: node.position.x + width + EDGE_NODE_CLEARANCE,
+    top: node.position.y - EDGE_NODE_CLEARANCE,
+    bottom: node.position.y + height + EDGE_NODE_CLEARANCE,
+  }
+}
+
+function routeOrthogonally(
+  start: Point,
+  end: Point,
+  obstacles: Rect[]
+): Point[] {
+  const xs = uniqueSorted([
+    start.x,
+    end.x,
+    ...obstacles.flatMap((rect) => [rect.left, rect.right]),
+  ])
+  const ys = uniqueSorted([
+    start.y,
+    end.y,
+    ...obstacles.flatMap((rect) => [rect.top, rect.bottom]),
+  ])
+  const points = xs.flatMap((x) =>
+    ys
+      .map((y) => ({ x, y }))
+      .filter((point) => !obstacles.some((rect) => pointInside(rect, point)))
+  )
+  const pointIndex = new Map(
+    points.map((point, index) => [`${point.x}:${point.y}`, index])
+  )
+  const startIndex = pointIndex.get(`${start.x}:${start.y}`)
+  const endIndex = pointIndex.get(`${end.x}:${end.y}`)
+  if (startIndex === undefined || endIndex === undefined) return [start, end]
+
+  const neighbours = points.map(() => [] as number[])
+  for (const coordinate of [xs, ys]) {
+    const vertical = coordinate === xs
+    for (const fixed of coordinate) {
+      const line = points
+        .map((point, index) => ({ point, index }))
+        .filter(({ point }) => (vertical ? point.x : point.y) === fixed)
+        .sort((a, b) =>
+          vertical ? a.point.y - b.point.y : a.point.x - b.point.x
+        )
+      for (let index = 1; index < line.length; index += 1) {
+        const previous = line[index - 1]
+        const current = line[index]
+        if (
+          !obstacles.some((rect) =>
+            segmentCrossesInterior(rect, previous.point, current.point)
+          )
+        ) {
+          neighbours[previous.index].push(current.index)
+          neighbours[current.index].push(previous.index)
+        }
+      }
+    }
+  }
+
+  const distances = points.map(() => Number.POSITIVE_INFINITY)
+  const previous = points.map(() => -1)
+  const unvisited = new Set(points.map((_, index) => index))
+  distances[startIndex] = 0
+
+  while (unvisited.size > 0) {
+    let current = -1
+    for (const candidate of unvisited)
+      if (current === -1 || distances[candidate] < distances[current])
+        current = candidate
+    if (current === -1 || !Number.isFinite(distances[current])) break
+    if (current === endIndex) break
+    unvisited.delete(current)
+
+    for (const neighbour of neighbours[current]) {
+      if (!unvisited.has(neighbour)) continue
+      const distance =
+        distances[current] +
+        manhattanDistance(points[current], points[neighbour])
+      if (distance < distances[neighbour]) {
+        distances[neighbour] = distance
+        previous[neighbour] = current
+      }
+    }
+  }
+
+  if (previous[endIndex] === -1 && startIndex !== endIndex) return [start, end]
+  const route: Point[] = []
+  for (let index = endIndex; index !== -1; index = previous[index])
+    route.unshift(points[index])
+  return route
+}
+
+function pointInside(rect: Rect, point: Point) {
+  return (
+    point.x > rect.left &&
+    point.x < rect.right &&
+    point.y > rect.top &&
+    point.y < rect.bottom
+  )
+}
+
+function segmentCrossesInterior(rect: Rect, start: Point, end: Point) {
+  if (start.x === end.x)
+    return (
+      start.x > rect.left &&
+      start.x < rect.right &&
+      Math.max(start.y, end.y) > rect.top &&
+      Math.min(start.y, end.y) < rect.bottom
+    )
+  return (
+    start.y > rect.top &&
+    start.y < rect.bottom &&
+    Math.max(start.x, end.x) > rect.left &&
+    Math.min(start.x, end.x) < rect.right
+  )
+}
+
+function uniqueSorted(values: number[]) {
+  return [...new Set(values)].sort((a, b) => a - b)
+}
+
+function manhattanDistance(start: Point, end: Point) {
+  return Math.abs(end.x - start.x) + Math.abs(end.y - start.y)
+}
+
+function simplifyPoints(points: Point[]) {
+  return points.filter((point, index) => {
+    const previous = points[index - 1]
+    const next = points[index + 1]
+    if (!previous || !next) return true
+    return !(
+      (previous.x === point.x && point.x === next.x) ||
+      (previous.y === point.y && point.y === next.y)
+    )
+  })
+}
+
+function pointHalfwayAlong(points: Point[]) {
+  const lengths = points.slice(1).map((point, index) => {
+    return manhattanDistance(points[index], point)
+  })
+  let remaining = lengths.reduce((total, length) => total + length, 0) / 2
+  for (let index = 0; index < lengths.length; index += 1) {
+    if (remaining <= lengths[index]) {
+      const start = points[index]
+      const end = points[index + 1]
+      const ratio = lengths[index] === 0 ? 0 : remaining / lengths[index]
+      return {
+        x: start.x + (end.x - start.x) * ratio,
+        y: start.y + (end.y - start.y) * ratio,
+      }
+    }
+    remaining -= lengths[index]
+  }
+  return points[0]
 }
 
 function EdgeEditDialog({

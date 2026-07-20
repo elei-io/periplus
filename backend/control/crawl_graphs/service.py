@@ -314,13 +314,13 @@ def validate_edge_sql(sql: str) -> None:
         for table in statement.find_all(exp.Table)
     ):
         raise CrawlGraphValidationError(
-            "Edge SQL may only read page.links and catalogue relations."
+            "Edge SQL may only read edge.page_links and catalogue relations."
         )
     if not any(
-        table.db.lower() == "page" and table.name.lower() == "links"
+        table.db.lower() == "edge" and table.name.lower() == "page_links"
         for table in statement.find_all(exp.Table)
     ):
-        raise CrawlGraphValidationError("Edge SQL must read page.links.")
+        raise CrawlGraphValidationError("Edge SQL must read edge.page_links.")
 
 
 def _get_node(session: Session, graph_id: UUID, node_id: UUID, *, lock: bool = False) -> CrawlGraphNode:

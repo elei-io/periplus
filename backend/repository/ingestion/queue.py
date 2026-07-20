@@ -8,8 +8,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
-import nats
-from config import get_float, get_int, get_str
+from config import get_float, get_int
 from config.performance import INGESTION_ACK_WAIT_SECONDS, INGESTION_CONSUMER_MAX_ACK_PENDING
 from nats.js.api import (
     AckPolicy,
@@ -40,6 +39,7 @@ from runtime.catalogue_queue import (
     ensure_catalogue_work_stream,
     ensure_dead_letter_stream as ensure_catalogue_dead_letter_stream,
 )
+from runtime.nats_client import connect_nats
 
 DURABLE = "atlas-repository-writer"
 RESULTS_BUCKET = "atlas_repository_results"
@@ -127,14 +127,6 @@ def _validate_envelope(payload: bytes, *, label: str) -> None:
     limit = get_int("ATLAS_NATS_MAX_ENVELOPE_BYTES")
     if len(payload) > limit:
         raise ValueError(f"{label} is {len(payload)} bytes; limit is {limit} bytes")
-
-
-async def connect_repository_nats():
-    return await nats.connect(
-        get_str("NATS_URL"),
-        connect_timeout=2,
-        max_reconnect_attempts=-1,
-    )
 
 
 async def ensure_repository_stream(jetstream) -> None:
@@ -500,7 +492,7 @@ class IngestionQueueClient:
         self.results = None
 
     async def connect(self) -> None:
-        self.client = await connect_repository_nats()
+        self.client = await connect_nats()
         self.jetstream = self.client.jetstream()
         await ensure_repository_stream(self.jetstream)
         self.results = await ensure_ingestion_results(self.jetstream)

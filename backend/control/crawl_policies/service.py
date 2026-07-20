@@ -27,18 +27,36 @@ def match_for_policy(policy: CrawlPolicy) -> str:
     return f"{policy.scheme}://{policy.host}{policy.path_prefix}{suffix}"
 
 
+def _host_matches(host: str, pattern: str) -> bool:
+    if pattern == "*":
+        return True
+    if pattern.startswith("*."):
+        suffix = pattern[1:]
+        return host.endswith(suffix) and host != suffix[1:]
+    return host == pattern
+
+
 def _matches(url: str, policy: CrawlPolicy) -> bool:
     parsed = urlparse(normalize_url(url))
     if not policy.enabled or policy.scheme not in {"*", parsed.scheme}:
         return False
-    if policy.host not in {"*", parsed.netloc}:
+    if not _host_matches(parsed.netloc.lower(), policy.host):
         return False
     path = parsed.path or "/"
     return path == policy.path_prefix if policy.path_mode == "exact" else path.startswith(policy.path_prefix)
 
 
-def _specificity(policy: CrawlPolicy) -> tuple[int, int, int, int]:
-    return (int(policy.scheme != "*"), int(policy.host != "*"), int(policy.path_mode == "exact"), len(policy.path_prefix))
+def _specificity(policy: CrawlPolicy) -> tuple[int, int, int, int, int]:
+    host_kind = (
+        0 if policy.host == "*" else 1 if policy.host.startswith("*.") else 2
+    )
+    return (
+        int(policy.scheme != "*"),
+        host_kind,
+        len(policy.host),
+        int(policy.path_mode == "exact"),
+        len(policy.path_prefix),
+    )
 
 
 def find_crawl_policy_for_url(session: Session, *, url: str) -> CrawlPolicy:

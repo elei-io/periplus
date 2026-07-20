@@ -8,10 +8,9 @@ import json
 from contextlib import AsyncExitStack
 from uuid import uuid4
 
-import nats
 from nats.js.api import KeyValueConfig, StorageType
 
-from config import get_str
+from runtime.nats_client import connect_nats
 from runtime.resource_governor import (
     ResourceCapacityUnavailable,
     ResourceLimits,
@@ -218,7 +217,7 @@ async def prove_maintenance_exclusion(bucket) -> dict[str, int]:
 
 
 async def run() -> dict[str, object]:
-    client = await nats.connect(get_str("NATS_URL"), connect_timeout=2)
+    client = await connect_nats()
     bucket_name = f"ATLAS_RELIABILITY_{uuid4().hex.upper()}"
     jetstream = client.jetstream()
     bucket = await jetstream.create_key_value(

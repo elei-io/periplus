@@ -30,7 +30,7 @@ def edge_uses_catalogue(sql: str) -> bool:
     for table in statement.find_all(exp.Table):
         if table.name.lower() in cte_names and not table.db:
             continue
-        if table.db.lower() == "page" and table.name.lower() == "links":
+        if table.db.lower() == "edge" and table.name.lower() == "page_links":
             continue
         return True
     return False

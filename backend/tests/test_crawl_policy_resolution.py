@@ -11,6 +11,7 @@ from control.crawl_policies.service import (
     find_crawl_policies_for_urls,
     update_crawl_policy,
 )
+from control.crawl_policies.schemas import CrawlPolicyCreateRequest
 
 
 def policy(
@@ -75,6 +76,59 @@ class CrawlPolicyResolutionTests(TestCase):
         self.assertIs(resolved["https://example.com/docs/api"], docs)
         self.assertIs(resolved["https://example.com/about"], site)
         self.assertIs(resolved["https://other.example/"], default)
+
+    def test_subdomain_wildcard_matches_subdomains_but_not_root_domain(self) -> None:
+        wikipedia = policy(slug="wikipedia", host="*.wikipedia.org")
+
+        self.assertTrue(_matches("https://en.wikipedia.org/wiki/Atlas", wikipedia))
+        self.assertTrue(
+            _matches("https://en.m.wikipedia.org/wiki/Atlas", wikipedia)
+        )
+        self.assertFalse(_matches("https://wikipedia.org/", wikipedia))
+        self.assertFalse(_matches("https://notwikipedia.org/", wikipedia))
+
+    def test_exact_host_outranks_subdomain_wildcard(self) -> None:
+        default = policy(slug=DEFAULT_POLICY_SLUG)
+        wikipedia = policy(slug="wikipedia", host="*.wikipedia.org")
+        english = policy(slug="english-wikipedia", host="en.wikipedia.org")
+
+        resolved = find_crawl_policies_for_urls(
+            session_with(default, wikipedia, english),
+            urls=[
+                "https://en.wikipedia.org/wiki/Atlas",
+                "https://de.wikipedia.org/wiki/Atlas",
+            ],
+        )
+
+        self.assertIs(resolved["https://en.wikipedia.org/wiki/Atlas"], english)
+        self.assertIs(resolved["https://de.wikipedia.org/wiki/Atlas"], wikipedia)
+
+    def test_more_specific_subdomain_wildcard_wins(self) -> None:
+        default = policy(slug=DEFAULT_POLICY_SLUG)
+        org = policy(slug="org", host="*.org")
+        wikipedia = policy(slug="wikipedia", host="*.wikipedia.org")
+
+        resolved = find_crawl_policies_for_urls(
+            session_with(default, org, wikipedia),
+            urls=["https://en.wikipedia.org/wiki/Atlas"],
+        )
+
+        self.assertIs(resolved["https://en.wikipedia.org/wiki/Atlas"], wikipedia)
+
+    def test_request_accepts_only_supported_host_wildcards(self) -> None:
+        request = CrawlPolicyCreateRequest(
+            slug="wikipedia",
+            scheme="*",
+            host=" *.Wikipedia.org ",
+        )
+
+        self.assertEqual(request.host, "*.wikipedia.org")
+        with self.assertRaisesRegex(ValueError, r"\*\.domain wildcard"):
+            CrawlPolicyCreateRequest(
+                slug="invalid",
+                scheme="*",
+                host="wiki*.wikipedia.org",
+            )
 
     def test_missing_catch_all_fails_instead_of_using_an_implicit_profile(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "catch-all CrawlPolicy"):

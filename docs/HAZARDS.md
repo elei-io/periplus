@@ -64,15 +64,19 @@ ledger, materialization orchestrator, or catalogue RPC service.
 **Sharing embedded DuckDB connections.** Each ingestion or materialization process owns its connection
 and initially runs one catalogue operation at a time. Scale with replicas under shared permits.
 
-**Executing interactive analytics in the API.** Each API replica has one small, serialized DuckDB
-connection for mandatory catalogue definition work. Do not turn it into a pool, use it for
-analytical reads, or poll DuckLake from API routes. Browser DuckDB-Wasm drives the required Quack
-service directly for the SQL workbench; the API only validates read-only SQL and supplies typed
-bootstrap configuration.
+**Running interactive analytics in the API's embedded catalogue.** Each API replica has one small,
+serialized DuckDB connection for mandatory catalogue definition work. Interactive routes must use
+the separate bounded Quack client pool; they must never execute analytical reads locally or share
+the definition connection.
 
-**Using browser DuckDB outside the workbench.** DuckDB-Wasm is an interactive SQL runtime, not a
-general frontend data layer. Run state, failures, capacity, and backlog must use their NATS-backed
-API contracts. Catalogue definition screens use their control-plane API contracts.
+**Exposing Quack or storage configuration to the browser.** Cloudflare Access protects Atlas Web/API,
+not Quack. The browser submits SQL to Atlas API and consumes Arrow IPC. Keep the Quack URI and token,
+Postgres DSN, object-store credentials, and DuckLake attachment SQL server-side. Quack must remain
+private and network-restricted to API compute.
+
+**Treating read-only SQL as sufficient validation.** A `SELECT` can still read local files, invoke
+dynamic SQL, inspect secrets, or cross catalogue boundaries through table functions. Interactive
+queries must pass Atlas's stricter public-catalogue validator before reaching Quack.
 
 **Letting historical edge joins drift during a run.** Page-only edges use their current immutable
 navigation package. Catalogue-reading edges use the snapshot pinned before the run; never silently

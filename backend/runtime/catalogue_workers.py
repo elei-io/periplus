@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 import logging
 from typing import Literal
 
-from config import get_float
+from config import get_float, get_int
 from config.performance import RESOURCE_STATE_REPLICAS
 from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import (
@@ -44,6 +44,7 @@ async def ensure_catalogue_worker_storage(jetstream):
         description="Ephemeral Atlas catalogue-worker presence",
         history=1,
         ttl=get_float("ATLAS_CATALOGUE_WORKER_PRESENCE_TTL_SECONDS"),
+        max_bytes=get_int("ATLAS_CATALOGUE_WORKER_MAX_BYTES"),
         storage=StorageType.FILE,
         replicas=RESOURCE_STATE_REPLICAS,
     )
@@ -60,6 +61,7 @@ async def ensure_catalogue_worker_storage(jetstream):
         actual.storage != StorageType.FILE
         or actual.max_msgs_per_subject != 1
         or actual.max_age != config.ttl
+        or actual.max_bytes != config.max_bytes
         or actual.num_replicas != config.replicas
     ):
         raise RuntimeError(
