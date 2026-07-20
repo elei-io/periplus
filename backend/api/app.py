@@ -18,6 +18,7 @@ from api.routers import (
     catalogue_materializations,
     operational_metrics,
     repository_operations,
+    search,
 )
 from repository.catalogue.quack_runtime import QuackQueryRuntime
 from runtime.catalogue_queries import ensure_catalogue_query_storage
@@ -74,6 +75,7 @@ app.include_router(catalogue_views.router)
 app.include_router(catalogue_materializations.router)
 app.include_router(operational_metrics.router)
 app.include_router(repository_operations.router)
+app.include_router(search.router)
 app.include_router(crawl_graphs.router)
 app.include_router(crawl_schedules.router)
 app.include_router(crawl_schedules.resource_router)

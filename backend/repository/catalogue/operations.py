@@ -60,6 +60,7 @@ def repository_commit_lock(
     *,
     crawl_ids: Sequence[UUID],
     content_ids: Sequence[str],
+    url_ids: Sequence[str],
 ) -> Iterator[None]:
     """Fence every independently overlapping identity in one repository batch."""
 
@@ -72,6 +73,10 @@ def repository_commit_lock(
         *(
             FenceSpec.exclusive("content", content_id)
             for content_id in sorted(set(content_ids))
+        ),
+        *(
+            FenceSpec.exclusive("url", url_id)
+            for url_id in sorted(set(url_ids))
         ),
     ]
     with catalogue.lake.fence_set(

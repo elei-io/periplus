@@ -33,6 +33,7 @@ from repository import (
 from repository.catalogue import Catalogue, CatalogueConfig, CrawlRecord
 from repository.catalogue.materializations import MaterializationStore
 from repository.catalogue.table_macros import CatalogueTableMacroStore
+from tests.catalogue_helpers import crawl_url_evidence
 from repository.catalogue.views import CatalogueViewStore
 
 
@@ -227,7 +228,7 @@ class CatalogueFixtureTests(unittest.TestCase):
                                 )
                             )
                         ),
-                        1,
+                        3,
                     )
                     self.assertEqual(page_links.scope_kind, "crawl")
                     self.assertEqual(page_links.scope_column, "crawl_id")
@@ -356,16 +357,22 @@ class CatalogueFixtureTests(unittest.TestCase):
                         )
                     ):
                         ingestor.store_raw(captured_html)
+                        crawl_id = uuid4()
+                        requested_url, urls, attempts = crawl_url_evidence(
+                            crawl_id,
+                            f"{url}/{index}",
+                            captured_at=datetime(2026, 7, 18, tzinfo=UTC),
+                            final_url=f"{url}/{index}",
+                        )
                         crawl = CrawlRecord(
-                            crawl_id=uuid4(),
+                            crawl_id=crawl_id,
                             document_id=captured_document_id,
                             graph_id=uuid4(),
                             graph_run_id=uuid4(),
                             graph_node_id=uuid4(),
                             crawl_request_id=uuid4(),
-                            requested_url=f"{url}/{index}",
-                            normalized_url=f"{url}/{index}",
-                            final_url=f"{url}/{index}",
+                            requested_url_id=requested_url.url_id,
+                            final_url_id=requested_url.url_id,
                             captured_at=datetime(2026, 7, 18, tzinfo=UTC),
                             status_code=200,
                             duration_ms=1,
@@ -377,12 +384,20 @@ class CatalogueFixtureTests(unittest.TestCase):
                             [
                                 ingestor.prepare_from_raw(
                                     crawl=crawl,
+                                    urls=urls,
+                                    crawl_attempts=attempts,
                                 )
                             ]
                         )
 
+                    page_metadata = session.scalar(
+                        select(CatalogueMaterialization).where(
+                            CatalogueMaterialization.name == "page_metadata"
+                        )
+                    )
+                    assert page_metadata is not None
                     row = catalogue.connection.execute(
-                        """
+                        f"""
                         SELECT
                             document_id,
                             language,
@@ -394,7 +409,7 @@ class CatalogueFixtureTests(unittest.TestCase):
                             open_graph_title,
                             open_graph_description,
                             open_graph_image
-                        FROM atlas.views.page_metadata
+                        FROM ({page_metadata.source_sql}) AS page_metadata
                         WHERE document_id = ?
                         """,
                         [document_id],
@@ -416,9 +431,9 @@ class CatalogueFixtureTests(unittest.TestCase):
                         ),
                     )
                     blank_description = catalogue.connection.execute(
-                        """
+                        f"""
                         SELECT description
-                        FROM atlas.views.page_metadata
+                        FROM ({page_metadata.source_sql}) AS page_metadata
                         WHERE document_id = ?
                         """,
                         [blank_document_id],
@@ -586,16 +601,22 @@ class CatalogueFixtureTests(unittest.TestCase):
                         staging_root=root / "staging",
                     )
                     ingestor.store_raw(html)
+                    crawl_id = uuid4()
+                    requested_url, urls, attempts = crawl_url_evidence(
+                        crawl_id,
+                        url,
+                        captured_at=datetime(2026, 7, 18, tzinfo=UTC),
+                        final_url=url,
+                    )
                     crawl = CrawlRecord(
-                        crawl_id=uuid4(),
+                        crawl_id=crawl_id,
                         document_id=document_id,
                         graph_id=uuid4(),
                         graph_run_id=uuid4(),
                         graph_node_id=uuid4(),
                         crawl_request_id=uuid4(),
-                        requested_url=url,
-                        normalized_url=url,
-                        final_url=url,
+                        requested_url_id=requested_url.url_id,
+                        final_url_id=requested_url.url_id,
                         captured_at=datetime(2026, 7, 18, tzinfo=UTC),
                         status_code=200,
                         duration_ms=1,
@@ -604,7 +625,9 @@ class CatalogueFixtureTests(unittest.TestCase):
                         outcome="success",
                     )
                     ingestor.commit_prepared_batch(
-                        [ingestor.prepare_from_raw(crawl=crawl)]
+                        [ingestor.prepare_from_raw(
+                            crawl=crawl, urls=urls, crawl_attempts=attempts
+                        )]
                     )
 
                     scripts = catalogue.connection.execute(
@@ -915,16 +938,22 @@ class CatalogueFixtureTests(unittest.TestCase):
                         staging_root=root / "staging",
                     )
                     ingestor.store_raw(html)
+                    crawl_id = uuid4()
+                    requested_url, urls, attempts = crawl_url_evidence(
+                        crawl_id,
+                        url,
+                        captured_at=datetime(2026, 7, 17, tzinfo=UTC),
+                        final_url=url,
+                    )
                     crawl = CrawlRecord(
-                        crawl_id=uuid4(),
+                        crawl_id=crawl_id,
                         document_id=f"sha256:{hashlib.sha256(html.encode()).hexdigest()}",
                         graph_id=uuid4(),
                         graph_run_id=uuid4(),
                         graph_node_id=uuid4(),
                         crawl_request_id=uuid4(),
-                        requested_url=url,
-                        normalized_url=url,
-                        final_url=url,
+                        requested_url_id=requested_url.url_id,
+                        final_url_id=requested_url.url_id,
                         captured_at=datetime(2026, 7, 17, tzinfo=UTC),
                         status_code=200,
                         duration_ms=1,
@@ -933,7 +962,9 @@ class CatalogueFixtureTests(unittest.TestCase):
                         outcome="success",
                     )
                     ingestor.commit_prepared_batch(
-                        [ingestor.prepare_from_raw(crawl=crawl)]
+                        [ingestor.prepare_from_raw(
+                            crawl=crawl, urls=urls, crawl_attempts=attempts
+                        )]
                     )
 
                     self.assertEqual(
@@ -953,13 +984,19 @@ class CatalogueFixtureTests(unittest.TestCase):
                     assert materialization is not None
                     page_links = catalogue.connection.execute(
                         f"""
+                        WITH links AS (
+                            SELECT *
+                            FROM ({materialization.source_sql}) AS page_links_source
+                            WHERE crawl_id = ?
+                        )
                         SELECT
-                            target_url,
-                            source_host,
-                            target_path,
-                            relation_kind
-                        FROM ({materialization.source_sql}) AS page_links_source
-                        WHERE crawl_id = ?
+                            target.normalized_url,
+                            source.host,
+                            target.path,
+                            links.relation_kind
+                        FROM links
+                        JOIN urls AS source ON source.url_id = links.source_url_id
+                        JOIN urls AS target ON target.url_id = links.target_url_id
                         ORDER BY element_index
                         LIMIT 2
                         """,
@@ -999,26 +1036,17 @@ class CatalogueFixtureTests(unittest.TestCase):
                     ):
                         expected_rows.append(
                             (
+                                crawl.crawl_id,
                                 crawl.document_id,
                                 crawl.captured_at,
-                                link["source_url"],
-                                link["source_scheme"],
-                                link["source_host"],
-                                link["source_port"],
-                                link["source_registrable_domain"],
-                                link["source_path"],
-                                link["source_query"],
-                                link["target_url"],
-                                link["target_scheme"],
-                                link["target_host"],
-                                link["target_port"],
-                                link["target_path"],
-                                link["target_query"],
+                                link["element_index"],
+                                requested_url.url_id,
+                                hashlib.sha256(
+                                    str(link["target_url"]).encode()
+                                ).hexdigest(),
+                                link["raw_href"],
                                 link["target_fragment"],
                                 link["relation_kind"],
-                                link["raw_href"],
-                                link["element_index"],
-                                crawl.crawl_id,
                             )
                         )
                     self.assertEqual(durable_rows, expected_rows)
@@ -1181,8 +1209,15 @@ class CatalogueFixtureTests(unittest.TestCase):
                     )
                     for url, captured_at, html in observations:
                         ingestor.store_raw(html)
+                        crawl_id = uuid4()
+                        requested_url, urls, attempts = crawl_url_evidence(
+                            crawl_id,
+                            url,
+                            captured_at=captured_at,
+                            final_url=url,
+                        )
                         crawl = CrawlRecord(
-                            crawl_id=uuid4(),
+                            crawl_id=crawl_id,
                             document_id=(
                                 "sha256:"
                                 f"{hashlib.sha256(html.encode()).hexdigest()}"
@@ -1191,9 +1226,8 @@ class CatalogueFixtureTests(unittest.TestCase):
                             graph_run_id=uuid4(),
                             graph_node_id=uuid4(),
                             crawl_request_id=uuid4(),
-                            requested_url=url,
-                            normalized_url=url,
-                            final_url=url,
+                            requested_url_id=requested_url.url_id,
+                            final_url_id=requested_url.url_id,
                             captured_at=captured_at,
                             status_code=200,
                             duration_ms=1,
@@ -1202,7 +1236,9 @@ class CatalogueFixtureTests(unittest.TestCase):
                             outcome="success",
                         )
                         ingestor.commit_prepared_batch(
-                            [ingestor.prepare_from_raw(crawl=crawl)]
+                            [ingestor.prepare_from_raw(
+                                crawl=crawl, urls=urls, crawl_attempts=attempts
+                            )]
                         )
 
                     selector = "ul.items > li.item"

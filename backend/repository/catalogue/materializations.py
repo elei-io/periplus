@@ -145,6 +145,34 @@ class MaterializationStore:
         )
         return self.inspect(name)
 
+    def set_scope_sort(
+        self,
+        *,
+        name: str,
+        scope_column: str,
+        partition_column: str | None,
+    ) -> MaterializationTable:
+        """Keep every bounded scope contiguous, then order its temporal rows."""
+
+        _validate_name(name)
+        _validate_name(scope_column)
+        columns = [scope_column]
+        if partition_column is not None and partition_column != scope_column:
+            _validate_name(partition_column)
+            columns.append(partition_column)
+        available = {column for column, _data_type, _nullable in self.inspect(name).columns}
+        missing = set(columns) - available
+        if missing:
+            raise MaterializationError(
+                f"Sort columns are absent from the materialized result: {sorted(missing)!r}"
+            )
+        expressions = ", ".join(_quote_identifier(value) for value in columns)
+        self.catalogue.connection.execute(
+            f"ALTER TABLE {_qualified(self.catalogue, name)} "
+            f"SET SORTED BY ({expressions})"
+        )
+        return self.inspect(name)
+
     def inspect(self, name: str) -> MaterializationTable:
         try:
             info = self.catalogue.lake.table.info(

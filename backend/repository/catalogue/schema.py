@@ -6,10 +6,22 @@ from ducklake_client import ColumnDef
 
 from dom.schema import ELEMENT_COLUMNS
 
-CATALOGUE_SCHEMA_VERSION = "v0.0.2"
+CATALOGUE_SCHEMA_VERSION = "v0.1.0"
 INTERNAL_SCHEMA = "_atlas"
 CRAWL_STEPS_TABLE = "crawl_steps"
+CRAWL_ATTEMPTS_TABLE = "crawl_attempts"
 MATERIALIZATION_COVERAGE_TABLE = "materialization_coverage"
+
+URL_COLUMNS: dict[str, ColumnDef] = {
+    "url_id": ColumnDef("VARCHAR", nullable=False),
+    "normalized_url": ColumnDef("VARCHAR", nullable=False),
+    "scheme": ColumnDef("VARCHAR", nullable=False),
+    "host": ColumnDef("VARCHAR", nullable=False),
+    "port": ColumnDef("INTEGER", nullable=False),
+    "registrable_domain": ColumnDef("VARCHAR", nullable=False),
+    "path": ColumnDef("VARCHAR", nullable=False),
+    "query": ColumnDef("VARCHAR", nullable=False),
+}
 
 ARTIFACT_COLUMNS: dict[str, ColumnDef] = {
     "artifact_id": ColumnDef("VARCHAR", nullable=False),
@@ -46,16 +58,8 @@ CRAWL_COLUMNS: dict[str, ColumnDef] = {
     "crawl_request_id": ColumnDef("UUID", nullable=False),
     "source_crawl_id": ColumnDef("UUID"),
     "source_edge_id": ColumnDef("UUID"),
-    "requested_url": ColumnDef("VARCHAR", nullable=False),
-    "normalized_url": ColumnDef("VARCHAR", nullable=False),
-    "final_url": ColumnDef("VARCHAR"),
-    "page_url": ColumnDef("VARCHAR", nullable=False),
-    "url_scheme": ColumnDef("VARCHAR", nullable=False),
-    "url_host": ColumnDef("VARCHAR", nullable=False),
-    "url_port": ColumnDef("INTEGER", nullable=False),
-    "url_registrable_domain": ColumnDef("VARCHAR", nullable=False),
-    "url_path": ColumnDef("VARCHAR", nullable=False),
-    "url_query": ColumnDef("VARCHAR", nullable=False),
+    "requested_url_id": ColumnDef("VARCHAR", nullable=False),
+    "final_url_id": ColumnDef("VARCHAR"),
     "captured_at": ColumnDef("TIMESTAMPTZ", nullable=False),
     "status_code": ColumnDef("INTEGER"),
     "duration_ms": ColumnDef("BIGINT"),
@@ -69,7 +73,20 @@ CRAWL_COLUMNS: dict[str, ColumnDef] = {
     "failure_stage": ColumnDef("VARCHAR"),
     "failure_retryable": ColumnDef("BOOLEAN"),
     "failure_detail": ColumnDef("VARCHAR"),
-    "acquisition_attempts_json": ColumnDef("JSON", nullable=False),
+}
+
+CRAWL_ATTEMPT_COLUMNS: dict[str, ColumnDef] = {
+    "crawl_id": ColumnDef("UUID", nullable=False),
+    "attempt_number": ColumnDef("INTEGER", nullable=False),
+    "started_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+    "completed_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+    "requested_url_id": ColumnDef("VARCHAR", nullable=False),
+    "final_url_id": ColumnDef("VARCHAR"),
+    "status_code": ColumnDef("INTEGER"),
+    "response_media_type": ColumnDef("VARCHAR"),
+    "outcome": ColumnDef("VARCHAR", nullable=False),
+    "failure_code": ColumnDef("VARCHAR"),
+    "retry_after_seconds": ColumnDef("DOUBLE"),
 }
 
 CRAWL_STEP_COLUMNS: dict[str, ColumnDef] = {
@@ -112,15 +129,17 @@ MATERIALIZATION_COVERAGE_COLUMNS: dict[str, ColumnDef] = {
 
 def expected_columns() -> dict[str, dict[str, ColumnDef]]:
     return {
+        "urls": URL_COLUMNS,
         "artifacts": ARTIFACT_COLUMNS,
         "documents": DOCUMENT_COLUMNS,
         "crawls": CRAWL_COLUMNS,
+        CRAWL_ATTEMPTS_TABLE: CRAWL_ATTEMPT_COLUMNS,
+        CRAWL_STEPS_TABLE: CRAWL_STEP_COLUMNS,
         "elements": ELEMENT_COLUMNS,
     }
 
 
 def expected_internal_columns() -> dict[str, dict[str, ColumnDef]]:
     return {
-        CRAWL_STEPS_TABLE: CRAWL_STEP_COLUMNS,
         MATERIALIZATION_COVERAGE_TABLE: MATERIALIZATION_COVERAGE_COLUMNS,
     }

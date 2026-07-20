@@ -5,6 +5,8 @@ directories go through the same catalogue services used by the UI:
 
 - `table_macros/` — one `CREATE MACRO macros.<filename>(...) AS TABLE (...)` statement;
 - `views/` — one virtual `CREATE VIEW views.<filename> AS ...` statement;
+- `materialized_views/url/` — one self-contained `CREATE VIEW` statement, activated as an
+  ordinary URL-scoped materialization using its `url_id` output;
 - `materialized_views/document/` — one self-contained `CREATE VIEW` statement, activated as an
   ordinary document-scoped materialization using its `document_id` output;
 - `materialized_views/crawl/` — one self-contained `CREATE VIEW` statement, activated as an
@@ -17,11 +19,12 @@ backfill scope jobs populate it through the materialization worker. Ingestion ne
 fixture-specific projection. A materialized fixture must therefore contain the complete query that
 can reproduce its rows from durable catalogue evidence.
 
-During scoped evaluation, Atlas sets `atlas_materialization_document_id` and, for crawl scopes,
-`atlas_materialization_crawl_id` as DuckDB session variables. Expensive fixture queries should use
-null-guarded `getvariable(...)` predicates directly on their base-table scans. The null guard keeps
-the source view usable before activation, while the bound value lets materialization workers prune
-physical data for one scope instead of relying on outer-predicate pushdown.
+During scoped evaluation, Atlas sets `atlas_materialization_url_id`,
+`atlas_materialization_document_id`, or `atlas_materialization_crawl_id` as applicable DuckDB
+session variables. Expensive fixture queries should use null-guarded `getvariable(...)` predicates
+directly on their base-table scans. The null guard keeps the source view usable before activation,
+while the bound value lets materialization workers prune physical data for one scope instead of
+relying on outer-predicate pushdown.
 
 A materialized-view fixture may request daily DuckLake partitioning with a single leading
 `-- atlas:partition-by-day=<column>` directive. The selected `DATE` or `TIMESTAMP` result column is

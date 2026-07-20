@@ -62,7 +62,7 @@ waits for ingestion or materialization coverage; historical edges intentionally 
 catalogue omissions in exchange for a stable pre-run snapshot.
 
 Independently, an ingestion worker verifies retained HTML and commits the crawl and base DOM
-evidence. It atomically commits each method execution to private `_atlas.crawl_steps` with its
+evidence. It atomically commits typed `crawl_attempts` and each public `crawl_steps` method execution with its
 frozen knobs, duration, stopping reason, and bounded before/after content metrics. Its queue,
 terminal results, and dead letters expose catalogue lag and failures without changing a completed
 graph traversal. Ingestion does not score content quality. Periodic DuckLake analysis derives

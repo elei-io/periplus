@@ -69,7 +69,13 @@ class IngestionFenceFailureTests(unittest.IsolatedAsyncioTestCase):
 
         message = SimpleNamespace(in_progress=AsyncMock())
         crawl = SimpleNamespace()
-        job = SimpleNamespace(request_id="request", crawl=crawl, crawl_steps=())
+        job = SimpleNamespace(
+            request_id="request",
+            crawl=crawl,
+            urls=(),
+            crawl_attempts=(),
+            crawl_steps=(),
+        )
         ingestor = SimpleNamespace(prepare_from_raw=MagicMock(return_value="prepared"))
         with (
             patch(
@@ -101,6 +107,8 @@ class IngestionFenceFailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(acquire_timeouts, [DURABLE_RESOURCE_WAIT])
         ingestor.prepare_from_raw.assert_called_once_with(
             crawl=crawl,
+            urls=(),
+            crawl_attempts=(),
             crawl_steps=(),
             known_documents={},
         )

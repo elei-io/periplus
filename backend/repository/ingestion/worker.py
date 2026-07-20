@@ -277,6 +277,8 @@ async def run(
                     results_store,
                     request_id=job.request_id,
                     crawl=job.crawl,
+                    urls=job.urls,
+                    crawl_attempts=job.crawl_attempts,
                     crawl_steps=job.crawl_steps,
                 )
                 if durable_state.status != "pending":
@@ -806,6 +808,8 @@ async def _prepare_ingestion_job(
             return await asyncio.to_thread(
                 ingestor.prepare_from_raw,
                 crawl=job.crawl,
+                urls=job.urls,
+                crawl_attempts=job.crawl_attempts,
                 crawl_steps=job.crawl_steps,
                 known_documents=job_known_documents,
             )

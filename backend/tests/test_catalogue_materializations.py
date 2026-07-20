@@ -22,13 +22,14 @@ from control.catalogue_materializations.service import (
 )
 from materialization.commit import commit_scope
 from materialization.compute import (
+    ComputedMaterializationScope,
     _set_scope_variables,
     _write_bounded_arrow,
     compute_scope,
 )
 from materialization.definitions import publish_scope
 from materialization.fencing import StaleMaterializationJob
-from materialization.queue import MaterializationCommitJob, MaterializationScopeJob
+from materialization.queue import MaterializationScopeJob
 from repository.catalogue import Catalogue, CatalogueConfig
 from repository.catalogue.materializations import (
     MaterializationError,
@@ -36,7 +37,6 @@ from repository.catalogue.materializations import (
     scoped_view_query,
 )
 from repository.catalogue.views import CatalogueViewStore
-from repository.objects.store import FileObjectStore
 
 
 class CatalogueMaterializationTests(unittest.TestCase):
@@ -269,6 +269,38 @@ class CatalogueMaterializationTests(unittest.TestCase):
             ],
         )
 
+    def test_url_scope_exposes_url_binding_without_document_pruning(self) -> None:
+        url_id = "a" * 64
+        job = MaterializationScopeJob(
+            materialization_id=uuid4(),
+            definition_revision_id=uuid4(),
+            target_table="url_features",
+            scope_kind="url",
+            scope_column="url_id",
+            scope_id=url_id,
+            document_id=None,
+            operation_id="e" * 64,
+            source="live",
+            enqueued_at=datetime.now(UTC),
+        )
+        catalogue = SimpleNamespace(connection=MagicMock())
+
+        _set_scope_variables(catalogue, job)
+
+        self.assertEqual(
+            catalogue.connection.execute.call_args_list,
+            [
+                unittest.mock.call(
+                    "SET VARIABLE atlas_materialization_document_id = ?",
+                    [None],
+                ),
+                unittest.mock.call(
+                    "SET VARIABLE atlas_materialization_url_id = ?",
+                    [url_id],
+                ),
+            ],
+        )
+
     def test_dematerialization_request_stops_work_without_removing_source(self) -> None:
         view_reference_id = uuid4()
         table_uuid = uuid4()
@@ -440,7 +472,7 @@ class CatalogueMaterializationTests(unittest.TestCase):
                     ["Any document key", "value"],
                 )
 
-    def test_scoped_commit_is_atomic_and_idempotent_without_staging_file(self) -> None:
+    def test_scoped_commit_is_atomic_and_idempotent_from_local_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = CatalogueConfig(
@@ -460,8 +492,6 @@ class CatalogueMaterializationTests(unittest.TestCase):
                 table = pa.table(
                     {"document_id": ["sha256:example"], "element_index": [7]}
                 )
-                staging = root / "objects"
-                key = "staging/materializations/operation.arrow"
                 path = root / "operation.arrow"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with pa.OSFile(str(path), "wb") as sink:
@@ -480,19 +510,16 @@ class CatalogueMaterializationTests(unittest.TestCase):
                     source="backfill",
                     enqueued_at=now,
                 )
-                job = MaterializationCommitJob(
+                job = ComputedMaterializationScope(
                     scope=scope,
-                    staging_key=key,
-                    staging_sha256=sha256(path.read_bytes()).hexdigest(),
+                    arrow_path=path,
+                    arrow_sha256=sha256(path.read_bytes()).hexdigest(),
                     row_count=1,
                     output_bytes=table.nbytes,
                     file_bytes=path.stat().st_size,
                     started_at=now,
                     completed_at=now,
                 )
-                object_store = FileObjectStore(staging)
-                with path.open("rb") as content:
-                    object_store.put_if_absent(key, content)
                 second_table = pa.table(
                     {"document_id": ["sha256:second"], "element_index": [8]}
                 )
@@ -503,19 +530,16 @@ class CatalogueMaterializationTests(unittest.TestCase):
                 second_scope = scope.model_copy(
                     update={"scope_id": "sha256:second", "operation_id": "c" * 64}
                 )
-                second_key = "staging/materializations/operation-second.arrow"
-                second_job = MaterializationCommitJob(
+                second_job = ComputedMaterializationScope(
                     scope=second_scope,
-                    staging_key=second_key,
-                    staging_sha256=sha256(second_path.read_bytes()).hexdigest(),
+                    arrow_path=second_path,
+                    arrow_sha256=sha256(second_path.read_bytes()).hexdigest(),
                     row_count=1,
                     output_bytes=second_table.nbytes,
                     file_bytes=second_path.stat().st_size,
                     started_at=now,
                     completed_at=now,
                 )
-                with second_path.open("rb") as content:
-                    object_store.put_if_absent(second_key, content)
 
                 @contextmanager
                 def active_definition_scope():
@@ -537,10 +561,6 @@ class CatalogueMaterializationTests(unittest.TestCase):
 
                 with (
                     patch(
-                        "materialization.commit.object_store_from_env",
-                        return_value=object_store,
-                    ),
-                    patch(
                         "materialization.commit.session_scope",
                         active_definition_scope,
                     ),
@@ -551,8 +571,6 @@ class CatalogueMaterializationTests(unittest.TestCase):
                 ):
                     self.assertEqual(commit_scope(catalogue, job), "committed")
                     self.assertEqual(commit_scope(catalogue, second_job), "committed")
-                    self.assertFalse(object_store.exists(key))
-                    self.assertFalse(object_store.exists(second_key))
                     self.assertEqual(commit_scope(catalogue, job), "already_committed")
 
                 self.assertEqual(
@@ -569,7 +587,7 @@ class CatalogueMaterializationTests(unittest.TestCase):
                     2,
                 )
 
-    def test_stale_definition_cannot_commit_and_discards_staging(self) -> None:
+    def test_stale_definition_cannot_commit_local_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = CatalogueConfig(
@@ -588,10 +606,6 @@ class CatalogueMaterializationTests(unittest.TestCase):
                 with pa.OSFile(str(arrow), "wb") as sink:
                     with pa.ipc.new_file(sink, table.schema) as writer:
                         writer.write_table(table)
-                store = FileObjectStore(root / "objects")
-                key = "staging/materializations/stale.arrow"
-                with arrow.open("rb") as content:
-                    store.put_if_absent(key, content)
                 scope = MaterializationScopeJob(
                     materialization_id=uuid4(),
                     definition_revision_id=uuid4(),
@@ -604,10 +618,10 @@ class CatalogueMaterializationTests(unittest.TestCase):
                     source="live",
                     enqueued_at=datetime.now(UTC),
                 )
-                job = MaterializationCommitJob(
+                job = ComputedMaterializationScope(
                     scope=scope,
-                    staging_key=key,
-                    staging_sha256=sha256(arrow.read_bytes()).hexdigest(),
+                    arrow_path=arrow,
+                    arrow_sha256=sha256(arrow.read_bytes()).hexdigest(),
                     row_count=1,
                     output_bytes=table.nbytes,
                     file_bytes=arrow.stat().st_size,
@@ -629,16 +643,12 @@ class CatalogueMaterializationTests(unittest.TestCase):
 
                 with (
                     patch(
-                        "materialization.commit.object_store_from_env",
-                        return_value=store,
-                    ),
-                    patch(
                         "materialization.commit.session_scope",
                         stale_definition_scope,
                     ),
                 ):
                     self.assertEqual(commit_scope(catalogue, job), "stale")
-                self.assertFalse(store.exists(key))
+                self.assertTrue(arrow.exists())
                 self.assertEqual(
                     catalogue.connection.execute(
                         "SELECT count(*) FROM atlas._atlas_materializations.stale_target"

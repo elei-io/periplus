@@ -45,8 +45,8 @@ provider-specific queues, browser slots, direct HTTP clients, or transport fallb
 
 ## Ingestion worker
 
-The ingestion worker verifies immutable HTML, prepares DOM data, commits base evidence and private
-`_atlas.crawl_steps` rows under the catalogue fence, records terminal ingestion state, and ACKs. It
+The ingestion worker verifies immutable HTML, prepares DOM data, commits base evidence plus public
+`crawl_attempts` and `crawl_steps` rows under the catalogue fence, records terminal ingestion state, and ACKs. It
 does not publish graph readiness or alter traversal status. It does not calculate quality flags;
 periodic analysis derives quality findings from committed step and element rows. It is critical
 work. One process owns one embedded DuckDB connection and runs one catalogue operation at a time.
@@ -61,7 +61,11 @@ so one scope prunes to a narrow physical partition without creating per-document
 Maintenance is off-path and requires an exclusive background
 catalogue and object-pressure permit. Once that bundle is waiting, new overlapping grants pause
 briefly so existing holders can drain and maintenance cannot starve behind continuous object-only
-work.
+work. Crawl-table CDC is a coalesced wake-up hint for compaction, never a maintenance work queue.
+The worker debounces bursts, derives eligibility from authoritative DuckLake file metadata, and
+rewrites at most one bounded table slice per exclusive permit. A periodic sweep remains the
+recovery path when CDC is idle or unavailable, and outstanding debt retries without waiting for
+the complete sweep interval.
 
 Permits control shared pressure, operation leases suppress duplicate execution, and PostgreSQL
 advisory locks fence commits. Nonblocking capacity probes are read-only on a miss. Granted permits

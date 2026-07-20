@@ -39,8 +39,14 @@ def run_hot_path_benchmark(
         [samples],
     ).fetchall()
     crawl_rows = catalogue.connection.execute(
-        "SELECT document_id, normalized_url, page_url, policy_config_hash, captured_at FROM "
-        f"{table('crawls')} WHERE document_id IS NOT NULL "
+        "SELECT crawl.document_id, requested.normalized_url, "
+        "effective.normalized_url, crawl.policy_config_hash, crawl.captured_at FROM "
+        f"{table('crawls')} AS crawl "
+        f"JOIN {table('urls')} AS requested "
+        "ON requested.url_id = crawl.requested_url_id "
+        f"JOIN {table('urls')} AS effective "
+        "ON effective.url_id = coalesce(crawl.final_url_id, crawl.requested_url_id) "
+        "WHERE crawl.document_id IS NOT NULL "
         "LIMIT ?",
         [samples],
     ).fetchall()
@@ -146,7 +152,7 @@ def _representative_queries(
     queries = {
         "date_bounded_crawls": (
             """
-            SELECT crawl_id, document_id, captured_at, normalized_url
+            SELECT crawl_id, document_id, captured_at, requested_url_id
             FROM crawls
             WHERE captured_at >= $window_start
               AND captured_at < $window_end

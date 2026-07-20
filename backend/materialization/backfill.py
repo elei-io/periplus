@@ -85,19 +85,18 @@ def _missing_scope_page(
 ) -> list[tuple[str, str | None]]:
     limit = get_int("ATLAS_MATERIALIZATION_BACKFILL_PAGE_SIZE")
     with catalogue_from_env() as catalogue:
-        source_table = "documents" if definition.scope_kind == "document" else "crawls"
-        identity = "document_id" if definition.scope_kind == "document" else "crawl_id"
+        source_table, identity = _scope_source(definition.scope_kind)
         scopes = _qualified(catalogue, source_table)
         coverage = _qualified(
             catalogue,
             MATERIALIZATION_COVERAGE_TABLE,
             schema=INTERNAL_SCHEMA,
         )
-        document_expression = (
-            "d.document_id"
-            if definition.scope_kind == "crawl"
-            else f"d.{identity}"
-        )
+        document_expression = {
+            "crawl": "d.document_id",
+            "document": "d.document_id",
+            "url": "NULL",
+        }[definition.scope_kind]
         rows = catalogue.connection.execute(
             f"""
             SELECT d.{identity}, {document_expression}
@@ -132,14 +131,16 @@ def _missing_scope_page(
 
 def _backfill_terminal(definition: CatalogueMaterialization) -> bool:
     with catalogue_from_env() as catalogue:
-        source_table = "documents" if definition.scope_kind == "document" else "crawls"
+        source_table, _identity = _scope_source(definition.scope_kind)
         scopes = _qualified(catalogue, source_table)
         coverage = _qualified(
             catalogue,
             MATERIALIZATION_COVERAGE_TABLE,
             schema=INTERNAL_SCHEMA,
         )
-        alias = "c" if definition.scope_kind == "crawl" else "d"
+        alias = {"crawl": "c", "document": "d", "url": "u"}[
+            definition.scope_kind
+        ]
         parameters = [definition.activation_snapshot]
         total = catalogue.connection.execute(
             f"SELECT count(*) FROM {scopes} AS {alias} AT (VERSION => ?)",
@@ -174,6 +175,14 @@ def _qualified(
         _quote(value)
         for value in (catalogue.config.alias, schema or catalogue.config.schema, table)
     )
+
+
+def _scope_source(scope_kind: str) -> tuple[str, str]:
+    return {
+        "url": ("urls", "url_id"),
+        "document": ("documents", "document_id"),
+        "crawl": ("crawls", "crawl_id"),
+    }[scope_kind]
 
 
 def _quote(value: str) -> str:

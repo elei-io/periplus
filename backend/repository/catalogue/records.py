@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 from ipaddress import ip_address
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import urlparse
 from uuid import UUID
 import tldextract
@@ -46,6 +47,40 @@ class DocumentRecord(CatalogueRecord):
     created_at: datetime
 
 
+class UrlRecord(CatalogueRecord):
+    url_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    normalized_url: str = Field(min_length=1)
+    scheme: str = Field(min_length=1)
+    host: str = Field(min_length=1)
+    port: int = Field(ge=0, le=65535)
+    registrable_domain: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    query: str
+
+    @classmethod
+    def from_normalized_url(cls, normalized_url: str) -> UrlRecord:
+        parsed = urlparse(normalized_url)
+        host = (parsed.hostname or "").lower()
+        scheme = parsed.scheme.lower()
+        try:
+            ip_address(host)
+        except ValueError:
+            extracted = _TLD_EXTRACT(host)
+            registrable_domain = extracted.top_domain_under_public_suffix or host
+        else:
+            registrable_domain = host
+        return cls(
+            url_id=hashlib.sha256(normalized_url.encode()).hexdigest(),
+            normalized_url=normalized_url,
+            scheme=scheme,
+            host=host,
+            port=parsed.port or {"http": 80, "https": 443}.get(scheme, 0),
+            registrable_domain=registrable_domain,
+            path=parsed.path or "/",
+            query=parsed.query,
+        )
+
+
 class CrawlRecord(CatalogueRecord):
     crawl_id: UUID
     document_id: str | None = Field(default=None, min_length=1)
@@ -56,16 +91,8 @@ class CrawlRecord(CatalogueRecord):
     crawl_request_id: UUID
     source_crawl_id: UUID | None = None
     source_edge_id: UUID | None = None
-    requested_url: str = Field(min_length=1)
-    normalized_url: str = Field(min_length=1)
-    final_url: str | None = None
-    page_url: str = Field(min_length=1)
-    url_scheme: str = Field(min_length=1)
-    url_host: str = Field(min_length=1)
-    url_port: int = Field(ge=0, le=65535)
-    url_registrable_domain: str = Field(min_length=1)
-    url_path: str = Field(min_length=1)
-    url_query: str
+    requested_url_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    final_url_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     captured_at: datetime
     status_code: int | None = Field(default=None, ge=100, le=599)
     duration_ms: int | None = Field(default=None, ge=0)
@@ -79,36 +106,6 @@ class CrawlRecord(CatalogueRecord):
     failure_stage: str | None = None
     failure_retryable: bool | None = None
     failure_detail: str | None = Field(default=None, max_length=2048)
-    acquisition_attempts_json: tuple[dict[str, JsonValue], ...] = ()
-
-    @model_validator(mode="before")
-    @classmethod
-    def derive_page_url_fields(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-        result = dict(value)
-        page_url = str(result.get("final_url") or result.get("normalized_url") or "")
-        parsed = urlparse(page_url)
-        host = (parsed.hostname or "").lower()
-        scheme = parsed.scheme.lower()
-        try:
-            ip_address(host)
-        except ValueError:
-            extracted = _TLD_EXTRACT(host)
-            registrable_domain = extracted.top_domain_under_public_suffix or host
-        else:
-            registrable_domain = host
-        result.update(
-            page_url=page_url,
-            url_scheme=scheme,
-            url_host=host,
-            url_port=parsed.port or {"http": 80, "https": 443}.get(scheme, 0),
-            url_registrable_domain=registrable_domain,
-            url_path=parsed.path or "/",
-            url_query=parsed.query,
-        )
-        return result
-
     @model_validator(mode="after")
     def validate_outcome(self) -> CrawlRecord:
         has_failure = self.failure_code is not None
@@ -137,6 +134,26 @@ class CrawlRecord(CatalogueRecord):
             raise ValueError("a crawl with captured content cannot have a failed outcome")
         if self.artifact_id is not None and self.response_media_type is None:
             raise ValueError("an artifact crawl requires its response media type")
+        return self
+
+
+class CrawlAttemptRecord(CatalogueRecord):
+    crawl_id: UUID
+    attempt_number: int = Field(ge=1)
+    started_at: datetime
+    completed_at: datetime
+    requested_url_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    final_url_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    status_code: int | None = Field(default=None, ge=100, le=599)
+    response_media_type: str | None = Field(default=None, min_length=1)
+    outcome: Literal["success", "retry", "skipped", "failed"]
+    failure_code: str | None = None
+    retry_after_seconds: float | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_timing(self) -> CrawlAttemptRecord:
+        if self.completed_at < self.started_at:
+            raise ValueError("crawl attempt completed_at cannot precede started_at")
         return self
 
 

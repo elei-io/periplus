@@ -24,6 +24,11 @@ const CatalogueWorkbenchPage = lazy(() =>
     default: module.CatalogueWorkbenchPage,
   }))
 )
+const SearchPage = lazy(() =>
+  import("@/pages/search-page").then((module) => ({
+    default: module.SearchPage,
+  }))
+)
 const CatalogueViewsPage = lazy(() =>
   import("@/pages/catalogue/views-page").then((module) => ({
     default: module.CatalogueViewsPage,
@@ -145,6 +150,10 @@ export function App() {
   }, [])
 
   const page = (() => {
+    if (pathname === "/") {
+      return <SearchPage />
+    }
+
     if (activeItem.href === "/catalogue/workbench") {
       return <CatalogueWorkbenchPage />
     }
@@ -194,9 +203,7 @@ export function App() {
     }
 
     if (activeItem.href === "/crawls/schedules") {
-      const scheduleId = pathname.match(
-        /^\/crawls\/schedules\/([^/]+)$/
-      )?.[1]
+      const scheduleId = pathname.match(/^\/crawls\/schedules\/([^/]+)$/)?.[1]
       if (scheduleId) {
         return (
           <CrawlScheduleDetailPage
@@ -244,16 +251,23 @@ export function App() {
 
   return (
     <SidebarProvider>
-      <AppSidebar pathname={activeItem.href} onNavigate={handleNavigate} />
+      <AppSidebar
+        pathname={pathname === "/" ? pathname : activeItem.href}
+        onNavigate={handleNavigate}
+      />
       <SidebarInset className="h-svh min-h-0 overflow-hidden">
         <header className="relative z-10 flex h-14 shrink-0 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur-xl">
           <SidebarTrigger />
           <div className="flex min-w-0 flex-col">
             <span className="truncate text-sm font-medium">
-              {activeItem.title ?? activeItem.name}
+              {pathname === "/"
+                ? "Search"
+                : (activeItem.title ?? activeItem.name)}
             </span>
             <span className="text-xs text-muted-foreground">
-              {activeItem.description ?? activeGroup.name}
+              {pathname === "/"
+                ? "Explore retained crawl evidence"
+                : (activeItem.description ?? activeGroup.name)}
             </span>
           </div>
         </header>

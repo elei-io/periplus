@@ -35,16 +35,18 @@ export function MaterializeViewDialog({
   onOpenChange: (open: boolean) => void
   view: CatalogueViewRecord
 }) {
-  const inferredKind = view.columns.some(
-    (column) => column.toLowerCase() === "document_id"
-  )
-    ? "document"
-    : "crawl"
+  const inferredKind = (
+    ["document", "crawl", "url"] as const
+  ).find((kind) =>
+    view.columns.some((column) => column.toLowerCase() === `${kind}_id`)
+  ) ?? "crawl"
   const inferredColumn =
     view.columns.find(
       (column) => column.toLowerCase() === `${inferredKind}_id`
     ) ?? ""
-  const [scopeKind, setScopeKind] = useState<"document" | "crawl">(inferredKind)
+  const [scopeKind, setScopeKind] = useState<
+    "url" | "document" | "crawl"
+  >(inferredKind)
   const [scopeColumn, setScopeColumn] = useState(inferredColumn)
   const [rate, setRate] = useState(60)
   const [partitionColumn, setPartitionColumn] = useState("")
@@ -61,7 +63,7 @@ export function MaterializeViewDialog({
     setPartitionColumn("")
   }
 
-  function chooseKind(value: "document" | "crawl") {
+  function chooseKind(value: "url" | "document" | "crawl") {
     setScopeKind(value)
     setScopeColumn(
       view.columns.find((column) => column.toLowerCase() === `${value}_id`) ??
@@ -106,7 +108,7 @@ export function MaterializeViewDialog({
           </DialogTitle>
           <DialogDescription>
             Atlas will backfill existing results and keep this view updated as
-            matching crawl data changes.
+            new matching catalogue identities arrive.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-5 px-5">
@@ -115,20 +117,25 @@ export function MaterializeViewDialog({
             <Select
               value={scopeKind}
               onValueChange={(value) =>
-                chooseKind(value as "document" | "crawl")
+                chooseKind(value as "url" | "document" | "crawl")
               }
             >
               <SelectTrigger className="w-full" aria-label="Incremental unit">
-                <span>{scopeKind === "document" ? "Document" : "Crawl"}</span>
+                <span>
+                  {{ url: "URL", document: "Document", crawl: "Crawl" }[
+                    scopeKind
+                  ]}
+                </span>
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="url">URL</SelectItem>
                 <SelectItem value="document">Document</SelectItem>
                 <SelectItem value="crawl">Crawl</SelectItem>
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              When one {scopeKind} changes, Atlas replaces only the rows
-              belonging to it.
+              Atlas replaces only the rows belonging to each discovered{" "}
+              {scopeKind}.
             </p>
           </div>
           <div className="grid gap-1.5">

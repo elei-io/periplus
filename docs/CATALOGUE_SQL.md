@@ -1,7 +1,8 @@
 # Catalogue SQL
 
-Atlas exposes the managed DuckLake schema as the default SQL namespace. Query `documents`,
-`crawls`, and `elements` directly; the `atlas.main` prefix is optional.
+Atlas exposes the managed DuckLake schema as the default SQL namespace. Query `urls`, `documents`,
+`crawls`, `crawl_attempts`, `crawl_steps`, and `elements` directly; the `atlas.main` prefix is
+optional.
 
 The SQL workbench submits queries to Atlas API and consumes Arrow IPC streams. The API owns bounded,
 reusable Quack client connections while the private Quack service owns analytical CPU, memory, and
@@ -18,22 +19,24 @@ timeouts, deployment-wide concurrency, row, result-byte, and cancellation limits
 
 ## Content and crawl identity
 
-`documents` contains unique, content-addressed captured HTML. `elements` contains one parsed DOM
-projection per document. `crawls` contains URL acquisition attempts, so joining a document to
-crawls can return the same document more than once when identical content was observed by
-multiple crawls.
+`urls` contains one immutable row per normalized URL, identified by
+`sha256(normalized_url)`. `documents` contains unique, content-addressed captured HTML and
+`elements` contains one parsed DOM projection per document. `crawls` is one logical observation;
+its network history is normalized into ordered `crawl_attempts`, while browser completion evidence
+is in `crawl_steps`.
 
-The effective crawl URL is `page_url`, defined as `coalesce(final_url, normalized_url)` at
-ingestion. Its non-null components are available as `url_scheme`, `url_host`, `url_port`,
-`url_registrable_domain`, `url_path`, and `url_query`.
+`requested_url_id` is always present and `final_url_id` is nullable. The effective crawl URL is
+`coalesce(final_url_id, requested_url_id)`. Join that identity to `urls` for normalized text and
+URL components.
 
 ```sql
-SELECT page_url, captured_at, duration_ms
-FROM crawls
-WHERE url_host = 'docs.example.com'
-  AND url_path LIKE '/guides/%'
-  AND captured_at >= TIMESTAMPTZ '2026-07-01 00:00:00+00'
-  AND captured_at <  TIMESTAMPTZ '2026-08-01 00:00:00+00';
+SELECT u.normalized_url, c.captured_at, c.duration_ms
+FROM crawls AS c
+JOIN urls AS u ON u.url_id = coalesce(c.final_url_id, c.requested_url_id)
+WHERE u.host = 'docs.example.com'
+  AND u.path LIKE '/guides/%'
+  AND c.captured_at >= TIMESTAMPTZ '2026-07-01 00:00:00+00'
+  AND c.captured_at <  TIMESTAMPTZ '2026-08-01 00:00:00+00';
 ```
 
 ## DOM columns
@@ -115,13 +118,14 @@ queries, and fragments without changing the stored `href` attribute.
 
 ```sql
 SELECT
-  c.page_url AS source,
+  u.normalized_url AS source,
   macros.get_attribute(e.attributes, 'href') AS href,
   macros.resolve_url(
-    c.page_url,
+    u.normalized_url,
     macros.get_attribute(e.attributes, 'href')
   ) AS url
 FROM crawls c
+JOIN urls u ON u.url_id = coalesce(c.final_url_id, c.requested_url_id)
 JOIN elements e USING (document_id)
 WHERE e.tag = 'a'
   AND macros.has_attribute(e.attributes, 'href');
@@ -197,14 +201,21 @@ crawl context:
 ```sql
 SELECT
   c.crawl_id,
-  c.page_url,
-  macros.resolve_url(c.page_url, m.canonical_href) AS canonical_url,
+  u.normalized_url AS page_url,
+  macros.resolve_url(u.normalized_url, m.canonical_href) AS canonical_url,
   m.title,
   m.description
 FROM crawls AS c
+JOIN urls AS u ON u.url_id = coalesce(c.final_url_id, c.requested_url_id)
 JOIN views.page_metadata AS m USING (document_id)
 WHERE c.outcome = 'success';
 ```
+
+`views.passages` returns searchable, human-scale regions from headings, paragraphs, list items,
+quotes, preformatted blocks, table cells, and figure captions. Each row retains its `document_id`,
+`element_index`, and source tag alongside normalized readable text. It is an ordinary seeded
+document-scoped materialization: search reads its durable backing relation, while live and backfill
+work use the standard materialization worker and coverage contract.
 
 `views.json_ld_scripts` preserves one row per
 `<script type="application/ld+json">`. `json_text` contains the exact script text, while
@@ -349,20 +360,24 @@ returned crawl candidates. Fragment navigation can therefore be inspected withou
 fragment-specific crawl identities. Link labels and presentation attributes are deliberately absent:
 the relation describes URL topology, not anchor content.
 
-The seeded `views.page_links` relation exposes the same columns and meanings over durable crawl
-history. Its self-contained definition derives links from `crawls` and `elements`, and its placement
-under `fixtures/materialized_views/crawl/` activates the standard crawl-scoped materialization.
+The seeded historical `views.page_links` relation stores `source_url_id` and `target_url_id`
+instead of repeating URL text; join both identities to `urls`. Its self-contained definition derives
+links from `crawls`, `urls`, and `elements`, and its placement under
+`fixtures/materialized_views/crawl/` activates the standard crawl-scoped materialization.
 Setup creates the empty backing relation; materialization workers alone populate live and backfill
-scopes. Ingestion writes only the durable crawl and DOM evidence. Historical graph edges never wait
+scopes. Ingestion also inserts newly discovered normalized targets into `urls`, so every link
+identity is resolvable. Historical graph edges never wait
 for either pipeline and may observe incomplete recent materialization coverage at their pinned
 pre-run snapshot; this intentional consistency contract is defined in
 [Crawl graphs](CRAWL_GRAPHS.md#historical-consistency-contract).
 
 ```sql
-SELECT source_host, target_host, count(*) AS links
-FROM views.page_links
-WHERE relation_kind <> 'external'
-GROUP BY source_host, target_host
+SELECT source.host, target.host, count(*) AS links
+FROM views.page_links AS link
+JOIN urls AS source ON source.url_id = link.source_url_id
+JOIN urls AS target ON target.url_id = link.target_url_id
+WHERE link.relation_kind <> 'external'
+GROUP BY source.host, target.host
 ORDER BY links DESC;
 ```
 

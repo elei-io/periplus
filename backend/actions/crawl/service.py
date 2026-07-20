@@ -22,7 +22,12 @@ from sqlalchemy.orm import Session
 from config import get_str
 from control.crawl_policies.schemas import EffectivePolicySnapshot, ResponseOutcome
 from control.urls import normalize_url
-from repository.catalogue import CrawlRecord, CrawlStepRecord
+from repository.catalogue import (
+    CrawlAttemptRecord,
+    CrawlRecord,
+    CrawlStepRecord,
+    UrlRecord,
+)
 from repository.ingestion.acquisition import AcquisitionPipeline
 from repository.objects.artifact import ArtifactIdentity
 from repository.objects.html import identify_html
@@ -668,7 +673,56 @@ async def crawl_graph_request(
             raise RetryableAcquisitionError(page)
         identity = identify_html(page.html) if page.html is not None and page.success else None
         artifact_identity = ArtifactIdentity(sha256=hashlib.sha256(page.artifact).hexdigest(), size_bytes=len(page.artifact)) if page.artifact is not None and page.success else None
-        attempts = (*context.prior_attempts_json, page.attempt_evidence.model_dump(mode="json") if page.attempt_evidence else {})
+        attempt_evidence = tuple(
+            AcquisitionAttemptEvidence.model_validate(value)
+            for value in context.prior_attempts_json
+        ) + ((page.attempt_evidence,) if page.attempt_evidence is not None else ())
+        requested_url = UrlRecord.from_normalized_url(normalized)
+        final_normalized = normalize_url(page.url) if page.url else None
+        final_url = (
+            UrlRecord.from_normalized_url(final_normalized)
+            if final_normalized is not None
+            else None
+        )
+        urls = tuple(
+            {value.url_id: value for value in (requested_url, final_url) if value is not None}.values()
+        )
+        crawl_attempts = tuple(
+            CrawlAttemptRecord(
+                crawl_id=context.crawl_request_id,
+                attempt_number=attempt.attempt,
+                started_at=attempt.started_at,
+                completed_at=attempt.completed_at,
+                requested_url_id=UrlRecord.from_normalized_url(
+                    normalize_url(attempt.requested_url)
+                ).url_id,
+                final_url_id=(
+                    UrlRecord.from_normalized_url(
+                        normalize_url(attempt.final_url)
+                    ).url_id
+                    if attempt.final_url is not None
+                    else None
+                ),
+                status_code=attempt.status_code,
+                response_media_type=attempt.response_media_type,
+                outcome=attempt.outcome,
+                failure_code=attempt.failure_code,
+                retry_after_seconds=attempt.retry_after_seconds,
+            )
+            for attempt in attempt_evidence
+        )
+        attempt_urls = tuple(
+            UrlRecord.from_normalized_url(normalize_url(value))
+            for attempt in attempt_evidence
+            for value in (attempt.requested_url, attempt.final_url)
+            if value is not None
+        )
+        urls = tuple(
+            {
+                value.url_id: value
+                for value in (*urls, *attempt_urls)
+            }.values()
+        )
         record = CrawlRecord(
             crawl_id=context.crawl_request_id,
             document_id=identity.document_id if identity else None,
@@ -679,9 +733,8 @@ async def crawl_graph_request(
             crawl_request_id=context.crawl_request_id,
             source_crawl_id=context.source_crawl_id,
             source_edge_id=context.source_edge_id,
-            requested_url=url,
-            normalized_url=normalized,
-            final_url=page.url,
+            requested_url_id=requested_url.url_id,
+            final_url_id=final_url.url_id if final_url is not None else None,
             captured_at=datetime.now(UTC),
             status_code=page.status_code,
             duration_ms=round(page.duration_seconds * 1000),
@@ -694,7 +747,6 @@ async def crawl_graph_request(
             failure_stage=page.failure_stage if not page.success else None,
             failure_retryable=page.failure_retryable if not page.success else None,
             failure_detail=page.error if not page.success else None,
-            acquisition_attempts_json=attempts,
         )
         crawl_steps = tuple(
             CrawlStepRecord(
@@ -719,7 +771,12 @@ async def crawl_graph_request(
                 else:
                     async with resource_permits(resource_grants, request, acquire_timeout=DURABLE_RESOURCE_WAIT):
                         await pipeline.store_artifact(content=io.BytesIO(page.artifact or b""), identity=artifact_identity)
-            await pipeline.enqueue_stored(record, crawl_steps=crawl_steps)
+            await pipeline.enqueue_stored(
+                record,
+                urls=urls,
+                crawl_attempts=crawl_attempts,
+                crawl_steps=crawl_steps,
+            )
             return page.model_copy(
                 update={
                     "crawl_id": context.crawl_request_id,

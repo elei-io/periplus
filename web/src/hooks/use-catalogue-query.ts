@@ -41,7 +41,7 @@ async function waitForTerminalQueryState(
   throw new Error("Catalogue query status did not settle after streaming.")
 }
 
-async function runCatalogueQuery(
+export async function runCatalogueQuery(
   request: CatalogueQueryRequest
 ): Promise<CatalogueQueryResult> {
   const response = await fetch(apiUrl("/catalogue/query-executions"), {

@@ -14,8 +14,9 @@ from ducklake_client import DiskStorage, PostgresCatalog
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 
-from repository.catalogue import Catalogue, CatalogueConfig, CrawlRecord
+from repository.catalogue import Catalogue, CatalogueConfig, CrawlRecord, UrlRecord
 from repository import FileObjectStore, RawHtmlRepository, RepositoryIngestor
+from tests.catalogue_helpers import crawl_url_evidence, seed_system_macros
 
 
 def _concurrent_ingest(
@@ -43,6 +44,14 @@ def _concurrent_ingest(
         with ingestor:
             barrier.wait(timeout=15)
             ingestor.store_raw(html)
+            captured_at = datetime(2026, 7, 11, 12, value, tzinfo=UTC)
+            requested_url, urls, attempts = crawl_url_evidence(
+                UUID(int=value),
+                f"https://example.com/{value}",
+                captured_at=captured_at,
+                final_url=f"https://example.com/{value}",
+            )
+            urls = (*urls, UrlRecord.from_normalized_url("https://example.com/shared"))
             prepared = ingestor.prepare_from_raw(
                 crawl=CrawlRecord(
                     crawl_id=UUID(int=value),
@@ -51,16 +60,17 @@ def _concurrent_ingest(
                     graph_run_id=UUID(int=200 + value),
                     graph_node_id=UUID(int=300 + value),
                     crawl_request_id=UUID(int=400 + value),
-                    requested_url=f"https://example.com/{value}",
-                    normalized_url=f"https://example.com/{value}",
-                    final_url=f"https://example.com/{value}",
-                    captured_at=datetime(2026, 7, 11, 12, value, tzinfo=UTC),
+                    requested_url_id=requested_url.url_id,
+                    final_url_id=requested_url.url_id,
+                    captured_at=captured_at,
                     status_code=200,
                     duration_ms=100,
                     policy_config_json={"value": value},
                     policy_config_hash=f"{value:064x}",
                     outcome="success",
-                )
+                ),
+                urls=urls,
+                crawl_attempts=attempts,
             )
             ingestor.commit_prepared_batch([prepared])
     except BaseException as exc:
@@ -92,6 +102,7 @@ class PostgresCatalogueConcurrencyTests(unittest.TestCase):
                     )
                 )
                 catalogue.bootstrap()
+                seed_system_macros(catalogue)
                 ingestor = RepositoryIngestor(
                     html_repository=RawHtmlRepository(
                         FileObjectStore(root / "objects")
@@ -105,6 +116,13 @@ class PostgresCatalogueConcurrencyTests(unittest.TestCase):
                     for value in range(1, 101):
                         html = f"<html><body>Unique page {value}</body></html>"
                         identity = ingestor.store_raw(html)
+                        observed_at = captured_at + timedelta(seconds=value)
+                        requested_url, urls, attempts = crawl_url_evidence(
+                            UUID(int=value),
+                            f"https://example.com/{value}",
+                            captured_at=observed_at,
+                            final_url=f"https://example.com/{value}",
+                        )
                         prepared.append(
                             ingestor.prepare_from_raw(
                                 crawl=CrawlRecord(
@@ -114,16 +132,17 @@ class PostgresCatalogueConcurrencyTests(unittest.TestCase):
                                     graph_run_id=UUID(int=2_000),
                                     graph_node_id=UUID(int=3_000),
                                     crawl_request_id=UUID(int=4_000 + value),
-                                    requested_url=f"https://example.com/{value}",
-                                    normalized_url=f"https://example.com/{value}",
-                                    final_url=f"https://example.com/{value}",
-                                    captured_at=captured_at + timedelta(seconds=value),
+                                    requested_url_id=requested_url.url_id,
+                                    final_url_id=requested_url.url_id,
+                                    captured_at=observed_at,
                                     status_code=200,
                                     duration_ms=100,
                                     policy_config_json={"value": value},
                                     policy_config_hash=f"{value:064x}",
                                     outcome="success",
-                                )
+                                ),
+                                urls=urls,
+                                crawl_attempts=attempts,
                             )
                         )
 
@@ -149,7 +168,10 @@ class PostgresCatalogueConcurrencyTests(unittest.TestCase):
                     )
                 )
 
-    def _run_concurrent_ingests(self, values: tuple[int, int]) -> tuple[int, int, bool]:
+    def _run_concurrent_ingests(
+        self,
+        values: tuple[int, int],
+    ) -> tuple[int, int, int, bool]:
         admin_dsn = os.environ["ATLAS_TEST_DATABASE_URL"]
         database_name = f"atlas_catalogue_test_{uuid4().hex}"
         with psycopg.connect(admin_dsn, autocommit=True) as admin:
@@ -167,6 +189,7 @@ class PostgresCatalogueConcurrencyTests(unittest.TestCase):
                 )
                 with Catalogue(config) as catalogue:
                     catalogue.bootstrap()
+                    seed_system_macros(catalogue)
 
                 context = multiprocessing.get_context("spawn")
                 barrier = context.Barrier(2)
@@ -215,6 +238,11 @@ class PostgresCatalogueConcurrencyTests(unittest.TestCase):
                                 "SELECT count(*) FROM atlas.main.crawls"
                             )
                         ),
+                        int(
+                            catalogue.lake.sql_scalar(
+                                "SELECT count(*) FROM atlas.main.urls"
+                            )
+                        ),
                         bool(
                             catalogue.lake.sql_scalar(
                                 "SELECT (SELECT count(*) FROM atlas.main.elements) = "
@@ -233,10 +261,10 @@ class PostgresCatalogueConcurrencyTests(unittest.TestCase):
                 )
 
     def test_independent_processes_can_commit_to_one_catalogue(self) -> None:
-        self.assertEqual(self._run_concurrent_ingests((1, 2)), (2, 2, True))
+        self.assertEqual(self._run_concurrent_ingests((1, 2)), (2, 2, 3, True))
 
     def test_same_logical_crawl_is_idempotent_across_processes(self) -> None:
-        self.assertEqual(self._run_concurrent_ingests((1, 1)), (1, 1, True))
+        self.assertEqual(self._run_concurrent_ingests((1, 1)), (1, 1, 2, True))
 
 
 if __name__ == "__main__":

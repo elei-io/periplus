@@ -39,9 +39,11 @@ export function CatalogueMaterializationDetail({
               <div>
                 <div className="text-sm">Incremental discriminator</div>
                 <div className="text-xs text-muted-foreground">
-                  {materialization.scope_kind === "document"
-                    ? "Document"
-                    : "Crawl"}{" "}
+                  {{
+                    url: "URL",
+                    document: "Document",
+                    crawl: "Crawl",
+                  }[materialization.scope_kind]}{" "}
                   · <code>{materialization.scope_column}</code>
                 </div>
               </div>
@@ -50,7 +52,7 @@ export function CatalogueMaterializationDetail({
               <div>
                 <div className="text-sm">New data</div>
                 <div className="text-xs text-muted-foreground">
-                  Process matching crawl data as it arrives
+                  Process newly discovered scopes as they arrive
                 </div>
               </div>
               <Button

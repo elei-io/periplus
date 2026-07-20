@@ -14,7 +14,13 @@ from config.performance import (
     INGEST_BATCH_MAX_WAIT_SECONDS,
 )
 
-from repository.catalogue import CatalogueWriteResult, CrawlRecord, CrawlStepRecord
+from repository.catalogue import (
+    CatalogueWriteResult,
+    CrawlAttemptRecord,
+    CrawlRecord,
+    CrawlStepRecord,
+    UrlRecord,
+)
 from observability import repository_metrics
 from repository.objects.html import HtmlIdentity
 from repository.objects.artifact import ArtifactIdentity
@@ -124,6 +130,8 @@ class RepositoryPipeline:
         self,
         crawl: CrawlRecord,
         *,
+        urls: tuple[UrlRecord, ...],
+        crawl_attempts: tuple[CrawlAttemptRecord, ...],
         request_id: str | None = None,
         crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
     ) -> CatalogueWriteResult:
@@ -131,6 +139,8 @@ class RepositoryPipeline:
             raise RuntimeError("repository pipeline is not running")
         return await self.queue.submit(
             crawl,
+            urls=urls,
+            crawl_attempts=crawl_attempts,
             request_id=request_id,
             crawl_steps=crawl_steps,
         )
@@ -167,6 +177,8 @@ class RepositoryPipeline:
         self,
         crawl: CrawlRecord,
         *,
+        urls: tuple[UrlRecord, ...],
+        crawl_attempts: tuple[CrawlAttemptRecord, ...],
         request_id: str | None = None,
         crawl_steps: tuple[CrawlStepRecord, ...] = (),
     ) -> None:
@@ -174,6 +186,8 @@ class RepositoryPipeline:
             raise RuntimeError("repository pipeline is not running")
         await self.queue.enqueue(
             crawl,
+            urls=urls,
+            crawl_attempts=crawl_attempts,
             request_id=request_id,
             crawl_steps=crawl_steps,
         )
@@ -196,8 +210,19 @@ class RepositoryPipeline:
                         f"DOM projection for {exc.crawl.document_id} remained stale after rebuild"
                     ) from exc
                 repaired_documents.add(exc.crawl.document_id)
+                url_ids = tuple(
+                    value
+                    for value in (
+                        exc.crawl.requested_url_id,
+                        exc.crawl.final_url_id,
+                    )
+                    if value is not None
+                )
+                stored_urls = self.ingestor.catalogue_service.get_urls(url_ids)
                 await self.submit_stored(
                     exc.crawl,
+                    urls=tuple(stored_urls.values()),
+                    crawl_attempts=(),
                     request_id=projection_ingestion_request_id(exc.crawl.document_id),
                     crawl_steps=None,
                 )
@@ -235,8 +260,19 @@ class RepositoryPipeline:
                         f"DOM projection for {exc.crawl.document_id} remained stale after rebuild"
                     ) from exc
                 repaired_documents.add(exc.crawl.document_id)
+                url_ids = tuple(
+                    value
+                    for value in (
+                        exc.crawl.requested_url_id,
+                        exc.crawl.final_url_id,
+                    )
+                    if value is not None
+                )
+                stored_urls = self.ingestor.catalogue_service.get_urls(url_ids)
                 await self.submit_stored(
                     exc.crawl,
+                    urls=tuple(stored_urls.values()),
+                    crawl_attempts=(),
                     request_id=projection_ingestion_request_id(exc.crawl.document_id),
                     crawl_steps=None,
                 )

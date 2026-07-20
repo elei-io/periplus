@@ -15,10 +15,12 @@ from repository.catalogue.exceptions import (
 from repository.catalogue.records import (
     ArtifactRecord,
     CatalogueWriteResult,
+    CrawlAttemptRecord,
     CrawlRecord,
     CrawlStepRecord,
     DocumentRecord,
     ElementRecord,
+    UrlRecord,
 )
 from repository.catalogue.service import CatalogueBatchEntry, CatalogueService
 
@@ -66,10 +68,12 @@ __all__ = [
     "CatalogueSchemaError",
     "CatalogueValidationError",
     "CatalogueWriteResult",
+    "CrawlAttemptRecord",
     "CrawlRecord",
     "CrawlStepRecord",
     "DocumentRecord",
     "ElementRecord",
+    "UrlRecord",
     "catalogue_config_from_env",
     "catalogue_from_env",
 ]

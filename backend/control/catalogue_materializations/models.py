@@ -27,7 +27,10 @@ def utc_now() -> datetime:
 class CatalogueMaterialization(Base):
     __tablename__ = "catalogue_materializations"
     __table_args__ = (
-        CheckConstraint("scope_kind IN ('document', 'crawl')", name="ck_catalogue_materializations_scope"),
+        CheckConstraint(
+            "scope_kind IN ('url', 'document', 'crawl')",
+            name="ck_catalogue_materializations_scope",
+        ),
         CheckConstraint(
             "scope_column <> ''",
             name="ck_catalogue_materializations_scope_column",

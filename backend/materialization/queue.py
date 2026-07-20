@@ -41,27 +41,13 @@ class MaterializationScopeJob(BaseModel):
     materialization_id: UUID
     definition_revision_id: UUID
     target_table: str
-    scope_kind: Literal["document", "crawl"]
+    scope_kind: Literal["url", "document", "crawl"]
     scope_column: str
     scope_id: str
     document_id: str | None
     operation_id: str
     source: Literal["live", "backfill"]
     enqueued_at: datetime
-
-
-class MaterializationCommitJob(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    kind: Literal["commit"] = "commit"
-    scope: MaterializationScopeJob
-    staging_key: str
-    staging_sha256: str
-    row_count: int
-    output_bytes: int
-    file_bytes: int
-    started_at: datetime
-    completed_at: datetime
 
 
 class MaterializationFailureJob(BaseModel):
@@ -83,7 +69,6 @@ class MaterializationDeadLetter(BaseModel):
     error: str
     processing_failure_count: int
     failed_at: datetime
-    staging_key: str | None = None
 
 
 class MaterializationAttemptState(BaseModel):

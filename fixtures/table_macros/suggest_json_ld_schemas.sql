@@ -3,22 +3,26 @@ CREATE MACRO macros.suggest_json_ld_schemas(p_url) AS TABLE (
         SELECT
             crawl_id,
             captured_at,
-            page_url,
+            coalesce(final_url.normalized_url, requested_url.normalized_url) AS page_url,
             document_id
-        FROM crawls
+        FROM crawls AS crawl
+        JOIN urls AS requested_url
+          ON requested_url.url_id = crawl.requested_url_id
+        LEFT JOIN urls AS final_url
+          ON final_url.url_id = crawl.final_url_id
         WHERE (
                 (
                     contains(p_url, '%')
                     AND (
-                        normalized_url ILIKE p_url
-                        OR page_url ILIKE p_url
+                        requested_url.normalized_url ILIKE p_url
+                        OR final_url.normalized_url ILIKE p_url
                     )
                 )
                 OR (
                     NOT contains(p_url, '%')
                     AND (
-                        normalized_url = p_url
-                        OR page_url = p_url
+                        requested_url.normalized_url = p_url
+                        OR final_url.normalized_url = p_url
                     )
                 )
               )

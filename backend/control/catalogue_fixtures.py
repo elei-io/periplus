@@ -95,7 +95,7 @@ def seed_catalogue_fixtures(
             _parse_relation_fixture(fixtures_root, path, kind="VIEW", schema=VIEW_SCHEMA),
         )
     materialized_fixtures: list[tuple[str, RelationFixture]] = []
-    for scope_kind in ("document", "crawl"):
+    for scope_kind in ("url", "document", "crawl"):
         for path in _sql_files(fixtures_root / "materialized_views" / scope_kind):
             fixture = _parse_relation_fixture(
                 fixtures_root,

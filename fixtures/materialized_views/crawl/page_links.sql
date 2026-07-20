@@ -2,18 +2,26 @@
 CREATE VIEW views.page_links AS
 WITH successful_crawls AS (
     SELECT
-        crawl_id,
-        document_id,
-        captured_at,
-        page_url,
-        url_registrable_domain AS source_registrable_domain,
-        macros.normalize_url(page_url) AS source_url
-    FROM crawls
-    WHERE outcome = 'success'
-      AND document_id IS NOT NULL
+        crawl.crawl_id,
+        crawl.document_id,
+        crawl.captured_at,
+        effective.url_id AS source_url_id,
+        effective.normalized_url AS page_url,
+        effective.scheme AS source_scheme,
+        effective.host AS source_host,
+        effective.port AS source_port,
+        effective.registrable_domain AS source_registrable_domain,
+        effective.path AS source_path
+    FROM crawls AS crawl
+    JOIN urls AS requested ON requested.url_id = crawl.requested_url_id
+    LEFT JOIN urls AS final ON final.url_id = crawl.final_url_id
+    JOIN urls AS effective
+      ON effective.url_id = coalesce(crawl.final_url_id, crawl.requested_url_id)
+    WHERE crawl.outcome = 'success'
+      AND crawl.document_id IS NOT NULL
       AND (
           getvariable('atlas_materialization_crawl_id') IS NULL
-          OR crawl_id = CAST(
+          OR crawl.crawl_id = CAST(
               getvariable('atlas_materialization_crawl_id') AS UUID
           )
       )
@@ -73,8 +81,12 @@ anchors AS (
         crawl.document_id,
         crawl.captured_at,
         anchor.element_index,
-        crawl.source_url,
+        crawl.source_url_id,
+        crawl.source_scheme,
+        crawl.source_host,
+        crawl.source_port,
         crawl.source_registrable_domain,
+        crawl.source_path,
         regexp_replace(
             macros.get_attribute(anchor.attributes, 'href'),
             '^[ \t\r\n\f]+|[ \t\r\n\f]+$',
@@ -105,59 +117,40 @@ anchors AS (
 normalized AS (
     SELECT
         *,
-        macros.normalize_url(resolved_url) AS target_url
+        macros.normalize_url(resolved_url) AS target_url,
+        macros.url_parts(resolved_url).fragment AS fragment
     FROM anchors
 ),
 with_parts AS (
     SELECT
         *,
-        macros.url_parts(source_url) AS source,
-        macros.url_parts(target_url) AS target,
-        macros.url_parts(resolved_url).fragment AS target_fragment
+        macros.url_parts(target_url) AS target
     FROM normalized
     WHERE target_url IS NOT NULL
-),
-classified AS (
-    SELECT
-        *,
-        CASE
-            WHEN target_url = source_url THEN 'same_url'
-            WHEN target.scheme = source.scheme
-             AND target.host = source.host
-             AND target.port = source.port
-             AND target.path = source.path THEN 'same_path'
-            WHEN target.scheme = source.scheme
-             AND target.host = source.host
-             AND target.port = source.port THEN 'same_origin'
-            WHEN target.host = source.host THEN 'same_host'
-            WHEN target.host = source_registrable_domain
-              OR ends_with(
-                    target.host,
-                    '.' || source_registrable_domain
-                 ) THEN 'same_site'
-            ELSE 'external'
-        END AS relation_kind
-    FROM with_parts
 )
 SELECT
+    crawl_id,
     document_id,
     captured_at,
-    source_url,
-    source.scheme AS source_scheme,
-    source.host AS source_host,
-    source.port AS source_port,
-    source_registrable_domain,
-    source.path AS source_path,
-    nullif(source.query, '') AS source_query,
-    target_url,
-    target.scheme AS target_scheme,
-    target.host AS target_host,
-    target.port AS target_port,
-    target.path AS target_path,
-    nullif(target.query, '') AS target_query,
-    nullif(target_fragment, '') AS target_fragment,
-    relation_kind,
-    raw_href,
     element_index,
-    crawl_id
-FROM classified;
+    source_url_id,
+    sha256(target_url) AS target_url_id,
+    raw_href,
+    nullif(fragment, '') AS fragment,
+    CASE
+        WHEN target_url = (
+            SELECT normalized_url FROM urls WHERE url_id = source_url_id LIMIT 1
+        ) THEN 'same_url'
+        WHEN target.scheme = source_scheme
+         AND target.host = source_host
+         AND target.port = source_port
+         AND target.path = source_path THEN 'same_path'
+        WHEN target.scheme = source_scheme
+         AND target.host = source_host
+         AND target.port = source_port THEN 'same_origin'
+        WHEN target.host = source_host THEN 'same_host'
+        WHEN target.host = source_registrable_domain
+          OR ends_with(target.host, '.' || source_registrable_domain) THEN 'same_site'
+        ELSE 'external'
+    END AS relation_kind
+FROM with_parts;

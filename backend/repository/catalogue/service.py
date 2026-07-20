@@ -16,12 +16,14 @@ from repository.catalogue.operations import maintenance_lock, repository_commit_
 from repository.catalogue.records import (
     ArtifactRecord,
     CatalogueWriteResult,
+    CrawlAttemptRecord,
     CrawlRecord,
     CrawlStepRecord,
     DocumentRecord,
     ElementRecord,
+    UrlRecord,
 )
-from repository.catalogue.schema import CRAWL_STEPS_TABLE, INTERNAL_SCHEMA
+from repository.catalogue.schema import CRAWL_ATTEMPTS_TABLE, CRAWL_STEPS_TABLE, INTERNAL_SCHEMA
 from dom import ElementRow, GroupedLinkPayload, links_from_elements
 
 
@@ -29,6 +31,8 @@ from dom import ElementRow, GroupedLinkPayload, links_from_elements
 class CatalogueBatchEntry:
     document: DocumentRecord | None
     crawl: CrawlRecord
+    urls: tuple[UrlRecord, ...] = ()
+    crawl_attempts: tuple[CrawlAttemptRecord, ...] = ()
     crawl_steps: tuple[CrawlStepRecord, ...] | None = ()
     artifact: ArtifactRecord | None = None
     elements_path: Path | None = None
@@ -65,10 +69,18 @@ class CatalogueService:
                 if identity is not None
             }
         )
+        url_ids = sorted(
+            {
+                url.url_id
+                for entry in entries
+                for url in entry.urls
+            }
+        )
         with repository_commit_lock(
             self.catalogue,
             crawl_ids=[entry.crawl.crawl_id for entry in entries],
             content_ids=content_ids,
+            url_ids=url_ids,
         ):
             return self._record_crawl_batch_unfenced(entries)
 
@@ -79,10 +91,11 @@ class CatalogueService:
         maximum_input_file_bytes: int,
         target_file_bytes: int,
         maximum_compacted_files: int,
+        maximum_tables: int | None = None,
         maximum_operation_bytes: int = 256 * 1024 * 1024,
         cleanup_older_than_seconds: int = 7 * 24 * 60 * 60,
     ) -> list[CompactionResult]:
-        """Merge small files in bounded table-level operations when thresholds are met."""
+        """Merge small files in bounded, debt-prioritized table operations."""
 
         for name, value in (
             ("minimum_files", minimum_files),
@@ -102,6 +115,10 @@ class CatalogueService:
             raise CatalogueValidationError(
                 "target_file_bytes must not exceed maximum_operation_bytes"
             )
+        if maximum_tables is not None and maximum_tables <= 0:
+            raise CatalogueValidationError(
+                "maximum_tables must be greater than zero when provided"
+            )
 
         with maintenance_lock(self.catalogue):
             # DuckLake inlines tiny writes into its metadata catalogue. Flush those
@@ -114,6 +131,8 @@ class CatalogueService:
             candidates = self._small_file_candidates(
                 maximum_input_file_bytes=maximum_input_file_bytes,
             )
+            if maximum_tables is not None:
+                candidates = candidates[:maximum_tables]
             results: list[CompactionResult] = []
             bounded_compactions = min(
                 maximum_compacted_files,
@@ -173,16 +192,22 @@ class CatalogueService:
         )
         rows = self.catalogue.connection.execute(
             f"""
-            SELECT
-                schema_name,
-                table_name,
-                max(partition_files) AS eligible_files,
-                sum(partition_bytes) AS eligible_bytes
-            FROM (
+            WITH file_partition_keys AS (
+                SELECT
+                    data_file_id,
+                    table_id,
+                    string_agg(
+                        partition_key_index::VARCHAR || '=' || partition_value,
+                        '|' ORDER BY partition_key_index
+                    ) AS partition_key
+                FROM {metadata}.ducklake_file_partition_value
+                GROUP BY data_file_id, table_id
+            ),
+            physical_partitions AS (
                 SELECT
                     schema_info.schema_name,
                     table_info.table_name,
-                    data_file.partition_id,
+                    coalesce(partition_key.partition_key, '') AS partition_key,
                     count(*) AS partition_files,
                     sum(data_file.file_size_bytes) AS partition_bytes
                 FROM {metadata}.ducklake_data_file AS data_file
@@ -190,15 +215,29 @@ class CatalogueService:
                   ON table_info.table_id = data_file.table_id
                 JOIN {metadata}.ducklake_schema AS schema_info
                   ON schema_info.schema_id = table_info.schema_id
+                LEFT JOIN file_partition_keys AS partition_key
+                  ON partition_key.data_file_id = data_file.data_file_id
+                 AND partition_key.table_id = data_file.table_id
                 WHERE data_file.end_snapshot IS NULL
                   AND table_info.end_snapshot IS NULL
                   AND schema_info.end_snapshot IS NULL
                   AND schema_info.schema_name IN (?, ?, '_atlas_materializations')
                   AND data_file.file_size_bytes < ?
-                GROUP BY schema_info.schema_name, table_info.table_name, data_file.partition_id
-            ) AS partitions
+                GROUP BY
+                    schema_info.schema_name,
+                    table_info.table_name,
+                    coalesce(partition_key.partition_key, '')
+                HAVING count(*) > 1
+            )
+            SELECT
+                schema_name,
+                table_name,
+                sum(partition_files) AS eligible_files,
+                sum(partition_bytes) AS eligible_bytes
+            FROM physical_partitions
             GROUP BY schema_name, table_name
-            ORDER BY schema_name, table_name
+            ORDER BY sum(partition_files) DESC, sum(partition_bytes) DESC,
+                     schema_name, table_name
             """,
             [
                 self.catalogue.config.schema,
@@ -224,10 +263,12 @@ class CatalogueService:
             return []
         new_documents: dict[str, DocumentRecord] = {}
         new_artifacts: dict[str, ArtifactRecord] = {}
+        new_urls: dict[str, UrlRecord] = {}
         replacement_documents: dict[str, DocumentRecord] = {}
         element_paths: dict[str, Path] = {}
         new_crawls: dict[UUID, CrawlRecord] = {}
         new_crawl_steps: dict[UUID, tuple[CrawlStepRecord, ...]] = {}
+        new_crawl_attempts: dict[UUID, tuple[CrawlAttemptRecord, ...]] = {}
         document_created: list[bool] = []
         artifact_created: list[bool] = []
         crawl_created: list[bool] = []
@@ -252,7 +293,12 @@ class CatalogueService:
             crawls_by_id = self._lookup_batch_crawls(
                 [entry.crawl for entry in entries]
             )
+            batch_urls = [url for entry in entries for url in entry.urls]
+            urls_by_id = self.get_urls([url.url_id for url in batch_urls])
             crawl_steps_by_id = self._lookup_batch_crawl_steps(
+                [entry.crawl.crawl_id for entry in entries]
+            )
+            crawl_attempts_by_id = self._lookup_batch_crawl_attempts(
                 [entry.crawl.crawl_id for entry in entries]
             )
 
@@ -260,6 +306,19 @@ class CatalogueService:
                 artifact = entry.artifact
                 document = entry.document
                 crawl = entry.crawl
+                crawl_attempts = tuple(entry.crawl_attempts)
+                if crawl_attempts:
+                    _validate_crawl_attempts(crawl, crawl_attempts)
+                for url in entry.urls:
+                    _validate_url_identity(url)
+                    existing_url = urls_by_id.get(url.url_id)
+                    pending_url = new_urls.get(url.url_id)
+                    if existing_url is not None:
+                        _validate_canonical_url(existing_url, url)
+                    elif pending_url is not None:
+                        _validate_canonical_url(pending_url, url)
+                    else:
+                        new_urls[url.url_id] = url
                 crawl_steps = (
                     None
                     if entry.crawl_steps is None
@@ -371,6 +430,14 @@ class CatalogueService:
                         raise CatalogueConflictError(
                             f"crawl_id {str(crawl.crawl_id)!r} already has different completion steps"
                         )
+                    if (
+                        crawl_attempts
+                        and crawl_attempts_by_id.get(crawl.crawl_id, ())
+                        != crawl_attempts
+                    ):
+                        raise CatalogueConflictError(
+                            f"crawl_id {str(crawl.crawl_id)!r} already has different attempts"
+                        )
                     crawl_created.append(False)
                 elif (pending := new_crawls.get(crawl.crawl_id)) is not None:
                     if pending != crawl:
@@ -385,15 +452,45 @@ class CatalogueService:
                             f"microbatch contains conflicting completion steps for "
                             f"crawl {str(crawl.crawl_id)!r}"
                         )
+                    if new_crawl_attempts.get(crawl.crawl_id) != crawl_attempts:
+                        raise CatalogueConflictError(
+                            f"microbatch contains conflicting attempts for crawl "
+                            f"{str(crawl.crawl_id)!r}"
+                        )
                     crawl_created.append(False)
                 else:
                     if crawl_steps is None:
                         raise CatalogueValidationError(
                             "projection-only ingestion requires an existing crawl"
                         )
+                    if not crawl_attempts:
+                        raise CatalogueValidationError(
+                            "a new crawl requires typed acquisition attempts"
+                        )
                     new_crawls[crawl.crawl_id] = crawl
                     new_crawl_steps[crawl.crawl_id] = crawl_steps
+                    new_crawl_attempts[crawl.crawl_id] = crawl_attempts
                     crawl_created.append(True)
+
+            available_url_ids = set(urls_by_id) | set(new_urls)
+            for crawl in new_crawls.values():
+                referenced = {crawl.requested_url_id}
+                if crawl.final_url_id is not None:
+                    referenced.add(crawl.final_url_id)
+                referenced.update(
+                    attempt.requested_url_id
+                    for attempt in new_crawl_attempts[crawl.crawl_id]
+                )
+                referenced.update(
+                    attempt.final_url_id
+                    for attempt in new_crawl_attempts[crawl.crawl_id]
+                    if attempt.final_url_id is not None
+                )
+                missing = referenced - available_url_ids
+                if missing:
+                    raise CatalogueValidationError(
+                        "crawl and attempt URL identities must be included in the URL dimension"
+                    )
 
             if replacement_documents:
                 identifiers = list(replacement_documents)
@@ -404,6 +501,11 @@ class CatalogueService:
                     identifiers,
                 )
 
+            if new_urls:
+                self._append(
+                    "urls",
+                    [_url_values(value) for value in new_urls.values()],
+                )
             if new_artifacts:
                 self._append(
                     "artifacts",
@@ -431,19 +533,30 @@ class CatalogueService:
                     "crawls",
                     [_crawl_values(value) for value in new_crawls.values()],
                 )
+                attempts = [
+                    attempt
+                    for crawl_id in new_crawls
+                    for attempt in new_crawl_attempts[crawl_id]
+                ]
+                if attempts:
+                    self._append(
+                        CRAWL_ATTEMPTS_TABLE,
+                        [_crawl_attempt_values(value) for value in attempts],
+                    )
                 steps = [
                     step
                     for crawl_id in new_crawls
                     for step in new_crawl_steps[crawl_id]
                 ]
                 if steps:
-                    self._append_internal(
+                    self._append(
                         CRAWL_STEPS_TABLE,
                         [_crawl_step_values(value) for value in steps],
                     )
 
             made_changes = bool(
                 new_documents
+                or new_urls
                 or new_artifacts
                 or element_paths
                 or replacement_documents
@@ -458,6 +571,10 @@ class CatalogueService:
                         "new_documents": len(new_documents),
                         "new_artifacts": len(new_artifacts),
                         "new_crawls": len(new_crawls),
+                        "new_urls": len(new_urls),
+                        "crawl_attempts": sum(
+                            len(value) for value in new_crawl_attempts.values()
+                        ),
                         "crawl_steps": sum(
                             len(value) for value in new_crawl_steps.values()
                         ),
@@ -507,6 +624,18 @@ class CatalogueService:
         )
         row = _one_or_none(rows, identity=f"artifact_id {artifact_id!r}")
         return ArtifactRecord.model_validate(row) if row is not None else None
+
+    def get_urls(self, url_ids: Sequence[str]) -> dict[str, UrlRecord]:
+        rows = self._lookup_rows_by_identity("urls", "url_id", url_ids)
+        result: dict[str, UrlRecord] = {}
+        for row in rows:
+            url = UrlRecord.model_validate(row)
+            if url.url_id in result:
+                raise CatalogueConflictError(
+                    f"catalogue contains duplicate rows for url_id {url.url_id!r}"
+                )
+            result[url.url_id] = url
+        return result
 
     def get_artifacts(
         self,
@@ -580,14 +709,14 @@ class CatalogueService:
         if limit <= 0:
             raise CatalogueValidationError("limit must be greater than zero")
         conditions = [
-            "normalized_url = $normalized_url",
+            "requested_url_id = $requested_url_id",
             "policy_config_hash = $policy_config_hash",
             "outcome = 'success'",
             "document_id IS NOT NULL",
             "(status_code IS NULL OR status_code BETWEEN 200 AND 399)",
         ]
         params: dict[str, object] = {
-            "normalized_url": normalized_url,
+            "requested_url_id": UrlRecord.from_normalized_url(normalized_url).url_id,
             "policy_config_hash": policy_config_hash,
             "limit": limit,
         }
@@ -797,7 +926,7 @@ class CatalogueService:
             return {}
         placeholders = ", ".join("?" for _ in unique)
         rows = self._fetch_rows(
-            f"SELECT * FROM {self._internal_table(CRAWL_STEPS_TABLE)} "
+            f"SELECT * FROM {self._table(CRAWL_STEPS_TABLE)} "
             f"WHERE crawl_id IN ({placeholders}) "
             "ORDER BY crawl_id, attempt_number, step_ordinal",
             unique,
@@ -805,6 +934,25 @@ class CatalogueService:
         grouped: dict[UUID, list[CrawlStepRecord]] = {}
         for row in rows:
             record = _crawl_step_from_row(row)
+            grouped.setdefault(record.crawl_id, []).append(record)
+        return {crawl_id: tuple(values) for crawl_id, values in grouped.items()}
+
+    def _lookup_batch_crawl_attempts(
+        self, crawl_ids: Sequence[UUID]
+    ) -> dict[UUID, tuple[CrawlAttemptRecord, ...]]:
+        unique = sorted(set(crawl_ids), key=str)
+        if not unique:
+            return {}
+        placeholders = ", ".join("?" for _ in unique)
+        rows = self._fetch_rows(
+            f"SELECT * FROM {self._table(CRAWL_ATTEMPTS_TABLE)} "
+            f"WHERE crawl_id IN ({placeholders}) "
+            "ORDER BY crawl_id, attempt_number",
+            unique,
+        )
+        grouped: dict[UUID, list[CrawlAttemptRecord]] = {}
+        for row in rows:
+            record = CrawlAttemptRecord.model_validate(row)
             grouped.setdefault(record.crawl_id, []).append(record)
         return {crawl_id: tuple(values) for crawl_id, values in grouped.items()}
 
@@ -821,15 +969,20 @@ def _artifact_values(artifact: ArtifactRecord) -> dict[str, object]:
     return artifact.model_dump(mode="python")
 
 
+def _url_values(url: UrlRecord) -> dict[str, object]:
+    return url.model_dump(mode="python")
+
+
 def _crawl_values(crawl: CrawlRecord) -> dict[str, object]:
     values = crawl.model_dump(mode="python")
     values["policy_config_json"] = json.dumps(
         values["policy_config_json"], separators=(",", ":"), sort_keys=True
     )
-    values["acquisition_attempts_json"] = json.dumps(
-        values["acquisition_attempts_json"], separators=(",", ":"), sort_keys=True
-    )
     return values
+
+
+def _crawl_attempt_values(attempt: CrawlAttemptRecord) -> dict[str, object]:
+    return attempt.model_dump(mode="python")
 
 
 def _crawl_step_values(step: CrawlStepRecord) -> dict[str, object]:
@@ -867,6 +1020,34 @@ def _validate_crawl_steps(
                 "crawl completion step attempt and ordinal must be unique"
             )
         identities.add(identity)
+
+
+def _validate_crawl_attempts(
+    crawl: CrawlRecord, attempts: tuple[CrawlAttemptRecord, ...]
+) -> None:
+    if [value.attempt_number for value in attempts] != list(
+        range(1, len(attempts) + 1)
+    ):
+        raise CatalogueValidationError(
+            "crawl attempts must be ordered and contiguous from attempt 1"
+        )
+    if any(value.crawl_id != crawl.crawl_id for value in attempts):
+        raise CatalogueValidationError("crawl attempt crawl_id must match its crawl")
+
+
+def _validate_url_identity(url: UrlRecord) -> None:
+    expected = UrlRecord.from_normalized_url(url.normalized_url)
+    if url != expected:
+        raise CatalogueValidationError(
+            "URL rows must match the SHA-256 identity and canonical decomposition"
+        )
+
+
+def _validate_canonical_url(existing: UrlRecord, proposed: UrlRecord) -> None:
+    if existing != proposed:
+        raise CatalogueConflictError(
+            f"url_id {existing.url_id!r} already has different canonical metadata"
+        )
 
 
 def _validate_canonical_document(
@@ -937,8 +1118,6 @@ def _crawl_from_row(row: dict[str, Any]) -> CrawlRecord:
     values = dict(row)
     if isinstance(values.get("policy_config_json"), str):
         values["policy_config_json"] = json.loads(values["policy_config_json"])
-    if isinstance(values.get("acquisition_attempts_json"), str):
-        values["acquisition_attempts_json"] = json.loads(values["acquisition_attempts_json"])
     return CrawlRecord.model_validate(values)
 
 

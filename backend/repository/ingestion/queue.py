@@ -28,8 +28,10 @@ import zstandard
 
 from repository.catalogue import (
     CatalogueWriteResult,
+    CrawlAttemptRecord,
     CrawlRecord,
     CrawlStepRecord,
+    UrlRecord,
 )
 from runtime.catalogue_queue import (
     DEAD_LETTER_STREAM,
@@ -51,6 +53,8 @@ class IngestionJob(BaseModel):
     request_id: str
     enqueued_at: datetime
     crawl: CrawlRecord
+    urls: tuple[UrlRecord, ...]
+    crawl_attempts: tuple[CrawlAttemptRecord, ...]
     crawl_steps: tuple[CrawlStepRecord, ...] | None = ()
 
 
@@ -82,6 +86,8 @@ class IngestionState(BaseModel):
     request_id: str
     status: Literal["pending", "succeeded", "failed"]
     crawl: CrawlRecord
+    urls: tuple[UrlRecord, ...]
+    crawl_attempts: tuple[CrawlAttemptRecord, ...]
     crawl_steps: tuple[CrawlStepRecord, ...] | None = ()
     enqueued_at: datetime
     updated_at: datetime
@@ -246,6 +252,8 @@ async def ensure_pending_ingestion(
     *,
     request_id: str,
     crawl: CrawlRecord,
+    urls: tuple[UrlRecord, ...],
+    crawl_attempts: tuple[CrawlAttemptRecord, ...],
     crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
 ) -> IngestionState:
     """Create pending state once, retaining the first frozen crawl envelope."""
@@ -255,6 +263,8 @@ async def ensure_pending_ingestion(
         request_id=request_id,
         status="pending",
         crawl=crawl,
+        urls=urls,
+        crawl_attempts=crawl_attempts,
         crawl_steps=crawl_steps,
         enqueued_at=now,
         updated_at=now,
@@ -416,6 +426,8 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
                 results,
                 request_id=dead_letter.job.request_id,
                 crawl=dead_letter.job.crawl,
+                urls=dead_letter.job.urls,
+                crawl_attempts=dead_letter.job.crawl_attempts,
                 crawl_steps=dead_letter.job.crawl_steps,
             )
             if recovered.status == "succeeded":
@@ -501,6 +513,8 @@ class IngestionQueueClient:
         self,
         crawl: CrawlRecord,
         *,
+        urls: tuple[UrlRecord, ...],
+        crawl_attempts: tuple[CrawlAttemptRecord, ...],
         request_id: str | None = None,
         crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
     ) -> CatalogueWriteResult:
@@ -510,6 +524,8 @@ class IngestionQueueClient:
         state = await self._pending_state(
             request_id=request_id,
             crawl=crawl,
+            urls=urls,
+            crawl_attempts=crawl_attempts,
             crawl_steps=crawl_steps,
         )
         if state.status != "pending":
@@ -521,6 +537,8 @@ class IngestionQueueClient:
         self,
         crawl: CrawlRecord,
         *,
+        urls: tuple[UrlRecord, ...],
+        crawl_attempts: tuple[CrawlAttemptRecord, ...],
         request_id: str | None = None,
         crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
     ) -> None:
@@ -530,6 +548,8 @@ class IngestionQueueClient:
         state = await self._pending_state(
             request_id=request_id,
             crawl=crawl,
+            urls=urls,
+            crawl_attempts=crawl_attempts,
             crawl_steps=crawl_steps,
         )
         if state.status != "pending" or state.published_at is not None:
@@ -538,6 +558,8 @@ class IngestionQueueClient:
             request_id=state.request_id,
             enqueued_at=state.enqueued_at,
             crawl=state.crawl,
+            urls=state.urls,
+            crawl_attempts=state.crawl_attempts,
             crawl_steps=state.crawl_steps,
         )
         payload = job.model_dump_json().encode()
@@ -567,6 +589,8 @@ class IngestionQueueClient:
         *,
         request_id: str,
         crawl: CrawlRecord,
+        urls: tuple[UrlRecord, ...],
+        crawl_attempts: tuple[CrawlAttemptRecord, ...],
         crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
     ) -> IngestionState:
         self._require_connected()
@@ -574,6 +598,8 @@ class IngestionQueueClient:
             self.results,
             request_id=request_id,
             crawl=crawl,
+            urls=urls,
+            crawl_attempts=crawl_attempts,
             crawl_steps=crawl_steps,
         )
 
@@ -585,6 +611,8 @@ class IngestionQueueClient:
             request_id=state.request_id,
             enqueued_at=state.enqueued_at,
             crawl=state.crawl,
+            urls=state.urls,
+            crawl_attempts=state.crawl_attempts,
             crawl_steps=state.crawl_steps,
         )
         poll_seconds = get_float("ATLAS_INGEST_RESULT_POLL_SECONDS")

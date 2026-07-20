@@ -3,13 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from ducklake_cdc_client import CDCClient, DMLConsumer
-
-from config import get_str
+from ducklake_cdc_client import DMLConsumer
 
 from materialization.definitions import active_definitions, scope_job
 from materialization.queue import SCOPE_LIVE_SUBJECT
 from repository.catalogue import Catalogue, catalogue_from_env
+from repository.catalogue.cdc import validate_cdc_extension
 from repository.ingestion.health import HealthMonitor
 from runtime.catalogue_lane import run_catalogue_operation
 from runtime.resource_governor import (
@@ -72,88 +71,84 @@ async def _run_active_crawl_planner(
     catalogue = await _run_governed(
         resource_grants, "cdc-open-catalogue", catalogue_from_env
     )
-    consumer = None
+    consumers: dict[str, DMLConsumer] = {}
     try:
         await _run_governed(
             resource_grants,
             "cdc-validate-extension",
-            _validate_cdc_extension,
+            validate_cdc_extension,
             catalogue,
         )
-        start_at = await _run_governed(
-            resource_grants, "cdc-latest-snapshot", catalogue.latest_snapshot
-        )
-        if start_at is None:
-            raise RuntimeError("DuckLake has no snapshot for crawl materialization planning")
-        consumer = await _run_governed(
+        definitions = await asyncio.to_thread(active_definitions, live=True)
+        starts = _required_consumer_starts(definitions)
+        if not starts:
+            return
+        consumers = await _run_governed(
             resource_grants,
-            "cdc-open-consumer",
-            _open_crawl_planner_consumer,
+            "cdc-open-planner-consumers",
+            _open_planner_consumers,
             catalogue,
-            start_at,
-            "use",
+            starts,
         )
         if monitor is not None:
             monitor.subsystem_ready("cdc_crawl_planner")
         while not stop.is_set():
             definitions = await asyncio.to_thread(active_definitions, live=True)
             if not definitions:
+                await _drop_unused_consumers(
+                    catalogue,
+                    consumers,
+                    required=set(),
+                    resource_grants=resource_grants,
+                )
                 return
-            batch = await _run_governed(
-                resource_grants,
-                "cdc-read",
-                consumer.read,
-                max_snapshots=100,
-            )
-            if batch is None:
-                window = await _run_governed(
+            required = set(_required_consumer_starts(definitions))
+            if required != set(consumers):
+                await _drop_unused_consumers(
+                    catalogue,
+                    consumers,
+                    required=required,
+                    resource_grants=resource_grants,
+                )
+                return
+            saw_changes = False
+            for kind in tuple(consumers):
+                consumer = consumers[kind]
+                batch = await _run_governed(
                     resource_grants,
-                    "cdc-window",
-                    consumer.window,
+                    f"cdc-read-{kind}",
+                    consumer.read,
                     max_snapshots=100,
                 )
-                if window.terminal and window.terminal_at_snapshot is not None:
-                    boundary = window.terminal_at_snapshot
-                    await _run_governed(
-                        resource_grants,
-                        "cdc-close-consumer",
-                        _close_consumer, catalogue, consumer, drop=True
-                    )
-                    consumer = await _run_governed(
-                        resource_grants,
-                        "cdc-reopen-consumer",
-                        _open_crawl_planner_consumer,
+                if batch is None:
+                    replacement = await _advance_terminal_consumer(
                         catalogue,
-                        boundary,
-                        "error",
+                        consumer,
+                        kind=kind,
+                        resource_grants=resource_grants,
                     )
-                    logging.info(
-                        "advanced crawl materialization planner across schema boundary %s",
-                        boundary,
-                    )
-                else:
-                    await _wait(stop, 1)
-                continue
-            crawl_scopes = {
-                (str(change.values["crawl_id"]), change.values.get("document_id"))
-                for change in batch.changes
-                if change.kind.value in {"insert", "update_postimage"}
-                and change.values.get("crawl_id")
-            }
-            for crawl_id, document_id in crawl_scopes:
-                for scope in _crawl_triggered_scopes(
-                    definitions, crawl_id=crawl_id, document_id=document_id
-                ):
+                    if replacement is not None:
+                        consumers[kind] = replacement
+                    continue
+                saw_changes = True
+                scopes = (
+                    _crawl_batch_scopes(definitions, batch)
+                    if kind == "crawl"
+                    else _url_batch_scopes(definitions, batch)
+                )
+                for scope in scopes:
                     await jetstream.publish(
                         SCOPE_LIVE_SUBJECT,
                         scope.model_dump_json().encode(),
                         headers={"Nats-Msg-Id": scope.operation_id},
                     )
-            await _run_governed(
-                resource_grants, "cdc-commit-position", batch.commit
-            )
+                await _run_governed(
+                    resource_grants, f"cdc-commit-{kind}-position", batch.commit
+                )
+            if not saw_changes:
+                await _wait(stop, 1)
     finally:
-        if consumer is not None:
+        for consumer in consumers.values():
             await _run_governed(
                 resource_grants,
                 "cdc-release-consumer",
@@ -182,17 +177,127 @@ def _open_crawl_planner_consumer(
     ).open()
 
 
-def _validate_cdc_extension(catalogue: Catalogue) -> None:
-    """Load and validate the image-installed community CDC extension."""
+def _open_url_planner_consumer(
+    catalogue: Catalogue, start_at: int, on_exists: str
+) -> DMLConsumer:
+    return DMLConsumer(
+        catalogue.lake,
+        "atlas-url-materialization-planner",
+        connection=catalogue.connection,
+        table=f"{catalogue.config.schema}.urls",
+        mode="changes",
+        start_at=start_at,
+        on_exists=on_exists,
+        lease_policy="error",
+    ).open()
 
-    catalogue.connection.execute("LOAD ducklake_cdc")
-    client = CDCClient(catalogue.lake, install_extension=False)
-    actual = client.version()
-    expected = get_str("ATLAS_DUCKLAKE_CDC_VERSION")
-    if actual != expected:
-        raise RuntimeError(
-            f"DuckLake CDC version mismatch: expected {expected!r}, got {actual!r}"
+
+def _open_planner_consumers(
+    catalogue: Catalogue,
+    starts: dict[str, int],
+) -> dict[str, DMLConsumer]:
+    consumers: dict[str, DMLConsumer] = {}
+    try:
+        if "crawl" in starts:
+            consumers["crawl"] = _open_crawl_planner_consumer(
+                catalogue,
+                starts["crawl"],
+                "use",
+            )
+        if "url" in starts:
+            consumers["url"] = _open_url_planner_consumer(
+                catalogue,
+                starts["url"],
+                "use",
+            )
+        return consumers
+    except Exception:
+        for consumer in consumers.values():
+            _close_consumer(catalogue, consumer, drop=False)
+        raise
+
+
+def _required_consumer_starts(definitions) -> dict[str, int]:
+    starts: dict[str, int] = {}
+    crawl_starts = [
+        definition.activation_snapshot
+        for definition in definitions
+        if definition.scope_kind in {"crawl", "document"}
+    ]
+    if crawl_starts:
+        starts["crawl"] = min(crawl_starts)
+    url_starts = [
+        definition.activation_snapshot
+        for definition in definitions
+        if definition.scope_kind == "url"
+    ]
+    if url_starts:
+        starts["url"] = min(url_starts)
+    return starts
+
+
+async def _drop_unused_consumers(
+    catalogue: Catalogue,
+    consumers: dict[str, DMLConsumer],
+    *,
+    required: set[str],
+    resource_grants,
+) -> None:
+    for kind in set(consumers) - required:
+        consumer = consumers.pop(kind)
+        await _run_governed(
+            resource_grants,
+            f"cdc-drop-{kind}-consumer",
+            _close_consumer,
+            catalogue,
+            consumer,
+            drop=True,
         )
+
+
+async def _advance_terminal_consumer(
+    catalogue: Catalogue,
+    consumer: DMLConsumer,
+    *,
+    kind: str,
+    resource_grants,
+) -> DMLConsumer | None:
+    window = await _run_governed(
+        resource_grants,
+        f"cdc-{kind}-window",
+        consumer.window,
+        max_snapshots=100,
+    )
+    if not window.terminal or window.terminal_at_snapshot is None:
+        return None
+    boundary = window.terminal_at_snapshot
+    await _run_governed(
+        resource_grants,
+        f"cdc-close-{kind}-consumer",
+        _close_consumer,
+        catalogue,
+        consumer,
+        drop=True,
+    )
+    opener = (
+        _open_crawl_planner_consumer
+        if kind == "crawl"
+        else _open_url_planner_consumer
+    )
+    replacement = await _run_governed(
+        resource_grants,
+        f"cdc-reopen-{kind}-consumer",
+        opener,
+        catalogue,
+        boundary,
+        "error",
+    )
+    logging.info(
+        "advanced %s materialization planner across schema boundary %s",
+        kind,
+        boundary,
+    )
+    return replacement
 
 
 async def _run_blocking(function, *args, **kwargs):
@@ -229,4 +334,42 @@ def _crawl_triggered_scopes(definitions, *, crawl_id: str, document_id):
         for definition in definitions
         if definition.scope_kind == "crawl"
         or (definition.scope_kind == "document" and document_id is not None)
+    ]
+
+
+def _crawl_batch_scopes(definitions, batch):
+    crawl_scopes = {
+        (str(change.values["crawl_id"]), change.values.get("document_id"))
+        for change in batch.changes
+        if change.kind.value in {"insert", "update_postimage"}
+        and change.values.get("crawl_id")
+    }
+    return [
+        scope
+        for crawl_id, document_id in crawl_scopes
+        for scope in _crawl_triggered_scopes(
+            definitions,
+            crawl_id=crawl_id,
+            document_id=document_id,
+        )
+    ]
+
+
+def _url_batch_scopes(definitions, batch):
+    url_ids = {
+        str(change.values["url_id"])
+        for change in batch.changes
+        if change.kind.value in {"insert", "update_postimage"}
+        and change.values.get("url_id")
+    }
+    return [
+        scope_job(
+            definition,
+            url_id,
+            "live",
+            document_id=None,
+        )
+        for url_id in url_ids
+        for definition in definitions
+        if definition.scope_kind == "url"
     ]

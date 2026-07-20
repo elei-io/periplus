@@ -26,7 +26,7 @@ export type CreateCatalogueMaterializationInput = {
   name: string
   display_name?: string
   description?: string
-  scope_kind: "document" | "crawl"
+  scope_kind: "url" | "document" | "crawl"
   scope_column: string
   backfill_scopes_per_minute?: number
   partition_column?: string

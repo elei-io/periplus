@@ -5,7 +5,7 @@ import unittest
 from uuid import uuid4
 
 from materialization.queue import MaterializationScopeJob
-from repository.catalogue.records import CrawlRecord
+from repository.catalogue.records import CrawlRecord, UrlRecord
 
 
 class GraphRepositoryContractTests(unittest.TestCase):
@@ -19,8 +19,9 @@ class GraphRepositoryContractTests(unittest.TestCase):
             graph_node_id=identifiers[3],
             crawl_request_id=identifiers[4],
             source_edge_id=identifiers[5],
-            requested_url="https://example.com",
-            normalized_url="https://example.com/",
+            requested_url_id=UrlRecord.from_normalized_url(
+                "https://example.com/"
+            ).url_id,
             captured_at=datetime.now(UTC),
             policy_config_json={},
             policy_config_hash="a" * 64,

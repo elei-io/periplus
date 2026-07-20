@@ -21,9 +21,16 @@ from ducklake_client import (
     S3Storage,
 )
 
-from tests.catalogue_helpers import seed_system_macros
+from tests.catalogue_helpers import crawl_url_evidence, seed_system_macros
+from repository.catalogue import UrlRecord
 from dom import encode_html
-from repository.catalogue import Catalogue, CatalogueConfig, CatalogueConfigError, catalogue_config_from_env
+from repository.catalogue import (
+    Catalogue,
+    CatalogueConfig,
+    CatalogueConfigError,
+    CatalogueSchemaError,
+    catalogue_config_from_env,
+)
 from repository.catalogue import CrawlRecord, CrawlStepRecord
 from repository.catalogue.service import CatalogueService
 from repository.catalogue.schema import (
@@ -144,16 +151,22 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 catalogue=catalogue,
                 staging_root=root / "staging",
             )
+            crawl_id = uuid4()
+            requested_url, urls, attempts = crawl_url_evidence(
+                crawl_id,
+                "https://reports.example.com/reports/atlas.pdf",
+                captured_at=datetime(2026, 7, 14, tzinfo=UTC),
+                final_url="https://reports.example.com/reports/atlas.pdf",
+            )
             crawl = CrawlRecord(
-                crawl_id=uuid4(),
+                crawl_id=crawl_id,
                 artifact_id=identity.artifact_id,
                 graph_id=uuid4(),
                 graph_run_id=uuid4(),
                 graph_node_id=uuid4(),
                 crawl_request_id=uuid4(),
-                requested_url="https://reports.example.com/reports/atlas.pdf",
-                normalized_url="https://reports.example.com/reports/atlas.pdf",
-                final_url="https://reports.example.com/reports/atlas.pdf",
+                requested_url_id=requested_url.url_id,
+                final_url_id=requested_url.url_id,
                 captured_at=datetime(2026, 7, 14, tzinfo=UTC),
                 status_code=200,
                 response_media_type="application/pdf",
@@ -162,15 +175,19 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 policy_config_json={},
                 outcome="success",
             )
-            prepared = ingestor.prepare_from_raw(crawl=crawl)
+            prepared = ingestor.prepare_from_raw(
+                crawl=crawl, urls=urls, crawl_attempts=attempts
+            )
             result = ingestor.commit_prepared_batch([prepared])[0]
             stored = ingestor.catalogue_service.get_artifact(identity.artifact_id)
             unique_pdfs = catalogue.connection.execute(
                 "SELECT count(DISTINCT c.artifact_id) "
                 "FROM atlas.main.crawls c "
                 "JOIN atlas.main.artifacts a USING (artifact_id) "
-                "WHERE c.url_registrable_domain = 'example.com' "
-                "AND c.url_path LIKE '/reports/%' "
+                "JOIN atlas.main.urls u ON u.url_id = "
+                "coalesce(c.final_url_id, c.requested_url_id) "
+                "WHERE u.registrable_domain = 'example.com' "
+                "AND u.path LIKE '/reports/%' "
                 "AND c.response_media_type = 'application/pdf'"
             ).fetchone()[0]
             ingestor.close()
@@ -203,16 +220,21 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 staging_root=root / "staging",
             )
             ingestor.store_raw(html)
+            crawl_id = uuid4()
+            requested_url, urls, attempts = crawl_url_evidence(
+                crawl_id,
+                captured_at=datetime(2026, 7, 14, tzinfo=UTC),
+                final_url="https://example.com/",
+            )
             crawl = CrawlRecord(
-                crawl_id=uuid4(),
+                crawl_id=crawl_id,
                 document_id=f"sha256:{digest}",
                 graph_id=uuid4(),
                 graph_run_id=uuid4(),
                 graph_node_id=uuid4(),
                 crawl_request_id=uuid4(),
-                requested_url="https://example.com/",
-                normalized_url="https://example.com/",
-                final_url="https://example.com/",
+                requested_url_id=requested_url.url_id,
+                final_url_id=requested_url.url_id,
                 captured_at=datetime(2026, 7, 14, tzinfo=UTC),
                 status_code=200,
                 duration_ms=12,
@@ -248,13 +270,15 @@ class CatalogueBootstrapTests(unittest.TestCase):
             )
             prepared = ingestor.prepare_from_raw(
                 crawl=crawl,
+                urls=urls,
+                crawl_attempts=attempts,
                 crawl_steps=(step,),
             )
             ingestor.commit_prepared_batch([prepared])
             stored_crawl = ingestor.catalogue_service.get_crawl(crawl.crawl_id)
             stored_step = catalogue.connection.execute(
                 "SELECT method, duration_ms, before_element_count, "
-                "after_element_count FROM atlas._atlas.crawl_steps "
+                "after_element_count FROM atlas.main.crawl_steps "
                 "WHERE crawl_id = ?",
                 [crawl.crawl_id],
             ).fetchone()
@@ -266,6 +290,8 @@ class CatalogueBootstrapTests(unittest.TestCase):
             )
             rebuilt = ingestor.prepare_from_raw(
                 crawl=crawl,
+                urls=urls,
+                crawl_attempts=(),
                 crawl_steps=None,
             )
             self.assertTrue(rebuilt.replace_projection)
@@ -291,20 +317,23 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 catalogue.bootstrap()
                 with catalogue.lake.transaction():
                     catalogue.connection.execute(
+                        "INSERT INTO atlas.main.urls VALUES ("
+                        "sha256('https://x/'), 'https://x/', 'https', 'x', "
+                        "443, 'x', '/', '')"
+                    )
+                    catalogue.connection.execute(
                         "INSERT INTO atlas.main.crawls ("
                         "crawl_id, document_id, graph_id, graph_run_id, graph_node_id, "
                         "crawl_request_id, source_crawl_id, source_edge_id, "
-                        "requested_url, normalized_url, final_url, page_url, "
-                        "url_scheme, url_host, url_port, url_registrable_domain, "
-                        "url_path, url_query, captured_at, status_code, duration_ms, "
+                        "requested_url_id, final_url_id, captured_at, "
+                        "status_code, duration_ms, "
                         "policy_config_hash, policy_config_json, crawl_policy_id, "
                         "outcome, failure_code, failure_stage, "
-                        "failure_retryable, failure_detail, acquisition_attempts_json"
-                        ") SELECT uuid(), NULL, uuid(), uuid(), uuid(), uuid(), NULL, NULL, 'https://x', "
-                        "'https://x/', NULL, 'https://x/', 'https', 'x', 443, 'x', '/', "
-                        "'', now(), NULL, NULL, repeat('a', 64), "
+                        "failure_retryable, failure_detail"
+                        ") SELECT uuid(), NULL, uuid(), uuid(), uuid(), uuid(), NULL, NULL, "
+                        "sha256('https://x/'), NULL, now(), NULL, NULL, repeat('a', 64), "
                         "'{}', NULL, 'failed', 'expected_failure', 'request', "
-                        "false, 'expected failure', '[]'"
+                        "false, 'expected failure'"
                     )
                     catalogue.set_commit_message(
                         author="Atlas test",
@@ -423,6 +452,51 @@ class CatalogueBootstrapTests(unittest.TestCase):
         self.assertEqual(compacted[0].files_processed, 4)
         self.assertEqual(compacted[0].files_created, 1)
 
+    def test_compaction_ignores_single_files_in_distinct_physical_buckets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = CatalogueConfig(
+                catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                storage=DiskStorage(root / "lake"),
+                attach=DuckLakeAttachConfig(data_inlining_row_limit=0),
+            )
+            with Catalogue(config) as catalogue:
+                catalogue.bootstrap()
+                catalogue.connection.execute(
+                    "CALL atlas.set_option('data_inlining_row_limit', 0, "
+                    "schema => 'main', table_name => 'elements')"
+                )
+                for index, document_id in enumerate(
+                    ("sha256:physical-bucket-a", "sha256:physical-bucket-b")
+                ):
+                    catalogue.lake.table.append(
+                        "elements",
+                        [
+                            {
+                                "document_id": document_id,
+                                "element_index": index,
+                                "parent_index": None,
+                                "subtree_end_index": index,
+                                "depth": 0,
+                                "tag": "p",
+                                "namespace_uri": None,
+                                "attributes": {},
+                                "text_direct": document_id,
+                                "text_tail": "",
+                            }
+                        ],
+                        schema_name="main",
+                    )
+
+                compacted = CatalogueService(catalogue).compact_small_files(
+                    minimum_files=2,
+                    maximum_input_file_bytes=1024 * 1024,
+                    target_file_bytes=2 * 1024 * 1024,
+                    maximum_compacted_files=2,
+                )
+
+        self.assertEqual(compacted, [])
+
     def test_resolve_url_uses_standard_reference_resolution(self) -> None:
         base = "http://a/b/c/d;p?q"
         references = (
@@ -453,7 +527,7 @@ class CatalogueBootstrapTests(unittest.TestCase):
             [row[0] for row in result],
             [urljoin(base, reference) for reference in references],
         )
-    def test_bootstrap_migrates_v1_crawl_document_id_to_nullable(self) -> None:
+    def test_bootstrap_rejects_an_existing_incompatible_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = CatalogueConfig(
@@ -474,18 +548,8 @@ class CatalogueBootstrapTests(unittest.TestCase):
                     )
 
             with Catalogue(config) as catalogue:
-                catalogue.bootstrap()
-                info = catalogue.lake.table.info(
-                    "crawls",
-                    schema_name="main",
-                    include_summary=False,
-                    include_row_count=False,
-                    include_snapshots=False,
-                )
-
-            self.assertTrue(
-                next(column for column in info.columns if column.name == "document_id").nullable
-            )
+                with self.assertRaises(CatalogueSchemaError):
+                    catalogue.bootstrap()
 
     def test_bootstrap_is_idempotent_and_attributes_are_queryable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -551,7 +615,7 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 "MAP(VARCHAR, VARCHAR)",
             )
 
-    def test_bootstrap_rewrites_legacy_element_files_into_bucket_layout(self) -> None:
+    def test_bootstrap_rejects_a_replaced_legacy_elements_table(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = CatalogueConfig(
@@ -576,29 +640,10 @@ class CatalogueBootstrapTests(unittest.TestCase):
                         "ALTER TABLE atlas.main.elements_legacy RENAME TO elements"
                     )
 
-                catalogue.bootstrap()
-                row_count = catalogue.connection.execute(
-                    "SELECT count(*) FROM atlas.main.elements"
-                ).fetchone()[0]
-                files = catalogue.connection.execute(
-                    """
-                    SELECT count(*), count(df.partition_id)
-                    FROM __ducklake_metadata_atlas.ducklake_data_file AS df
-                    JOIN __ducklake_metadata_atlas.ducklake_table AS t
-                      ON t.table_id = df.table_id
-                    JOIN __ducklake_metadata_atlas.ducklake_schema AS s
-                      ON s.schema_id = t.schema_id
-                    WHERE s.schema_name = 'main' AND t.table_name = 'elements'
-                      AND s.end_snapshot IS NULL AND t.end_snapshot IS NULL
-                      AND df.end_snapshot IS NULL
-                    """
-                ).fetchone()
+                with self.assertRaises(CatalogueSchemaError):
+                    catalogue.bootstrap()
 
-            self.assertEqual(row_count, 1)
-            self.assertGreater(files[0], 0)
-            self.assertEqual(files[0], files[1])
-
-    def test_bootstrap_rewrites_previous_element_bucket_layout(self) -> None:
+    def test_bootstrap_rejects_a_superseded_element_bucket_layout(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = CatalogueConfig(
@@ -635,30 +680,9 @@ class CatalogueBootstrapTests(unittest.TestCase):
                         "RENAME TO elements"
                     )
 
-                catalogue.bootstrap()
-                partitioning = catalogue.connection.execute(
-                    """
-                    SELECT pc.transform
-                    FROM __ducklake_metadata_atlas.ducklake_partition_info AS pi
-                    JOIN __ducklake_metadata_atlas.ducklake_partition_column AS pc
-                      USING (partition_id, table_id)
-                    JOIN __ducklake_metadata_atlas.ducklake_table AS t
-                      USING (table_id)
-                    JOIN __ducklake_metadata_atlas.ducklake_schema AS s
-                      USING (schema_id)
-                    WHERE s.schema_name = 'main'
-                      AND t.table_name = 'elements'
-                      AND s.end_snapshot IS NULL
-                      AND t.end_snapshot IS NULL
-                      AND pi.end_snapshot IS NULL
-                    """
-                ).fetchall()
-                row_count = catalogue.connection.execute(
-                    "SELECT count(*) FROM atlas.main.elements"
-                ).fetchone()[0]
-
-            self.assertEqual(partitioning, [("bucket(256)",)])
-            self.assertEqual(row_count, 1)
+                catalogue._configure_layout()
+                with self.assertRaises(CatalogueSchemaError):
+                    catalogue._validate_layout()
 
     def test_dom_macros_are_persistent_and_follow_projected_dom_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -726,46 +750,21 @@ class CatalogueBootstrapTests(unittest.TestCase):
             )
             self.assertEqual(row_results, [("b", "bold"), ("script", "x < y")])
 
-    def test_crawl_urls_are_decomposed_without_nullable_derived_fields(self) -> None:
-        crawl = CrawlRecord(
-            crawl_id=UUID(int=1),
-            document_id=None,
-            graph_id=UUID(int=2),
-            graph_run_id=UUID(int=3),
-            graph_node_id=UUID(int=4),
-            crawl_request_id=UUID(int=5),
-            source_crawl_id=UUID(int=6),
-            source_edge_id=UUID(int=7),
-            requested_url="https://docs.example.co.jp/start",
-            normalized_url="https://docs.example.co.jp/start",
-            final_url="https://www.example.co.jp:8443/guides/sql?q=ducklake",
-            captured_at=datetime(2026, 7, 11, tzinfo=UTC),
-            policy_config_json={},
-            policy_config_hash="a" * 64,
-            outcome="failed",
-            failure_code="expected_failure",
-            failure_stage="request",
-            failure_retryable=False,
-            failure_detail="failed",
+    def test_url_dimension_is_content_addressed_and_decomposed(self) -> None:
+        url = UrlRecord.from_normalized_url(
+            "https://www.example.co.jp:8443/guides/sql?q=ducklake"
         )
 
-        self.assertEqual(crawl.page_url, crawl.final_url)
-        self.assertEqual(crawl.url_scheme, "https")
-        self.assertEqual(crawl.url_host, "www.example.co.jp")
-        self.assertEqual(crawl.url_port, 8443)
-        self.assertEqual(crawl.url_registrable_domain, "example.co.jp")
-        self.assertEqual(crawl.url_path, "/guides/sql")
-        self.assertEqual(crawl.url_query, "q=ducklake")
-        for name in (
-            "page_url",
-            "url_scheme",
-            "url_host",
-            "url_port",
-            "url_registrable_domain",
-            "url_path",
-            "url_query",
-        ):
-            self.assertFalse(CRAWL_COLUMNS[name].nullable)
+        self.assertEqual(
+            url.url_id,
+            hashlib.sha256(url.normalized_url.encode()).hexdigest(),
+        )
+        self.assertEqual(url.scheme, "https")
+        self.assertEqual(url.host, "www.example.co.jp")
+        self.assertEqual(url.port, 8443)
+        self.assertEqual(url.registrable_domain, "example.co.jp")
+        self.assertEqual(url.path, "/guides/sql")
+        self.assertEqual(url.query, "q=ducklake")
 
 
 if __name__ == "__main__":

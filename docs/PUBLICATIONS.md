@@ -154,13 +154,19 @@ never more than one active attachment for the definition.
 
 ## Live scoped materialization
 
-Scoped incremental maintenance evaluates one bounded unit at a time. The first supported scope is an
-immutable document; crawl scope follows the same model.
+Scoped incremental maintenance evaluates one bounded immutable unit at a time. URL, document, and
+crawl identities use the same replacement model.
 
 ```text
+URL scope      → $url_id
 document scope → $document_id
 crawl scope    → $crawl_id
 ```
+
+URL scope is discovered from durable `urls` inserts rather than inferred from crawl cardinality.
+It is appropriate for results functionally determined by immutable URL identity. A rollup that
+changes whenever another crawl observes the same URL is not URL-scoped; it must retain the crawl
+identity that drives each immutable observation.
 
 A definition needs both:
 
@@ -224,9 +230,10 @@ scope identities directly through JetStream. Atlas does not persist a fan-out he
 and does not split computed results into a second commit queue.
 
 One supervised materialization worker owns a scope from evaluation through coverage. It requests a
-`live` or `backfill` Resource Governor bundle, may stage bounded deterministic Arrow in repository
-object storage, verifies the checksum, fences the active definition, atomically replaces the scope
-in DuckLake, records coverage, and acknowledges the original scope message. It shares no process,
+`live` or `backfill` Resource Governor bundle, writes bounded Arrow to process-local staging, verifies
+the checksum, fences the active definition, atomically replaces the scope in DuckLake, records
+coverage, and acknowledges the original scope message. A failed process recomputes the retained
+scope delivery; local Arrow is not a durable workflow boundary. The worker shares no process,
 connection, or health state with base ingestion, while both deployments consume their assigned
 shares of the same governed catalogue and object-store resources.
 
@@ -237,7 +244,7 @@ position and planning records are diagnostics, never analytical truth.
 
 Every scope job identifies `materialization_id`, `definition_revision_id`, `scope_kind`, and
 `scope_id` together with its active query revision, target, scope column, and live/backfill source.
-This identity is also the retry-stable operation and staging identity.
+This identity is also the retry-stable operation identity.
 Before evaluation and again under a Postgres row lock before commit, Atlas verifies that the
 materialization is active, its source attachment and definition revision are current, its target and
 scope contract still match, and the corresponding live or backfill switch remains enabled. Stale
@@ -304,7 +311,7 @@ External pipeline retries are downstream behavior and are not Atlas rematerializ
 | NATS JetStream/KV | Live and backfill scope delivery, operation leases, expiring resource grants, current worker progress, retries, and dead letters |
 | DuckLake | Authoritative SQL views, typed materialization tables, durable scope coverage, snapshots, row history, DDL history, and crawl evidence |
 | DuckLake CDC metadata | Durable publication consumer subscriptions, leases, cursors, and audit state |
-| Repository objects | Immutable raw HTML and bounded temporary Arrow staging objects |
+| Repository objects | Immutable raw HTML |
 | Resource Governor | Current catalogue/object-store admission decisions; never materialization completion |
 
 Prometheus and progress events remain observational and never become correctness state.

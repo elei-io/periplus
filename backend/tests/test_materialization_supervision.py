@@ -18,7 +18,10 @@ from materialization.live import (
     _close_consumer,
     _crawl_triggered_scopes,
     _open_crawl_planner_consumer,
+    _open_url_planner_consumer,
+    _required_consumer_starts,
     _run_blocking,
+    _url_batch_scopes,
     run_crawl_planner,
 )
 from repository.ingestion.health import HealthMonitor
@@ -167,6 +170,82 @@ class MaterializationSupervisionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(scopes), 1)
         self.assertEqual(scopes[0].document_id, "sha256:document")
+
+    def test_url_planner_consumes_typed_url_changes(self) -> None:
+        catalogue = SimpleNamespace(
+            lake=MagicMock(),
+            connection=MagicMock(),
+            config=SimpleNamespace(schema="main"),
+        )
+        with patch("materialization.live.DMLConsumer") as consumer_type:
+            consumer = consumer_type.return_value
+            consumer.open.return_value = consumer
+
+            opened = _open_url_planner_consumer(catalogue, 42, "use")
+
+        self.assertIs(opened, consumer)
+        consumer_type.assert_called_once_with(
+            catalogue.lake,
+            "atlas-url-materialization-planner",
+            connection=catalogue.connection,
+            table="main.urls",
+            mode="changes",
+            start_at=42,
+            on_exists="use",
+            lease_policy="error",
+        )
+
+    def test_url_change_publishes_only_url_scopes(self) -> None:
+        url_definition = SimpleNamespace(
+            id=uuid4(),
+            definition_revision_id=uuid4(),
+            name="url_features",
+            scope_kind="url",
+            scope_column="url_id",
+        )
+        crawl_definition = SimpleNamespace(
+            id=uuid4(),
+            definition_revision_id=uuid4(),
+            name="page_links",
+            scope_kind="crawl",
+            scope_column="crawl_id",
+        )
+        batch = SimpleNamespace(
+            changes=[
+                SimpleNamespace(
+                    kind=SimpleNamespace(value="insert"),
+                    values={"url_id": "a" * 64},
+                )
+            ]
+        )
+
+        scopes = _url_batch_scopes(
+            [url_definition, crawl_definition],
+            batch,
+        )
+
+        self.assertEqual(len(scopes), 1)
+        self.assertEqual(scopes[0].scope_kind, "url")
+        self.assertEqual(scopes[0].scope_id, "a" * 64)
+        self.assertIsNone(scopes[0].document_id)
+
+    def test_planner_opens_only_consumers_required_by_live_scopes(self) -> None:
+        definitions = [
+            SimpleNamespace(scope_kind="crawl", activation_snapshot=20),
+            SimpleNamespace(scope_kind="document", activation_snapshot=10),
+        ]
+
+        self.assertEqual(
+            _required_consumer_starts(definitions),
+            {"crawl": 10},
+        )
+        definitions.append(
+            SimpleNamespace(scope_kind="url", activation_snapshot=30)
+        )
+        self.assertEqual(
+            _required_consumer_starts(definitions),
+            {"crawl": 10, "url": 30},
+        )
 
     async def test_crawl_planner_stays_idle_without_live_definitions(self) -> None:
         stop = asyncio.Event()

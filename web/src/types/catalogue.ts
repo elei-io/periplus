@@ -178,7 +178,7 @@ export type CatalogueMaterializationRecord = {
   view_reference_id: string
   view_uuid: string
   view_name: string
-  scope_kind: "document" | "crawl"
+  scope_kind: "url" | "document" | "crawl"
   scope_column: string
   activation_snapshot: number
   live_enabled: boolean

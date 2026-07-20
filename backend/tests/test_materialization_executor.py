@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
-from materialization.executor import _process_scope
+from materialization.executor import _commit_scope_fenced, _process_scope
 from materialization.queue import MaterializationScopeJob
 from materialization.queue import record_materialization_processing_failure
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
+from observability import materialization_metrics
 from runtime.resource_governor import ResourceCapacityUnavailable
 
 
@@ -46,6 +49,80 @@ def scope_message(job: MaterializationScopeJob, *, deliveries: int = 1):
 
 
 class MaterializationExecutorTests(unittest.IsolatedAsyncioTestCase):
+    def test_subphase_timer_records_success_and_failure(self) -> None:
+        with (
+            patch(
+                "observability.materialization_metrics.time.perf_counter",
+                side_effect=[1.0, 2.5, 4.0, 7.0],
+            ),
+            patch(
+                "observability.materialization_metrics.operation"
+            ) as record_operation,
+        ):
+            with materialization_metrics.operation_timer("compute.test"):
+                pass
+            with self.assertRaisesRegex(RuntimeError, "failed"):
+                with materialization_metrics.operation_timer("commit.test"):
+                    raise RuntimeError("failed")
+
+        self.assertEqual(
+            record_operation.call_args_list,
+            [
+                unittest.mock.call(
+                    phase="compute.test",
+                    outcome="succeeded",
+                    duration_seconds=1.5,
+                ),
+                unittest.mock.call(
+                    phase="commit.test",
+                    outcome="failed",
+                    duration_seconds=3.0,
+                ),
+            ],
+        )
+
+    def test_local_result_survives_commit_retries_then_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "scope.arrow"
+            path.write_bytes(b"arrow")
+            staged = SimpleNamespace(
+                arrow_path=path,
+                scope=SimpleNamespace(operation_id="scope"),
+            )
+
+            @contextmanager
+            def lock(*_args, **_kwargs):
+                yield
+
+            attempts = 0
+
+            def commit(_catalogue, _staged):
+                nonlocal attempts
+                attempts += 1
+                self.assertTrue(path.exists())
+                if attempts == 1:
+                    raise RuntimeError("retry")
+                return "committed"
+
+            def retry(function, **_kwargs):
+                try:
+                    function()
+                except RuntimeError:
+                    self.assertTrue(path.exists())
+                return function()
+
+            with (
+                patch("materialization.executor.operation_lock", new=lock),
+                patch("materialization.executor.commit_scope", new=commit),
+                patch("materialization.executor.run_with_catalogue_retry", new=retry),
+            ):
+                self.assertEqual(
+                    _commit_scope_fenced(MagicMock(), staged), "committed"
+                )
+
+            self.assertEqual(attempts, 2)
+            self.assertFalse(path.exists())
+
     async def test_processing_failure_counter_is_independent_of_deliveries(self) -> None:
         class Bucket:
             value = None
@@ -80,7 +157,7 @@ class MaterializationExecutorTests(unittest.IsolatedAsyncioTestCase):
         job = scope_job()
         message = scope_message(job)
         attempts = SimpleNamespace(delete=AsyncMock())
-        staged = object()
+        staged = SimpleNamespace(arrow_path=MagicMock())
         catalogue_calls = AsyncMock(side_effect=[False, staged, "committed"])
 
         with (
@@ -96,6 +173,7 @@ class MaterializationExecutorTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(catalogue_calls.await_count, 3)
+        staged.arrow_path.unlink.assert_called_once_with(missing_ok=True)
         message.ack.assert_awaited_once()
         message.nak.assert_not_awaited()
         message.term.assert_not_awaited()

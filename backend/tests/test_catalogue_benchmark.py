@@ -43,20 +43,25 @@ class CatalogueBenchmarkTests(unittest.TestCase):
                 seed_all_catalogue_fixtures(catalogue)
                 catalogue.connection.execute(
                     """
+                    INSERT INTO atlas.main.urls VALUES (
+                        sha256('https://example.com/'), 'https://example.com/',
+                        'https', 'example.com', 443, 'example.com', '/', ''
+                    )
+                    """
+                )
+                catalogue.connection.execute(
+                    """
                     INSERT INTO atlas.main.crawls (
                         crawl_id, document_id, graph_id, graph_run_id, graph_node_id,
-                        crawl_request_id, requested_url, normalized_url,
-                        final_url, page_url, url_scheme, url_host, url_port,
-                        url_registrable_domain, url_path, url_query, captured_at,
+                        crawl_request_id, requested_url_id, final_url_id, captured_at,
                         status_code, policy_config_hash,
-                        policy_config_json, outcome, acquisition_attempts_json
+                        policy_config_json, outcome
                     ) VALUES (
                         uuid(), 'doc', uuid(), uuid(), uuid(), uuid(),
-                        'https://example.com/', 'https://example.com/',
-                        'https://example.com/', 'https://example.com/', 'https',
-                        'example.com', 443, 'example.com', '/', '',
+                        sha256('https://example.com/'),
+                        sha256('https://example.com/'),
                         TIMESTAMPTZ '2026-07-14 12:00:00+00', 200,
-                        repeat('a', 64), '{}', 'success', '[]'
+                        repeat('a', 64), '{}', 'success'
                     )
                     """
                 )

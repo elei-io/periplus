@@ -37,22 +37,24 @@ class CatalogueOperationLockTests(unittest.TestCase):
             timeout=30.0,
         )
 
-    def test_repository_batch_fences_each_crawl_and_content_identity(self) -> None:
+    def test_repository_batch_fences_each_crawl_content_and_url_identity(self) -> None:
         catalogue = self._catalogue()
         crawl_ids = [UUID(int=value) for value in range(1, 101)]
         content_ids = [f"sha256:{value:064x}" for value in range(100)]
+        url_ids = [f"{value:064x}" for value in range(100)]
 
         with patch("repository.catalogue.operations.CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS", 30.0):
             with repository_commit_lock(
                 catalogue,
                 crawl_ids=crawl_ids,
                 content_ids=content_ids,
+                url_ids=url_ids,
             ):
                 pass
 
         catalogue.lake.fence_set.assert_called_once()
         args = catalogue.lake.fence_set.call_args.args
-        self.assertEqual(len(args), 201)
+        self.assertEqual(len(args), 301)
         self.assertEqual(args[0], FenceSpec.shared("catalogue-maintenance"))
         self.assertEqual(
             {spec.keys for spec in args[1:101]},
@@ -60,7 +62,22 @@ class CatalogueOperationLockTests(unittest.TestCase):
         )
         self.assertEqual(
             {spec.keys for spec in args[101:]},
+            {
+                ("content", content_id)
+                for content_id in content_ids
+            }
+            | {
+                ("url", url_id)
+                for url_id in url_ids
+            },
+        )
+        self.assertEqual(
+            {spec.keys for spec in args[101:201]},
             {("content", content_id) for content_id in content_ids},
+        )
+        self.assertEqual(
+            {spec.keys for spec in args[201:]},
+            {("url", url_id) for url_id in url_ids},
         )
 
     def test_maintenance_uses_the_exclusive_barrier(self) -> None:

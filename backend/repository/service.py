@@ -18,9 +18,11 @@ from repository.catalogue import (
     CatalogueService,
     CatalogueValidationError,
     CatalogueWriteResult,
+    CrawlAttemptRecord,
     CrawlRecord,
     CrawlStepRecord,
     DocumentRecord,
+    UrlRecord,
     catalogue_from_env,
 )
 from dom import (
@@ -29,6 +31,7 @@ from dom import (
     PARSER_OPTIONS_HASH,
     PARSER_VERSION,
     GroupedLinkPayload,
+    links_from_html,
     write_dom_parquet,
 )
 from repository.objects.config import object_store_from_env, staging_root_from_env
@@ -108,6 +111,8 @@ class RepositoryIngestor:
         self,
         *,
         crawl: CrawlRecord,
+        urls: tuple[UrlRecord, ...],
+        crawl_attempts: tuple[CrawlAttemptRecord, ...],
         crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
         known_documents: Mapping[str, DocumentRecord] | None = None,
     ) -> PreparedIngestion:
@@ -137,6 +142,8 @@ class RepositoryIngestor:
                 document=None,
                 artifact=artifact,
                 crawl=crawl,
+                urls=urls,
+                crawl_attempts=crawl_attempts,
                 crawl_steps=crawl_steps,
             )
 
@@ -144,6 +151,8 @@ class RepositoryIngestor:
             return PreparedIngestion(
                 document=None,
                 crawl=crawl,
+                urls=urls,
+                crawl_attempts=crawl_attempts,
                 crawl_steps=crawl_steps,
             )
 
@@ -160,6 +169,11 @@ class RepositoryIngestor:
             else known_documents.get(crawl.document_id)
         )
         captured_html = self.html_repository.read(object_key)
+        urls = self._urls_with_links(
+            captured_html=captured_html,
+            crawl=crawl,
+            urls=urls,
+        )
         if existing is not None and self._projection_is_current(existing):
             self.html_repository.verify(
                 object_key,
@@ -171,6 +185,8 @@ class RepositoryIngestor:
             return PreparedIngestion(
                 document=existing,
                 crawl=crawl,
+                urls=urls,
+                crawl_attempts=crawl_attempts,
                 crawl_steps=crawl_steps,
             )
 
@@ -218,12 +234,36 @@ class RepositoryIngestor:
         return PreparedIngestion(
             document=document,
             crawl=crawl,
+            urls=urls,
+            crawl_attempts=crawl_attempts,
             crawl_steps=crawl_steps,
             elements_path=projection.path,
             element_count=projection.element_count,
             staged_bytes=projection.size_bytes,
             replace_projection=existing is not None,
         )
+
+    @staticmethod
+    def _urls_with_links(
+        *,
+        captured_html: str,
+        crawl: CrawlRecord,
+        urls: tuple[UrlRecord, ...],
+    ) -> tuple[UrlRecord, ...]:
+        by_id = {url.url_id: url for url in urls}
+        page_url_id = crawl.final_url_id or crawl.requested_url_id
+        page_url = by_id.get(page_url_id)
+        if page_url is None:
+            raise ValueError("crawl effective URL must be present in its URL dimension rows")
+        links = links_from_html(
+            captured_html,
+            page_url=page_url.normalized_url,
+        )
+        for group in links.values():
+            for link in group:
+                target_url = UrlRecord.from_normalized_url(str(link["target_url"]))
+                by_id.setdefault(target_url.url_id, target_url)
+        return tuple(by_id.values())
 
     def commit_prepared_batch(
         self,
@@ -241,6 +281,8 @@ class RepositoryIngestor:
                         document=value.document,
                         artifact=value.artifact,
                         crawl=value.crawl,
+                        urls=value.urls,
+                        crawl_attempts=value.crawl_attempts,
                         crawl_steps=value.crawl_steps,
                         elements_path=value.elements_path,
                         replace_projection=value.replace_projection,
@@ -432,6 +474,15 @@ class RepositoryIngestor:
                 projection_rebuilt=False,
                 repository_snapshot=repository_snapshot,
             )
+        url_ids = tuple(
+            value
+            for value in (crawl.requested_url_id, crawl.final_url_id)
+            if value is not None
+        )
+        stored_urls = self.catalogue_service.get_urls(url_ids)
+        effective_url = stored_urls.get(crawl.final_url_id or crawl.requested_url_id)
+        if effective_url is None:
+            raise CatalogueValidationError("crawl effective URL is missing")
         document = self.catalogue_service.get_document(crawl.document_id)
         if document is None:
             if require_complete:
@@ -490,6 +541,8 @@ class RepositoryIngestor:
                     PreparedIngestion(
                         document=document,
                         crawl=crawl,
+                        urls=tuple(stored_urls.values()),
+                        crawl_attempts=(),
                         crawl_steps=None,
                         elements_path=projection.path,
                         element_count=projection.element_count,
@@ -507,7 +560,7 @@ class RepositoryIngestor:
             links=(
                 self.catalogue_service.get_projected_links(
                     document.document_id,
-                    page_url=crawl.page_url,
+                    page_url=effective_url.normalized_url,
                 )
                 if include_links
                 else None
@@ -574,6 +627,8 @@ class RepositoryCacheHit:
 class PreparedIngestion:
     document: DocumentRecord | None
     crawl: CrawlRecord
+    urls: tuple[UrlRecord, ...]
+    crawl_attempts: tuple[CrawlAttemptRecord, ...]
     crawl_steps: tuple[CrawlStepRecord, ...] | None = ()
     artifact: ArtifactRecord | None = None
     elements_path: Path | None = None

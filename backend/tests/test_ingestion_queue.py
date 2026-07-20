@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import unittest
 from uuid import uuid4
 
-from repository.catalogue.records import CrawlRecord
+from repository.catalogue.records import CrawlRecord, UrlRecord
 from repository.ingestion.queue import (
     IngestionState,
     record_ingestion_processing_failure,
@@ -25,8 +25,9 @@ class IngestionAttemptTests(unittest.IsolatedAsyncioTestCase):
             graph_run_id=uuid4(),
             graph_node_id=uuid4(),
             crawl_request_id=uuid4(),
-            requested_url="https://example.com",
-            normalized_url="https://example.com/",
+            requested_url_id=UrlRecord.from_normalized_url(
+                "https://example.com/"
+            ).url_id,
             captured_at=datetime.now(UTC),
             policy_config_json={},
             policy_config_hash="a" * 64,
@@ -40,6 +41,8 @@ class IngestionAttemptTests(unittest.IsolatedAsyncioTestCase):
             request_id="request",
             status="pending",
             crawl=crawl,
+            urls=(),
+            crawl_attempts=(),
             enqueued_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
         )

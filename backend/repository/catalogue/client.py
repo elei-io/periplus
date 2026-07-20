@@ -16,6 +16,8 @@ from repository.catalogue.exceptions import CatalogueSchemaError
 from repository.catalogue.schema import (
     ARTIFACT_COLUMNS,
     CATALOGUE_SCHEMA_VERSION,
+    CRAWL_ATTEMPT_COLUMNS,
+    CRAWL_ATTEMPTS_TABLE,
     CRAWL_COLUMNS,
     CRAWL_STEP_COLUMNS,
     CRAWL_STEPS_TABLE,
@@ -23,6 +25,7 @@ from repository.catalogue.schema import (
     INTERNAL_SCHEMA,
     MATERIALIZATION_COVERAGE_COLUMNS,
     MATERIALIZATION_COVERAGE_TABLE,
+    URL_COLUMNS,
     expected_columns,
     expected_internal_columns,
 )
@@ -75,6 +78,11 @@ class Catalogue:
             self.lake.schema.create(INTERNAL_SCHEMA)
             self.lake.schema.create("_atlas_materializations")
             self.lake.table.create(
+                "urls",
+                schema_name=self.config.schema,
+                **URL_COLUMNS,
+            )
+            self.lake.table.create(
                 "artifacts",
                 schema_name=self.config.schema,
                 **ARTIFACT_COLUMNS,
@@ -90,13 +98,18 @@ class Catalogue:
                 **CRAWL_COLUMNS,
             )
             self.lake.table.create(
+                CRAWL_ATTEMPTS_TABLE,
+                schema_name=self.config.schema,
+                **CRAWL_ATTEMPT_COLUMNS,
+            )
+            self.lake.table.create(
                 "elements",
                 schema_name=self.config.schema,
                 **ELEMENT_COLUMNS,
             )
             self.lake.table.create(
                 CRAWL_STEPS_TABLE,
-                schema_name=INTERNAL_SCHEMA,
+                schema_name=self.config.schema,
                 **CRAWL_STEP_COLUMNS,
             )
             self.lake.table.create(
@@ -105,9 +118,7 @@ class Catalogue:
                 **MATERIALIZATION_COVERAGE_COLUMNS,
             )
         self._use_catalogue_schema_if_available()
-        self._migrate_schema()
         self._configure_layout()
-        self._migrate_layout()
         self._configure_inlining()
         self._validate_physical_schema()
 
@@ -130,23 +141,50 @@ class Catalogue:
             self.connection.execute(f"USE {namespace}")
 
     def _configure_layout(self) -> None:
-        """Apply the one physical partition contract for new crawl data."""
+        """Apply the physical partition and sort contract for new data."""
 
-        crawls = ".".join(
-            _quote_identifier(value)
-            for value in (self.config.alias, self.config.schema, "crawls")
-        )
-        self.connection.execute(
-            f"ALTER TABLE {crawls} SET PARTITIONED BY ("
-            "year(captured_at), month(captured_at), day(captured_at))"
-        )
-        elements = ".".join(
-            _quote_identifier(value)
-            for value in (self.config.alias, self.config.schema, "elements")
-        )
+        for table_name, column in (
+            ("crawls", "captured_at"),
+            (CRAWL_ATTEMPTS_TABLE, "started_at"),
+            (CRAWL_STEPS_TABLE, "started_at"),
+        ):
+            table = self._qualified_table(self.config.schema, table_name)
+            self.connection.execute(
+                f"ALTER TABLE {table} SET PARTITIONED BY ("
+                f"year({column}), month({column}), day({column}))"
+            )
+        elements = self._qualified_table(self.config.schema, "elements")
         self.connection.execute(
             f"ALTER TABLE {elements} SET PARTITIONED BY "
             f"(bucket({ELEMENT_PARTITION_BUCKETS}, document_id))"
+        )
+        sort_orders = {
+            "urls": ("url_id",),
+            "artifacts": ("artifact_id",),
+            "documents": ("document_id",),
+            "crawls": ("requested_url_id", "captured_at"),
+            CRAWL_ATTEMPTS_TABLE: ("crawl_id", "attempt_number"),
+            CRAWL_STEPS_TABLE: ("crawl_id", "attempt_number", "step_ordinal"),
+            "elements": ("document_id", "element_index"),
+        }
+        for table_name, columns in sort_orders.items():
+            table = self._qualified_table(self.config.schema, table_name)
+            expressions = ", ".join(_quote_identifier(value) for value in columns)
+            self.connection.execute(
+                f"ALTER TABLE {table} SET SORTED BY ({expressions})"
+            )
+        coverage = self._qualified_table(
+            INTERNAL_SCHEMA, MATERIALIZATION_COVERAGE_TABLE
+        )
+        self.connection.execute(
+            f"ALTER TABLE {coverage} SET SORTED BY "
+            "(definition_revision_id, scope_kind, scope_id, partition_value)"
+        )
+
+    def _qualified_table(self, schema_name: str, table_name: str) -> str:
+        return ".".join(
+            _quote_identifier(value)
+            for value in (self.config.alias, schema_name, table_name)
         )
 
     def _migrate_layout(self) -> None:
@@ -591,7 +629,32 @@ class Catalogue:
 
     def _validate_layout(self) -> None:
         metadata = _quote_identifier(f"__ducklake_metadata_{self.config.alias}")
-        def partitioning(table_name: str):
+        legacy_files = self.connection.execute(
+            f"""
+            SELECT s.schema_name, t.table_name, count(*)
+            FROM {metadata}.ducklake_data_file AS df
+            JOIN {metadata}.ducklake_table AS t ON t.table_id = df.table_id
+            JOIN {metadata}.ducklake_schema AS s ON s.schema_id = t.schema_id
+            JOIN {metadata}.ducklake_partition_info AS pi
+              ON pi.table_id = t.table_id
+            WHERE s.schema_name = ?
+              AND t.table_name IN ('crawls', 'crawl_attempts', 'crawl_steps', 'elements')
+              AND s.end_snapshot IS NULL
+              AND t.end_snapshot IS NULL
+              AND pi.end_snapshot IS NULL
+              AND df.end_snapshot IS NULL
+              AND df.begin_snapshot < pi.begin_snapshot
+            GROUP BY s.schema_name, t.table_name
+            """,
+            [self.config.schema],
+        ).fetchall()
+        if legacy_files:
+            raise CatalogueSchemaError(
+                "greenfield catalogue reset required; active files predate the "
+                f"declared partition contract: {legacy_files!r}"
+            )
+
+        def partitioning(table_name: str, schema_name: str = self.config.schema):
             return self.connection.execute(
                 f"""
             SELECT pc.partition_key_index, c.column_name, pc.transform
@@ -612,7 +675,7 @@ class Catalogue:
               AND s.end_snapshot IS NULL
             ORDER BY pc.partition_key_index
             """,
-                [self.config.schema, table_name],
+                [schema_name, table_name],
             ).fetchall()
 
         crawls = partitioning("crawls")
@@ -626,6 +689,18 @@ class Catalogue:
                 f"catalogue table 'crawls' must be partitioned by "
                 f"year/month/day(captured_at), got {crawls!r}"
             )
+        for table_name in (CRAWL_ATTEMPTS_TABLE, CRAWL_STEPS_TABLE):
+            actual = partitioning(table_name)
+            expected = [
+                (0, "started_at", "year"),
+                (1, "started_at", "month"),
+                (2, "started_at", "day"),
+            ]
+            if actual != expected:
+                raise CatalogueSchemaError(
+                    f"catalogue table {table_name!r} must be partitioned by "
+                    f"year/month/day(started_at), got {actual!r}"
+                )
         elements = partitioning("elements")
         expected_elements = [
             (0, "document_id", f"bucket({ELEMENT_PARTITION_BUCKETS})")
@@ -635,6 +710,70 @@ class Catalogue:
                 "catalogue table 'elements' must be partitioned by "
                 f"bucket({ELEMENT_PARTITION_BUCKETS}, document_id), "
                 f"got {elements!r}"
+            )
+        expected_sorts = {
+            "urls": ("url_id",),
+            "artifacts": ("artifact_id",),
+            "documents": ("document_id",),
+            "crawls": ("requested_url_id", "captured_at"),
+            CRAWL_ATTEMPTS_TABLE: ("crawl_id", "attempt_number"),
+            CRAWL_STEPS_TABLE: ("crawl_id", "attempt_number", "step_ordinal"),
+            "elements": ("document_id", "element_index"),
+        }
+        for table_name, expected in expected_sorts.items():
+            actual = tuple(
+                str(row[0]).strip('"')
+                for row in self.connection.execute(
+                    f"""
+                    SELECT expression
+                    FROM {metadata}.ducklake_sort_info AS si
+                    JOIN {metadata}.ducklake_sort_expression AS se
+                      ON se.sort_id = si.sort_id AND se.table_id = si.table_id
+                    JOIN {metadata}.ducklake_table AS t ON t.table_id = si.table_id
+                    JOIN {metadata}.ducklake_schema AS s ON s.schema_id = t.schema_id
+                    WHERE s.schema_name = ? AND t.table_name = ?
+                      AND si.end_snapshot IS NULL
+                      AND t.end_snapshot IS NULL
+                      AND s.end_snapshot IS NULL
+                    ORDER BY se.sort_key_index
+                    """,
+                    [self.config.schema, table_name],
+                ).fetchall()
+            )
+            if actual != expected:
+                raise CatalogueSchemaError(
+                    f"catalogue table {table_name!r} must be sorted by "
+                    f"{expected!r}, got {actual!r}"
+                )
+        coverage_sort = tuple(
+            str(row[0]).strip('"')
+            for row in self.connection.execute(
+                f"""
+                SELECT expression
+                FROM {metadata}.ducklake_sort_info AS si
+                JOIN {metadata}.ducklake_sort_expression AS se
+                  ON se.sort_id = si.sort_id AND se.table_id = si.table_id
+                JOIN {metadata}.ducklake_table AS t ON t.table_id = si.table_id
+                JOIN {metadata}.ducklake_schema AS s ON s.schema_id = t.schema_id
+                WHERE s.schema_name = ? AND t.table_name = ?
+                  AND si.end_snapshot IS NULL
+                  AND t.end_snapshot IS NULL
+                  AND s.end_snapshot IS NULL
+                ORDER BY se.sort_key_index
+                """,
+                [INTERNAL_SCHEMA, MATERIALIZATION_COVERAGE_TABLE],
+            ).fetchall()
+        )
+        expected_coverage = (
+            "definition_revision_id",
+            "scope_kind",
+            "scope_id",
+            "partition_value",
+        )
+        if coverage_sort != expected_coverage:
+            raise CatalogueSchemaError(
+                "materialization coverage sort contract does not match: "
+                f"expected {expected_coverage!r}, got {coverage_sort!r}"
             )
 
     def _validate_macros(self) -> None:

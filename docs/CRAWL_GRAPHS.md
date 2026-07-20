@@ -66,9 +66,10 @@ The CDP service decides how the page is transported and how browser-fleet capaci
 - `NavigationReadinessWork`: acquired crawl plus optional acquisition-owned navigation package.
 - `EdgeWork`: one bounded SQL evaluation for one source crawl and edge, with a pinned catalogue
   snapshot only when the SQL reads historical state.
-- `CrawlRecord`: immutable DuckLake observation pointing at content plus bounded acquisition-attempt evidence.
-- `_atlas.crawl_steps`: private per-method duration, configuration, stopping, and content-change
-  evidence committed atomically with its crawl.
+- `CrawlRecord`: immutable DuckLake observation pointing at content and requested/final URL identities.
+- `crawl_attempts`: typed, ordered network-attempt evidence committed atomically with its crawl.
+- `crawl_steps`: public per-method duration, configuration, stopping, and content-change evidence
+  committed atomically with its crawl.
 
 Acquisition failures may be retried by redelivery. Retry evidence is retained with the final logical
 crawl so successful recovery does not erase earlier 429 or navigation observations. Invalid work is terminated. A successful worker

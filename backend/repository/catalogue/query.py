@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
-import re
+
 import pyarrow as pa
 from sqlglot import exp, parse
 from sqlglot.errors import ParseError
@@ -48,9 +49,7 @@ _DOM_HELPERS = frozenset({"inner_html", "readable_text", "text_content"})
 _MANAGED_ROW_TABLES = frozenset({"artifacts", "crawls", "documents", "elements"})
 _MAX_DOM_HELPER_INPUT_ROWS = 10_000
 _ABSURD_LIMIT = 100_000
-_INTERACTIVE_SCHEMAS = frozenset(
-    {"main", "macros", "views", "_atlas", "_atlas_materializations"}
-)
+_INTERACTIVE_SCHEMAS = frozenset({"main", "macros", "views"})
 _FORBIDDEN_INTERACTIVE_FUNCTIONS = frozenset(
     {
         "current_setting",
@@ -92,9 +91,7 @@ _FORBIDDEN_INTERACTIVE_RELATION_PREFIXES = (
     "quack_",
     "sqlite_",
 )
-_EXPLAIN_PREFIX = re.compile(
-    r"(?is)\A(?:\s|--[^\n]*(?:\n|\Z)|/\*.*?\*/)*EXPLAIN\b"
-)
+_EXPLAIN_PREFIX = re.compile(r"(?is)\A(?:\s|--[^\n]*(?:\n|\Z)|/\*.*?\*/)*EXPLAIN\b")
 
 
 def classify_select(sql: str) -> exp.Query:
@@ -103,7 +100,9 @@ def classify_select(sql: str) -> exp.Query:
     if not sql.strip():
         raise CatalogueQueryError("SQL must not be empty")
     try:
-        statements = [statement for statement in parse(sql, dialect="duckdb") if statement]
+        statements = [
+            statement for statement in parse(sql, dialect="duckdb") if statement
+        ]
     except ParseError as exc:
         raise CatalogueQueryError(f"invalid SQL: {exc}") from exc
     if len(statements) != 1:
@@ -186,9 +185,7 @@ def validate_interactive_catalogue_statement(
         )
     for function in statement.query.find_all(exp.Func):
         if function.name.lower() in _FORBIDDEN_INTERACTIVE_FUNCTIONS:
-            raise CatalogueQueryError(
-                f"interactive SQL may not call {function.name}"
-            )
+            raise CatalogueQueryError(f"interactive SQL may not call {function.name}")
     return statement
 
 
@@ -240,7 +237,7 @@ def lint_select(sql: str) -> list[CatalogueLintDiagnostic]:
                 severity="warning",
                 message=(
                     f"LIMIT {max(large_limits):,} is unusually large for the interactive SQL "
-                    f"workbench. Consider { _ABSURD_LIMIT:,} rows or fewer."
+                    f"workbench. Consider {_ABSURD_LIMIT:,} rows or fewer."
                 ),
             )
         )
@@ -288,14 +285,21 @@ def _uses_outer_dom_helper(statement: exp.Query) -> bool:
     for function in statement.find_all(exp.Func):
         if function.find_ancestor(exp.CTE) is not None:
             continue
-        name = function.name if isinstance(function, exp.Anonymous) else function.sql_name()
+        name = (
+            function.name
+            if isinstance(function, exp.Anonymous)
+            else function.sql_name()
+        )
         if name.lower() in _DOM_HELPERS:
             return True
     return False
 
 
 def _reads_managed_rows(statement: exp.Query) -> bool:
-    return any(table.name.lower() in _MANAGED_ROW_TABLES for table in statement.find_all(exp.Table))
+    return any(
+        table.name.lower() in _MANAGED_ROW_TABLES
+        for table in statement.find_all(exp.Table)
+    )
 
 
 def _is_single_aggregate(statement: exp.Query) -> bool:
@@ -364,9 +368,7 @@ def prepare_catalogue_query(
 
     statement = classify_select(sql)
     bindings = dict(parameters or {})
-    required = {
-        placeholder.name for placeholder in statement.find_all(exp.Placeholder)
-    }
+    required = {placeholder.name for placeholder in statement.find_all(exp.Placeholder)}
     missing = required - set(bindings)
     if missing:
         names = ", ".join(f"${name}" for name in sorted(missing))

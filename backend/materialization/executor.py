@@ -280,10 +280,19 @@ async def _process_scope(
                     _scope_succeeded, catalogue, job
                 )
                 if not already_committed:
-                    staged = await run_catalogue_operation(compute_scope, job)
-                    await run_catalogue_operation(
-                        _commit_scope_fenced, catalogue, staged
+                    staged = await _run_scope_phase(
+                        "compute", run_catalogue_operation, compute_scope, job
                     )
+                    try:
+                        await _run_scope_phase(
+                            "commit",
+                            run_catalogue_operation,
+                            _commit_scope_fenced,
+                            catalogue,
+                            staged,
+                        )
+                    finally:
+                        staged.arrow_path.unlink(missing_ok=True)
         try:
             await message.ack()
         except Exception as exc:
@@ -369,14 +378,32 @@ def _scope_succeeded(catalogue, job: MaterializationScopeJob) -> bool:
     )
 
 
-def _commit_scope_fenced(catalogue, staged):
-    def attempt():
-        with operation_lock(catalogue, staged.scope.operation_id):
-            return commit_scope(catalogue, staged)
+async def _run_scope_phase(phase, runner, function, *args):
+    started = time.perf_counter()
+    outcome = "failed"
+    try:
+        result = await runner(function, *args)
+        outcome = "succeeded"
+        return result
+    finally:
+        materialization_metrics.operation(
+            phase=phase,
+            outcome=outcome,
+            duration_seconds=time.perf_counter() - started,
+        )
 
-    return run_with_catalogue_retry(
-        attempt, description="materialization scope commit"
-    )
+
+def _commit_scope_fenced(catalogue, staged):
+    try:
+        def attempt():
+            with operation_lock(catalogue, staged.scope.operation_id):
+                return commit_scope(catalogue, staged)
+
+        return run_with_catalogue_retry(
+            attempt, description="materialization scope commit"
+        )
+    finally:
+        staged.arrow_path.unlink(missing_ok=True)
 
 
 def _record_scope_failure_fenced(catalogue, failure) -> bool:

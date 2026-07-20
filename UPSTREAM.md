@@ -167,6 +167,17 @@ the published release; version control retains the history.
 
 No upstream work is currently in progress.
 
+### `TableInfo.sort_specs` is empty for active DuckLake sort orders
+
+- **Atlas caller:** greenfield catalogue bootstrap validation for declared table sort contracts.
+- **Evidence:** DuckLake persists active rows in `ducklake_sort_info` and
+  `ducklake_sort_expression` after `ALTER TABLE ... SET SORTED BY`, but
+  `ducklake-client` 0.8.2 returns an empty `TableInfo.sort_specs` list for the same table.
+- **Smallest useful upstream contract:** make `table.info(...).sort_specs` return the active ordered
+  expressions and cover both DuckDB- and Postgres-backed metadata catalogues.
+- **Atlas status:** validates the authoritative DuckLake metadata relations directly until the
+  typed client result is fixed.
+
 ## Released, awaiting Atlas adoption
 
 ### Native nested/list types in typed schema definitions

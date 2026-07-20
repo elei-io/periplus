@@ -82,8 +82,10 @@ def put_for_view(
     source_view = CatalogueViewStore(store.catalogue).get(reference.ducklake_view_uuid)
     if source_view is None:
         raise LookupError("DuckLake view not found.")
-    if scope_kind not in {"document", "crawl"}:
-        raise MaterializationError("Materialization requires document or crawl scope.")
+    if scope_kind not in {"url", "document", "crawl"}:
+        raise MaterializationError(
+            "Materialization requires URL, document, or crawl scope."
+        )
     if scope_column not in source_view.columns:
         raise MaterializationError(
             f"Discriminator column {scope_column!r} is not an output of {source_view.qualified_name}."
@@ -105,6 +107,11 @@ def put_for_view(
     )
     if partition_column:
         table = store.set_daily_partition(name=name, column=partition_column)
+    table = store.set_scope_sort(
+        name=name,
+        scope_column=scope_column,
+        partition_column=partition_column,
+    )
     wrapper = CatalogueViewStore(store.catalogue).replace(
         current_uuid=source_view.view_uuid,
         sql=_backing_view_sql(store, name),
@@ -270,8 +277,11 @@ def _status(model: CatalogueMaterialization) -> str:
 
 
 def _seed_scope(store: MaterializationStore, scope_kind: str) -> str:
-    source_table = "documents" if scope_kind == "document" else "crawls"
-    identity_column = "document_id" if scope_kind == "document" else "crawl_id"
+    source_table, identity_column = {
+        "url": ("urls", "url_id"),
+        "document": ("documents", "document_id"),
+        "crawl": ("crawls", "crawl_id"),
+    }[scope_kind]
     table = _qualified(store, store.catalogue.config.schema, source_table)
     row = store.catalogue.connection.execute(
         f"SELECT {identity_column} FROM {table} LIMIT 1"

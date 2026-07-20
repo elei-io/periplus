@@ -474,11 +474,14 @@ class CdpAcquisitionTests(unittest.TestCase):
                     repository_pipeline=pipeline,
                 )
             record = pipeline.enqueue_stored.await_args.args[0]
+            urls = pipeline.enqueue_stored.await_args.kwargs["urls"]
+            attempts = pipeline.enqueue_stored.await_args.kwargs["crawl_attempts"]
             crawl_steps = pipeline.enqueue_stored.await_args.kwargs["crawl_steps"]
             self.assertTrue(page.success)
             self.assertEqual(record.outcome, "success")
-            self.assertEqual(len(record.acquisition_attempts_json), 1)
-            self.assertEqual(record.acquisition_attempts_json[0]["status_code"], 200)
+            self.assertGreaterEqual(len(urls), 1)
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(attempts[0].status_code, 200)
             self.assertIsNone(record.failure_code)
             self.assertIsNone(record.failure_stage)
             self.assertIsNone(record.failure_retryable)

@@ -24,18 +24,30 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
       <SidebarHeader className="h-14 shrink-0 justify-center border-b px-3 py-0">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" tooltip="Atlas">
-              <img
-                src={atlasWordmark}
-                alt="Atlas"
-                className="h-5 w-auto group-data-[collapsible=icon]:hidden"
-              />
-              <img
-                src={atlasMark}
-                alt="Atlas"
-                className="hidden size-5 shrink-0 group-data-[collapsible=icon]:block"
-              />
-            </SidebarMenuButton>
+            <SidebarMenuButton
+              size="lg"
+              tooltip="Atlas"
+              render={
+                <a
+                  href="/"
+                  onClick={(event) => {
+                    event.preventDefault()
+                    onNavigate("/")
+                  }}
+                >
+                  <img
+                    src={atlasWordmark}
+                    alt="Atlas"
+                    className="h-5 w-auto group-data-[collapsible=icon]:hidden"
+                  />
+                  <img
+                    src={atlasMark}
+                    alt="Atlas"
+                    className="hidden size-5 shrink-0 group-data-[collapsible=icon]:block"
+                  />
+                </a>
+              }
+            />
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>

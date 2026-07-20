@@ -11,7 +11,7 @@ class ViewMaterializationPut(BaseModel):
     name: str = Field(min_length=1, max_length=63)
     display_name: str | None = Field(default=None, max_length=200)
     description: str | None = Field(default=None, max_length=2_000)
-    scope_kind: Literal["document", "crawl"]
+    scope_kind: Literal["url", "document", "crawl"]
     scope_column: str = Field(min_length=1, max_length=255)
     backfill_scopes_per_minute: int = Field(default=60, ge=1, le=10_000)
     partition_column: str | None = Field(default=None, max_length=63)
@@ -58,7 +58,7 @@ class CatalogueMaterializationRecord(BaseModel):
     view_reference_id: UUID
     view_uuid: UUID
     view_name: str
-    scope_kind: Literal["document", "crawl"]
+    scope_kind: Literal["url", "document", "crawl"]
     scope_column: str
     activation_snapshot: int
     live_enabled: bool

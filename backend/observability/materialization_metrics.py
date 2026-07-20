@@ -1,5 +1,9 @@
 """Prometheus metrics for scoped catalogue materialization work."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+import time
+
 from prometheus_client import Gauge, Histogram
 
 _duration = Histogram(
@@ -26,6 +30,23 @@ _oldest_pending_age = Gauge(
 
 def operation(*, phase: str, outcome: str, duration_seconds: float) -> None:
     _duration.labels(phase, outcome).observe(max(0.0, duration_seconds))
+
+
+@contextmanager
+def operation_timer(phase: str) -> Iterator[None]:
+    """Observe one synchronous materialization subphase."""
+
+    started = time.perf_counter()
+    outcome = "failed"
+    try:
+        yield
+        outcome = "succeeded"
+    finally:
+        operation(
+            phase=phase,
+            outcome=outcome,
+            duration_seconds=time.perf_counter() - started,
+        )
 
 
 def queue_state(

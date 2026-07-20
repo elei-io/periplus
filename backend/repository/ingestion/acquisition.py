@@ -9,7 +9,13 @@ from types import TracebackType
 from uuid import UUID
 
 from observability import repository_metrics
-from repository.catalogue import CrawlRecord, CrawlStepRecord, DocumentRecord
+from repository.catalogue import (
+    CrawlAttemptRecord,
+    CrawlRecord,
+    CrawlStepRecord,
+    DocumentRecord,
+    UrlRecord,
+)
 from repository.ingestion.queue import (
     IngestionQueueClient,
     crawl_ingestion_request_id,
@@ -88,12 +94,16 @@ class AcquisitionPipeline:
         self,
         crawl: CrawlRecord,
         *,
+        urls: tuple[UrlRecord, ...],
+        crawl_attempts: tuple[CrawlAttemptRecord, ...],
         request_id: str | None = None,
         crawl_steps: tuple[CrawlStepRecord, ...] = (),
     ) -> None:
         self._require_running()
         await self.queue.enqueue(
             crawl,
+            urls=urls,
+            crawl_attempts=crawl_attempts,
             request_id=request_id,
             crawl_steps=crawl_steps,
         )
