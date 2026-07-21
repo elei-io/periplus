@@ -25,8 +25,8 @@ const CatalogueWorkbenchPage = lazy(() =>
   }))
 )
 const SearchPage = lazy(() =>
-  import("@/pages/search-page").then((module) => ({
-    default: module.SearchPage,
+  import("@/pages/chat-page").then((module) => ({
+    default: module.ChatPage,
   }))
 )
 const CatalogueViewsPage = lazy(() =>
@@ -115,11 +115,20 @@ function getCurrentPathname() {
   return window.location.pathname
 }
 
+function getCurrentChatId() {
+  return new URLSearchParams(window.location.search).get("chat")
+}
+
 export function App() {
   const [pathname, setPathname] = useState(getCurrentPathname)
+  const [activeChatId, setActiveChatId] = useState(getCurrentChatId)
+  const [chatBusy, setChatBusy] = useState(false)
 
   useEffect(() => {
-    const handlePopState = () => setPathname(getCurrentPathname())
+    const handlePopState = () => {
+      setPathname(getCurrentPathname())
+      setActiveChatId(getCurrentChatId())
+    }
 
     window.addEventListener("popstate", handlePopState)
     return () => window.removeEventListener("popstate", handlePopState)
@@ -140,18 +149,28 @@ export function App() {
   const isFullScreenWorkbench = pathname === "/catalogue/workbench"
 
   const handleNavigate = useCallback((href: string) => {
-    const targetPathname = new URL(href, window.location.origin).pathname
+    const target = new URL(href, window.location.origin)
+    const targetPathname = target.pathname
     if (href === `${window.location.pathname}${window.location.search}`) {
       return
     }
 
     window.history.pushState(null, "", href)
     setPathname(targetPathname)
+    setActiveChatId(target.searchParams.get("chat"))
   }, [])
 
   const page = (() => {
     if (pathname === "/") {
-      return <SearchPage />
+      return (
+        <SearchPage
+          chatId={activeChatId}
+          onBusyChange={setChatBusy}
+          onChatChange={(chatId: string | null) =>
+            handleNavigate(chatId ? `/?chat=${chatId}` : "/")
+          }
+        />
+      )
     }
 
     if (activeItem.href === "/catalogue/workbench") {
@@ -252,6 +271,8 @@ export function App() {
   return (
     <SidebarProvider>
       <AppSidebar
+        activeChatId={activeChatId}
+        chatBusy={chatBusy}
         pathname={pathname === "/" ? pathname : activeItem.href}
         onNavigate={handleNavigate}
       />
@@ -261,12 +282,12 @@ export function App() {
           <div className="flex min-w-0 flex-col">
             <span className="truncate text-sm font-medium">
               {pathname === "/"
-                ? "Search"
+                ? "Atlas chat"
                 : (activeItem.title ?? activeItem.name)}
             </span>
             <span className="text-xs text-muted-foreground">
               {pathname === "/"
-                ? "Explore retained crawl evidence"
+                ? "Analyze retained evidence or plan new acquisition"
                 : (activeItem.description ?? activeGroup.name)}
             </span>
           </div>
@@ -285,7 +306,9 @@ export function App() {
             className={
               isFullScreenWorkbench
                 ? "relative z-10 flex h-full min-h-0 min-w-0"
-                : "relative z-10 flex min-h-full min-w-0 pb-10"
+                : pathname === "/"
+                  ? "relative z-10 flex min-h-full min-w-0"
+                  : "relative z-10 flex min-h-full min-w-0 pb-10"
             }
           >
             <Suspense fallback={<PageFallback />}>{page}</Suspense>

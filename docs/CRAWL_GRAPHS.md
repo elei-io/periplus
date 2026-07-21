@@ -19,8 +19,28 @@ scoped SQL edges derive later URL inputs from durable crawl evidence.
 9. The request settles after its edges settle; the run settles after all requests settle. Catalogue
    ingestion proceeds independently and does not hold the run open.
 
+Every graph run freezes a positive `max_crawls` budget. Initial roots must fit inside that budget.
+Graph-wide admission atomically stops accepting newly discovered URLs when the request count reaches
+the budget; already admitted requests finish normally. The run records whether traversal actually
+reached the limit.
+
 There are no action-specific traversal loops, transport routes, provider profiles, shadow trials,
 or direct-HTTP fallback in Atlas.
+
+## Seeded graph library
+
+Source-controlled definitions under `fixtures/crawl_graphs/` provide immutable single-page,
+same-origin, same-site, cross-site, and all-links graphs at depths one through three. The library
+also includes cross-site-then-same-site, same-site-then-cross-site, and recursive same-site query
+traversal. Setup validates and seeds those complete node, edge, SQL, and deduplication definitions.
+User-created graphs remain editable and appear beside the seeded library.
+Depth is the number of link transitions beyond each supplied root. Cross-site scope is evaluated
+relative to the current source page at every hop.
+
+The agent's live-page reconnaissance capability uses the seeded `single-page` graph with a crawl
+budget of one. It does not introduce another acquisition path. The API observes the exact crawl's
+terminal ingestion state in NATS; neither graph traversal nor the acquisition worker waits for
+catalogue ingestion.
 
 ### Historical consistency contract
 
@@ -76,20 +96,31 @@ crawl so successful recovery does not erase earlier 429 or navigation observatio
 ACK requires retained HTML, durable ingestion publication, and durable navigation-readiness
 publication. A run cancellation settles every nonterminal request. Ingestion terminal state and
 dead letters remain independently observable and never retroactively rewrite traversal status.
-Execution state is operational rather than historical: request and edge-evaluation detail has a
-seven-day default retention window, and compact run summaries and progress have a thirty-day
-default window. The durable crawl and DOM evidence remains in DuckLake after those NATS records
-expire.
+HTTP 429 responses immediately apply a shared hostname cooldown using `Retry-After` when present;
+repeated 5xx responses apply a weaker capped cooldown. The state is shared across graph runs and
+acquisition replicas, and cooled hostnames remain buffered before domain permits and local lanes.
+Every run has one deployment-wide wall-clock ceiling, `ATLAS_GRAPH_MAX_RUN_SECONDS`, which defaults
+to seven days. Expiry stops admission and settles every nonterminal request. Execution state is
+operational rather than historical: request, edge-evaluation, and sharded admission-deduplication
+detail, compact run summaries, and progress have a thirty-day default retention window. The durable
+crawl and DOM evidence remains in DuckLake after those NATS records expire.
+Terminal request settlement also updates a bounded per-run failure summary in NATS, grouped by
+stage, failure code, and HTTP status with one recent example. Operational metrics read that compact
+summary directly; they do not scan crawl requests or join catalogue ingestion state on demand.
 
 ## Scaling
 
 Scale Atlas acquisition-worker replicas for coordination throughput. Domain policies limit website
 pressure independently. Scale the CDP service and its browser farm for transport capacity. Atlas
 continues to govern its own object-store, ingestion, DuckLake, and materialization pressure.
-Mixed-host runs interleave initial roots and each bounded edge result by normalized hostname.
-Acquisition workers retain a bounded hostname-aware delivery window and assign local execution
+Initial roots and edge traversal share a bounded per-run acquisition window instead of publishing
+their complete frontier. A durable root cursor refills available slots across worker restarts.
+Mixed-host runs interleave initial roots and each bounded edge result by normalized
+hostname. Acquisition workers retain a bounded run- and hostname-aware delivery window and assign local execution
 lanes only after the distributed domain permit is available, preventing one saturated hostname's
 politeness waiters from blocking ready work for another hostname.
+If that run window defers admission after edge SQL has selected URLs, the selected result is retained
+with the run's navigation objects and reused across worker redelivery and restart.
 
 ## Schedules
 

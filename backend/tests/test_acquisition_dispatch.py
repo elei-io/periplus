@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+from actions.crawl.service import PlaywrightRuntimeLost
 from repository.ingestion.health import HealthMonitor
 from runtime.graph_queue import CrawlRequest
 from runtime.resource_governor import ResourceCapacityUnavailable
@@ -17,16 +18,18 @@ from workers.acquisition import (
     _PreAcquiredDomainPermit,
     _dispatch_buffered_crawls,
     _keep_buffered_deliveries_alive,
+    _raise_background_failure,
     _release_buffered_deliveries,
     _run_presence_until_stopped,
+    _watch_playwright_driver,
 )
 
 
-def buffered(hostname: str) -> _BufferedCrawl:
+def buffered(hostname: str, *, run_id=None) -> _BufferedCrawl:
     now = datetime.now(UTC)
     request = CrawlRequest(
         id=uuid4(),
-        graph_run_id=uuid4(),
+        graph_run_id=run_id or uuid4(),
         node_id=uuid4(),
         url=f"https://{hostname}/",
         effective_policy_snapshot_json={},
@@ -48,15 +51,30 @@ def buffered(hostname: str) -> _BufferedCrawl:
 class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_round_robin_preserves_per_hostname_order(self) -> None:
         buffer = _HostnameDispatchBuffer(5)
-        first = buffered("a.example")
-        second = buffered("a.example")
-        other = buffered("b.example")
+        run_id = uuid4()
+        first = buffered("a.example", run_id=run_id)
+        second = buffered("a.example", run_id=run_id)
+        other = buffered("b.example", run_id=run_id)
         buffer.add(first)
         buffer.add(second)
         buffer.add(other)
 
         self.assertIs(buffer.pop(), first)
         self.assertIs(buffer.pop(), other)
+        self.assertIs(buffer.pop(), second)
+
+    async def test_round_robin_gives_each_run_a_turn_before_reusing_one(self) -> None:
+        buffer = _HostnameDispatchBuffer(5)
+        large_run = uuid4()
+        first = buffered("a.example", run_id=large_run)
+        second = buffered("b.example", run_id=large_run)
+        small = buffered("c.example", run_id=uuid4())
+        buffer.add(first)
+        buffer.add(second)
+        buffer.add(small)
+
+        self.assertIs(buffer.pop(), first)
+        self.assertIs(buffer.pop(), small)
         self.assertIs(buffer.pop(), second)
 
     async def test_deferred_hostname_is_skipped_until_its_retry_time(self) -> None:
@@ -86,6 +104,10 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         processor = AsyncMock()
         with (
+            patch(
+                "workers.acquisition.domain_backoff_seconds",
+                new=AsyncMock(return_value=0),
+            ),
             patch("workers.acquisition._try_domain_permit", side_effect=permit),
             patch(
                 "workers.acquisition._process_dispatched_crawl",
@@ -121,6 +143,10 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
+                "workers.acquisition.domain_backoff_seconds",
+                new=AsyncMock(return_value=0),
+            ),
+            patch(
                 "workers.acquisition._try_domain_permit",
                 new=AsyncMock(return_value=None),
             ),
@@ -147,6 +173,47 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(launched)
         self.assertEqual(processor.await_count, 3)
         self.assertEqual(len(buffer), 0)
+
+    async def test_shared_domain_backoff_is_checked_before_the_permit(self) -> None:
+        buffer = _HostnameDispatchBuffer(2)
+        blocked = buffered("blocked.example")
+        ready = buffered("ready.example")
+        buffer.add(blocked)
+        buffer.add(ready)
+        active: set[asyncio.Task] = set()
+        permit = AsyncMock(return_value=None)
+        processor = AsyncMock()
+
+        async def backoff(_bucket, *, domain):
+            return 30 if domain == blocked.hostname else 0
+
+        with (
+            patch(
+                "workers.acquisition.domain_backoff_seconds",
+                side_effect=backoff,
+            ),
+            patch("workers.acquisition._try_domain_permit", permit),
+            patch("workers.acquisition._process_dispatched_crawl", processor),
+        ):
+            launched = await _dispatch_buffered_crawls(
+                buffer,
+                active,
+                capacity=1,
+                runs=object(),
+                requests=object(),
+                progress=object(),
+                repository_pipeline=object(),
+                resource_grants=object(),
+                domain_pacing=object(),
+                jetstream=object(),
+                playwright=object(),
+            )
+            await asyncio.gather(*active)
+
+        self.assertTrue(launched)
+        permit.assert_awaited_once()
+        self.assertEqual(permit.await_args.args[1].hostname, ready.hostname)
+        self.assertEqual(len(buffer), 1)
 
     async def test_buffered_deliveries_are_heartbeated_and_released(self) -> None:
         buffer = _HostnameDispatchBuffer(2)
@@ -209,6 +276,25 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(attempts, 2)
         self.assertEqual(monitor.status(), (True, "ready"))
+
+    async def test_playwright_driver_exit_is_a_fatal_background_failure(self) -> None:
+        driver_failure = asyncio.get_running_loop().create_future()
+        driver_failure.set_exception(RuntimeError("driver pipe closed"))
+        context = SimpleNamespace(
+            _connection=SimpleNamespace(
+                _transport=SimpleNamespace(on_error_future=driver_failure)
+            )
+        )
+        task = asyncio.create_task(
+            _watch_playwright_driver(context),
+            name="acquisition-playwright-driver",
+        )
+        await asyncio.wait({task})
+
+        with self.assertRaisesRegex(
+            PlaywrightRuntimeLost, "driver process exited"
+        ):
+            _raise_background_failure((task,))
 
 
 if __name__ == "__main__":

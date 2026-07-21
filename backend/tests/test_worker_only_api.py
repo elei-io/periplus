@@ -28,7 +28,8 @@ class WorkerOnlyApiTests(unittest.TestCase):
         paths = app.openapi()["paths"]
         self.assertIn("post", paths["/crawl-graphs/{graph_id}/runs"])
         self.assertIn("get", paths["/graph-runs/{run_id}"])
-        self.assertIn("get", paths["/graph-runs/{run_id}/failures"])
+        self.assertIn("get", paths["/graph-runs/{run_id}/failure-summary"])
+        self.assertNotIn("/graph-runs/{run_id}/failures", paths)
         self.assertNotIn("/graph-runs/materialization-definitions", paths)
         self.assertIn("post", paths["/graph-runs/{run_id}/cancel"])
         self.assertFalse(any(path.startswith("/task-runs") for path in paths))

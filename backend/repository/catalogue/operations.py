@@ -22,7 +22,6 @@ from config.performance import (
 from repository.catalogue.client import Catalogue
 
 _T = TypeVar("_T")
-_MAINTENANCE_IDENTITY = "catalogue-maintenance"
 
 
 @contextmanager
@@ -40,11 +39,8 @@ def operation_locks(
     """Fence independent mutation identities through one catalogue session."""
 
     fences = [
-        FenceSpec.shared(_MAINTENANCE_IDENTITY),
-        *(
-            FenceSpec.exclusive("operation", operation_id)
-            for operation_id in sorted(set(operation_ids))
-        ),
+        FenceSpec.exclusive("operation", operation_id)
+        for operation_id in sorted(set(operation_ids))
     ]
     with catalogue.lake.fence_set(
         *fences,
@@ -65,7 +61,6 @@ def repository_commit_lock(
     """Fence every independently overlapping identity in one repository batch."""
 
     fences = [
-        FenceSpec.shared(_MAINTENANCE_IDENTITY),
         *(
             FenceSpec.exclusive("crawl", str(crawl_id))
             for crawl_id in sorted(set(crawl_ids), key=str)
@@ -81,18 +76,6 @@ def repository_commit_lock(
     ]
     with catalogue.lake.fence_set(
         *fences,
-        namespace="atlas",
-        timeout=CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS,
-    ):
-        yield
-
-
-@contextmanager
-def maintenance_lock(catalogue: Catalogue) -> Iterator[None]:
-    """Wait for in-flight commits and exclude new commits during maintenance."""
-
-    with catalogue.lake.fence_set(
-        FenceSpec.exclusive(_MAINTENANCE_IDENTITY),
         namespace="atlas",
         timeout=CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS,
     ):

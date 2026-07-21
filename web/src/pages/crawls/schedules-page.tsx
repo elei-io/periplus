@@ -58,7 +58,8 @@ export function CrawlSchedulesPage({
   const [graphId, setGraphId] = useState("")
   const [creatingForGraph, setCreatingForGraph] = useState<string | null>(null)
   const schedules = schedulesQuery.data?.items ?? []
-  const graphs = graphsQuery.data?.items.filter((graph) => graph.root_node_id) ?? []
+  const graphs =
+    graphsQuery.data?.items.filter((graph) => graph.root_node_id) ?? []
 
   return (
     <div className="flex min-h-0 w-full flex-col gap-4">
@@ -202,8 +203,7 @@ export function CrawlScheduleDetailPage({
 }) {
   const query = useCrawlSchedule(scheduleId)
   const schedule = query.data
-  if (query.isLoading)
-    return <Centered>Loading schedule…</Centered>
+  if (query.isLoading) return <Centered>Loading schedule…</Centered>
   if (!schedule) return <Centered>Schedule not found.</Centered>
   return (
     <ScheduleDetail
@@ -259,9 +259,7 @@ function ScheduleDetail({
             <button
               type="button"
               className="mt-1 text-sm text-link hover:underline"
-              onClick={() =>
-                onNavigate(`/crawls/graphs/${schedule.graph_id}`)
-              }
+              onClick={() => onNavigate(`/crawls/graphs/${schedule.graph_id}`)}
             >
               Graph: {schedule.graph_slug}
             </button>
@@ -342,6 +340,10 @@ function ScheduleDetail({
                 value={`${schedule.run_count} / ${schedule.maximum_run_count ?? "unlimited"}`}
               />
               <Fact
+                label="Crawl budget"
+                value={`${schedule.max_crawls.toLocaleString()} per run`}
+              />
+              <Fact
                 label="Overlap"
                 value={
                   schedule.overlap_policy === "skip"
@@ -371,10 +373,7 @@ function ScheduleDetail({
                 label="Last occurrence"
                 value={formatDate(schedule.last_occurrence_at)}
               />
-              <Fact
-                label="Last run"
-                value={schedule.last_run_id ?? "—"}
-              />
+              <Fact label="Last run" value={schedule.last_run_id ?? "—"} />
             </dl>
             {schedule.last_error ? (
               <p className="mt-4 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive">
@@ -436,8 +435,7 @@ function Fact({ label, value }: { label: string; value: string }) {
 }
 
 function timingLabel(timing: ScheduleTiming) {
-  if (timing.kind === "cron")
-    return `${timing.expression} · ${timing.timezone}`
+  if (timing.kind === "cron") return `${timing.expression} · ${timing.timezone}`
   const seconds = timing.seconds
   if (seconds % 86400 === 0)
     return `Every ${seconds / 86400} day${seconds === 86400 ? "" : "s"}`

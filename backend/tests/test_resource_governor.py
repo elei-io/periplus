@@ -318,40 +318,42 @@ class ResourceGovernorTests(unittest.IsolatedAsyncioTestCase):
             for context in reversed(contexts):
                 await context.__aexit__(None, None, None)
 
-    async def test_maintenance_exclusive_bundle_waits_for_hot_work(self) -> None:
+    async def test_bounded_maintenance_runs_beside_hot_work(self) -> None:
         bucket = FakeBucket()
         critical = catalogue_request(
-            "ingest", service_class="critical", limits=self.limits
+            "ingest",
+            service_class="critical",
+            object_write_units=1,
+            limits=self.limits,
         )
         maintenance = catalogue_request(
             "compact",
             service_class="maintenance",
+            object_read_units=1,
             limits=self.limits,
-            exclusive=True,
         )
         async with resource_permits(bucket, critical, limits=self.limits):
-            with self.assertRaises(ResourceCapacityUnavailable):
-                async with resource_permits(
-                    bucket, maintenance, limits=self.limits, acquire_timeout=0
-                ):
-                    pass
-        async with resource_permits(bucket, maintenance, limits=self.limits):
-            state = ResourceState.model_validate_json(
-                (await bucket.get(RESOURCE_STATE_KEY)).value
-            )
-            self.assertEqual(state.grants[0].resources[0].units, 3)
+            async with resource_permits(bucket, maintenance, limits=self.limits):
+                state = ResourceState.model_validate_json(
+                    (await bucket.get(RESOURCE_STATE_KEY)).value
+                )
+                self.assertEqual(
+                    [grant.service_class for grant in state.grants],
+                    ["critical", "maintenance"],
+                )
 
-    async def test_waiting_maintenance_stops_new_hot_admission(self) -> None:
+    async def test_waiting_maintenance_does_not_stop_new_hot_admission(self) -> None:
         bucket = FakeBucket()
-        critical_context = resource_permits(
+        object_context = resource_permits(
             bucket,
-            catalogue_request("critical", service_class="critical", limits=self.limits),
+            ResourceRequest(
+                operation_id="object-reader",
+                service_class="live",
+                resources=(ResourceNeed(name="object:read", units=2),),
+            ),
             limits=self.limits,
         )
-        await critical_context.__aenter__()
-        critical_released = False
-        maintenance_entered = asyncio.Event()
-        release_maintenance = asyncio.Event()
+        await object_context.__aenter__()
 
         async def wait_for_maintenance() -> None:
             async with resource_permits(
@@ -360,53 +362,124 @@ class ResourceGovernorTests(unittest.IsolatedAsyncioTestCase):
                     "maintenance",
                     service_class="maintenance",
                     object_read_units=self.limits.object_read,
-                    object_write_units=self.limits.object_write,
                     limits=self.limits,
-                    exclusive=True,
                 ),
                 limits=self.limits,
                 acquire_timeout=DURABLE_RESOURCE_WAIT,
             ):
-                maintenance_entered.set()
-                await release_maintenance.wait()
+                pass
 
         task = asyncio.create_task(wait_for_maintenance())
         try:
             await _wait_for_waiter(bucket, "maintenance")
-            with self.assertRaises(ResourceCapacityUnavailable):
-                async with resource_permits(
-                    bucket,
-                    catalogue_request(
-                        "late-critical",
-                        service_class="critical",
-                        limits=self.limits,
-                    ),
+            async with resource_permits(
+                bucket,
+                catalogue_request(
+                    "late-critical",
+                    service_class="critical",
                     limits=self.limits,
-                    acquire_timeout=0,
-                ):
-                    pass
+                ),
+                limits=self.limits,
+                acquire_timeout=0,
+            ):
+                pass
+        finally:
+            await object_context.__aexit__(None, None, None)
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_waiting_critical_object_work_reclaims_one_unit(self) -> None:
+        bucket = FakeBucket()
+        live_context = resource_permits(
+            bucket,
+            ResourceRequest(
+                operation_id="live-reader",
+                service_class="live",
+                resources=(ResourceNeed(name="object:read", units=2),),
+            ),
+            limits=self.limits,
+        )
+        await live_context.__aenter__()
+        critical_entered = asyncio.Event()
+
+        async def wait_for_critical() -> None:
+            async with resource_permits(
+                bucket,
+                ResourceRequest(
+                    operation_id="critical-reader",
+                    service_class="critical",
+                    resources=(ResourceNeed(name="object:read", units=1),),
+                ),
+                limits=self.limits,
+                acquire_timeout=DURABLE_RESOURCE_WAIT,
+            ):
+                critical_entered.set()
+
+        task = asyncio.create_task(wait_for_critical())
+        try:
+            await _wait_for_waiter(bucket, "critical")
+            await live_context.__aexit__(None, None, None)
             with self.assertRaises(ResourceCapacityUnavailable):
                 async with resource_permits(
                     bucket,
                     ResourceRequest(
-                        operation_id="late-object-writer",
-                        service_class="critical",
-                        resources=(
-                            ResourceNeed(name="object:write", units=1),
-                        ),
+                        operation_id="late-live-reader",
+                        service_class="live",
+                        resources=(ResourceNeed(name="object:read", units=2),),
                     ),
                     limits=self.limits,
                     acquire_timeout=0,
                 ):
                     pass
-            await critical_context.__aexit__(None, None, None)
-            critical_released = True
-            await asyncio.wait_for(maintenance_entered.wait(), timeout=1)
+            await asyncio.wait_for(critical_entered.wait(), timeout=1)
         finally:
-            release_maintenance.set()
             await asyncio.gather(task, return_exceptions=True)
-            if not critical_released:
-                await critical_context.__aexit__(None, None, None)
+
+    async def test_old_same_class_waiter_cannot_be_bypassed(self) -> None:
+        bucket = FakeBucket()
+        blocker = resource_permits(
+            bucket,
+            ResourceRequest(
+                operation_id="blocker",
+                service_class="critical",
+                resources=(ResourceNeed(name="object:read", units=2),),
+            ),
+            limits=self.limits,
+        )
+        await blocker.__aenter__()
+        old_entered = asyncio.Event()
+
+        async def old_live_request() -> None:
+            async with resource_permits(
+                bucket,
+                ResourceRequest(
+                    operation_id="old-live",
+                    service_class="live",
+                    resources=(ResourceNeed(name="object:read", units=2),),
+                ),
+                limits=self.limits,
+                acquire_timeout=DURABLE_RESOURCE_WAIT,
+            ):
+                old_entered.set()
+
+        task = asyncio.create_task(old_live_request())
+        try:
+            await _wait_for_waiter(bucket, "live")
+            await blocker.__aexit__(None, None, None)
+            with self.assertRaises(ResourceCapacityUnavailable):
+                async with resource_permits(
+                    bucket,
+                    ResourceRequest(
+                        operation_id="late-live",
+                        service_class="live",
+                        resources=(ResourceNeed(name="object:read", units=1),),
+                    ),
+                    limits=self.limits,
+                    acquire_timeout=0,
+                ):
+                    pass
+            await asyncio.wait_for(old_entered.wait(), timeout=1)
+        finally:
+            await asyncio.gather(task, return_exceptions=True)
 
     async def test_expired_grant_releases_the_whole_bundle(self) -> None:
         bucket = FakeBucket()

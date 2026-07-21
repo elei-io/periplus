@@ -26,27 +26,23 @@ from config.performance import (
     object_io_max_concurrency,
 )
 from control.crawl_graphs.models import CrawlGraph
+from control.crawl_graphs.schemas import (
+    DEFAULT_GRAPH_RUN_MAX_CRAWLS,
+    MAX_GRAPH_RUN_CRAWLS,
+)
 from control.crawl_graphs.service import (
     CrawlGraphNotFoundError,
     CrawlGraphValidationError,
 )
 from db.session import get_session
-from repository.ingestion.queue import (
-    DURABLE as INGESTION_DURABLE,
-    IngestionState,
-    crawl_ingestion_request_id,
-    ensure_ingestion_results,
-    get_ingestion_state,
-)
+from repository.ingestion.queue import DURABLE as INGESTION_DURABLE
 from runtime.catalogue_events import DML_SUBJECT_PREFIX, EVENT_STREAM
 from runtime.catalogue_queue import WORK_STREAM
 from runtime.graph_queue import (
-    CrawlRequest,
     GraphRun,
     ensure_graph_progress_storage,
     ensure_graph_storage,
     get_graph_run,
-    list_crawl_requests,
     list_graph_runs,
     list_worker_states,
 )
@@ -80,6 +76,11 @@ class GraphRunTrigger(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     urls: list[str] = Field(min_length=1, max_length=10_000)
+    max_crawls: int = Field(
+        default=DEFAULT_GRAPH_RUN_MAX_CRAWLS,
+        ge=1,
+        le=MAX_GRAPH_RUN_CRAWLS,
+    )
 
 
 class GraphRunSubmission(BaseModel):
@@ -98,6 +99,8 @@ class GraphRunSummary(BaseModel):
     trigger_kind: Literal["manual", "schedule"]
     trigger_schedule_id: UUID | None
     trigger_urls: tuple[str, ...]
+    max_crawls: int
+    crawl_limit_reached: bool
     request_count: int
     pending_request_count: int
     failed_request_count: int
@@ -155,19 +158,18 @@ class RuntimeSizing(BaseModel):
     duckdb_memory_limit_per_executor: str
 
 
-class GraphRunFailure(BaseModel):
-    crawl_id: UUID
-    requested_url: str
-    final_url: str | None
+class GraphRunFailureGroupResponse(BaseModel):
+    failure_stage: str
+    failure_code: str
     status_code: int | None
-    failure_code: str | None
-    failure_stage: str | None
-    failure_detail: str | None
-    captured_at: datetime
+    count: int
+    example_url: str
+    example_detail: str | None
+    last_occurred_at: datetime
 
 
-class GraphRunFailureList(BaseModel):
-    items: list[GraphRunFailure]
+class GraphRunFailureSummary(BaseModel):
+    items: list[GraphRunFailureGroupResponse]
     total: int
 
 
@@ -336,6 +338,7 @@ async def trigger(
             graph_id=graph_id,
             urls=payload.urls,
             catalogue_snapshot_resolver=control.latest_snapshot,
+            max_crawls=payload.max_crawls,
         )
     except CrawlGraphNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -383,9 +386,9 @@ async def get(run_id: UUID) -> GraphRun:
     return run
 
 
-@router.get("/{run_id}/failures", response_model=GraphRunFailureList)
-async def failures(run_id: UUID) -> GraphRunFailureList:
-    client, runs, requests, _progress = await _storage()
+@router.get("/{run_id}/failure-summary", response_model=GraphRunFailureSummary)
+async def failure_summary(run_id: UUID) -> GraphRunFailureSummary:
+    client, runs, _requests, _progress = await _storage()
     try:
         run = await get_graph_run(runs, run_id)
         if run is None:
@@ -393,75 +396,19 @@ async def failures(run_id: UUID) -> GraphRunFailureList:
                 status_code=404,
                 detail=f"Graph run {run_id} was not found.",
             )
-        failed_requests = [
-            request
-            for request in await list_crawl_requests(requests, graph_run_id=run_id)
-            if request.status == "failed"
-        ]
-        results = await ensure_ingestion_results(client.jetstream())
-        states = await asyncio.gather(
-            *(
-                get_ingestion_state(
-                    results,
-                    crawl_ingestion_request_id(request.id),
-                )
-                for request in failed_requests
-            )
-        )
     finally:
         await client.drain()
-    items = [
-        _failure_record(request, state)
-        for request, state in zip(failed_requests, states, strict=True)
-    ]
-    items.sort(key=lambda item: item.captured_at, reverse=True)
-    return GraphRunFailureList(items=items, total=len(items))
-
-
-def _failure_record(
-    request: CrawlRequest,
-    state: IngestionState | None,
-) -> GraphRunFailure:
-    if state is not None:
-        crawl = state.crawl
-        urls_by_id = {url.url_id: url.normalized_url for url in state.urls}
-        return GraphRunFailure(
-            crawl_id=crawl.crawl_id,
-            requested_url=urls_by_id.get(crawl.requested_url_id, request.url),
-            final_url=(
-                urls_by_id.get(crawl.final_url_id)
-                if crawl.final_url_id is not None
-                else None
-            ),
-            status_code=crawl.status_code,
-            failure_code=crawl.failure_code,
-            failure_stage=crawl.failure_stage or request.failure_stage,
-            failure_detail=crawl.failure_detail or request.error,
-            captured_at=crawl.captured_at,
-        )
-    attempt = (
-        request.acquisition_attempts_json[-1]
-        if request.acquisition_attempts_json
-        else {}
+    groups = sorted(
+        run.failure_groups,
+        key=lambda group: (-group.count, group.failure_stage, group.failure_code),
     )
-    return GraphRunFailure(
-        crawl_id=request.id,
-        requested_url=request.url,
-        final_url=_optional_string(attempt.get("final_url")),
-        status_code=_optional_int(attempt.get("status_code")),
-        failure_code=_optional_string(attempt.get("failure_code")),
-        failure_stage=request.failure_stage,
-        failure_detail=request.error,
-        captured_at=request.updated_at,
+    return GraphRunFailureSummary(
+        items=[
+            GraphRunFailureGroupResponse.model_validate(group, from_attributes=True)
+            for group in groups
+        ],
+        total=run.failed_request_count,
     )
-
-
-def _optional_string(value: object) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def _optional_int(value: object) -> int | None:
-    return value if isinstance(value, int) else None
 
 
 @router.get("/", response_model=GraphRunList)

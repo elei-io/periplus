@@ -367,22 +367,10 @@ class RepositoryIngestor:
     def cleanup_staging(self, *, older_than_seconds: float) -> int:
         """Remove abandoned local projection files after a safety grace period."""
 
-        if older_than_seconds <= 0:
-            raise ValueError("older_than_seconds must be greater than zero")
-        cutoff = datetime.now(UTC) - timedelta(seconds=older_than_seconds)
-        deleted = 0
-        paths = list(self.staging_root.glob("*.parquet"))
-        paths.extend(self.staging_root.rglob("*.arrow"))
-        for path in paths:
-            try:
-                modified_at = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
-                if modified_at >= cutoff:
-                    continue
-                path.unlink()
-                deleted += 1
-            except FileNotFoundError:
-                continue
-        return deleted
+        return cleanup_staging_files(
+            self.staging_root,
+            older_than_seconds=older_than_seconds,
+        )
 
     def resolve_cached_page(
         self,
@@ -610,6 +598,31 @@ def repository_ingestor_from_env() -> RepositoryIngestor:
         staging_root=staging_root_from_env(),
         limits=RepositoryLimits.from_env(),
     )
+
+
+def cleanup_staging_files(
+    staging_root: Path,
+    *,
+    older_than_seconds: float,
+) -> int:
+    """Remove abandoned local projection files without opening the catalogue."""
+
+    if older_than_seconds <= 0:
+        raise ValueError("older_than_seconds must be greater than zero")
+    cutoff = datetime.now(UTC) - timedelta(seconds=older_than_seconds)
+    deleted = 0
+    paths = list(staging_root.glob("*.parquet"))
+    paths.extend(staging_root.rglob("*.arrow"))
+    for path in paths:
+        try:
+            modified_at = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+            if modified_at >= cutoff:
+                continue
+            path.unlink()
+            deleted += 1
+        except FileNotFoundError:
+            continue
+    return deleted
 
 
 @dataclass(frozen=True, slots=True)

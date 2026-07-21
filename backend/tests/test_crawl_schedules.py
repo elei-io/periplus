@@ -60,6 +60,7 @@ class CrawlScheduleTests(unittest.TestCase):
             CrawlScheduleCreate(
                 name="Hourly",
                 timing=IntervalTiming(kind="interval", seconds=3600),
+                max_crawls=250,
                 root_urls=[
                     "HTTPS://Example.com",
                     "https://example.com/",
@@ -69,6 +70,7 @@ class CrawlScheduleTests(unittest.TestCase):
         )
 
         self.assertEqual(schedule.root_urls, ["https://example.com/"])
+        self.assertEqual(schedule.max_crawls, 250)
         self.assertEqual(schedule.next_run_at, now + timedelta(hours=1))
         self.assertEqual(schedule.status, "active")
 

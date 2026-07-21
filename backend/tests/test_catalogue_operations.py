@@ -8,7 +8,6 @@ import duckdb
 from ducklake_client import DuckLakeFenceError, FenceSpec
 
 from repository.catalogue.operations import (
-    maintenance_lock,
     is_retryable_catalogue_unavailability,
     operation_locks,
     repository_commit_lock,
@@ -30,7 +29,6 @@ class CatalogueOperationLockTests(unittest.TestCase):
                 pass
 
         catalogue.lake.fence_set.assert_called_once_with(
-            FenceSpec.shared("catalogue-maintenance"),
             FenceSpec.exclusive("operation", "first"),
             FenceSpec.exclusive("operation", "second"),
             namespace="atlas",
@@ -54,14 +52,13 @@ class CatalogueOperationLockTests(unittest.TestCase):
 
         catalogue.lake.fence_set.assert_called_once()
         args = catalogue.lake.fence_set.call_args.args
-        self.assertEqual(len(args), 301)
-        self.assertEqual(args[0], FenceSpec.shared("catalogue-maintenance"))
+        self.assertEqual(len(args), 300)
         self.assertEqual(
-            {spec.keys for spec in args[1:101]},
+            {spec.keys for spec in args[:100]},
             {("crawl", str(crawl_id)) for crawl_id in crawl_ids},
         )
         self.assertEqual(
-            {spec.keys for spec in args[101:]},
+            {spec.keys for spec in args[100:]},
             {
                 ("content", content_id)
                 for content_id in content_ids
@@ -72,25 +69,12 @@ class CatalogueOperationLockTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {spec.keys for spec in args[101:201]},
+            {spec.keys for spec in args[100:200]},
             {("content", content_id) for content_id in content_ids},
         )
         self.assertEqual(
-            {spec.keys for spec in args[201:]},
+            {spec.keys for spec in args[200:]},
             {("url", url_id) for url_id in url_ids},
-        )
-
-    def test_maintenance_uses_the_exclusive_barrier(self) -> None:
-        catalogue = self._catalogue()
-
-        with patch("repository.catalogue.operations.CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS", 30.0):
-            with maintenance_lock(catalogue):
-                pass
-
-        catalogue.lake.fence_set.assert_called_once_with(
-            FenceSpec.exclusive("catalogue-maintenance"),
-            namespace="atlas",
-            timeout=30.0,
         )
 
     def test_fence_failure_is_retryable_infrastructure_unavailability(self) -> None:

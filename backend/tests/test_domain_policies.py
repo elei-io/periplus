@@ -8,7 +8,12 @@ from pydantic import ValidationError
 
 from control.domain_policies.schemas import DomainPolicyCreateRequest
 from control.domain_policies.service import DEFAULT_DOMAIN_POLICY_SLUG, find_domain_policy_for_url
-from runtime.domain_pacing import wait_for_domain_interval
+from runtime.domain_pacing import (
+    DomainPacingState,
+    domain_backoff_seconds,
+    record_domain_response,
+    wait_for_domain_interval,
+)
 
 
 def policy(slug: str, host_match: str):
@@ -81,6 +86,62 @@ class DomainPacingTests(unittest.TestCase):
                 await wait_for_domain_interval(bucket, domain="example.com", interval_seconds=2)
             self.assertEqual(sleep.await_count, 1)
             self.assertGreaterEqual(sleep.await_args.args[0], 1.9)
+
+        asyncio.run(scenario())
+
+    def test_429_applies_a_shared_retry_after_backoff(self):
+        bucket = FakeBucket()
+
+        async def scenario():
+            delay = await record_domain_response(
+                bucket,
+                domain="example.com",
+                status_code=429,
+                retry_after_seconds=12,
+            )
+            shared_delay = await domain_backoff_seconds(
+                bucket,
+                domain="example.com",
+            )
+            self.assertGreaterEqual(delay, 11.9)
+            self.assertGreaterEqual(shared_delay, 11.9)
+
+        asyncio.run(scenario())
+
+    def test_repeated_500s_trip_the_weaker_domain_backoff(self):
+        bucket = FakeBucket()
+
+        async def scenario():
+            first = await record_domain_response(
+                bucket, domain="example.com", status_code=500
+            )
+            second = await record_domain_response(
+                bucket, domain="example.com", status_code=500
+            )
+            third = await record_domain_response(
+                bucket, domain="example.com", status_code=500
+            )
+            state = DomainPacingState.model_validate_json(bucket.value)
+            self.assertEqual(first, 0)
+            self.assertEqual(second, 0)
+            self.assertGreaterEqual(third, 0.9)
+            self.assertEqual(state.transient_failure_count, 3)
+
+        asyncio.run(scenario())
+
+    def test_successful_responses_decay_the_failure_score(self):
+        bucket = FakeBucket()
+
+        async def scenario():
+            await record_domain_response(
+                bucket, domain="example.com", status_code=500
+            )
+            await record_domain_response(
+                bucket, domain="example.com", status_code=200
+            )
+            state = DomainPacingState.model_validate_json(bucket.value)
+            self.assertEqual(state.transient_failure_count, 0)
+            self.assertIsNone(state.last_failure_at)
 
         asyncio.run(scenario())
 

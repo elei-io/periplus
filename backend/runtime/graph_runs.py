@@ -10,7 +10,10 @@ from urllib.parse import urlsplit
 from uuid import UUID, uuid4, uuid5
 
 from config import get_float, get_int
-from config.performance import GRAPH_ACK_WAIT_SECONDS
+from config.performance import (
+    CRAWL_RUN_ACQUISITION_PENDING_LIMIT,
+    GRAPH_ACK_WAIT_SECONDS,
+)
 from control.crawl_policies.schemas import EffectivePolicySnapshot
 from control.crawl_policies.service import find_crawl_policy_for_url, policy_snapshot
 from control.crawl_policies.variance import vary_content_policy
@@ -18,28 +21,38 @@ from control.domain_policies.service import (
     find_domain_policy_for_url,
     domain_policy_snapshot,
 )
-from control.crawl_graphs.schemas import EdgeDedupeMode
+from control.crawl_graphs.schemas import (
+    DEFAULT_GRAPH_RUN_MAX_CRAWLS,
+    EdgeDedupeMode,
+)
 from nats.js.errors import KeyWrongLastSequenceError
 
 from .graph_queue import (
+    AdmissionReservation,
     CrawlRequest,
     EdgeEvaluation,
     EdgeWork,
     FrozenGraphSnapshot,
     GraphRun,
+    GraphRunFailureGroup,
+    MAX_GRAPH_RUN_FAILURE_GROUPS,
     NavigationReadinessWork,
     PendingAdmission,
+    admission_reservation_key,
     edge_evaluation_identity,
     edge_evaluation_key,
+    get_admission_reservation,
     get_crawl_request,
     get_edge_evaluation,
     get_graph_run,
+    list_admission_reservations,
     list_crawl_requests,
     new_graph_run,
     normalize_request_url,
     publish_crawl,
     publish_edge,
     request_identity,
+    update_admission_reservation,
     update_crawl_request,
     update_edge_evaluation,
     update_graph_run,
@@ -56,6 +69,8 @@ from .edge_sql import edge_uses_catalogue
 _REQUEST_NAMESPACE = UUID("869ee36c-76ad-46f0-a1b7-9b28f4b71386")
 _TERMINAL_RUNS = {"completed", "completed_with_errors", "failed", "cancelled"}
 _TERMINAL_REQUESTS = {"completed", "failed", "cancelled"}
+_FAILURE_OVERFLOW_STAGE = "other"
+_FAILURE_OVERFLOW_CODE = "other_failures"
 
 
 async def _project(operation):
@@ -75,11 +90,19 @@ class GraphRunCeilingError(RuntimeError):
     pass
 
 
+class GraphRunAdmissionDeferred(RuntimeError):
+    """The run must settle acquisition work before admitting another page."""
+
+
 class EdgeEvaluationBusy(RuntimeError):
     pass
 
 
 class EdgeEvaluationFailed(RuntimeError):
+    pass
+
+
+class EdgeEvaluationDeferred(RuntimeError):
     pass
 
 
@@ -123,9 +146,6 @@ def resolve_policy_snapshot(session, url: str) -> dict:
 
 
 def _ceiling_error(run: GraphRun, now: datetime) -> str | None:
-    max_requests = get_int("ATLAS_GRAPH_MAX_REQUESTS_PER_RUN")
-    if run.request_count >= max_requests:
-        return f"Graph run reached platform ceiling ATLAS_GRAPH_MAX_REQUESTS_PER_RUN={max_requests}."
     max_seconds = get_int("ATLAS_GRAPH_MAX_RUN_SECONDS")
     if (now - run.created_at).total_seconds() >= max_seconds:
         return f"Graph run reached platform ceiling ATLAS_GRAPH_MAX_RUN_SECONDS={max_seconds}."
@@ -150,6 +170,20 @@ async def admit_request(
     now: datetime | None = None,
 ) -> tuple[CrawlRequest | None, bool]:
     now = now or datetime.now(UTC)
+    run = await get_graph_run(runs, run_id)
+    if run is None:
+        raise GraphRunNotFoundError(f"Graph run {run_id} was not found.")
+    run = await expire_graph_run(
+        runs=runs,
+        requests=requests,
+        progress=progress,
+        run=run,
+        now=now,
+    )
+    if run.status in _TERMINAL_RUNS:
+        if run.status == "failed" and run.error and "platform ceiling" in run.error:
+            raise GraphRunCeilingError(run.error)
+        return None, False
     normalized = normalize_request_url(url)
     identity = request_identity(
         run_id,
@@ -161,6 +195,20 @@ async def admit_request(
     )
     graph_identity = request_identity(run_id, normalized)
     request_id = deterministic_request_id(identity)
+    reservation = await get_admission_reservation(requests, identity)
+    if reservation is not None:
+        return await _resume_admission(
+            runs=runs,
+            requests=requests,
+            progress=progress,
+            jetstream=jetstream,
+            reservation=reservation,
+        )
+    if run.acquisition_pending_count >= CRAWL_RUN_ACQUISITION_PENDING_LIMIT:
+        raise GraphRunAdmissionDeferred(
+            f"graph run {run_id} has "
+            f"{run.acquisition_pending_count} acquisition requests pending"
+        )
     policy_snapshot_json = policy_resolver(normalized)
     pending = PendingAdmission(
         request_id=request_id,
@@ -173,82 +221,151 @@ async def admit_request(
         parent_request_id=parent_request_id,
         created_at=now,
     )
-    admitted = False
+    reservation = AdmissionReservation(
+        identity=identity,
+        graph_run_id=run_id,
+        request_id=request_id,
+        pending=pending,
+    )
+    try:
+        await requests.create(
+            admission_reservation_key(identity),
+            reservation.model_dump_json().encode(),
+        )
+    except KeyWrongLastSequenceError:
+        existing = await get_admission_reservation(requests, identity)
+        if existing is None:
+            raise
+        return await _resume_admission(
+            runs=runs,
+            requests=requests,
+            progress=progress,
+            jetstream=jetstream,
+            reservation=existing,
+        )
+    if graph_identity != identity:
+        alias = AdmissionReservation(
+            identity=graph_identity,
+            graph_run_id=run_id,
+            delivered=True,
+        )
+        try:
+            await requests.create(
+                admission_reservation_key(graph_identity),
+                alias.model_dump_json().encode(),
+            )
+        except KeyWrongLastSequenceError:
+            pass
+    return await _resume_admission(
+        runs=runs,
+        requests=requests,
+        progress=progress,
+        jetstream=jetstream,
+        reservation=reservation,
+    )
+
+
+async def _resume_admission(
+    *,
+    runs,
+    requests,
+    progress,
+    jetstream,
+    reservation: AdmissionReservation,
+) -> tuple[CrawlRequest | None, bool]:
+    if reservation.request_id is None:
+        return None, False
+    existing = await get_crawl_request(requests, reservation.request_id)
+    if reservation.delivered:
+        return existing, False
+    if reservation.pending is None:
+        return existing, False
+    counted_now = False
+    deferred = False
+    budget_exhausted = False
 
     def reserve(run: GraphRun) -> GraphRun:
-        nonlocal admitted
-        admitted = False
-        dedupe_identity = (
-            graph_identity if dedupe_mode == EdgeDedupeMode.graph else identity
-        )
-        if (
-            run.status in _TERMINAL_RUNS
-            or run.cancel_requested_at is not None
-            or dedupe_identity in run.seen_request_identities
+        nonlocal counted_now, deferred, budget_exhausted
+        counted_now = False
+        deferred = False
+        budget_exhausted = False
+        if run.status in _TERMINAL_RUNS or run.cancel_requested_at is not None:
+            return run
+        if existing is not None or any(
+            value.request_id == reservation.request_id
+            for value in run.pending_admissions
         ):
             return run
-        error = _ceiling_error(run, now)
-        if error:
-            return run.model_copy(
-                update={
-                    "status": "failed",
-                    "completed_at": now,
-                    "error": error,
-                    "error_count": run.error_count + 1,
-                }
-            )
-        admitted = True
-        identities = (identity,)
+        remaining_roots = max(
+            0, len(run.trigger_urls) - run.root_admission_cursor
+        )
         if (
-            graph_identity != identity
-            and graph_identity not in run.seen_request_identities
+            reservation.pending.parent_request_id is not None
+            and run.request_count >= run.max_crawls - remaining_roots
+            and run.request_count < run.max_crawls
         ):
-            identities = (*identities, graph_identity)
+            deferred = True
+            return run
+        if run.request_count >= run.max_crawls:
+            budget_exhausted = True
+            return run.model_copy(update={"crawl_limit_reached": True})
+        if run.acquisition_pending_count >= CRAWL_RUN_ACQUISITION_PENDING_LIMIT:
+            deferred = True
+            return run
+        counted_now = True
+        now = reservation.pending.created_at
         return run.model_copy(
             update={
                 "status": "running",
                 "started_at": run.started_at or now,
                 "last_progress_at": now,
-                "seen_request_identities": (*run.seen_request_identities, *identities),
-                "pending_admissions": (*run.pending_admissions, pending),
+                "pending_admissions": (
+                    *run.pending_admissions,
+                    reservation.pending,
+                ),
                 "request_count": run.request_count + 1,
                 "pending_request_count": run.pending_request_count + 1,
+                "acquisition_pending_count": run.acquisition_pending_count + 1,
             }
         )
 
-    run = await update_graph_run(runs, run_id, reserve)
-    if not admitted:
-        if run.status == "failed" and run.error and "platform ceiling" in run.error:
-            raise GraphRunCeilingError(run.error)
-        reserved = next(
-            (
-                value
-                for value in run.pending_admissions
-                if value.request_id == request_id
-            ),
-            None,
+    run = await update_graph_run(runs, reservation.graph_run_id, reserve)
+    if run.status in _TERMINAL_RUNS:
+        await update_admission_reservation(
+            requests,
+            reservation.identity,
+            lambda value: value.model_copy(update={"delivered": True}),
         )
-        if reserved is not None:
-            existing = await _deliver_pending_admission(
-                runs=runs,
-                requests=requests,
-                progress=progress,
-                jetstream=jetstream,
-                run_id=run_id,
-                pending=reserved,
-            )
-            return existing, False
-        existing = await get_crawl_request(requests, request_id)
-        return existing, False
+        return None, False
+    if budget_exhausted:
+        await update_admission_reservation(
+            requests,
+            reservation.identity,
+            lambda value: value.model_copy(
+                update={"pending": None, "delivered": True}
+            ),
+        )
+        return None, False
+    if deferred:
+        raise GraphRunAdmissionDeferred(
+            f"graph run {run.id} has "
+            f"{run.acquisition_pending_count} acquisition requests pending"
+        )
+    if counted_now and not reservation.counted:
+        reservation = await update_admission_reservation(
+            requests,
+            reservation.identity,
+            lambda value: value.model_copy(update={"counted": True}),
+        )
     request = await _deliver_pending_admission(
         runs=runs,
         requests=requests,
         progress=progress,
         jetstream=jetstream,
-        run_id=run_id,
-        pending=pending,
+        run_id=reservation.graph_run_id,
+        pending=reservation.pending,
     )
-    return request, True
+    return request, counted_now
 
 
 async def _deliver_pending_admission(
@@ -289,6 +406,13 @@ async def _deliver_pending_admission(
         return value.model_copy(update={"pending_admissions": remaining})
 
     await update_graph_run(runs, run_id, clear)
+    await update_admission_reservation(
+        requests,
+        pending.identity,
+        lambda value: value.model_copy(
+            update={"pending": None, "counted": True, "delivered": True}
+        ),
+    )
     return request
 
 
@@ -311,6 +435,137 @@ async def reconcile_pending_admissions(
     return reconciled
 
 
+async def reconcile_admission_reservations(
+    *, runs, requests, progress, jetstream, run: GraphRun
+) -> int:
+    """Resume sharded reservations interrupted before they reached the run."""
+
+    reconciled = 0
+    reservations = await list_admission_reservations(
+        requests, graph_run_id=run.id
+    )
+    for reservation in reservations:
+        if reservation.delivered or reservation.pending is None:
+            continue
+        try:
+            await _resume_admission(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                jetstream=jetstream,
+                reservation=reservation,
+            )
+        except GraphRunAdmissionDeferred:
+            continue
+        reconciled += 1
+    return reconciled
+
+
+async def _settle_run_if_idle(
+    runs,
+    progress,
+    run_id: UUID,
+    *,
+    now: datetime | None = None,
+) -> GraphRun:
+    """Settle a run only after both work and durable root input are exhausted."""
+
+    now = now or datetime.now(UTC)
+    settled = False
+
+    def finish(run: GraphRun) -> GraphRun:
+        nonlocal settled
+        settled = False
+        roots_exhausted = (
+            run.root_admission_cursor >= len(run.trigger_urls)
+            or run.crawl_limit_reached
+        )
+        if (
+            run.status in _TERMINAL_RUNS
+            or run.pending_request_count != 0
+            or run.pending_admissions
+            or not roots_exhausted
+        ):
+            return run
+        settled = True
+        final = "completed_with_errors" if run.failed_request_count else "completed"
+        return run.model_copy(
+            update={
+                "status": final,
+                "completed_at": now,
+                "last_progress_at": now,
+            }
+        )
+
+    run = await update_graph_run(runs, run_id, finish)
+    if settled:
+        await _project(mark_run_progress_settled(progress, run))
+    return run
+
+
+async def fill_root_admissions(
+    *,
+    runs,
+    requests,
+    progress,
+    jetstream,
+    run_id: UUID,
+    policy_resolver: Callable[[str], dict],
+) -> int:
+    """Fill one run's bounded acquisition window from its durable root cursor."""
+
+    admitted = 0
+    ordered_urls: tuple[str, ...] | None = None
+    while True:
+        run = await get_graph_run(runs, run_id)
+        if (
+            run is None
+            or run.status in _TERMINAL_RUNS
+            or run.cancel_requested_at is not None
+        ):
+            return admitted
+        if run.crawl_limit_reached:
+            await _settle_run_if_idle(runs, progress, run.id)
+            return admitted
+        if (
+            run.acquisition_pending_count
+            >= CRAWL_RUN_ACQUISITION_PENDING_LIMIT
+        ):
+            return admitted
+        if ordered_urls is None:
+            ordered_urls = tuple(_interleave_urls_by_hostname(run.trigger_urls))
+        index = run.root_admission_cursor
+        if index >= len(ordered_urls):
+            await _settle_run_if_idle(runs, progress, run.id)
+            return admitted
+        try:
+            _request, newly_admitted = await admit_request(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                jetstream=jetstream,
+                run_id=run.id,
+                node_id=run.snapshot.root_node_id,
+                url=ordered_urls[index],
+                policy_resolver=policy_resolver,
+            )
+        except GraphRunAdmissionDeferred:
+            return admitted
+
+        await update_graph_run(
+            runs,
+            run.id,
+            lambda current: (
+                current
+                if current.root_admission_cursor != index
+                else current.model_copy(
+                    update={"root_admission_cursor": index + 1}
+                )
+            ),
+        )
+        admitted += int(newly_admitted)
+
+
 async def create_graph_run(
     *,
     runs,
@@ -324,6 +579,7 @@ async def create_graph_run(
     trigger_kind: str = "manual",
     run_id: UUID | None = None,
     trigger_schedule_id: UUID | None = None,
+    max_crawls: int = DEFAULT_GRAPH_RUN_MAX_CRAWLS,
     now: datetime | None = None,
 ) -> GraphRun:
     existing = await get_graph_run(runs, run_id) if run_id is not None else None
@@ -350,6 +606,7 @@ async def create_graph_run(
         run_id=run_id,
         trigger_schedule_id=trigger_schedule_id,
         catalogue_snapshot_id=catalogue_snapshot_id,
+        max_crawls=max_crawls,
     )
     if existing is None:
         existing = await get_graph_run(runs, run.id)
@@ -368,6 +625,7 @@ async def create_graph_run(
             or existing.trigger_kind != run.trigger_kind
             or existing.trigger_schedule_id != run.trigger_schedule_id
             or existing.catalogue_snapshot_id != run.catalogue_snapshot_id
+            or existing.max_crawls != run.max_crawls
         ):
             raise ValueError(
                 f"Graph run identity {run.id} is already used by another trigger."
@@ -383,17 +641,14 @@ async def create_graph_run(
         )
     else:
         await _project(initialize_run_progress(progress, run))
-    for url in _interleave_urls_by_hostname(run.trigger_urls):
-        await admit_request(
-            runs=runs,
-            requests=requests,
-            progress=progress,
-            jetstream=jetstream,
-            run_id=run.id,
-            node_id=snapshot.root_node_id,
-            url=url,
-            policy_resolver=policy_resolver,
-        )
+    await fill_root_admissions(
+        runs=runs,
+        requests=requests,
+        progress=progress,
+        jetstream=jetstream,
+        run_id=run.id,
+        policy_resolver=policy_resolver,
+    )
     return await get_graph_run(runs, run.id) or run
 
 
@@ -489,12 +744,17 @@ async def settle_request(
     now: datetime | None = None,
     expected_claim_token: UUID | None = None,
     failure_stage: str | None = None,
+    failure_code: str | None = None,
+    status_code: int | None = None,
 ) -> CrawlRequest:
     now = now or datetime.now(UTC)
     became_terminal = False
+    previous_status: str | None = None
 
     def settle(request: CrawlRequest) -> CrawlRequest:
-        nonlocal became_terminal
+        nonlocal became_terminal, previous_status
+        became_terminal = False
+        previous_status = request.status
         if request.status in _TERMINAL_REQUESTS:
             return request
         if (
@@ -514,14 +774,7 @@ async def settle_request(
             }
         )
 
-    previous_status: str | None = None
-
-    def tracked_settle(request: CrawlRequest) -> CrawlRequest:
-        nonlocal previous_status
-        previous_status = request.status
-        return settle(request)
-
-    request = await update_crawl_request(requests, request_id, tracked_settle)
+    request = await update_crawl_request(requests, request_id, settle)
     if became_terminal:
         await _project(
             transition_node_progress(progress, request, previous_status=previous_status)
@@ -529,36 +782,159 @@ async def settle_request(
 
         def account(run: GraphRun) -> GraphRun:
             pending = max(0, run.pending_request_count - 1)
+            acquisition_pending = max(
+                0,
+                run.acquisition_pending_count
+                - (1 if previous_status in {"queued", "crawling"} else 0),
+            )
             failures = run.failed_request_count + (1 if status == "failed" else 0)
             errors = run.error_count + (1 if status == "failed" else 0)
             update = {
                 "pending_request_count": pending,
+                "acquisition_pending_count": acquisition_pending,
                 "failed_request_count": failures,
                 "error_count": errors,
                 "last_progress_at": now,
             }
-            if pending == 0:
-                terminal_update = {
-                    **update,
-                    "seen_request_identities": (),
-                    "pending_admissions": (),
-                }
-                if run.status in _TERMINAL_RUNS:
-                    return run.model_copy(update=terminal_update)
-                final = "completed_with_errors" if failures else "completed"
-                return run.model_copy(
-                    update={
-                        **terminal_update,
-                        "status": final,
-                        "completed_at": now,
-                    }
+            if status == "failed":
+                update["failure_groups"] = _updated_failure_groups(
+                    run,
+                    request=request,
+                    failure_stage=failure_stage,
+                    failure_code=failure_code,
+                    status_code=status_code,
+                    detail=error,
+                    occurred_at=now,
                 )
             return run.model_copy(update=update)
 
         run = await update_graph_run(runs, request.graph_run_id, account)
         if run.status in _TERMINAL_RUNS:
             await _project(mark_run_progress_settled(progress, run))
+        elif run.pending_request_count == 0:
+            await _settle_run_if_idle(
+                runs,
+                progress,
+                run.id,
+                now=now,
+            )
     return request
+
+
+def _updated_failure_groups(
+    run: GraphRun,
+    *,
+    request: CrawlRequest,
+    failure_stage: str | None,
+    failure_code: str | None,
+    status_code: int | None,
+    detail: str | None,
+    occurred_at: datetime,
+) -> tuple[GraphRunFailureGroup, ...]:
+    stage = failure_stage or "lifecycle"
+    code = failure_code or f"{stage}_failed"
+    groups = list(run.failure_groups)
+    matching = next(
+        (
+            index
+            for index, group in enumerate(groups)
+            if (
+                group.failure_stage == stage
+                and group.failure_code == code
+                and group.status_code == status_code
+            )
+        ),
+        None,
+    )
+    if matching is None and len(groups) >= MAX_GRAPH_RUN_FAILURE_GROUPS - 1:
+        stage = _FAILURE_OVERFLOW_STAGE
+        code = _FAILURE_OVERFLOW_CODE
+        status_code = None
+        matching = next(
+            (
+                index
+                for index, group in enumerate(groups)
+                if (
+                    group.failure_stage == stage
+                    and group.failure_code == code
+                )
+            ),
+            None,
+        )
+        if matching is None and len(groups) >= MAX_GRAPH_RUN_FAILURE_GROUPS:
+            matching = len(groups) - 1
+            displaced = groups[matching]
+            groups[matching] = displaced.model_copy(
+                update={
+                    "failure_stage": stage,
+                    "failure_code": code,
+                    "status_code": None,
+                }
+            )
+    example = {
+        "example_url": request.url,
+        "example_detail": detail[:2_000] if detail else None,
+        "last_occurred_at": occurred_at,
+    }
+    if matching is not None:
+        current = groups[matching]
+        groups[matching] = current.model_copy(
+            update={"count": current.count + 1, **example}
+        )
+    else:
+        groups.append(
+            GraphRunFailureGroup(
+                failure_stage=stage,
+                failure_code=code,
+                status_code=status_code,
+                count=1,
+                **example,
+            )
+        )
+    return tuple(groups)
+
+
+async def release_acquisition_slot(
+    runs,
+    run_id: UUID,
+    *,
+    now: datetime | None = None,
+) -> GraphRun:
+    """Release one run acquisition window slot after readiness is durable."""
+
+    now = now or datetime.now(UTC)
+    return await update_graph_run(
+        runs,
+        run_id,
+        lambda run: run.model_copy(
+            update={
+                "acquisition_pending_count": max(
+                    0, run.acquisition_pending_count - 1
+                ),
+                "last_progress_at": now,
+            }
+        ),
+    )
+
+
+async def reconcile_acquisition_pending_count(
+    runs,
+    requests,
+    run_id: UUID,
+) -> GraphRun:
+    """Repair the bounded acquisition-window projection after an interrupted update."""
+
+    crawl_requests = await list_crawl_requests(requests, graph_run_id=run_id)
+    acquisition_pending = sum(
+        request.status in {"queued", "crawling"} for request in crawl_requests
+    )
+    return await update_graph_run(
+        runs,
+        run_id,
+        lambda run: run.model_copy(
+            update={"acquisition_pending_count": acquisition_pending}
+        ),
+    )
 
 
 async def handle_navigation_readiness(
@@ -716,6 +1092,7 @@ async def evaluate_edge(
 
     def start_evaluation(value: EdgeEvaluation) -> EdgeEvaluation:
         nonlocal previous_evaluation_status, claimed
+        claimed = False
         previous_evaluation_status = value.status
         now = datetime.now(UTC)
         reclaimable = (
@@ -780,23 +1157,75 @@ async def evaluate_edge(
             seen += 1
             if seen <= count:
                 continue
+            try:
+                _target, newly_admitted = await admit_request(
+                    runs=runs,
+                    requests=requests,
+                    progress=progress,
+                    jetstream=jetstream,
+                    run_id=run.id,
+                    node_id=edge.target_node_id,
+                    url=str(url),
+                    policy_resolver=policy_resolver,
+                    dedupe_mode=edge.dedupe_mode,
+                    source_crawl_id=work.crawl_id,
+                    source_document_id=request.document_id,
+                    source_edge_id=edge.id,
+                    parent_request_id=request.id,
+                )
+            except GraphRunAdmissionDeferred:
+                if batch_selected:
+                    progress_count = count
+                    await update_edge_evaluation(
+                        requests,
+                        identity,
+                        lambda value: value.model_copy(
+                            update={
+                                "output_count": progress_count,
+                                "updated_at": datetime.now(UTC),
+                            }
+                        ),
+                    )
+                    await _project(
+                        add_edge_output_progress(
+                            progress,
+                            run.id,
+                            edge.id,
+                            selected=batch_selected,
+                            admitted=batch_admitted,
+                            deduplicated=batch_selected - batch_admitted,
+                        )
+                    )
+                deferred_evaluation = await update_edge_evaluation(
+                    requests,
+                    identity,
+                    lambda value: (
+                        value
+                        if value.claim_token != claim_token
+                        else value.model_copy(
+                            update={
+                                "status": "pending",
+                                "output_count": count,
+                                "claim_token": None,
+                                "claim_expires_at": None,
+                                "updated_at": datetime.now(UTC),
+                            }
+                        )
+                    ),
+                )
+                if deferred_evaluation.status == "pending":
+                    await _project(
+                        transition_edge_evaluation_progress(
+                            progress,
+                            deferred_evaluation,
+                            previous_status="running",
+                        )
+                    )
+                raise EdgeEvaluationDeferred(
+                    f"edge evaluation {identity} is waiting for run capacity"
+                )
             count += 1
             batch_selected += 1
-            _target, newly_admitted = await admit_request(
-                runs=runs,
-                requests=requests,
-                progress=progress,
-                jetstream=jetstream,
-                run_id=run.id,
-                node_id=edge.target_node_id,
-                url=str(url),
-                policy_resolver=policy_resolver,
-                dedupe_mode=edge.dedupe_mode,
-                source_crawl_id=work.crawl_id,
-                source_document_id=request.document_id,
-                source_edge_id=edge.id,
-                parent_request_id=request.id,
-            )
             batch_admitted += int(newly_admitted)
             if batch_selected == 10:
                 progress_count = count
@@ -822,6 +1251,8 @@ async def evaluate_edge(
                 )
                 batch_selected = 0
                 batch_admitted = 0
+    except EdgeEvaluationDeferred:
+        raise
     except Exception as exc:
         previous_evaluation_status = evaluation.status
         error_message = str(exc)
@@ -859,6 +1290,7 @@ async def evaluate_edge(
             status="failed",
             error=f"Edge {edge.name} failed: {exc}",
             failure_stage="edge",
+            failure_code="edge_evaluation_failed",
         )
         raise EdgeEvaluationFailed(str(exc)) from exc
     previous_evaluation_status = evaluation.status

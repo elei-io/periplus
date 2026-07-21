@@ -167,6 +167,7 @@ async def _process_due_schedule(
                 trigger_kind="schedule",
                 run_id=run_id,
                 trigger_schedule_id=schedule.id,
+                max_crawls=schedule.max_crawls,
                 now=expected_occurrence,
             )
         except Exception as exc:

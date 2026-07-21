@@ -9,10 +9,11 @@ import type {
   CrawlGraphNode,
   CrawlConcurrencyLimits,
   GraphRunSubmission,
+  GraphRunTrigger,
   GraphRunListResponse,
   GraphRunRecord,
   EdgeDedupeMode,
-  GraphRunFailureList,
+  GraphRunFailureSummary,
   CrawlSchedule,
   CrawlScheduleInput,
   CrawlScheduleListResponse,
@@ -291,12 +292,12 @@ export function useUpdateCrawlGraphEdge(graphId: string) {
 export function useTriggerCrawlGraph(graphId: string) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (urls: string[]) =>
+    mutationFn: async (payload: GraphRunTrigger) =>
       jsonResponse<GraphRunSubmission>(
         await fetch(apiUrl(`/crawl-graphs/${graphId}/runs`), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ urls }),
+          body: JSON.stringify(payload),
         })
       ),
     onSuccess: async () => {
@@ -315,13 +316,13 @@ export function useGraphRuns() {
   })
 }
 
-export function useGraphRunFailures(runId: string, enabled: boolean) {
+export function useGraphRunFailureSummary(runId: string, enabled: boolean) {
   return useQuery({
-    queryKey: ["graph-runs", runId, "failures"],
+    queryKey: ["graph-runs", runId, "failure-summary"],
     enabled,
     queryFn: async () =>
-      jsonResponse<GraphRunFailureList>(
-        await fetch(apiUrl(`/graph-runs/${runId}/failures`))
+      jsonResponse<GraphRunFailureSummary>(
+        await fetch(apiUrl(`/graph-runs/${runId}/failure-summary`))
       ),
   })
 }

@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
 import re
 import time
 from datetime import UTC, datetime
@@ -32,7 +33,7 @@ from repository.ingestion.acquisition import AcquisitionPipeline
 from repository.objects.artifact import ArtifactIdentity
 from repository.objects.html import identify_html
 from runtime.context import GraphExecutionContext, graph_execution_scope
-from runtime.domain_pacing import wait_for_domain_interval
+from runtime.domain_pacing import record_domain_response, wait_for_domain_interval
 from runtime.resource_governor import (
     DURABLE_RESOURCE_WAIT,
     object_request,
@@ -50,6 +51,10 @@ class RetryableAcquisitionError(RuntimeError):
         self.retry_after_seconds = page.retry_after_seconds
 
 
+class PlaywrightRuntimeLost(RuntimeError):
+    """The local Playwright driver process or its transport is no longer usable."""
+
+
 class ExecutionContextReplacedError(RuntimeError):
     pass
 
@@ -64,6 +69,11 @@ def _is_execution_context_replaced(exc: PlaywrightError) -> bool:
         "execution context was destroyed" in detail
         or "cannot find context with specified id" in detail
     )
+
+
+def _raise_if_playwright_runtime_lost(exc: PlaywrightError) -> None:
+    if "connection closed while reading from the driver" in str(exc).lower():
+        raise PlaywrightRuntimeLost("local Playwright driver connection was lost") from exc
 
 
 async def _with_context_recovery(
@@ -409,7 +419,10 @@ async def _acquire(
                 browser = await playwright.chromium.connect_over_cdp(get_str("CDP_URL"))
             except PlaywrightTimeoutError as exc:
                 return _failed_page(url, started, started_at, attempt_number, str(exc) or "CDP connection timed out", "cdp_connection_timeout", "connection", True)
-            except (OSError, PlaywrightError) as exc:
+            except PlaywrightError as exc:
+                _raise_if_playwright_runtime_lost(exc)
+                return _failed_page(url, started, started_at, attempt_number, str(exc), "cdp_connection_failed", "connection", True)
+            except OSError as exc:
                 return _failed_page(url, started, started_at, attempt_number, str(exc), "cdp_connection_failed", "connection", True)
             try:
                 completion = policy.content.completion
@@ -586,6 +599,7 @@ async def _acquire(
             except PlaywrightTimeoutError as exc:
                 return _failed_page(url, started, started_at, attempt_number, str(exc) or "Page navigation timed out", "navigation_timeout", "navigation", True)
             except PlaywrightError as exc:
+                _raise_if_playwright_runtime_lost(exc)
                 return _failed_page(url, started, started_at, attempt_number, str(exc), "navigation_failed", "navigation", True)
             await browser.close()
             browser = None
@@ -593,12 +607,15 @@ async def _acquire(
         return CrawlPage(url=final_url, success=True, status_code=status, duration_seconds=time.perf_counter() - started, html=html, outcome="success", response_media_type=media_type, attempt_evidence=evidence, steps=tuple(steps))
     except TimeoutError as exc:
         return _failed_page(url, started, started_at, attempt_number, str(exc) or "Page acquisition timed out", "acquisition_timeout", "acquisition", True)
+    except PlaywrightError as exc:
+        _raise_if_playwright_runtime_lost(exc)
+        raise
     finally:
         if browser is not None:
             try:
                 await browser.close()
-            except PlaywrightError:
-                pass
+            except PlaywrightError as exc:
+                _raise_if_playwright_runtime_lost(exc)
 
 
 def _response_outcome_page(*, url: str, requested_url: str, started: float, started_at: datetime, attempt_number: int, status: int | None, media_type: str, outcome: ResponseOutcome, failure_code: str, retry_after: float | None = None) -> CrawlPage:
@@ -668,6 +685,20 @@ async def crawl_graph_request(
                     policy,
                     attempt_number=attempt_number,
                     playwright=playwright,
+                )
+        if domain_pacing is not None:
+            try:
+                await record_domain_response(
+                    domain_pacing,
+                    domain=remote_domain,
+                    status_code=page.status_code,
+                    retry_after_seconds=page.retry_after_seconds,
+                )
+            except Exception:
+                logging.warning(
+                    "failed to record adaptive domain pacing for %s",
+                    remote_domain,
+                    exc_info=True,
                 )
         if not page.success and page.failure_retryable and not persist_retryable_failure:
             raise RetryableAcquisitionError(page)

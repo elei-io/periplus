@@ -39,6 +39,9 @@ x-atlas-resource-environment: &atlas-resource-environment
   ATLAS_CATALOGUE_MAX_CONCURRENCY: ${ATLAS_CATALOGUE_MAX_CONCURRENCY:-64}
   ATLAS_OBJECT_IO_MAX_CONCURRENCY: ${ATLAS_OBJECT_IO_MAX_CONCURRENCY:-64}
 
+x-atlas-graph-environment: &atlas-graph-environment
+  ATLAS_GRAPH_MAX_RUN_SECONDS: ${ATLAS_GRAPH_MAX_RUN_SECONDS:-604800}
+
 x-atlas-quack-environment: &atlas-quack-environment
   ATLAS_QUACK_URI: quack:atlas-quack:9494
   ATLAS_QUACK_TOKEN: ${ATLAS_QUACK_TOKEN:-atlas-local-quack}
@@ -89,6 +92,7 @@ services:
           *atlas-nats-environment,
           *atlas-repository-environment,
           *atlas-resource-environment,
+          *atlas-graph-environment,
           *atlas-quack-environment,
         ]
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -101,6 +105,8 @@ services:
       atlas-setup:
         condition: service_completed_successfully
       atlas-quack:
+        condition: service_healthy
+      atlas-nats:
         condition: service_healthy
     restart: unless-stopped
 
@@ -130,13 +136,14 @@ services:
           *atlas-nats-environment,
           *atlas-repository-environment,
           *atlas-resource-environment,
+          *atlas-graph-environment,
         ]
       CDP_URL: ${CDP_URL:-ws://192.168.30.201:8411/v1/connect}
-      ATLAS_GRAPH_MAX_REQUESTS_PER_RUN: ${ATLAS_GRAPH_MAX_REQUESTS_PER_RUN:-10000}
-      ATLAS_GRAPH_MAX_RUN_SECONDS: ${ATLAS_GRAPH_MAX_RUN_SECONDS:-3600}
     depends_on:
       atlas-setup:
         condition: service_completed_successfully
+      atlas-nats:
+        condition: service_healthy
     restart: unless-stopped
 
   atlas-ingestion-worker:
@@ -171,6 +178,8 @@ services:
       atlas-setup:
         condition: service_completed_successfully
       atlas-maintenance-worker:
+        condition: service_healthy
+      atlas-nats:
         condition: service_healthy
     restart: unless-stopped
 
@@ -209,6 +218,8 @@ services:
         condition: service_healthy
       atlas-maintenance-worker:
         condition: service_healthy
+      atlas-nats:
+        condition: service_healthy
     restart: unless-stopped
 
   atlas-catalogue-relay:
@@ -239,6 +250,8 @@ services:
     depends_on:
       atlas-setup:
         condition: service_completed_successfully
+      atlas-nats:
+        condition: service_healthy
     restart: unless-stopped
 
   atlas-maintenance-worker:
@@ -265,11 +278,14 @@ services:
           *atlas-nats-environment,
           *atlas-repository-environment,
           *atlas-resource-environment,
+          *atlas-graph-environment,
         ]
       ATLAS_REPOSITORY_STAGING_ROOT: /app/.atlas/repository/staging
     depends_on:
       atlas-setup:
         condition: service_completed_successfully
+      atlas-nats:
+        condition: service_healthy
     restart: unless-stopped
 
   atlas-setup:
@@ -318,19 +334,21 @@ services:
       - ./docker/quack/init.sql:/opt/atlas/quack-init.sql:ro
     restart: unless-stopped
 
-  # atlas-nats:
-  #   image: nats:2.11-alpine
-  #   container_name: atlas-nats
-  #   ports:
-  #     - "127.0.0.1:4222:4222"
-  #   healthcheck:
-  #     test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8222/healthz"]
-  #     interval: 5s
-  #     timeout: 3s
-  #     retries: 10
-  #   command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
-  #   volumes:
-  #     - atlas-nats-data:/data
+  atlas-nats:
+    image: nats:2.11-alpine
+    container_name: atlas-nats
+    command: ["--config", "/etc/nats/atlas-local.conf"]
+    ports:
+      - "127.0.0.1:4222:4222"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - atlas-nats-data:/data
+      - ./docker/nats/local.conf:/etc/nats/atlas-local.conf:ro
+    restart: unless-stopped
 
   # atlas-postgres:
   #   image: postgres:18
@@ -374,8 +392,10 @@ services:
   #   command: python -m repository init-s3
   #   environment:
   #     <<: *atlas-repository-environment
-  #     ATLAS_NAVIGATION_OBJECT_RETENTION_DAYS: "2"
   #   depends_on:
   #     atlas-minio:
   #       condition: service_healthy
   #   restart: "no"
+
+volumes:
+  atlas-nats-data:

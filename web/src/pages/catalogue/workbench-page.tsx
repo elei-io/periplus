@@ -948,9 +948,12 @@ function CrawlLaunchOutput({
       return
     }
     startedRef.current = true
-    mutate(urls, {
-      onSuccess: (submission) => setRunId(submission.run_id),
-    })
+    mutate(
+      { urls, max_crawls: urls.length },
+      {
+        onSuccess: (submission) => setRunId(submission.run_id),
+      }
+    )
   }, [mutate, selectedGraph, urls])
 
   if (graphsQuery.isLoading) {

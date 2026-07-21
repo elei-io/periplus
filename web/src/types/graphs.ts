@@ -58,6 +58,7 @@ export type CrawlScheduleInput = {
   starts_at: string | null
   ends_at: string | null
   maximum_run_count: number | null
+  max_crawls: number
   root_urls: string[]
   overlap_policy: "skip" | "allow"
   misfire_policy: "skip" | "run_once"
@@ -100,6 +101,11 @@ export type GraphRunSubmission = {
   status: "queued"
 }
 
+export type GraphRunTrigger = {
+  urls: string[]
+  max_crawls: number
+}
+
 export type GraphRunStatus =
   | "queued"
   | "running"
@@ -116,6 +122,8 @@ export type GraphRunRecord = {
   trigger_kind: "manual" | "schedule"
   trigger_schedule_id: string | null
   trigger_urls: string[]
+  max_crawls: number
+  crawl_limit_reached: boolean
   request_count: number
   pending_request_count: number
   failed_request_count: number
@@ -136,19 +144,18 @@ export type GraphRunListResponse = {
   total: number
 }
 
-export type GraphRunFailure = {
-  crawl_id: string
-  requested_url: string
-  final_url: string | null
+export type GraphRunFailureGroup = {
+  failure_stage: string
+  failure_code: string
   status_code: number | null
-  failure_code: string | null
-  failure_stage: string | null
-  failure_detail: string | null
-  captured_at: string
+  count: number
+  example_url: string
+  example_detail: string | null
+  last_occurred_at: string
 }
 
-export type GraphRunFailureList = {
-  items: GraphRunFailure[]
+export type GraphRunFailureSummary = {
+  items: GraphRunFailureGroup[]
   total: number
 }
 

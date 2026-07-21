@@ -223,6 +223,7 @@ async def run_now(
             catalogue_snapshot_resolver=control.latest_snapshot,
             trigger_kind="manual",
             trigger_schedule_id=schedule.id,
+            max_crawls=schedule.max_crawls,
         )
     except (
         CrawlGraphNotFoundError,

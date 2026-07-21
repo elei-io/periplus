@@ -65,16 +65,20 @@ export function ScheduleEditorDialog({
   graphId,
   schedule,
   initialName,
+  initialMaxCrawls,
   initialUrls,
   open,
   onOpenChange,
+  onSaved,
 }: {
   graphId: string
   schedule: CrawlSchedule | null
   initialName?: string
+  initialMaxCrawls?: number
   initialUrls?: string[]
   open: boolean
   onOpenChange: (open: boolean) => void
+  onSaved?: (schedule: CrawlSchedule) => void
 }) {
   const interval = initialInterval(schedule)
   const [name, setName] = useState(schedule?.name ?? initialName ?? "")
@@ -99,6 +103,9 @@ export function ScheduleEditorDialog({
   )
   const [maximumRuns, setMaximumRuns] = useState(
     schedule?.maximum_run_count?.toString() ?? ""
+  )
+  const [maxCrawls, setMaxCrawls] = useState(
+    (schedule?.max_crawls ?? initialMaxCrawls ?? 1000).toString()
   )
   const [urls, setUrls] = useState(
     schedule?.root_urls.join("\n") ?? initialUrls?.join("\n") ?? ""
@@ -128,6 +135,7 @@ export function ScheduleEditorDialog({
     starts_at: instant(startsAt),
     ends_at: instant(endsAt),
     maximum_run_count: maximumRuns ? Number(maximumRuns) : null,
+    max_crawls: Number(maxCrawls),
     root_urls: urls
       .split("\n")
       .map((value) => value.trim())
@@ -142,9 +150,17 @@ export function ScheduleEditorDialog({
       toast.error("Schedule name and at least one root URL are required.")
       return
     }
+    if (
+      !Number.isInteger(values.max_crawls) ||
+      values.max_crawls < values.root_urls.length
+    ) {
+      toast.error("Maximum crawls must be at least the number of root URLs.")
+      return
+    }
     const options = {
-      onSuccess: () => {
+      onSuccess: (saved: CrawlSchedule) => {
         toast.success(schedule ? "Schedule updated." : "Schedule created.")
+        onSaved?.(saved)
         onOpenChange(false)
       },
     }
@@ -241,7 +257,7 @@ export function ScheduleEditorDialog({
             )}
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Field label="Starts at · optional">
               <Input
                 type="datetime-local"
@@ -262,6 +278,15 @@ export function ScheduleEditorDialog({
                 min={1}
                 value={maximumRuns}
                 onChange={(event) => setMaximumRuns(event.target.value)}
+              />
+            </Field>
+            <Field label="Maximum crawls per run">
+              <Input
+                type="number"
+                min={1}
+                max={1_000_000}
+                value={maxCrawls}
+                onChange={(event) => setMaxCrawls(event.target.value)}
               />
             </Field>
           </div>

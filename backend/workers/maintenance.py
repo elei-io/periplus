@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Literal
+from uuid import UUID
 
-from config import get_float
+from config import get_float, get_int
+from config.performance import NAVIGATION_CLEANUP_BATCH_SIZE
 from nats.errors import TimeoutError as NatsTimeoutError
 from repository.ingestion.health import HealthMonitor
 from repository.maintenance import MaintenanceConfig, cleanup_staging, compact
+from repository.objects.config import object_store_from_env
+from repository.objects.store import ObjectMetadata, ObjectStore
 from runtime.catalogue_lane import run_catalogue_operation
 from runtime.catalogue_events import (
     DML_ALL_SUBJECT,
@@ -20,6 +25,7 @@ from runtime.catalogue_events import (
     maintenance_wake_consumer_config,
 )
 from runtime.nats_client import connect_nats
+from runtime.graph_queue import GraphRun, ensure_graph_storage, get_graph_run
 from runtime.operation_leases import (
     OperationLeaseLost,
     OperationLeaseUnavailable,
@@ -30,9 +36,12 @@ from runtime.resource_governor import (
     DURABLE_RESOURCE_WAIT,
     ResourceCapacityUnavailable,
     ResourceLimits,
+    ResourceNeed,
     ResourcePermitLost,
+    ResourceRequest,
     catalogue_request,
     ensure_resource_governor_storage,
+    object_units,
     resource_permits,
 )
 from workers.lifecycle import cancel_task, run_worker_process
@@ -40,6 +49,117 @@ from workers.lifecycle import cancel_task, run_worker_process
 
 MaintenanceKind = Literal["compact", "cleanup"]
 MaintenanceOutcome = Literal["worked", "idle", "deferred", "failed"]
+_NAVIGATION_PREFIX = "runtime/navigation/"
+
+
+def _navigation_run_id(key: str) -> UUID | None:
+    parts = key.split("/")
+    if len(parts) < 4 or parts[:2] != ["runtime", "navigation"]:
+        return None
+    try:
+        return UUID(hex=parts[2])
+    except ValueError:
+        return None
+
+
+def _aged_navigation_objects(
+    store: ObjectStore,
+    *,
+    cutoff: datetime,
+    limit: int = NAVIGATION_CLEANUP_BATCH_SIZE,
+) -> tuple[ObjectMetadata, ...]:
+    aged: list[ObjectMetadata] = []
+    for item in store.list_objects(_NAVIGATION_PREFIX):
+        if item.last_modified <= cutoff:
+            aged.append(item)
+            if len(aged) >= limit:
+                break
+    return tuple(aged)
+
+
+async def _run_navigation_cleanup(
+    *,
+    runs,
+    store: ObjectStore,
+    operation_lease_store,
+    resource_grants,
+    now: datetime | None = None,
+    monitor: HealthMonitor | None = None,
+) -> MaintenanceOutcome:
+    """Delete one bounded batch of expired terminal or orphan navigation objects."""
+
+    now = now or datetime.now(UTC)
+    cutoff = now - timedelta(seconds=get_int("ATLAS_GRAPH_MAX_RUN_SECONDS"))
+    try:
+        async with operation_leases(
+            operation_lease_store,
+            ("navigation-retention",),
+            phase="maintenance",
+            acquire_timeout=0,
+        ):
+            async with resource_permits(
+                resource_grants,
+                ResourceRequest(
+                    operation_id="maintenance:navigation-retention",
+                    service_class="maintenance",
+                    resources=(
+                        ResourceNeed(name="object:read", units=1),
+                        ResourceNeed(name="object:write", units=1),
+                    ),
+                ),
+                acquire_timeout=DURABLE_RESOURCE_WAIT,
+            ):
+                candidates = await asyncio.to_thread(
+                    _aged_navigation_objects,
+                    store,
+                    cutoff=cutoff,
+                )
+                run_ids = {
+                    item.key: _navigation_run_id(item.key) for item in candidates
+                }
+                unique_ids = {value for value in run_ids.values() if value is not None}
+                states: dict[UUID, GraphRun | None] = {}
+                if unique_ids:
+                    values = await asyncio.gather(
+                        *(get_graph_run(runs, run_id) for run_id in unique_ids)
+                    )
+                    states = dict(zip(unique_ids, values, strict=True))
+                keys = tuple(
+                    item.key
+                    for item in candidates
+                    if (run_id := run_ids[item.key]) is not None
+                    and (
+                        states.get(run_id) is None
+                        or states[run_id].status
+                        in {"completed", "completed_with_errors", "failed", "cancelled"}
+                    )
+                )
+                active_expired = len(candidates) - len(keys)
+                deleted = (
+                    await asyncio.to_thread(store.delete_many, keys) if keys else 0
+                )
+        if active_expired:
+            logging.warning(
+                "skipped %d expired navigation objects owned by active graph runs",
+                active_expired,
+            )
+        if monitor is not None:
+            monitor.subsystem_ready("navigation_retention")
+        return "worked" if deleted else "idle"
+    except (OperationLeaseUnavailable, ResourceCapacityUnavailable):
+        return "deferred"
+    except (OperationLeaseLost, ResourcePermitLost) as exc:
+        if monitor is not None:
+            monitor.subsystem_unavailable("navigation_retention", str(exc))
+        logging.exception("navigation retention admission was lost")
+        return "deferred"
+    except Exception:
+        if monitor is not None:
+            monitor.subsystem_unavailable(
+                "navigation_retention", "navigation cleanup failed"
+            )
+        logging.exception("navigation retention cleanup failed")
+        return "failed"
 
 
 async def _run_operation(
@@ -50,9 +170,7 @@ async def _run_operation(
     config: MaintenanceConfig,
     monitor: HealthMonitor | None = None,
 ) -> MaintenanceOutcome:
-    """Run one singleton operation only after all shared pressure has drained."""
-
-    limits = ResourceLimits.from_env()
+    """Run one bounded singleton operation without draining foreground work."""
 
     def operation() -> bool:
         if kind == "compact":
@@ -70,19 +188,26 @@ async def _run_operation(
             phase="maintenance",
             acquire_timeout=0,
         ):
-            async with resource_permits(
-                resource_grants,
-                catalogue_request(
-                    f"maintenance:{kind}",
+            if kind == "compact":
+                limits = ResourceLimits.from_env()
+                io_units = object_units(config.maximum_compaction_pass_bytes)
+                request = catalogue_request(
+                    "maintenance:compact",
                     service_class="maintenance",
-                    object_read_units=limits.object_read,
-                    object_write_units=limits.object_write,
+                    object_read_units=io_units,
+                    object_write_units=io_units,
                     limits=limits,
-                    exclusive=True,
-                ),
-                acquire_timeout=DURABLE_RESOURCE_WAIT,
-            ):
-                worked = await run_catalogue_operation(operation)
+                )
+                async with resource_permits(
+                    resource_grants,
+                    request,
+                    acquire_timeout=DURABLE_RESOURCE_WAIT,
+                ):
+                    worked = await run_catalogue_operation(operation)
+            else:
+                # Staging cleanup touches only process-local abandoned files.
+                # It needs neither catalogue nor object-store pressure admission.
+                worked = await asyncio.to_thread(operation)
         if monitor is not None:
             monitor.subsystem_ready("maintenance_admission")
         return "worked" if worked else "idle"
@@ -232,6 +357,8 @@ async def _run(stop: asyncio.Event, monitor: HealthMonitor) -> None:
     await ensure_catalogue_event_stream(jetstream)
     operation_lease_store = await ensure_operation_lease_storage(jetstream)
     resource_grants = await ensure_resource_governor_storage(jetstream)
+    runs, _requests, _workers = await ensure_graph_storage(jetstream)
+    object_store = object_store_from_env()
     tick_subscription = await jetstream.pull_subscribe(
         DML_ALL_SUBJECT,
         durable=MAINTENANCE_WAKE_DURABLE,
@@ -241,6 +368,7 @@ async def _run(stop: asyncio.Event, monitor: HealthMonitor) -> None:
     monitor.dependencies_ready()
     monitor.subsystem_ready("maintenance_admission")
     monitor.subsystem_ready("maintenance_catalogue_ticks")
+    monitor.subsystem_ready("navigation_retention")
     compaction_wake = asyncio.Event()
     compaction_wake.set()
     tick_task = asyncio.create_task(
@@ -277,6 +405,13 @@ async def _run(stop: asyncio.Event, monitor: HealthMonitor) -> None:
                     operation_lease_store=operation_lease_store,
                     resource_grants=resource_grants,
                     config=config,
+                    monitor=monitor,
+                )
+                await _run_navigation_cleanup(
+                    runs=runs,
+                    store=object_store,
+                    operation_lease_store=operation_lease_store,
+                    resource_grants=resource_grants,
                     monitor=monitor,
                 )
                 next_periodic = loop.time() + config.interval_seconds

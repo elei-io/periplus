@@ -59,6 +59,20 @@ class ObjectStoreContract:
         self.assertFalse(self.store.exists(first))
         self.assertTrue(self.store.exists(second))
 
+    def test_listing_and_batch_deletion_are_prefix_scoped(self) -> None:
+        first = "runtime/navigation/run-a/documents/a/package.arrow"
+        second = "runtime/navigation/run-b/documents/b/package.arrow"
+        self.store.put_if_absent(first, io.BytesIO(b"a"))
+        self.store.put_if_absent(second, io.BytesIO(b"bb"))
+
+        listed = list(self.store.list_objects("runtime/navigation/run-a/"))
+        self.assertEqual([item.key for item in listed], [first])
+        self.assertEqual(listed[0].size, 1)
+        self.assertIsNotNone(listed[0].last_modified.tzinfo)
+        self.assertEqual(self.store.delete_many((first,)), 1)
+        self.assertFalse(self.store.exists(first))
+        self.assertTrue(self.store.exists(second))
+
 
 class FileObjectStoreTests(ObjectStoreContract, unittest.TestCase):
     def setUp(self) -> None:
@@ -184,11 +198,8 @@ class RepositoryConfigTests(unittest.TestCase):
 
         self.assertEqual(bucket, "atlas")
         client.create_bucket.assert_called_once_with(Bucket="atlas")
-        lifecycle = client.put_bucket_lifecycle_configuration.call_args.kwargs
-        self.assertEqual(
-            lifecycle["LifecycleConfiguration"]["Rules"][-1]["Filter"]["Prefix"],
-            "runtime/navigation/",
-        )
+        client.get_bucket_lifecycle_configuration.assert_not_called()
+        client.put_bucket_lifecycle_configuration.assert_not_called()
 
     @patch("repository.objects.config.boto3.client")
     def test_s3_initializer_preserves_an_existing_bucket(self, client_factory) -> None:
@@ -220,6 +231,21 @@ class RepositoryConfigTests(unittest.TestCase):
 
         options = client.call_args.kwargs
         self.assertEqual(options["config"].s3["addressing_style"], "path")
+
+    @patch("repository.objects.config.boto3.client")
+    def test_s3_pool_matches_the_callers_process_concurrency(self, client) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ATLAS_REPOSITORY_STORAGE": "s3",
+                "ATLAS_REPOSITORY_S3_BUCKET": "atlas",
+            },
+            clear=True,
+        ):
+            object_store_from_env(maximum_concurrency=12)
+
+        options = client.call_args.kwargs
+        self.assertEqual(options["config"].max_pool_connections, 12)
 
     def test_invalid_s3_url_style_is_rejected(self) -> None:
         with patch.dict(

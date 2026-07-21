@@ -40,8 +40,9 @@ changing worker ownership, queue routing, embedded DuckDB use, or deployment sca
   Governor budgets cap combined DuckLake and object-store pressure across replicas.
 - Page-only graph edges use bounded standalone DuckDB connections. Historical edge joins use a
   pinned snapshot through one serialized, read-only catalogue operation per acquisition process.
-- The maintenance worker performs off-path upkeep only after receiving an exclusive background
-  catalogue permit. It does not use a bespoke maintenance-active polling protocol.
+- The maintenance worker performs bounded off-path upkeep under proportional background catalogue
+  and object-store permits. It runs concurrently with foreground work, never installs a global
+  drain barrier, and does not use a bespoke maintenance-active polling protocol.
 - Capacity permits, operation leases, and PostgreSQL advisory commit locks are distinct. Permits
   control pressure, leases suppress duplicate execution, and advisory locks fence correctness.
 - The Resource Governor is a narrow admission controller. It never owns work delivery, workflow

@@ -42,8 +42,13 @@ class AcquisitionResume:
 class AcquisitionPipeline:
     """Store immutable captured content and publish ingestion without opening DuckLake."""
 
-    def __init__(self, *, queue: IngestionQueueClient | None = None) -> None:
-        store = object_store_from_env()
+    def __init__(
+        self,
+        *,
+        queue: IngestionQueueClient | None = None,
+        maximum_concurrency: int = 1,
+    ) -> None:
+        store = object_store_from_env(maximum_concurrency=maximum_concurrency)
         self.html_repository = RawHtmlRepository(store)
         self.artifact_repository = RawArtifactRepository(store)
         self.queue = queue or IngestionQueueClient()

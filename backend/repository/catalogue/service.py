@@ -12,7 +12,7 @@ from uuid import UUID
 
 from repository.catalogue.client import Catalogue
 from repository.catalogue.exceptions import CatalogueConflictError, CatalogueValidationError
-from repository.catalogue.operations import maintenance_lock, repository_commit_lock
+from repository.catalogue.operations import repository_commit_lock
 from repository.catalogue.records import (
     ArtifactRecord,
     CatalogueWriteResult,
@@ -120,62 +120,63 @@ class CatalogueService:
                 "maximum_tables must be greater than zero when provided"
             )
 
-        with maintenance_lock(self.catalogue):
-            # Atlas attaches DuckLake with data_inlining_row_limit=0, so there
-            # is no inline-data debt to flush on every CDC wake-up.
-            candidates = self._small_file_candidates(
-                maximum_input_file_bytes=maximum_input_file_bytes,
-            )
-            if maximum_tables is not None:
-                candidates = candidates[:maximum_tables]
-            results: list[CompactionResult] = []
-            bounded_compactions = min(
-                maximum_compacted_files,
-                max(1, maximum_operation_bytes // target_file_bytes),
-            )
-            for schema_name, table_name, eligible_files, eligible_bytes in candidates:
-                if eligible_files < minimum_files:
-                    continue
-                self.catalogue.connection.execute(
-                    "CALL ducklake_set_option("
-                    "?, 'target_file_size', ?, schema => ?, table_name => ?)",
-                    [
-                        self.catalogue.config.alias,
-                        f"{target_file_bytes}B",
-                        schema_name,
-                        table_name,
-                    ],
-                )
-                rows = self.catalogue.connection.execute(
-                    "CALL ducklake_merge_adjacent_files("
-                    "?, ?, schema => ?, max_compacted_files => ?, max_file_size => ?)",
-                    [
-                        self.catalogue.config.alias,
-                        table_name,
-                        schema_name,
-                        bounded_compactions,
-                        maximum_input_file_bytes,
-                    ],
-                ).fetchall()
-                results.append(
-                    CompactionResult(
-                        schema_name=schema_name,
-                        table_name=table_name,
-                        eligible_files=eligible_files,
-                        eligible_bytes=eligible_bytes,
-                        files_processed=sum(int(row[2]) for row in rows),
-                        files_created=sum(int(row[3]) for row in rows),
-                    )
-                )
-            # Compaction schedules superseded files for deletion. Keep a generous
-            # grace window for long reads, then reclaim only scheduled files;
-            # snapshot expiry and orphan deletion remain explicit retention actions.
+        # Atlas attaches DuckLake with data_inlining_row_limit=0, so there is
+        # no inline-data debt to flush on every CDC wake-up. DuckLake owns the
+        # transactional conflict boundary: appends may continue while this
+        # bounded physical rewrite runs and callers retry a conflicting pass.
+        candidates = self._small_file_candidates(
+            maximum_input_file_bytes=maximum_input_file_bytes,
+        )
+        if maximum_tables is not None:
+            candidates = candidates[:maximum_tables]
+        results: list[CompactionResult] = []
+        bounded_compactions = min(
+            maximum_compacted_files,
+            max(1, maximum_operation_bytes // target_file_bytes),
+        )
+        for schema_name, table_name, eligible_files, eligible_bytes in candidates:
+            if eligible_files < minimum_files:
+                continue
             self.catalogue.connection.execute(
-                "CALL ducklake_cleanup_old_files(?, older_than => "
-                "now() - CAST(? AS BIGINT) * INTERVAL '1 second')",
-                [self.catalogue.config.alias, cleanup_older_than_seconds],
+                "CALL ducklake_set_option("
+                "?, 'target_file_size', ?, schema => ?, table_name => ?)",
+                [
+                    self.catalogue.config.alias,
+                    f"{target_file_bytes}B",
+                    schema_name,
+                    table_name,
+                ],
+            )
+            rows = self.catalogue.connection.execute(
+                "CALL ducklake_merge_adjacent_files("
+                "?, ?, schema => ?, max_compacted_files => ?, max_file_size => ?)",
+                [
+                    self.catalogue.config.alias,
+                    table_name,
+                    schema_name,
+                    bounded_compactions,
+                    maximum_input_file_bytes,
+                ],
             ).fetchall()
-            return results
+            results.append(
+                CompactionResult(
+                    schema_name=schema_name,
+                    table_name=table_name,
+                    eligible_files=eligible_files,
+                    eligible_bytes=eligible_bytes,
+                    files_processed=sum(int(row[2]) for row in rows),
+                    files_created=sum(int(row[3]) for row in rows),
+                )
+            )
+        # Compaction schedules superseded files for deletion. Keep a generous
+        # grace window for long reads, then reclaim only scheduled files;
+        # snapshot expiry and orphan deletion remain explicit retention actions.
+        self.catalogue.connection.execute(
+            "CALL ducklake_cleanup_old_files(?, older_than => "
+            "now() - CAST(? AS BIGINT) * INTERVAL '1 second')",
+            [self.catalogue.config.alias, cleanup_older_than_seconds],
+        ).fetchall()
+        return results
 
     def _small_file_candidates(
         self,

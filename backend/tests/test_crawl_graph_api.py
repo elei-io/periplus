@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -10,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from api.routers.crawl_graphs import router
 from control.crawl_graphs.models import CrawlGraph, CrawlGraphEdge, CrawlGraphNode
-from control.crawl_graphs.service import ensure_default_crawl_graph
+from control.crawl_graphs.service import ensure_seeded_crawl_graphs
 from db import Base
 from db.session import get_session
 
@@ -107,13 +108,22 @@ class CrawlGraphApiTests(unittest.TestCase):
 
     def test_system_graph_is_visible_and_rejects_mutations(self) -> None:
         with Session(self.engine, expire_on_commit=False) as session:
-            graph = ensure_default_crawl_graph(session)
+            graph = next(
+                graph
+                for graph in ensure_seeded_crawl_graphs(
+                    session, Path(__file__).parents[2] / "fixtures"
+                )
+                if graph.slug == "single-page"
+            )
             session.commit()
 
         listing = self.client.get("/crawl-graphs/")
         self.assertEqual(listing.status_code, 200)
-        self.assertEqual(listing.json()["items"][0]["slug"], "single-page")
-        self.assertTrue(listing.json()["items"][0]["system_owned"])
+        self.assertEqual(listing.json()["total"], 16)
+        single = next(
+            item for item in listing.json()["items"] if item["slug"] == "single-page"
+        )
+        self.assertTrue(single["system_owned"])
 
         add_node = self.client.post(
             f"/crawl-graphs/{graph.id}/nodes",

@@ -12,13 +12,17 @@ import pyarrow as pa
 
 from repository.objects.store import FileObjectStore
 from repository.objects.html import RawHtmlRepository, identify_html
-from runtime.graph_navigation import EdgeUrlExecutor
+from runtime.graph_navigation import EdgeResultCache, EdgeUrlExecutor
 from runtime.edge_sql import edge_uses_catalogue
 from runtime.navigation import (
+    build_edge_selection_package,
     build_navigation_package,
     delete_run_navigation,
+    edge_selection_object_name,
+    load_edge_selection_package,
     load_navigation_package,
     navigation_object_name,
+    put_edge_selection_package,
     put_navigation_package,
 )
 
@@ -192,6 +196,75 @@ class NavigationPackageTests(unittest.TestCase):
             )
 
         self.assertEqual(urls, ["https://example.com/products?page=2"])
+
+    def test_deferred_edge_reuses_its_bounded_query_result(self) -> None:
+        crawl_id = uuid4()
+        run_id = uuid4()
+        html = '<a href="/next">Next</a>'
+        document_id = identify_html(html).document_id
+        payload, row_count = build_navigation_package(
+            html,
+            document_id=document_id,
+            page_url="https://example.com/start",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = FileObjectStore(Path(directory))
+            package = put_navigation_package(
+                store,
+                name=navigation_object_name(
+                    run_id, document_id, "https://example.com/start"
+                ),
+                payload=payload,
+                row_count=row_count,
+            )
+            cache = EdgeResultCache(maximum_bytes=1024 * 1024)
+            parameters = {
+                "crawl_id": crawl_id,
+                "_page_url": "https://example.com/start",
+                "_document_id": document_id,
+            }
+            sql = (
+                "SELECT target_url AS url FROM edge.page_links "
+                "WHERE crawl_id = $crawl_id"
+            )
+            first = EdgeUrlExecutor(
+                store,
+                package,
+                result_cache=cache,
+                cache_key="evaluation",
+            )(sql, parameters)
+            store.delete(package.object_name)
+            second = EdgeUrlExecutor(
+                store,
+                package,
+                result_cache=cache,
+                cache_key="evaluation",
+            )(sql, parameters)
+
+        self.assertEqual(first, ["https://example.com/next"])
+        self.assertEqual(second, first)
+
+    def test_deferred_edge_selection_survives_process_cache_loss(self) -> None:
+        run_id = uuid4()
+        urls = ("https://example.com/one", "https://example.com/two")
+        payload = build_edge_selection_package(urls)
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = FileObjectStore(Path(directory))
+            package = put_edge_selection_package(
+                store,
+                name=edge_selection_object_name(
+                    run_id,
+                    "evaluation",
+                    "a" * 64,
+                ),
+                payload=payload,
+                row_count=len(urls),
+            )
+            loaded = load_edge_selection_package(store, package)
+
+        self.assertEqual(loaded, urls)
 
     def test_relation_kind_uses_origin_host_and_registrable_domain(self) -> None:
         html = (

@@ -27,6 +27,11 @@ DuckLake; current work and progress belong in NATS.
 **Using NATS as analytical history.** JetStream/KV state is current, bounded, and repairable. Durable
 evidence belongs in DuckLake and immutable objects.
 
+**Putting graph execution state in DuckLake.** Runs, crawl requests, admission frontiers,
+deduplication markers, claims, retries, scheduler state, and completion counters are operational
+NATS state. DuckLake contains retained crawl evidence only and must never become a workflow recovery
+path.
+
 **Scoring content quality during ingestion.** Ingestion produces faithful structural evidence.
 Quality hypotheses change independently and must run later over DuckLake crawl attempts and element
 rows; changing an analyzer must never invalidate or rebuild the DOM projection.
@@ -110,5 +115,8 @@ dematerialize, edit, and create a new incarnation.
 
 **Creating permanent per-crawl Parquet files.** DuckLake owns analytical layout and compaction.
 
-**Running maintenance in the foreground.** Maintenance is off-path and requires an exclusive background
-catalogue permit.
+**Requiring global quiescence for maintenance.** Foreground work may remain active for days while
+small Parquet files accumulate. Compaction therefore runs concurrently in bounded table slices under
+proportional background permits and retries DuckLake transaction conflicts. It must never install a
+deployment-wide drain barrier. Local staging cleanup and navigation-object retention do not acquire
+catalogue permits.

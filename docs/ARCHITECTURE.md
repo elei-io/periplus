@@ -8,7 +8,7 @@ vendor, proxy, profile, or transport; the CDP service owns those decisions and t
 
 | System | Owns |
 |---|---|
-| Postgres | Editable graphs, domain politeness, content policies, schedules, matches, schemas, macro definitions, and materialization definitions |
+| Postgres | Editable graphs, domain politeness, content policies, schedules, matches, schemas, macro and materialization definitions, and durable chat workspace items |
 | NATS JetStream/KV | Graph runs, crawl work, progress, leases, workers, admission, and expiring resource grants |
 | CDP service | Acquisition transport, provider selection, browser farm, and acquisition capacity |
 | Quack service | Interactive analytical DuckDB execution and memory |
@@ -25,7 +25,9 @@ URL -> crawl request -> CDP session -> immutable HTML -> navigation package -> s
 ## Acquisition boundary
 
 Every admitted URL resolves and freezes a `DomainPolicy` and `CrawlPolicy`. Domain policy owns
-website politeness: maximum concurrency and minimum request interval. Crawl policy owns accepted
+website politeness: maximum concurrency and minimum request interval. A NATS-backed hostname
+health record adds deployment-wide adaptive cooldown after 429 and repeated 5xx responses, while
+successful HTTP responses decay that penalty. Crawl policy owns accepted
 content types, response outcomes, and four content-completion methods: dynamic waiting, fixed
 waiting, scrolling, and expansion. Playwright remains an implementation detail. With every method
 disabled Atlas emits only the navigation and content calls supported by a static HTTP capture. The
@@ -53,6 +55,9 @@ page's occurrence-level Arrow package. It preserves raw hrefs, fragments, DOM or
 provenance, normalized source and target URL components, and their most-specific relationship while
 exposing a fragment-free crawl destination. Link text and presentation attributes are not part of
 the navigation contract. It uses a standalone memory-limited DuckDB connection.
+When the run acquisition window defers an evaluated edge, Atlas retains its bounded selected-URL
+package under the run's navigation prefix. Redelivery resumes admission from that result instead
+of rereading and requerying the source navigation package.
 The seeded `views.page_links` definition reproduces those meanings from durable crawl and DOM
 evidence and is declared under `fixtures/materialized_views/crawl/`. Its full
 bootstrap and keyed `crawl_id` refreshes are ordinary materialization-worker
@@ -78,10 +83,12 @@ cursor publish physical events to JetStream. Each materialization owns a filtere
 durable NATS consumer, coalesces ticks, and transactionally refreshes its stable
 table using its declared keyed, append-only, or full strategy. Keyed refreshes
 derive composite keys from a stateless bounded CDC range query; they do not open
-another persistent CDC consumer. Maintenance runs off-path with an exclusive background catalogue
-permit and consumes the relay's wildcard DML subject only as a coalesced
-wake-up hint. Each ingestion or materialization process owns one embedded
-DuckDB connection and initially executes one catalogue operation at a time; the
+another persistent CDC consumer. Maintenance runs off-path in bounded table slices with proportional
+catalogue and object-store permits and consumes the relay's wildcard DML subject only as a coalesced
+wake-up hint. DuckLake transaction conflicts are retried, so compaction can progress during
+continuously active foreground work without deployment-wide quiescence. Each ingestion or
+materialization process owns one embedded DuckDB connection and initially executes one catalogue
+operation at a time; the
 relay owns exactly its DML and DDL connections. Historical graph edges open
 bounded, read-only, per-operation connections and
 are serialized within each acquisition process.
@@ -94,10 +101,18 @@ streams bounded Arrow IPC results. Query status and cancellation requests use th
 `atlas_catalogue_queries` NATS KV bucket, so another API replica can observe or cancel an execution.
 Timeout, row, encoded-byte, local-pool, and global-concurrency limits are mandatory.
 
-The catalogue search agent is an API-owned adapter over that same interactive query boundary. Its
+The Atlas chat agent is an API-owned adapter over that same interactive query boundary. Its
 PydanticAI loop and typed catalogue tools live under `backend/agents/`; neither the model nor the
-browser receives a Quack connection or storage credentials. A POST request remains attached while
-Atlas emits its own stable SSE progress events, executed SQL, bounded rows, and final summary. The
+browser receives a Quack connection or storage credentials. Postgres retains Atlas-owned chat
+messages, bounded normalized tool artifacts, and explicit user actions; it never stores raw provider
+responses or graph execution state. The agent reads current graph-run state directly from NATS and
+live graph and schedule definitions from Postgres. A turn may retain several independently
+approvable acquisition plans and schedule-change proposals. The sole bounded acquisition
+capability is a one-page reconnaissance probe: it submits the seeded `single-page` graph through
+the ordinary run path and observes that crawl's NATS ingestion result until its base evidence is
+catalogue-visible or the bounded wait expires. Corpus execution and schedule mutation remain
+explicit user actions. Each agent turn remains request-attached while Atlas emits its
+own stable SSE progress events, executed SQL, bounded rows, completeness metadata, and final response. The
 tool implementations are independent of HTTP and agent transport so a CLI or future MCP server can
 reuse them without duplicating catalogue access or validation.
 
@@ -119,10 +134,17 @@ a distinct `ATLAS_CATALOGUE_ALIAS`; `USE` remains Quack-client-session-local.
 
 Raw HTML is immutable and content addressed. Object keys are repository-relative. Postgres never
 stores crawl history, NATS never becomes analytical history, and DuckLake never becomes the editable
-control plane. NATS execution records are deliberately bounded operational state: crawl-request and
-edge-evaluation records expire after seven days by default, while compact graph-run summaries and
-progress expire after thirty days. Terminal runs discard their admission deduplication set once all
-requests settle. DuckLake remains the only long-lived crawl history.
+control plane. NATS execution records are deliberately bounded operational state. A graph run may
+remain active for at most `ATLAS_GRAPH_MAX_RUN_SECONDS` (seven days by default); crawl-request,
+edge-evaluation, sharded admission-deduplication, compact run-summary, and progress records expire
+after thirty days by default. DuckLake remains the only long-lived crawl history.
+
+Root feeding and edge traversal admit only a bounded window of acquisition work per run. A durable
+root cursor refills that window after slot release and worker restart. The shared crawl consumer
+round-robins visible work by graph run and then hostname, while the deployment-wide hostname permit
+and pacing key remain the final politeness gate across every run and acquisition replica. A lone run
+may use all ready worker lanes; a broad run cannot publish an unbounded FIFO backlog ahead of a small
+run.
 
 ## Scheduled graph runs
 
@@ -132,6 +154,6 @@ fixed overlap and misfire behavior. The API process runs the thin scheduler adap
 admission and deterministic identity live under `runtime/`.
 
 Every admitted occurrence uses the ordinary graph-run path: Atlas snapshots the latest saved graph,
-freezes the schedule's current root URLs, and creates NATS-owned execution state. A deterministic
+freezes the schedule's current root URLs and per-run maximum crawl budget, and creates NATS-owned execution state. A deterministic
 run ID derived from the schedule and occurrence makes concurrent API replicas and crash recovery
 converge on one graph run. Manual “run now” actions do not consume the schedule run count.

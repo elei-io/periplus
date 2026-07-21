@@ -18,7 +18,11 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from playwright.async_api import Playwright, async_playwright
 
 from actions.crawl.schemas import CrawlPage
-from actions.crawl.service import RetryableAcquisitionError, crawl_graph_request
+from actions.crawl.service import (
+    PlaywrightRuntimeLost,
+    RetryableAcquisitionError,
+    crawl_graph_request,
+)
 from config import get_float, get_int, get_optional
 from config.performance import (
     CRAWL_ACQUISITION_LANES,
@@ -27,11 +31,12 @@ from config.performance import (
     GRAPH_ACK_WAIT_SECONDS,
 )
 from control.crawl_policies.schemas import EffectivePolicySnapshot
+from db.session import session_scope
 from observability import crawl_metrics, navigation_metrics
 from repository.ingestion.acquisition import AcquisitionPipeline
 from repository.ingestion.health import HealthMonitor
 from runtime.context import GraphExecutionContext
-from runtime.domain_pacing import ensure_domain_pacing_storage
+from runtime.domain_pacing import domain_backoff_seconds, ensure_domain_pacing_storage
 from runtime.graph_queue import (
     CRAWL_CONSUMER,
     CRAWL_SUBJECT,
@@ -53,7 +58,12 @@ from runtime.graph_navigation import run as run_graph_navigation
 from runtime.graph_progress import bootstrap_run_progress, transition_node_progress
 from runtime.graph_runs import (
     expire_graph_run,
+    fill_root_admissions,
+    reconcile_acquisition_pending_count,
+    reconcile_admission_reservations,
     reconcile_pending_admissions,
+    release_acquisition_slot,
+    resolve_policy_snapshot,
     settle_request,
 )
 from runtime.navigation import (
@@ -83,6 +93,34 @@ class AcquisitionClaimLost(RuntimeError):
     """The delivery or crawl-request claim was lost before work could settle."""
 
 
+async def _watch_playwright_driver(playwright_context) -> None:
+    """Fail the worker when Playwright's local Node driver transport exits."""
+
+    try:
+        await asyncio.shield(
+            playwright_context._connection._transport.on_error_future
+        )
+    except asyncio.CancelledError:
+        raise
+    except BaseException as exc:
+        raise PlaywrightRuntimeLost("local Playwright driver process exited") from exc
+    raise PlaywrightRuntimeLost("local Playwright driver process exited")
+
+
+async def _fill_root_window(
+    *, runs, requests, progress, jetstream, run_id: UUID
+) -> int:
+    with session_scope() as session:
+        return await fill_root_admissions(
+            runs=runs,
+            requests=requests,
+            progress=progress,
+            jetstream=jetstream,
+            run_id=run_id,
+            policy_resolver=lambda url: resolve_policy_snapshot(session, url),
+        )
+
+
 @dataclass(slots=True)
 class _BufferedCrawl:
     message: Any
@@ -94,14 +132,15 @@ class _BufferedCrawl:
 
 
 class _HostnameDispatchBuffer:
-    """Bounded worker-local look-ahead with per-host FIFO ordering."""
+    """Bounded run-fair look-ahead with per-host FIFO ordering."""
 
     def __init__(self, maximum_size: int) -> None:
         if maximum_size < 1:
             raise ValueError("dispatch buffer size must be positive")
         self.maximum_size = maximum_size
-        self._queues: dict[str, deque[_BufferedCrawl]] = {}
-        self._rotation: deque[str] = deque()
+        self._queues: dict[UUID, dict[str, deque[_BufferedCrawl]]] = {}
+        self._run_rotation: deque[UUID] = deque()
+        self._host_rotations: dict[UUID, deque[str]] = {}
         self._retry_after: dict[str, float] = {}
         self._size = 0
 
@@ -111,16 +150,23 @@ class _HostnameDispatchBuffer:
     def add(self, item: _BufferedCrawl) -> None:
         if self._size >= self.maximum_size:
             raise RuntimeError("acquisition dispatch buffer is full")
-        queue = self._queues.get(item.hostname)
+        run_id = item.request.graph_run_id
+        run_queues = self._queues.get(run_id)
+        if run_queues is None:
+            run_queues = {}
+            self._queues[run_id] = run_queues
+            self._host_rotations[run_id] = deque()
+            self._run_rotation.append(run_id)
+        queue = run_queues.get(item.hostname)
         if queue is None:
             queue = deque()
-            self._queues[item.hostname] = queue
-            self._rotation.append(item.hostname)
+            run_queues[item.hostname] = queue
+            self._host_rotations[run_id].append(item.hostname)
         queue.append(item)
         self._size += 1
 
     def defer_hostname(self, hostname: str, *, retry_at: float) -> None:
-        if hostname in self._queues:
+        if any(hostname in queues for queues in self._queues.values()):
             self._retry_after[hostname] = max(
                 retry_at,
                 self._retry_after.get(hostname, retry_at),
@@ -134,31 +180,45 @@ class _HostnameDispatchBuffer:
     ) -> _BufferedCrawl | None:
         excluded = excluded_hostnames or set()
         current_time = time.monotonic() if now is None else now
-        for _ in range(len(self._rotation)):
-            hostname = self._rotation.popleft()
-            queue = self._queues[hostname]
-            retry_at = self._retry_after.get(hostname)
-            if hostname in excluded or (
-                retry_at is not None and retry_at > current_time
-            ):
-                self._rotation.append(hostname)
-                continue
-            self._retry_after.pop(hostname, None)
-            item = queue.popleft()
-            self._size -= 1
-            if queue:
-                self._rotation.append(hostname)
-            else:
-                del self._queues[hostname]
+        for _ in range(len(self._run_rotation)):
+            run_id = self._run_rotation.popleft()
+            run_queues = self._queues[run_id]
+            host_rotation = self._host_rotations[run_id]
+            for _ in range(len(host_rotation)):
+                hostname = host_rotation.popleft()
+                retry_at = self._retry_after.get(hostname)
+                if hostname in excluded or (
+                    retry_at is not None and retry_at > current_time
+                ):
+                    host_rotation.append(hostname)
+                    continue
                 self._retry_after.pop(hostname, None)
-            return item
+                queue = run_queues[hostname]
+                item = queue.popleft()
+                self._size -= 1
+                if queue:
+                    host_rotation.append(hostname)
+                else:
+                    del run_queues[hostname]
+                    if not any(
+                        hostname in queues for queues in self._queues.values()
+                    ):
+                        self._retry_after.pop(hostname, None)
+                if run_queues:
+                    self._run_rotation.append(run_id)
+                else:
+                    del self._queues[run_id]
+                    del self._host_rotations[run_id]
+                return item
+            self._run_rotation.append(run_id)
         return None
 
     def messages(self) -> list[Any]:
         return [
             item.message
-            for hostname in self._rotation
-            for item in self._queues[hostname]
+            for run_id in self._run_rotation
+            for hostname in self._host_rotations[run_id]
+            for item in self._queues[run_id][hostname]
         ]
 
     def drain(self) -> list[_BufferedCrawl]:
@@ -301,6 +361,18 @@ async def _dispatch_buffered_crawls(
         if item is None:
             break
         try:
+            backoff = await domain_backoff_seconds(
+                domain_pacing,
+                domain=item.hostname,
+            )
+            if backoff > 0:
+                buffer.add(item)
+                buffer.defer_hostname(
+                    item.hostname,
+                    retry_at=time.monotonic() + backoff,
+                )
+                blocked_hostnames.add(item.hostname)
+                continue
             domain_permit = await _try_domain_permit(resource_grants, item)
         except ResourceCapacityUnavailable:
             buffer.add(item)
@@ -433,6 +505,8 @@ def _raise_background_failure(tasks: tuple[asyncio.Task, ...]) -> None:
         error = task.exception()
         if error is None:
             raise RuntimeError(f"{name} exited unexpectedly")
+        if isinstance(error, PlaywrightRuntimeLost):
+            raise error
         raise RuntimeError(f"{name} failed") from error
 
 
@@ -534,6 +608,45 @@ async def _keep_alive(message, requests, request_id: UUID, claim_token: UUID) ->
             return
 
 
+async def _release_crawl_for_redelivery(
+    *,
+    message,
+    requests,
+    progress,
+    request_id: UUID,
+    claim_token: UUID,
+    delay: float,
+) -> None:
+    released = False
+
+    def release_claim(current: CrawlRequest) -> CrawlRequest:
+        nonlocal released
+        released = False
+        if current.status != "crawling" or current.claim_token != claim_token:
+            return current
+        released = True
+        return current.model_copy(
+            update={
+                "status": "queued",
+                "claim_token": None,
+                "claim_expires_at": None,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+
+    current = await update_crawl_request(
+        requests, request_id, release_claim
+    )
+    if released:
+        try:
+            await transition_node_progress(
+                progress, current, previous_status="crawling"
+            )
+        except Exception:
+            pass
+    await message.nak(delay=delay)
+
+
 async def _process_crawl(
     message,
     runs,
@@ -564,6 +677,7 @@ async def _process_crawl(
 
     def claim(current: CrawlRequest) -> CrawlRequest:
         nonlocal claimed, previous_status
+        claimed = False
         previous_status = current.status
         reclaimable = (
             current.status == "crawling"
@@ -681,7 +795,9 @@ async def _process_crawl(
                     status="failed",
                     error=page.error or "Page acquisition failed.",
                     expected_claim_token=claim_token,
-                    failure_stage="acquisition",
+                    failure_stage=page.failure_stage or "acquisition",
+                    failure_code=page.failure_code or "acquisition_failed",
+                    status_code=page.status_code,
             )
             await message.ack()
             return
@@ -727,6 +843,7 @@ async def _process_crawl(
 
         def mark_awaiting_navigation(current: CrawlRequest) -> CrawlRequest:
             nonlocal transitioned_to_navigation
+            transitioned_to_navigation = False
             if current.status != "crawling" or current.claim_token != claim_token:
                 return current
             transitioned_to_navigation = True
@@ -745,19 +862,61 @@ async def _process_crawl(
         )
         if transitioned_to_navigation:
             try:
+                await release_acquisition_slot(runs, run.id)
+            except Exception:
+                await reconcile_acquisition_pending_count(
+                    runs, requests, run.id
+                )
+            try:
+                await _fill_root_window(
+                    runs=runs,
+                    requests=requests,
+                    progress=progress,
+                    jetstream=jetstream,
+                    run_id=run.id,
+                )
+            except Exception:
+                logging.warning(
+                    "root admission refill failed for graph run %s",
+                    run.id,
+                    exc_info=True,
+                )
+            try:
                 await transition_node_progress(
                     progress, request, previous_status=previous_status
                 )
             except Exception:
                 pass
         await message.ack()
+    except asyncio.CancelledError:
+        try:
+            await _release_crawl_for_redelivery(
+                message=message,
+                requests=requests,
+                progress=progress,
+                request_id=request.id,
+                claim_token=claim_token,
+                delay=1,
+            )
+        except Exception:
+            logging.exception(
+                "failed to release cancelled crawl acquisition for redelivery",
+                extra={
+                    "crawl_request_id": str(request.id),
+                    "graph_run_id": str(request.graph_run_id),
+                    "url": request.url,
+                },
+            )
+        raise
     except Exception as exc:
+        worker_fatal = isinstance(exc, PlaywrightRuntimeLost)
         infrastructure_failure = isinstance(
             exc,
             (
                 AcquisitionClaimLost,
                 NatsTimeoutError,
                 OSError,
+                PlaywrightRuntimeLost,
                 ResourceCapacityUnavailable,
                 ResourcePermitLost,
             ),
@@ -789,26 +948,6 @@ async def _process_crawl(
             failure_count = request.processing_failure_count
 
         if infrastructure_failure or failure_count < max_deliver:
-            def release_claim(current: CrawlRequest) -> CrawlRequest:
-                if current.status != "crawling" or current.claim_token != claim_token:
-                    return current
-                return current.model_copy(
-                    update={
-                        "status": "queued",
-                        "claim_token": None,
-                        "claim_expires_at": None,
-                        "updated_at": datetime.now(UTC),
-                    }
-                )
-
-            current = await update_crawl_request(requests, request.id, release_claim)
-            if current.status == "queued":
-                try:
-                    await transition_node_progress(
-                        progress, current, previous_status="crawling"
-                    )
-                except Exception:
-                    pass
             retry_after = (
                 exc.retry_after_seconds
                 if isinstance(exc, RetryableAcquisitionError)
@@ -819,8 +958,18 @@ async def _process_crawl(
                 if retry_after is not None
                 else min(30, 2 ** max(0, failure_count - 1))
             )
-            await message.nak(delay=delay)
+            await _release_crawl_for_redelivery(
+                message=message,
+                requests=requests,
+                progress=progress,
+                request_id=request.id,
+                claim_token=claim_token,
+                delay=delay,
+            )
+            if worker_fatal:
+                raise
             return
+        failure_page = exc.page if isinstance(exc, RetryableAcquisitionError) else None
         await settle_request(
                 runs=runs,
                 requests=requests,
@@ -829,7 +978,19 @@ async def _process_crawl(
                 status="failed",
                 error=str(exc),
                 expected_claim_token=claim_token,
-                failure_stage="acquisition",
+                failure_stage=(
+                    failure_page.failure_stage
+                    if failure_page is not None and failure_page.failure_stage
+                    else "acquisition"
+                ),
+                failure_code=(
+                    failure_page.failure_code
+                    if failure_page is not None and failure_page.failure_code
+                    else "acquisition_processing_failed"
+                ),
+                status_code=(
+                    failure_page.status_code if failure_page is not None else None
+                ),
         )
         await message.ack()
     finally:
@@ -864,6 +1025,9 @@ async def run() -> None:
     domain_pacing = await ensure_domain_pacing_storage(jetstream)
     for active_run in await list_graph_runs(runs):
         if active_run.status in {"queued", "running"}:
+            await reconcile_acquisition_pending_count(
+                runs, requests, active_run.id
+            )
             await bootstrap_run_progress(progress, requests, active_run)
             await reconcile_pending_admissions(
                 runs=runs,
@@ -871,6 +1035,20 @@ async def run() -> None:
                 progress=progress,
                 jetstream=jetstream,
                 run=active_run,
+            )
+            await reconcile_admission_reservations(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                jetstream=jetstream,
+                run=active_run,
+            )
+            await _fill_root_window(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                jetstream=jetstream,
+                run_id=active_run.id,
             )
     crawl_subscription = await jetstream.pull_subscribe(
         CRAWL_SUBJECT,
@@ -972,7 +1150,14 @@ async def run() -> None:
                         jetstream=jetstream,
                         run=active_run,
                     )
-
+                if active_run.status in {"queued", "running"}:
+                    await _fill_root_window(
+                        runs=runs,
+                        requests=requests,
+                        progress=progress,
+                        jetstream=jetstream,
+                        run_id=active_run.id,
+                    )
     presence_task = asyncio.create_task(
         _run_presence_until_stopped(
             stop=stop,
@@ -991,25 +1176,37 @@ async def run() -> None:
         graph_navigation_task,
         presence_task,
     )
+    playwright_context = async_playwright()
     try:
         async with (
-            async_playwright() as playwright,
-            AcquisitionPipeline() as repository_pipeline,
+            playwright_context as playwright,
+            AcquisitionPipeline(maximum_concurrency=capacity) as repository_pipeline,
         ):
+            playwright_driver_task = asyncio.create_task(
+                _watch_playwright_driver(playwright_context),
+                name="acquisition-playwright-driver",
+            )
+            runtime_tasks = (*background_tasks, playwright_driver_task)
             try:
                 while not stop.is_set():
-                    _raise_background_failure(background_tasks)
+                    _raise_background_failure(runtime_tasks)
                     completed = {task for task in active if task.done()}
+                    fatal_error = None
                     for task in completed:
                         if task.cancelled():
                             continue
                         error = task.exception()
+                        if isinstance(error, PlaywrightRuntimeLost):
+                            fatal_error = error
+                            continue
                         if error is not None:
                             logging.error(
                                 "acquisition task exited unexpectedly",
                                 exc_info=(type(error), error, error.__traceback__),
                             )
                     active.difference_update(completed)
+                    if fatal_error is not None:
+                        raise fatal_error
                     delivery_room = (
                         CRAWL_DISPATCH_WINDOW - len(dispatch_buffer) - len(active)
                     )
@@ -1057,13 +1254,26 @@ async def run() -> None:
                     )
                     if not messages and not launched:
                         await asyncio.sleep(0.05)
+            except PlaywrightRuntimeLost as exc:
+                monitor.subsystem_unavailable(
+                    "acquisition", str(exc) or type(exc).__name__
+                )
+                logging.critical(
+                    "local Playwright runtime was lost; exiting acquisition worker",
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+                for task in active:
+                    task.cancel()
+                raise
             finally:
                 stop.set()
                 await release_dispatch_buffer()
+                playwright_driver_task.cancel()
                 presence_task.cancel()
                 event_loop_heartbeat_task.cancel()
                 graph_navigation_task.cancel()
                 await asyncio.gather(
+                    playwright_driver_task,
                     presence_task,
                     event_loop_heartbeat_task,
                     graph_navigation_task,

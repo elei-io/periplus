@@ -1,4 +1,11 @@
-# Catalogue fixtures
+# Atlas fixtures
+
+`crawl_graphs/library.json` defines the immutable generic crawl-graph library seeded into the
+Postgres control plane. Every graph includes its complete node, edge, scoped SQL, and deduplication
+definition. Setup validates existing definitions and refuses conflicting drift. Agents inspect the
+current Postgres graph list—including user-created graphs—rather than reading this source file.
+
+## Catalogue fixtures
 
 Atlas setup seeds every source-controlled `*.sql` fixture. User-visible definitions in these
 directories go through the same catalogue services used by the UI:

@@ -642,6 +642,7 @@ function RunGraphButton({
 }) {
   const trigger = useTriggerCrawlGraph(graph.id)
   const [urlsText, setUrlsText] = useState("")
+  const [maxCrawls, setMaxCrawls] = useState("1000")
   const [open, setOpen] = useState(false)
 
   const run = () => {
@@ -653,14 +654,22 @@ function RunGraphButton({
       toast.error("Enter at least one URL.")
       return
     }
-    trigger.mutate(urls, {
-      onSuccess: (submission) => {
-        toast.success(`Graph run ${submission.run_id} queued.`)
-        onStarted(submission.run_id)
-        setOpen(false)
-        setUrlsText("")
-      },
-    })
+    const crawlBudget = Number(maxCrawls)
+    if (!Number.isInteger(crawlBudget) || crawlBudget < urls.length) {
+      toast.error("Maximum crawls must be at least the number of root URLs.")
+      return
+    }
+    trigger.mutate(
+      { urls, max_crawls: crawlBudget },
+      {
+        onSuccess: (submission) => {
+          toast.success(`Graph run ${submission.run_id} queued.`)
+          onStarted(submission.run_id)
+          setOpen(false)
+          setUrlsText("")
+        },
+      }
+    )
   }
 
   return (
@@ -682,6 +691,19 @@ function RunGraphButton({
           placeholder={"https://example.com/a\nhttps://example.com/b"}
           onChange={(event) => setUrlsText(event.target.value)}
         />
+        <div className="space-y-1.5">
+          <p className="text-sm font-medium">Maximum crawls</p>
+          <Input
+            min={1}
+            max={1_000_000}
+            type="number"
+            value={maxCrawls}
+            onChange={(event) => setMaxCrawls(event.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            Stops admitting new URLs when this run reaches its budget.
+          </p>
+        </div>
         <DialogFooter>
           <Button disabled={trigger.isPending} onClick={run}>
             {trigger.isPending ? (

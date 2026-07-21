@@ -12,6 +12,7 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from agents.acquisition_tools import (
     AcquisitionPlan,
+    BraveSearchError,
     SeedSearchResponse,
     SeedSearchResult,
 )
@@ -21,14 +22,18 @@ from agents.catalogue_tools import (
     CatalogueRelation,
     CatalogueTools,
 )
-from api.routers.search import SearchRequest
+from control.chats.schemas import ChatTurnRequest
 from repository.catalogue.interactive import BufferedCatalogueResult
+from repository.catalogue.quack_runtime import CatalogueQueryExecutionError
 from repository.catalogue.query import CatalogueQueryError
 
 
 class SearchContractTests(unittest.IsolatedAsyncioTestCase):
     def test_question_is_trimmed_and_bounded(self) -> None:
-        self.assertEqual(SearchRequest(question="  What changed?  ").question, "What changed?")
+        self.assertEqual(
+            ChatTurnRequest(message="What changed?").message,
+            "What changed?",
+        )
 
     def test_events_reject_transport_specific_extensions(self) -> None:
         with self.assertRaises(ValueError):
@@ -55,7 +60,7 @@ class SearchContractTests(unittest.IsolatedAsyncioTestCase):
             response = await service.query("SELECT page_url FROM main.documents LIMIT 900")
 
         executed_sql = execute.await_args.args[1]
-        self.assertIn("LIMIT 200", executed_sql)
+        self.assertIn("LIMIT 201", executed_sql)
         self.assertEqual(response.sql, executed_sql)
         self.assertEqual(response.rows, [["https://example.com/"]])
 
@@ -80,7 +85,7 @@ class SearchContractTests(unittest.IsolatedAsyncioTestCase):
                 return [CatalogueRelation(qualified_name="main.documents", kind=kind)]
 
         model = TestModel(
-            call_tools=["list_tables"],
+            call_tools=["list_catalogue_relations"],
             custom_output_text="Found the documents table.",
         )
         with _AGENT.override(model=model):
@@ -121,7 +126,7 @@ class SearchContractTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         model = TestModel(
-            call_tools=["list_graphs", "list_schedules", "search_web"],
+            call_tools=["list_crawl_graphs", "list_crawl_schedules", "search_public_web"],
             custom_output_text="Use the proposed seed URL with a one-off graph run.",
         )
         with _AGENT.override(model=model):
@@ -139,7 +144,7 @@ class SearchContractTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual(
             started_tools,
-            {"list_graphs", "list_schedules", "search_web"},
+            {"list_crawl_graphs", "list_crawl_schedules", "search_public_web"},
         )
         serialized_events = "\n".join(event.model_dump_json() for event in events)
         self.assertIn("https://seed.example.com/", serialized_events)
@@ -147,34 +152,39 @@ class SearchContractTests(unittest.IsolatedAsyncioTestCase):
         search_event = next(
             event for event in events if event.type == "search.completed"
         )
-        self.assertEqual(search_event.arguments["country"], "US")  # type: ignore[index]
-        self.assertEqual(search_event.arguments["search_lang"], "en")  # type: ignore[index]
+        self.assertEqual(search_event.arguments["country"], "ALL")  # type: ignore[index]
+        self.assertEqual(search_event.arguments["language"], "en")  # type: ignore[index]
 
     async def test_submitted_acquisition_plan_is_returned_for_ui_actions(self) -> None:
         graph_id = uuid4()
 
         class Acquisition:
-            async def prepare_plan(self, **_kwargs: object) -> AcquisitionPlan:
-                return AcquisitionPlan(
+            async def prepare_plans(self, _plans: object) -> list[AcquisitionPlan]:
+                return [AcquisitionPlan(
                     graph_id=graph_id,
                     graph_slug="marketplace",
                     start_urls=["https://market.example.com/electronics"],
+                    max_crawls=500,
                     recommended_run_type="one_off",
-                )
+                )]
 
         async def respond(messages, _info):
             if not any(isinstance(message, ModelResponse) for message in messages):
                 yield {
                     0: DeltaToolCall(
-                        name="submit_acquisition_plan",
+                        name="propose_acquisition",
                         json_args=json.dumps(
-                            {
+                            {"plans": [{
+                                "name": "Marketplace acquisition",
+                                "purpose": "Retain marketplace evidence.",
+                                "mode": "corpus",
                                 "graph_id": str(graph_id),
                                 "start_urls": [
                                     "https://market.example.com/electronics"
                                 ],
+                                "max_crawls": 500,
                                 "recommended_run_type": "one_off",
-                            }
+                            }]}
                         ),
                         tool_call_id="plan",
                     )
@@ -194,7 +204,8 @@ class SearchContractTests(unittest.IsolatedAsyncioTestCase):
             ]
 
         self.assertEqual(events[-1].type, "run.completed", events[-1].message)
-        self.assertEqual(events[-1].acquisition_plan.graph_id, graph_id)  # type: ignore[union-attr]
+        self.assertEqual(events[-1].acquisition_plans[0].graph_id, graph_id)  # type: ignore[index]
+        self.assertEqual(events[-1].acquisition_plans[0].max_crawls, 500)  # type: ignore[index]
 
     async def test_invalid_sql_is_returned_to_the_agent_for_retry(self) -> None:
         class Catalogue:
@@ -214,7 +225,7 @@ class SearchContractTests(unittest.IsolatedAsyncioTestCase):
 
         catalogue = Catalogue()
         model = TestModel(
-            call_tools=["query"],
+            call_tools=["query_catalogue"],
             custom_output_text="Atlas retained 517 books.",
         )
         with _AGENT.override(model=model):
@@ -232,6 +243,64 @@ class SearchContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("query.failed", event_types)
         self.assertIn("query.completed", event_types)
         self.assertEqual(events[-1].type, "run.completed")
+
+    async def test_catalogue_outage_is_not_misreported_as_bad_sql(self) -> None:
+        class Catalogue:
+            calls = 0
+
+            async def query(self, _sql: str) -> CatalogueQueryResult:
+                self.calls += 1
+                raise CatalogueQueryExecutionError("Invalid connection id")
+
+        catalogue = Catalogue()
+        model = TestModel(
+            call_tools=["query_catalogue"],
+            custom_output_text="The catalogue is temporarily unavailable.",
+        )
+        with _AGENT.override(model=model):
+            events = [
+                event
+                async for event in stream_atlas_search(
+                    "What was retained?",
+                    catalogue,  # type: ignore[arg-type]
+                    SimpleNamespace(),  # type: ignore[arg-type]
+                )
+            ]
+
+        self.assertEqual(catalogue.calls, 1)
+        self.assertIn("query.failed", [event.type for event in events])
+        self.assertEqual(events[-1].type, "run.completed")
+        self.assertNotIn("Invalid connection id", events[-1].summary or "")
+
+    async def test_brave_failure_is_returned_to_the_agent_for_retry(self) -> None:
+        class Acquisition:
+            calls = 0
+
+            async def search_web(
+                self, query: str, *, count: int = 10, **_kwargs: object
+            ) -> SeedSearchResponse:
+                self.calls += 1
+                if self.calls == 1:
+                    raise BraveSearchError("Brave Search is temporarily rate limited.")
+                return SeedSearchResponse(query=query, results=[])
+
+        acquisition = Acquisition()
+        model = TestModel(
+            call_tools=["search_public_web"],
+            custom_output_text="No web seeds were returned.",
+        )
+        with _AGENT.override(model=model):
+            events = [
+                event
+                async for event in stream_atlas_search(
+                    "Find public crawl seeds.",
+                    SimpleNamespace(),  # type: ignore[arg-type]
+                    acquisition,  # type: ignore[arg-type]
+                )
+            ]
+
+        self.assertEqual(acquisition.calls, 2)
+        self.assertEqual(events[-1].type, "run.completed", events[-1].message)
 
 
 if __name__ == "__main__":

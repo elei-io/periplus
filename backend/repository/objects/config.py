@@ -8,7 +8,7 @@ from pathlib import Path
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
-from config import get_int, get_optional, get_path, get_str
+from config import get_optional, get_path, get_str
 
 from repository.exceptions import RepositoryConfigError
 from repository.objects.store import FileObjectStore, ObjectStore, S3ObjectStore
@@ -16,13 +16,17 @@ from repository.objects.store import FileObjectStore, ObjectStore, S3ObjectStore
 _DEFAULT_ROOT = Path(__file__).resolve().parents[2] / ".atlas" / "repository"
 
 
-def object_store_from_env() -> ObjectStore:
+def object_store_from_env(*, maximum_concurrency: int = 1) -> ObjectStore:
+    if maximum_concurrency < 1:
+        raise ValueError("object-store concurrency must be positive")
     kind = get_str("ATLAS_REPOSITORY_STORAGE").lower()
     if kind == "disk":
         root = get_path("ATLAS_REPOSITORY_ROOT")
         return FileObjectStore(root)
     if kind == "s3":
-        client, bucket = _s3_client_from_env()
+        client, bucket = _s3_client_from_env(
+            maximum_concurrency=maximum_concurrency
+        )
         return S3ObjectStore(
             client,
             bucket=bucket,
@@ -63,39 +67,10 @@ def ensure_s3_bucket_from_env() -> str:
             }:
                 raise
             client.head_bucket(Bucket=bucket)
-    _configure_navigation_lifecycle(client, bucket)
     return bucket
 
 
-def _configure_navigation_lifecycle(client, bucket: str) -> None:
-    rule_id = "atlas-runtime-navigation-expiry"
-    rules = []
-    try:
-        rules = client.get_bucket_lifecycle_configuration(Bucket=bucket).get("Rules", [])
-    except ClientError as exc:
-        code = str(exc.response.get("Error", {}).get("Code", ""))
-        if code not in {"NoSuchLifecycleConfiguration", "NoSuchLifecycle"}:
-            raise
-    rules = [rule for rule in rules if rule.get("ID") != rule_id]
-    repository_prefix = (get_optional("ATLAS_REPOSITORY_S3_PREFIX") or "").strip("/")
-    prefix = "runtime/navigation/"
-    if repository_prefix:
-        prefix = f"{repository_prefix}/{prefix}"
-    rules.append(
-        {
-            "ID": rule_id,
-            "Status": "Enabled",
-            "Filter": {"Prefix": prefix},
-            "Expiration": {"Days": get_int("ATLAS_NAVIGATION_OBJECT_RETENTION_DAYS")},
-        }
-    )
-    client.put_bucket_lifecycle_configuration(
-        Bucket=bucket,
-        LifecycleConfiguration={"Rules": rules},
-    )
-
-
-def _s3_client_from_env() -> tuple[object, str]:
+def _s3_client_from_env(*, maximum_concurrency: int = 1) -> tuple[object, str]:
     bucket = _required("ATLAS_REPOSITORY_S3_BUCKET")
     client_options: dict[str, object] = {
         "endpoint_url": _optional("ATLAS_REPOSITORY_S3_ENDPOINT"),
@@ -110,13 +85,17 @@ def _s3_client_from_env() -> tuple[object, str]:
     use_ssl = _optional_bool("ATLAS_REPOSITORY_S3_USE_SSL")
     if use_ssl is not None:
         client_options["use_ssl"] = use_ssl
+    config_options: dict[str, object] = {
+        "max_pool_connections": maximum_concurrency,
+    }
     url_style = _optional("ATLAS_REPOSITORY_S3_URL_STYLE")
     if url_style is not None:
         if url_style not in {"auto", "path", "virtual"}:
             raise RepositoryConfigError(
                 "ATLAS_REPOSITORY_S3_URL_STYLE must be one of: auto, path, virtual"
             )
-        client_options["config"] = Config(s3={"addressing_style": url_style})
+        config_options["s3"] = {"addressing_style": url_style}
+    client_options["config"] = Config(**config_options)
     return boto3.client("s3", **client_options), bucket
 
 

@@ -26,6 +26,7 @@ import { ScheduleEditorDialog } from "@/components/crawl-graph/schedule-editor-d
 import { MarkdownContent } from "@/components/markdown-content"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   Card,
   CardAction,
@@ -48,8 +49,11 @@ import {
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  useRecordChatSchedule,
+  useRunChatPlan,
+} from "@/hooks/use-search"
 import { streamSearch } from "@/hooks/use-search"
-import { useTriggerCrawlGraph } from "@/hooks/use-crawl-graphs"
 import { extractApiError } from "@/lib/api"
 import type {
   AcquisitionPlan,
@@ -58,13 +62,14 @@ import type {
   SeedSearchResult,
 } from "@/types/search"
 
-type SearchActivity = {
+export type SearchActivity = {
   callId: string
   tool: string
   label: string
   detail: string | null
   sql: string | null
   results: SeedSearchResult[]
+  result: string | null
   status: "running" | "completed"
 }
 
@@ -103,37 +108,40 @@ function ElapsedTimer() {
 }
 
 function activityLabel(tool: string, args: Record<string, unknown> | null) {
-  if (tool === "list_tables") return "Inspect tables"
-  if (tool === "list_views") return "Inspect views"
+  if (tool === "list_catalogue_relations") return "Inspect catalogue"
   if (tool === "list_materializations") return "Inspect materializations"
   if (tool === "list_macros") return "Inspect macros"
-  if (tool === "list_graphs") return "Inspect crawl graphs"
-  if (tool === "list_schedules") return "Inspect schedules"
-  if (tool === "search_web") return "Discover start URLs"
-  if (tool === "submit_acquisition_plan") return "Prepare acquisition plan"
+  if (tool === "list_crawl_graphs") return "Inspect crawl graphs"
+  if (tool === "get_crawl_graph") return "Inspect graph details"
+  if (tool === "list_crawl_schedules") return "Inspect schedules"
+  if (tool === "get_crawl_schedule") return "Inspect schedule details"
+  if (tool === "inspect_graph_run") return "Inspect graph run"
+  if (tool === "search_public_web") return "Discover start URLs"
+  if (tool === "propose_acquisition") return "Prepare acquisition plans"
+  if (tool === "propose_schedule_change") return "Prepare schedule change"
   if (tool === "describe_relation") {
     const relation = args?.qualified_name
     return typeof relation === "string"
       ? `Describe ${relation}`
       : "Describe relation"
   }
-  if (tool === "query") return "Run catalogue query"
+  if (tool === "query_catalogue") return "Run catalogue query"
   return tool.replaceAll("_", " ")
 }
 
 function activityDetail(tool: string, args: Record<string, unknown> | null) {
-  if (!args || tool === "query" || tool === "describe_relation") return null
+  if (!args || tool === "query_catalogue" || tool === "describe_relation") return null
   return Object.keys(args).length > 0 ? JSON.stringify(args, null, 2) : null
 }
 
 function ActivityIcon({ tool }: { tool: string }) {
-  if (tool === "query") return <TerminalSquareIcon />
+  if (tool === "query_catalogue") return <TerminalSquareIcon />
   if (tool === "describe_relation") return <TablePropertiesIcon />
   if (tool === "list_macros") return <BracesIcon />
   return <DatabaseIcon />
 }
 
-function LiveActivity({
+export function LiveActivity({
   activities,
   status,
 }: {
@@ -428,7 +436,7 @@ function QueryCard({
   )
 }
 
-const FinalResultTabs = memo(function FinalResultTabs({
+export const FinalResultTabs = memo(function FinalResultTabs({
   trace,
 }: {
   trace: SearchQueryTrace
@@ -507,7 +515,7 @@ function ToolEvidenceCard({ activity }: { activity: SearchActivity }) {
           </Badge>
         </div>
       </CardHeader>
-      {(activity.detail || activity.results.length > 0) && (
+      {(activity.detail || activity.result || activity.results.length > 0) && (
         <CardContent className="pt-3">
           {activity.detail && (
             <pre className="max-h-48 overflow-auto rounded-lg bg-muted/50 p-3 font-mono text-[11px] leading-5 whitespace-pre-wrap">
@@ -517,13 +525,18 @@ function ToolEvidenceCard({ activity }: { activity: SearchActivity }) {
           {activity.results.length > 0 && (
             <SearchResultLinks results={activity.results} />
           )}
+          {activity.result && activity.results.length === 0 && (
+            <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-muted/50 p-3 font-mono text-[11px] leading-5 whitespace-pre-wrap">
+              {activity.result}
+            </pre>
+          )}
         </CardContent>
       )}
     </Card>
   )
 }
 
-const EvidenceSection = memo(function EvidenceSection({
+export const EvidenceSection = memo(function EvidenceSection({
   queries,
   activities,
   toolsCompleted,
@@ -585,25 +598,52 @@ const EvidenceSection = memo(function EvidenceSection({
   )
 })
 
-function AcquisitionPlanActions({ plan }: { plan: AcquisitionPlan }) {
+export function AcquisitionPlanActions({
+  plan,
+  planIndex = 0,
+  chatId = "",
+  itemId = "",
+}: {
+  plan: AcquisitionPlan
+  chatId?: string
+  itemId?: string
+  planIndex?: number
+}) {
   const [scheduleOpen, setScheduleOpen] = useState(false)
   const [runId, setRunId] = useState<string | null>(null)
-  const trigger = useTriggerCrawlGraph(plan.graph_id)
+  const [maxCrawls, setMaxCrawls] = useState(plan.max_crawls.toString())
+  const trigger = useRunChatPlan(chatId, itemId, planIndex)
+  const recordSchedule = useRecordChatSchedule(chatId, itemId, planIndex)
+
+  function crawlBudget() {
+    const value = Number(maxCrawls)
+    if (!Number.isInteger(value) || value < plan.start_urls.length) {
+      toast.error("Maximum crawls must be at least the number of start URLs.")
+      return null
+    }
+    return value
+  }
 
   function runNow() {
-    trigger.mutate(plan.start_urls, {
-      onSuccess: (submission) => {
-        setRunId(submission.run_id)
-        toast.success(`Graph run ${submission.run_id} queued.`)
-      },
-    })
+    const budget = crawlBudget()
+    if (budget === null) return
+    trigger.mutate(
+      budget,
+      {
+        onSuccess: (submission) => {
+          setRunId(submission.run_id)
+          toast.success(`Graph run ${submission.run_id} queued.`)
+        },
+      }
+    )
   }
 
   return (
     <div className="rounded-xl border border-primary/15 bg-background/55 p-4">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div className="min-w-0">
-          <p className="text-sm font-medium">Acquisition plan ready</p>
+          <p className="text-sm font-medium">{plan.name}</p>
+          <p className="mt-1 text-xs text-foreground/80">{plan.purpose}</p>
           <p className="mt-1 text-xs text-muted-foreground">
             {plan.graph_slug} · {plan.start_urls.length} start URL
             {plan.start_urls.length === 1 ? "" : "s"} ·{" "}
@@ -613,6 +653,17 @@ function AcquisitionPlanActions({ plan }: { plan: AcquisitionPlan }) {
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            Max crawls
+            <Input
+              className="h-8 w-24 font-mono text-xs"
+              min={plan.start_urls.length}
+              max={1_000_000}
+              type="number"
+              value={maxCrawls}
+              onChange={(event) => setMaxCrawls(event.target.value)}
+            />
+          </label>
           {runId ? (
             <Button
               nativeButton={false}
@@ -634,7 +685,9 @@ function AcquisitionPlanActions({ plan }: { plan: AcquisitionPlan }) {
             </Button>
           )}
           <Button
-            onClick={() => setScheduleOpen(true)}
+            onClick={() => {
+              if (crawlBudget() !== null) setScheduleOpen(true)
+            }}
             size="sm"
             variant="outline"
           >
@@ -648,11 +701,20 @@ function AcquisitionPlanActions({ plan }: { plan: AcquisitionPlan }) {
           {plan.schedule_summary}
         </p>
       )}
+      {(plan.expected_coverage || plan.success_criteria) && (
+        <div className="mt-3 grid gap-2 border-t pt-3 text-xs text-muted-foreground sm:grid-cols-2">
+          {plan.expected_coverage && <p><strong>Expected:</strong> {plan.expected_coverage}</p>}
+          {plan.success_criteria && <p><strong>Success:</strong> {plan.success_criteria}</p>}
+        </div>
+      )}
       <ScheduleEditorDialog
+        key={maxCrawls}
         graphId={plan.graph_id}
         initialName={`${plan.graph_slug} acquisition`}
+        initialMaxCrawls={Number(maxCrawls)}
         initialUrls={plan.start_urls}
         onOpenChange={setScheduleOpen}
+        onSaved={(schedule) => recordSchedule.mutate(schedule.id)}
         open={scheduleOpen}
         schedule={null}
       />
@@ -668,8 +730,7 @@ export function SearchPage() {
   const [queries, setQueries] = useState<SearchQueryTrace[]>([])
   const [activities, setActivities] = useState<SearchActivity[]>([])
   const [toolsCompleted, setToolsCompleted] = useState(0)
-  const [acquisitionPlan, setAcquisitionPlan] =
-    useState<AcquisitionPlan | null>(null)
+  const [acquisitionPlans, setAcquisitionPlans] = useState<AcquisitionPlan[]>([])
   const controller = useRef<AbortController | null>(null)
   const questionRef = useRef<HTMLTextAreaElement>(null)
 
@@ -678,7 +739,7 @@ export function SearchPage() {
   function applyEvent(event: SearchEvent) {
     if (event.type === "agent.status") setStatus(event.message)
     if (event.type === "tool.started" && event.call_id && event.tool) {
-      if (event.tool !== "query") {
+      if (event.tool !== "query_catalogue") {
         setStatus(`${activityLabel(event.tool, event.arguments)}…`)
       }
       setActivities((current) => [
@@ -689,8 +750,9 @@ export function SearchPage() {
           label: activityLabel(event.tool!, event.arguments),
           detail: activityDetail(event.tool!, event.arguments),
           results: [],
+          result: null,
           sql:
-            event.tool === "query" && typeof event.arguments?.sql === "string"
+            event.tool === "query_catalogue" && typeof event.arguments?.sql === "string"
               ? event.arguments.sql
               : null,
           status: "running",
@@ -715,7 +777,11 @@ export function SearchPage() {
       setActivities((current) =>
         current.map((activity) =>
           activity.callId === event.call_id
-            ? { ...activity, status: "completed" }
+            ? {
+                ...activity,
+                status: "completed",
+                result: event.result ?? activity.result,
+              }
             : activity
         )
       )
@@ -738,6 +804,8 @@ export function SearchPage() {
           columns: [],
           columnTypes: [],
           rows: [],
+          row_count: 0,
+          truncated: false,
           status: "running",
           error: null,
         },
@@ -754,6 +822,8 @@ export function SearchPage() {
                 columns: event.columns ?? [],
                 columnTypes: event.column_types ?? [],
                 rows: event.rows ?? [],
+                row_count: event.row_count ?? (event.rows?.length ?? 0),
+                truncated: event.truncated ?? false,
                 status: "completed",
                 error: null,
               }
@@ -780,7 +850,7 @@ export function SearchPage() {
     }
     if (event.type === "run.completed") {
       setSummary(event.summary ?? "")
-      setAcquisitionPlan(event.acquisition_plan)
+      setAcquisitionPlans(event.acquisition_plans ?? [])
       setStatus(null)
       setRunning(false)
     }
@@ -804,7 +874,7 @@ export function SearchPage() {
     setQueries([])
     setActivities([])
     setToolsCompleted(0)
-    setAcquisitionPlan(null)
+    setAcquisitionPlans([])
     try {
       await streamSearch(nextQuestion, applyEvent, controller.current.signal)
     } catch (error) {
@@ -960,12 +1030,13 @@ export function SearchPage() {
                     </MarkdownContent>
                   </div>
 
-                  {acquisitionPlan && (
+                  {acquisitionPlans.map((plan, index) => (
                     <AcquisitionPlanActions
-                      key={`${acquisitionPlan.graph_id}:${acquisitionPlan.start_urls.join("|")}`}
-                      plan={acquisitionPlan}
+                      key={`${plan.graph_id}:${plan.start_urls.join("|")}`}
+                      plan={plan}
+                      planIndex={index}
                     />
-                  )}
+                  ))}
 
                   {finalQuery && <FinalResultTabs trace={finalQuery} />}
                 </CardContent>

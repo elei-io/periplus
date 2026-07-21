@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import create_engine
@@ -24,7 +25,7 @@ from control.crawl_graphs.service import (
     create_node,
     delete_graph,
     delete_node,
-    ensure_default_crawl_graph,
+    ensure_seeded_crawl_graphs,
     freeze_graph,
     update_edge,
     update_node,
@@ -63,26 +64,35 @@ class CrawlGraphTests(unittest.TestCase):
         )
         return graph, search, result
 
-    def test_default_single_page_graph_is_idempotent_and_immutable(self) -> None:
-        created = ensure_default_crawl_graph(self.session)
-        repeated = ensure_default_crawl_graph(self.session)
+    def test_seeded_graph_library_is_idempotent_and_immutable(self) -> None:
+        fixtures = Path(__file__).parents[2] / "fixtures"
+        created = ensure_seeded_crawl_graphs(self.session, fixtures)
+        repeated = ensure_seeded_crawl_graphs(self.session, fixtures)
+        by_slug = {graph.slug: graph for graph in created}
 
-        self.assertEqual(repeated.id, created.id)
-        self.assertEqual(created.slug, "single-page")
-        self.assertTrue(created.system_owned)
-        self.assertEqual(len(created.nodes), 1)
-        self.assertEqual(created.nodes[0].name, "root")
-        self.assertEqual(created.root_node_id, created.nodes[0].id)
-        self.assertEqual(created.edges, [])
+        self.assertEqual([graph.id for graph in repeated], [graph.id for graph in created])
+        self.assertEqual(len(created), 16)
+        single = by_slug["single-page"]
+        self.assertTrue(single.system_owned)
+        self.assertTrue(by_slug["same-site-depth-1"].system_owned)
+        self.assertEqual(len(single.nodes), 1)
+        self.assertEqual(single.nodes[0].name, "root")
+        self.assertEqual(single.root_node_id, single.nodes[0].id)
+        self.assertEqual(single.edges, [])
+        self.assertEqual(len(by_slug["same-site-depth-3"].nodes), 4)
+        recursive = by_slug["same-site-query-recursive"]
+        self.assertEqual(recursive.edges[0].source_node_id, recursive.root_node_id)
+        self.assertEqual(recursive.edges[0].target_node_id, recursive.root_node_id)
+        self.assertIn("target_query IS NOT NULL", recursive.edges[0].sql)
 
         with self.assertRaises(CrawlGraphConflictError):
             create_node(
                 self.session,
-                created.id,
+                by_slug["same-site-depth-1"].id,
                 CrawlGraphNodeCreate(name="extra"),
             )
         with self.assertRaises(CrawlGraphConflictError):
-            delete_graph(self.session, created.id)
+            delete_graph(self.session, single.id)
 
     def test_freeze_returns_complete_snapshot_without_locking_components(self) -> None:
         graph, search, result = self._graph_with_nodes()

@@ -40,6 +40,10 @@ class CrawlSchedule(Base):
             name="ck_crawl_schedules_maximum_run_count",
         ),
         CheckConstraint(
+            "max_crawls >= 1 AND max_crawls <= 1000000",
+            name="ck_crawl_schedules_max_crawls",
+        ),
+        CheckConstraint(
             "run_count >= 0", name="ck_crawl_schedules_run_count"
         ),
         CheckConstraint(
@@ -77,6 +81,7 @@ class CrawlSchedule(Base):
     maximum_run_count: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )
+    max_crawls: Mapped[int] = mapped_column(Integer, default=1_000)
     root_urls: Mapped[list[str]] = mapped_column(json_type)
     overlap_policy: Mapped[str] = mapped_column(Text, default="skip")
     misfire_policy: Mapped[str] = mapped_column(Text, default="skip")

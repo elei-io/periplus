@@ -7,8 +7,10 @@ from dataclasses import dataclass
 
 from config import get_float, get_int
 from observability import repository_metrics
+from repository.objects.config import staging_root_from_env
 from repository.catalogue.service import CompactionResult
-from repository.service import repository_ingestor_from_env
+from repository.catalogue.operations import run_with_catalogue_retry
+from repository.service import cleanup_staging_files, repository_ingestor_from_env
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +27,16 @@ class MaintenanceConfig:
     maximum_operation_bytes: int
     cleanup_older_than_seconds: int
     staging_grace_seconds: float
+
+    @property
+    def maximum_compaction_pass_bytes(self) -> int:
+        """Return the effective output bound for one compacted table slice."""
+
+        bounded_outputs = min(
+            self.maximum_compacted_files,
+            max(1, self.maximum_operation_bytes // self.target_file_bytes),
+        )
+        return bounded_outputs * self.target_file_bytes
 
     @classmethod
     def from_env(cls) -> "MaintenanceConfig":
@@ -46,6 +58,12 @@ class MaintenanceConfig:
         )
         if value.target_file_bytes <= value.maximum_input_file_bytes:
             raise ValueError("maintenance target file size must exceed the maximum input file size")
+        if value.target_file_bytes > value.maximum_operation_bytes:
+            raise ValueError(
+                "maintenance target file size must not exceed the maximum operation size"
+            )
+        if value.maximum_compacted_files <= 0:
+            raise ValueError("maintenance maximum compacted files must be greater than zero")
         if value.debounce_seconds <= 0:
             raise ValueError("maintenance debounce must be greater than zero")
         if value.maximum_delay_seconds < value.debounce_seconds:
@@ -58,16 +76,22 @@ class MaintenanceConfig:
 def compact(config: MaintenanceConfig) -> list[CompactionResult]:
     started = time.perf_counter()
     try:
-        with repository_ingestor_from_env() as ingestor:
-            results = ingestor.catalogue_service.compact_small_files(
-                minimum_files=config.minimum_files,
-                maximum_input_file_bytes=config.maximum_input_file_bytes,
-                target_file_bytes=config.target_file_bytes,
-                maximum_compacted_files=config.maximum_compacted_files,
-                maximum_tables=config.maximum_tables_per_pass,
-                maximum_operation_bytes=config.maximum_operation_bytes,
-                cleanup_older_than_seconds=config.cleanup_older_than_seconds,
-            )
+        def attempt() -> list[CompactionResult]:
+            with repository_ingestor_from_env() as ingestor:
+                return ingestor.catalogue_service.compact_small_files(
+                    minimum_files=config.minimum_files,
+                    maximum_input_file_bytes=config.maximum_input_file_bytes,
+                    target_file_bytes=config.target_file_bytes,
+                    maximum_compacted_files=config.maximum_compacted_files,
+                    maximum_tables=config.maximum_tables_per_pass,
+                    maximum_operation_bytes=config.maximum_operation_bytes,
+                    cleanup_older_than_seconds=config.cleanup_older_than_seconds,
+                )
+
+        results = run_with_catalogue_retry(
+            attempt,
+            description="repository compaction",
+        )
     except BaseException:
         repository_metrics.compaction(
             outcome="failed",
@@ -86,5 +110,7 @@ def compact(config: MaintenanceConfig) -> list[CompactionResult]:
 
 
 def cleanup_staging(config: MaintenanceConfig) -> None:
-    with repository_ingestor_from_env() as ingestor:
-        ingestor.cleanup_staging(older_than_seconds=config.staging_grace_seconds)
+    cleanup_staging_files(
+        staging_root_from_env(),
+        older_than_seconds=config.staging_grace_seconds,
+    )

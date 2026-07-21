@@ -8,7 +8,12 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from actions.crawl.schemas import AcquisitionAttemptEvidence, CrawlPage, CrawlStepEvidence
-from actions.crawl.service import _acquire, _status_outcome, crawl_graph_request
+from actions.crawl.service import (
+    PlaywrightRuntimeLost,
+    _acquire,
+    _status_outcome,
+    crawl_graph_request,
+)
 from control.crawl_policies.schemas import CrawlPolicySnapshot, EffectivePolicySnapshot
 from control.domain_policies.schemas import DomainPolicySnapshot
 from runtime.context import GraphExecutionContext
@@ -148,6 +153,47 @@ class CdpAcquisitionTests(unittest.TestCase):
             page.wait_for_timeout.assert_not_awaited()
             playwright.chromium.connect_over_cdp.assert_awaited_once()
             browser.close.assert_awaited_once_with()
+
+        asyncio.run(scenario())
+
+    def test_dead_local_playwright_driver_is_not_a_crawl_failure(self):
+        playwright = MagicMock()
+        playwright.chromium.connect_over_cdp = AsyncMock(
+            side_effect=PlaywrightError(
+                "BrowserType.connect_over_cdp: Connection closed while reading "
+                "from the driver"
+            )
+        )
+
+        async def scenario():
+            with self.assertRaisesRegex(
+                PlaywrightRuntimeLost, "driver connection was lost"
+            ):
+                await _acquire(
+                    "https://example.com/",
+                    policy(),
+                    attempt_number=1,
+                    playwright=playwright,
+                )
+
+        asyncio.run(scenario())
+
+    def test_remote_cdp_connection_failure_remains_retryable(self):
+        playwright = MagicMock()
+        playwright.chromium.connect_over_cdp = AsyncMock(
+            side_effect=PlaywrightError("WebSocket error: connect ECONNREFUSED")
+        )
+
+        async def scenario():
+            result = await _acquire(
+                "https://example.com/",
+                policy(),
+                attempt_number=1,
+                playwright=playwright,
+            )
+            self.assertFalse(result.success)
+            self.assertEqual(result.failure_code, "cdp_connection_failed")
+            self.assertTrue(result.failure_retryable)
 
         asyncio.run(scenario())
 

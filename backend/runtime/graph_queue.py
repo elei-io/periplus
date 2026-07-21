@@ -13,10 +13,17 @@ from config.performance import GRAPH_ACK_WAIT_SECONDS, GRAPH_CONSUMER_MAX_ACK_PE
 from nats.js.api import AckPolicy, ConsumerConfig, KeyValueConfig, RetentionPolicy, StorageType, StreamConfig
 from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError, NotFoundError
 from pydantic import BaseModel, ConfigDict, Field
-from control.crawl_graphs.schemas import EdgeDedupeMode, FrozenGraphEdge, FrozenGraphNode, FrozenGraphSnapshot
+from control.crawl_graphs.schemas import (
+    DEFAULT_GRAPH_RUN_MAX_CRAWLS,
+    MAX_GRAPH_RUN_CRAWLS,
+    EdgeDedupeMode,
+    FrozenGraphEdge,
+    FrozenGraphNode,
+    FrozenGraphSnapshot,
+)
 from control.crawl_policies.schemas import CrawlPolicySnapshot
 from control.urls import normalize_url
-from runtime.navigation_contract import NavigationPackage
+from runtime.navigation_contract import EdgeSelectionPackage, NavigationPackage
 
 GRAPH_STREAM = "ATLAS_GRAPH_WORK"
 CRAWL_SUBJECT = "atlas.graph.crawl"
@@ -32,8 +39,18 @@ PROGRESS_BUCKET = "atlas_graph_progress"
 
 GraphRunStatus = Literal["queued", "running", "completed", "completed_with_errors", "failed", "cancelled"]
 CrawlRequestStatus = Literal["queued", "crawling", "awaiting_navigation", "evaluating_edges", "completed", "failed", "cancelled"]
-FailureStage = Literal["admission", "acquisition", "edge", "lifecycle"]
+FailureStage = Literal[
+    "admission",
+    "connection",
+    "request",
+    "navigation",
+    "completion",
+    "acquisition",
+    "edge",
+    "lifecycle",
+]
 TriggerKind = Literal["manual", "schedule"]
+MAX_GRAPH_RUN_FAILURE_GROUPS = 32
 
 
 class PendingAdmission(BaseModel):
@@ -51,6 +68,31 @@ class PendingAdmission(BaseModel):
     created_at: datetime
 
 
+class AdmissionReservation(BaseModel):
+    """Sharded deduplication and recovery marker for one admission identity."""
+
+    model_config = ConfigDict(frozen=True)
+    identity: str
+    graph_run_id: UUID
+    request_id: UUID | None = None
+    pending: PendingAdmission | None = None
+    counted: bool = False
+    delivered: bool = False
+
+
+class GraphRunFailureGroup(BaseModel):
+    """Bounded operational summary for one terminal crawl failure type."""
+
+    model_config = ConfigDict(frozen=True)
+    failure_stage: str
+    failure_code: str
+    status_code: int | None = None
+    count: int = Field(ge=1)
+    example_url: str
+    example_detail: str | None = None
+    last_occurred_at: datetime
+
+
 class GraphRun(BaseModel):
     model_config = ConfigDict(frozen=True)
     id: UUID
@@ -61,12 +103,16 @@ class GraphRun(BaseModel):
     status: GraphRunStatus = "queued"
     snapshot: FrozenGraphSnapshot
     trigger_urls: tuple[str, ...]
-    seen_request_identities: tuple[str, ...] = ()
+    max_crawls: int = Field(default=DEFAULT_GRAPH_RUN_MAX_CRAWLS, ge=1, le=MAX_GRAPH_RUN_CRAWLS)
+    crawl_limit_reached: bool = False
+    root_admission_cursor: int = Field(default=0, ge=0)
     pending_admissions: tuple[PendingAdmission, ...] = ()
     request_count: int = 0
     pending_request_count: int = 0
+    acquisition_pending_count: int = Field(default=0, ge=0)
     failed_request_count: int = 0
     error_count: int = 0
+    failure_groups: tuple[GraphRunFailureGroup, ...] = ()
     created_at: datetime
     started_at: datetime | None = None
     last_progress_at: datetime | None = None
@@ -125,6 +171,7 @@ class EdgeEvaluation(BaseModel):
     created_at: datetime
     updated_at: datetime
     output_count: int = 0
+    selection: EdgeSelectionPackage | None = None
     error: str | None = None
 
 
@@ -191,13 +238,23 @@ def new_graph_run(
     run_id: UUID | None = None,
     trigger_schedule_id: UUID | None = None,
     catalogue_snapshot_id: int | None = None,
+    max_crawls: int = DEFAULT_GRAPH_RUN_MAX_CRAWLS,
 ) -> GraphRun:
     now = now or datetime.now(UTC)
-    normalized = tuple(normalize_request_url(url) for url in urls)
+    normalized = tuple(dict.fromkeys(normalize_request_url(url) for url in urls))
     if not normalized:
         raise ValueError("A graph run requires at least one URL.")
     if not any(node.id == snapshot.root_node_id for node in snapshot.nodes):
         raise ValueError("A graph run requires a valid root node.")
+    if not 1 <= max_crawls <= MAX_GRAPH_RUN_CRAWLS:
+        raise ValueError(
+            f"A graph run maximum crawl budget must be between 1 and {MAX_GRAPH_RUN_CRAWLS}."
+        )
+    if max_crawls < len(normalized):
+        raise ValueError(
+            "A graph run maximum crawl budget cannot be smaller than its number "
+            f"of distinct root URLs ({len(normalized)})."
+        )
     return GraphRun(
         id=run_id or uuid4(),
         graph_id=snapshot.graph_id,
@@ -206,6 +263,7 @@ def new_graph_run(
         catalogue_snapshot_id=catalogue_snapshot_id,
         snapshot=snapshot,
         trigger_urls=normalized,
+        max_crawls=max_crawls,
         created_at=now,
     )
 
@@ -378,6 +436,27 @@ def edge_evaluation_key(identity: str) -> str:
     return f"edge-{identity}"
 
 
+def admission_reservation_key(identity: str) -> str:
+    return f"admission-{identity}"
+
+
+async def get_admission_reservation(
+    bucket, identity: str
+) -> AdmissionReservation | None:
+    return await _get(
+        bucket, admission_reservation_key(identity), AdmissionReservation
+    )
+
+
+async def update_admission_reservation(bucket, identity: str, mutate):
+    return await _update(
+        bucket,
+        admission_reservation_key(identity),
+        AdmissionReservation,
+        mutate,
+    )
+
+
 async def get_edge_evaluation(bucket, identity: str) -> EdgeEvaluation | None:
     return await _get(bucket, edge_evaluation_key(identity), EdgeEvaluation)
 
@@ -433,7 +512,7 @@ async def list_worker_states(bucket) -> list[WorkerState]:
 
 async def list_crawl_requests(bucket, *, graph_run_id: UUID | None = None) -> list[CrawlRequest]:
     keys = await _list_keys(bucket)
-    request_keys = [key for key in keys if not key.startswith("edge-")]
+    request_keys = [key for key in keys if _is_request_key(key)]
     values: list[CrawlRequest] = []
     for start in range(0, len(request_keys), 64):
         batch = await asyncio.gather(
@@ -442,6 +521,28 @@ async def list_crawl_requests(bucket, *, graph_run_id: UUID | None = None) -> li
         values.extend(
             value for value in batch
             if value is not None and (graph_run_id is None or value.graph_run_id == graph_run_id)
+        )
+    return values
+
+
+async def list_admission_reservations(
+    bucket, *, graph_run_id: UUID | None = None
+) -> list[AdmissionReservation]:
+    keys = await _list_keys(bucket)
+    reservation_keys = [key for key in keys if key.startswith("admission-")]
+    values: list[AdmissionReservation] = []
+    for start in range(0, len(reservation_keys), 64):
+        batch = await asyncio.gather(
+            *(
+                _get(bucket, key, AdmissionReservation)
+                for key in reservation_keys[start : start + 64]
+            )
+        )
+        values.extend(
+            value
+            for value in batch
+            if value is not None
+            and (graph_run_id is None or value.graph_run_id == graph_run_id)
         )
     return values
 
@@ -486,6 +587,16 @@ async def _list_keys(bucket) -> list[str]:
                 await bucket._js.delete_consumer(bucket._stream, consumer_name)
             except NotFoundError:
                 pass
+
+
+def _is_request_key(key: str) -> bool:
+    if len(key) != 32:
+        return False
+    try:
+        UUID(hex=key)
+    except ValueError:
+        return False
+    return True
 
 
 async def publish_crawl(jetstream, request: CrawlRequest) -> None:

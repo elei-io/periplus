@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 import asyncio
 from threading import Event
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import UUID, uuid4
 
 from actions.crawl.schemas import CrawlPage
-from actions.crawl.service import RetryableAcquisitionError
+from actions.crawl.service import PlaywrightRuntimeLost, RetryableAcquisitionError
 from control.crawl_graphs.schemas import (
     EdgeDedupeMode,
     FrozenGraphEdge,
@@ -17,8 +18,15 @@ from control.crawl_graphs.schemas import (
     FrozenGraphSnapshot,
 )
 from runtime.graph_queue import (
+    CrawlRequest,
+    CrawlWork,
+    EdgeEvaluation,
     EdgeWork,
+    GraphRun,
     NavigationReadinessWork,
+    PendingAdmission,
+    edge_evaluation_identity,
+    edge_evaluation_key,
     get_crawl_request,
     get_graph_run,
     new_graph_run,
@@ -26,15 +34,20 @@ from runtime.graph_queue import (
     request_identity,
     update_crawl_request,
 )
+from config.performance import CRAWL_RUN_ACQUISITION_PENDING_LIMIT
 from runtime.graph_runs import (
+    EdgeEvaluationBusy,
     EdgeEvaluationFailed,
+    GraphRunAdmissionDeferred,
     admit_request,
     create_graph_run,
     deterministic_request_id,
     evaluate_edge,
     expire_graph_run,
+    fill_root_admissions,
     handle_navigation_readiness,
     reconcile_pending_admissions,
+    release_acquisition_slot,
     request_cancellation,
     settle_request,
 )
@@ -44,13 +57,19 @@ from runtime.graph_progress import (
     initialize_run_progress,
 )
 from runtime.navigation_contract import NavigationPackage
-from workers.acquisition import _process_crawl
+from workers.acquisition import _process_crawl, _release_crawl_for_redelivery
 
 
 class FakeKV:
     def __init__(self) -> None:
         self.values: dict[str, bytes] = {}
         self.revisions: dict[str, int] = {}
+        self.conflicts: dict[str, Callable[[bytes], bytes]] = {}
+
+    def conflict_once(
+        self, key: str, replace: Callable[[bytes], bytes]
+    ) -> None:
+        self.conflicts[key] = replace
 
     async def create(self, key: str, value: bytes) -> int:
         if key in self.values:
@@ -70,6 +89,13 @@ class FakeKV:
 
     async def update(self, key: str, value: bytes, last: int) -> int:
         assert self.revisions[key] == last
+        replace = self.conflicts.pop(key, None)
+        if replace is not None:
+            from nats.js.errors import KeyWrongLastSequenceError
+
+            self.values[key] = replace(self.values[key])
+            self.revisions[key] += 1
+            raise KeyWrongLastSequenceError
         self.values[key] = value
         self.revisions[key] += 1
         return self.revisions[key]
@@ -153,6 +179,53 @@ def snapshot(
 
 
 class GraphRuntimeTests(unittest.TestCase):
+    def test_graph_run_stops_admission_at_its_crawl_budget(self) -> None:
+        async def scenario() -> None:
+            runs = FakeKV()
+            requests = FakeKV()
+            progress = FakeKV()
+            jetstream = FakeJetStream()
+            graph = snapshot()
+            run = await create_graph_run(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                jetstream=jetstream,
+                snapshot=graph,
+                urls=["https://example.com/"],
+                max_crawls=1,
+                policy_resolver=lambda _url: policy_snapshot(),
+            )
+
+            admitted, created = await admit_request(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                jetstream=jetstream,
+                run_id=run.id,
+                node_id=graph.nodes[-1].id,
+                url="https://example.com/next",
+                policy_resolver=lambda _url: policy_snapshot(),
+                parent_request_id=uuid4(),
+            )
+
+            current = await get_graph_run(runs, run.id)
+            assert current is not None
+            self.assertIsNone(admitted)
+            self.assertFalse(created)
+            self.assertEqual(current.request_count, 1)
+            self.assertTrue(current.crawl_limit_reached)
+
+        asyncio.run(scenario())
+
+    def test_graph_run_budget_must_cover_distinct_roots(self) -> None:
+        with self.assertRaisesRegex(ValueError, "distinct root URLs"):
+            new_graph_run(
+                snapshot(),
+                ["https://one.example/", "https://two.example/"],
+                max_crawls=1,
+            )
+
     def test_historical_edges_pin_the_catalogue_snapshot_at_run_creation(self) -> None:
         async def scenario() -> None:
             graph = snapshot()
@@ -206,6 +279,69 @@ class GraphRuntimeTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_lost_crawl_claim_cas_does_not_execute_acquisition(self) -> None:
+        async def scenario() -> None:
+            runs, requests = FakeKV(), FakeKV()
+            graph = snapshot()
+            run = new_graph_run(graph, ["https://example.com"]).model_copy(
+                update={"root_admission_cursor": 1}
+            )
+            await runs.create(run.id.hex, run.model_dump_json().encode())
+            request = CrawlRequest(
+                id=uuid4(),
+                graph_run_id=run.id,
+                node_id=graph.root_node_id,
+                url="https://example.com/",
+                effective_policy_snapshot_json=policy_snapshot(),
+                created_at=run.created_at,
+                updated_at=run.created_at,
+            )
+            await requests.create(request.id.hex, request.model_dump_json().encode())
+            competing_token = uuid4()
+            requests.conflict_once(
+                request.id.hex,
+                lambda payload: CrawlRequest.model_validate_json(payload)
+                .model_copy(
+                    update={
+                        "status": "crawling",
+                        "claim_token": competing_token,
+                        "claim_expires_at": datetime.now(UTC)
+                        + timedelta(minutes=1),
+                    }
+                )
+                .model_dump_json()
+                .encode(),
+            )
+
+            message = SimpleNamespace(
+                data=CrawlWork(crawl_request_id=request.id)
+                .model_dump_json()
+                .encode(),
+                ack=AsyncMock(),
+                nak=AsyncMock(),
+            )
+            acquire = AsyncMock()
+            with patch("workers.acquisition.crawl_graph_request", acquire):
+                await _process_crawl(
+                    message,
+                    runs,
+                    requests,
+                    object(),
+                    object(),
+                    object(),
+                    "http",
+                    playwright=object(),
+                )
+
+            acquire.assert_not_awaited()
+            message.nak.assert_awaited_once_with(delay=1)
+            message.ack.assert_not_awaited()
+            current = await get_crawl_request(requests, request.id)
+            assert current is not None
+            self.assertEqual(current.claim_token, competing_token)
+
+        asyncio.run(scenario())
+
     def test_failed_acquisition_settles_after_durable_publication(self) -> None:
         async def scenario() -> None:
             runs, requests = FakeKV(), FakeKV()
@@ -242,6 +378,9 @@ class GraphRuntimeTests(unittest.TestCase):
                 success=False,
                 error="network failed",
                 document_id=None,
+                failure_stage="connection",
+                failure_code="cdp_connection_failed",
+                status_code=None,
             )
             acquire = AsyncMock(return_value=failure)
             playwright = object()
@@ -273,7 +412,9 @@ class GraphRuntimeTests(unittest.TestCase):
         async def scenario() -> None:
             runs, requests = FakeKV(), FakeKV()
             graph = snapshot()
-            run = new_graph_run(graph, ["https://example.com"])
+            run = new_graph_run(graph, ["https://example.com"]).model_copy(
+                update={"root_admission_cursor": 1}
+            )
             await runs.create(run.id.hex, run.model_dump_json().encode())
             from runtime.graph_queue import (
                 CrawlRequest,
@@ -448,6 +589,9 @@ class GraphRuntimeTests(unittest.TestCase):
                 success=False,
                 error="still failed",
                 document_id=None,
+                failure_stage="navigation",
+                failure_code="navigation_failed",
+                status_code=None,
             )
             acquire = AsyncMock(return_value=page)
             with (
@@ -532,6 +676,118 @@ class GraphRuntimeTests(unittest.TestCase):
             Message.nak.assert_awaited_once_with(delay=1)
             Message.ack.assert_not_awaited()
             settle.assert_not_awaited()
+
+        asyncio.run(scenario())
+
+    def test_playwright_runtime_loss_requeues_without_consuming_retry_budget(
+        self,
+    ) -> None:
+        async def scenario() -> None:
+            runs, requests = FakeKV(), FakeKV()
+            graph = snapshot()
+            run = new_graph_run(graph, ["https://example.com"])
+            await runs.create(run.id.hex, run.model_dump_json().encode())
+            request = CrawlRequest(
+                id=uuid4(),
+                graph_run_id=run.id,
+                node_id=graph.root_node_id,
+                url="https://example.com/",
+                effective_policy_snapshot_json=policy_snapshot(),
+                created_at=run.created_at,
+                updated_at=run.created_at,
+            )
+            await requests.create(request.id.hex, request.model_dump_json().encode())
+            message = SimpleNamespace(
+                data=CrawlWork(crawl_request_id=request.id)
+                .model_dump_json()
+                .encode(),
+                ack=AsyncMock(),
+                nak=AsyncMock(),
+            )
+
+            with (
+                patch(
+                    "workers.acquisition.crawl_graph_request",
+                    AsyncMock(
+                        side_effect=PlaywrightRuntimeLost(
+                            "local Playwright driver connection was lost"
+                        )
+                    ),
+                ),
+                patch("workers.acquisition.transition_node_progress", AsyncMock()),
+                patch("workers.acquisition.settle_request", AsyncMock()) as settle,
+            ):
+                with self.assertRaises(PlaywrightRuntimeLost):
+                    await _process_crawl(
+                        message,
+                        runs,
+                        requests,
+                        object(),
+                        object(),
+                        object(),
+                        "http",
+                        playwright=object(),
+                    )
+
+            current = await get_crawl_request(requests, request.id)
+            assert current is not None
+            self.assertEqual(current.status, "queued")
+            self.assertIsNone(current.claim_token)
+            self.assertEqual(current.processing_failure_count, 0)
+            message.nak.assert_awaited_once_with(delay=1)
+            message.ack.assert_not_awaited()
+            settle.assert_not_awaited()
+
+        asyncio.run(scenario())
+
+    def test_redelivery_release_does_not_double_transition_after_cas_conflict(
+        self,
+    ) -> None:
+        async def scenario() -> None:
+            requests = FakeKV()
+            claim_token = uuid4()
+            request = CrawlRequest(
+                id=uuid4(),
+                graph_run_id=uuid4(),
+                node_id=uuid4(),
+                url="https://example.com/",
+                effective_policy_snapshot_json=policy_snapshot(),
+                status="crawling",
+                claim_token=claim_token,
+                claim_expires_at=datetime.now(UTC) + timedelta(minutes=1),
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            await requests.create(request.id.hex, request.model_dump_json().encode())
+            requests.conflict_once(
+                request.id.hex,
+                lambda payload: CrawlRequest.model_validate_json(payload)
+                .model_copy(
+                    update={
+                        "status": "queued",
+                        "claim_token": None,
+                        "claim_expires_at": None,
+                    }
+                )
+                .model_dump_json()
+                .encode(),
+            )
+            message = SimpleNamespace(nak=AsyncMock())
+
+            with patch(
+                "workers.acquisition.transition_node_progress", AsyncMock()
+            ) as transition:
+                await _release_crawl_for_redelivery(
+                    message=message,
+                    requests=requests,
+                    progress=object(),
+                    request_id=request.id,
+                    claim_token=claim_token,
+                    delay=1,
+                )
+
+            transition.assert_not_awaited()
+            message.nak.assert_awaited_once_with(delay=1)
 
         asyncio.run(scenario())
 
@@ -773,6 +1029,217 @@ class GraphRuntimeTests(unittest.TestCase):
             assert len(jetstream.messages) == 1
             current = await get_graph_run(runs, run.id)
             assert current is not None and current.last_progress_at is not None
+            self.assertNotIn("seen_request_identities", current.model_dump())
+            self.assertTrue(
+                any(key.startswith("admission-") for key in await requests.keys())
+            )
+
+        asyncio.run(scenario())
+
+    def test_lost_admission_cas_does_not_report_a_second_win(self) -> None:
+        async def scenario() -> None:
+            runs, requests, progress, jetstream = (
+                FakeKV(),
+                FakeKV(),
+                FakeKV(),
+                FakeJetStream(),
+            )
+            graph = snapshot()
+            now = datetime(2026, 1, 1, tzinfo=UTC)
+            run = new_graph_run(graph, ["https://example.com"], now=now)
+            await runs.create(run.id.hex, run.model_dump_json().encode())
+            await initialize_run_progress(progress, run)
+            url = normalize_request_url("https://example.com/a")
+            identity = request_identity(run.id, url)
+            pending = PendingAdmission(
+                request_id=deterministic_request_id(identity),
+                identity=identity,
+                node_id=graph.root_node_id,
+                url=url,
+                effective_policy_snapshot_json=policy_snapshot(),
+                created_at=now,
+            )
+            runs.conflict_once(
+                run.id.hex,
+                lambda payload: GraphRun.model_validate_json(payload)
+                .model_copy(
+                    update={
+                        "status": "running",
+                        "started_at": now,
+                        "last_progress_at": now,
+                        "pending_admissions": (pending,),
+                        "request_count": 1,
+                        "pending_request_count": 1,
+                        "acquisition_pending_count": 1,
+                    }
+                )
+                .model_dump_json()
+                .encode(),
+            )
+
+            _request, newly_admitted = await admit_request(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                jetstream=jetstream,
+                run_id=run.id,
+                node_id=graph.root_node_id,
+                url=url,
+                policy_resolver=lambda _url: policy_snapshot(),
+                now=now,
+            )
+
+            self.assertFalse(newly_admitted)
+            current = await get_graph_run(runs, run.id)
+            assert current is not None
+            self.assertEqual(current.request_count, 1)
+            self.assertEqual(current.pending_request_count, 1)
+            self.assertEqual(len(jetstream.messages), 1)
+
+        asyncio.run(scenario())
+
+    def test_edge_admission_waits_for_the_run_acquisition_window(self) -> None:
+        async def scenario() -> None:
+            runs, requests, progress, jetstream = (
+                FakeKV(),
+                FakeKV(),
+                FakeKV(),
+                FakeJetStream(),
+            )
+            graph = snapshot()
+            run = new_graph_run(graph, ["https://source.example/"]).model_copy(
+                update={
+                    "status": "running",
+                    "acquisition_pending_count": CRAWL_RUN_ACQUISITION_PENDING_LIMIT,
+                }
+            )
+            await runs.create(run.id.hex, run.model_dump_json().encode())
+            await initialize_run_progress(progress, run)
+
+            with self.assertRaises(GraphRunAdmissionDeferred):
+                await admit_request(
+                    runs=runs,
+                    requests=requests,
+                    progress=progress,
+                    jetstream=jetstream,
+                    run_id=run.id,
+                    node_id=graph.root_node_id,
+                    url="https://target.example/",
+                    policy_resolver=lambda _url: policy_snapshot(),
+                    parent_request_id=uuid4(),
+                )
+
+            self.assertEqual(jetstream.messages, [])
+            current = await get_graph_run(runs, run.id)
+            assert current is not None
+            self.assertEqual(current.request_count, 0)
+
+        asyncio.run(scenario())
+
+    def test_root_admission_uses_the_same_bounded_window(self) -> None:
+        async def scenario() -> None:
+            runs, requests, progress, jetstream = (
+                FakeKV(),
+                FakeKV(),
+                FakeKV(),
+                FakeJetStream(),
+            )
+            graph = snapshot()
+            urls = [
+                f"https://seed-{index}.example/"
+                for index in range(CRAWL_RUN_ACQUISITION_PENDING_LIMIT + 10)
+            ]
+            run = await create_graph_run(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                jetstream=jetstream,
+                snapshot=graph,
+                urls=urls,
+                policy_resolver=lambda _url: policy_snapshot(),
+            )
+
+            self.assertEqual(
+                run.root_admission_cursor,
+                CRAWL_RUN_ACQUISITION_PENDING_LIMIT,
+            )
+            self.assertEqual(
+                run.acquisition_pending_count,
+                CRAWL_RUN_ACQUISITION_PENDING_LIMIT,
+            )
+            self.assertEqual(
+                len(jetstream.messages),
+                CRAWL_RUN_ACQUISITION_PENDING_LIMIT,
+            )
+
+            await release_acquisition_slot(runs, run.id)
+            admitted = await fill_root_admissions(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                jetstream=jetstream,
+                run_id=run.id,
+                policy_resolver=lambda _url: policy_snapshot(),
+            )
+            current = await get_graph_run(runs, run.id)
+            assert current is not None
+            self.assertEqual(admitted, 1)
+            self.assertEqual(
+                current.root_admission_cursor,
+                CRAWL_RUN_ACQUISITION_PENDING_LIMIT + 1,
+            )
+            self.assertEqual(
+                current.acquisition_pending_count,
+                CRAWL_RUN_ACQUISITION_PENDING_LIMIT,
+            )
+
+        asyncio.run(scenario())
+
+    def test_lost_settlement_cas_does_not_double_account_run(self) -> None:
+        async def scenario() -> None:
+            runs, requests, progress = FakeKV(), FakeKV(), FakeKV()
+            graph = snapshot()
+            run = new_graph_run(graph, ["https://example.com"]).model_copy(
+                update={
+                    "status": "running",
+                    "root_admission_cursor": 1,
+                    "request_count": 1,
+                    "pending_request_count": 1,
+                }
+            )
+            await runs.create(run.id.hex, run.model_dump_json().encode())
+            await initialize_run_progress(progress, run)
+            request = CrawlRequest(
+                id=uuid4(),
+                graph_run_id=run.id,
+                node_id=graph.root_node_id,
+                url="https://example.com/",
+                effective_policy_snapshot_json=policy_snapshot(),
+                status="awaiting_navigation",
+                created_at=run.created_at,
+                updated_at=run.created_at,
+            )
+            await requests.create(request.id.hex, request.model_dump_json().encode())
+            requests.conflict_once(
+                request.id.hex,
+                lambda payload: CrawlRequest.model_validate_json(payload)
+                .model_copy(update={"status": "completed"})
+                .model_dump_json()
+                .encode(),
+            )
+
+            await settle_request(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                request_id=request.id,
+                status="completed",
+            )
+
+            current = await get_graph_run(runs, run.id)
+            assert current is not None
+            self.assertEqual(current.pending_request_count, 1)
+            self.assertEqual(current.status, "running")
 
         asyncio.run(scenario())
 
@@ -785,6 +1252,7 @@ class GraphRuntimeTests(unittest.TestCase):
             run = new_graph_run(graph, ["https://example.com"], now=started).model_copy(
                 update={
                     "status": "running",
+                    "root_admission_cursor": 1,
                     "request_count": 1,
                     "pending_request_count": 1,
                 }
@@ -1000,9 +1468,10 @@ class GraphRuntimeTests(unittest.TestCase):
             run = new_graph_run(graph, ["https://example.com"], now=now).model_copy(
                 update={
                     "status": "running",
-                    "seen_request_identities": ("a" * 64, "b" * 64),
-                    "request_count": 2,
-                    "pending_request_count": 2,
+                    "root_admission_cursor": 1,
+                    "request_count": 3,
+                    "pending_request_count": 3,
+                    "acquisition_pending_count": 3,
                 }
             )
             await runs.create(run.id.hex, run.model_dump_json().encode())
@@ -1010,7 +1479,7 @@ class GraphRuntimeTests(unittest.TestCase):
             from runtime.graph_queue import CrawlRequest
 
             crawl_requests = []
-            for path in ("external", "pipeline"):
+            for path in ("external", "pipeline", "edge"):
                 crawl_request = CrawlRequest(
                     id=uuid4(),
                     graph_run_id=run.id,
@@ -1032,7 +1501,10 @@ class GraphRuntimeTests(unittest.TestCase):
                 progress=progress,
                 request_id=crawl_requests[0].id,
                 status="failed",
-                failure_stage="acquisition",
+                error="Page returned HTTP 503",
+                failure_stage="navigation",
+                failure_code="http_status",
+                status_code=503,
                 now=now,
             )
             await settle_request(
@@ -1041,17 +1513,41 @@ class GraphRuntimeTests(unittest.TestCase):
                 progress=progress,
                 request_id=crawl_requests[1].id,
                 status="failed",
+                error="Page returned HTTP 503 again",
+                failure_stage="navigation",
+                failure_code="http_status",
+                status_code=503,
+                now=now + timedelta(seconds=1),
+            )
+            await settle_request(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                request_id=crawl_requests[2].id,
+                status="failed",
+                error="Edge query failed",
                 failure_stage="edge",
-                now=now,
+                failure_code="edge_evaluation_failed",
+                now=now + timedelta(seconds=2),
             )
 
             current = await get_graph_run(runs, run.id)
             assert current is not None
             self.assertEqual(current.status, "completed_with_errors")
-            self.assertEqual(current.failed_request_count, 2)
-            self.assertEqual(current.error_count, 2)
-            self.assertEqual(current.seen_request_identities, ())
+            self.assertEqual(current.failed_request_count, 3)
+            self.assertEqual(current.error_count, 3)
             self.assertEqual(current.pending_admissions, ())
+            self.assertEqual(current.acquisition_pending_count, 0)
+            self.assertEqual(len(current.failure_groups), 2)
+            http, edge = current.failure_groups
+            self.assertEqual(http.failure_stage, "navigation")
+            self.assertEqual(http.failure_code, "http_status")
+            self.assertEqual(http.status_code, 503)
+            self.assertEqual(http.count, 2)
+            self.assertEqual(http.example_url, crawl_requests[1].url)
+            self.assertEqual(http.example_detail, "Page returned HTTP 503 again")
+            self.assertEqual(edge.failure_code, "edge_evaluation_failed")
+            self.assertEqual(edge.count, 1)
 
         asyncio.run(scenario())
 
@@ -1256,6 +1752,86 @@ class GraphRuntimeTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_lost_edge_claim_cas_does_not_execute_query(self) -> None:
+        async def scenario() -> None:
+            runs, requests, progress, jetstream = (
+                FakeKV(),
+                FakeKV(),
+                FakeKV(),
+                FakeJetStream(),
+            )
+            graph = snapshot()
+            run = new_graph_run(graph, ["https://example.com"])
+            await runs.create(run.id.hex, run.model_dump_json().encode())
+            await initialize_run_progress(progress, run)
+            source = CrawlRequest(
+                id=uuid4(),
+                graph_run_id=run.id,
+                node_id=graph.nodes[0].id,
+                url="https://example.com/",
+                document_id="sha256:" + "a" * 64,
+                effective_policy_snapshot_json=policy_snapshot(),
+                created_at=run.created_at,
+                updated_at=run.created_at,
+            )
+            await requests.create(source.id.hex, source.model_dump_json().encode())
+            work = EdgeWork(
+                graph_run_id=run.id,
+                crawl_request_id=source.id,
+                crawl_id=source.id,
+                edge_id=graph.edges[0].id,
+                navigation=navigation_package(),
+            )
+            identity = edge_evaluation_identity(
+                run.id, source.id, work.crawl_id, work.edge_id
+            )
+            evaluation = EdgeEvaluation(
+                identity=identity,
+                graph_run_id=run.id,
+                crawl_request_id=source.id,
+                crawl_id=work.crawl_id,
+                edge_id=work.edge_id,
+                created_at=run.created_at,
+                updated_at=run.created_at,
+            )
+            key = edge_evaluation_key(identity)
+            await requests.create(key, evaluation.model_dump_json().encode())
+            competing_token = uuid4()
+            requests.conflict_once(
+                key,
+                lambda payload: EdgeEvaluation.model_validate_json(payload)
+                .model_copy(
+                    update={
+                        "status": "running",
+                        "claim_token": competing_token,
+                        "claim_expires_at": datetime.now(UTC)
+                        + timedelta(minutes=1),
+                    }
+                )
+                .model_dump_json()
+                .encode(),
+            )
+            execute = Mock(return_value=[])
+
+            with self.assertRaises(EdgeEvaluationBusy):
+                await evaluate_edge(
+                    runs=runs,
+                    requests=requests,
+                    progress=progress,
+                    jetstream=jetstream,
+                    work=work,
+                    execute_urls=execute,
+                    policy_resolver=lambda _url: policy_snapshot(),
+                )
+
+            execute.assert_not_called()
+            current = EdgeEvaluation.model_validate_json(
+                (await requests.get(key)).value
+            )
+            self.assertEqual(current.claim_token, competing_token)
+
+        asyncio.run(scenario())
+
     def test_edge_timeout_interrupts_query_and_fails_request(self) -> None:
         async def scenario() -> None:
             runs, requests, progress, jetstream = (
@@ -1433,20 +2009,18 @@ class GraphRuntimeTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_platform_ceiling_names_are_exact(self) -> None:
+    def test_platform_duration_ceiling_name_is_exact(self) -> None:
         from runtime.graph_runs import _ceiling_error
 
         run = new_graph_run(
             snapshot(), ["https://example.com"], now=datetime(2026, 1, 1, tzinfo=UTC)
-        ).model_copy(update={"request_count": 10})
-        with patch(
-            "runtime.graph_runs.get_int",
-            side_effect=lambda name: {
-                "ATLAS_GRAPH_MAX_REQUESTS_PER_RUN": 10,
-                "ATLAS_GRAPH_MAX_RUN_SECONDS": 3600,
-            }[name],
-        ):
+        )
+        with patch("runtime.graph_runs.get_int", return_value=60):
             self.assertIn(
-                "ATLAS_GRAPH_MAX_REQUESTS_PER_RUN=10",
-                _ceiling_error(run, datetime(2026, 1, 1, tzinfo=UTC)) or "",
+                "ATLAS_GRAPH_MAX_RUN_SECONDS=60",
+                _ceiling_error(
+                    run,
+                    datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=60),
+                )
+                or "",
             )

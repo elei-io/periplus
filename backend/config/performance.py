@@ -20,11 +20,18 @@ CRAWL_ACQUISITION_LANES = 12
 # ready hostnames behind its own politeness waiters. This is deliberately
 # process-local and bounded well below the durable consumer delivery ceiling.
 CRAWL_DISPATCH_WINDOW = CRAWL_ACQUISITION_LANES * 4
+# Edge traversal may keep this many crawl requests for one run in acquisition
+# (queued, retrying, or crawling). This bounds its position in the shared FIFO;
+# completed acquisitions no longer consume the window while their edges run.
+CRAWL_RUN_ACQUISITION_PENDING_LIMIT = CRAWL_DISPATCH_WINDOW
 # A denied nonblocking domain probe is retried soon, but not on every worker
 # loop iteration. Permit release remains responsive while saturated hosts avoid
 # generating avoidable Resource Governor reads and admission metrics.
 CRAWL_DOMAIN_PERMIT_RETRY_SECONDS = 0.25
 CATALOGUE_EXECUTOR_LANES = 1
+# Navigation retention is recovery cleanup, not a bulk-delete job. One bounded
+# batch per maintenance sweep keeps object-store pressure predictable.
+NAVIGATION_CLEANUP_BATCH_SIZE = 500
 
 # Durable consumers use a generous internal delivery ceiling. Most pull loops
 # claim their local lane count; acquisition uses the fixed, bounded hostname

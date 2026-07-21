@@ -4,6 +4,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+DEFAULT_GRAPH_RUN_MAX_CRAWLS = 1_000
+MAX_GRAPH_RUN_CRAWLS = 1_000_000
+
 
 class EdgeDedupeMode(StrEnum):
     graph = "graph"

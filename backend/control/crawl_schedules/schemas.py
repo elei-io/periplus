@@ -12,6 +12,10 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from control.crawl_graphs.schemas import (
+    DEFAULT_GRAPH_RUN_MAX_CRAWLS,
+    MAX_GRAPH_RUN_CRAWLS,
+)
 
 
 class IntervalTiming(BaseModel):
@@ -53,6 +57,11 @@ class CrawlScheduleInput(BaseModel):
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     maximum_run_count: int | None = Field(default=None, ge=1)
+    max_crawls: int = Field(
+        default=DEFAULT_GRAPH_RUN_MAX_CRAWLS,
+        ge=1,
+        le=MAX_GRAPH_RUN_CRAWLS,
+    )
     root_urls: list[str] = Field(min_length=1, max_length=10_000)
     overlap_policy: OverlapPolicy = "skip"
     misfire_policy: MisfirePolicy = "skip"

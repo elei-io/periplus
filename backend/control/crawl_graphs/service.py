@@ -1,5 +1,6 @@
 """Postgres-backed crawl-graph definitions and frozen execution snapshots."""
 
+from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy import delete, select
@@ -9,6 +10,11 @@ from sqlglot import exp
 
 from repository.catalogue.query import CatalogueQueryError, classify_select
 
+from .fixtures import (
+    SYSTEM_CRAWL_GRAPH_SLUGS,
+    SeedCrawlGraph,
+    load_seeded_crawl_graphs,
+)
 from .models import CrawlGraph, CrawlGraphEdge, CrawlGraphNode
 from .schemas import (
     CrawlGraphCreate,
@@ -22,6 +28,7 @@ from .schemas import (
     CrawlGraphNodeUpdate,
     CrawlGraphRecord,
     CrawlGraphUpdate,
+    EdgeDedupeMode,
     FrozenGraphEdge,
     FrozenGraphNode,
     FrozenGraphSnapshot,
@@ -40,10 +47,6 @@ class CrawlGraphValidationError(ValueError):
     pass
 
 
-DEFAULT_CRAWL_GRAPH_SLUG = "single-page"
-DEFAULT_CRAWL_GRAPH_ROOT_NAME = "root"
-
-
 def _clean(value: str) -> str:
     cleaned = value.strip()
     if not cleaned:
@@ -57,7 +60,7 @@ def _record(graph: CrawlGraph) -> CrawlGraphRecord:
         slug=graph.slug,
         description=graph.description,
         root_node_id=graph.root_node_id,
-        system_owned=graph.slug == DEFAULT_CRAWL_GRAPH_SLUG,
+        system_owned=graph.slug in SYSTEM_CRAWL_GRAPH_SLUGS,
         created_at=graph.created_at,
     )
 
@@ -79,9 +82,9 @@ def detail(graph: CrawlGraph) -> CrawlGraphDetail:
 
 
 def create_graph(session: Session, request: CrawlGraphCreate) -> CrawlGraphDetail:
-    if request.slug == DEFAULT_CRAWL_GRAPH_SLUG:
+    if request.slug in SYSTEM_CRAWL_GRAPH_SLUGS:
         raise CrawlGraphConflictError(
-            f"The {DEFAULT_CRAWL_GRAPH_SLUG} slug is reserved for the system crawl graph."
+            f"The {request.slug} slug is reserved for a system crawl graph."
         )
     graph = CrawlGraph(slug=request.slug, description=request.description)
     session.add(graph)
@@ -89,40 +92,86 @@ def create_graph(session: Session, request: CrawlGraphCreate) -> CrawlGraphDetai
     return detail(graph)
 
 
-def ensure_default_crawl_graph(session: Session) -> CrawlGraphDetail:
-    graph = session.scalar(
-        select(CrawlGraph)
-        .where(CrawlGraph.slug == DEFAULT_CRAWL_GRAPH_SLUG)
-        .options(selectinload(CrawlGraph.nodes), selectinload(CrawlGraph.edges))
-    )
-    if graph is None:
-        graph = CrawlGraph(
-            slug=DEFAULT_CRAWL_GRAPH_SLUG,
-            description="Acquire exactly one page without following links.",
-        )
-        session.add(graph)
-        session.flush()
-        root = CrawlGraphNode(
-            graph=graph,
-            name=DEFAULT_CRAWL_GRAPH_ROOT_NAME,
-            description="Receives the URL supplied to the crawl.",
-        )
-        session.add(root)
-        session.flush()
-        graph.root_node_id = root.id
-        session.flush()
-        return detail(graph)
+def ensure_seeded_crawl_graphs(
+    session: Session, fixtures_root: Path
+) -> list[CrawlGraphDetail]:
+    """Create the immutable generic graph library and verify existing definitions."""
 
+    results: list[CrawlGraphDetail] = []
+    for seed in load_seeded_crawl_graphs(fixtures_root):
+        for edge in seed.edges:
+            validate_edge_sql(edge.sql)
+        graph = session.scalar(
+            select(CrawlGraph)
+            .where(CrawlGraph.slug == seed.slug)
+            .options(selectinload(CrawlGraph.nodes), selectinload(CrawlGraph.edges))
+        )
+        if graph is None:
+            graph = CrawlGraph(slug=seed.slug, description=seed.description)
+            session.add(graph)
+            session.flush()
+            nodes = {
+                node.name: CrawlGraphNode(
+                    graph=graph,
+                    name=node.name,
+                    description=node.description,
+                    position_x=index * 280.0,
+                    position_y=0.0,
+                )
+                for index, node in enumerate(seed.nodes)
+            }
+            session.add_all(nodes.values())
+            session.flush()
+            graph.root_node_id = nodes[seed.root].id
+            session.add_all(
+                CrawlGraphEdge(
+                    graph=graph,
+                    source_node_id=nodes[edge.source].id,
+                    target_node_id=nodes[edge.target].id,
+                    name=edge.name,
+                    description=edge.description,
+                    sql=edge.sql,
+                    dedupe_mode=edge.dedupe_mode,
+                )
+                for edge in seed.edges
+            )
+            session.flush()
+        _validate_seeded_graph(graph, seed)
+        results.append(detail(graph))
+    return results
+
+
+def _validate_seeded_graph(graph: CrawlGraph, seed: SeedCrawlGraph) -> None:
+    nodes = {node.name: node for node in graph.nodes}
+    expected_nodes = {node.name for node in seed.nodes}
+    expected_node_descriptions = {
+        node.name: node.description for node in seed.nodes
+    }
+    edges = {edge.name: edge for edge in graph.edges}
+    expected_edges = {edge.name: edge for edge in seed.edges}
+    root = nodes.get(seed.root)
     if (
-        len(graph.nodes) != 1
-        or graph.nodes[0].name != DEFAULT_CRAWL_GRAPH_ROOT_NAME
-        or graph.root_node_id != graph.nodes[0].id
-        or graph.edges
+        graph.description != seed.description
+        or set(nodes) != expected_nodes
+        or root is None
+        or graph.root_node_id != root.id
+        or any(
+            nodes[name].description != description
+            for name, description in expected_node_descriptions.items()
+        )
+        or set(edges) != set(expected_edges)
+        or any(
+            edges[name].source_node_id != nodes[expected.source].id
+            or edges[name].target_node_id != nodes[expected.target].id
+            or edges[name].description != expected.description
+            or edges[name].sql != expected.sql
+            or edges[name].dedupe_mode != EdgeDedupeMode.graph
+            for name, expected in expected_edges.items()
+        )
     ):
         raise CrawlGraphConflictError(
-            "The system single-page crawl graph has an invalid definition."
+            f"The system crawl graph {seed.slug!r} has an invalid definition."
         )
-    return detail(graph)
 
 
 def list_graphs(session: Session) -> list[CrawlGraphRecord]:
@@ -350,9 +399,9 @@ def _require_endpoints(session: Session, graph_id: UUID, source_id: UUID, target
 
 
 def _require_user_owned(graph: CrawlGraph) -> None:
-    if graph.slug == DEFAULT_CRAWL_GRAPH_SLUG:
+    if graph.slug in SYSTEM_CRAWL_GRAPH_SLUGS:
         raise CrawlGraphConflictError(
-            "The system single-page crawl graph cannot be edited or deleted."
+            f"The system crawl graph {graph.slug!r} cannot be edited or deleted."
         )
 
 

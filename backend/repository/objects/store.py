@@ -6,12 +6,21 @@ import os
 import tempfile
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Protocol, runtime_checkable
 
 from botocore.exceptions import ClientError
 
 from repository.exceptions import RepositoryKeyError, RepositoryObjectNotFound
+
+
+@dataclass(frozen=True)
+class ObjectMetadata:
+    key: str
+    size: int
+    last_modified: datetime
 
 
 @runtime_checkable
@@ -35,6 +44,12 @@ class ObjectStore(Protocol):
 
     def delete_prefix(self, prefix: str) -> int:
         """Delete every object below a normalized runtime prefix."""
+
+    def list_objects(self, prefix: str) -> Iterator[ObjectMetadata]:
+        """List object metadata below a normalized runtime prefix."""
+
+    def delete_many(self, keys: tuple[str, ...]) -> int:
+        """Delete a bounded group of normalized keys."""
 
 
 class FileObjectStore:
@@ -105,6 +120,23 @@ class FileObjectStore:
                 path.rmdir()
         root.rmdir()
         return deleted
+
+    def list_objects(self, prefix: str) -> Iterator[ObjectMetadata]:
+        root = self._path(prefix.rstrip("/"))
+        if not root.exists():
+            return
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            yield ObjectMetadata(
+                key=path.relative_to(self.root).as_posix(),
+                size=stat.st_size,
+                last_modified=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
+            )
+
+    def delete_many(self, keys: tuple[str, ...]) -> int:
+        return sum(self.delete(key) for key in keys)
 
     def _path(self, key: str) -> Path:
         return self.root.joinpath(*_key_parts(key))
@@ -197,6 +229,57 @@ class S3ObjectStore:
             if not response.get("IsTruncated"):
                 break
             continuation = response["NextContinuationToken"]
+        return deleted
+
+    def list_objects(self, prefix: str) -> Iterator[ObjectMetadata]:
+        relative_prefix = prefix.rstrip("/")
+        object_prefix = self._object_key(relative_prefix) + "/"
+        continuation = None
+        while True:
+            options = {"Bucket": self.bucket, "Prefix": object_prefix}
+            if continuation is not None:
+                options["ContinuationToken"] = continuation
+            response = self.client.list_objects_v2(**options)
+            for item in response.get("Contents", []):
+                object_key = str(item["Key"])
+                relative_key = (
+                    object_key[len(self.prefix) + 1 :]
+                    if self.prefix
+                    else object_key
+                )
+                modified = item["LastModified"]
+                if modified.tzinfo is None:
+                    modified = modified.replace(tzinfo=UTC)
+                yield ObjectMetadata(
+                    key=relative_key,
+                    size=int(item["Size"]),
+                    last_modified=modified.astimezone(UTC),
+                )
+            if not response.get("IsTruncated"):
+                break
+            continuation = response["NextContinuationToken"]
+
+    def delete_many(self, keys: tuple[str, ...]) -> int:
+        deleted = 0
+        for offset in range(0, len(keys), 1000):
+            batch = keys[offset : offset + 1000]
+            if not batch:
+                continue
+            response = self.client.delete_objects(
+                Bucket=self.bucket,
+                Delete={
+                    "Objects": [
+                        {"Key": self._object_key(key)} for key in batch
+                    ],
+                    "Quiet": True,
+                },
+            )
+            errors = response.get("Errors", [])
+            if errors:
+                raise RuntimeError(
+                    f"S3 batch deletion failed for {len(errors)} objects"
+                )
+            deleted += len(batch)
         return deleted
 
     def _object_key(self, key: str) -> str:

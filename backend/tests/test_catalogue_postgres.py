@@ -10,11 +10,13 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import psycopg
-from ducklake_client import DiskStorage, PostgresCatalog
+from ducklake_client import DiskStorage, DuckLakeAttachConfig, PostgresCatalog
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 
 from repository.catalogue import Catalogue, CatalogueConfig, CrawlRecord, UrlRecord
+from repository.catalogue.operations import run_with_catalogue_retry
+from repository.catalogue.service import CatalogueService
 from repository import FileObjectStore, RawHtmlRepository, RepositoryIngestor
 from tests.catalogue_helpers import crawl_url_evidence, seed_system_macros
 
@@ -78,11 +80,146 @@ def _concurrent_ingest(
         raise
 
 
+def _concurrent_compact(
+    dsn: str,
+    data_path: str,
+    barrier: multiprocessing.synchronize.Barrier,
+    errors: multiprocessing.queues.Queue,
+) -> None:
+    try:
+        config = CatalogueConfig(
+            catalog=PostgresCatalog(dsn),
+            storage=DiskStorage(data_path),
+            attach=DuckLakeAttachConfig(data_inlining_row_limit=0),
+        )
+
+        def attempt() -> None:
+            with Catalogue(config) as catalogue:
+                CatalogueService(catalogue).compact_small_files(
+                    minimum_files=4,
+                    maximum_input_file_bytes=1024 * 1024,
+                    target_file_bytes=2 * 1024 * 1024,
+                    maximum_compacted_files=2,
+                    maximum_tables=1,
+                )
+
+        barrier.wait(timeout=15)
+        run_with_catalogue_retry(attempt, description="concurrent test compaction")
+    except BaseException as exc:
+        errors.put(f"{type(exc).__name__}: {exc}")
+        raise
+
+
+def _concurrent_append(
+    dsn: str,
+    data_path: str,
+    barrier: multiprocessing.synchronize.Barrier,
+    errors: multiprocessing.queues.Queue,
+) -> None:
+    try:
+        config = CatalogueConfig(
+            catalog=PostgresCatalog(dsn),
+            storage=DiskStorage(data_path),
+            attach=DuckLakeAttachConfig(data_inlining_row_limit=0),
+        )
+        with Catalogue(config) as catalogue:
+            barrier.wait(timeout=15)
+            catalogue.connection.execute(
+                "INSERT INTO atlas.main.concurrent_compaction VALUES (8)"
+            )
+    except BaseException as exc:
+        errors.put(f"{type(exc).__name__}: {exc}")
+        raise
+
+
 @unittest.skipUnless(
     os.getenv("ATLAS_TEST_DATABASE_URL"),
     "Postgres catalogue integration is opt-in",
 )
 class PostgresCatalogueConcurrencyTests(unittest.TestCase):
+    def test_append_and_compaction_can_overlap(self) -> None:
+        admin_dsn = os.environ["ATLAS_TEST_DATABASE_URL"]
+        database_name = f"atlas_catalogue_test_{uuid4().hex}"
+        with psycopg.connect(admin_dsn, autocommit=True) as admin:
+            admin.execute(
+                sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database_name))
+            )
+
+        catalogue_dsn = make_conninfo(admin_dsn, dbname=database_name)
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                config = CatalogueConfig(
+                    catalog=PostgresCatalog(catalogue_dsn),
+                    storage=DiskStorage(root / "lake"),
+                    attach=DuckLakeAttachConfig(data_inlining_row_limit=0),
+                )
+                with Catalogue(config) as catalogue:
+                    catalogue.bootstrap()
+                    catalogue.connection.execute(
+                        "CREATE TABLE atlas.main.concurrent_compaction(value INTEGER)"
+                    )
+                    for value in range(8):
+                        catalogue.connection.execute(
+                            "INSERT INTO atlas.main.concurrent_compaction VALUES (?)",
+                            [value],
+                        )
+
+                context = multiprocessing.get_context("spawn")
+                barrier = context.Barrier(2)
+                errors = context.Queue()
+                processes = [
+                    context.Process(
+                        target=target,
+                        args=(catalogue_dsn, str(root / "lake"), barrier, errors),
+                    )
+                    for target in (_concurrent_compact, _concurrent_append)
+                ]
+                for process in processes:
+                    process.start()
+                for process in processes:
+                    process.join(timeout=30)
+                    if process.is_alive():
+                        process.kill()
+                        process.join()
+
+                failures: list[str] = []
+                while not errors.empty():
+                    failures.append(errors.get())
+                self.assertEqual(
+                    [process.exitcode for process in processes],
+                    [0, 0],
+                    failures,
+                )
+
+                with Catalogue(config) as catalogue:
+                    self.assertEqual(
+                        catalogue.connection.execute(
+                            "SELECT count(*), count(DISTINCT value) "
+                            "FROM atlas.main.concurrent_compaction"
+                        ).fetchone(),
+                        (9, 9),
+                    )
+                    active_files = catalogue.connection.execute(
+                        """
+                        SELECT count(*)
+                        FROM __ducklake_metadata_atlas.ducklake_data_file AS data_file
+                        JOIN __ducklake_metadata_atlas.ducklake_table AS table_info
+                          ON table_info.table_id = data_file.table_id
+                        WHERE table_info.table_name = 'concurrent_compaction'
+                          AND table_info.end_snapshot IS NULL
+                          AND data_file.end_snapshot IS NULL
+                        """
+                    ).fetchone()[0]
+                    self.assertLessEqual(active_files, 2)
+        finally:
+            with psycopg.connect(admin_dsn, autocommit=True) as admin:
+                admin.execute(
+                    sql.SQL("DROP DATABASE {} WITH (FORCE)").format(
+                        sql.Identifier(database_name)
+                    )
+                )
+
     def test_hundred_unique_items_use_a_bounded_fence_session_count(self) -> None:
         admin_dsn = os.environ["ATLAS_TEST_DATABASE_URL"]
         database_name = f"atlas_catalogue_test_{uuid4().hex}"

@@ -28,7 +28,7 @@ import {
 } from "@/components/ui/table"
 import {
   useCrawlConcurrencyLimits,
-  useGraphRunFailures,
+  useGraphRunFailureSummary,
   useGraphRuns,
 } from "@/hooks/use-crawl-graphs"
 import { extractApiError } from "@/lib/api"
@@ -230,10 +230,11 @@ function SharedPressure({ capacity }: { capacity?: CrawlConcurrencyLimits }) {
   return (
     <Card className="border-amber-500/40 bg-amber-500/5">
       <CardHeader>
-        <CardTitle>Shared infrastructure is limiting work</CardTitle>
+        <CardTitle>Shared resource admission is delaying work</CardTitle>
         <CardDescription>
-          Adding worker replicas will not remove this wait; inspect the
-          corresponding catalogue or object-store budget.
+          Bounded foreground and maintenance operations share these budgets.
+          Maintenance can run concurrently; adding replicas alone does not
+          increase the configured catalogue or object-store capacity.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -253,6 +254,17 @@ function SharedPressure({ capacity }: { capacity?: CrawlConcurrencyLimits }) {
             <p className="mt-1 text-xs text-muted-foreground">
               {resource.waiting.toLocaleString()} waiting · oldest{" "}
               {formatAge(resource.oldest_wait_seconds * 1_000)}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {[
+                ["critical", resource.critical_waiting],
+                ["live", resource.live_waiting],
+                ["backfill", resource.backfill_waiting],
+                ["maintenance", resource.maintenance_waiting],
+              ]
+                .filter(([, count]) => Number(count) > 0)
+                .map(([label, count]) => `${count} ${label}`)
+                .join(" · ")}
             </p>
           </div>
         ))}
@@ -392,6 +404,11 @@ function RunRow({ run }: { run: GraphRunRecord }) {
             ? `Started ${relativeTime(run.started_at)}`
             : `Queued ${relativeTime(run.created_at)}`}
         </p>
+        <p className="mt-1 text-xs text-muted-foreground tabular-nums">
+          Budget {run.request_count.toLocaleString()} /{" "}
+          {run.max_crawls.toLocaleString()}
+          {run.crawl_limit_reached ? " · limit reached" : ""}
+        </p>
       </TableCell>
       <TableCell className="py-4 align-top whitespace-normal">
         <div className="flex items-center justify-between gap-4">
@@ -419,7 +436,10 @@ function RunRow({ run }: { run: GraphRunRecord }) {
 
 function RunErrors({ run }: { run: GraphRunRecord }) {
   const [open, setOpen] = useState(false)
-  const failures = useGraphRunFailures(run.id, open && run.error_count > 0)
+  const failures = useGraphRunFailureSummary(
+    run.id,
+    open && run.error_count > 0
+  )
 
   if (run.error_count === 0) {
     return <CountCell value={0} />
@@ -442,7 +462,7 @@ function RunErrors({ run }: { run: GraphRunRecord }) {
           <DialogHeader>
             <DialogTitle>Run errors</DialogTitle>
             <DialogDescription>
-              Crawl failures recorded for run {run.id}.
+              Failure counts by type for run {run.id}.
             </DialogDescription>
           </DialogHeader>
           {run.error ? (
@@ -452,36 +472,43 @@ function RunErrors({ run }: { run: GraphRunRecord }) {
             <LoaderCircleIcon className="mx-auto my-6 size-5 animate-spin text-muted-foreground" />
           ) : failures.isError ? (
             <p className="text-sm text-destructive">
-              Failed to load crawl error details.
+              Failed to load the crawl failure summary.
             </p>
-          ) : (
+          ) : failures.data?.items.length ? (
             failures.data?.items.map((failure) => (
               <div
-                key={failure.crawl_id}
+                key={`${failure.failure_stage}:${failure.failure_code}:${failure.status_code ?? "none"}`}
                 className="rounded-md border bg-muted/20 p-3 text-left"
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="destructive">
-                    {failure.failure_code ?? "crawl_failed"}
+                    {failure.failure_code}
+                  </Badge>
+                  <Badge variant="outline" className="tabular-nums">
+                    {failure.count.toLocaleString()}
                   </Badge>
                   <span className="text-xs text-muted-foreground">
-                    {failure.failure_stage ?? "unknown stage"}
+                    {failure.failure_stage}
                     {failure.status_code
                       ? ` · HTTP ${failure.status_code}`
                       : ""}
-                    {` · ${new Date(failure.captured_at).toLocaleString()}`}
+                    {` · latest ${new Date(failure.last_occurred_at).toLocaleString()}`}
                   </span>
                 </div>
                 <p className="mt-2 text-sm font-medium break-all">
-                  {failure.requested_url}
+                  {failure.example_url}
                 </p>
-                {failure.failure_detail ? (
+                {failure.example_detail ? (
                   <p className="mt-2 text-sm whitespace-pre-wrap text-muted-foreground">
-                    {failure.failure_detail}
+                    {failure.example_detail}
                   </p>
                 ) : null}
               </div>
             ))
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No grouped crawl failures are available for this run.
+            </p>
           )}
         </DialogContent>
       </Dialog>

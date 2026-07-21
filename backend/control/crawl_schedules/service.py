@@ -151,6 +151,13 @@ def _normalized_urls(values: list[str]) -> list[str]:
     return normalized
 
 
+def _validate_crawl_budget(urls: list[str], max_crawls: int) -> None:
+    if max_crawls < len(urls):
+        raise CrawlScheduleValidationError(
+            "Maximum crawls per run cannot be smaller than the number of root URLs."
+        )
+
+
 def schedule_status(
     schedule: CrawlSchedule, *, now: datetime | None = None
 ) -> ScheduleStatus:
@@ -181,6 +188,7 @@ def record(
         starts_at=schedule.starts_at,
         ends_at=schedule.ends_at,
         maximum_run_count=schedule.maximum_run_count,
+        max_crawls=schedule.max_crawls,
         root_urls=schedule.root_urls,
         overlap_policy=schedule.overlap_policy,  # type: ignore[arg-type]
         misfire_policy=schedule.misfire_policy,  # type: ignore[arg-type]
@@ -268,6 +276,8 @@ def create_schedule(
         )
     validate_timing(request.timing)
     now = _utc(now or datetime.now(UTC))
+    root_urls = _normalized_urls(request.root_urls)
+    _validate_crawl_budget(root_urls, request.max_crawls)
     schedule = CrawlSchedule(
         graph_id=graph_id,
         name=_clean_name(request.name),
@@ -276,7 +286,8 @@ def create_schedule(
         starts_at=request.starts_at,
         ends_at=request.ends_at,
         maximum_run_count=request.maximum_run_count,
-        root_urls=_normalized_urls(request.root_urls),
+        max_crawls=request.max_crawls,
+        root_urls=root_urls,
         overlap_policy=request.overlap_policy,
         misfire_policy=request.misfire_policy,
         next_run_at=(
@@ -309,13 +320,16 @@ def update_schedule(
     schedule = get_schedule(session, graph_id, schedule_id, lock=True)
     validate_timing(request.timing)
     now = _utc(now or datetime.now(UTC))
+    root_urls = _normalized_urls(request.root_urls)
+    _validate_crawl_budget(root_urls, request.max_crawls)
     schedule.name = _clean_name(request.name)
     schedule.enabled = request.enabled
     schedule.timing = request.timing.model_dump(mode="json")
     schedule.starts_at = request.starts_at
     schedule.ends_at = request.ends_at
     schedule.maximum_run_count = request.maximum_run_count
-    schedule.root_urls = _normalized_urls(request.root_urls)
+    schedule.max_crawls = request.max_crawls
+    schedule.root_urls = root_urls
     schedule.overlap_policy = request.overlap_policy
     schedule.misfire_policy = request.misfire_policy
     schedule.next_run_at = (

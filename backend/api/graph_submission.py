@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from control.crawl_graphs.schemas import DEFAULT_GRAPH_RUN_MAX_CRAWLS
 from control.crawl_graphs.service import freeze_graph
 from runtime.graph_queue import (
     GraphRun,
@@ -25,6 +26,7 @@ async def submit_graph_run(
     catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]],
     trigger_kind: str = "manual",
     trigger_schedule_id: UUID | None = None,
+    max_crawls: int = DEFAULT_GRAPH_RUN_MAX_CRAWLS,
 ) -> GraphRun:
     snapshot = freeze_graph(session, graph_id)
     session.commit()
@@ -44,6 +46,7 @@ async def submit_graph_run(
             catalogue_snapshot_resolver=catalogue_snapshot_resolver,
             trigger_kind=trigger_kind,
             trigger_schedule_id=trigger_schedule_id,
+            max_crawls=max_crawls,
         )
     finally:
         await client.drain()

@@ -8,7 +8,7 @@ Atlas deploys five worker roles:
 | Ingestion | repository ingestion queue | Crawl/DOM catalogue evidence | Critical catalogue capacity |
 | Catalogue relay | DuckLake DML/DDL CDC | Durable per-table DML subjects and global DDL subject | Exactly two DuckDB connections |
 | Materialization | Filtered catalogue DML subjects | Stable materialization tables | Live catalogue capacity |
-| Maintenance | maintenance triggers | Compaction and cleanup | Exclusive maintenance capacity |
+| Maintenance | maintenance triggers | Compaction and cleanup | Bounded background capacity |
 
 ## Acquisition worker
 
@@ -21,14 +21,20 @@ without generating a package. Page-only edges execute in standalone memory-limit
 connections. Historical joins use a read-only DuckLake connection at the run's pinned snapshot.
 Each worker process owns one Playwright driver, while every delivery opens and closes its own CDP
 connection and page so crawl state is not shared between deliveries.
-The durable crawl consumer uses a fixed, bounded worker-local look-ahead grouped by normalized
-hostname. Buffered deliveries remain queued in crawl-request state and receive JetStream
+The durable crawl consumer uses a fixed, bounded worker-local look-ahead grouped first by graph run
+and then normalized hostname. Initial roots and edge traversal share a bounded acquisition window
+per run; a durable root cursor refills released slots, so one
+run cannot place an unbounded backlog ahead of later work. Buffered deliveries remain queued in
+crawl-request state and receive JetStream
 heartbeats. A worker probes the deployment-wide domain permit before assigning a process-local
 acquisition lane, so excess work for a saturated hostname cannot occupy every lane while another
 hostname is ready. Ready hostnames are selected round-robin; a single-host backlog remains
-work-conserving. Denied hostname probes receive a short worker-local cooldown, and nonblocking
+work-conserving. Shared response health cools a hostname after 429 or repeated 5xx responses before
+the worker probes its distributed permit. Denied hostname probes receive a short worker-local cooldown, and nonblocking
 capacity misses do not register Resource Governor waiters. Initial roots and each bounded edge
 result preserve per-host order while being interleaved across hostnames before publication.
+Deferred edge evaluation retains a bounded selected-URL package under the run's navigation prefix;
+subsequent deliveries reuse it instead of reopening the source package or rerunning DuckDB.
 Worker presence is renewed before recovery bookkeeping and retries transient NATS failures with
 bounded backoff. Queue health uses the durable crawl consumer counters instead of scanning every
 request record, while an independent heartbeat reports actual event-loop liveness. Unexpected
@@ -68,14 +74,21 @@ consumers. The target table identity remains stable.
 Schema boundaries block the incarnation instead of being crossed implicitly.
 Maintenance consumes one durable wildcard NATS subscription over catalogue DML
 ticks; it never opens a DuckLake CDC consumer or discovers materialized tables
-through Postgres. It is off-path and requires an exclusive background
-catalogue and object-pressure permit. Once that bundle is waiting, new overlapping grants pause
-briefly so existing holders can drain and maintenance cannot starve behind continuous object-only
-work. A catalogue tick is a coalesced wake-up hint for compaction, never a maintenance work queue.
+through Postgres. It is off-path and uses one catalogue unit plus object pressure proportional to
+the effective bounded pass size (target file size times bounded output count, capped by the maximum
+operation bytes). It never pauses new foreground grants or waits for global
+quiescence; DuckLake transaction conflicts are retried with bounded backoff. Same-class resource
+waiters retain arrival order, and waiting critical object work reclaims capacity from later
+noncritical requests. A catalogue tick is a coalesced wake-up hint for compaction, never a
+maintenance work queue.
+Its periodic recovery sweep also lists only `runtime/navigation/` objects older than
+`ATLAS_GRAPH_MAX_RUN_SECONDS` and deletes one bounded batch owned by terminal or expired-away runs.
+This is the authoritative retention path for S3-compatible providers; Atlas does not require bucket
+lifecycle-policy APIs.
 The worker debounces bursts, derives eligibility from authoritative DuckLake file metadata, and
-rewrites at most one bounded table slice per exclusive permit. A periodic sweep remains the
-recovery path when CDC is idle or unavailable, and outstanding debt retries without waiting for
-the complete sweep interval.
+rewrites at most one bounded table slice per proportional permit before yielding. A periodic sweep
+remains the recovery path when CDC is idle or unavailable, and outstanding debt retries without
+waiting for the complete sweep interval.
 
 Acknowledgement follows the meaning of each input. Acquisition and ingestion
 ACK commands only after their durable effect and terminal operational state are
@@ -105,6 +118,8 @@ Local Compose passes only addresses and credentials that differ inside its conta
 the small set of documented deployment safety rails. Runtime mechanics use validated code defaults;
 they are not repeated as Compose interpolation knobs. Shared YAML anchors keep the remaining
 catalogue, repository, NATS, and control-plane contracts consistent across roles.
+Each S3 client derives its connection-pool size from the concurrency of its owning process workload;
+there is no independent pool-size deployment setting.
 
 Atlas accepts a literal NKey seed through `NATS_SEED` and applies it to every application NATS
 connection; omitting it retains unauthenticated local-development behavior. Every Atlas-managed

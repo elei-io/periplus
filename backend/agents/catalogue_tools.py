@@ -55,11 +55,15 @@ class CatalogueMaterialization(BaseModel):
 class CatalogueQueryResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    query_id: str
+    status: Literal["completed", "unavailable"] = "completed"
+    query_id: str | None
     sql: str
     columns: list[str]
     column_types: list[str]
     rows: list[list[Any]]
+    row_count: int = 0
+    truncated: bool = False
+    error: str | None = None
 
 
 class CatalogueTools:
@@ -209,14 +213,18 @@ class CatalogueTools:
             catalogue_alias=self.query_runtime.config.catalogue_alias,
             catalogue_schema=self.query_runtime.config.catalogue_schema,
         )
-        bounded_sql = statement.query.limit(200).sql(dialect="duckdb")
+        bounded_sql = statement.query.limit(201).sql(dialect="duckdb")
         result = await execute_interactive_query(self.query_runtime, bounded_sql)
+        truncated = len(result.rows) > 200
+        rows = result.rows[:200]
         return CatalogueQueryResult(
             query_id=result.query_id.hex,
             sql=bounded_sql,
             columns=result.columns,
             column_types=result.column_types,
-            rows=result.rows,
+            rows=rows,
+            row_count=len(rows),
+            truncated=truncated,
         )
 
 

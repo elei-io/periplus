@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
+from hashlib import sha256
 import logging
 import time
 from datetime import UTC, datetime, timedelta
@@ -37,24 +39,30 @@ from runtime.graph_queue import (
     edge_evaluation_identity,
     ensure_graph_progress_storage,
     ensure_graph_storage,
+    get_edge_evaluation,
     list_graph_runs,
     update_edge_evaluation,
 )
 from runtime.nats_client import connect_nats
 from runtime.graph_runs import (
     EdgeEvaluationBusy,
+    EdgeEvaluationDeferred,
     EdgeEvaluationFailed,
     evaluate_edge,
     handle_navigation_readiness,
     resolve_policy_snapshot,
 )
 from runtime.navigation import (
+    build_edge_selection_package,
     build_navigation_package,
     delete_run_navigation,
+    edge_selection_object_name,
+    load_edge_selection_package,
     load_navigation_package,
+    put_edge_selection_package,
     put_navigation_package,
 )
-from runtime.navigation_contract import NavigationPackage
+from runtime.navigation_contract import EdgeSelectionPackage, NavigationPackage
 from runtime.resource_governor import (
     DURABLE_RESOURCE_WAIT,
     ResourceCapacityUnavailable,
@@ -66,6 +74,46 @@ from runtime.resource_governor import (
 )
 
 
+class EdgeResultCache:
+    """Bounded process-local reuse for deterministic edge query results."""
+
+    def __init__(self, *, maximum_bytes: int) -> None:
+        if maximum_bytes < 1:
+            raise ValueError("edge-result cache size must be positive")
+        self._maximum_bytes = maximum_bytes
+        self._bytes = 0
+        self._values: OrderedDict[str, tuple[tuple[str, ...], int]] = OrderedDict()
+        self._lock = Lock()
+
+    def get(self, identity: str) -> tuple[str, ...] | None:
+        with self._lock:
+            cached = self._values.pop(identity, None)
+            if cached is None:
+                return None
+            self._values[identity] = cached
+            return cached[0]
+
+    def put(self, identity: str, urls: tuple[str, ...]) -> None:
+        size = sum(len(url.encode()) + 8 for url in urls)
+        if size > self._maximum_bytes:
+            return
+        with self._lock:
+            previous = self._values.pop(identity, None)
+            if previous is not None:
+                self._bytes -= previous[1]
+            while self._values and self._bytes + size > self._maximum_bytes:
+                _key, (_urls, evicted_size) = self._values.popitem(last=False)
+                self._bytes -= evicted_size
+            self._values[identity] = (urls, size)
+            self._bytes += size
+
+    def discard(self, identity: str) -> None:
+        with self._lock:
+            cached = self._values.pop(identity, None)
+            if cached is not None:
+                self._bytes -= cached[1]
+
+
 class EdgeUrlExecutor:
     """Execute one bounded DuckDB edge query and make it interruptible."""
 
@@ -75,12 +123,23 @@ class EdgeUrlExecutor:
         package: NavigationPackage,
         *,
         catalogue_snapshot_id: int | None = None,
+        result_cache: EdgeResultCache | None = None,
+        cache_key: str | None = None,
+        selection: EdgeSelectionPackage | None = None,
     ) -> None:
         self._lock = Lock()
         self._connection = None
         self._object_store = object_store
         self._package = package
         self._catalogue_snapshot_id = catalogue_snapshot_id
+        self._result_cache = result_cache
+        self._cache_key = cache_key
+        self._selection = selection
+        self._selected_urls: tuple[str, ...] | None = None
+
+    @property
+    def selected_urls(self) -> tuple[str, ...] | None:
+        return self._selected_urls
 
     def interrupt(self) -> None:
         with self._lock:
@@ -89,6 +148,18 @@ class EdgeUrlExecutor:
             connection.interrupt()
 
     def __call__(self, sql: str, parameters: dict[str, object]) -> list[str]:
+        if self._result_cache is not None and self._cache_key is not None:
+            cached = self._result_cache.get(self._cache_key)
+            if cached is not None:
+                self._selected_urls = cached
+                return list(cached)
+        if self._selection is not None:
+            selected = load_edge_selection_package(
+                self._object_store,
+                self._selection,
+            )
+            self._remember(selected)
+            return list(selected)
         bound = dict(parameters)
         page_url = str(bound.pop("_page_url"))
         document_id = str(bound.pop("_document_id"))
@@ -127,39 +198,47 @@ class EdgeUrlExecutor:
                     reader = connection.execute(
                         statement.sql(dialect="duckdb"), bound
                     ).to_arrow_reader(batch_size=65_536)
-                    return self._collect_urls(reader)
+                    urls = self._collect_urls(reader)
                 finally:
                     with self._lock:
                         self._connection = None
-
-        if self._catalogue_snapshot_id is None:
-            raise ValueError(
-                "catalogue edge SQL requires the graph run's pinned snapshot"
-            )
-        with catalogue_from_env() as catalogue:
-            with self._lock:
-                self._connection = catalogue.connection
-            try:
-                catalogue.connection.execute(
-                    "SET memory_limit = ?", [get_str("ATLAS_EDGE_QUERY_MEMORY_LIMIT")]
+        else:
+            if self._catalogue_snapshot_id is None:
+                raise ValueError(
+                    "catalogue edge SQL requires the graph run's pinned snapshot"
                 )
-                catalogue.connection.register("atlas_navigation_links", table)
-                prepared = prepare_catalogue_query(
-                    catalogue, statement.sql(dialect="duckdb"), bound
-                )
-                prepared_statement = parse_one(
-                    prepared.sql, dialect="duckdb"
-                )
-                self._pin_catalogue_sources(catalogue, prepared_statement)
-                catalogue.connection.execute(f"USE {prepared.namespace}")
-                reader = catalogue.connection.execute(
-                    prepared_statement.sql(dialect="duckdb"),
-                    prepared.bindings,
-                ).to_arrow_reader(batch_size=65_536)
-                return self._collect_urls(reader)
-            finally:
+            with catalogue_from_env() as catalogue:
                 with self._lock:
-                    self._connection = None
+                    self._connection = catalogue.connection
+                try:
+                    catalogue.connection.execute(
+                        "SET memory_limit = ?",
+                        [get_str("ATLAS_EDGE_QUERY_MEMORY_LIMIT")],
+                    )
+                    catalogue.connection.register("atlas_navigation_links", table)
+                    prepared = prepare_catalogue_query(
+                        catalogue, statement.sql(dialect="duckdb"), bound
+                    )
+                    prepared_statement = parse_one(
+                        prepared.sql, dialect="duckdb"
+                    )
+                    self._pin_catalogue_sources(catalogue, prepared_statement)
+                    catalogue.connection.execute(f"USE {prepared.namespace}")
+                    reader = catalogue.connection.execute(
+                        prepared_statement.sql(dialect="duckdb"),
+                        prepared.bindings,
+                    ).to_arrow_reader(batch_size=65_536)
+                    urls = self._collect_urls(reader)
+                finally:
+                    with self._lock:
+                        self._connection = None
+        self._remember(tuple(urls))
+        return urls
+
+    def _remember(self, urls: tuple[str, ...]) -> None:
+        self._selected_urls = urls
+        if self._result_cache is not None and self._cache_key is not None:
+            self._result_cache.put(self._cache_key, urls)
 
     def _pin_catalogue_sources(self, catalogue, statement: exp.Expression) -> None:
         cte_names = {
@@ -266,6 +345,59 @@ async def _process_navigation_readiness(
     await message.ack()
 
 
+async def _retain_deferred_edge_selection(
+    *,
+    requests,
+    resource_grants,
+    object_store,
+    work: EdgeWork,
+    identity: str,
+    executor: EdgeUrlExecutor,
+) -> None:
+    urls = executor.selected_urls
+    if urls is None:
+        return
+    current = await get_edge_evaluation(requests, identity)
+    if current is None or current.selection is not None:
+        return
+    payload = await asyncio.to_thread(build_edge_selection_package, urls)
+    async with resource_permits(
+        resource_grants,
+        object_request(
+            f"edge-selection:{identity}",
+            direction="write",
+            byte_count=len(payload),
+            service_class="critical",
+        ),
+        acquire_timeout=DURABLE_RESOURCE_WAIT,
+    ):
+        package = await asyncio.to_thread(
+            put_edge_selection_package,
+            object_store,
+            name=edge_selection_object_name(
+                work.graph_run_id,
+                identity,
+                sha256(payload).hexdigest(),
+            ),
+            payload=payload,
+            row_count=len(urls),
+        )
+    await update_edge_evaluation(
+        requests,
+        identity,
+        lambda value: (
+            value
+            if value.selection is not None
+            else value.model_copy(
+                update={
+                    "selection": package,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+        ),
+    )
+
+
 async def _process_edge(
     message,
     runs,
@@ -275,6 +407,7 @@ async def _process_edge(
     object_store,
     catalogue_operation_lock: asyncio.Lock,
     resource_grants,
+    result_cache: EdgeResultCache,
 ) -> None:
     try:
         work = EdgeWork.model_validate_json(message.data)
@@ -285,6 +418,16 @@ async def _process_edge(
     claim_token = uuid4()
     identity = edge_evaluation_identity(
         work.graph_run_id, work.crawl_request_id, work.crawl_id, work.edge_id
+    )
+    evaluation = await get_edge_evaluation(requests, identity)
+    selection = evaluation.selection if evaluation is not None else None
+    executor = EdgeUrlExecutor(
+        object_store,
+        work.navigation,
+        catalogue_snapshot_id=work.catalogue_snapshot_id,
+        result_cache=result_cache,
+        cache_key=identity,
+        selection=selection,
     )
 
     async def keep_alive() -> None:
@@ -309,7 +452,14 @@ async def _process_edge(
     heartbeat = asyncio.create_task(keep_alive())
     try:
         resource_request = (
-            catalogue_request(
+            object_request(
+                f"edge-selection:{identity}",
+                direction="read",
+                byte_count=selection.byte_size,
+                service_class="critical",
+            )
+            if selection is not None
+            else catalogue_request(
                 f"edge:{identity}",
                 service_class="critical",
                 object_read_units=1,
@@ -335,15 +485,11 @@ async def _process_edge(
                         progress=progress,
                         jetstream=jetstream,
                         work=work,
-                        execute_urls=EdgeUrlExecutor(
-                            object_store,
-                            work.navigation,
-                            catalogue_snapshot_id=work.catalogue_snapshot_id,
-                        ),
+                        execute_urls=executor,
                         policy_resolver=lambda url: resolve_policy_snapshot(session, url),
                         claim_token=claim_token,
                     )
-        if work.catalogue_snapshot_id is None:
+        if work.catalogue_snapshot_id is None or selection is not None:
             await execute()
         else:
             async with catalogue_operation_lock:
@@ -351,7 +497,26 @@ async def _process_edge(
     except EdgeEvaluationBusy:
         await message.nak(delay=1)
         return
+    except EdgeEvaluationDeferred:
+        try:
+            await _retain_deferred_edge_selection(
+                requests=requests,
+                resource_grants=resource_grants,
+                object_store=object_store,
+                work=work,
+                identity=identity,
+                executor=executor,
+            )
+        except Exception:
+            logging.warning(
+                "failed to retain deferred edge selection %s",
+                identity,
+                exc_info=True,
+            )
+        await message.nak(delay=1)
+        return
     except EdgeEvaluationFailed:
+        result_cache.discard(identity)
         await message.ack()
         return
     except (ResourceCapacityUnavailable, ResourcePermitLost):
@@ -364,6 +529,7 @@ async def _process_edge(
         heartbeat.cancel()
         await asyncio.gather(heartbeat, return_exceptions=True)
     # Evaluation records terminal semantic failures itself; redelivery cannot repair SQL.
+    result_cache.discard(identity)
     await message.ack()
 
 
@@ -374,7 +540,8 @@ async def run(monitor: HealthMonitor | None = None) -> None:
     runs, requests, _workers = await ensure_graph_storage(jetstream)
     progress = await ensure_graph_progress_storage(jetstream)
     resource_grants = await ensure_resource_governor_storage(jetstream)
-    object_store = object_store_from_env()
+    capacity = CRAWL_ACQUISITION_LANES
+    object_store = object_store_from_env(maximum_concurrency=capacity)
     navigation_readiness = await jetstream.pull_subscribe(
         NAVIGATION_READINESS_SUBJECT,
         durable=NAVIGATION_READINESS_CONSUMER,
@@ -385,8 +552,10 @@ async def run(monitor: HealthMonitor | None = None) -> None:
     )
     if monitor is not None:
         monitor.subsystem_ready("navigation")
-    capacity = CRAWL_ACQUISITION_LANES
     catalogue_operation_lock = catalogue_operation_lane()
+    result_cache = EdgeResultCache(
+        maximum_bytes=get_int("ATLAS_EDGE_MAX_OUTPUT_BYTES") * 2
+    )
     active: set[asyncio.Task] = set()
     cleaned_runs = set()
     next_cleanup = 0.0
@@ -469,6 +638,7 @@ async def run(monitor: HealthMonitor | None = None) -> None:
                             object_store,
                             catalogue_operation_lock,
                             resource_grants,
+                            result_cache,
                         )
                     active.add(asyncio.create_task(processor(*arguments)))
                     available -= 1

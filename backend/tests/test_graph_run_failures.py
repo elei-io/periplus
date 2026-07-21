@@ -1,76 +1,102 @@
 from __future__ import annotations
 
-import unittest
-from datetime import UTC, datetime
+import asyncio
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+import unittest
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-from api.routers.graph_runs import _failure_record
-from repository.catalogue.records import CrawlRecord, UrlRecord
-from runtime.graph_queue import CrawlRequest
+from api.routers.graph_runs import failure_summary
+from runtime.graph_queue import GraphRunFailureGroup
+from runtime.graph_runs import _updated_failure_groups
 
 
 class GraphRunFailureApiTests(unittest.TestCase):
-    def test_prefers_durable_ingestion_failure_provenance(self) -> None:
-        request = _failed_request()
-        captured_at = datetime(2026, 7, 17, tzinfo=UTC)
-        crawl_id = uuid4()
-        requested_url = UrlRecord.from_normalized_url(request.url)
-        final_url = UrlRecord.from_normalized_url("https://example.com/final")
-        state = SimpleNamespace(
-            crawl=CrawlRecord(
-                crawl_id=crawl_id,
-                graph_id=uuid4(),
-                graph_run_id=request.graph_run_id,
-                graph_node_id=request.node_id,
-                crawl_request_id=request.id,
-                requested_url_id=requested_url.url_id,
-                final_url_id=final_url.url_id,
-                status_code=503,
-                outcome="failed",
-                failure_code="navigation_failed",
-                failure_stage="navigation",
-                failure_retryable=False,
-                failure_detail="Execution context was destroyed.",
-                captured_at=captured_at,
-            ),
-            urls=(requested_url, final_url),
+    def test_failure_groups_remain_bounded_with_an_overflow_group(self) -> None:
+        captured_at = datetime(2026, 7, 21, tzinfo=UTC)
+        run = SimpleNamespace(
+            failure_groups=tuple(
+                GraphRunFailureGroup(
+                    failure_stage="navigation",
+                    failure_code=f"failure_{index}",
+                    count=1,
+                    example_url=f"https://example.com/{index}",
+                    last_occurred_at=captured_at,
+                )
+                for index in range(32)
+            )
         )
 
-        result = _failure_record(request, state)
+        groups = _updated_failure_groups(
+            run,
+            request=SimpleNamespace(url="https://example.com/new"),
+            failure_stage="connection",
+            failure_code="new_failure",
+            status_code=None,
+            detail="new detail",
+            occurred_at=captured_at + timedelta(seconds=1),
+        )
 
-        self.assertEqual(result.crawl_id, crawl_id)
-        self.assertEqual(result.requested_url, request.url)
-        self.assertEqual(result.final_url, "https://example.com/final")
-        self.assertEqual(result.failure_code, "navigation_failed")
-        self.assertEqual(result.failure_detail, "Execution context was destroyed.")
-        self.assertEqual(result.captured_at, captured_at)
+        self.assertEqual(len(groups), 32)
+        self.assertEqual(groups[-1].failure_stage, "other")
+        self.assertEqual(groups[-1].failure_code, "other_failures")
+        self.assertEqual(groups[-1].count, 2)
 
-    def test_falls_back_to_failed_request_when_ingestion_state_expired(self) -> None:
-        request = _failed_request()
+    def test_returns_bounded_runtime_groups_without_crawl_history_lookups(
+        self,
+    ) -> None:
+        async def scenario() -> None:
+            captured_at = datetime(2026, 7, 21, tzinfo=UTC)
+            run = SimpleNamespace(
+                failed_request_count=4,
+                failure_groups=(
+                    GraphRunFailureGroup(
+                        failure_stage="edge",
+                        failure_code="edge_evaluation_failed",
+                        count=1,
+                        example_url="https://example.com/edge",
+                        example_detail="query failed",
+                        last_occurred_at=captured_at,
+                    ),
+                    GraphRunFailureGroup(
+                        failure_stage="navigation",
+                        failure_code="http_status",
+                        status_code=503,
+                        count=3,
+                        example_url="https://example.com/unavailable",
+                        example_detail="Page returned HTTP 503",
+                        last_occurred_at=captured_at + timedelta(seconds=1),
+                    ),
+                ),
+            )
+            client = SimpleNamespace(drain=AsyncMock())
+            with (
+                patch(
+                    "api.routers.graph_runs._storage",
+                    AsyncMock(
+                        return_value=(client, object(), object(), object())
+                    ),
+                ),
+                patch(
+                    "api.routers.graph_runs.get_graph_run",
+                    AsyncMock(return_value=run),
+                ),
+            ):
+                result = await failure_summary(uuid4())
 
-        result = _failure_record(request, None)
+            self.assertEqual(result.total, 4)
+            self.assertEqual(len(result.items), 2)
+            self.assertEqual(result.items[0].failure_code, "http_status")
+            self.assertEqual(result.items[0].status_code, 503)
+            self.assertEqual(result.items[0].count, 3)
+            self.assertEqual(
+                result.items[0].example_url,
+                "https://example.com/unavailable",
+            )
+            client.drain.assert_awaited_once_with()
 
-        self.assertEqual(result.crawl_id, request.id)
-        self.assertEqual(result.requested_url, request.url)
-        self.assertEqual(result.failure_stage, "acquisition")
-        self.assertEqual(result.failure_detail, "browser unavailable")
-
-
-def _failed_request() -> CrawlRequest:
-    now = datetime.now(UTC)
-    return CrawlRequest(
-        id=uuid4(),
-        graph_run_id=uuid4(),
-        node_id=uuid4(),
-        url="https://example.com/",
-        effective_policy_snapshot_json={},
-        status="failed",
-        created_at=now,
-        updated_at=now,
-        error="browser unavailable",
-        failure_stage="acquisition",
-    )
+        asyncio.run(scenario())
 
 
 if __name__ == "__main__":

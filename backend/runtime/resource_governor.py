@@ -265,6 +265,32 @@ def _need_for(
     return next((need for need in owner.resources if need.name == name), None)
 
 
+def _requests_overlap(left: ResourceRequest, right: ResourceWaiter) -> bool:
+    left_names = {need.name for need in left.resources}
+    return any(need.name in left_names for need in right.resources)
+
+
+def _earlier_peer_is_waiting(
+    waiters: tuple[ResourceWaiter, ...],
+    request: ResourceRequest,
+    current_waiter: ResourceWaiter | None,
+) -> bool:
+    """Prevent a new same-class request from repeatedly bypassing old demand."""
+
+    position = (
+        (current_waiter.waiting_since, current_waiter.token)
+        if current_waiter is not None
+        else None
+    )
+    return any(
+        waiter.service_class == request.service_class
+        and _requests_overlap(request, waiter)
+        and (position is None or (waiter.waiting_since, waiter.token) < position)
+        for waiter in waiters
+        if current_waiter is None or waiter.token != current_waiter.token
+    )
+
+
 def _bundle_fits(
     grants: tuple[ResourceGrant, ...],
     waiters: tuple[ResourceWaiter, ...],
@@ -278,15 +304,6 @@ def _bundle_fits(
                 f"resource request for {requested.name!r} needs {requested.units} "
                 f"units but capacity is {capacity}"
             )
-        if request.service_class != "maintenance" and any(
-            waiter.service_class == "maintenance"
-            and _need_for(waiter, requested.name) is not None
-            for waiter in waiters
-        ):
-            # Exclusive maintenance waits on catalogue and object pressure as
-            # one bundle. Stop admitting every overlapping resource so the
-            # complete bundle can drain instead of starving on object-only work.
-            return False
         existing = [
             (grant, need)
             for grant in grants
@@ -348,6 +365,21 @@ def _bundle_fits(
                     if noncritical_waiting
                     else 0
                 )
+                if used + requested.units > capacity - reserved_gap:
+                    return False
+        elif requested.name.startswith("object:"):
+            critical_waiting = any(
+                waiter.service_class == "critical"
+                and _need_for(waiter, requested.name) is not None
+                for waiter in waiters
+            )
+            if request.service_class != "critical" and critical_waiting:
+                critical_used = sum(
+                    need.units
+                    for grant, need in existing
+                    if grant.service_class == "critical"
+                )
+                reserved_gap = max(0, 1 - critical_used)
                 if used + requested.units > capacity - reserved_gap:
                     return False
     return True
@@ -471,7 +503,9 @@ async def _try_acquire(
         (waiter for waiter in waiters if waiter.token == token), None
     )
     other_waiters = tuple(waiter for waiter in waiters if waiter.token != token)
-    if not _bundle_fits(grants, other_waiters, request, limits):
+    if _earlier_peer_is_waiting(waiters, request, current_waiter) or not _bundle_fits(
+        grants, other_waiters, request, limits
+    ):
         if not register_waiter:
             return None
         should_refresh = (
@@ -720,7 +754,6 @@ def catalogue_request(
     object_read_units: int = 0,
     object_write_units: int = 0,
     limits: ResourceLimits | None = None,
-    exclusive: bool = False,
 ) -> ResourceRequest:
     """Build the fixed bundle used by DuckLake-owning workers."""
 
@@ -728,7 +761,7 @@ def catalogue_request(
     resources = [
         ResourceNeed(
             name="catalogue:hot",
-            units=limits.catalogue if exclusive else 1,
+            units=1,
         )
     ]
     if object_read_units:
