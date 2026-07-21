@@ -7,7 +7,7 @@ Atlas deploys five worker roles:
 | Acquisition | graph crawl/readiness/edge work | Immutable HTML, ingestion job, and graph readiness | CDP and traversal coordination |
 | Ingestion | repository ingestion queue | Crawl/DOM catalogue evidence | Critical catalogue capacity |
 | Catalogue relay | DuckLake DML/DDL CDC | Durable per-table DML subjects and global DDL subject | Exactly two DuckDB connections |
-| Materialization | Filtered catalogue DML subjects | Stable whole materialization tables | Live catalogue capacity |
+| Materialization | Filtered catalogue DML subjects | Stable materialization tables | Live catalogue capacity |
 | Maintenance | maintenance triggers | Compaction and cleanup | Exclusive maintenance capacity |
 
 ## Acquisition worker
@@ -61,7 +61,10 @@ shutdown. Table-specific fan-out exists only in JetStream; the relay publishes
 only after JetStream confirms each deterministic message.
 Materialization workers own filtered durable NATS consumers. They create the
 consumer before bootstrap, pause by stopping pulls, and coalesce ticks into
-whole-table transactional refreshes. The target table identity remains stable.
+transactional keyed replacement, idempotent append, or explicit full refresh.
+Composite keys come from stateless CDC queries bounded to the retained NATS
+snapshot range; materialization workers do not own persistent DuckLake CDC
+consumers. The target table identity remains stable.
 Schema boundaries block the incarnation instead of being crossed implicitly.
 Maintenance consumes one durable wildcard NATS subscription over catalogue DML
 ticks; it never opens a DuckLake CDC consumer or discovers materialized tables

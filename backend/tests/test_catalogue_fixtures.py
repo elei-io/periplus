@@ -248,6 +248,8 @@ class CatalogueFixtureTests(unittest.TestCase):
                         3,
                     )
                     self.assertEqual(page_links.source_table, "crawls")
+                    self.assertEqual(page_links.refresh_strategy, "keyed")
+                    self.assertEqual(page_links.key_columns, ["crawl_id"])
                     self.assertEqual(page_links.partition_column, "captured_at")
                     self.assertEqual(page_links.observed_state, "creating")
                     self.assertIsNone(page_links.ducklake_table_uuid)
@@ -497,6 +499,7 @@ class CatalogueFixtureTests(unittest.TestCase):
                         / "crawl"
                         / "page_links.sql"
                     ).write_text(
+                        "-- atlas:refresh=keyed(crawl_id)\n"
                         "CREATE VIEW views.page_links AS "
                         "SELECT crawl_id FROM crawls;",
                         encoding="utf-8",

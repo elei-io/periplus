@@ -1043,7 +1043,9 @@ function CrawlLaunchOutput({
 }
 
 export function CatalogueWorkbenchPage() {
-  const [input, setInput] = useState("")
+  const [input, setInput] = useState(() =>
+    formatSql(new URLSearchParams(window.location.search).get("sql") ?? "")
+  )
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([
     {
       id: "welcome",

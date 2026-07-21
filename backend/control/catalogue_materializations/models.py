@@ -10,7 +10,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
-    Integer,
+    JSON,
     Text,
     text,
 )
@@ -42,6 +42,10 @@ class CatalogueMaterialization(Base):
             "refresh_delay_seconds >= 0",
             name="ck_catalogue_materializations_refresh_delay",
         ),
+        CheckConstraint(
+            "refresh_strategy IN ('keyed', 'append', 'full')",
+            name="ck_catalogue_materializations_refresh_strategy",
+        ),
         Index("ix_catalogue_materializations_archived_at", "archived_at"),
         Index(
             "uq_catalogue_materializations_active_name",
@@ -71,11 +75,12 @@ class CatalogueMaterialization(Base):
     source_table_id: Mapped[int] = mapped_column(BigInteger)
     source_table_uuid: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
     control_snapshot: Mapped[int] = mapped_column(BigInteger)
-    source_schema_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     desired_state: Mapped[str] = mapped_column(Text, default="live")
     observed_state: Mapped[str] = mapped_column(Text, default="creating")
     nats_consumer_name: Mapped[str] = mapped_column(Text, unique=True)
     refresh_delay_seconds: Mapped[float] = mapped_column(Float, default=1.0)
+    refresh_strategy: Mapped[str] = mapped_column(Text)
+    key_columns: Mapped[list[str]] = mapped_column(JSON)
     partition_column: Mapped[str | None] = mapped_column(Text, nullable=True)
     target_table_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ducklake_table_uuid: Mapped[UUID | None] = mapped_column(

@@ -50,6 +50,8 @@ def put_for_view(
     display_name: str | None,
     description: str | None,
     source_table: str,
+    refresh_strategy: str,
+    key_columns: list[str],
     refresh_delay_seconds: float,
     partition_column: str | None,
 ) -> CatalogueMaterializationRecord:
@@ -70,11 +72,28 @@ def put_for_view(
         )
     )
     if existing is not None:
+        if (
+            existing.name != name
+            or existing.source_table != source_table
+            or existing.refresh_strategy != refresh_strategy
+            or existing.key_columns != key_columns
+            or existing.partition_column != partition_column
+        ):
+            raise MaterializationConflictError(
+                "This view already has a different materialization incarnation. "
+                "Dematerialize it before changing the definition."
+            )
         return record(session, existing)
     source_view = CatalogueViewStore(store.catalogue).get(reference.ducklake_view_uuid)
     if source_view is None:
         raise LookupError("DuckLake view not found.")
     source = store.table_identity(source_table)
+    store.validate_refresh_strategy(
+        source_table=source.table_name,
+        sql=source_view.sql,
+        refresh_strategy=refresh_strategy,
+        key_columns=tuple(key_columns),
+    )
     control_snapshot = store.catalogue.latest_snapshot()
     if control_snapshot is None:
         raise MaterializationConflictError("DuckLake has no control snapshot.")
@@ -95,6 +114,8 @@ def put_for_view(
         observed_state="creating",
         nats_consumer_name=materialization_durable(materialization_id),
         refresh_delay_seconds=refresh_delay_seconds,
+        refresh_strategy=refresh_strategy,
+        key_columns=key_columns,
         partition_column=partition_column,
     )
     session.add(model)
@@ -165,6 +186,8 @@ def record(
         observed_state=model.observed_state,
         nats_consumer_name=model.nats_consumer_name,
         refresh_delay_seconds=model.refresh_delay_seconds,
+        refresh_strategy=model.refresh_strategy,
+        key_columns=model.key_columns,
         partition_column=model.partition_column,
         target_table_id=model.target_table_id,
         ducklake_table_uuid=model.ducklake_table_uuid,

@@ -6,25 +6,31 @@ directories go through the same catalogue services used by the UI:
 - `table_macros/` — one `CREATE MACRO macros.<filename>(...) AS TABLE (...)` statement;
 - `views/` — one virtual `CREATE VIEW views.<filename> AS ...` statement;
 - `materialized_views/url/` — one self-contained `CREATE VIEW` statement, activated as an
-  ordinary URL-scoped materialization using its `url_id` output;
+  ordinary materialization driven by `urls`;
 - `materialized_views/document/` — one self-contained `CREATE VIEW` statement, activated as an
-  ordinary document-scoped materialization using its `document_id` output;
+  ordinary materialization driven by `documents`;
 - `materialized_views/crawl/` — one self-contained `CREATE VIEW` statement, activated as an
-  ordinary crawl-scoped materialization using its `crawl_id` output;
+  ordinary materialization driven by `crawls`;
 - `queries/` — one read-only query, named from the filename.
 
 Materialized-view fixtures use the same control-plane definition and materialization machinery as
-user-created views. Setup creates their managed definition and empty backing table; live and
-backfill scope jobs populate it through the materialization worker. Ingestion never writes a
-fixture-specific projection. A materialized fixture must therefore contain the complete query that
-can reproduce its rows from durable catalogue evidence.
+user-created views. Setup creates their managed definition; the materialization worker creates and
+fully populates the backing table. Ingestion never writes a fixture-specific projection. A
+materialized fixture must therefore contain the complete query that can reproduce its rows from
+durable catalogue evidence.
 
-During scoped evaluation, Atlas sets `atlas_materialization_url_id`,
-`atlas_materialization_document_id`, or `atlas_materialization_crawl_id` as applicable DuckDB
-session variables. Expensive fixture queries should use null-guarded `getvariable(...)` predicates
-directly on their base-table scans. The null guard keeps the source view usable before activation,
-while the bound value lets materialization workers prune physical data for one scope instead of
-relying on outer-predicate pushdown.
+Every materialized-view fixture declares exactly one leading refresh directive:
+
+```sql
+-- atlas:refresh=keyed(tenant_id, document_id)
+-- atlas:refresh=append(event_id)
+-- atlas:refresh=full
+```
+
+Keyed refresh replaces only result groups identified by the ordered composite key. Append requires
+that key to uniquely identify every result row and refuses source updates or deletes. Full refresh
+is the explicit fallback for inherently global queries. Key columns must exist with the same names
+in both the driving table and the view result so Atlas can derive them from bounded CDC changes.
 
 A materialized-view fixture may request daily DuckLake partitioning with a single leading
 `-- atlas:partition-by-day=<column>` directive. The selected `DATE` or `TIMESTAMP` result column is

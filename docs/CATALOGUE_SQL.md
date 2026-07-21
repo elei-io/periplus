@@ -215,8 +215,8 @@ WHERE c.outcome = 'success';
 quotes, preformatted blocks, table cells, and figure captions. Each row retains its `document_id`,
 `element_index`, and source tag alongside normalized readable text. It is an ordinary seeded
 materialization driven by document-table DML ticks: search reads its durable
-backing relation while the standard materialization worker coalesces whole-view
-refreshes.
+backing relation while the standard materialization worker replaces only the
+affected `document_id` groups.
 
 `views.json_ld_scripts` preserves one row per
 `<script type="application/ld+json">`. `json_text` contains the exact script text, while
@@ -366,7 +366,7 @@ instead of repeating URL text; join both identities to `urls`. Its self-containe
 links from `crawls`, `urls`, and `elements`, and its placement under
 `fixtures/materialized_views/crawl/` activates a materialization driven by crawl-table ticks.
 The materialization worker creates and fully populates the backing relation,
-then refreshes it after coalesced ticks. Ingestion also inserts newly discovered normalized targets into `urls`, so every link
+then replaces affected `crawl_id` groups after coalesced ticks. Ingestion also inserts newly discovered normalized targets into `urls`, so every link
 identity is resolvable. Historical graph edges never wait
 for either pipeline and may observe an incomplete recent materialization refresh at their pinned
 pre-run snapshot; this intentional consistency contract is defined in

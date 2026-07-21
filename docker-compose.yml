@@ -91,6 +91,12 @@ services:
           *atlas-resource-environment,
           *atlas-quack-environment,
         ]
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ATLAS_SEARCH_MODEL: ${ATLAS_SEARCH_MODEL:-openai:gpt-5.6-luna}
+      ATLAS_SEARCH_MODEL_TIMEOUT_SECONDS: ${ATLAS_SEARCH_MODEL_TIMEOUT_SECONDS:-60}
+      ATLAS_SEARCH_MODEL_REQUEST_LIMIT: ${ATLAS_SEARCH_MODEL_REQUEST_LIMIT:-32}
+      ATLAS_SEARCH_TOOL_CALL_LIMIT: ${ATLAS_SEARCH_TOOL_CALL_LIMIT:-24}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
     depends_on:
       atlas-setup:
         condition: service_completed_successfully

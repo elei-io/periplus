@@ -60,6 +60,8 @@ class RelationFixture:
     parameters: tuple[str, ...] = ()
     parameter_defaults: tuple[tuple[str, str], ...] = ()
     partition_column: str | None = None
+    refresh_strategy: str | None = None
+    key_columns: tuple[str, ...] = ()
 
 
 _FIXTURE_PARAMETER_DEFAULT = re.compile(
@@ -70,6 +72,12 @@ _FIXTURE_PARAMETER_DEFAULT = re.compile(
 _FIXTURE_DAILY_PARTITION = re.compile(
     r"^\s*--\s*atlas:partition-by-day\s*=\s*"
     r"(?P<column>[a-z_][a-z0-9_]*)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_FIXTURE_REFRESH = re.compile(
+    r"^\s*--\s*atlas:refresh\s*=\s*"
+    r"(?P<strategy>keyed|append|full)"
+    r"(?:\((?P<columns>[a-z_][a-z0-9_]*(?:\s*,\s*[a-z_][a-z0-9_]*)*)\))?\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -445,6 +453,13 @@ def _seed_materialization(
         raise CatalogueFixtureError(
             f"{fixture.fixture_path} changed physical partitioning; reset fixture state."
         )
+    if (
+        existing.refresh_strategy != fixture.refresh_strategy
+        or tuple(existing.key_columns) != fixture.key_columns
+    ):
+        raise CatalogueFixtureError(
+            f"{fixture.fixture_path} changed its refresh strategy; reset fixture state."
+        )
 
 
 def _create_seeded_materialization(
@@ -455,6 +470,8 @@ def _create_seeded_materialization(
     *,
     driver_kind: str,
 ) -> None:
+    if fixture.refresh_strategy is None:
+        raise RuntimeError("Materialized fixture refresh strategy is missing.")
     created = materialize_view(
         session,
         store,
@@ -467,6 +484,8 @@ def _create_seeded_materialization(
             "document": "documents",
             "crawl": "crawls",
         }[driver_kind],
+        refresh_strategy=fixture.refresh_strategy,
+        key_columns=list(fixture.key_columns),
         refresh_delay_seconds=1,
         partition_column=fixture.partition_column,
     )
@@ -574,6 +593,38 @@ def _parse_relation_fixture(
         if partition_directives
         else None
     )
+    refresh_directives = list(_FIXTURE_REFRESH.finditer(source))
+    if len(refresh_directives) > 1:
+        raise CatalogueFixtureError(
+            f"{path} may declare atlas:refresh at most once."
+        )
+    if refresh_directives and not materialized:
+        raise CatalogueFixtureError(
+            f"{path} may only declare atlas:refresh as a materialized view."
+        )
+    if materialized and not refresh_directives:
+        raise CatalogueFixtureError(
+            f"{path} must declare atlas:refresh."
+        )
+    refresh_strategy: str | None = None
+    key_columns: tuple[str, ...] = ()
+    if refresh_directives:
+        directive = refresh_directives[0]
+        refresh_strategy = directive.group("strategy").lower()
+        columns = directive.group("columns")
+        key_columns = (
+            tuple(column.strip().lower() for column in columns.split(","))
+            if columns
+            else ()
+        )
+        if refresh_strategy in {"keyed", "append"} and not key_columns:
+            raise CatalogueFixtureError(
+                f"{path} {refresh_strategy} refresh requires key columns."
+            )
+        if refresh_strategy == "full" and key_columns:
+            raise CatalogueFixtureError(
+                f"{path} full refresh does not accept key columns."
+            )
     signature_end = (
         re.search(r"\)\s+AS\s+TABLE\b", source, re.IGNORECASE)
         if kind == "MACRO"
@@ -645,6 +696,8 @@ def _parse_relation_fixture(
         parameters=parameters,
         parameter_defaults=parameter_defaults,
         partition_column=partition_column,
+        refresh_strategy=refresh_strategy,
+        key_columns=key_columns,
     )
 
 

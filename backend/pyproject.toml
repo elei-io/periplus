@@ -28,6 +28,7 @@ dependencies = [
     "sqlglot>=27",
     "ducklake-cdc-client==0.7.0",
     "duckdb==1.5.4",
+    "pydantic-ai-slim[openai]>=2.14.0",
 ]
 
 [dependency-groups]

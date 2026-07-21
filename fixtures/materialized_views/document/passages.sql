@@ -1,3 +1,4 @@
+-- atlas:refresh=keyed(document_id)
 CREATE VIEW views.passages AS
 WITH candidates AS (
     SELECT
@@ -10,10 +11,6 @@ WITH candidates AS (
         'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
         'td', 'th', 'figcaption'
     )
-      AND (
-        getvariable('atlas_materialization_document_id') IS NULL
-        OR document_id = getvariable('atlas_materialization_document_id')
-      )
       AND (macros.has_text(text_direct) OR subtree_end_index > element_index)
 )
 SELECT

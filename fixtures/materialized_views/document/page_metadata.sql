@@ -1,3 +1,4 @@
+-- atlas:refresh=keyed(document_id)
 CREATE VIEW views.page_metadata AS
 WITH raw_candidates AS (
     SELECT

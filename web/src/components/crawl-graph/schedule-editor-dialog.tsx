@@ -64,16 +64,20 @@ function initialInterval(schedule: CrawlSchedule | null) {
 export function ScheduleEditorDialog({
   graphId,
   schedule,
+  initialName,
+  initialUrls,
   open,
   onOpenChange,
 }: {
   graphId: string
   schedule: CrawlSchedule | null
+  initialName?: string
+  initialUrls?: string[]
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
   const interval = initialInterval(schedule)
-  const [name, setName] = useState(schedule?.name ?? "")
+  const [name, setName] = useState(schedule?.name ?? initialName ?? "")
   const [kind, setKind] = useState<"interval" | "cron">(
     schedule?.timing.kind ?? "interval"
   )
@@ -96,7 +100,9 @@ export function ScheduleEditorDialog({
   const [maximumRuns, setMaximumRuns] = useState(
     schedule?.maximum_run_count?.toString() ?? ""
   )
-  const [urls, setUrls] = useState(schedule?.root_urls.join("\n") ?? "")
+  const [urls, setUrls] = useState(
+    schedule?.root_urls.join("\n") ?? initialUrls?.join("\n") ?? ""
+  )
   const [overlap, setOverlap] = useState<"skip" | "allow">(
     schedule?.overlap_policy ?? "skip"
   )
@@ -264,7 +270,9 @@ export function ScheduleEditorDialog({
             <Textarea
               className="min-h-32 font-mono text-xs"
               value={urls}
-              placeholder={"https://example.com/\nhttps://example.com/catalogue"}
+              placeholder={
+                "https://example.com/\nhttps://example.com/catalogue"
+              }
               onChange={(event) => setUrls(event.target.value)}
             />
           </Field>
@@ -349,13 +357,7 @@ export function ScheduleEditorDialog({
   )
 }
 
-function Field({
-  label,
-  children,
-}: {
-  label: string
-  children: ReactNode
-}) {
+function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="space-y-1.5">
       <Label>{label}</Label>

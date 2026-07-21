@@ -1,40 +1,28 @@
-import { useQuery } from "@tanstack/react-query"
-
 import { apiErrorFromResponse, apiUrl } from "@/lib/api"
-import type {
-  SearchCompilation,
-  SearchResultType,
-  SearchTypeRegistry,
-} from "@/types/search"
+import { readSseStream } from "@/lib/sse"
+import type { SearchEvent } from "@/types/search"
 
-async function fetchSearchTypes(): Promise<SearchTypeRegistry> {
-  const response = await fetch(apiUrl("/search/types"))
-  if (!response.ok) throw await apiErrorFromResponse(response)
-  return response.json() as Promise<SearchTypeRegistry>
-}
-
-export async function compileSearch(
-  query: string,
-  resultType: SearchResultType,
-  limit = 50
-): Promise<SearchCompilation> {
-  const response = await fetch(apiUrl("/search/compile"), {
+export async function streamSearch(
+  question: string,
+  onEvent: (event: SearchEvent) => void,
+  signal?: AbortSignal
+) {
+  const response = await fetch(apiUrl("/search/stream"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      query,
-      result_type: resultType,
-      limit,
-    }),
+    headers: {
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ question }),
+    signal,
   })
   if (!response.ok) throw await apiErrorFromResponse(response)
-  return response.json() as Promise<SearchCompilation>
-}
 
-export function useSearchTypes() {
-  return useQuery({
-    queryKey: ["search-types"],
-    queryFn: fetchSearchTypes,
-    staleTime: 5 * 60_000,
+  await readSseStream(response, (message) => {
+    const event = JSON.parse(message.data) as SearchEvent
+    if (event.type !== message.event) {
+      throw new Error("The Atlas agent returned an invalid event stream.")
+    }
+    onEvent(event)
   })
 }

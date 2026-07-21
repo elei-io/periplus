@@ -192,6 +192,8 @@ export type CatalogueMaterializationRecord = {
   observed_state: MaterializationObservedState
   nats_consumer_name: string
   refresh_delay_seconds: number
+  refresh_strategy: "keyed" | "append" | "full"
+  key_columns: string[]
   partition_column: string | null
   target_table_id: number | null
   ducklake_table_uuid: string | null

@@ -424,10 +424,15 @@ def _failure_record(
 ) -> GraphRunFailure:
     if state is not None:
         crawl = state.crawl
+        urls_by_id = {url.url_id: url.normalized_url for url in state.urls}
         return GraphRunFailure(
             crawl_id=crawl.crawl_id,
-            requested_url=crawl.requested_url,
-            final_url=crawl.final_url,
+            requested_url=urls_by_id.get(crawl.requested_url_id, request.url),
+            final_url=(
+                urls_by_id.get(crawl.final_url_id)
+                if crawl.final_url_id is not None
+                else None
+            ),
             status_code=crawl.status_code,
             failure_code=crawl.failure_code,
             failure_stage=crawl.failure_stage or request.failure_stage,

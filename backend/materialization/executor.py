@@ -1,4 +1,4 @@
-"""NATS-driven whole-table materialization lifecycle."""
+"""NATS-driven materialization lifecycle and bounded refresh execution."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from control.catalogue_views.models import CatalogueViewReference
 from db.session import session_scope
 from materialization.dematerialization import dematerialize_one
 from repository.catalogue import catalogue_from_env
+from repository.catalogue.cdc import validate_cdc_extension
 from repository.catalogue.materializations import (
     MaterializationSchemaChangeError,
     MaterializationStore,
@@ -82,6 +83,7 @@ async def run(
         catalogue_from_env,
         memory_limit=materialization_duckdb_memory_limit(),
     )
+    await asyncio.to_thread(validate_cdc_extension, catalogue)
     subscriptions: dict[UUID, object] = {}
     stop = asyncio.Event()
     active_operation_count = [0]
@@ -150,14 +152,8 @@ async def run(
                         )
                         continue
                     if definition.observed_state == "paused":
-                        await _tracked_operation(
-                            active_operation_count,
-                            _resume_one(
-                                catalogue,
-                                leases,
-                                resources,
-                                definition.id,
-                            ),
+                        await asyncio.to_thread(
+                            _mark_observed, definition.id, "live"
                         )
                         worked = True
                         continue
@@ -212,9 +208,11 @@ def _active_definitions() -> list[SimpleNamespace]:
                 source_table_uuid=row.source_table_uuid,
                 nats_consumer_name=row.nats_consumer_name,
                 refresh_delay_seconds=row.refresh_delay_seconds,
+                refresh_strategy=row.refresh_strategy,
+                key_columns=tuple(row.key_columns),
+                source_table_id=row.source_table_id,
                 bootstrap_snapshot=row.bootstrap_snapshot,
                 processed_snapshot=row.processed_snapshot,
-                source_schema_version=row.source_schema_version,
                 ducklake_table_uuid=row.ducklake_table_uuid,
             )
             for row in rows
@@ -322,28 +320,6 @@ async def _bootstrap_one(
     return True
 
 
-async def _resume_one(
-    catalogue,
-    leases,
-    resources,
-    materialization_id: UUID,
-) -> None:
-    async with operation_leases(
-        leases,
-        (str(materialization_id),),
-        phase="materialization",
-        acquire_timeout=0,
-    ):
-        async with _materialization_permit(
-            resources, materialization_id, "resume"
-        ):
-            await asyncio.to_thread(
-                _resume_materialization,
-                catalogue,
-                materialization_id,
-            )
-
-
 async def _tracked_operation(counter: list[int], operation):
     counter[0] += 1
     try:
@@ -391,7 +367,13 @@ def _bootstrap_materialization(catalogue, materialization_id: UUID) -> None:
         current = _source_view(view_store, reference, model)
         store = MaterializationStore(catalogue)
         table, source_snapshot = store.create_full(
-            name=model.name, sql=model.source_sql
+            name=model.name,
+            sql=model.source_sql,
+            append_key_columns=(
+                tuple(model.key_columns)
+                if model.refresh_strategy == "append"
+                else ()
+            ),
         )
         if model.partition_column:
             table = store.set_daily_partition(
@@ -513,15 +495,11 @@ async def _apply_ticks(
         for message in messages:
             await message.ack()
         return True
-    schema_versions = {tick.schema_version for tick in fresh}
-    baseline = definition.source_schema_version
-    if baseline is not None and schema_versions != {baseline}:
-        await asyncio.to_thread(
-            _mark_blocked,
-            definition.id,
-            "The driving table schema changed; create a new materialization incarnation.",
-        )
-        return True
+    # DuckLake schema versions are catalogue-wide, so unrelated DDL can
+    # advance tick.schema_version without changing this materialization's
+    # driving table. Source/target table shape changes are fenced by the
+    # global DDL relay and the materialization DDL reconciler, which matches
+    # stable table IDs before marking an incarnation blocked.
     async with _materialization_permit(
         resources, definition.id, "refresh"
     ):
@@ -529,8 +507,8 @@ async def _apply_ticks(
             _refresh_materialization,
             catalogue,
             definition.id,
+            min(tick.snapshot_id for tick in fresh),
             max(tick.snapshot_id for tick in fresh),
-            next(iter(schema_versions)),
         )
     for message in messages:
         await message.ack()
@@ -540,8 +518,8 @@ async def _apply_ticks(
 def _refresh_materialization(
     catalogue,
     materialization_id: UUID,
+    from_snapshot: int,
     processed_snapshot: int,
-    schema_version: int | None,
 ) -> None:
     with session_scope() as session:
         model = session.get(CatalogueMaterialization, materialization_id)
@@ -552,30 +530,42 @@ def _refresh_materialization(
             or model.ducklake_table_uuid is None
         ):
             return
-        MaterializationStore(catalogue).refresh_full(
-            name=model.name,
-            expected_uuid=model.ducklake_table_uuid,
-            sql=model.source_sql,
-        )
-        if schema_version is not None:
-            model.source_schema_version = (
-                model.source_schema_version or schema_version
+        store = MaterializationStore(catalogue)
+        if model.refresh_strategy == "full":
+            store.refresh_full(
+                name=model.name,
+                expected_uuid=model.ducklake_table_uuid,
+                sql=model.source_sql,
+            )
+        elif model.refresh_strategy == "keyed":
+            store.refresh_keyed(
+                name=model.name,
+                expected_uuid=model.ducklake_table_uuid,
+                sql=model.source_sql,
+                source_table_id=model.source_table_id,
+                from_snapshot=from_snapshot,
+                to_snapshot=processed_snapshot,
+                key_columns=tuple(model.key_columns),
+            )
+        elif model.refresh_strategy == "append":
+            store.refresh_append(
+                name=model.name,
+                expected_uuid=model.ducklake_table_uuid,
+                sql=model.source_sql,
+                source_table_id=model.source_table_id,
+                from_snapshot=from_snapshot,
+                to_snapshot=processed_snapshot,
+                key_columns=tuple(model.key_columns),
+            )
+        else:
+            raise RuntimeError(
+                f"Unknown materialization refresh strategy {model.refresh_strategy!r}."
             )
         model.processed_snapshot = processed_snapshot
         model.last_refreshed_at = datetime.now(UTC)
         model.observed_state = "live"
         model.last_error = None
         session.flush()
-
-
-def _resume_materialization(catalogue, materialization_id: UUID) -> None:
-    _refresh_materialization(
-        catalogue,
-        materialization_id,
-        catalogue.latest_snapshot() or 0,
-        None,
-    )
-
 
 async def _delete_one(
     jetstream, catalogue, leases, resources, definition

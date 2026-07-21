@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from api.routers.graph_runs import _failure_record
+from repository.catalogue.records import CrawlRecord, UrlRecord
 from runtime.graph_queue import CrawlRequest
 
 
@@ -14,22 +15,33 @@ class GraphRunFailureApiTests(unittest.TestCase):
         request = _failed_request()
         captured_at = datetime(2026, 7, 17, tzinfo=UTC)
         crawl_id = uuid4()
+        requested_url = UrlRecord.from_normalized_url(request.url)
+        final_url = UrlRecord.from_normalized_url("https://example.com/final")
         state = SimpleNamespace(
-            crawl=SimpleNamespace(
+            crawl=CrawlRecord(
                 crawl_id=crawl_id,
-                requested_url=request.url,
-                final_url="https://example.com/final",
+                graph_id=uuid4(),
+                graph_run_id=request.graph_run_id,
+                graph_node_id=request.node_id,
+                crawl_request_id=request.id,
+                requested_url_id=requested_url.url_id,
+                final_url_id=final_url.url_id,
                 status_code=503,
+                outcome="failed",
                 failure_code="navigation_failed",
                 failure_stage="navigation",
+                failure_retryable=False,
                 failure_detail="Execution context was destroyed.",
                 captured_at=captured_at,
-            )
+            ),
+            urls=(requested_url, final_url),
         )
 
         result = _failure_record(request, state)
 
         self.assertEqual(result.crawl_id, crawl_id)
+        self.assertEqual(result.requested_url, request.url)
+        self.assertEqual(result.final_url, "https://example.com/final")
         self.assertEqual(result.failure_code, "navigation_failed")
         self.assertEqual(result.failure_detail, "Execution context was destroyed.")
         self.assertEqual(result.captured_at, captured_at)

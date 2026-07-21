@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Literal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -15,15 +14,14 @@ from repository.catalogue.quack_runtime import (
     QuackQueryRuntime,
     remote_rows,
 )
+from repository.catalogue.interactive import prepare_interactive_query
 from repository.catalogue.query import (
     CatalogueQueryError,
     CatalogueStatementKind,
     lint_catalogue_statement,
-    validate_interactive_catalogue_statement,
 )
 from runtime.catalogue_queries import (
     CatalogueQueryState,
-    create_catalogue_query,
     get_catalogue_query,
     request_catalogue_query_cancellation,
     update_catalogue_query,
@@ -129,35 +127,16 @@ async def execute_query(
     payload: CatalogueSqlRequest,
     request: Request,
 ) -> StreamingResponse:
-    runtime = get_quack_runtime(request)
     try:
-        statement = validate_interactive_catalogue_statement(
-            payload.sql,
-            catalogue_alias=runtime.config.catalogue_alias,
-            catalogue_schema=runtime.config.catalogue_schema,
+        query_id, statement, active = await prepare_interactive_query(
+            get_quack_runtime(request), payload.sql
         )
     except CatalogueQueryError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    query_id = uuid4()
-    await create_catalogue_query(
-        runtime.query_bucket,
-        CatalogueQueryState(
-            id=query_id,
-            statement_kind=statement.kind,
-            status="queued",
-            created_at=datetime.now(UTC),
-        ),
-    )
+    except CatalogueQueryExecutionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     async def stream():
-        try:
-            active = await runtime.prepare(
-                query_id=query_id,
-                sql=statement.sql,
-                statement_kind=statement.kind,
-            )
-        except CatalogueQueryExecutionError:
-            return
         async for chunk in active.stream():
             yield chunk
 

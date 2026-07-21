@@ -695,14 +695,14 @@ export function ResourcesScalingDocsPage({ onNavigate }: DocsPageProps) {
               <ServiceName key="live" tone="live">
                 live
               </ServiceName>,
-              "Current materialization scopes",
+              "Current materialization refreshes",
               "Uses the noncritical share while preserving live freshness",
             ],
             [
               <ServiceName key="backfill" tone="backfill">
                 backfill
               </ServiceName>,
-              "Historical materialization coverage",
+              "Explicit catalogue backfills",
               "Shares noncritical capacity and has an explicit concurrency ceiling",
             ],
             [

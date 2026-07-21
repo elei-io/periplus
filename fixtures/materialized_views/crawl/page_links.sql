@@ -1,4 +1,5 @@
 -- atlas:partition-by-day=captured_at
+-- atlas:refresh=keyed(crawl_id)
 CREATE VIEW views.page_links AS
 WITH successful_crawls AS (
     SELECT
@@ -19,14 +20,8 @@ WITH successful_crawls AS (
       ON effective.url_id = coalesce(crawl.final_url_id, crawl.requested_url_id)
     WHERE crawl.outcome = 'success'
       AND crawl.document_id IS NOT NULL
-      AND (
-          getvariable('atlas_materialization_crawl_id') IS NULL
-          OR crawl.crawl_id = CAST(
-              getvariable('atlas_materialization_crawl_id') AS UUID
-          )
-      )
 ),
-scoped_elements AS MATERIALIZED (
+scoped_elements AS (
     SELECT
         document_id,
         element_index,
@@ -34,8 +29,6 @@ scoped_elements AS MATERIALIZED (
         tag,
         attributes
     FROM elements
-    WHERE getvariable('atlas_materialization_document_id') IS NULL
-       OR document_id = getvariable('atlas_materialization_document_id')
 ),
 base_candidates AS (
     SELECT

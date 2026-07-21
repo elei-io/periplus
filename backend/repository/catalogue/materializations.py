@@ -1,4 +1,4 @@
-"""Physical DuckLake operations for whole-table materializations."""
+"""Physical DuckLake operations for stable materialization tables."""
 
 from __future__ import annotations
 
@@ -23,6 +23,10 @@ class MaterializationConflictError(MaterializationError):
 
 
 class MaterializationSchemaChangeError(MaterializationError):
+    pass
+
+
+class MaterializationAppendOnlyViolation(MaterializationError):
     pass
 
 
@@ -82,7 +86,58 @@ class MaterializationStore:
             begin_snapshot=int(row[4]),
         )
 
-    def create_full(self, *, name: str, sql: str) -> tuple[MaterializationTable, int]:
+    def validate_refresh_strategy(
+        self,
+        *,
+        source_table: str,
+        sql: str,
+        refresh_strategy: str,
+        key_columns: tuple[str, ...],
+    ) -> None:
+        if refresh_strategy not in {"keyed", "append", "full"}:
+            raise MaterializationError(
+                f"Unknown refresh strategy {refresh_strategy!r}."
+            )
+        if refresh_strategy == "full":
+            if key_columns:
+                raise MaterializationError(
+                    "Full refresh materializations do not use key columns."
+                )
+            return
+        if not key_columns:
+            raise MaterializationError(
+                f"{refresh_strategy.title()} materializations require key columns."
+            )
+        if len(set(key_columns)) != len(key_columns):
+            raise MaterializationError("Key columns must not contain duplicates.")
+        for column in key_columns:
+            _validate_name(column)
+        source_columns = self._relation_columns(
+            _qualified_source(self.catalogue, source_table)
+        )
+        result_columns = self._query_columns(sql)
+        missing_source = set(key_columns) - source_columns
+        missing_result = set(key_columns) - result_columns
+        if missing_source:
+            raise MaterializationError(
+                "Key columns missing from the driving table: "
+                + ", ".join(sorted(missing_source))
+                + "."
+            )
+        if missing_result:
+            raise MaterializationError(
+                "Key columns missing from the view result: "
+                + ", ".join(sorted(missing_result))
+                + "."
+            )
+
+    def create_full(
+        self,
+        *,
+        name: str,
+        sql: str,
+        append_key_columns: tuple[str, ...] = (),
+    ) -> tuple[MaterializationTable, int]:
         _validate_name(name)
         classify_select(sql)
         try:
@@ -103,6 +158,13 @@ class MaterializationStore:
                 f"CREATE TABLE {_qualified(self.catalogue, name)} AS "
                 f"SELECT * FROM ({query}) AS materialized_source"
             )
+            if append_key_columns and self._has_duplicate_keys(
+                relation=_qualified(self.catalogue, name),
+                key_columns=append_key_columns,
+            ):
+                raise MaterializationAppendOnlyViolation(
+                    "Append key columns must uniquely identify every result row."
+                )
         return self.inspect(name), source_snapshot
 
     def refresh_full(self, *, name: str, expected_uuid: UUID, sql: str) -> MaterializationTable:
@@ -128,6 +190,124 @@ class MaterializationStore:
                     "The materialized query no longer matches its durable table schema. "
                     "Dematerialize and create it again."
                 ) from exc
+        return self.inspect(name)
+
+    def refresh_keyed(
+        self,
+        *,
+        name: str,
+        expected_uuid: UUID,
+        sql: str,
+        source_table_id: int,
+        from_snapshot: int,
+        to_snapshot: int,
+        key_columns: tuple[str, ...],
+    ) -> MaterializationTable:
+        current = self._checked_target(name, expected_uuid)
+        classify_select(sql)
+        query = sql.strip().removesuffix(";")
+        self._use_main()
+        try:
+            self._prepare_changes(
+                source_table_id=source_table_id,
+                from_snapshot=from_snapshot,
+                to_snapshot=to_snapshot,
+                key_columns=key_columns,
+            )
+            if not self._has_changed_keys():
+                return current
+            target = _qualified(self.catalogue, name)
+            target_match = _key_match("materialized_target", "changed", key_columns)
+            source_match = _key_match("materialized_source", "changed", key_columns)
+            with self.catalogue.lake.transaction():
+                self.catalogue.connection.execute(
+                    f"DELETE FROM {target} AS materialized_target "
+                    "WHERE EXISTS (SELECT 1 FROM _atlas_materialization_changed_keys "
+                    f"AS changed WHERE {target_match})"
+                )
+                try:
+                    self.catalogue.connection.execute(
+                        f"INSERT INTO {target} "
+                        f"SELECT materialized_source.* FROM ({query}) "
+                        "AS materialized_source "
+                        "WHERE EXISTS (SELECT 1 FROM "
+                        "_atlas_materialization_changed_keys AS changed "
+                        f"WHERE {source_match})"
+                    )
+                except Exception as exc:
+                    raise MaterializationSchemaChangeError(
+                        "The materialized query no longer matches its durable "
+                        "table schema. Dematerialize and create it again."
+                    ) from exc
+        finally:
+            self._drop_changes()
+        return self.inspect(name)
+
+    def refresh_append(
+        self,
+        *,
+        name: str,
+        expected_uuid: UUID,
+        sql: str,
+        source_table_id: int,
+        from_snapshot: int,
+        to_snapshot: int,
+        key_columns: tuple[str, ...],
+    ) -> MaterializationTable:
+        current = self._checked_target(name, expected_uuid)
+        classify_select(sql)
+        query = sql.strip().removesuffix(";")
+        self._use_main()
+        try:
+            self._prepare_changes(
+                source_table_id=source_table_id,
+                from_snapshot=from_snapshot,
+                to_snapshot=to_snapshot,
+                key_columns=key_columns,
+            )
+            mutation = self.catalogue.connection.execute(
+                "SELECT change_type FROM _atlas_materialization_changes "
+                "WHERE change_type <> 'insert' LIMIT 1"
+            ).fetchone()
+            if mutation is not None:
+                raise MaterializationAppendOnlyViolation(
+                    "The driving table emitted a non-insert change. "
+                    "Dematerialize and choose keyed or full refresh."
+                )
+            if not self._has_changed_keys():
+                return current
+            target = _qualified(self.catalogue, name)
+            source_match = _key_match("materialized_source", "changed", key_columns)
+            target_match = _key_match("materialized_target", "candidate", key_columns)
+            candidates = (
+                f"SELECT materialized_source.* FROM ({query}) AS materialized_source "
+                "WHERE EXISTS (SELECT 1 FROM _atlas_materialization_changed_keys "
+                f"AS changed WHERE {source_match})"
+            )
+            if self._has_duplicate_keys(
+                relation=f"({candidates})",
+                key_columns=key_columns,
+            ):
+                raise MaterializationAppendOnlyViolation(
+                    "Append key columns must uniquely identify every result row."
+                )
+            try:
+                with self.catalogue.lake.transaction():
+                    self.catalogue.connection.execute(
+                        f"INSERT INTO {target} "
+                        f"SELECT candidate.* FROM ({candidates}) AS candidate "
+                        f"WHERE NOT EXISTS (SELECT 1 FROM {target} "
+                        f"AS materialized_target WHERE {target_match})"
+                    )
+            except MaterializationAppendOnlyViolation:
+                raise
+            except Exception as exc:
+                raise MaterializationSchemaChangeError(
+                    "The materialized query no longer matches its durable table "
+                    "schema. Dematerialize and create it again."
+                ) from exc
+        finally:
+            self._drop_changes()
         return self.inspect(name)
 
     def drop(self, *, name: str, expected_uuid: UUID) -> None:
@@ -222,6 +402,79 @@ class MaterializationStore:
             f'USE "{self.catalogue.config.alias}"."{self.catalogue.config.schema}"'
         )
 
+    def _checked_target(
+        self, name: str, expected_uuid: UUID
+    ) -> MaterializationTable:
+        current = self.inspect(name)
+        if current.table_uuid != expected_uuid:
+            raise MaterializationConflictError(
+                "The materialized table identity changed; refresh stopped."
+            )
+        return current
+
+    def _prepare_changes(
+        self,
+        *,
+        source_table_id: int,
+        from_snapshot: int,
+        to_snapshot: int,
+        key_columns: tuple[str, ...],
+    ) -> None:
+        if from_snapshot > to_snapshot:
+            raise MaterializationError("The CDC snapshot range is reversed.")
+        columns = ", ".join(_quote_identifier(column) for column in key_columns)
+        alias = _quote_literal(self.catalogue.config.alias)
+        self.catalogue.connection.execute(
+            "CREATE OR REPLACE TEMP TABLE _atlas_materialization_changes AS "
+            f"SELECT change_type, {columns} FROM cdc_dml_changes_query("
+            f"{alias}, {int(from_snapshot)}, {int(to_snapshot)}, "
+            f"table_id := {int(source_table_id)})"
+        )
+        self.catalogue.connection.execute(
+            "CREATE OR REPLACE TEMP TABLE _atlas_materialization_changed_keys AS "
+            f"SELECT DISTINCT {columns} FROM _atlas_materialization_changes"
+        )
+
+    def _drop_changes(self) -> None:
+        self.catalogue.connection.execute(
+            "DROP TABLE IF EXISTS _atlas_materialization_changed_keys"
+        )
+        self.catalogue.connection.execute(
+            "DROP TABLE IF EXISTS _atlas_materialization_changes"
+        )
+
+    def _has_changed_keys(self) -> bool:
+        row = self.catalogue.connection.execute(
+            "SELECT EXISTS(SELECT 1 FROM _atlas_materialization_changed_keys)"
+        ).fetchone()
+        return bool(row and row[0])
+
+    def _has_duplicate_keys(
+        self, *, relation: str, key_columns: tuple[str, ...]
+    ) -> bool:
+        columns = ", ".join(_quote_identifier(column) for column in key_columns)
+        row = self.catalogue.connection.execute(
+            f"SELECT EXISTS(SELECT 1 FROM {relation} AS keyed_rows "
+            f"GROUP BY {columns} HAVING count(*) > 1)"
+        ).fetchone()
+        return bool(row and row[0])
+
+    def _relation_columns(self, relation: str) -> set[str]:
+        self._use_main()
+        cursor = self.catalogue.connection.execute(
+            f"SELECT * FROM {relation} LIMIT 0"
+        )
+        return {str(column[0]) for column in cursor.description}
+
+    def _query_columns(self, sql: str) -> set[str]:
+        classify_select(sql)
+        query = sql.strip().removesuffix(";")
+        self._use_main()
+        rows = self.catalogue.connection.execute(
+            f"DESCRIBE SELECT * FROM ({query}) AS materialized_source"
+        ).fetchall()
+        return {str(row[0]) for row in rows}
+
 
 def _validate_name(value: str) -> None:
     if not _SAFE_NAME.fullmatch(value):
@@ -237,5 +490,24 @@ def _qualified(catalogue: Catalogue, name: str) -> str:
     )
 
 
+def _qualified_source(catalogue: Catalogue, name: str) -> str:
+    return ".".join(
+        _quote_identifier(part)
+        for part in (catalogue.config.alias, catalogue.config.schema, name)
+    )
+
+
+def _key_match(left: str, right: str, key_columns: tuple[str, ...]) -> str:
+    return " AND ".join(
+        f"{left}.{_quote_identifier(column)} IS NOT DISTINCT FROM "
+        f"{right}.{_quote_identifier(column)}"
+        for column in key_columns
+    )
+
+
 def _quote_identifier(value: str) -> str:
     return f'"{value.replace(chr(34), chr(34) * 2)}"'
+
+
+def _quote_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"

@@ -44,6 +44,10 @@ export function MaterializeViewDialog({
     sourceTables.find((table) => view.sql.toLowerCase().includes(table)) ??
     "documents"
   const [sourceTable, setSourceTable] = useState<string>(inferred)
+  const [refreshStrategy, setRefreshStrategy] = useState<
+    "keyed" | "append" | "full"
+  >("keyed")
+  const [keyColumns, setKeyColumns] = useState("")
   const [delay, setDelay] = useState(1)
   const [partitionColumn, setPartitionColumn] = useState("")
   const create = useCreateCatalogueMaterialization()
@@ -53,6 +57,10 @@ export function MaterializeViewDialog({
   })
 
   async function submit() {
+    const keys = keyColumns
+      .split(",")
+      .map((column) => column.trim())
+      .filter(Boolean)
     try {
       await create.mutateAsync({
         view_reference_id: view.id!,
@@ -60,6 +68,8 @@ export function MaterializeViewDialog({
         display_name: view.slug,
         description: view.description ?? undefined,
         source_table: sourceTable,
+        refresh_strategy: refreshStrategy,
+        key_columns: refreshStrategy === "full" ? [] : keys,
         refresh_delay_seconds: delay,
         partition_column: partitionColumn || undefined,
       })
@@ -78,8 +88,8 @@ export function MaterializeViewDialog({
           </div>
           <DialogTitle>Materialize {view.slug}</DialogTitle>
           <DialogDescription>
-            Atlas will snapshot the whole view, then refresh it when the driving
-            DuckLake table publishes a CDC tick.
+            Atlas will snapshot the view, then apply committed changes from its
+            driving DuckLake table.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-5">
@@ -97,6 +107,57 @@ export function MaterializeViewDialog({
               A committed DML change to this table schedules a refresh.
             </p>
           </div>
+          <div className="grid gap-1.5">
+            <Label>Refresh strategy</Label>
+            <Select
+              value={refreshStrategy}
+              onValueChange={(value) =>
+                setRefreshStrategy(
+                  (value ?? "keyed") as "keyed" | "append" | "full"
+                )
+              }
+            >
+              <SelectTrigger className="w-full">
+                <span>
+                  {refreshStrategy === "keyed"
+                    ? "Replace affected groups"
+                    : refreshStrategy === "append"
+                      ? "Append new rows"
+                      : "Rebuild everything"}
+                </span>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="keyed">Replace affected groups</SelectItem>
+                <SelectItem value="append">Append new rows</SelectItem>
+                <SelectItem value="full">Rebuild everything</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {refreshStrategy === "keyed"
+                ? "Recomputes only groups whose composite refresh key changed."
+                : refreshStrategy === "append"
+                  ? "Accepts inserts only; the key must uniquely identify each result row."
+                  : "Recomputes the complete result after coalescing changes."}
+            </p>
+          </div>
+          {refreshStrategy !== "full" ? (
+            <div className="grid gap-1.5">
+              <Label>
+                {refreshStrategy === "keyed"
+                  ? "Refresh key columns"
+                  : "Row identity columns"}
+              </Label>
+              <Input
+                value={keyColumns}
+                onChange={(event) => setKeyColumns(event.target.value)}
+                placeholder="tenant_id, document_id"
+              />
+              <p className="text-xs text-muted-foreground">
+                Ordered, comma-separated columns present in both the driving
+                table and this view result.
+              </p>
+            </div>
+          ) : null}
           <div className="grid gap-1.5">
             <Label>Coalescing delay (seconds)</Label>
             <Input
@@ -127,7 +188,13 @@ export function MaterializeViewDialog({
           </div>
         </div>
         <DialogFooter showCloseButton>
-          <Button onClick={() => void submit()} disabled={create.isPending}>
+          <Button
+            onClick={() => void submit()}
+            disabled={
+              create.isPending ||
+              (refreshStrategy !== "full" && !keyColumns.trim())
+            }
+          >
             {create.isPending ? "Materializing…" : "Materialize"}
           </Button>
         </DialogFooter>

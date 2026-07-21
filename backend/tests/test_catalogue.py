@@ -115,6 +115,7 @@ class CatalogueConfigTests(unittest.TestCase):
         self.assertEqual(
             config.duckdb.config,
             {
+                "allow_unsigned_extensions": True,
                 "preserve_insertion_order": False,
                 "pg_pool_acquire_mode": "wait",
                 "pg_pool_max_connections": "4",

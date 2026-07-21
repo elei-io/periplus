@@ -183,7 +183,7 @@ async def _watch_compaction_ticks(
     while not stop.is_set():
         try:
             messages = await subscription.fetch(batch=100, timeout=1)
-        except NatsTimeoutError:
+        except (NatsTimeoutError, asyncio.TimeoutError):
             continue
         except asyncio.CancelledError:
             raise

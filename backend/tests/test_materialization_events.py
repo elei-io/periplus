@@ -12,8 +12,12 @@ from nats.js.api import DiscardPolicy, RetentionPolicy, StorageType, StreamConfi
 from nats.js.errors import BadRequestError, NotFoundError
 
 from control.catalogue_materializations.models import CatalogueMaterialization
+from control.catalogue_materializations.schemas import ViewMaterializationPut
 from repository.catalogue import Catalogue, CatalogueConfig
-from repository.catalogue.materializations import MaterializationStore
+from repository.catalogue.materializations import (
+    MaterializationAppendOnlyViolation,
+    MaterializationStore,
+)
 from materialization.executor import _backing_view_sql, _source_view
 from runtime.catalogue_events import (
     CatalogueDDLEvent,
@@ -57,12 +61,14 @@ class MaterializationEventContractTests(unittest.TestCase):
             'SELECT * FROM "atlas"."_atlas_materializations"."page_links"',
         )
 
-    def test_control_model_has_one_incarnation_without_scope_or_revision(self) -> None:
+    def test_control_model_has_refresh_strategy_without_scope_or_revision(self) -> None:
         columns = set(CatalogueMaterialization.__table__.columns.keys())
         self.assertTrue(
             {
                 "source_table_uuid",
                 "control_snapshot",
+                "refresh_strategy",
+                "key_columns",
                 "desired_state",
                 "observed_state",
                 "nats_consumer_name",
@@ -80,6 +86,43 @@ class MaterializationEventContractTests(unittest.TestCase):
             }
             & columns
         )
+
+    def test_refresh_strategy_requires_the_right_key_shape(self) -> None:
+        keyed = ViewMaterializationPut(
+            name="links",
+            source_table="crawls",
+            refresh_strategy="keyed",
+            key_columns=["tenant_id", "crawl_id"],
+        )
+        self.assertEqual(keyed.key_columns, ["tenant_id", "crawl_id"])
+
+        append = ViewMaterializationPut(
+            name="events",
+            source_table="crawl_steps",
+            refresh_strategy="append",
+            key_columns=["crawl_id", "step_index"],
+        )
+        self.assertEqual(append.refresh_strategy, "append")
+
+        full = ViewMaterializationPut(
+            name="totals",
+            source_table="crawls",
+            refresh_strategy="full",
+        )
+        self.assertEqual(full.key_columns, [])
+
+        for strategy, key_columns in (
+            ("keyed", []),
+            ("append", []),
+            ("full", ["crawl_id"]),
+        ):
+            with self.subTest(strategy=strategy), self.assertRaises(ValueError):
+                ViewMaterializationPut(
+                    name="invalid",
+                    source_table="crawls",
+                    refresh_strategy=strategy,
+                    key_columns=key_columns,
+                )
 
     def test_subjects_and_message_ids_are_physical_incarnation_stable(self) -> None:
         table_uuid = uuid4()
@@ -118,7 +161,7 @@ class MaterializationEventContractTests(unittest.TestCase):
         )
         self.assertEqual(ddl.message_id, "ddl:20:table:7:altered")
 
-    def test_whole_table_refresh_retains_target_uuid(self) -> None:
+    def test_full_refresh_retains_target_uuid(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with Catalogue(
@@ -160,6 +203,146 @@ class MaterializationEventContractTests(unittest.TestCase):
                     ).fetchone()[0],
                     "doc-2",
                 )
+
+    def test_composite_key_refresh_replaces_only_changed_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with Catalogue(
+                CatalogueConfig(
+                    catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                    storage=DiskStorage(root / "lake"),
+                )
+            ) as catalogue:
+                catalogue.bootstrap()
+                catalogue.connection.execute(
+                    "CREATE TABLE keyed_source "
+                    "(tenant_id INTEGER, document_id INTEGER, value VARCHAR)"
+                )
+                catalogue.connection.execute(
+                    "INSERT INTO keyed_source VALUES "
+                    "(1, 10, 'old-a'), (1, 11, 'old-b'), (2, 10, 'untouched')"
+                )
+                store = MaterializationStore(catalogue)
+                table, source_snapshot = store.create_full(
+                    name="keyed_result",
+                    sql="SELECT * FROM keyed_source",
+                )
+                catalogue.connection.execute(
+                    "UPDATE keyed_source SET value = 'new-a' "
+                    "WHERE tenant_id = 1 AND document_id = 10"
+                )
+                catalogue.connection.execute(
+                    "UPDATE keyed_source SET value = 'not-in-window' "
+                    "WHERE tenant_id = 2 AND document_id = 10"
+                )
+                self._install_changes_macro(
+                    catalogue,
+                    columns="tenant_id INTEGER, document_id INTEGER",
+                    values=f"({source_snapshot + 1}, 1, 'update_postimage', 1, 10)",
+                )
+
+                refreshed = store.refresh_keyed(
+                    name="keyed_result",
+                    expected_uuid=table.table_uuid,
+                    sql="SELECT * FROM keyed_source",
+                    source_table_id=store.table_identity("keyed_source").table_id,
+                    from_snapshot=source_snapshot + 1,
+                    to_snapshot=source_snapshot + 1,
+                    key_columns=("tenant_id", "document_id"),
+                )
+
+                self.assertEqual(refreshed.table_uuid, table.table_uuid)
+                self.assertEqual(
+                    catalogue.connection.execute(
+                        "SELECT * FROM _atlas_materializations.keyed_result "
+                        "ORDER BY tenant_id, document_id"
+                    ).fetchall(),
+                    [
+                        (1, 10, "new-a"),
+                        (1, 11, "old-b"),
+                        (2, 10, "untouched"),
+                    ],
+                )
+
+    def test_append_refresh_is_idempotent_and_rejects_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with Catalogue(
+                CatalogueConfig(
+                    catalog=DuckDBCatalog(root / "catalog.ducklake"),
+                    storage=DiskStorage(root / "lake"),
+                )
+            ) as catalogue:
+                catalogue.bootstrap()
+                catalogue.connection.execute(
+                    "CREATE TABLE append_source "
+                    "(tenant_id INTEGER, event_id INTEGER, value VARCHAR)"
+                )
+                catalogue.connection.execute(
+                    "INSERT INTO append_source VALUES (1, 10, 'first')"
+                )
+                store = MaterializationStore(catalogue)
+                table, source_snapshot = store.create_full(
+                    name="append_result",
+                    sql="SELECT * FROM append_source",
+                    append_key_columns=("tenant_id", "event_id"),
+                )
+                catalogue.connection.execute(
+                    "INSERT INTO append_source VALUES (1, 11, 'second')"
+                )
+                self._install_changes_macro(
+                    catalogue,
+                    columns="tenant_id INTEGER, event_id INTEGER",
+                    values=f"({source_snapshot + 1}, 1, 'insert', 1, 11)",
+                )
+                kwargs = {
+                    "name": "append_result",
+                    "expected_uuid": table.table_uuid,
+                    "sql": "SELECT * FROM append_source",
+                    "source_table_id": store.table_identity("append_source").table_id,
+                    "from_snapshot": source_snapshot + 1,
+                    "to_snapshot": source_snapshot + 1,
+                    "key_columns": ("tenant_id", "event_id"),
+                }
+
+                store.refresh_append(**kwargs)
+                store.refresh_append(**kwargs)
+
+                self.assertEqual(
+                    catalogue.connection.execute(
+                        "SELECT * FROM _atlas_materializations.append_result "
+                        "ORDER BY tenant_id, event_id"
+                    ).fetchall(),
+                    [(1, 10, "first"), (1, 11, "second")],
+                )
+
+                self._install_changes_macro(
+                    catalogue,
+                    columns="tenant_id INTEGER, event_id INTEGER",
+                    values=f"({source_snapshot + 1}, 1, 'delete', 1, 11)",
+                )
+                with self.assertRaises(MaterializationAppendOnlyViolation):
+                    store.refresh_append(**kwargs)
+
+    @staticmethod
+    def _install_changes_macro(
+        catalogue: Catalogue, *, columns: str, values: str
+    ) -> None:
+        catalogue.connection.execute("DROP MACRO IF EXISTS cdc_dml_changes_query")
+        catalogue.connection.execute("DROP TABLE IF EXISTS materialization_test_changes")
+        catalogue.connection.execute(
+            "CREATE TEMP TABLE materialization_test_changes "
+            f"(snapshot_id BIGINT, rowid BIGINT, change_type VARCHAR, {columns})"
+        )
+        catalogue.connection.execute(
+            f"INSERT INTO materialization_test_changes VALUES {values}"
+        )
+        catalogue.connection.execute(
+            "CREATE TEMP MACRO cdc_dml_changes_query("
+            "catalog_name, from_snapshot, to_snapshot, table_id := NULL"
+            ") AS TABLE SELECT * FROM materialization_test_changes "
+            "WHERE snapshot_id BETWEEN from_snapshot AND to_snapshot"
+        )
 
 
 class CatalogueEventStreamTests(unittest.IsolatedAsyncioTestCase):

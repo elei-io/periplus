@@ -1,67 +1,52 @@
-"""Typed exploratory search over the analytical catalogue."""
+"""Streaming catalogue-agent API."""
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from fastapi import APIRouter, Request
+from fastapi.sse import EventSourceResponse, ServerSentEvent
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
-from repository.catalogue.search import SEARCH_TYPES, SearchType, compile_search
+from agents.acquisition_tools import AcquisitionTools
+from agents.catalogue_search import stream_atlas_search
+from agents.catalogue_tools import CatalogueTools
+from api.catalogue_control import get_catalogue_control
+from api.routers.catalogue import get_quack_runtime
+from config import get_optional
 
 
 router = APIRouter(prefix="/search", tags=["search"])
-
-
-class SearchTypeResponse(BaseModel):
-    type: SearchType
-    label: str
-    description: str
-
-
-class SearchRegistryResponse(BaseModel):
-    items: list[SearchTypeResponse]
-
-
-SearchQuery = Annotated[
+SearchQuestion = Annotated[
     str,
-    StringConstraints(strip_whitespace=True, min_length=1, max_length=1_000),
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=20_000),
 ]
 
 
-class SearchCompileRequest(BaseModel):
+class SearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    query: SearchQuery
-    result_type: SearchType
-    limit: int = Field(default=50, ge=1, le=200)
+    question: SearchQuestion
 
 
-class SearchCompileResponse(BaseModel):
-    result_type: SearchType
-    sql: str
-    investigation_sql: str
-
-
-@router.get("/types", response_model=SearchRegistryResponse)
-def search_types() -> SearchRegistryResponse:
-    return SearchRegistryResponse(
-        items=[
-            SearchTypeResponse(
-                type=strategy.type,
-                label=strategy.label,
-                description=strategy.description,
-            )
-            for strategy in SEARCH_TYPES.values()
-        ]
+@router.post("/stream", response_class=EventSourceResponse)
+async def search(
+    payload: SearchRequest,
+    request: Request,
+) -> AsyncIterator[ServerSentEvent]:
+    catalogue_control = get_catalogue_control(request)
+    catalogue_tools = CatalogueTools(
+        get_quack_runtime(request),
+        catalogue_control,
     )
-
-
-@router.post("/compile", response_model=SearchCompileResponse)
-def compile_search_request(payload: SearchCompileRequest) -> SearchCompileResponse:
-    sql = compile_search(payload.result_type, payload.query, payload.limit)
-    return SearchCompileResponse(
-        result_type=payload.result_type,
-        sql=sql,
-        investigation_sql=sql,
+    acquisition_tools = AcquisitionTools(
+        catalogue_control,
+        brave_api_key=get_optional("BRAVE_SEARCH_API_KEY"),
     )
+    async for event in stream_atlas_search(
+        payload.question,
+        catalogue_tools,
+        acquisition_tools,
+    ):
+        yield ServerSentEvent(data=event, event=event.type)

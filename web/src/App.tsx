@@ -137,7 +137,7 @@ export function App() {
     )
   }, [activeItem.href])
 
-  const isFullScreenWorkbench = activeItem.href === "/catalogue/workbench"
+  const isFullScreenWorkbench = pathname === "/catalogue/workbench"
 
   const handleNavigate = useCallback((href: string) => {
     const targetPathname = new URL(href, window.location.origin).pathname
@@ -275,7 +275,7 @@ export function App() {
           className={
             isFullScreenWorkbench
               ? "app-surface relative min-h-0 min-w-0 flex-1 overflow-hidden"
-              : "app-surface relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain p-4 lg:p-6"
+              : "app-surface relative min-h-0 min-w-0 flex-1 [scrollbar-gutter:stable] overflow-auto overscroll-contain p-4 lg:p-6"
           }
         >
           {!isFullScreenWorkbench && (
@@ -285,7 +285,7 @@ export function App() {
             className={
               isFullScreenWorkbench
                 ? "relative z-10 flex h-full min-h-0 min-w-0"
-                : "relative z-10 flex min-h-full min-w-0"
+                : "relative z-10 flex min-h-full min-w-0 pb-10"
             }
           >
             <Suspense fallback={<PageFallback />}>{page}</Suspense>

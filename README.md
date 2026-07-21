@@ -56,6 +56,11 @@ Atlas API compute. The API owns a bounded pool of reusable Quack client connecti
 read-only workbench queries and Arrow IPC result streaming. The browser never receives Quack,
 Postgres, DuckLake, or object-store credentials.
 
+The home page runs a server-owned PydanticAI catalogue agent when `OPENAI_API_KEY` is configured.
+It streams progress, bounded query rows, executed SQL, and a short evidence-based summary over SSE.
+`ATLAS_SEARCH_MODEL` selects the PydanticAI model identifier; catalogue tools retain the same
+read-only validator, permits, timeouts, and result limits as the SQL workbench.
+
 Use the CLI for configuration and repository administration:
 
 ```sh

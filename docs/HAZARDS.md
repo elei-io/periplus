@@ -69,6 +69,11 @@ serialized DuckDB connection for mandatory catalogue definition work. Interactiv
 the separate bounded Quack client pool; they must never execute analytical reads locally or share
 the definition connection.
 
+**Giving agents a second catalogue path.** Agent tools must use the same validated interactive
+Quack boundary as the workbench. Do not let a model connect directly to DuckLake, execute SQL on the
+API control connection, call an internal HTTP route, or move the tool loop into the browser. Keep
+typed capabilities transport-neutral and adapt them to PydanticAI, CLI, or MCP at the edge.
+
 **Exposing Quack or storage configuration to the browser.** Cloudflare Access protects Atlas Web/API,
 not Quack. The browser submits SQL to Atlas API and consumes Arrow IPC. Keep the Quack URI and token,
 Postgres DSN, object-store credentials, and DuckLake attachment SQL server-side. Quack must remain

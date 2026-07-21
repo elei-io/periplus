@@ -192,8 +192,9 @@ No upstream work is currently in progress.
   content-addressed document. A direct greenfield schema cutover can replace it with
   `ColumnDef(ListType("VARCHAR"), nullable=False)` and delete the JSON encode/decode path.
 
-The CDC releases are fully adopted: Atlas uses `ducklake-cdc-client` 0.7.0 and installs
-`ducklake_cdc` 0.6.0 from the DuckDB community repository for DuckDB 1.5.4. Atlas validates
+The CDC releases are fully adopted: Atlas uses `ducklake-cdc-client` 0.7.0 and temporarily pins
+the checksummed `ducklake_cdc` 0.6.1 release artifact for DuckDB 1.5.4 while
+[community PR #2280](https://github.com/duckdb/community-extensions/pull/2280) lands. Atlas validates
 `cdc_version()` at startup. The catalogue relay owns exactly one catalogue-wide DML tick cursor
 and one catalogue-wide DDL cursor; table-specific fan-out happens in NATS. Other high-level
 consumers derive and own dedicated DuckDB connections, and supervisors reopen a fresh consumer

@@ -58,6 +58,28 @@ class MaintenanceWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(wake.is_set())
         message.ack.assert_awaited_once_with()
 
+    async def test_idle_catalogue_tick_subscription_remains_healthy(self) -> None:
+        stop = asyncio.Event()
+        wake = asyncio.Event()
+        monitor = MagicMock()
+
+        class Subscription:
+            calls = 0
+
+            async def fetch(self, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise asyncio.TimeoutError
+                stop.set()
+                return []
+
+        subscription = Subscription()
+        await _watch_compaction_ticks(stop, wake, subscription, monitor)
+
+        self.assertEqual(subscription.calls, 2)
+        self.assertFalse(wake.is_set())
+        monitor.subsystem_unavailable.assert_not_called()
+
     async def test_operation_runs_behind_resource_and_operation_admission(self) -> None:
         monitor = HealthMonitor()
         monitor.dependencies_ready()

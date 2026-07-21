@@ -50,6 +50,18 @@ export function CatalogueMaterializationDetail({
             </div>
             <div className="flex items-center justify-between gap-3 py-3">
               <div>
+                <div className="text-sm">Refresh strategy</div>
+                <div className="text-xs text-muted-foreground">
+                  {materialization.refresh_strategy === "keyed"
+                    ? `Replace by (${materialization.key_columns.join(", ")})`
+                    : materialization.refresh_strategy === "append"
+                      ? `Append by (${materialization.key_columns.join(", ")})`
+                      : "Full rebuild"}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-3 py-3">
+              <div>
                 <div className="text-sm">Refresh consumption</div>
                 <div className="text-xs text-muted-foreground">
                   Pausing leaves the durable NATS cursor in place
@@ -74,7 +86,7 @@ export function CatalogueMaterializationDetail({
               <div>
                 <div className="text-sm">Coalescing delay</div>
                 <div className="text-xs text-muted-foreground">
-                  More delay combines more ticks into one whole-table refresh
+                  More delay combines more ticks into one refresh transaction
                 </div>
               </div>
               <div className="flex items-center gap-2">

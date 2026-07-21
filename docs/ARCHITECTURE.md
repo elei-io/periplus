@@ -55,7 +55,8 @@ exposing a fragment-free crawl destination. Link text and presentation attribute
 the navigation contract. It uses a standalone memory-limited DuckDB connection.
 The seeded `views.page_links` definition reproduces those meanings from durable crawl and DOM
 evidence and is declared under `fixtures/materialized_views/crawl/`. Its full
-refreshes are ordinary materialization-worker work driven by crawl-table ticks;
+bootstrap and keyed `crawl_id` refreshes are ordinary materialization-worker
+work driven by crawl-table ticks;
 ingestion has no link-specific projection. Edges may also
 join read-only catalogue tables; those reads use the DuckLake snapshot pinned before the graph run
 starts, so retries cannot observe ingestion arriving midway through the run. Graph traversal never
@@ -75,7 +76,9 @@ Ingestion is `critical`. The catalogue relay is the only owner of DuckLake CDC
 consumers: one catalogue-wide DML tick cursor and one catalogue-wide DDL
 cursor publish physical events to JetStream. Each materialization owns a filtered
 durable NATS consumer, coalesces ticks, and transactionally refreshes its stable
-whole table. Maintenance runs off-path with an exclusive background catalogue
+table using its declared keyed, append-only, or full strategy. Keyed refreshes
+derive composite keys from a stateless bounded CDC range query; they do not open
+another persistent CDC consumer. Maintenance runs off-path with an exclusive background catalogue
 permit and consumes the relay's wildcard DML subject only as a coalesced
 wake-up hint. Each ingestion or materialization process owns one embedded
 DuckDB connection and initially executes one catalogue operation at a time; the
@@ -90,6 +93,13 @@ SQL, secret, and non-Atlas catalogue access, acquires a deployment-wide `quack:q
 streams bounded Arrow IPC results. Query status and cancellation requests use the expiring
 `atlas_catalogue_queries` NATS KV bucket, so another API replica can observe or cancel an execution.
 Timeout, row, encoded-byte, local-pool, and global-concurrency limits are mandatory.
+
+The catalogue search agent is an API-owned adapter over that same interactive query boundary. Its
+PydanticAI loop and typed catalogue tools live under `backend/agents/`; neither the model nor the
+browser receives a Quack connection or storage credentials. A POST request remains attached while
+Atlas emits its own stable SSE progress events, executed SQL, bounded rows, and final summary. The
+tool implementations are independent of HTTP and agent transport so a CLI or future MCP server can
+reuse them without duplicating catalogue access or validation.
 
 Each API process owns exactly one lightweight embedded DuckDB catalogue-control connection, pinned
 to one thread and one operation at a time. It performs only mandatory definition work such as

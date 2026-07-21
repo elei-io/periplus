@@ -26,6 +26,8 @@ export type CreateCatalogueMaterializationInput = {
   display_name?: string
   description?: string
   source_table: string
+  refresh_strategy: "keyed" | "append" | "full"
+  key_columns: string[]
   refresh_delay_seconds?: number
   partition_column?: string
 }
