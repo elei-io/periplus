@@ -34,7 +34,6 @@ GRAPH_CONSUMER_MAX_ACK_PENDING = 1024
 INGESTION_CONSUMER_MAX_ACK_PENDING = 1024
 GRAPH_ACK_WAIT_SECONDS = 60.0
 INGESTION_ACK_WAIT_SECONDS = 60.0
-MATERIALIZATION_ACK_WAIT_SECONDS = 60.0
 
 # Resource-governor mechanics are protocol constants.  Operators size only the
 # shared maximum pressure accepted by their state/storage platform.
@@ -94,6 +93,15 @@ def duckdb_memory_limit() -> str:
     memory_bytes = _cgroup_memory_limit() or 8 * 1024**3
     derived = memory_bytes // 20
     bounded = min(2 * 1024**3, max(512 * 1024**2, derived))
+    return f"{bounded // (1024**2)}MB"
+
+
+def materialization_duckdb_memory_limit() -> str:
+    """Allow whole-table builds enough memory without widening every worker."""
+
+    memory_bytes = _cgroup_memory_limit() or 8 * 1024**3
+    derived = memory_bytes // 8
+    bounded = min(4 * 1024**3, max(1024 * 1024**2, derived))
     return f"{bounded // (1024**2)}MB"
 
 

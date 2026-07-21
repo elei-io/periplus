@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -14,7 +14,7 @@ from control.catalogue_materializations.schemas import CatalogueMaterializationS
 from control.catalogue_materializations.service import (
     summary as materialization_summary,
 )
-from repository.catalogue.query import classify_select
+from repository.catalogue.query import classify_select, compile_catalogue_definition
 from repository.catalogue.views import (
     CatalogueViewConflictError,
     CatalogueViewStore,
@@ -58,15 +58,7 @@ def list_records(
     views = store.list()
     present = {view.view_uuid for view in views}
     summaries = {
-        reference_id: materialization_summary(
-            materialization,
-            definition_is_current=(
-                materialization.source_state == "current"
-                and reference.ducklake_view_uuid
-                == materialization.bound_ducklake_view_uuid
-                and reference.ducklake_view_uuid in present
-            ),
-        )
+        reference_id: materialization_summary(materialization)
         for reference_id, materialization in by_reference.items()
         if (reference := references_by_id.get(reference_id)) is not None
     }
@@ -112,15 +104,7 @@ def get_record(
     view = store.get(reference.ducklake_view_uuid)
     materialization = _attached_materialization(session, reference.id)
     summary = (
-        materialization_summary(
-            materialization,
-            definition_is_current=(
-                materialization.source_state == "current"
-                and view is not None
-                and reference.ducklake_view_uuid
-                == materialization.bound_ducklake_view_uuid
-            ),
-        )
+        materialization_summary(materialization)
         if materialization is not None
         else None
     )
@@ -205,21 +189,24 @@ def update_reference(
             "The view reference changed; refresh before editing."
         )
     classify_select(sql)
-    locked_reference.slug = slug
-    locked_reference.description = description
     if materialization is not None:
-        materialization.live_enabled = False
-        materialization.backfill_enabled = False
-        materialization.source_sql = sql.strip()
-        materialization.source_state = "source_changed"
-        materialization.definition_revision_id = uuid4()
+        if compile_catalogue_definition(sql) != compile_catalogue_definition(
+            materialization.source_sql
+        ):
+            raise CatalogueViewConflictError(
+                "Dematerialize this view before changing its definition."
+            )
+        locked_reference.slug = slug
+        locked_reference.description = description
         _flush_reference(session)
-        view = store.get(expected_uuid)
+        view = store.get(locked_reference.ducklake_view_uuid)
         if view is None:
             raise CatalogueViewConflictError("The materialized view is missing.")
         return _record_with_materialization(
             session, store, view, locked_reference, materialization
         )
+    locked_reference.slug = slug
+    locked_reference.description = description
     view = store.replace(current_uuid=expected_uuid, sql=sql)
     _update_reference_identity(locked_reference, view)
     _flush_reference(session)
@@ -242,13 +229,7 @@ def _record_with_materialization(
     materialization: CatalogueMaterialization | None,
 ) -> CatalogueViewRecord:
     summary = (
-        materialization_summary(
-            materialization,
-            definition_is_current=(
-                materialization.source_state == "current"
-                and view.view_uuid == materialization.bound_ducklake_view_uuid
-            ),
-        )
+        materialization_summary(materialization)
         if materialization is not None
         else None
     )

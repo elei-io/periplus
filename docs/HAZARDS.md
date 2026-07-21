@@ -82,8 +82,26 @@ queries must pass Atlas's stricter public-catalogue validator before reaching Qu
 navigation package. Catalogue-reading edges use the snapshot pinned before the run; never silently
 switch them to the latest snapshot on retry.
 
-**Publishing unbounded materialization work.** Discovery emits deterministic bounded scopes. One worker
-commits one authoritative scope; do not add a fan-out ledger or settlement queue.
+**Treating CDC locks as control-plane messaging.** DuckLake CDC cursors describe
+durable data ordering; they do not distribute editable Postgres state. Publish
+table ticks and DDL changes through the catalogue relay, retain downstream NATS
+cursors, and make lifecycle intent explicit in Postgres.
+
+**Opening DuckLake CDC consumers in downstream workers.** The catalogue relay
+is the sole DuckLake CDC owner. Materializations, maintenance, publications,
+and future sinks consume its JetStream subjects so one downstream failure
+cannot retain or advance the shared source cursor.
+
+**Using one acknowledgement rule for unlike inputs.** Commands are retained
+until their requested durable effect and terminal state exist. Materialization
+ticks are retained until the derived target commits. Maintenance ticks are
+wake-up hints and are acknowledged after the wake is recorded, with the
+periodic metadata sweep as recovery. Do not hide these meanings behind a
+generic completion callback.
+
+**Crossing a driving-table schema boundary in place.** A materialization
+incarnation is pinned to a table UUID and schema. Block it on incompatible DDL;
+dematerialize, edit, and create a new incarnation.
 
 **Creating permanent per-crawl Parquet files.** DuckLake owns analytical layout and compaction.
 

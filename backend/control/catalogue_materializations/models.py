@@ -5,9 +5,9 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
-    Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -25,23 +25,22 @@ def utc_now() -> datetime:
 
 
 class CatalogueMaterialization(Base):
+    """One immutable materialization incarnation and its desired lifecycle."""
+
     __tablename__ = "catalogue_materializations"
     __table_args__ = (
         CheckConstraint(
-            "scope_kind IN ('url', 'document', 'crawl')",
-            name="ck_catalogue_materializations_scope",
+            "desired_state IN ('live', 'paused', 'deleting')",
+            name="ck_catalogue_materializations_desired_state",
         ),
         CheckConstraint(
-            "scope_column <> ''",
-            name="ck_catalogue_materializations_scope_column",
+            "observed_state IN "
+            "('creating', 'live', 'paused', 'deleting', 'blocked_schema', 'failed')",
+            name="ck_catalogue_materializations_observed_state",
         ),
         CheckConstraint(
-            "backfill_scopes_per_minute > 0",
-            name="ck_catalogue_materializations_positive_backfill_rate",
-        ),
-        CheckConstraint(
-            "source_state IN ('current', 'source_changed')",
-            name="ck_catalogue_materializations_source_state",
+            "refresh_delay_seconds >= 0",
+            name="ck_catalogue_materializations_refresh_delay",
         ),
         Index("ix_catalogue_materializations_archived_at", "archived_at"),
         Index(
@@ -54,36 +53,44 @@ class CatalogueMaterialization(Base):
             "uq_catalogue_materializations_active_view",
             "view_reference_id",
             unique=True,
-            postgresql_where=text(
-                "view_reference_id IS NOT NULL AND archived_at IS NULL"
-            ),
+            postgresql_where=text("archived_at IS NULL"),
         ),
     )
 
+    # The row id is the incarnation id. Dematerialize/rematerialize creates a new id.
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(Text)
     display_name: Mapped[str] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_sql: Mapped[str] = mapped_column(Text)
     view_reference_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("catalogue_view_references.id"),
+        PG_UUID(as_uuid=True), ForeignKey("catalogue_view_references.id")
     )
-    bound_ducklake_view_uuid: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
-    source_state: Mapped[str] = mapped_column(Text, default="current")
-    definition_revision_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), default=uuid4)
-    scope_kind: Mapped[str] = mapped_column(Text)
-    scope_column: Mapped[str] = mapped_column(Text)
-    activation_snapshot: Mapped[int] = mapped_column(BigInteger)
-    live_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    backfill_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    backfill_scopes_per_minute: Mapped[int] = mapped_column(Integer, default=60)
+    source_view_uuid: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
+    source_table: Mapped[str] = mapped_column(Text)
+    source_table_id: Mapped[int] = mapped_column(BigInteger)
+    source_table_uuid: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
+    control_snapshot: Mapped[int] = mapped_column(BigInteger)
+    source_schema_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    desired_state: Mapped[str] = mapped_column(Text, default="live")
+    observed_state: Mapped[str] = mapped_column(Text, default="creating")
+    nats_consumer_name: Mapped[str] = mapped_column(Text, unique=True)
+    refresh_delay_seconds: Mapped[float] = mapped_column(Float, default=1.0)
     partition_column: Mapped[str | None] = mapped_column(Text, nullable=True)
-    ducklake_table_uuid: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
-    last_refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    dematerialization_requested_at: Mapped[datetime | None] = mapped_column(
+    target_table_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ducklake_table_uuid: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True
+    )
+    bootstrap_snapshot: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    processed_snapshot: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )

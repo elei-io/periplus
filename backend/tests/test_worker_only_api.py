@@ -38,10 +38,10 @@ class WorkerOnlyApiTests(unittest.TestCase):
         self.assertIn("get", paths["/catalogue/materializations/{materialization_id}"])
         self.assertIn(
             "patch",
-            paths["/catalogue/materializations/{materialization_id}/maintenance"],
+            paths["/catalogue/materializations/{materialization_id}"],
         )
-        self.assertIn(
-            "post", paths["/catalogue/materializations/{materialization_id}/rebuild"]
+        self.assertNotIn(
+            "/catalogue/materializations/{materialization_id}/rebuild", paths
         )
         self.assertIn(
             "delete", paths["/catalogue/materializations/{materialization_id}"]

@@ -1,12 +1,13 @@
 # Worker architecture
 
-Atlas deploys four worker roles:
+Atlas deploys five worker roles:
 
 | Worker | Input | Output | Scaling dimension |
 |---|---|---|---|
 | Acquisition | graph crawl/readiness/edge work | Immutable HTML, ingestion job, and graph readiness | CDP and traversal coordination |
 | Ingestion | repository ingestion queue | Crawl/DOM catalogue evidence | Critical catalogue capacity |
-| Materialization | live/backfill scope queues | Authoritative materialized scopes | Live/backfill catalogue capacity |
+| Catalogue relay | DuckLake DML/DDL CDC | Durable per-table DML subjects and global DDL subject | Exactly two DuckDB connections |
+| Materialization | Filtered catalogue DML subjects | Stable whole materialization tables | Live catalogue capacity |
 | Maintenance | maintenance triggers | Compaction and cleanup | Exclusive maintenance capacity |
 
 ## Acquisition worker
@@ -53,19 +54,33 @@ work. One process owns one embedded DuckDB connection and runs one catalogue ope
 
 ## Materialization and maintenance
 
-Materialization discovery directly publishes deterministic bounded scopes. One worker evaluates and
-commits one scope through authoritative coverage. Crawl-triggered scope jobs retain the immutable
-document identity already present in the crawl change so source SQL can bind crawl and document
-predicates directly to physical scans. The shared DOM evidence table uses 256 document-hash buckets
-so one scope prunes to a narrow physical partition without creating per-document files.
-Maintenance is off-path and requires an exclusive background
+The catalogue relay owns one catalogue-wide tick-mode DML consumer and one
+catalogue-wide DDL consumer. Their two embedded DuckDB connections preserve
+independent lease identities and are closed concurrently during process
+shutdown. Table-specific fan-out exists only in JetStream; the relay publishes
+only after JetStream confirms each deterministic message.
+Materialization workers own filtered durable NATS consumers. They create the
+consumer before bootstrap, pause by stopping pulls, and coalesce ticks into
+whole-table transactional refreshes. The target table identity remains stable.
+Schema boundaries block the incarnation instead of being crossed implicitly.
+Maintenance consumes one durable wildcard NATS subscription over catalogue DML
+ticks; it never opens a DuckLake CDC consumer or discovers materialized tables
+through Postgres. It is off-path and requires an exclusive background
 catalogue and object-pressure permit. Once that bundle is waiting, new overlapping grants pause
 briefly so existing holders can drain and maintenance cannot starve behind continuous object-only
-work. Crawl-table CDC is a coalesced wake-up hint for compaction, never a maintenance work queue.
+work. A catalogue tick is a coalesced wake-up hint for compaction, never a maintenance work queue.
 The worker debounces bursts, derives eligibility from authoritative DuckLake file metadata, and
 rewrites at most one bounded table slice per exclusive permit. A periodic sweep remains the
 recovery path when CDC is idle or unavailable, and outstanding debt retries without waiting for
 the complete sweep interval.
+
+Acknowledgement follows the meaning of each input. Acquisition and ingestion
+ACK commands only after their durable effect and terminal operational state are
+recorded. A materialization ACKs coalesced ticks only after its target
+transaction commits. Maintenance records its local wake-up before ACKing ticks;
+the periodic metadata sweep recovers a process death after that acknowledgement.
+These contracts are intentionally distinct and are not hidden behind a generic
+worker-handler protocol.
 
 Permits control shared pressure, operation leases suppress duplicate execution, and PostgreSQL
 advisory locks fence commits. Nonblocking capacity probes are read-only on a miss. Granted permits
@@ -74,8 +89,12 @@ failed renewal CAS as loss. None of these mechanisms owns work delivery or workf
 
 ## Packaging and deployment
 
-All roles use the same backend image and the same `atlas-worker <role>` entrypoint. Acquisition,
-ingestion, materialization, and maintenance remain separate deployments so each retains independent
+All roles use the same backend image and the same `atlas-worker <role>` entrypoint. Relay,
+materialization, ingestion, and maintenance share the same process shell for
+signals, health, metrics, event-loop heartbeat, task supervision, and draining.
+Acquisition uses the same lifecycle primitives inside its specialized
+hostname-dispatch and navigation runtime. Acquisition,
+ingestion, catalogue relay, materialization, and maintenance remain separate deployments so each retains independent
 autoscaling, rollout, health, queue, and failure boundaries. Sharing packaging must not couple their
 replica counts or cause one workload's backlog to add capacity to another workload.
 

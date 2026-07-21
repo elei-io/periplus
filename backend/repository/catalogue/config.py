@@ -59,7 +59,7 @@ def catalogue_config_from_env() -> CatalogueConfig:
     storage_kind = get_str("ATLAS_REPOSITORY_STORAGE").lower()
     storage = _storage_from_env(root)
     override_data_path = _optional_bool("ATLAS_CATALOGUE_OVERRIDE_DATA_PATH")
-    duckdb_settings = {}
+    duckdb_settings = {"preserve_insertion_order": False}
     if isinstance(catalog, PostgresCatalog):
         duckdb_settings.update(
             {

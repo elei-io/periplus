@@ -9,12 +9,10 @@ from sqlalchemy.orm import Session
 from control.catalogue_views.models import CatalogueViewReference
 from repository.catalogue.materializations import (
     MaterializationConflictError,
-    MaterializationError,
     MaterializationStore,
-    scoped_select,
-    scoped_view_query,
 )
 from repository.catalogue.views import CatalogueViewStore
+from runtime.catalogue_events import materialization_durable
 
 from .models import CatalogueMaterialization
 from .schemas import CatalogueMaterializationRecord, CatalogueMaterializationSummary
@@ -36,15 +34,10 @@ def get_model(
     return model if model is not None and model.archived_at is None else None
 
 
-def summary(
-    model: CatalogueMaterialization,
-    *,
-    definition_is_current: bool,
-) -> CatalogueMaterializationSummary:
+def summary(model: CatalogueMaterialization) -> CatalogueMaterializationSummary:
     return CatalogueMaterializationSummary(
         id=model.id,
-        status=_status(model),
-        definition_is_current=definition_is_current,
+        status=model.observed_state,
     )
 
 
@@ -56,9 +49,8 @@ def put_for_view(
     name: str,
     display_name: str | None,
     description: str | None,
-    scope_kind: str,
-    scope_column: str,
-    backfill_scopes_per_minute: int,
+    source_table: str,
+    refresh_delay_seconds: float,
     partition_column: str | None,
 ) -> CatalogueMaterializationRecord:
     reference = session.scalar(
@@ -82,126 +74,54 @@ def put_for_view(
     source_view = CatalogueViewStore(store.catalogue).get(reference.ducklake_view_uuid)
     if source_view is None:
         raise LookupError("DuckLake view not found.")
-    if scope_kind not in {"url", "document", "crawl"}:
-        raise MaterializationError(
-            "Materialization requires URL, document, or crawl scope."
-        )
-    if scope_column not in source_view.columns:
-        raise MaterializationError(
-            f"Discriminator column {scope_column!r} is not an output of {source_view.qualified_name}."
-        )
-    activation_snapshot = store.catalogue.latest_snapshot()
-    if activation_snapshot is None:
-        raise MaterializationError("DuckLake has no activation snapshot.")
-    scope_id = _seed_scope(store, scope_kind)
-    sql = scoped_view_query(
-        store.catalogue,
-        source_view,
-        scope_kind=scope_kind,
-        scope_column=scope_column,
-    )
-    table = store.create_empty_scoped(
-        name=name,
-        sql=sql,
-        parameters={f"{scope_kind}_id": scope_id},
-    )
-    if partition_column:
-        table = store.set_daily_partition(name=name, column=partition_column)
-    table = store.set_scope_sort(
-        name=name,
-        scope_column=scope_column,
-        partition_column=partition_column,
-    )
-    wrapper = CatalogueViewStore(store.catalogue).replace(
-        current_uuid=source_view.view_uuid,
-        sql=_backing_view_sql(store, name),
-    )
-    reference.ducklake_view_uuid = wrapper.view_uuid
-    now = datetime.now(UTC)
+    source = store.table_identity(source_table)
+    control_snapshot = store.catalogue.latest_snapshot()
+    if control_snapshot is None:
+        raise MaterializationConflictError("DuckLake has no control snapshot.")
+    materialization_id = uuid4()
     model = CatalogueMaterialization(
+        id=materialization_id,
         name=name,
         display_name=(display_name or name).strip(),
         description=description,
         source_sql=source_view.sql,
         view_reference_id=reference.id,
-        bound_ducklake_view_uuid=wrapper.view_uuid,
-        definition_revision_id=uuid4(),
-        scope_kind=scope_kind,
-        scope_column=scope_column,
-        activation_snapshot=activation_snapshot,
-        live_enabled=True,
-        backfill_enabled=True,
-        backfill_scopes_per_minute=backfill_scopes_per_minute,
+        source_view_uuid=source_view.view_uuid,
+        source_table=source.table_name,
+        source_table_id=source.table_id,
+        source_table_uuid=source.table_uuid,
+        control_snapshot=control_snapshot,
+        desired_state="live",
+        observed_state="creating",
+        nats_consumer_name=materialization_durable(materialization_id),
+        refresh_delay_seconds=refresh_delay_seconds,
         partition_column=partition_column,
-        ducklake_table_uuid=table.table_uuid,
-        last_refreshed_at=now,
     )
     session.add(model)
     session.flush()
     return record(session, model)
 
 
-def rebuild(
-    session: Session,
-    store: MaterializationStore,
-    model: CatalogueMaterialization,
-    *,
-    expected_uuid: UUID,
-) -> CatalogueMaterializationRecord:
-    if model.dematerialization_requested_at is not None:
-        raise MaterializationConflictError("This materialization is being removed.")
-    reference = session.get(CatalogueViewReference, model.view_reference_id)
-    if reference is None:
-        raise LookupError("Materialized view source not found.")
-    current = store.inspect(model.name)
-    if current.table_uuid != expected_uuid:
-        raise MaterializationConflictError(
-            "The materialized table changed; refresh the page before retrying."
-        )
-    scope_id = _seed_scope(store, model.scope_kind)
-    sql = scoped_select(
-        model.source_sql,
-        scope_kind=model.scope_kind,
-        scope_column=model.scope_column,
-    )
-    store.validate_scoped_schema(
-        name=model.name,
-        sql=sql,
-        parameters={f"{model.scope_kind}_id": scope_id},
-    )
-    activation_snapshot = store.catalogue.latest_snapshot()
-    if activation_snapshot is None:
-        raise MaterializationError("DuckLake has no activation snapshot.")
-    model.bound_ducklake_view_uuid = reference.ducklake_view_uuid
-    model.source_state = "current"
-    model.definition_revision_id = uuid4()
-    model.activation_snapshot = activation_snapshot
-    model.live_enabled = True
-    model.backfill_enabled = True
-    session.flush()
-    return record(session, model)
-
-
-def update_maintenance(
+def update_state(
     session: Session,
     model: CatalogueMaterialization,
     *,
-    live_enabled: bool | None,
-    backfill_enabled: bool | None,
-    backfill_scopes_per_minute: int | None,
+    desired_state: str | None,
+    refresh_delay_seconds: float | None,
 ) -> CatalogueMaterializationRecord:
-    if model.dematerialization_requested_at is not None:
+    if model.desired_state == "deleting":
         raise MaterializationConflictError("This materialization is being removed.")
-    if model.source_state != "current":
-        raise MaterializationConflictError(
-            "Rebuild the materialization against its changed view before resuming updates."
-        )
-    if live_enabled is not None:
-        model.live_enabled = live_enabled
-    if backfill_enabled is not None:
-        model.backfill_enabled = backfill_enabled
-    if backfill_scopes_per_minute is not None:
-        model.backfill_scopes_per_minute = backfill_scopes_per_minute
+    if desired_state is not None:
+        if desired_state == "live" and model.observed_state in {
+            "blocked_schema",
+            "failed",
+        }:
+            raise MaterializationConflictError(
+                "This incarnation cannot resume. Dematerialize it and create a new one."
+            )
+        model.desired_state = desired_state
+    if refresh_delay_seconds is not None:
+        model.refresh_delay_seconds = refresh_delay_seconds
     session.flush()
     return record(session, model)
 
@@ -209,18 +129,9 @@ def update_maintenance(
 def request_dematerialization(
     session: Session,
     model: CatalogueMaterialization,
-    *,
-    expected_uuid: UUID,
 ) -> CatalogueMaterializationRecord:
-    if model.dematerialization_requested_at is not None:
-        return record(session, model)
-    if model.ducklake_table_uuid != expected_uuid:
-        raise MaterializationConflictError(
-            "The materialized table changed; refresh before removing it."
-        )
-    model.live_enabled = False
-    model.backfill_enabled = False
-    model.dematerialization_requested_at = datetime.now(UTC)
+    model.desired_state = "deleting"
+    model.observed_state = "deleting"
     session.flush()
     return record(session, model)
 
@@ -238,67 +149,40 @@ def record(
         view_reference_id=model.view_reference_id,
         view_uuid=(
             reference.ducklake_view_uuid
-            if reference
-            else model.bound_ducklake_view_uuid
+            if reference is not None
+            else model.source_view_uuid
         ),
         view_name=(
             f"{reference.schema_name}.{reference.view_name}"
-            if reference
+            if reference is not None
             else f"views.{model.name}"
         ),
-        scope_kind=model.scope_kind,
-        scope_column=model.scope_column,
-        activation_snapshot=model.activation_snapshot,
-        live_enabled=model.live_enabled,
-        backfill_enabled=model.backfill_enabled,
-        backfill_scopes_per_minute=model.backfill_scopes_per_minute,
+        source_table=model.source_table,
+        source_table_id=model.source_table_id,
+        source_table_uuid=model.source_table_uuid,
+        control_snapshot=model.control_snapshot,
+        desired_state=model.desired_state,
+        observed_state=model.observed_state,
+        nats_consumer_name=model.nats_consumer_name,
+        refresh_delay_seconds=model.refresh_delay_seconds,
         partition_column=model.partition_column,
-        definition_revision_id=model.definition_revision_id,
-        status=_status(model),
-        source_state=model.source_state,
-        dematerialization_requested_at=model.dematerialization_requested_at,
+        target_table_id=model.target_table_id,
         ducklake_table_uuid=model.ducklake_table_uuid,
+        bootstrap_snapshot=model.bootstrap_snapshot,
+        processed_snapshot=model.processed_snapshot,
         last_refreshed_at=model.last_refreshed_at,
+        last_error=model.last_error,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )
 
 
-def _status(model: CatalogueMaterialization) -> str:
-    if model.dematerialization_requested_at is not None:
-        return "dematerializing"
-    if model.source_state == "source_changed":
-        return "source_changed"
-    if model.backfill_enabled:
-        return "backfilling"
-    if model.live_enabled:
-        return "live"
-    return "paused"
-
-
-def _seed_scope(store: MaterializationStore, scope_kind: str) -> str:
-    source_table, identity_column = {
-        "url": ("urls", "url_id"),
-        "document": ("documents", "document_id"),
-        "crawl": ("crawls", "crawl_id"),
-    }[scope_kind]
-    table = _qualified(store, store.catalogue.config.schema, source_table)
-    row = store.catalogue.connection.execute(
-        f"SELECT {identity_column} FROM {table} LIMIT 1"
-    ).fetchone()
-    return str(row[0]) if row else str(uuid4())
-
-
-def _qualified(store: MaterializationStore, schema: str, table: str) -> str:
-    return ".".join(
-        '"' + value.replace('"', '""') + '"'
-        for value in (store.catalogue.config.alias, schema, table)
-    )
-
-
-def _backing_view_sql(store: MaterializationStore, name: str) -> str:
-    qualified = ".".join(
-        '"' + value.replace('"', '""') + '"'
-        for value in (store.catalogue.config.alias, "_atlas_materializations", name)
-    )
-    return f"SELECT * FROM {qualified}"
+def mark_failed(
+    session: Session, materialization_id: UUID, error: Exception
+) -> None:
+    model = get_model(session, materialization_id)
+    if model is None or model.desired_state == "deleting":
+        return
+    model.observed_state = "failed"
+    model.last_error = str(error)[:4000]
+    model.updated_at = datetime.now(UTC)

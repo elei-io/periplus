@@ -1,10 +1,10 @@
-.PHONY: sync check setup catalogue-check catalogue-benchmark catalogue-test-postgres repository-test-s3 resource-governor-smoke worker-independence-smoke worker-horizontal-smoke reliability-check docs-diagrams api acquisition-worker ingestion-worker materialization-worker maintenance-worker cli db-revision compose-up compose-down
+.PHONY: sync check setup catalogue-check catalogue-benchmark catalogue-test-postgres repository-test-s3 resource-governor-smoke worker-independence-smoke worker-horizontal-smoke reliability-check docs-diagrams api acquisition-worker ingestion-worker catalogue-relay-worker materialization-worker maintenance-worker cli db-revision compose-up compose-down
 
 sync:
 	cd backend && uv sync
 
 check:
-	cd backend && uv run python -m compileall actions api cli config control db dom materialization observability repository runtime workers
+	cd backend && uv run python -m compileall actions api catalogue_relay cli config control db dom materialization observability repository runtime workers
 	cd backend && uv run python -m unittest discover -s tests
 
 setup:
@@ -50,6 +50,9 @@ acquisition-worker:
 
 ingestion-worker:
 	cd backend && uv run atlas-worker ingestion
+
+catalogue-relay-worker:
+	cd backend && uv run atlas-worker catalogue-relay
 
 materialization-worker:
 	cd backend && uv run atlas-worker materialization

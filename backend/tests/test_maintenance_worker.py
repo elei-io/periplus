@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, MagicMock, call, patch
+from uuid import uuid4
 
 from repository.ingestion.health import HealthMonitor
+from runtime.catalogue_events import (
+    DML_ALL_SUBJECT,
+    MAINTENANCE_WAKE_DURABLE,
+    CatalogueDMLTick,
+    maintenance_wake_consumer_config,
+)
 from workers.maintenance import (
-    _compaction_sources,
-    _open_compaction_consumer,
     _run_operation,
     _wait_for_compaction_trigger,
+    _watch_compaction_ticks,
 )
 
 
@@ -21,55 +26,37 @@ async def granted(*_args, **_kwargs):
 
 
 class MaintenanceWorkerTests(unittest.IsolatedAsyncioTestCase):
-    def test_compaction_sources_include_base_and_materialized_tables(self) -> None:
-        definition = SimpleNamespace(
-            ducklake_table_uuid=SimpleNamespace(hex="1" * 32),
-            name="url_features",
-        )
-        catalogue = unittest.mock.MagicMock()
-        catalogue.config.schema = "main"
+    def test_compaction_uses_one_durable_catalogue_tick_subscription(self) -> None:
+        config = maintenance_wake_consumer_config()
 
-        with patch(
-            "workers.maintenance.active_definitions",
-            return_value=[definition],
-        ):
-            sources = _compaction_sources(catalogue)
+        self.assertEqual(config.durable_name, MAINTENANCE_WAKE_DURABLE)
+        self.assertEqual(config.filter_subject, DML_ALL_SUBJECT)
+        self.assertEqual(config.max_ack_pending, 1000)
 
-        self.assertEqual(
-            sources,
-            {
-                "atlas-compaction-wakeup": "main.crawls",
-                "atlas-compaction-urls": "main.urls",
-                f"atlas-compact-{'1' * 32}": (
-                    "_atlas_materializations.url_features"
-                ),
-            },
-        )
+    async def test_catalogue_ticks_are_acked_after_waking_maintenance(self) -> None:
+        stop = asyncio.Event()
+        wake = asyncio.Event()
+        message = MagicMock()
+        message.data = CatalogueDMLTick(
+            table_id=1,
+            table_uuid=uuid4(),
+            schema_name="main",
+            table_name="crawls",
+            snapshot_id=42,
+            snapshot_time=None,
+            schema_version=1,
+        ).model_dump_json().encode()
+        message.ack = AsyncMock()
 
-    def test_compaction_consumers_use_ticks_not_typed_changes(self) -> None:
-        catalogue = unittest.mock.MagicMock()
-        with patch("workers.maintenance.DMLConsumer") as consumer_type:
-            consumer = consumer_type.return_value
-            consumer.open.return_value = consumer
+        class Subscription:
+            async def fetch(self, **_kwargs):
+                stop.set()
+                return [message]
 
-            opened = _open_compaction_consumer(
-                catalogue,
-                name="atlas-compaction-urls",
-                table="main.urls",
-                start_at=42,
-            )
+        await _watch_compaction_ticks(stop, wake, Subscription())
 
-        self.assertIs(opened, consumer)
-        consumer_type.assert_called_once_with(
-            catalogue.lake,
-            "atlas-compaction-urls",
-            connection=catalogue.connection,
-            table="main.urls",
-            mode="ticks",
-            start_at=42,
-            on_exists="use",
-            lease_policy="error",
-        )
+        self.assertTrue(wake.is_set())
+        message.ack.assert_awaited_once_with()
 
     async def test_operation_runs_behind_resource_and_operation_admission(self) -> None:
         monitor = HealthMonitor()

@@ -33,6 +33,7 @@ from repository import (
 from repository.catalogue import Catalogue, CatalogueConfig, CrawlRecord
 from repository.catalogue.materializations import MaterializationStore
 from repository.catalogue.table_macros import CatalogueTableMacroStore
+from repository.catalogue.views import CatalogueViewConflictError
 from tests.catalogue_helpers import crawl_url_evidence
 from repository.catalogue.views import CatalogueViewStore
 
@@ -176,9 +177,30 @@ class CatalogueFixtureTests(unittest.TestCase):
                     )
                     self.assertIsNotNone(first_page_links)
                     assert first_page_links is not None
-                    first_revision_id = first_page_links.definition_revision_id
-                    first_activation_snapshot = first_page_links.activation_snapshot
+                    first_incarnation_id = first_page_links.id
+                    json_ld_nodes = session.scalar(
+                        select(CatalogueViewReference).where(
+                            CatalogueViewReference.fixture_path
+                            == "views/json_ld_nodes.sql"
+                        )
+                    )
+                    self.assertIsNotNone(json_ld_nodes)
+                    assert json_ld_nodes is not None
+                    missing_uuid = json_ld_nodes.ducklake_view_uuid
+                    CatalogueViewStore(catalogue).drop(
+                        current_uuid=missing_uuid
+                    )
                     seed_catalogue_fixtures(session, catalogue, fixtures)
+                    session.refresh(json_ld_nodes)
+                    self.assertNotEqual(
+                        json_ld_nodes.ducklake_view_uuid,
+                        missing_uuid,
+                    )
+                    self.assertIsNotNone(
+                        CatalogueViewStore(catalogue).get(
+                            json_ld_nodes.ducklake_view_uuid
+                        )
+                    )
                     self.assertEqual(
                         [
                             macro.macro_name
@@ -212,12 +234,7 @@ class CatalogueFixtureTests(unittest.TestCase):
                     )
                     self.assertIsNotNone(page_links)
                     assert page_links is not None
-                    self.assertEqual(
-                        page_links.definition_revision_id, first_revision_id
-                    )
-                    self.assertEqual(
-                        page_links.activation_snapshot, first_activation_snapshot
-                    )
+                    self.assertEqual(page_links.id, first_incarnation_id)
                     self.assertEqual(
                         len(
                             list(
@@ -230,21 +247,11 @@ class CatalogueFixtureTests(unittest.TestCase):
                         ),
                         3,
                     )
-                    self.assertEqual(page_links.scope_kind, "crawl")
-                    self.assertEqual(page_links.scope_column, "crawl_id")
+                    self.assertEqual(page_links.source_table, "crawls")
                     self.assertEqual(page_links.partition_column, "captured_at")
-                    self.assertEqual(
-                        MaterializationStore(catalogue)
-                        .inspect("page_links")
-                        .partitioning,
-                        (
-                            "year(captured_at)",
-                            "month(captured_at)",
-                            "day(captured_at)",
-                        ),
-                    )
-                    self.assertTrue(page_links.live_enabled)
-                    self.assertTrue(page_links.backfill_enabled)
+                    self.assertEqual(page_links.observed_state, "creating")
+                    self.assertIsNone(page_links.ducklake_table_uuid)
+                    self.assertEqual(page_links.desired_state, "live")
                     reference = session.get(
                         CatalogueViewReference, page_links.view_reference_id
                     )
@@ -494,31 +501,11 @@ class CatalogueFixtureTests(unittest.TestCase):
                         "SELECT crawl_id FROM crawls;",
                         encoding="utf-8",
                     )
-                    seed_catalogue_fixtures(session, catalogue, fixtures)
-
-                    replacement = session.scalar(
-                        select(CatalogueMaterialization).where(
-                            CatalogueMaterialization.name == "page_links",
-                            CatalogueMaterialization.archived_at.is_(None),
-                        )
-                    )
-                    self.assertIsNotNone(replacement)
-                    assert replacement is not None
-                    self.assertNotEqual(replacement.id, original_id)
-                    self.assertNotEqual(
-                        replacement.ducklake_table_uuid, original_table_uuid
-                    )
-                    self.assertIsNone(
-                        session.get(CatalogueMaterialization, original_id)
-                    )
+                    with self.assertRaises(CatalogueViewConflictError):
+                        seed_catalogue_fixtures(session, catalogue, fixtures)
+                    self.assertEqual(original.id, original_id)
                     self.assertEqual(
-                        [
-                            column[0]
-                            for column in MaterializationStore(catalogue)
-                            .inspect("page_links")
-                            .columns
-                        ],
-                        ["crawl_id"],
+                        original.ducklake_table_uuid, original_table_uuid
                     )
             finally:
                 session.close()
@@ -967,13 +954,15 @@ class CatalogueFixtureTests(unittest.TestCase):
                         )]
                     )
 
-                    self.assertEqual(
-                        catalogue.connection.execute(
-                            "SELECT * FROM atlas.views.page_links "
-                            "WHERE crawl_id = ?",
-                            [crawl.crawl_id],
-                        ).fetchall(),
-                        [],
+                    self.assertGreater(
+                        len(
+                            catalogue.connection.execute(
+                                "SELECT * FROM atlas.views.page_links "
+                                "WHERE crawl_id = ?",
+                                [crawl.crawl_id],
+                            ).fetchall()
+                        ),
+                        0,
                     )
                     materialization = session.scalar(
                         select(CatalogueMaterialization).where(

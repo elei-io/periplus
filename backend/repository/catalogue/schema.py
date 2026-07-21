@@ -10,7 +10,6 @@ CATALOGUE_SCHEMA_VERSION = "v0.1.0"
 INTERNAL_SCHEMA = "_atlas"
 CRAWL_STEPS_TABLE = "crawl_steps"
 CRAWL_ATTEMPTS_TABLE = "crawl_attempts"
-MATERIALIZATION_COVERAGE_TABLE = "materialization_coverage"
 
 URL_COLUMNS: dict[str, ColumnDef] = {
     "url_id": ColumnDef("VARCHAR", nullable=False),
@@ -111,22 +110,6 @@ CRAWL_STEP_COLUMNS: dict[str, ColumnDef] = {
     "after_scroll_height": ColumnDef("BIGINT", nullable=False),
 }
 
-MATERIALIZATION_COVERAGE_COLUMNS: dict[str, ColumnDef] = {
-    "materialization_id": ColumnDef("UUID", nullable=False),
-    "definition_revision_id": ColumnDef("UUID", nullable=False),
-    "scope_kind": ColumnDef("VARCHAR", nullable=False),
-    "scope_id": ColumnDef("VARCHAR", nullable=False),
-    "operation_id": ColumnDef("VARCHAR", nullable=False),
-    "row_count": ColumnDef("BIGINT", nullable=False),
-    "output_bytes": ColumnDef("BIGINT", nullable=False),
-    "status": ColumnDef("VARCHAR", nullable=False),
-    "error": ColumnDef("VARCHAR"),
-    "started_at": ColumnDef("TIMESTAMPTZ", nullable=False),
-    "completed_at": ColumnDef("TIMESTAMPTZ", nullable=False),
-    "partition_value": ColumnDef("DATE"),
-}
-
-
 def expected_columns() -> dict[str, dict[str, ColumnDef]]:
     return {
         "urls": URL_COLUMNS,
@@ -140,6 +123,4 @@ def expected_columns() -> dict[str, dict[str, ColumnDef]]:
 
 
 def expected_internal_columns() -> dict[str, dict[str, ColumnDef]]:
-    return {
-        MATERIALIZATION_COVERAGE_TABLE: MATERIALIZATION_COVERAGE_COLUMNS,
-    }
+    return {}

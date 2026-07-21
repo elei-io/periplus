@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { PauseIcon, PlayIcon, RefreshCwIcon, Trash2Icon } from "lucide-react"
+import { PauseIcon, PlayIcon, Trash2Icon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -14,8 +14,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
   useDematerialize,
-  useRebuildCatalogueMaterialization,
-  useUpdateCatalogueMaterializationMaintenance,
+  useUpdateCatalogueMaterialization,
 } from "@/hooks/use-catalogue-materializations"
 import type { CatalogueMaterializationRecord } from "@/types/catalogue"
 
@@ -24,136 +23,102 @@ export function CatalogueMaterializationDetail({
 }: {
   materialization: CatalogueMaterializationRecord
 }) {
-  const maintenance = useUpdateCatalogueMaterializationMaintenance()
-  const rebuild = useRebuildCatalogueMaterialization()
-  const [rate, setRate] = useState(materialization.backfill_scopes_per_minute)
+  const update = useUpdateCatalogueMaterialization()
+  const [delay, setDelay] = useState(materialization.refresh_delay_seconds)
   const [dematerializeOpen, setDematerializeOpen] = useState(false)
+  const paused = materialization.desired_state === "paused"
+  const terminal = ["deleting", "blocked_schema", "failed"].includes(
+    materialization.observed_state
+  )
 
   return (
     <>
       <div className="grid gap-6 p-5">
         <section>
-          <h3 className="mb-1 text-sm font-medium">Maintenance</h3>
+          <h3 className="mb-1 text-sm font-medium">CDC maintenance</h3>
           <div className="divide-y">
-            <div className="flex flex-wrap items-center justify-between gap-3 py-3">
+            <div className="flex items-center justify-between gap-3 py-3">
               <div>
-                <div className="text-sm">Incremental discriminator</div>
-                <div className="text-xs text-muted-foreground">
-                  {{
-                    url: "URL",
-                    document: "Document",
-                    crawl: "Crawl",
-                  }[materialization.scope_kind]}{" "}
-                  · <code>{materialization.scope_column}</code>
-                </div>
+                <div className="text-sm">Driving table</div>
+                <code className="text-xs text-muted-foreground">
+                  main.{materialization.source_table}
+                </code>
               </div>
+              <span className="text-xs text-muted-foreground">
+                {materialization.observed_state}
+              </span>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-3 py-3">
+            <div className="flex items-center justify-between gap-3 py-3">
               <div>
-                <div className="text-sm">New data</div>
+                <div className="text-sm">Refresh consumption</div>
                 <div className="text-xs text-muted-foreground">
-                  Process newly discovered scopes as they arrive
+                  Pausing leaves the durable NATS cursor in place
                 </div>
               </div>
               <Button
                 size="sm"
-                variant={materialization.live_enabled ? "outline" : "default"}
+                variant={paused ? "default" : "outline"}
                 onClick={() =>
-                  maintenance.mutate({
+                  update.mutate({
                     id: materialization.id,
-                    live_enabled: !materialization.live_enabled,
+                    desired_state: paused ? "live" : "paused",
                   })
                 }
-                disabled={
-                  maintenance.isPending ||
-                  materialization.status === "dematerializing"
-                }
+                disabled={update.isPending || terminal}
               >
-                {materialization.live_enabled ? <PauseIcon /> : <PlayIcon />}
-                {materialization.live_enabled ? "Pause" : "Resume"}
+                {paused ? <PlayIcon /> : <PauseIcon />}
+                {paused ? "Continue" : "Pause"}
               </Button>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-3 py-3">
+            <div className="flex items-center justify-between gap-3 py-3">
               <div>
-                <div className="text-sm">Existing data</div>
+                <div className="text-sm">Coalescing delay</div>
                 <div className="text-xs text-muted-foreground">
-                  {materialization.backfill_enabled
-                    ? "Backfill is enabled"
-                    : "Backfill is paused"}
+                  More delay combines more ticks into one whole-table refresh
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 <Input
-                  aria-label="Backfill units per minute"
                   className="h-8 w-24"
                   type="number"
-                  min={1}
-                  max={10_000}
-                  value={rate}
-                  onChange={(event) => setRate(Number(event.target.value) || 1)}
+                  min={0}
+                  max={3600}
+                  step={0.1}
+                  value={delay}
+                  onChange={(event) => setDelay(Number(event.target.value) || 0)}
                 />
-                <span className="text-xs text-muted-foreground">/ min</span>
+                <span className="text-xs text-muted-foreground">seconds</span>
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() =>
-                    maintenance.mutate({
-                      id: materialization.id,
-                      backfill_scopes_per_minute: rate,
-                    })
-                  }
                   disabled={
-                    maintenance.isPending ||
-                    rate === materialization.backfill_scopes_per_minute
+                    update.isPending ||
+                    delay === materialization.refresh_delay_seconds
+                  }
+                  onClick={() =>
+                    update.mutate({
+                      id: materialization.id,
+                      refresh_delay_seconds: delay,
+                    })
                   }
                 >
                   Save
                 </Button>
-                <Button
-                  size="sm"
-                  variant={
-                    materialization.backfill_enabled ? "outline" : "default"
-                  }
-                  onClick={() =>
-                    maintenance.mutate({
-                      id: materialization.id,
-                      backfill_enabled: !materialization.backfill_enabled,
-                    })
-                  }
-                  disabled={
-                    maintenance.isPending ||
-                    materialization.status === "dematerializing"
-                  }
-                >
-                  {materialization.backfill_enabled ? (
-                    <PauseIcon />
-                  ) : (
-                    <PlayIcon />
-                  )}
-                  {materialization.backfill_enabled ? "Pause" : "Resume"}
-                </Button>
               </div>
             </div>
           </div>
+          {materialization.last_error ? (
+            <p className="mt-3 rounded-md bg-destructive/10 p-3 text-xs text-destructive">
+              {materialization.last_error}
+            </p>
+          ) : null}
         </section>
-
-        <div className="flex flex-wrap justify-end gap-2 border-t pt-4">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => rebuild.mutate({ materialization })}
-            disabled={
-              rebuild.isPending || materialization.status === "dematerializing"
-            }
-          >
-            <RefreshCwIcon />
-            {rebuild.isPending ? "Starting…" : "Rebuild"}
-          </Button>
+        <div className="flex justify-end border-t pt-4">
           <Button
             size="sm"
             variant="destructive"
             onClick={() => setDematerializeOpen(true)}
-            disabled={materialization.status === "dematerializing"}
+            disabled={materialization.desired_state === "deleting"}
           >
             <Trash2Icon />
             Turn off materialization
@@ -194,8 +159,8 @@ function DematerializeDialog({
             Turn off materialization for {materialization.display_name}?
           </DialogTitle>
           <DialogDescription>
-            The view remains available, but reads will evaluate its SQL
-            directly. Atlas will stop maintenance and remove the stored results.
+            Atlas will delete its NATS consumer, drop the stored table, and
+            restore the original virtual view.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-1.5">

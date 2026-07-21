@@ -38,10 +38,7 @@ from repository.ingestion.queue import (
     ensure_ingestion_results,
     get_ingestion_state,
 )
-from materialization.queue import (
-    SCOPE_BACKFILL_DURABLE,
-    SCOPE_LIVE_DURABLE,
-)
+from runtime.catalogue_events import DML_SUBJECT_PREFIX, EVENT_STREAM
 from runtime.catalogue_queue import WORK_STREAM
 from runtime.graph_queue import (
     CrawlRequest,
@@ -258,11 +255,20 @@ async def capacity() -> CrawlConcurrencyLimits:
                 return 0
             return int(info.num_pending or 0) + int(info.num_ack_pending or 0)
 
+        try:
+            materialization_consumers = await jetstream.consumers_info(
+                EVENT_STREAM
+            )
+        except NotFoundError:
+            materialization_consumers = []
         catalogue_backlogs = {
             "ingestion": await consumer_backlog(INGESTION_DURABLE),
-            "materialization": (
-                await consumer_backlog(SCOPE_LIVE_DURABLE)
-                + await consumer_backlog(SCOPE_BACKFILL_DURABLE)
+            "materialization": sum(
+                int(info.num_pending or 0) + int(info.num_ack_pending or 0)
+                for info in materialization_consumers
+                if (info.config.filter_subject or "").startswith(
+                    f"{DML_SUBJECT_PREFIX}."
+                )
             ),
         }
     finally:

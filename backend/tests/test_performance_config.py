@@ -7,6 +7,7 @@ from config.performance import (
     GRAPH_CONSUMER_MAX_ACK_PENDING,
     duckdb_memory_limit,
     duckdb_threads,
+    materialization_duckdb_memory_limit,
 )
 from runtime.resource_governor import ResourceLimits
 
@@ -37,8 +38,10 @@ class PerformanceConfigTests(unittest.TestCase):
     def test_duckdb_memory_is_derived_with_safe_bounds(self) -> None:
         with patch("config.performance._cgroup_memory_limit", return_value=4 * 1024**3):
             self.assertEqual(duckdb_memory_limit(), "512MB")
+            self.assertEqual(materialization_duckdb_memory_limit(), "1024MB")
         with patch("config.performance._cgroup_memory_limit", return_value=128 * 1024**3):
             self.assertEqual(duckdb_memory_limit(), "2048MB")
+            self.assertEqual(materialization_duckdb_memory_limit(), "4096MB")
 
 
 if __name__ == "__main__":

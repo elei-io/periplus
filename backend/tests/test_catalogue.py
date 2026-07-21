@@ -115,6 +115,7 @@ class CatalogueConfigTests(unittest.TestCase):
         self.assertEqual(
             config.duckdb.config,
             {
+                "preserve_insertion_order": False,
                 "pg_pool_acquire_mode": "wait",
                 "pg_pool_max_connections": "4",
                 "pg_pool_idle_timeout_millis": "5000",
@@ -562,6 +563,7 @@ class CatalogueBootstrapTests(unittest.TestCase):
                 catalogue.bootstrap()
                 first_snapshot = catalogue.latest_snapshot()
                 catalogue.bootstrap()
+                second_snapshot = catalogue.latest_snapshot()
 
                 catalogue.connection.execute(
                     """
@@ -605,6 +607,7 @@ class CatalogueBootstrapTests(unittest.TestCase):
             self.assertEqual(internal_tables, set(expected_internal_columns()))
             self.assertEqual(href, "/docs")
             self.assertIsNotNone(first_snapshot)
+            self.assertEqual(second_snapshot, first_snapshot)
             self.assertTrue(all(column.summary is None for column in elements.columns))
             self.assertEqual(
                 next(

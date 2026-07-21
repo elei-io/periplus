@@ -6,16 +6,19 @@ import asyncio
 import logging
 from typing import Literal
 
-from ducklake_cdc_client import DMLConsumer
-
 from config import get_float
-from materialization.definitions import active_definitions
-
-from repository.catalogue import Catalogue, catalogue_from_env
-from repository.catalogue.cdc import validate_cdc_extension
+from nats.errors import TimeoutError as NatsTimeoutError
 from repository.ingestion.health import HealthMonitor
 from repository.maintenance import MaintenanceConfig, cleanup_staging, compact
 from runtime.catalogue_lane import run_catalogue_operation
+from runtime.catalogue_events import (
+    DML_ALL_SUBJECT,
+    EVENT_STREAM,
+    MAINTENANCE_WAKE_DURABLE,
+    CatalogueDMLTick,
+    ensure_catalogue_event_stream,
+    maintenance_wake_consumer_config,
+)
 from runtime.nats_client import connect_nats
 from runtime.operation_leases import (
     OperationLeaseLost,
@@ -32,13 +35,7 @@ from runtime.resource_governor import (
     ensure_resource_governor_storage,
     resource_permits,
 )
-from workers.lifecycle import (
-    WorkerEndpointConfig,
-    WorkerEndpoints,
-    cancel_task,
-    install_signal_handlers,
-    monitor_heartbeat,
-)
+from workers.lifecycle import cancel_task, run_worker_process
 
 
 MaintenanceKind = Literal["compact", "cleanup"]
@@ -175,182 +172,84 @@ async def _wait_for_compaction_trigger(
         wake.clear()
 
 
-def _close_cdc_consumer(
-    catalogue: Catalogue,
-    consumer: DMLConsumer,
-    *,
-    drop: bool = False,
-) -> None:
-    name = consumer.name
-    consumer.close(timeout=5.0, cancel=False, release=True)
-    if drop:
-        catalogue.connection.execute(
-            "SELECT * FROM cdc_consumer_drop(?, ?)",
-            [catalogue.config.alias, name],
-        )
-
-
-def _compaction_sources(catalogue: Catalogue) -> dict[str, str]:
-    sources = {
-        "atlas-compaction-wakeup": f"{catalogue.config.schema}.crawls",
-        "atlas-compaction-urls": f"{catalogue.config.schema}.urls",
-    }
-    for definition in active_definitions():
-        sources[f"atlas-compact-{definition.ducklake_table_uuid.hex}"] = (
-            f"_atlas_materializations.{definition.name}"
-        )
-    return sources
-
-
-def _open_compaction_consumer(
-    catalogue: Catalogue,
-    *,
-    name: str,
-    table: str,
-    start_at: int,
-    on_exists: str = "use",
-) -> DMLConsumer:
-    return DMLConsumer(
-        catalogue.lake,
-        name,
-        connection=catalogue.connection,
-        table=table,
-        mode="ticks",
-        start_at=start_at,
-        on_exists=on_exists,
-        lease_policy="error",
-    ).open()
-
-
-async def _watch_compaction_commits(
+async def _watch_compaction_ticks(
     stop: asyncio.Event,
     wake: asyncio.Event,
+    subscription,
+    monitor: HealthMonitor | None = None,
 ) -> None:
-    """Wake maintenance from base and materialized-table ticks without row reads."""
+    """Turn durable catalogue ticks into coalesced, recoverable wake-up hints."""
 
     while not stop.is_set():
-        catalogue = None
-        consumers: dict[str, tuple[str, DMLConsumer]] = {}
         try:
-            catalogue = await run_catalogue_operation(catalogue_from_env)
-            await run_catalogue_operation(validate_cdc_extension, catalogue)
-            reconcile_at = 0.0
-            while not stop.is_set():
-                now = asyncio.get_running_loop().time()
-                if now >= reconcile_at:
-                    sources = await asyncio.to_thread(_compaction_sources, catalogue)
-                    for name in set(consumers) - set(sources):
-                        _table, consumer = consumers.pop(name)
-                        await run_catalogue_operation(
-                            _close_cdc_consumer,
-                            catalogue,
-                            consumer,
-                            drop=True,
-                        )
-                    start_at = await run_catalogue_operation(
-                        catalogue.latest_snapshot
-                    )
-                    if start_at is not None:
-                        for name, table in sources.items():
-                            if name in consumers:
-                                continue
-                            consumer = await run_catalogue_operation(
-                                _open_compaction_consumer,
-                                catalogue,
-                                name=name,
-                                table=table,
-                                start_at=start_at,
-                            )
-                            consumers[name] = (table, consumer)
-                    reconcile_at = now + 5
-
-                saw_commit = False
-                for name, (table, consumer) in list(consumers.items()):
-                    batch = await run_catalogue_operation(
-                        consumer.read,
-                        max_snapshots=100,
-                    )
-                    if batch is None:
-                        window = await run_catalogue_operation(
-                            consumer.window,
-                            max_snapshots=100,
-                        )
-                        if (
-                            window.terminal
-                            and window.terminal_at_snapshot is not None
-                        ):
-                            await run_catalogue_operation(
-                                _close_cdc_consumer,
-                                catalogue,
-                                consumer,
-                                drop=True,
-                            )
-                            replacement = await run_catalogue_operation(
-                                _open_compaction_consumer,
-                                catalogue,
-                                name=name,
-                                table=table,
-                                start_at=window.terminal_at_snapshot,
-                                on_exists="error",
-                            )
-                            consumers[name] = (table, replacement)
-                        continue
-                    saw_commit = True
-                    wake.set()
-                    await run_catalogue_operation(batch.commit)
-                if not saw_commit:
-                    await _wait(stop, 1)
-        except Exception:
+            messages = await subscription.fetch(batch=100, timeout=1)
+        except NatsTimeoutError:
+            continue
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if monitor is not None:
+                monitor.subsystem_unavailable(
+                    "maintenance_catalogue_ticks",
+                    str(exc) or type(exc).__name__,
+                )
             if not stop.is_set():
                 logging.exception(
-                    "compaction CDC wake-up unavailable; periodic fallback remains active"
+                    "catalogue tick wake-up unavailable; periodic fallback remains active"
                 )
                 await _wait(stop, 5)
-        finally:
-            if catalogue is not None:
-                for _table, consumer in consumers.values():
-                    try:
-                        await run_catalogue_operation(
-                            _close_cdc_consumer,
-                            catalogue,
-                            consumer,
-                        )
-                    except Exception:
-                        logging.exception(
-                            "failed to release compaction CDC consumer %s",
-                            consumer.name,
-                        )
+            continue
+
+        valid_messages = []
+        for message in messages:
+            try:
+                CatalogueDMLTick.model_validate_json(message.data)
+            except Exception:
+                logging.exception("discarding invalid catalogue maintenance tick")
                 try:
-                    await run_catalogue_operation(catalogue.close)
+                    await message.term()
                 except Exception:
-                    logging.exception(
-                        "failed to close compaction CDC catalogue"
-                    )
+                    logging.exception("failed to terminate invalid catalogue tick")
+                continue
+            valid_messages.append(message)
+        if not valid_messages:
+            continue
+
+        # These are hints rather than work items. Record the local debt before
+        # acknowledging; the periodic metadata sweep recovers a process death
+        # immediately after acknowledgement.
+        wake.set()
+        for message in valid_messages:
+            await message.ack()
+        if monitor is not None:
+            monitor.subsystem_ready("maintenance_catalogue_ticks")
 
 
-async def run() -> None:
-    stop = asyncio.Event()
-    install_signal_handlers(stop)
+async def _run(stop: asyncio.Event, monitor: HealthMonitor) -> None:
     config = MaintenanceConfig.from_env()
     client = await connect_nats()
     jetstream = client.jetstream()
+    await ensure_catalogue_event_stream(jetstream)
     operation_lease_store = await ensure_operation_lease_storage(jetstream)
     resource_grants = await ensure_resource_governor_storage(jetstream)
-    monitor = HealthMonitor(
-        heartbeat_timeout_seconds=get_float(
-            "ATLAS_MAINTENANCE_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
-        )
+    tick_subscription = await jetstream.pull_subscribe(
+        DML_ALL_SUBJECT,
+        durable=MAINTENANCE_WAKE_DURABLE,
+        stream=EVENT_STREAM,
+        config=maintenance_wake_consumer_config(),
     )
     monitor.dependencies_ready()
     monitor.subsystem_ready("maintenance_admission")
-    endpoints = WorkerEndpoints(WorkerEndpointConfig.from_env("maintenance"))
-    endpoints.start_health(monitor)
-    endpoints.start_metrics()
-    heartbeat_task = asyncio.create_task(monitor_heartbeat(monitor, stop))
+    monitor.subsystem_ready("maintenance_catalogue_ticks")
     compaction_wake = asyncio.Event()
     compaction_wake.set()
-    cdc_task = asyncio.create_task(
-        _watch_compaction_commits(stop, compaction_wake)
+    tick_task = asyncio.create_task(
+        _watch_compaction_ticks(
+            stop,
+            compaction_wake,
+            tick_subscription,
+            monitor,
+        )
     )
     loop = asyncio.get_running_loop()
     next_periodic = loop.time() + config.interval_seconds
@@ -386,7 +285,20 @@ async def run() -> None:
                 compaction_wake.set()
     finally:
         stop.set()
-        await cancel_task(cdc_task)
-        await cancel_task(heartbeat_task)
-        await endpoints.close()
+        await cancel_task(tick_task)
         await client.drain()
+
+
+async def run() -> None:
+    stop = asyncio.Event()
+    monitor = HealthMonitor(
+        heartbeat_timeout_seconds=get_float(
+            "ATLAS_MAINTENANCE_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
+        )
+    )
+    await run_worker_process(
+        role="maintenance",
+        monitor=monitor,
+        tasks={"maintenance": _run(stop, monitor)},
+        stop=stop,
+    )

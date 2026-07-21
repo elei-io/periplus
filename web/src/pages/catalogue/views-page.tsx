@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { toast } from "sonner"
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
@@ -9,7 +10,6 @@ import {
   RefreshCwIcon,
   SparklesIcon,
   Trash2Icon,
-  TriangleAlertIcon,
   UnlinkIcon,
 } from "lucide-react"
 
@@ -281,15 +281,10 @@ function ViewDetail({ view }: { view: CatalogueViewRecord }) {
     description !== (view.description ?? "")
 
   const save = () => {
-    const definitionChanged = sql.trim() !== view.sql.trim()
-    if (
-      definitionChanged &&
-      materialization &&
-      !window.confirm(
-        "Change the source definition used by its materialization? Existing materialized rows will not change automatically; rebuild the materialization when you are ready."
-      )
-    )
+    if (sql.trim() !== view.sql.trim() && materialization) {
+      toast.error("Dematerialize this view before changing its SQL definition.")
       return
+    }
     update.mutate({ view, sql, slug, description })
   }
 
@@ -396,20 +391,6 @@ function ViewDetail({ view }: { view: CatalogueViewRecord }) {
 
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           <div className="grid gap-4">
-            {materialization && !materialization.definition_is_current && (
-              <div className="flex gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
-                <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" />
-                <div>
-                  <div className="font-medium">
-                    Materialized data uses an older definition
-                  </div>
-                  <p className="mt-1 text-foreground/70">
-                    The SQL below no longer matches the stored data. Rebuild the
-                    materialization when you are ready to replace it.
-                  </p>
-                </div>
-              </div>
-            )}
 
             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
               <div className="grid gap-1.5">
@@ -552,18 +533,13 @@ function MaterializationStatus({
 }: {
   status: NonNullable<CatalogueViewRecord["materialization"]>["status"]
 }) {
-  const label =
-    status === "backfilling"
-      ? "Backfilling"
-      : status === "source_changed"
-        ? "Source changed"
-        : status[0].toUpperCase() + status.slice(1)
+  const label = status.replace("_", " ")
   return (
     <Badge
       variant={
-        status === "dematerializing" || status === "source_changed"
+        status === "deleting" || status === "blocked_schema" || status === "failed"
           ? "destructive"
-          : status === "live" || status === "backfilling"
+          : status === "live" || status === "creating"
             ? "default"
             : "secondary"
       }
@@ -591,8 +567,8 @@ function MaterializationCell({
     <div>
       <MaterializationStatus status={materialization.status} />
       <div className="mt-1 text-[10px] text-muted-foreground">
-        {materialization.status === "backfilling"
-          ? "Historical maintenance enabled"
+        {materialization.status === "creating"
+          ? "Creating stored table"
           : materialization.status === "live"
             ? "Live maintenance enabled"
             : "Maintenance paused"}

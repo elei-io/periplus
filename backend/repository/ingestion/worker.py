@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import logging
 import os
@@ -17,7 +16,7 @@ from repository.catalogue import (
     DocumentRecord,
 )
 from observability import repository_metrics
-from config import get_float, get_str
+from config import get_float
 from repository.ingestion.health import HealthMonitor
 from repository.ingestion.pipeline import IngestionWorkerConfig
 from repository.ingestion.queue import (
@@ -63,18 +62,10 @@ from runtime.resource_governor import (
     object_units,
     resource_permits,
 )
-from workers.lifecycle import (
-    WorkerEndpointConfig,
-    WorkerEndpoints,
-    cancel_task,
-    monitor_heartbeat,
-)
+from workers.lifecycle import cancel_task
 
 
-async def run(
-    initialized: asyncio.Event | None = None, monitor: HealthMonitor | None = None
-) -> None:
-    stop = asyncio.Event()
+async def run(*, stop: asyncio.Event, monitor: HealthMonitor) -> None:
     config = IngestionWorkerConfig.defaults()
     catalogue_request(
         "ingestion-startup-validation",
@@ -101,21 +92,9 @@ async def run(
     health_ingestor = repository_ingestor_from_env()
     await asyncio.to_thread(health_ingestor.validate)
     next_queue_snapshot = 0.0
-    endpoints = WorkerEndpoints(WorkerEndpointConfig.from_env("ingestion"))
-    endpoints.start_metrics()
-    health_monitor = monitor or HealthMonitor(
-        heartbeat_timeout_seconds=float(
-            get_str("ATLAS_INGESTION_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS")
-        )
-    )
+    health_monitor = monitor
     health_monitor.dependencies_ready()
     health_monitor.subsystem_ready("ingestion")
-    endpoints.start_health(health_monitor)
-    if initialized is not None:
-        initialized.set()
-    health_heartbeat_task = asyncio.create_task(
-        monitor_heartbeat(health_monitor)
-    )
     dependency_probe_task = asyncio.create_task(
         _dependency_probe(
             client,
@@ -368,22 +347,11 @@ async def run(
         stop.set()
         await cancel_task(heartbeat_task)
         await cancel_task(fetched_heartbeat_task)
-        await cancel_task(health_heartbeat_task)
         await cancel_task(dependency_probe_task)
         await cancel_task(presence_task)
-        await endpoints.close()
         await asyncio.to_thread(health_ingestor.close)
         await asyncio.to_thread(ingestor.close)
         await client.drain()
-
-
-def main() -> None:
-    argparse.ArgumentParser(description="Run the Atlas ingestion loop.").parse_args()
-    logging.basicConfig(
-        level=get_str("ATLAS_LOG_LEVEL"),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-    asyncio.run(run())
 
 
 def _would_exceed_batch(prepared, value, *, config: IngestionWorkerConfig) -> bool:
@@ -875,5 +843,3 @@ async def _dependency_probe(
             else:
                 monitor.dependencies_ready()
         await asyncio.sleep(interval)
-if __name__ == "__main__":
-    main()

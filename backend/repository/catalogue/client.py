@@ -23,8 +23,6 @@ from repository.catalogue.schema import (
     CRAWL_STEPS_TABLE,
     DOCUMENT_COLUMNS,
     INTERNAL_SCHEMA,
-    MATERIALIZATION_COVERAGE_COLUMNS,
-    MATERIALIZATION_COVERAGE_TABLE,
     URL_COLUMNS,
     expected_columns,
     expected_internal_columns,
@@ -77,6 +75,12 @@ class Catalogue:
             self.lake.schema.create("macros")
             self.lake.schema.create(INTERNAL_SCHEMA)
             self.lake.schema.create("_atlas_materializations")
+            # Superseded scoped-materialization state is deliberately not
+            # migrated into the event-driven contract.
+            self.connection.execute(
+                f"DROP TABLE IF EXISTS "
+                f"{self._qualified_table(INTERNAL_SCHEMA, 'materialization_coverage')}"
+            )
             self.lake.table.create(
                 "urls",
                 schema_name=self.config.schema,
@@ -112,11 +116,6 @@ class Catalogue:
                 schema_name=self.config.schema,
                 **CRAWL_STEP_COLUMNS,
             )
-            self.lake.table.create(
-                MATERIALIZATION_COVERAGE_TABLE,
-                schema_name=INTERNAL_SCHEMA,
-                **MATERIALIZATION_COVERAGE_COLUMNS,
-            )
         self._use_catalogue_schema_if_available()
         self._configure_layout()
         self._configure_inlining()
@@ -148,16 +147,26 @@ class Catalogue:
             (CRAWL_ATTEMPTS_TABLE, "started_at"),
             (CRAWL_STEPS_TABLE, "started_at"),
         ):
+            expected = (
+                (0, column, "year"),
+                (1, column, "month"),
+                (2, column, "day"),
+            )
+            if self._partitioning(table_name) == expected:
+                continue
             table = self._qualified_table(self.config.schema, table_name)
             self.connection.execute(
                 f"ALTER TABLE {table} SET PARTITIONED BY ("
                 f"year({column}), month({column}), day({column}))"
             )
         elements = self._qualified_table(self.config.schema, "elements")
-        self.connection.execute(
-            f"ALTER TABLE {elements} SET PARTITIONED BY "
-            f"(bucket({ELEMENT_PARTITION_BUCKETS}, document_id))"
-        )
+        if self._partitioning("elements") != (
+            (0, "document_id", f"bucket({ELEMENT_PARTITION_BUCKETS})"),
+        ):
+            self.connection.execute(
+                f"ALTER TABLE {elements} SET PARTITIONED BY "
+                f"(bucket({ELEMENT_PARTITION_BUCKETS}, document_id))"
+            )
         sort_orders = {
             "urls": ("url_id",),
             "artifacts": ("artifact_id",),
@@ -168,18 +177,63 @@ class Catalogue:
             "elements": ("document_id", "element_index"),
         }
         for table_name, columns in sort_orders.items():
+            if self._sort_order(table_name) == columns:
+                continue
             table = self._qualified_table(self.config.schema, table_name)
             expressions = ", ".join(_quote_identifier(value) for value in columns)
             self.connection.execute(
                 f"ALTER TABLE {table} SET SORTED BY ({expressions})"
             )
-        coverage = self._qualified_table(
-            INTERNAL_SCHEMA, MATERIALIZATION_COVERAGE_TABLE
-        )
-        self.connection.execute(
-            f"ALTER TABLE {coverage} SET SORTED BY "
-            "(definition_revision_id, scope_kind, scope_id, partition_value)"
-        )
+
+    def _partitioning(
+        self, table_name: str, schema_name: str | None = None
+    ) -> tuple[tuple[int, str, str], ...]:
+        metadata = _quote_identifier(f"__ducklake_metadata_{self.config.alias}")
+        rows = self.connection.execute(
+            f"""
+            SELECT pc.partition_key_index, c.column_name, pc.transform
+            FROM {metadata}.ducklake_partition_info AS pi
+            JOIN {metadata}.ducklake_partition_column AS pc
+              ON pc.partition_id = pi.partition_id
+             AND pc.table_id = pi.table_id
+            JOIN {metadata}.ducklake_table AS t ON t.table_id = pi.table_id
+            JOIN {metadata}.ducklake_schema AS s ON s.schema_id = t.schema_id
+            JOIN {metadata}.ducklake_column AS c
+              ON c.table_id = t.table_id
+             AND c.column_id = pc.column_id
+             AND c.end_snapshot IS NULL
+            WHERE s.schema_name = ?
+              AND t.table_name = ?
+              AND pi.end_snapshot IS NULL
+              AND t.end_snapshot IS NULL
+              AND s.end_snapshot IS NULL
+            ORDER BY pc.partition_key_index
+            """,
+            [schema_name or self.config.schema, table_name],
+        ).fetchall()
+        return tuple((int(row[0]), str(row[1]), str(row[2])) for row in rows)
+
+    def _sort_order(
+        self, table_name: str, schema_name: str | None = None
+    ) -> tuple[str, ...]:
+        metadata = _quote_identifier(f"__ducklake_metadata_{self.config.alias}")
+        rows = self.connection.execute(
+            f"""
+            SELECT expression
+            FROM {metadata}.ducklake_sort_info AS si
+            JOIN {metadata}.ducklake_sort_expression AS se
+              ON se.sort_id = si.sort_id AND se.table_id = si.table_id
+            JOIN {metadata}.ducklake_table AS t ON t.table_id = si.table_id
+            JOIN {metadata}.ducklake_schema AS s ON s.schema_id = t.schema_id
+            WHERE s.schema_name = ? AND t.table_name = ?
+              AND si.end_snapshot IS NULL
+              AND t.end_snapshot IS NULL
+              AND s.end_snapshot IS NULL
+            ORDER BY se.sort_key_index
+            """,
+            [schema_name or self.config.schema, table_name],
+        ).fetchall()
+        return tuple(str(row[0]).strip('"') for row in rows)
 
     def _qualified_table(self, schema_name: str, table_name: str) -> str:
         return ".".join(
@@ -654,57 +708,33 @@ class Catalogue:
                 f"declared partition contract: {legacy_files!r}"
             )
 
-        def partitioning(table_name: str, schema_name: str = self.config.schema):
-            return self.connection.execute(
-                f"""
-            SELECT pc.partition_key_index, c.column_name, pc.transform
-            FROM {metadata}.ducklake_partition_info AS pi
-            JOIN {metadata}.ducklake_partition_column AS pc
-              ON pc.partition_id = pi.partition_id
-             AND pc.table_id = pi.table_id
-            JOIN {metadata}.ducklake_table AS t ON t.table_id = pi.table_id
-            JOIN {metadata}.ducklake_schema AS s ON s.schema_id = t.schema_id
-            JOIN {metadata}.ducklake_column AS c
-              ON c.table_id = t.table_id
-             AND c.column_id = pc.column_id
-             AND c.end_snapshot IS NULL
-            WHERE s.schema_name = ?
-              AND t.table_name = ?
-              AND pi.end_snapshot IS NULL
-              AND t.end_snapshot IS NULL
-              AND s.end_snapshot IS NULL
-            ORDER BY pc.partition_key_index
-            """,
-                [schema_name, table_name],
-            ).fetchall()
-
-        crawls = partitioning("crawls")
-        expected_crawls = [
+        crawls = self._partitioning("crawls")
+        expected_crawls = (
             (0, "captured_at", "year"),
             (1, "captured_at", "month"),
             (2, "captured_at", "day"),
-        ]
+        )
         if crawls != expected_crawls:
             raise CatalogueSchemaError(
                 f"catalogue table 'crawls' must be partitioned by "
                 f"year/month/day(captured_at), got {crawls!r}"
             )
         for table_name in (CRAWL_ATTEMPTS_TABLE, CRAWL_STEPS_TABLE):
-            actual = partitioning(table_name)
-            expected = [
+            actual = self._partitioning(table_name)
+            expected = (
                 (0, "started_at", "year"),
                 (1, "started_at", "month"),
                 (2, "started_at", "day"),
-            ]
+            )
             if actual != expected:
                 raise CatalogueSchemaError(
                     f"catalogue table {table_name!r} must be partitioned by "
                     f"year/month/day(started_at), got {actual!r}"
                 )
-        elements = partitioning("elements")
-        expected_elements = [
+        elements = self._partitioning("elements")
+        expected_elements = (
             (0, "document_id", f"bucket({ELEMENT_PARTITION_BUCKETS})")
-        ]
+        ,)
         if elements != expected_elements:
             raise CatalogueSchemaError(
                 "catalogue table 'elements' must be partitioned by "
@@ -721,61 +751,12 @@ class Catalogue:
             "elements": ("document_id", "element_index"),
         }
         for table_name, expected in expected_sorts.items():
-            actual = tuple(
-                str(row[0]).strip('"')
-                for row in self.connection.execute(
-                    f"""
-                    SELECT expression
-                    FROM {metadata}.ducklake_sort_info AS si
-                    JOIN {metadata}.ducklake_sort_expression AS se
-                      ON se.sort_id = si.sort_id AND se.table_id = si.table_id
-                    JOIN {metadata}.ducklake_table AS t ON t.table_id = si.table_id
-                    JOIN {metadata}.ducklake_schema AS s ON s.schema_id = t.schema_id
-                    WHERE s.schema_name = ? AND t.table_name = ?
-                      AND si.end_snapshot IS NULL
-                      AND t.end_snapshot IS NULL
-                      AND s.end_snapshot IS NULL
-                    ORDER BY se.sort_key_index
-                    """,
-                    [self.config.schema, table_name],
-                ).fetchall()
-            )
+            actual = self._sort_order(table_name)
             if actual != expected:
                 raise CatalogueSchemaError(
                     f"catalogue table {table_name!r} must be sorted by "
                     f"{expected!r}, got {actual!r}"
                 )
-        coverage_sort = tuple(
-            str(row[0]).strip('"')
-            for row in self.connection.execute(
-                f"""
-                SELECT expression
-                FROM {metadata}.ducklake_sort_info AS si
-                JOIN {metadata}.ducklake_sort_expression AS se
-                  ON se.sort_id = si.sort_id AND se.table_id = si.table_id
-                JOIN {metadata}.ducklake_table AS t ON t.table_id = si.table_id
-                JOIN {metadata}.ducklake_schema AS s ON s.schema_id = t.schema_id
-                WHERE s.schema_name = ? AND t.table_name = ?
-                  AND si.end_snapshot IS NULL
-                  AND t.end_snapshot IS NULL
-                  AND s.end_snapshot IS NULL
-                ORDER BY se.sort_key_index
-                """,
-                [INTERNAL_SCHEMA, MATERIALIZATION_COVERAGE_TABLE],
-            ).fetchall()
-        )
-        expected_coverage = (
-            "definition_revision_id",
-            "scope_kind",
-            "scope_id",
-            "partition_value",
-        )
-        if coverage_sort != expected_coverage:
-            raise CatalogueSchemaError(
-                "materialization coverage sort contract does not match: "
-                f"expected {expected_coverage!r}, got {coverage_sort!r}"
-            )
-
     def _validate_macros(self) -> None:
         rows = self.connection.execute(
             """

@@ -10,6 +10,7 @@ from workers.lifecycle import (
     WorkerEndpoints,
     cancel_task,
     monitor_heartbeat,
+    run_worker_process,
     supervise_until_stopped,
 )
 
@@ -50,6 +51,19 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(cancelled.is_set())
 
+    async def test_supervisor_rejects_an_unexpected_successful_exit(self) -> None:
+        async def completed() -> None:
+            return
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "worker task exited unexpectedly: completed",
+        ):
+            await supervise_until_stopped(
+                {"completed": completed()},
+                asyncio.Event(),
+            )
+
     async def test_heartbeat_stops_cooperatively(self) -> None:
         monitor = HealthMonitor(heartbeat_timeout_seconds=0.01)
         monitor.dependencies_ready()
@@ -72,6 +86,42 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         await cancel_task(task)
 
         self.assertTrue(task.cancelled())
+
+    async def test_worker_process_owns_endpoints_heartbeat_and_supervision(
+        self,
+    ) -> None:
+        stop = asyncio.Event()
+        monitor = HealthMonitor()
+        endpoints = MagicMock()
+        endpoints.close = unittest.mock.AsyncMock()
+
+        async def work() -> None:
+            monitor.dependencies_ready()
+            stop.set()
+
+        with (
+            patch(
+                "workers.lifecycle.WorkerEndpointConfig.from_env",
+                return_value=MagicMock(),
+            ) as config,
+            patch(
+                "workers.lifecycle.WorkerEndpoints",
+                return_value=endpoints,
+            ),
+            patch("workers.lifecycle.install_signal_handlers") as signals,
+        ):
+            await run_worker_process(
+                role="maintenance",
+                monitor=monitor,
+                tasks={"work": work()},
+                stop=stop,
+            )
+
+        config.assert_called_once_with("maintenance")
+        endpoints.start_health.assert_called_once_with(monitor)
+        endpoints.start_metrics.assert_called_once_with()
+        signals.assert_called_once_with(stop)
+        endpoints.close.assert_awaited_once_with()
 
     async def test_endpoints_own_and_close_both_servers(self) -> None:
         health_server = MagicMock()

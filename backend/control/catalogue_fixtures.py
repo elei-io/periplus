@@ -17,7 +17,6 @@ from control.catalogue_queries.service import create_query, detail, restore_quer
 from control.catalogue_materializations.models import CatalogueMaterialization
 from control.catalogue_materializations.service import (
     put_for_view as materialize_view,
-    rebuild as rebuild_materialization,
 )
 from control.catalogue_scalar_macros.models import CatalogueScalarMacroDefinition
 from control.catalogue_scalar_macros.service import (
@@ -36,10 +35,7 @@ from control.catalogue_views.service import (
     update_reference as update_view,
 )
 from repository.catalogue.client import Catalogue
-from repository.catalogue.materializations import (
-    MaterializationSchemaChangeError,
-    MaterializationStore,
-)
+from repository.catalogue.materializations import MaterializationStore
 from repository.catalogue.query import CatalogueQueryError, classify_select
 from repository.catalogue.scalar_macros import (
     SCALAR_MACRO_SCHEMA,
@@ -95,8 +91,8 @@ def seed_catalogue_fixtures(
             _parse_relation_fixture(fixtures_root, path, kind="VIEW", schema=VIEW_SCHEMA),
         )
     materialized_fixtures: list[tuple[str, RelationFixture]] = []
-    for scope_kind in ("url", "document", "crawl"):
-        for path in _sql_files(fixtures_root / "materialized_views" / scope_kind):
+    for driver_kind in ("url", "document", "crawl"):
+        for path in _sql_files(fixtures_root / "materialized_views" / driver_kind):
             fixture = _parse_relation_fixture(
                 fixtures_root,
                 path,
@@ -105,13 +101,13 @@ def seed_catalogue_fixtures(
                 materialized=True,
             )
             _seed_view(session, view_store, fixture)
-            materialized_fixtures.append((scope_kind, fixture))
-    for scope_kind, fixture in materialized_fixtures:
+            materialized_fixtures.append((driver_kind, fixture))
+    for driver_kind, fixture in materialized_fixtures:
         _seed_materialization(
             session,
             catalogue,
             fixture,
-            scope_kind=scope_kind,
+            driver_kind=driver_kind,
         )
     macro_paths = _sql_files(fixtures_root / "table_macros")
     for path in _ordered_table_macro_paths(macro_paths):
@@ -365,9 +361,38 @@ def _seed_view(
         )
     current = get_view_record(session, store, existing.id)
     if current is None or not current.available:
-        raise CatalogueFixtureError(
-            f"Fixture-owned view {VIEW_SCHEMA}.{fixture.name} is missing from DuckLake."
+        materialization = session.scalar(
+            select(CatalogueMaterialization).where(
+                CatalogueMaterialization.view_reference_id == existing.id,
+                CatalogueMaterialization.archived_at.is_(None),
+            )
         )
+        if materialization is not None:
+            raise CatalogueFixtureError(
+                f"Fixture-owned materialized view {VIEW_SCHEMA}.{fixture.name} "
+                "is missing from DuckLake."
+            )
+        physical = next(
+            (view for view in store.list() if view.view_name == fixture.name),
+            None,
+        )
+        if physical is None:
+            physical = store.create(name=fixture.name, sql=fixture.sql)
+        elif _canonical(physical.sql) != _canonical(fixture.sql):
+            physical = store.replace(
+                current_uuid=physical.view_uuid,
+                sql=fixture.sql,
+            )
+        existing.ducklake_view_uuid = physical.view_uuid
+        existing.schema_name = physical.schema_name
+        existing.view_name = physical.view_name
+        session.flush()
+        current = get_view_record(session, store, existing.id)
+        if current is None or not current.available:
+            raise CatalogueFixtureError(
+                f"Fixture-owned view {VIEW_SCHEMA}.{fixture.name} "
+                "could not be restored in DuckLake."
+            )
     if _canonical(current.sql) != _canonical(fixture.sql):
         update_view(
             session,
@@ -385,7 +410,7 @@ def _seed_materialization(
     catalogue: Catalogue,
     fixture: RelationFixture,
     *,
-    scope_kind: str,
+    driver_kind: str,
 ) -> None:
     reference = session.scalar(
         select(CatalogueViewReference).where(
@@ -394,7 +419,11 @@ def _seed_materialization(
     )
     if reference is None:
         raise RuntimeError("Seeded materialized view reference was not found.")
-    scope_column = f"{scope_kind}_id"
+    source_table = {
+        "url": "urls",
+        "document": "documents",
+        "crawl": "crawls",
+    }[driver_kind]
     existing = session.scalar(
         select(CatalogueMaterialization).where(
             CatalogueMaterialization.view_reference_id == reference.id,
@@ -404,44 +433,18 @@ def _seed_materialization(
     store = MaterializationStore(catalogue)
     if existing is None:
         _create_seeded_materialization(
-            session, store, reference, fixture, scope_kind=scope_kind
+            session, store, reference, fixture, driver_kind=driver_kind
         )
         return
-    if existing.scope_kind != scope_kind or existing.scope_column != scope_column:
+    if existing.source_table != source_table:
         raise CatalogueFixtureError(
-            f"{fixture.fixture_path} changed its materialization scope from "
-            f"{existing.scope_kind}:{existing.scope_column} to "
-            f"{scope_kind}:{scope_column}; use a new fixture filename."
+            f"{fixture.fixture_path} changed its driving table from "
+            f"{existing.source_table} to {source_table}; reset fixture state."
         )
     if existing.partition_column != fixture.partition_column:
-        _replace_seeded_materialization(
-            session,
-            catalogue,
-            store,
-            reference,
-            fixture,
-            existing,
-            scope_kind=scope_kind,
+        raise CatalogueFixtureError(
+            f"{fixture.fixture_path} changed physical partitioning; reset fixture state."
         )
-        return
-    if existing.source_state == "source_changed":
-        try:
-            rebuild_materialization(
-                session,
-                store,
-                existing,
-                expected_uuid=existing.ducklake_table_uuid,
-            )
-        except MaterializationSchemaChangeError:
-            _replace_seeded_materialization(
-                session,
-                catalogue,
-                store,
-                reference,
-                fixture,
-                existing,
-                scope_kind=scope_kind,
-            )
 
 
 def _create_seeded_materialization(
@@ -450,7 +453,7 @@ def _create_seeded_materialization(
     reference: CatalogueViewReference,
     fixture: RelationFixture,
     *,
-    scope_kind: str,
+    driver_kind: str,
 ) -> None:
     created = materialize_view(
         session,
@@ -459,9 +462,12 @@ def _create_seeded_materialization(
         name=fixture.name,
         display_name=None,
         description=None,
-        scope_kind=scope_kind,
-        scope_column=f"{scope_kind}_id",
-        backfill_scopes_per_minute=60,
+        source_table={
+            "url": "urls",
+            "document": "documents",
+            "crawl": "crawls",
+        }[driver_kind],
+        refresh_delay_seconds=1,
         partition_column=fixture.partition_column,
     )
     model = session.get(CatalogueMaterialization, created.id)
@@ -471,34 +477,6 @@ def _create_seeded_materialization(
     # The fixture itself remains the authoritative, portable source query.
     model.source_sql = fixture.sql
     session.flush()
-
-
-def _replace_seeded_materialization(
-    session: Session,
-    catalogue: Catalogue,
-    store: MaterializationStore,
-    reference: CatalogueViewReference,
-    fixture: RelationFixture,
-    existing: CatalogueMaterialization,
-    *,
-    scope_kind: str,
-) -> None:
-    restored = CatalogueViewStore(catalogue).replace(
-        current_uuid=reference.ducklake_view_uuid,
-        sql=fixture.sql,
-    )
-    reference.ducklake_view_uuid = restored.view_uuid
-    store.drop_managed(
-        name=existing.name,
-        expected_uuid=existing.ducklake_table_uuid,
-        materialization_id=existing.id,
-    )
-    session.delete(existing)
-    session.flush()
-    _create_seeded_materialization(
-        session, store, reference, fixture, scope_kind=scope_kind
-    )
-
 
 def _seed_macro(
     session: Session, store: CatalogueTableMacroStore, fixture: RelationFixture

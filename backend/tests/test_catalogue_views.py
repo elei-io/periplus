@@ -131,7 +131,7 @@ class CatalogueMaterializationSourceChangeTests(unittest.TestCase):
 
         store.drop.assert_not_called()
 
-    def test_edit_fences_updates_and_replaces_stored_definition(self) -> None:
+    def test_edit_requires_dematerialization(self) -> None:
         old_uuid = uuid4()
         old_definition = uuid4()
         reference = SimpleNamespace(
@@ -165,12 +165,8 @@ class CatalogueMaterializationSourceChangeTests(unittest.TestCase):
         ]
         store = MagicMock()
         store.get.return_value = wrapper
-        expected = MagicMock()
-        with patch(
-            "control.catalogue_views.service._record_with_materialization",
-            return_value=expected,
-        ):
-            result = update_reference(
+        with self.assertRaises(CatalogueViewConflictError):
+            update_reference(
                 session,
                 store,
                 reference,
@@ -180,11 +176,9 @@ class CatalogueMaterializationSourceChangeTests(unittest.TestCase):
                 description="Changed",
             )
 
-        self.assertIs(result, expected)
         self.assertEqual(reference.ducklake_view_uuid, old_uuid)
-        self.assertEqual(reference.slug, "new-links")
-        self.assertEqual(materialization.source_state, "source_changed")
-        self.assertEqual(materialization.source_sql, "SELECT 2 AS value")
+        self.assertEqual(reference.slug, "links")
+        self.assertEqual(materialization.source_sql, "SELECT 1 AS value")
         store.replace.assert_not_called()
 
 if __name__ == "__main__":

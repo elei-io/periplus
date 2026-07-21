@@ -31,9 +31,10 @@ changing worker ownership, queue routing, embedded DuckDB use, or deployment sca
   service owns transport choice, browser-farm capacity, profiles, and acquisition strategy.
 - Ingestion workers own base crawl/DOM/system-projection writes. They are independently observable
   `critical` catalogue work, never settle graph traversal, and never wait for user materialization.
-- Materialization discovery publishes deterministic live/backfill scope jobs directly. One worker
-  evaluates and commits one bounded scope through authoritative coverage; there is no fan-out
-  ledger, settlement workflow, or separate commit queue.
+- The catalogue relay publishes per-table DuckLake DML ticks and global DDL changes to JetStream.
+  Each materialization owns one filtered durable NATS consumer, coalesces ticks, and commits one
+  whole-table refresh while retaining a stable target identity. There is no scope queue, coverage
+  table, revision fence, fan-out ledger, or separate commit queue.
 - Each ingestion or materialization process owns its embedded DuckDB connection and initially runs
   one catalogue operation at a time. Horizontal replicas provide executor capacity; Resource
   Governor budgets cap combined DuckLake and object-store pressure across replicas.
@@ -44,7 +45,7 @@ changing worker ownership, queue routing, embedded DuckDB use, or deployment sca
 - Capacity permits, operation leases, and PostgreSQL advisory commit locks are distinct. Permits
   control pressure, leases suppress duplicate execution, and advisory locks fence correctness.
 - The Resource Governor is a narrow admission controller. It never owns work delivery, workflow
-  completion, materialization coverage, or a generic catalogue RPC surface.
+  completion, materialization lifecycle, or a generic catalogue RPC surface.
 - DuckLake owns analytical Parquet layout and compaction. Do not create permanent per-crawl files.
 - Acquisition workers connect to the configured standard CDP endpoint. Atlas owns content correctness,
   including when scrolling is required; the CDP service owns rendering and physical capacity.

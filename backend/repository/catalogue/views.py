@@ -101,17 +101,36 @@ class CatalogueViewStore:
 
     def replace(self, *, current_uuid: UUID, sql: str) -> DuckLakeView:
         compiled = compile_catalogue_definition(sql)
-        current = self.get(current_uuid)
-        if current is None:
+        current_name = self.name_for_uuid(current_uuid)
+        if current_name is None:
             raise CatalogueViewConflictError(
                 "The DuckLake view changed or was removed; refresh before editing."
             )
         self._use_main()
         self.catalogue.connection.execute(
-            f"CREATE OR REPLACE VIEW {_qualified(self.catalogue, current.view_name)} "
+            f"CREATE OR REPLACE VIEW {_qualified(self.catalogue, current_name)} "
             f"AS {compiled}"
         )
-        return self._require_name(current.view_name)
+        return self._require_name(current_name)
+
+    def name_for_uuid(self, view_uuid: UUID) -> str | None:
+        """Look up identity without binding the view's possibly broken SQL."""
+
+        metadata = _quote_identifier(
+            f"__ducklake_metadata_{self.catalogue.config.alias}"
+        )
+        metadata_schema = _quote_identifier(self.catalogue.metadata_schema)
+        row = self.catalogue.connection.execute(
+            f"""
+            SELECT v.view_name
+            FROM {metadata}.{metadata_schema}.ducklake_view AS v
+            JOIN {metadata}.{metadata_schema}.ducklake_schema AS s USING (schema_id)
+            WHERE v.end_snapshot IS NULL AND s.end_snapshot IS NULL
+              AND s.schema_name = ? AND v.view_uuid = ?
+            """,
+            [VIEW_SCHEMA, view_uuid],
+        ).fetchone()
+        return str(row[0]) if row is not None else None
 
     def _use_main(self) -> None:
         namespace = ".".join(
@@ -121,12 +140,26 @@ class CatalogueViewStore:
         self.catalogue.connection.execute(f"USE {namespace}")
 
     def drop(self, *, current_uuid: UUID) -> DuckLakeView:
-        current = self.get(current_uuid)
-        if current is None:
+        current_name = self.name_for_uuid(current_uuid)
+        if current_name is None:
             raise CatalogueViewConflictError(
                 "The DuckLake view changed or was removed; refresh before dropping."
             )
-        self.catalogue.connection.execute(f"DROP VIEW {_qualified(self.catalogue, current.view_name)}")
+        try:
+            current = self.get(current_uuid)
+        except Exception:
+            current = None
+        if current is None:
+            current = DuckLakeView(
+                view_uuid=current_uuid,
+                schema_name=VIEW_SCHEMA,
+                view_name=current_name,
+                sql="",
+                columns=(),
+            )
+        self.catalogue.connection.execute(
+            f"DROP VIEW {_qualified(self.catalogue, current.view_name)}"
+        )
         return current
 
     def _require_name(self, name: str) -> DuckLakeView:

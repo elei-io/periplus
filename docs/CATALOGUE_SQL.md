@@ -214,8 +214,9 @@ WHERE c.outcome = 'success';
 `views.passages` returns searchable, human-scale regions from headings, paragraphs, list items,
 quotes, preformatted blocks, table cells, and figure captions. Each row retains its `document_id`,
 `element_index`, and source tag alongside normalized readable text. It is an ordinary seeded
-document-scoped materialization: search reads its durable backing relation, while live and backfill
-work use the standard materialization worker and coverage contract.
+materialization driven by document-table DML ticks: search reads its durable
+backing relation while the standard materialization worker coalesces whole-view
+refreshes.
 
 `views.json_ld_scripts` preserves one row per
 `<script type="application/ld+json">`. `json_text` contains the exact script text, while
@@ -363,11 +364,11 @@ the relation describes URL topology, not anchor content.
 The seeded historical `views.page_links` relation stores `source_url_id` and `target_url_id`
 instead of repeating URL text; join both identities to `urls`. Its self-contained definition derives
 links from `crawls`, `urls`, and `elements`, and its placement under
-`fixtures/materialized_views/crawl/` activates the standard crawl-scoped materialization.
-Setup creates the empty backing relation; materialization workers alone populate live and backfill
-scopes. Ingestion also inserts newly discovered normalized targets into `urls`, so every link
+`fixtures/materialized_views/crawl/` activates a materialization driven by crawl-table ticks.
+The materialization worker creates and fully populates the backing relation,
+then refreshes it after coalesced ticks. Ingestion also inserts newly discovered normalized targets into `urls`, so every link
 identity is resolvable. Historical graph edges never wait
-for either pipeline and may observe incomplete recent materialization coverage at their pinned
+for either pipeline and may observe an incomplete recent materialization refresh at their pinned
 pre-run snapshot; this intentional consistency contract is defined in
 [Crawl graphs](CRAWL_GRAPHS.md#historical-consistency-contract).
 
@@ -400,8 +401,8 @@ queries. Deduplicated `documents` and `elements` are not date-partitioned becaus
 be observed by crawls on multiple dates. `elements` is not partitioned by tag so complete
 document-order projections remain physically cohesive. The seeded `views.page_links` backing table
 also carries `captured_at` and uses its year, month, and day partition transforms. Seeded
-materialized views use the same `_atlas_materializations` backing-table machinery, scope coverage,
-and worker ownership as user-created materializations; there is no private page-links table or
+materialized views use the same `_atlas_materializations` backing-table machinery,
+filtered NATS consumer, and worker ownership as user-created materializations; there is no private page-links table or
 ingestion exception.
 
 Run `make catalogue-benchmark` against an existing catalogue before changing that layout. The

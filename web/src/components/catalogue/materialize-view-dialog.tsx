@@ -3,11 +3,6 @@ import { DatabaseZapIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -26,6 +21,16 @@ import {
 import { useCreateCatalogueMaterialization } from "@/hooks/use-catalogue-materializations"
 import type { CatalogueViewRecord } from "@/types/catalogue"
 
+const sourceTables = [
+  "urls",
+  "documents",
+  "crawls",
+  "elements",
+  "artifacts",
+  "crawl_attempts",
+  "crawl_steps",
+] as const
+
 export function MaterializeViewDialog({
   open,
   onOpenChange,
@@ -35,41 +40,17 @@ export function MaterializeViewDialog({
   onOpenChange: (open: boolean) => void
   view: CatalogueViewRecord
 }) {
-  const inferredKind = (
-    ["document", "crawl", "url"] as const
-  ).find((kind) =>
-    view.columns.some((column) => column.toLowerCase() === `${kind}_id`)
-  ) ?? "crawl"
-  const inferredColumn =
-    view.columns.find(
-      (column) => column.toLowerCase() === `${inferredKind}_id`
-    ) ?? ""
-  const [scopeKind, setScopeKind] = useState<
-    "url" | "document" | "crawl"
-  >(inferredKind)
-  const [scopeColumn, setScopeColumn] = useState(inferredColumn)
-  const [rate, setRate] = useState(60)
+  const inferred =
+    sourceTables.find((table) => view.sql.toLowerCase().includes(table)) ??
+    "documents"
+  const [sourceTable, setSourceTable] = useState<string>(inferred)
+  const [delay, setDelay] = useState(1)
   const [partitionColumn, setPartitionColumn] = useState("")
   const create = useCreateCatalogueMaterialization()
   const partitionCandidates = view.columns.filter((_, index) => {
     const type = view.column_types[index]?.toUpperCase() ?? ""
     return type.includes("DATE") || type.includes("TIMESTAMP")
   })
-
-  function reset() {
-    setScopeKind(inferredKind)
-    setScopeColumn(inferredColumn)
-    setRate(60)
-    setPartitionColumn("")
-  }
-
-  function chooseKind(value: "url" | "document" | "crawl") {
-    setScopeKind(value)
-    setScopeColumn(
-      view.columns.find((column) => column.toLowerCase() === `${value}_id`) ??
-        ""
-    )
-  }
 
   async function submit() {
     try {
@@ -78,12 +59,10 @@ export function MaterializeViewDialog({
         name: view.view_name,
         display_name: view.slug,
         description: view.description ?? undefined,
-        scope_kind: scopeKind,
-        scope_column: scopeColumn,
-        backfill_scopes_per_minute: rate,
+        source_table: sourceTable,
+        refresh_delay_seconds: delay,
         partition_column: partitionColumn || undefined,
       })
-      reset()
       onOpenChange(false)
     } catch {
       // The shared mutation surfaces the API error.
@@ -91,137 +70,64 @@ export function MaterializeViewDialog({
   }
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen) reset()
-        onOpenChange(nextOpen)
-      }}
-    >
-      <DialogContent className="max-h-[90vh] overflow-y-auto p-0 sm:max-w-xl">
-        <DialogHeader className="border-b bg-gradient-to-r from-primary/10 to-transparent p-5">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-xl">
+        <DialogHeader>
           <div className="mb-1 flex size-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
             <DatabaseZapIcon className="size-4" />
           </div>
-          <DialogTitle className="text-base">
-            Materialize {view.slug}
-          </DialogTitle>
+          <DialogTitle>Materialize {view.slug}</DialogTitle>
           <DialogDescription>
-            Atlas will backfill existing results and keep this view updated as
-            new matching catalogue identities arrive.
+            Atlas will snapshot the whole view, then refresh it when the driving
+            DuckLake table publishes a CDC tick.
           </DialogDescription>
         </DialogHeader>
-        <div className="grid gap-5 px-5">
+        <div className="grid gap-5">
           <div className="grid gap-1.5">
-            <Label>Incremental unit</Label>
-            <Select
-              value={scopeKind}
-              onValueChange={(value) =>
-                chooseKind(value as "url" | "document" | "crawl")
-              }
-            >
-              <SelectTrigger className="w-full" aria-label="Incremental unit">
-                <span>
-                  {{ url: "URL", document: "Document", crawl: "Crawl" }[
-                    scopeKind
-                  ]}
-                </span>
-              </SelectTrigger>
+            <Label>Driving table</Label>
+            <Select value={sourceTable} onValueChange={(value) => setSourceTable(value ?? inferred)}>
+              <SelectTrigger className="w-full"><span>{sourceTable}</span></SelectTrigger>
               <SelectContent>
-                <SelectItem value="url">URL</SelectItem>
-                <SelectItem value="document">Document</SelectItem>
-                <SelectItem value="crawl">Crawl</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              Atlas replaces only the rows belonging to each discovered{" "}
-              {scopeKind}.
-            </p>
-          </div>
-          <div className="grid gap-1.5">
-            <Label>Discriminator column</Label>
-            <Select
-              value={scopeColumn || null}
-              onValueChange={(value) => setScopeColumn(value ?? "")}
-            >
-              <SelectTrigger
-                className="w-full"
-                aria-label="Discriminator column"
-              >
-                <span>{scopeColumn || "Choose an output column"}</span>
-              </SelectTrigger>
-              <SelectContent>
-                {view.columns.map((column, index) => (
-                  <SelectItem key={column} value={column}>
-                    {column} · {view.column_types[index] ?? "unknown"}
-                  </SelectItem>
+                {sourceTables.map((table) => (
+                  <SelectItem key={table} value={table}>{table}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              This output identifies which rows belong to the changed{" "}
-              {scopeKind}. It is usually <code>{scopeKind}_id</code>.
+              A committed DML change to this table schedules a refresh.
             </p>
           </div>
-          <Collapsible className="rounded-xl border">
-            <CollapsibleTrigger className="w-full cursor-pointer px-4 py-3 text-left text-sm font-medium">
-              Advanced settings{" "}
-              <span className="ml-1 text-xs font-normal text-muted-foreground">
-                · optional
-              </span>
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <div className="grid gap-4 border-t p-4">
-                <div className="grid gap-1.5">
-                  <Label>Backfill units per minute</Label>
-                  <Input
-                    type="number"
-                    min={1}
-                    max={10_000}
-                    value={rate}
-                    onChange={(event) =>
-                      setRate(Number(event.target.value) || 1)
-                    }
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label>Daily partition column</Label>
-                  <Select
-                    value={partitionColumn || "__none__"}
-                    onValueChange={(value) =>
-                      setPartitionColumn(
-                        value === "__none__" || value === null ? "" : value
-                      )
-                    }
-                  >
-                    <SelectTrigger
-                      className="w-full"
-                      aria-label="Daily partition column"
-                    >
-                      <span>{partitionColumn || "No partitioning"}</span>
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__none__">No partitioning</SelectItem>
-                      {partitionCandidates.map((column) => (
-                        <SelectItem key={column} value={column}>
-                          {column}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
+          <div className="grid gap-1.5">
+            <Label>Coalescing delay (seconds)</Label>
+            <Input
+              type="number"
+              min={0}
+              max={3600}
+              step={0.1}
+              value={delay}
+              onChange={(event) => setDelay(Number(event.target.value) || 0)}
+            />
+          </div>
+          <div className="grid gap-1.5">
+            <Label>Daily partition column</Label>
+            <Select
+              value={partitionColumn || "__none__"}
+              onValueChange={(value) =>
+                setPartitionColumn(value === "__none__" || value === null ? "" : value)
+              }
+            >
+              <SelectTrigger className="w-full"><span>{partitionColumn || "No partitioning"}</span></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">No partitioning</SelectItem>
+                {partitionCandidates.map((column) => (
+                  <SelectItem key={column} value={column}>{column}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
-        <DialogFooter
-          showCloseButton
-          className="sticky bottom-0 border-t bg-popover/95 p-4 backdrop-blur-xl"
-        >
-          <Button
-            onClick={() => void submit()}
-            disabled={!scopeColumn || create.isPending}
-          >
+        <DialogFooter showCloseButton>
+          <Button onClick={() => void submit()} disabled={create.isPending}>
             {create.isPending ? "Materializing…" : "Materialize"}
           </Button>
         </DialogFooter>

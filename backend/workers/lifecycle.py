@@ -17,6 +17,7 @@ from repository.ingestion.health import HealthMonitor, start_health_server
 WorkerRole = Literal[
     "acquisition",
     "ingestion",
+    "catalogue_relay",
     "materialization",
     "maintenance",
 ]
@@ -114,19 +115,55 @@ async def supervise_until_stopped(
         [*running, stop_task],
         return_when=asyncio.FIRST_COMPLETED,
     )
+    completed_workers = [
+        task
+        for task in done
+        if task is not stop_task and not task.cancelled()
+    ]
     error = next(
         (
-            task.exception()
-            for task in done
-            if task is not stop_task and not task.cancelled()
+            candidate
+            for task in completed_workers
+            if (candidate := task.exception()) is not None
         ),
         None,
     )
+    if error is None and stop_task not in done and completed_workers:
+        names = ", ".join(sorted(task.get_name() for task in completed_workers))
+        error = RuntimeError(f"worker task exited unexpectedly: {names}")
     for task in (*running, stop_task):
         task.cancel()
     await asyncio.gather(*running, stop_task, return_exceptions=True)
     if error is not None:
         raise error
+
+
+async def run_worker_process(
+    *,
+    role: WorkerRole,
+    monitor: HealthMonitor,
+    tasks: Mapping[str, Awaitable[None]],
+    stop: asyncio.Event,
+) -> None:
+    """Host role-specific loops behind one process lifecycle contract."""
+
+    if "event-loop-heartbeat" in tasks:
+        raise ValueError("event-loop-heartbeat is owned by the worker process")
+    endpoints = WorkerEndpoints(WorkerEndpointConfig.from_env(role))
+    try:
+        endpoints.start_health(monitor)
+        endpoints.start_metrics()
+        install_signal_handlers(stop)
+        await supervise_until_stopped(
+            {
+                **tasks,
+                "event-loop-heartbeat": monitor_heartbeat(monitor, stop),
+            },
+            stop,
+        )
+    finally:
+        stop.set()
+        await endpoints.close()
 
 
 async def monitor_heartbeat(

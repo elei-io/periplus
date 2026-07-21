@@ -74,10 +74,16 @@ export type CatalogueLintResult = {
 
 export type CatalogueMaterializationSummary = {
   id: string
-  status:
-    "live" | "backfilling" | "paused" | "dematerializing" | "source_changed"
-  definition_is_current: boolean
+  status: MaterializationObservedState
 }
+
+export type MaterializationObservedState =
+  | "creating"
+  | "live"
+  | "paused"
+  | "deleting"
+  | "blocked_schema"
+  | "failed"
 
 export type CatalogueViewRecord = {
   id: string | null
@@ -178,20 +184,21 @@ export type CatalogueMaterializationRecord = {
   view_reference_id: string
   view_uuid: string
   view_name: string
-  scope_kind: "url" | "document" | "crawl"
-  scope_column: string
-  activation_snapshot: number
-  live_enabled: boolean
-  backfill_enabled: boolean
-  backfill_scopes_per_minute: number
+  source_table: string
+  source_table_id: number
+  source_table_uuid: string
+  control_snapshot: number
+  desired_state: "live" | "paused" | "deleting"
+  observed_state: MaterializationObservedState
+  nats_consumer_name: string
+  refresh_delay_seconds: number
   partition_column: string | null
-  definition_revision_id: string
-  status:
-    "live" | "backfilling" | "paused" | "dematerializing" | "source_changed"
-  source_state: "current" | "source_changed"
-  dematerialization_requested_at: string | null
-  ducklake_table_uuid: string
-  last_refreshed_at: string
+  target_table_id: number | null
+  ducklake_table_uuid: string | null
+  bootstrap_snapshot: number | null
+  processed_snapshot: number | null
+  last_refreshed_at: string | null
+  last_error: string | null
   created_at: string
   updated_at: string
 }

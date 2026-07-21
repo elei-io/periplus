@@ -9,9 +9,8 @@ import type {
 
 const key = ["catalogue-materializations"] as const
 
-function invalidateDefinitionSummaries(
-  client: ReturnType<typeof useQueryClient>
-) {
+function invalidate(client: ReturnType<typeof useQueryClient>) {
+  void client.invalidateQueries({ queryKey: key })
   void client.invalidateQueries({ queryKey: ["catalogue-views"] })
 }
 
@@ -26,9 +25,8 @@ export type CreateCatalogueMaterializationInput = {
   name: string
   display_name?: string
   description?: string
-  scope_kind: "url" | "document" | "crawl"
-  scope_column: string
-  backfill_scopes_per_minute?: number
+  source_table: string
+  refresh_delay_seconds?: number
   partition_column?: string
 }
 
@@ -46,6 +44,7 @@ export function useCatalogueMaterialization(id: string | null | undefined) {
     queryFn: () =>
       json<CatalogueMaterializationRecord>(`/catalogue/materializations/${id}`),
     enabled: Boolean(id),
+    refetchInterval: 2000,
   })
 }
 
@@ -65,42 +64,14 @@ export function useCreateCatalogueMaterialization() {
         }
       ),
     onSuccess: () => {
-      void client.invalidateQueries({ queryKey: key })
-      invalidateDefinitionSummaries(client)
-      toast.success("View materialized.")
+      invalidate(client)
+      toast.success("Materialization requested.")
     },
     onError: (error) => toast.error(extractApiError(error)),
   })
 }
 
-export function useRebuildCatalogueMaterialization() {
-  const client = useQueryClient()
-  return useMutation({
-    mutationFn: ({
-      materialization,
-    }: {
-      materialization: CatalogueMaterializationRecord
-    }) =>
-      json<CatalogueMaterializationRecord>(
-        `/catalogue/materializations/${materialization.id}/rebuild`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            expected_ducklake_table_uuid: materialization.ducklake_table_uuid,
-          }),
-        }
-      ),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: key })
-      invalidateDefinitionSummaries(client)
-      toast.success("Materialization rebuild started.")
-    },
-    onError: (error) => toast.error(extractApiError(error)),
-  })
-}
-
-export function useUpdateCatalogueMaterializationMaintenance() {
+export function useUpdateCatalogueMaterialization() {
   const client = useQueryClient()
   return useMutation({
     mutationFn: ({
@@ -108,12 +79,11 @@ export function useUpdateCatalogueMaterializationMaintenance() {
       ...input
     }: {
       id: string
-      live_enabled?: boolean
-      backfill_enabled?: boolean
-      backfill_scopes_per_minute?: number
+      desired_state?: "live" | "paused"
+      refresh_delay_seconds?: number
     }) =>
       json<CatalogueMaterializationRecord>(
-        `/catalogue/materializations/${id}/maintenance`,
+        `/catalogue/materializations/${id}`,
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -121,12 +91,11 @@ export function useUpdateCatalogueMaterializationMaintenance() {
         }
       ),
     onSuccess: (materialization) => {
-      void client.invalidateQueries({ queryKey: key })
-      invalidateDefinitionSummaries(client)
+      invalidate(client)
       toast.success(
-        materialization.live_enabled
-          ? "Live maintenance resumed."
-          : "Maintenance updated."
+        materialization.desired_state === "live"
+          ? "Materialization resumed."
+          : "Materialization updated."
       )
     },
     onError: (error) => toast.error(extractApiError(error)),
@@ -136,21 +105,14 @@ export function useUpdateCatalogueMaterializationMaintenance() {
 export function useDematerialize() {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: (materialization: CatalogueMaterializationRecord) => {
-      const params = new URLSearchParams({
-        expected_ducklake_table_uuid: materialization.ducklake_table_uuid,
-      })
-      return json<CatalogueMaterializationRecord>(
-        `/catalogue/materializations/${materialization.id}?${params}`,
-        {
-          method: "DELETE",
-        }
-      )
-    },
+    mutationFn: (materialization: CatalogueMaterializationRecord) =>
+      json<CatalogueMaterializationRecord>(
+        `/catalogue/materializations/${materialization.id}`,
+        { method: "DELETE" }
+      ),
     onSuccess: () => {
-      void client.invalidateQueries({ queryKey: key })
-      invalidateDefinitionSummaries(client)
-      toast.success("Dematerialization requested. New work has been stopped.")
+      invalidate(client)
+      toast.success("Dematerialization requested.")
     },
     onError: (error) => toast.error(extractApiError(error)),
   })

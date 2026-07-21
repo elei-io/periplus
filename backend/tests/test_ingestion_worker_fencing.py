@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 import unittest
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -165,6 +166,60 @@ class IngestionFenceFailureTests(unittest.IsolatedAsyncioTestCase):
         ingestor.discard_prepared.assert_called_once_with(prepared)
         for message in messages:
             message.nak.assert_awaited_once_with(delay=4)
+
+    async def test_success_is_recorded_after_commit_and_before_ack(self) -> None:
+        events: list[str] = []
+        ingestor = MagicMock()
+
+        def commit(_prepared, **_kwargs):
+            events.append("ducklake_commit")
+            return [SimpleNamespace()]
+
+        ingestor.commit_prepared_batch.side_effect = commit
+        job = SimpleNamespace(
+            request_id="request",
+            enqueued_at=datetime.now(UTC),
+        )
+        message = SimpleNamespace(
+            metadata=SimpleNamespace(num_delivered=1),
+            ack=AsyncMock(side_effect=lambda: events.append("ack")),
+        )
+        prepared = [SimpleNamespace(element_count=10, staged_bytes=100)]
+
+        async def store_result(*_args, **_kwargs):
+            events.append("terminal_state")
+
+        with (
+            patch(
+                "repository.ingestion.worker.resource_permits",
+                _admitted,
+            ),
+            patch(
+                "repository.ingestion.worker.operation_leases",
+                _admitted,
+            ),
+            patch(
+                "repository.ingestion.worker.catalogue_request",
+                return_value=object(),
+            ),
+            patch(
+                "repository.ingestion.worker.store_ingestion_response",
+                new=store_result,
+            ),
+        ):
+            await _commit_batch_isolated(
+                MagicMock(),
+                MagicMock(),
+                ingestor,
+                [job],
+                [message],
+                prepared,
+                asyncio.Lock(),
+                MagicMock(),
+                MagicMock(),
+            )
+
+        self.assertEqual(events, ["ducklake_commit", "terminal_state", "ack"])
 
 
 if __name__ == "__main__":

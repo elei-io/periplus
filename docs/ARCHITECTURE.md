@@ -13,7 +13,7 @@ vendor, proxy, profile, or transport; the CDP service owns those decisions and t
 | CDP service | Acquisition transport, provider selection, browser farm, and acquisition capacity |
 | Quack service | Interactive analytical DuckDB execution and memory |
 | Object repository | Immutable content-addressed raw HTML and bounded navigation packages |
-| DuckLake | Crawls, documents, DOM, graph provenance, materialized data, snapshots, and coverage |
+| DuckLake | Crawls, documents, DOM, graph provenance, materialized data, and snapshots |
 
 The durable path is:
 
@@ -54,11 +54,12 @@ provenance, normalized source and target URL components, and their most-specific
 exposing a fragment-free crawl destination. Link text and presentation attributes are not part of
 the navigation contract. It uses a standalone memory-limited DuckDB connection.
 The seeded `views.page_links` definition reproduces those meanings from durable crawl and DOM
-evidence and is declared under `fixtures/materialized_views/crawl/`. Its live and backfill writes
-are ordinary materialization-worker work; ingestion has no link-specific projection. Edges may also
+evidence and is declared under `fixtures/materialized_views/crawl/`. Its full
+refreshes are ordinary materialization-worker work driven by crawl-table ticks;
+ingestion has no link-specific projection. Edges may also
 join read-only catalogue tables; those reads use the DuckLake snapshot pinned before the graph run
 starts, so retries cannot observe ingestion arriving midway through the run. Graph traversal never
-waits for ingestion or materialization coverage; historical edges intentionally tolerate recent
+waits for ingestion or materialization refreshes; historical edges intentionally tolerate recent
 catalogue omissions in exchange for a stable pre-run snapshot.
 
 Independently, an ingestion worker verifies retained HTML and commits the crawl and base DOM
@@ -70,10 +71,16 @@ quality findings from immutable crawls, step evidence, and element rows.
 
 ## Catalogue work
 
-Ingestion is `critical`. Live and backfill materializations publish bounded authoritative scopes.
-Maintenance runs off-path with an exclusive background catalogue permit. Each ingestion or
-materialization process owns one embedded DuckDB connection and initially executes one catalogue
-operation at a time. Historical graph edges open bounded, read-only, per-operation connections and
+Ingestion is `critical`. The catalogue relay is the only owner of DuckLake CDC
+consumers: one catalogue-wide DML tick cursor and one catalogue-wide DDL
+cursor publish physical events to JetStream. Each materialization owns a filtered
+durable NATS consumer, coalesces ticks, and transactionally refreshes its stable
+whole table. Maintenance runs off-path with an exclusive background catalogue
+permit and consumes the relay's wildcard DML subject only as a coalesced
+wake-up hint. Each ingestion or materialization process owns one embedded
+DuckDB connection and initially executes one catalogue operation at a time; the
+relay owns exactly its DML and DDL connections. Historical graph edges open
+bounded, read-only, per-operation connections and
 are serialized within each acquisition process.
 
 Interactive catalogue reads enter through the Atlas API. Each API replica owns a bounded pool of

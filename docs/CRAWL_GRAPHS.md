@@ -25,11 +25,11 @@ or direct-HTTP fallback in Atlas.
 ### Historical consistency contract
 
 Historical edge SQL reads only the DuckLake snapshot pinned before the graph run. Atlas never waits
-for ingestion commits, live materialization, or backfill coverage before starting or settling graph
-traversal. That snapshot may therefore omit recently retained crawls and materialized scopes even
+for ingestion commits or materialization refreshes before starting or settling graph
+traversal. That snapshot may therefore omit recently retained crawls and materialized rows even
 though their durable work has already been accepted. This bounded staleness is intentional:
 current-page navigation remains available from retained HTML, historical edge SQL must tolerate
-incomplete recent catalogue coverage, and every retry within the run observes the same snapshot.
+incomplete recent catalogue state, and every retry within the run observes the same snapshot.
 
 ## Content policies
 

@@ -60,18 +60,13 @@ function StatusBadge({
 }: {
   status: CatalogueMaterializationSummary["status"]
 }) {
-  const label =
-    status === "backfilling"
-      ? "Backfilling"
-      : status === "source_changed"
-        ? "Source changed"
-        : status[0].toUpperCase() + status.slice(1)
+  const label = status.replace("_", " ")
   return (
     <Badge
       variant={
-        status === "dematerializing" || status === "source_changed"
+        status === "deleting" || status === "blocked_schema" || status === "failed"
           ? "destructive"
-          : status === "live" || status === "backfilling"
+          : status === "live" || status === "creating"
             ? "default"
             : "secondary"
       }

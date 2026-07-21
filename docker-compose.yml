@@ -199,8 +199,40 @@ services:
     depends_on:
       atlas-setup:
         condition: service_completed_successfully
+      atlas-catalogue-relay:
+        condition: service_healthy
       atlas-maintenance-worker:
         condition: service_healthy
+    restart: unless-stopped
+
+  atlas-catalogue-relay:
+    <<: *atlas-backend
+    command: atlas-worker catalogue-relay
+    volumes: *atlas-repository-volumes
+    expose:
+      - "9097"
+      - "9098"
+    healthcheck:
+      <<: *atlas-healthcheck
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9098/healthz', timeout=2).read()",
+        ]
+    environment:
+      <<:
+        [
+          *atlas-control-environment,
+          *atlas-catalogue-environment,
+          *atlas-nats-environment,
+          *atlas-repository-environment,
+          *atlas-resource-environment,
+        ]
+    depends_on:
+      atlas-setup:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   atlas-maintenance-worker:

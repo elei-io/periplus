@@ -121,13 +121,8 @@ class CatalogueService:
             )
 
         with maintenance_lock(self.catalogue):
-            # DuckLake inlines tiny writes into its metadata catalogue. Flush those
-            # accumulated rows before file compaction so Postgres does not become
-            # an unbounded data store at low ingestion rates.
-            self.catalogue.connection.execute(
-                "CALL ducklake_flush_inlined_data(?)",
-                [self.catalogue.config.alias],
-            ).fetchall()
+            # Atlas attaches DuckLake with data_inlining_row_limit=0, so there
+            # is no inline-data debt to flush on every CDC wake-up.
             candidates = self._small_file_candidates(
                 maximum_input_file_bytes=maximum_input_file_bytes,
             )

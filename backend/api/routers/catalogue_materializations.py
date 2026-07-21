@@ -7,8 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from api.catalogue_control import CatalogueControl, get_catalogue_control
 from control.catalogue_materializations.schemas import (
     CatalogueMaterializationListResponse,
-    CatalogueMaterializationMaintenanceUpdate,
-    CatalogueMaterializationRebuild,
+    CatalogueMaterializationStateUpdate,
     CatalogueMaterializationRecord,
     ViewMaterializationPut,
 )
@@ -16,10 +15,9 @@ from control.catalogue_materializations.service import (
     get_model,
     list_records,
     put_for_view,
-    rebuild,
     record,
     request_dematerialization,
-    update_maintenance,
+    update_state,
 )
 from repository.catalogue.materializations import (
     MaterializationConflictError,
@@ -92,52 +90,20 @@ async def materialize_view(
         _raise(exc)
 
 
-@router.post(
-    "/catalogue/materializations/{materialization_id}/rebuild",
-    response_model=CatalogueMaterializationRecord,
-)
-async def rebuild_(
-    materialization_id: UUID,
-    payload: CatalogueMaterializationRebuild,
-    control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
-) -> CatalogueMaterializationRecord:
-    def operation(session, catalogue):
-        model = get_model(session, materialization_id)
-        if model is None:
-            raise LookupError("Catalogue materialization not found.")
-        with operation_lock(catalogue, f"materialization-rebuild:{materialization_id}"):
-            return rebuild(
-                session,
-                MaterializationStore(catalogue),
-                model,
-                expected_uuid=payload.expected_ducklake_table_uuid,
-            )
-
-    try:
-        return await control.run(operation)
-    except (
-        MaterializationError,
-        CatalogueQueryError,
-        duckdb.Error,
-        LookupError,
-    ) as exc:
-        _raise(exc)
-
-
 @router.patch(
-    "/catalogue/materializations/{materialization_id}/maintenance",
+    "/catalogue/materializations/{materialization_id}",
     response_model=CatalogueMaterializationRecord,
 )
-async def maintenance(
+async def update(
     materialization_id: UUID,
-    payload: CatalogueMaterializationMaintenanceUpdate,
+    payload: CatalogueMaterializationStateUpdate,
     control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
 ) -> CatalogueMaterializationRecord:
     def operation(session, _catalogue):
         model = get_model(session, materialization_id)
         if model is None:
             raise LookupError("Catalogue materialization not found.")
-        return update_maintenance(session, model, **payload.model_dump())
+        return update_state(session, model, **payload.model_dump())
 
     try:
         return await control.run(operation)
@@ -151,18 +117,13 @@ async def maintenance(
 )
 async def dematerialize(
     materialization_id: UUID,
-    expected_ducklake_table_uuid: UUID,
     control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
 ) -> CatalogueMaterializationRecord:
     def operation(session, _catalogue):
         model = get_model(session, materialization_id)
         if model is None:
             raise LookupError("Catalogue materialization not found.")
-        return request_dematerialization(
-            session,
-            model,
-            expected_uuid=expected_ducklake_table_uuid,
-        )
+        return request_dematerialization(session, model)
 
     try:
         return await control.run(operation)

@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 import unittest
 from uuid import uuid4
 
-from materialization.queue import MaterializationScopeJob
+from runtime.catalogue_events import CatalogueDMLTick, dml_subject
 from repository.catalogue.records import CrawlRecord, UrlRecord
 
 
@@ -38,23 +38,19 @@ class GraphRepositoryContractTests(unittest.TestCase):
         self.assertNotIn("task_revision", dumped)
         self.assertNotIn("primitive", dumped)
 
-    def test_crawl_scope_is_a_first_class_materialization_job(self) -> None:
-        crawl_id = uuid4()
-        job = MaterializationScopeJob(
-            materialization_id=uuid4(),
-            definition_revision_id=uuid4(),
-            target_table="page_links",
-            scope_kind="crawl",
-            scope_column="crawl_id",
-            scope_id=str(crawl_id),
-            document_id="sha256:document",
-            operation_id="operation",
-            source="live",
-            enqueued_at=datetime.now(UTC),
+    def test_table_tick_is_a_first_class_materialization_trigger(self) -> None:
+        table_uuid = uuid4()
+        tick = CatalogueDMLTick(
+            table_id=12,
+            table_uuid=table_uuid,
+            schema_name="main",
+            table_name="crawls",
+            snapshot_id=42,
+            snapshot_time=datetime.now(UTC),
+            schema_version=3,
         )
-        self.assertEqual(job.scope_kind, "crawl")
-        self.assertEqual(job.scope_id, str(crawl_id))
-        self.assertEqual(job.document_id, "sha256:document")
+        self.assertEqual(dml_subject(table_uuid), f"atlas.catalogue.dml.{table_uuid.hex}")
+        self.assertEqual(tick.message_id, f"dml:{table_uuid}:42")
 
 if __name__ == "__main__":
     unittest.main()

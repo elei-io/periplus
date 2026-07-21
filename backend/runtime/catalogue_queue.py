@@ -7,21 +7,11 @@ from nats.js.errors import NotFoundError
 
 WORK_STREAM = "ATLAS_CATALOGUE_WORK"
 INGEST_SUBJECT = "atlas.catalogue.ingest"
-MATERIALIZE_LIVE_SUBJECT = "atlas.catalogue.materialize.live"
-MATERIALIZE_BACKFILL_SUBJECT = "atlas.catalogue.materialize.backfill"
-WORK_SUBJECTS = (
-    INGEST_SUBJECT,
-    MATERIALIZE_LIVE_SUBJECT,
-    MATERIALIZE_BACKFILL_SUBJECT,
-)
+WORK_SUBJECTS = (INGEST_SUBJECT,)
 
 DEAD_LETTER_STREAM = "ATLAS_DEAD_LETTER"
 INGEST_DEAD_LETTER_SUBJECT = "atlas.dead_letter.ingest"
-MATERIALIZE_DEAD_LETTER_SUBJECT = "atlas.dead_letter.materialize"
-DEAD_LETTER_SUBJECTS = (
-    INGEST_DEAD_LETTER_SUBJECT,
-    MATERIALIZE_DEAD_LETTER_SUBJECT,
-)
+DEAD_LETTER_SUBJECTS = (INGEST_DEAD_LETTER_SUBJECT,)
 
 
 async def ensure_catalogue_work_stream(jetstream) -> None:
