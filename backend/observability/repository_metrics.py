@@ -19,17 +19,6 @@ _oldest_pending_age = Gauge(
     "atlas_repository_ingestion_oldest_pending_age_seconds",
     "Lower-bound age of an ingestion queue that has not made progress.",
 )
-_compactions = Counter(
-    "atlas_repository_compactions_total",
-    "Repository compaction pass outcomes.",
-    ("outcome",),
-)
-_compaction_duration = Histogram(
-    "atlas_repository_compaction_duration_seconds",
-    "Repository compaction pass duration.",
-    ("outcome",),
-)
-_compaction_files = Counter("atlas_repository_compaction_files_total", "Repository files involved in compaction.", ("kind",))
 
 
 def raw_write(*, outcome: str, duration_seconds: float, html_bytes: int | None = None, compressed_bytes: int | None = None) -> None:
@@ -67,16 +56,3 @@ def queue_state(
     _ack_pending.set(ack_pending)
     _redelivered.set(redelivered)
     _oldest_pending_age.set(max(0.0, oldest_pending_age_seconds))
-
-
-def compaction(
-    *,
-    outcome: str,
-    duration_seconds: float,
-    files_processed: int,
-    files_created: int,
-) -> None:
-    _compactions.labels(outcome).inc()
-    _compaction_duration.labels(outcome).observe(max(0.0, duration_seconds))
-    _compaction_files.labels("processed").inc(files_processed)
-    _compaction_files.labels("created").inc(files_created)

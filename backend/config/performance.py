@@ -30,7 +30,7 @@ CRAWL_RUN_ACQUISITION_PENDING_LIMIT = CRAWL_DISPATCH_WINDOW
 CRAWL_DOMAIN_PERMIT_RETRY_SECONDS = 0.25
 CATALOGUE_EXECUTOR_LANES = 1
 # Navigation retention is recovery cleanup, not a bulk-delete job. One bounded
-# batch per maintenance sweep keeps object-store pressure predictable.
+# batch per housekeeping sweep keeps object-store pressure predictable.
 NAVIGATION_CLEANUP_BATCH_SIZE = 500
 
 # Durable consumers use a generous internal delivery ceiling. Most pull loops
@@ -57,14 +57,6 @@ CATALOGUE_OPERATION_LEASE_SECONDS = 30.0
 CATALOGUE_OPERATION_HEARTBEAT_SECONDS = 5.0
 CATALOGUE_OPERATION_ACQUIRE_TIMEOUT_SECONDS = 1.0
 CATALOGUE_OPERATION_LEASE_REPLICAS = 1
-# DuckLake CDC schema-boundary reads need three metadata connections with
-# Atlas's two DuckDB execution threads. Keep one additional connection of
-# headroom for catalogue bookkeeping on the same embedded database.
-CATALOGUE_POSTGRES_POOL_MAX_CONNECTIONS = 4
-CATALOGUE_POSTGRES_POOL_IDLE_TIMEOUT_MS = 5_000
-CATALOGUE_POSTGRES_POOL_MAX_LIFETIME_MS = 60_000
-CATALOGUE_POSTGRES_POOL_WAIT_TIMEOUT_MS = 10_000
-
 # Adaptive microbatch bounds.  A batch flushes on whichever bound is reached
 # first, keeping latency bounded for small deployments and amortising commits
 # automatically when replicas are busy.
@@ -89,7 +81,7 @@ def process_cpu_count() -> int:
 
 
 def duckdb_threads() -> int:
-    """Bound an embedded executor so adding replicas remains predictable."""
+    """Bound one DuckDB client so adding process replicas remains predictable."""
 
     return min(2, process_cpu_count())
 

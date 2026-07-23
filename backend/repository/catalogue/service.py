@@ -39,16 +39,6 @@ class CatalogueBatchEntry:
     replace_projection: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class CompactionResult:
-    schema_name: str
-    table_name: str
-    eligible_files: int
-    eligible_bytes: int
-    files_processed: int
-    files_created: int
-
-
 class CatalogueService:
     """The only application boundary for Atlas catalogue reads and writes."""
 
@@ -84,173 +74,6 @@ class CatalogueService:
         ):
             return self._record_crawl_batch_unfenced(entries)
 
-    def compact_small_files(
-        self,
-        *,
-        minimum_files: int,
-        maximum_input_file_bytes: int,
-        target_file_bytes: int,
-        maximum_compacted_files: int,
-        maximum_tables: int | None = None,
-        maximum_operation_bytes: int = 256 * 1024 * 1024,
-        cleanup_older_than_seconds: int = 7 * 24 * 60 * 60,
-    ) -> list[CompactionResult]:
-        """Merge small files in bounded, debt-prioritized table operations."""
-
-        for name, value in (
-            ("minimum_files", minimum_files),
-            ("maximum_input_file_bytes", maximum_input_file_bytes),
-            ("target_file_bytes", target_file_bytes),
-            ("maximum_compacted_files", maximum_compacted_files),
-            ("maximum_operation_bytes", maximum_operation_bytes),
-            ("cleanup_older_than_seconds", cleanup_older_than_seconds),
-        ):
-            if value <= 0:
-                raise CatalogueValidationError(f"{name} must be greater than zero")
-        if target_file_bytes <= maximum_input_file_bytes:
-            raise CatalogueValidationError(
-                "target_file_bytes must be greater than maximum_input_file_bytes"
-            )
-        if target_file_bytes > maximum_operation_bytes:
-            raise CatalogueValidationError(
-                "target_file_bytes must not exceed maximum_operation_bytes"
-            )
-        if maximum_tables is not None and maximum_tables <= 0:
-            raise CatalogueValidationError(
-                "maximum_tables must be greater than zero when provided"
-            )
-
-        # Atlas attaches DuckLake with data_inlining_row_limit=0, so there is
-        # no inline-data debt to flush on every CDC wake-up. DuckLake owns the
-        # transactional conflict boundary: appends may continue while this
-        # bounded physical rewrite runs and callers retry a conflicting pass.
-        candidates = self._small_file_candidates(
-            maximum_input_file_bytes=maximum_input_file_bytes,
-        )
-        if maximum_tables is not None:
-            candidates = candidates[:maximum_tables]
-        results: list[CompactionResult] = []
-        bounded_compactions = min(
-            maximum_compacted_files,
-            max(1, maximum_operation_bytes // target_file_bytes),
-        )
-        for schema_name, table_name, eligible_files, eligible_bytes in candidates:
-            if eligible_files < minimum_files:
-                continue
-            self.catalogue.connection.execute(
-                "CALL ducklake_set_option("
-                "?, 'target_file_size', ?, schema => ?, table_name => ?)",
-                [
-                    self.catalogue.config.alias,
-                    f"{target_file_bytes}B",
-                    schema_name,
-                    table_name,
-                ],
-            )
-            rows = self.catalogue.connection.execute(
-                "CALL ducklake_merge_adjacent_files("
-                "?, ?, schema => ?, max_compacted_files => ?, max_file_size => ?)",
-                [
-                    self.catalogue.config.alias,
-                    table_name,
-                    schema_name,
-                    bounded_compactions,
-                    maximum_input_file_bytes,
-                ],
-            ).fetchall()
-            results.append(
-                CompactionResult(
-                    schema_name=schema_name,
-                    table_name=table_name,
-                    eligible_files=eligible_files,
-                    eligible_bytes=eligible_bytes,
-                    files_processed=sum(int(row[2]) for row in rows),
-                    files_created=sum(int(row[3]) for row in rows),
-                )
-            )
-        # Compaction schedules superseded files for deletion. Keep a generous
-        # grace window for long reads, then reclaim only scheduled files;
-        # snapshot expiry and orphan deletion remain explicit retention actions.
-        self.catalogue.connection.execute(
-            "CALL ducklake_cleanup_old_files(?, older_than => "
-            "now() - CAST(? AS BIGINT) * INTERVAL '1 second')",
-            [self.catalogue.config.alias, cleanup_older_than_seconds],
-        ).fetchall()
-        return results
-
-    def _small_file_candidates(
-        self,
-        *,
-        maximum_input_file_bytes: int,
-    ) -> list[tuple[str, str, int, int]]:
-        metadata = _quote_identifier(
-            f"__ducklake_metadata_{self.catalogue.config.alias}"
-        )
-        rows = self.catalogue.connection.execute(
-            f"""
-            WITH file_partition_keys AS (
-                SELECT
-                    data_file_id,
-                    table_id,
-                    string_agg(
-                        partition_key_index::VARCHAR || '=' || partition_value,
-                        '|' ORDER BY partition_key_index
-                    ) AS partition_key
-                FROM {metadata}.ducklake_file_partition_value
-                GROUP BY data_file_id, table_id
-            ),
-            physical_partitions AS (
-                SELECT
-                    schema_info.schema_name,
-                    table_info.table_name,
-                    coalesce(partition_key.partition_key, '') AS partition_key,
-                    count(*) AS partition_files,
-                    sum(data_file.file_size_bytes) AS partition_bytes
-                FROM {metadata}.ducklake_data_file AS data_file
-                JOIN {metadata}.ducklake_table AS table_info
-                  ON table_info.table_id = data_file.table_id
-                JOIN {metadata}.ducklake_schema AS schema_info
-                  ON schema_info.schema_id = table_info.schema_id
-                LEFT JOIN file_partition_keys AS partition_key
-                  ON partition_key.data_file_id = data_file.data_file_id
-                 AND partition_key.table_id = data_file.table_id
-                WHERE data_file.end_snapshot IS NULL
-                  AND table_info.end_snapshot IS NULL
-                  AND schema_info.end_snapshot IS NULL
-                  AND schema_info.schema_name IN (?, ?, '_atlas_materializations')
-                  AND data_file.file_size_bytes < ?
-                GROUP BY
-                    schema_info.schema_name,
-                    table_info.table_name,
-                    coalesce(partition_key.partition_key, '')
-                HAVING count(*) > 1
-            )
-            SELECT
-                schema_name,
-                table_name,
-                sum(partition_files) AS eligible_files,
-                sum(partition_bytes) AS eligible_bytes
-            FROM physical_partitions
-            GROUP BY schema_name, table_name
-            ORDER BY sum(partition_files) DESC, sum(partition_bytes) DESC,
-                     schema_name, table_name
-            """,
-            [
-                self.catalogue.config.schema,
-                INTERNAL_SCHEMA,
-                maximum_input_file_bytes,
-            ],
-        ).fetchall()
-        return [
-            (
-                str(schema_name),
-                str(table_name),
-                int(eligible_files),
-                int(eligible_bytes),
-            )
-            for schema_name, table_name, eligible_files, eligible_bytes in rows
-        ]
-
     def _record_crawl_batch_unfenced(
         self,
         entries: Sequence[CatalogueBatchEntry],
@@ -269,7 +92,7 @@ class CatalogueService:
         artifact_created: list[bool] = []
         crawl_created: list[bool] = []
 
-        with self.catalogue.lake.transaction():
+        with self.catalogue.transaction():
             batch_documents = [
                 entry.document for entry in entries if entry.document is not None
             ]
@@ -490,11 +313,10 @@ class CatalogueService:
 
             if replacement_documents:
                 identifiers = list(replacement_documents)
-                placeholders = ", ".join("?" for _ in identifiers)
-                self.catalogue.connection.execute(
+                values = ", ".join(_sql_literal(value) for value in identifiers)
+                self.catalogue.remote_execute(
                     f"DELETE FROM {self._table('elements')} "
-                    f"WHERE document_id IN ({placeholders})",
-                    identifiers,
+                    f"WHERE document_id IN ({values})"
                 )
 
             if new_urls:
@@ -558,31 +380,6 @@ class CatalogueService:
                 or replacement_documents
                 or new_crawls
             )
-            if made_changes:
-                self.catalogue.set_commit_message(
-                    author="Atlas repository",
-                    message=f"Ingested {len(entries)} crawl operation(s)",
-                    extra={
-                        "crawl_ids": [str(entry.crawl.crawl_id) for entry in entries],
-                        "new_documents": len(new_documents),
-                        "new_artifacts": len(new_artifacts),
-                        "new_crawls": len(new_crawls),
-                        "new_urls": len(new_urls),
-                        "crawl_attempts": sum(
-                            len(value) for value in new_crawl_attempts.values()
-                        ),
-                        "crawl_steps": sum(
-                            len(value) for value in new_crawl_steps.values()
-                        ),
-                        "element_rows": sum(
-                            entry.document.element_count
-                            for entry in entries
-                            if entry.document is not None
-                            and entry.document.document_id in element_paths
-                        ),
-                    },
-                )
-
         snapshot = (
             self.catalogue.last_committed_snapshot()
             if made_changes
@@ -614,9 +411,9 @@ class CatalogueService:
         ]
 
     def get_artifact(self, artifact_id: str) -> ArtifactRecord | None:
-        rows = self.catalogue.lake.sql_dicts(
+        rows = self.catalogue.sql_dicts(
             f"SELECT * FROM {self._table('artifacts')} WHERE artifact_id = $artifact_id",
-            artifact_id=artifact_id,
+            {"artifact_id": artifact_id},
         )
         row = _one_or_none(rows, identity=f"artifact_id {artifact_id!r}")
         return ArtifactRecord.model_validate(row) if row is not None else None
@@ -654,9 +451,9 @@ class CatalogueService:
         return result
 
     def get_document(self, document_id: str) -> DocumentRecord | None:
-        rows = self.catalogue.lake.sql_dicts(
+        rows = self.catalogue.sql_dicts(
             f"SELECT * FROM {self._table('documents')} WHERE document_id = $document_id",
-            document_id=document_id,
+            {"document_id": document_id},
         )
         row = _one_or_none(rows, identity=f"document_id {document_id!r}")
         return _document_from_row(row) if row is not None else None
@@ -684,9 +481,9 @@ class CatalogueService:
         return result
 
     def get_crawl(self, crawl_id: UUID) -> CrawlRecord | None:
-        rows = self.catalogue.lake.sql_dicts(
+        rows = self.catalogue.sql_dicts(
             f"SELECT * FROM {self._table('crawls')} WHERE crawl_id = $crawl_id",
-            crawl_id=crawl_id,
+            {"crawl_id": crawl_id},
         )
         row = _one_or_none(rows, identity=f"crawl_id {str(crawl_id)!r}")
         return _crawl_from_row(row) if row is not None else None
@@ -722,11 +519,11 @@ class CatalogueService:
         if captured_before is not None:
             conditions.append("captured_at < $captured_before")
             params["captured_before"] = captured_before
-        rows = self.catalogue.lake.sql_dicts(
+        rows = self.catalogue.sql_dicts(
             f"SELECT * FROM {self._table('crawls')} WHERE "
             + " AND ".join(conditions)
             + " ORDER BY captured_at DESC LIMIT $limit",
-            **params,
+            params,
         )
         return [_crawl_from_row(row) for row in rows]
 
@@ -751,7 +548,7 @@ class CatalogueService:
         elif offset:
             sql += " LIMIT ALL OFFSET $offset"
             params["offset"] = offset
-        rows = self.catalogue.lake.sql_dicts(sql, **params)
+        rows = self.catalogue.sql_dicts(sql, params)
         return [ElementRecord.model_validate(row) for row in rows]
 
     def iter_elements(
@@ -845,33 +642,33 @@ class CatalogueService:
         self,
         documents: Sequence[DocumentRecord],
     ) -> None:
-        placeholders = ", ".join(
-            "(" + ", ".join("?" for _ in range(6)) + ")" for _ in documents
-        )
-        parameters = [
-            value
-            for document in documents
-            for value in (
-                document.document_id,
-                document.dom_schema_version,
-                document.parser_name,
-                document.parser_version,
-                document.parser_options_hash,
-                document.element_count,
+        values = ", ".join(
+            "("
+            + ", ".join(
+                _sql_literal(value)
+                for value in (
+                    document.document_id,
+                    document.dom_schema_version,
+                    document.parser_name,
+                    document.parser_version,
+                    document.parser_options_hash,
+                    document.element_count,
+                )
             )
-        ]
-        self.catalogue.connection.execute(
+            + ")"
+            for document in documents
+        )
+        self.catalogue.remote_execute(
             f"UPDATE {self._table('documents')} AS target SET "
             "dom_schema_version = staged.dom_schema_version, "
             "parser_name = staged.parser_name, "
             "parser_version = staged.parser_version, "
             "parser_options_hash = staged.parser_options_hash, "
             "element_count = staged.element_count "
-            f"FROM (VALUES {placeholders}) AS staged("
+            f"FROM (VALUES {values}) AS staged("
             "document_id, dom_schema_version, parser_name, parser_version, "
             "parser_options_hash, element_count) "
-            "WHERE target.document_id = staged.document_id",
-            parameters,
+            "WHERE target.document_id = staged.document_id"
         )
 
     def _fetch_rows(
@@ -887,7 +684,7 @@ class CatalogueService:
         ]
 
     def _append(self, table_name: str, rows: list[dict[str, object]]) -> None:
-        self.catalogue.lake.table.append(
+        self.catalogue.append(
             table_name,
             rows,
             schema_name=self.catalogue.config.schema,
@@ -896,7 +693,7 @@ class CatalogueService:
     def _append_internal(
         self, table_name: str, rows: list[dict[str, object]]
     ) -> None:
-        self.catalogue.lake.table.append(
+        self.catalogue.append(
             table_name,
             rows,
             schema_name=INTERNAL_SCHEMA,
@@ -1134,3 +931,15 @@ def _one_or_none(
 
 def _quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
+
+
+def _sql_literal(value: object) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, datetime):
+        return "'" + value.isoformat().replace("'", "''") + "'"
+    return "'" + str(value).replace("'", "''") + "'"

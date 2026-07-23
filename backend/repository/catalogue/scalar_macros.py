@@ -35,17 +35,20 @@ class CatalogueScalarMacroStore:
         self.catalogue = catalogue
 
     def list(self) -> list[DuckLakeScalarMacro]:
-        rows = self.catalogue.connection.execute(
+        rows = self.catalogue.remote_rows(
             """
             SELECT schema_name, function_name, parameters
             FROM duckdb_functions()
-            WHERE database_name = ?
-              AND schema_name = ?
+            WHERE database_name = """
+            + _quote_literal(self.catalogue.config.alias)
+            + """
+              AND schema_name = """
+            + _quote_literal(SCALAR_MACRO_SCHEMA)
+            + """
               AND function_type = 'macro'
             ORDER BY function_name
-            """,
-            [self.catalogue.config.alias, SCALAR_MACRO_SCHEMA],
-        ).fetchall()
+            """
+        )
         return [
             DuckLakeScalarMacro(
                 schema_name=str(row[0]),
@@ -82,7 +85,7 @@ class CatalogueScalarMacroStore:
 
     def drop(self, *, name: str) -> None:
         _validate_name(name, "Scalar macro name")
-        self.catalogue.connection.execute(
+        self.catalogue.remote_execute(
             f"DROP MACRO IF EXISTS {_qualified(self.catalogue, name)}"
         )
 
@@ -95,12 +98,7 @@ class CatalogueScalarMacroStore:
         sql: str,
     ) -> None:
         signature = ", ".join(_quote_identifier(value) for value in parameters)
-        namespace = ".".join(
-            _quote_identifier(part)
-            for part in (self.catalogue.config.alias, self.catalogue.config.schema)
-        )
-        self.catalogue.connection.execute(f"USE {namespace}")
-        self.catalogue.connection.execute(
+        self.catalogue.remote_execute(
             f"{operation} {_qualified(self.catalogue, name)}({signature}) "
             f"AS ({sql.strip()})"
         )
@@ -144,3 +142,7 @@ def _qualified(catalogue: Catalogue, name: str) -> str:
 
 def _quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
+
+
+def _quote_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"

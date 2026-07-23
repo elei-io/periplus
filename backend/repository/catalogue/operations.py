@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
+import hashlib
 import logging
 import time
 from typing import Callable, TypeVar
 from uuid import UUID
 
 import duckdb
-from ducklake_client import DuckLakeFenceError, FenceSpec
 import psycopg
 
+from config import get_str
 from config.performance import (
     CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS,
     CATALOGUE_OPERATION_MAX_ATTEMPTS,
@@ -36,17 +37,13 @@ def operation_lock(catalogue: Catalogue, operation_id: str) -> Iterator[None]:
 def operation_locks(
     catalogue: Catalogue, operation_ids: Iterable[str]
 ) -> Iterator[None]:
-    """Fence independent mutation identities through one catalogue session."""
+    """Fence independent identities in Atlas's remote control-plane Postgres."""
 
-    fences = [
-        FenceSpec.exclusive("operation", operation_id)
+    keys = [
+        _advisory_key("operation", operation_id)
         for operation_id in sorted(set(operation_ids))
     ]
-    with catalogue.lake.fence_set(
-        *fences,
-        namespace="atlas",
-        timeout=CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS,
-    ):
+    with _advisory_locks(keys):
         yield
 
 
@@ -60,32 +57,28 @@ def repository_commit_lock(
 ) -> Iterator[None]:
     """Fence every independently overlapping identity in one repository batch."""
 
-    fences = [
+    keys = [
         *(
-            FenceSpec.exclusive("crawl", str(crawl_id))
+            _advisory_key("crawl", str(crawl_id))
             for crawl_id in sorted(set(crawl_ids), key=str)
         ),
         *(
-            FenceSpec.exclusive("content", content_id)
+            _advisory_key("content", content_id)
             for content_id in sorted(set(content_ids))
         ),
         *(
-            FenceSpec.exclusive("url", url_id)
+            _advisory_key("url", url_id)
             for url_id in sorted(set(url_ids))
         ),
     ]
-    with catalogue.lake.fence_set(
-        *fences,
-        namespace="atlas",
-        timeout=CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS,
-    ):
+    with _advisory_locks(keys):
         yield
 
 
 def is_retryable_catalogue_unavailability(exc: BaseException) -> bool:
     """Return whether durable work must remain live across this failure."""
 
-    return isinstance(exc, (DuckLakeFenceError, psycopg.OperationalError))
+    return isinstance(exc, psycopg.OperationalError)
 
 
 def run_with_catalogue_retry(
@@ -121,3 +114,24 @@ def run_with_catalogue_retry(
             time.sleep(delay)
             delay = min(maximum_delay, max(delay * 2, 0.001))
     raise AssertionError("unreachable")
+
+
+@contextmanager
+def _advisory_locks(keys: Sequence[int]) -> Iterator[None]:
+    with psycopg.connect(get_str("DATABASE_URL")) as connection:
+        with connection.transaction():
+            connection.execute(
+                "SELECT set_config('lock_timeout', %s, true)",
+                [f"{CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS}s"],
+            )
+            for key in sorted(set(keys)):
+                connection.execute("SELECT pg_advisory_xact_lock(%s)", [key])
+            yield
+
+
+def _advisory_key(kind: str, identity: str) -> int:
+    digest = hashlib.blake2b(
+        f"atlas\\0{kind}\\0{identity}".encode(),
+        digest_size=8,
+    ).digest()
+    return int.from_bytes(digest, byteorder="big", signed=True)

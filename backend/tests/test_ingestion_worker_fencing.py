@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from ducklake_client import DuckLakeFenceError
+import psycopg
 
 from repository.ingestion.worker import (
     _commit_batch_isolated,
@@ -118,12 +118,12 @@ class IngestionFenceFailureTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         ingestor = MagicMock()
-        ingestor.commit_prepared_batch.side_effect = DuckLakeFenceError(
+        ingestor.commit_prepared_batch.side_effect = psycopg.OperationalError(
             "catalogue unavailable"
         )
         jobs = [
-            SimpleNamespace(request_id="first"),
-            SimpleNamespace(request_id="second"),
+            SimpleNamespace(request_id="first", enqueued_at=datetime.now(UTC)),
+            SimpleNamespace(request_id="second", enqueued_at=datetime.now(UTC)),
         ]
         messages = [
             SimpleNamespace(

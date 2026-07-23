@@ -5,7 +5,7 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
 repository storage, DOM generation, NATS, or DuckLake. Read
 [docs/HAZARDS.md](docs/HAZARDS.md) before adding a service, queue, persistence path, compatibility
 layer, or abstraction. Read [docs/WORKER_ARCHITECTURE.md](docs/WORKER_ARCHITECTURE.md) before
-changing worker ownership, queue routing, embedded DuckDB use, or deployment scaling.
+changing worker ownership, queue routing, managed DuckDB use, or deployment scaling.
 
 ## Non-negotiable boundaries
 
@@ -31,23 +31,24 @@ changing worker ownership, queue routing, embedded DuckDB use, or deployment sca
   service owns transport choice, browser-farm capacity, profiles, and acquisition strategy.
 - Ingestion workers own base crawl/DOM/system-projection writes. They are independently observable
   `critical` catalogue work, never settle graph traversal, and never wait for user materialization.
-- The catalogue relay publishes per-table DuckLake DML ticks and global DDL changes to JetStream.
+- The catalogue ingress consumes Basin-owned global DML/DDL JetStream streams, publishes per-table
+  DML ticks and global DDL changes into Atlas JetStream, and ACKs Basin only after Atlas PubAcks.
   Each materialization owns one filtered durable NATS consumer, coalesces ticks, and commits one
   whole-table refresh while retaining a stable target identity. There is no scope queue, coverage
   table, revision fence, fan-out ledger, or separate commit queue.
-- Each ingestion or materialization process owns its embedded DuckDB connection and initially runs
-  one catalogue operation at a time. Horizontal replicas provide executor capacity; Resource
-  Governor budgets cap combined DuckLake and object-store pressure across replicas.
+- Every DuckLake caller owns one session-affine DuckBasin connection minted with a service-account
+  token and initially runs one catalogue operation at a time. Horizontal replicas provide executor
+  capacity; Resource Governor budgets cap combined remote DuckLake and object-store pressure.
 - Page-only graph edges use bounded standalone DuckDB connections. Historical edge joins use a
   pinned snapshot through one serialized, read-only catalogue operation per acquisition process.
-- The maintenance worker performs bounded off-path upkeep under proportional background catalogue
-  and object-store permits. It runs concurrently with foreground work, never installs a global
-  drain barrier, and does not use a bespoke maintenance-active polling protocol.
+- DuckBasin owns compaction, old-file cleanup, and physical lake maintenance. Atlas housekeeping
+  only reclaims Atlas-owned staging and navigation objects.
 - Capacity permits, operation leases, and PostgreSQL advisory commit locks are distinct. Permits
   control pressure, leases suppress duplicate execution, and advisory locks fence correctness.
 - The Resource Governor is a narrow admission controller. It never owns work delivery, workflow
   completion, materialization lifecycle, or a generic catalogue RPC surface.
-- DuckLake owns analytical Parquet layout and compaction. Do not create permanent per-crawl files.
+- DuckBasin owns DuckLake metadata, analytical Parquet layout, compaction, and lake storage. Atlas
+  uploads bounded local Arrow/Parquet batches through Quack and does not receive lake S3 credentials.
 - Acquisition workers connect to the configured standard CDP endpoint. Atlas owns content correctness,
   including when scrolling is required; the CDP service owns rendering and physical capacity.
 - API and CLI code validate and adapt. Graph execution belongs in runtime, acquisition belongs in
@@ -62,11 +63,11 @@ changing worker ownership, queue routing, embedded DuckDB use, or deployment sca
   catalogue definitions.
 - `backend/runtime/` — NATS-backed graph runs, crawl requests, queues, progress, workers, admission,
   deduplication, operation leases, and resource governance.
-- `backend/workers/` — CDP acquisition, ingestion, materialization, and maintenance
+- `backend/workers/` — CDP acquisition, ingestion, materialization, catalogue ingress, and housekeeping
   process entrypoints. Resource governance is a shared `runtime/` contract, not a worker service.
 - `backend/repository/objects/` — immutable content-addressed raw HTML.
 - `backend/repository/ingestion/` — repository queue, pipeline, writer, health, and recovery.
-- `backend/repository/catalogue/` — private DuckLake implementation.
+- `backend/repository/catalogue/` — DuckBasin connection minter and logical DuckLake boundary.
 - `backend/repository/service.py` — application-facing durable repository boundary.
 - `backend/dom/` — versioned structural DOM projection.
 - `backend/api/` and `backend/cli/` — thin adapters.
@@ -102,27 +103,13 @@ npm run typecheck
 npm run build
 ```
 
-## Dogfooded DuckLake libraries
+## DuckBasin and Quack upstream
 
-Atlas intentionally dogfoods the maintainer's DuckLake libraries:
-
-- `ducklake-client` — Python catalogue client used by the repository; local source at
-  `/Users/ekku/Code/quack/ducklake-python-client`.
-- `ducklake-cdc` — DuckDB extension providing durable DuckLake change streams; local source at
-  `/Users/ekku/Code/quack/ducklake-cdc-extension`.
-- `ducklake-cdc-client` — Python CDC client intended for publication consumers; local source at
-  `/Users/ekku/Code/quack/ducklake-cdc-python-client`.
-
-Treat these as actively maintained upstreams, not immutable third-party constraints. When Atlas
-reveals a missing primitive, awkward API, correctness risk, performance problem, or documentation
-gap, prefer a small coherent upstream improvement over an Atlas-only wrapper, workaround, or copied
-implementation. Record actionable findings in [UPSTREAM.md](UPSTREAM.md), including evidence and the
-Atlas use case. The maintainer expects candid feedback and can publish updated packages quickly.
-
-Do not silently depend on unpublished local upstream changes. Unless the user explicitly asks for
-cross-repository work, change only Atlas and report the upstream need. After an upstream release,
-consume its published package normally, update the lockfile, and remove any temporary Atlas code
-that the released capability supersedes.
+Atlas intentionally uses only the official DuckDB Python package plus Quack for managed DuckLake
+access. Do not reintroduce a Basin SDK, `ducklake-client`, local DuckLake attachment configuration,
+lake object-store credentials, or Atlas-owned CDC cursors. When Atlas reveals a missing Quack or
+DuckBasin primitive, record actionable evidence in [UPSTREAM.md](UPSTREAM.md) and prefer a coherent
+upstream fix over an Atlas-only compatibility layer.
 
 ## Implementation rules
 

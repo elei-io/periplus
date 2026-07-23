@@ -36,17 +36,20 @@ class CatalogueTableMacroStore:
         self.catalogue = catalogue
 
     def list(self) -> list[DuckLakeTableMacro]:
-        rows = self.catalogue.connection.execute(
+        rows = self.catalogue.remote_rows(
             """
             SELECT schema_name, function_name, parameters
             FROM duckdb_functions()
-            WHERE database_name = ?
-              AND schema_name = ?
+            WHERE database_name = """
+            + _quote_literal(self.catalogue.config.alias)
+            + """
+              AND schema_name = """
+            + _quote_literal(TABLE_MACRO_SCHEMA)
+            + """
               AND function_type = 'table_macro'
             ORDER BY function_name
-            """,
-            [self.catalogue.config.alias, TABLE_MACRO_SCHEMA],
-        ).fetchall()
+            """
+        )
         return [
             DuckLakeTableMacro(
                 schema_name=str(row[0]),
@@ -101,7 +104,7 @@ class CatalogueTableMacroStore:
 
     def drop(self, *, name: str) -> None:
         _validate_name(name, "Table macro name")
-        self.catalogue.connection.execute(
+        self.catalogue.remote_execute(
             f"DROP MACRO TABLE IF EXISTS {_qualified(self.catalogue, name)}"
         )
 
@@ -123,12 +126,7 @@ class CatalogueTableMacroStore:
             )
             for value in parameters
         )
-        namespace = ".".join(
-            _quote_identifier(part)
-            for part in (self.catalogue.config.alias, self.catalogue.config.schema)
-        )
-        self.catalogue.connection.execute(f"USE {namespace}")
-        self.catalogue.connection.execute(
+        self.catalogue.remote_execute(
             f"{operation} {_qualified(self.catalogue, name)}({signature}) "
             f"AS TABLE ({compiled})"
         )
@@ -203,3 +201,7 @@ def _qualified(catalogue: Catalogue, name: str) -> str:
 
 def _quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
+
+
+def _quote_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"

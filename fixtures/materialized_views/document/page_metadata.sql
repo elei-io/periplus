@@ -97,7 +97,8 @@ WITH raw_candidates AS (
                  ) = 'og:image'
             THEN macros.get_attribute(attributes, 'content')
         END AS open_graph_image
-    FROM elements
+    FROM documents AS document
+    JOIN elements AS element USING (document_id)
     WHERE tag IN ('html', 'title', 'meta', 'link', 'base')
 ),
 candidates AS (

@@ -6,12 +6,17 @@ from dataclasses import dataclass
 import re
 from uuid import UUID
 
+from sqlglot import exp
+
 from repository.catalogue.client import Catalogue
 from repository.catalogue.query import classify_select
 
 
 MATERIALIZED_SCHEMA = "_atlas_materializations"
 _SAFE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+_CHANGED_KEYS_TABLE = "_atlas_materialization_changed_keys"
+_SCOPED_SOURCE_ALIAS = "_atlas_materialization_source"
+_SCOPED_CHANGED_ALIAS = "_atlas_materialization_changed"
 
 
 class MaterializationError(ValueError):
@@ -36,7 +41,6 @@ class DuckLakeTableIdentity:
     table_uuid: UUID
     schema_name: str
     table_name: str
-    begin_snapshot: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,31 +63,30 @@ class MaterializationStore:
         self, name: str, *, schema_name: str | None = None
     ) -> DuckLakeTableIdentity:
         schema_name = schema_name or self.catalogue.config.schema
-        metadata = _quote_identifier(
-            f"__ducklake_metadata_{self.catalogue.config.alias}"
-        )
-        metadata_schema = _quote_identifier(self.catalogue.metadata_schema)
-        row = self.catalogue.connection.execute(
+        alias = _quote_literal(self.catalogue.config.alias)
+        rows = self.catalogue.remote_rows(
             f"""
-            SELECT t.table_id, t.table_uuid, s.schema_name, t.table_name,
-                   t.begin_snapshot
-            FROM {metadata}.{metadata_schema}.ducklake_table AS t
-            JOIN {metadata}.{metadata_schema}.ducklake_schema AS s USING (schema_id)
-            WHERE t.end_snapshot IS NULL AND s.end_snapshot IS NULL
-              AND s.schema_name = ? AND t.table_name = ?
-            """,
-            [schema_name, name],
-        ).fetchone()
-        if row is None:
+            SELECT tables.table_id,
+                   tables.table_uuid,
+                   names.table_schema,
+                   tables.table_name
+            FROM ducklake_table_info({alias}) AS tables
+            JOIN information_schema.tables AS names USING (table_name)
+            WHERE names.table_catalog = {alias}
+              AND names.table_schema = {_quote_literal(schema_name)}
+              AND tables.table_name = {_quote_literal(name)}
+            """
+        )
+        if len(rows) != 1:
             raise MaterializationError(
                 f"DuckLake table {schema_name}.{name} does not exist."
             )
+        row = rows[0]
         return DuckLakeTableIdentity(
             table_id=int(row[0]),
             table_uuid=UUID(str(row[1])),
             schema_name=str(row[2]),
             table_name=str(row[3]),
-            begin_snapshot=int(row[4]),
         )
 
     def validate_refresh_strategy(
@@ -112,6 +115,11 @@ class MaterializationStore:
             raise MaterializationError("Key columns must not contain duplicates.")
         for column in key_columns:
             _validate_name(column)
+        self._scope_incremental_query(
+            sql,
+            source_table=source_table,
+            key_columns=key_columns,
+        )
         source_columns = self._relation_columns(
             _qualified_source(self.catalogue, source_table)
         )
@@ -150,11 +158,11 @@ class MaterializationStore:
             )
         query = sql.strip().removesuffix(";")
         self._use_main()
-        with self.catalogue.lake.transaction():
+        with self.catalogue.remote_transaction():
             source_snapshot = self.catalogue.latest_snapshot()
             if source_snapshot is None:
                 raise MaterializationError("DuckLake has no source snapshot.")
-            self.catalogue.connection.execute(
+            self.catalogue.remote_execute(
                 f"CREATE TABLE {_qualified(self.catalogue, name)} AS "
                 f"SELECT * FROM ({query}) AS materialized_source"
             )
@@ -176,12 +184,12 @@ class MaterializationStore:
         classify_select(sql)
         query = sql.strip().removesuffix(";")
         self._use_main()
-        with self.catalogue.lake.transaction():
-            self.catalogue.connection.execute(
+        with self.catalogue.remote_transaction():
+            self.catalogue.remote_execute(
                 f"DELETE FROM {_qualified(self.catalogue, name)}"
             )
             try:
-                self.catalogue.connection.execute(
+                self.catalogue.remote_execute(
                     f"INSERT INTO {_qualified(self.catalogue, name)} "
                     f"SELECT * FROM ({query}) AS materialized_source"
                 )
@@ -198,14 +206,18 @@ class MaterializationStore:
         name: str,
         expected_uuid: UUID,
         sql: str,
+        source_table: str,
         source_table_id: int,
         from_snapshot: int,
         to_snapshot: int,
         key_columns: tuple[str, ...],
     ) -> MaterializationTable:
         current = self._checked_target(name, expected_uuid)
-        classify_select(sql)
-        query = sql.strip().removesuffix(";")
+        query = self._scope_incremental_query(
+            sql,
+            source_table=source_table,
+            key_columns=key_columns,
+        )
         self._use_main()
         try:
             self._prepare_changes(
@@ -219,14 +231,14 @@ class MaterializationStore:
             target = _qualified(self.catalogue, name)
             target_match = _key_match("materialized_target", "changed", key_columns)
             source_match = _key_match("materialized_source", "changed", key_columns)
-            with self.catalogue.lake.transaction():
-                self.catalogue.connection.execute(
+            with self.catalogue.remote_transaction():
+                self.catalogue.remote_execute(
                     f"DELETE FROM {target} AS materialized_target "
                     "WHERE EXISTS (SELECT 1 FROM _atlas_materialization_changed_keys "
                     f"AS changed WHERE {target_match})"
                 )
                 try:
-                    self.catalogue.connection.execute(
+                    self.catalogue.remote_execute(
                         f"INSERT INTO {target} "
                         f"SELECT materialized_source.* FROM ({query}) "
                         "AS materialized_source "
@@ -249,14 +261,18 @@ class MaterializationStore:
         name: str,
         expected_uuid: UUID,
         sql: str,
+        source_table: str,
         source_table_id: int,
         from_snapshot: int,
         to_snapshot: int,
         key_columns: tuple[str, ...],
     ) -> MaterializationTable:
         current = self._checked_target(name, expected_uuid)
-        classify_select(sql)
-        query = sql.strip().removesuffix(";")
+        query = self._scope_incremental_query(
+            sql,
+            source_table=source_table,
+            key_columns=key_columns,
+        )
         self._use_main()
         try:
             self._prepare_changes(
@@ -265,11 +281,11 @@ class MaterializationStore:
                 to_snapshot=to_snapshot,
                 key_columns=key_columns,
             )
-            mutation = self.catalogue.connection.execute(
+            mutations = self.catalogue.remote_rows(
                 "SELECT change_type FROM _atlas_materialization_changes "
                 "WHERE change_type <> 'insert' LIMIT 1"
-            ).fetchone()
-            if mutation is not None:
+            )
+            if mutations:
                 raise MaterializationAppendOnlyViolation(
                     "The driving table emitted a non-insert change. "
                     "Dematerialize and choose keyed or full refresh."
@@ -292,8 +308,8 @@ class MaterializationStore:
                     "Append key columns must uniquely identify every result row."
                 )
             try:
-                with self.catalogue.lake.transaction():
-                    self.catalogue.connection.execute(
+                with self.catalogue.remote_transaction():
+                    self.catalogue.remote_execute(
                         f"INSERT INTO {target} "
                         f"SELECT candidate.* FROM ({candidates}) AS candidate "
                         f"WHERE NOT EXISTS (SELECT 1 FROM {target} "
@@ -316,7 +332,7 @@ class MaterializationStore:
             raise MaterializationConflictError(
                 "The materialized table identity changed; removal stopped."
             )
-        self.catalogue.connection.execute(
+        self.catalogue.remote_execute(
             f"DROP TABLE {_qualified(self.catalogue, name)}"
         )
 
@@ -336,7 +352,7 @@ class MaterializationStore:
             raise MaterializationError(
                 "Daily partitioning requires a DATE or TIMESTAMP result column."
             )
-        self.catalogue.connection.execute(
+        self.catalogue.remote_execute(
             f"ALTER TABLE {_qualified(self.catalogue, name)} SET PARTITIONED BY "
             f"(year({_quote_identifier(column)}), month({_quote_identifier(column)}), "
             f"day({_quote_identifier(column)}))"
@@ -345,62 +361,45 @@ class MaterializationStore:
 
     def inspect(self, name: str) -> MaterializationTable:
         try:
-            info = self.catalogue.lake.table.info(
-                name,
-                schema_name=MATERIALIZED_SCHEMA,
-                include_summary=False,
-                include_row_count=True,
-                include_snapshots=False,
-            )
             identity = self.table_identity(name, schema_name=MATERIALIZED_SCHEMA)
+            relation = _qualified(self.catalogue, name)
+            columns = self.catalogue.remote_rows(f"DESCRIBE {relation}")
+            counts = self.catalogue.remote_rows(
+                f"SELECT count(*) FROM {relation}"
+            )
+            alias = _quote_literal(self.catalogue.config.alias)
+            stats = self.catalogue.remote_rows(
+                "SELECT file_count, file_size_bytes "
+                f"FROM ducklake_table_info({alias}) "
+                f"WHERE table_id = {identity.table_id}"
+            )
         except Exception as exc:
             raise MaterializationConflictError(
                 f"Materialized table {name} is unavailable."
             ) from exc
-        metadata = _quote_identifier(
-            f"__ducklake_metadata_{self.catalogue.config.alias}"
-        )
-        metadata_schema = _quote_identifier(self.catalogue.metadata_schema)
-        file_stats = self.catalogue.connection.execute(
-            f"""
-            SELECT count(*), coalesce(sum(f.file_size_bytes), 0)
-            FROM {metadata}.{metadata_schema}.ducklake_data_file AS f
-            WHERE f.end_snapshot IS NULL AND f.table_id = ?
-            """,
-            [identity.table_id],
-        ).fetchone()
-        partition_rows = self.catalogue.connection.execute(
-            f"""
-            SELECT pc.transform, c.column_name
-            FROM {metadata}.{metadata_schema}.ducklake_partition_info AS pi
-            JOIN {metadata}.{metadata_schema}.ducklake_partition_column AS pc
-              ON pc.partition_id = pi.partition_id AND pc.table_id = pi.table_id
-            JOIN {metadata}.{metadata_schema}.ducklake_column AS c
-              ON c.table_id = pc.table_id AND c.column_id = pc.column_id
-            WHERE pi.end_snapshot IS NULL AND c.end_snapshot IS NULL
-              AND pi.table_id = ?
-            ORDER BY pc.partition_key_index
-            """,
-            [identity.table_id],
-        ).fetchall()
+        file_count, storage_bytes = stats[0] if stats else (0, 0)
         return MaterializationTable(
             table_id=identity.table_id,
             table_uuid=identity.table_uuid,
             name=name,
-            row_count=int(info.row_count or 0),
+            row_count=int(counts[0][0] if counts else 0),
             columns=tuple(
-                (column.name, column.data_type, column.nullable)
-                for column in info.columns
+                (
+                    str(column[0]),
+                    str(column[1]),
+                    str(column[2]).upper() == "YES",
+                )
+                for column in columns
             ),
-            active_file_count=int(file_stats[0] if file_stats else 0),
-            active_storage_bytes=int(file_stats[1] if file_stats else 0),
-            partitioning=tuple(f"{row[0]}({row[1]})" for row in partition_rows),
+            active_file_count=int(file_count or 0),
+            active_storage_bytes=int(storage_bytes or 0),
+            partitioning=(),
         )
 
     def _use_main(self) -> None:
-        self.catalogue.connection.execute(
-            f'USE "{self.catalogue.config.alias}"."{self.catalogue.config.schema}"'
-        )
+        # Basin sessions start in the selected lake's main schema. All
+        # Atlas-owned mutation targets are fully qualified.
+        return
 
     def _checked_target(
         self, name: str, expected_uuid: UUID
@@ -424,56 +423,158 @@ class MaterializationStore:
             raise MaterializationError("The CDC snapshot range is reversed.")
         columns = ", ".join(_quote_identifier(column) for column in key_columns)
         alias = _quote_literal(self.catalogue.config.alias)
-        self.catalogue.connection.execute(
+        schema = _quote_literal(self.catalogue.config.schema)
+        source = self.table_identity_from_id(source_table_id)
+        self.catalogue.remote_execute(
             "CREATE OR REPLACE TEMP TABLE _atlas_materialization_changes AS "
-            f"SELECT change_type, {columns} FROM cdc_dml_changes_query("
-            f"{alias}, {int(from_snapshot)}, {int(to_snapshot)}, "
-            f"table_id := {int(source_table_id)})"
+            f"SELECT change_type, {columns} FROM ducklake_table_changes("
+            f"{alias}, {schema}, {_quote_literal(source.table_name)}, "
+            f"{int(from_snapshot)}, {int(to_snapshot)})"
         )
-        self.catalogue.connection.execute(
+        self.catalogue.remote_execute(
             "CREATE OR REPLACE TEMP TABLE _atlas_materialization_changed_keys AS "
             f"SELECT DISTINCT {columns} FROM _atlas_materialization_changes"
         )
 
     def _drop_changes(self) -> None:
-        self.catalogue.connection.execute(
+        self.catalogue.remote_execute(
             "DROP TABLE IF EXISTS _atlas_materialization_changed_keys"
         )
-        self.catalogue.connection.execute(
+        self.catalogue.remote_execute(
             "DROP TABLE IF EXISTS _atlas_materialization_changes"
         )
 
     def _has_changed_keys(self) -> bool:
-        row = self.catalogue.connection.execute(
+        rows = self.catalogue.remote_rows(
             "SELECT EXISTS(SELECT 1 FROM _atlas_materialization_changed_keys)"
-        ).fetchone()
-        return bool(row and row[0])
+        )
+        return bool(rows and rows[0][0])
+
+    def _scope_incremental_query(
+        self,
+        sql: str,
+        *,
+        source_table: str,
+        key_columns: tuple[str, ...],
+    ) -> str:
+        """Restrict every physical driving-table scan before evaluating the query."""
+
+        statement = classify_select(sql).copy()
+        cte_names = {
+            cte.alias_or_name.lower()
+            for cte in statement.find_all(exp.CTE)
+            if cte.alias_or_name
+        }
+        if source_table.lower() in cte_names:
+            raise MaterializationError(
+                f"Incremental materialization SQL may not shadow its driving table "
+                f"{source_table!r} with a CTE."
+            )
+        if any(
+            table.name.lower() == _CHANGED_KEYS_TABLE
+            for table in statement.find_all(exp.Table)
+        ):
+            raise MaterializationError(
+                f"Materialization SQL may not read the reserved relation "
+                f"{_CHANGED_KEYS_TABLE}."
+            )
+
+        sources = [
+            table
+            for table in statement.find_all(exp.Table)
+            if self._is_driving_table(table, source_table)
+        ]
+        if not sources:
+            raise MaterializationError(
+                "Incremental materialization SQL must directly read its declared "
+                f"driving table {source_table!r}."
+            )
+
+        source_alias = _quote_identifier(_SCOPED_SOURCE_ALIAS)
+        changed_alias = _quote_identifier(_SCOPED_CHANGED_ALIAS)
+        changed_table = _quote_identifier(_CHANGED_KEYS_TABLE)
+        predicate = _key_match(
+            _SCOPED_SOURCE_ALIAS,
+            _SCOPED_CHANGED_ALIAS,
+            key_columns,
+        )
+        for source in sources:
+            base = source.copy()
+            outer_alias = base.args.pop("alias", None)
+            base_sql = base.sql(dialect="duckdb")
+            scoped = classify_select(
+                f"SELECT {source_alias}.* FROM {base_sql} AS {source_alias} "
+                f"WHERE EXISTS (SELECT 1 FROM {changed_table} AS {changed_alias} "
+                f"WHERE {predicate})"
+            )
+            if outer_alias is None:
+                outer_alias = exp.TableAlias(this=exp.to_identifier(source_table))
+            source.replace(exp.Subquery(this=scoped, alias=outer_alias))
+        return statement.sql(dialect="duckdb")
+
+    def _is_driving_table(self, table: exp.Table, source_table: str) -> bool:
+        return (
+            isinstance(table.this, exp.Identifier)
+            and table.name.lower() == source_table.lower()
+            and (
+                not table.db
+                or table.db.lower() == self.catalogue.config.schema.lower()
+            )
+            and (
+                not table.catalog
+                or table.catalog.lower() == self.catalogue.config.alias.lower()
+            )
+        )
 
     def _has_duplicate_keys(
         self, *, relation: str, key_columns: tuple[str, ...]
     ) -> bool:
         columns = ", ".join(_quote_identifier(column) for column in key_columns)
-        row = self.catalogue.connection.execute(
+        rows = self.catalogue.remote_rows(
             f"SELECT EXISTS(SELECT 1 FROM {relation} AS keyed_rows "
             f"GROUP BY {columns} HAVING count(*) > 1)"
-        ).fetchone()
-        return bool(row and row[0])
+        )
+        return bool(rows and rows[0][0])
 
     def _relation_columns(self, relation: str) -> set[str]:
         self._use_main()
-        cursor = self.catalogue.connection.execute(
-            f"SELECT * FROM {relation} LIMIT 0"
-        )
-        return {str(column[0]) for column in cursor.description}
+        rows = self.catalogue.remote_rows(f"DESCRIBE {relation}")
+        return {str(row[0]) for row in rows}
 
     def _query_columns(self, sql: str) -> set[str]:
         classify_select(sql)
         query = sql.strip().removesuffix(";")
         self._use_main()
-        rows = self.catalogue.connection.execute(
+        rows = self.catalogue.remote_rows(
             f"DESCRIBE SELECT * FROM ({query}) AS materialized_source"
-        ).fetchall()
+        )
         return {str(row[0]) for row in rows}
+
+    def table_identity_from_id(self, table_id: int) -> DuckLakeTableIdentity:
+        alias = _quote_literal(self.catalogue.config.alias)
+        rows = self.catalogue.remote_rows(
+            f"""
+            SELECT tables.table_id,
+                   tables.table_uuid,
+                   names.table_schema,
+                   tables.table_name
+            FROM ducklake_table_info({alias}) AS tables
+            JOIN information_schema.tables AS names USING (table_name)
+            WHERE names.table_catalog = {alias}
+              AND tables.table_id = {int(table_id)}
+            """
+        )
+        if len(rows) != 1:
+            raise MaterializationError(
+                f"DuckLake table ID {table_id} does not exist."
+            )
+        row = rows[0]
+        return DuckLakeTableIdentity(
+            table_id=int(row[0]),
+            table_uuid=UUID(str(row[1])),
+            schema_name=str(row[2]),
+            table_name=str(row[3]),
+        )
 
 
 def _validate_name(value: str) -> None:

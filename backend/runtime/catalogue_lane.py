@@ -1,4 +1,4 @@
-"""One embedded-catalogue execution lane per worker process."""
+"""One managed-catalogue execution lane per worker process."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def catalogue_operation_lane() -> asyncio.Lock:
 async def run_catalogue_operation(
     function: Callable[..., T], *args, **kwargs
 ) -> T:
-    """Run one blocking embedded-DuckDB operation in the process-owned lane."""
+    """Run one blocking managed-DuckDB operation in the process-owned lane."""
 
     async with catalogue_operation_lane():
         task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))

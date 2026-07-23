@@ -1,4 +1,4 @@
-"""Prometheus metrics for the DuckLake CDC to JetStream publication boundary."""
+"""Prometheus metrics for the Basin-to-Atlas catalogue-event boundary."""
 
 from __future__ import annotations
 

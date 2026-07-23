@@ -355,7 +355,7 @@ def main() -> None:
                 "atlas-acquisition-worker",
                 "atlas-ingestion-worker",
                 "atlas-materialization-worker",
-                "atlas-maintenance-worker",
+                "atlas-housekeeping-worker",
             )
         except Exception as exc:
             print(f"warning: worker restoration failed: {exc}")

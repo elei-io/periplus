@@ -10,7 +10,10 @@ import duckdb
 from control.catalogue_materializations.models import CatalogueMaterialization
 from control.catalogue_views.models import CatalogueViewReference
 from db.session import session_scope
-from repository.catalogue.materializations import MaterializationStore
+from repository.catalogue.materializations import (
+    MaterializationError,
+    MaterializationStore,
+)
 from repository.catalogue.views import CatalogueViewStore
 from repository.catalogue.views import CatalogueViewError
 
@@ -57,12 +60,15 @@ def dematerialize_one(catalogue, materialization_id: UUID) -> None:
             # unbindable. Removal must still self-destruct cleanly.
             view_store.drop(current_uuid=current_uuid)
         if model.ducklake_table_uuid is not None:
-            present = any(
-                table.table_name == model.name
-                for table in catalogue.lake.table.list(
-                    schema_name="_atlas_materializations"
+            try:
+                MaterializationStore(catalogue).table_identity(
+                    model.name,
+                    schema_name="_atlas_materializations",
                 )
-            )
+            except MaterializationError:
+                present = False
+            else:
+                present = True
             if present:
                 MaterializationStore(catalogue).drop(
                     name=model.name,

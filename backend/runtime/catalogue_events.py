@@ -7,9 +7,6 @@ from uuid import UUID
 
 from config import get_float, get_int
 from nats.js.api import (
-    AckPolicy,
-    ConsumerConfig,
-    DeliverPolicy,
     DiscardPolicy,
     RetentionPolicy,
     StorageType,
@@ -25,7 +22,6 @@ DML_ALL_SUBJECT = f"{DML_SUBJECT_PREFIX}.*"
 DDL_SUBJECT = "atlas.catalogue.ddl"
 EVENT_SUBJECTS = (DML_ALL_SUBJECT, DDL_SUBJECT)
 DDL_RECONCILER_DURABLE = "atlas-materialization-ddl-reconciler"
-MAINTENANCE_WAKE_DURABLE = "atlas-maintenance-catalogue-wakeups"
 
 
 class CatalogueDMLTick(BaseModel):
@@ -73,25 +69,20 @@ def materialization_durable(materialization_id: UUID) -> str:
     return f"atlas-materialization-{materialization_id.hex}"
 
 
-def relay_dml_consumer() -> str:
-    return "atlas-catalogue-dml-relay"
+def basin_ddl_subject(lake: str) -> str:
+    return f"basin.cdc.{lake}.lake.ddl"
 
 
-def relay_ddl_consumer() -> str:
-    return "atlas-catalogue-global-ddl-relay"
+def basin_dml_subject(lake: str) -> str:
+    return f"basin.cdc.{lake}.lake.dml_ticks"
 
 
-def maintenance_wake_consumer_config() -> ConsumerConfig:
-    """A retained wake-up cursor, not a maintenance-work ledger."""
+def basin_ddl_durable(lake: str) -> str:
+    return f"atlas-basin-{lake}-ddl"
 
-    return ConsumerConfig(
-        durable_name=MAINTENANCE_WAKE_DURABLE,
-        deliver_policy=DeliverPolicy.NEW,
-        ack_policy=AckPolicy.EXPLICIT,
-        ack_wait=30,
-        max_ack_pending=1000,
-        filter_subject=DML_ALL_SUBJECT,
-    )
+
+def basin_dml_durable(lake: str) -> str:
+    return f"atlas-basin-{lake}-dml"
 
 
 async def ensure_catalogue_event_stream(jetstream) -> None:

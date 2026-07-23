@@ -14,13 +14,14 @@ from typing import TypeVar
 from uuid import UUID, uuid4
 
 import duckdb
-from ducklake_client import PostgresCatalog
-from ducklake_client._attach import build_attach_sql
 import pyarrow as pa
 
-from config import get_bool, get_float, get_int, get_str
+from config import get_float, get_int, get_str
 from observability import catalogue_query_metrics
-from repository.catalogue.config import catalogue_config_from_env
+from repository.catalogue.duckbasin import (
+    DuckBasinClientMinter,
+    MintedDuckDB,
+)
 from repository.catalogue.query import CatalogueStatementKind
 from repository.catalogue.schema import CATALOGUE_SCHEMA_VERSION
 from runtime.catalogue_queries import (
@@ -38,7 +39,6 @@ from runtime.resource_governor import (
 
 
 T = TypeVar("T")
-_REMOTE_ALIAS = "_atlas_quack"
 _QUERY_POLL_SECONDS = 0.25
 
 
@@ -48,15 +48,9 @@ class CatalogueQueryExecutionError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class QuackRuntimeConfig:
-    uri: str
-    token: str
-    disable_ssl: bool
     catalogue_alias: str
     catalogue_schema: str
-    metadata_schema: str
     catalogue_schema_version: str
-    setup_sql: tuple[str, ...]
-    attach_sql: str
     maximum_concurrency: int
     pool_wait_seconds: float
     query_timeout_seconds: float
@@ -65,29 +59,10 @@ class QuackRuntimeConfig:
 
     @classmethod
     def from_env(cls) -> QuackRuntimeConfig:
-        uri = get_str("ATLAS_QUACK_URI")
-        if not uri.startswith("quack:"):
-            raise ValueError("ATLAS_QUACK_URI must use the quack: scheme.")
-        catalogue = catalogue_config_from_env()
         return cls(
-            uri=uri,
-            token=get_str("ATLAS_QUACK_TOKEN"),
-            disable_ssl=get_bool("ATLAS_QUACK_DISABLE_SSL"),
-            catalogue_alias=catalogue.alias,
-            catalogue_schema=catalogue.schema,
-            metadata_schema=(
-                "public" if isinstance(catalogue.catalog, PostgresCatalog) else "main"
-            ),
+            catalogue_alias=get_str("DUCKBASIN_LAKE"),
+            catalogue_schema=get_str("ATLAS_CATALOGUE_SCHEMA"),
             catalogue_schema_version=CATALOGUE_SCHEMA_VERSION,
-            setup_sql=catalogue.storage.setup_statements(
-                secret_name=f"{catalogue.alias}_storage"
-            ),
-            attach_sql=build_attach_sql(
-                catalog=catalogue.catalog,
-                storage=catalogue.storage,
-                alias=catalogue.alias,
-                attach=catalogue.attach,
-            ),
             maximum_concurrency=get_int("ATLAS_QUACK_MAX_CONCURRENCY"),
             pool_wait_seconds=get_float("ATLAS_QUACK_POOL_WAIT_SECONDS"),
             query_timeout_seconds=get_float("ATLAS_QUACK_QUERY_TIMEOUT_SECONDS"),
@@ -97,13 +72,20 @@ class QuackRuntimeConfig:
 
 
 class _QuackSlot:
-    def __init__(self, index: int, config: QuackRuntimeConfig) -> None:
+    def __init__(
+        self,
+        index: int,
+        config: QuackRuntimeConfig,
+        minter: DuckBasinClientMinter,
+    ) -> None:
         self.index = index
         self.config = config
+        self.minter = minter
         self.executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix=f"atlas-quack-{index}",
         )
+        self.minted: MintedDuckDB | None = None
         self.connection: duckdb.DuckDBPyConnection | None = None
 
     async def open(self) -> None:
@@ -126,33 +108,16 @@ class _QuackSlot:
     def _open(self) -> None:
         if self.connection is not None:
             raise RuntimeError("Quack slot is already open")
-        connection = duckdb.connect(":memory:", config={"threads": "1"})
-        try:
-            connection.load_extension("quack")
-            connection.execute("SET httpfs_connection_caching = true")
-            connection.execute(
-                "CREATE SECRET _atlas_quack_auth ("
-                "TYPE quack, "
-                f"TOKEN {_quote_literal(self.config.token)}, "
-                f"SCOPE {_quote_literal(self.config.uri)}"
-                ")"
-            )
-            options = "TYPE quack"
-            if self.config.disable_ssl:
-                options += ", DISABLE_SSL true"
-            connection.execute(
-                f"ATTACH {_quote_literal(self.config.uri)} "
-                f"AS {_quote_identifier(_REMOTE_ALIAS)} ({options})"
-            )
-        except BaseException:
-            connection.close()
-            raise
-        self.connection = connection
+        minted = self.minter.mint()
+        self.minted = minted
+        self.connection = minted.connection
 
     def _close(self) -> None:
-        if self.connection is None:
+        minted = self.minted
+        if minted is None:
             return
-        self.connection.close()
+        minted.close()
+        self.minted = None
         self.connection = None
 
 
@@ -341,10 +306,13 @@ class QuackQueryRuntime:
         resource_bucket,
         *,
         config: QuackRuntimeConfig | None = None,
+        minter: DuckBasinClientMinter | None = None,
     ) -> None:
         self.config = config or QuackRuntimeConfig.from_env()
         self.query_bucket = query_bucket
         self.resource_bucket = resource_bucket
+        self._minter = minter
+        self._owns_minter = minter is None
         self._slots: list[_QuackSlot] = []
         self._available: asyncio.Queue[_QuackSlot] = asyncio.Queue()
         self._active: dict[UUID, _QuackSlot] = {}
@@ -352,25 +320,15 @@ class QuackQueryRuntime:
 
     async def start(self) -> None:
         try:
+            if self._minter is None:
+                self._minter = DuckBasinClientMinter()
             for index in range(self.config.maximum_concurrency):
-                slot = _QuackSlot(index, self.config)
+                slot = _QuackSlot(index, self.config, self._minter)
                 await slot.open()
                 self._slots.append(slot)
             for slot in self._slots:
-                for statement in self.config.setup_sql:
-                    await slot.submit(
-                        lambda statement=statement, slot=slot: _remote_rows(
-                            self._connection(slot),
-                            statement,
-                        )
-                    )
-            await self._slots[0].submit(
-                lambda: _bootstrap_remote(self._connection(self._slots[0]), self.config)
-            )
-            for slot in self._slots:
                 await slot.submit(
-                    lambda slot=slot: _remote_rows(
-                        self._connection(slot),
+                    lambda slot=slot: self._connection(slot).execute(
                         "USE "
                         f"{_quote_identifier(self.config.catalogue_alias)}."
                         f"{_quote_identifier(self.config.catalogue_schema)}",
@@ -390,6 +348,9 @@ class QuackQueryRuntime:
             return_exceptions=True,
         )
         self._slots.clear()
+        if self._owns_minter and self._minter is not None:
+            await asyncio.to_thread(self._minter.close)
+            self._minter = None
         while not self._available.empty():
             self._available.get_nowait()
 
@@ -671,8 +632,9 @@ class QuackQueryRuntime:
 
     def safe_error(self, error: BaseException) -> str:
         message = str(error)
-        for value in (self.config.token, self.config.uri):
-            message = message.replace(value, "[redacted]")
+        for slot in self._slots:
+            if slot.minted is not None:
+                message = message.replace(slot.minted.quack_uri, "[redacted]")
         return message[:2_000] or error.__class__.__name__
 
     async def _monitor(
@@ -807,30 +769,6 @@ class QuackQueryRuntime:
         return slot.connection
 
 
-def _bootstrap_remote(
-    connection: duckdb.DuckDBPyConnection,
-    config: QuackRuntimeConfig,
-) -> None:
-    if not _remote_catalogue_exists(connection, config.catalogue_alias):
-        try:
-            _remote_rows(connection, config.attach_sql)
-        except Exception:
-            if not _remote_catalogue_exists(connection, config.catalogue_alias):
-                raise
-
-
-def _remote_catalogue_exists(
-    connection: duckdb.DuckDBPyConnection,
-    alias: str,
-) -> bool:
-    rows = _remote_rows(
-        connection,
-        "SELECT database_name FROM duckdb_databases() "
-        f"WHERE database_name = {_quote_literal(alias)}",
-    )
-    return bool(rows)
-
-
 def remote_rows(
     connection: duckdb.DuckDBPyConnection,
     sql: str,
@@ -843,7 +781,7 @@ def _remote_rows(
     sql: str,
 ) -> list[tuple]:
     return connection.execute(
-        f"FROM quack_query_by_name({_quote_literal(_REMOTE_ALIAS)}, ?)",
+        "FROM quack_query_by_name(current_catalog(), ?)",
         [sql],
     ).fetchall()
 
@@ -856,7 +794,7 @@ def _start_arrow_stream(
     maximum_bytes: int,
 ) -> _BoundedArrowStream:
     cursor = connection.execute(
-        f"FROM quack_query_by_name({_quote_literal(_REMOTE_ALIAS)}, ?)",
+        "FROM quack_query_by_name(current_catalog(), ?)",
         [sql],
     )
     return _BoundedArrowStream(
@@ -876,10 +814,6 @@ def _empty_arrow_stream(
         maximum_rows=maximum_rows,
         maximum_bytes=maximum_bytes,
     )
-
-
-def _quote_literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
 
 
 def _quote_identifier(value: str) -> str:

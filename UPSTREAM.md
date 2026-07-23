@@ -1,17 +1,19 @@
 # Upstream DuckLake and Quack Feedback
 
-This is Atlas's focused wishlist and issue log for the DuckLake libraries maintained alongside it.
-Atlas intentionally dogfoods these packages, so friction found here should improve the shared
-library instead of becoming a permanent Atlas-specific workaround.
+This is Atlas's focused wishlist and issue log for its managed DuckLake boundary. Current Atlas
+code uses the official DuckDB Python library, a session-affine Quack attachment minted by
+DuckBasin, and Basin-published JetStream CDC. Older client and extension findings remain below as
+historical upstream evidence, not as active Atlas dependencies.
 
 ## Libraries
 
 | Package or extension | Atlas role | Local source |
 | --- | --- | --- |
-| `ducklake-client` | Typed DuckLake configuration, attachment, schema, transactions, and catalogue access | `/Users/ekku/Code/quack/ducklake-python-client` |
-| `ducklake-cdc` | Durable DDL/DML change consumption for publication tables | `/Users/ekku/Code/quack/ducklake-cdc-extension` |
-| `ducklake-cdc-client` | Python consumer API for publication CDC, replay, and bootstrap | `/Users/ekku/Code/quack/ducklake-cdc-python-client` |
-| `quack` | Browser-to-server analytical DuckDB transport | `/Users/ekku/Code/quack/duckdb-quack` |
+| `ducklake-client` | Retired Atlas dependency; historical findings only | `/Users/ekku/Code/quack/ducklake-python-client` |
+| `ducklake-cdc` | Retired Atlas dependency; DuckBasin owns CDC | `/Users/ekku/Code/quack/ducklake-cdc-extension` |
+| `ducklake-cdc-client` | Retired Atlas dependency; historical findings only | `/Users/ekku/Code/quack/ducklake-cdc-python-client` |
+| `quack` | Managed remote DuckDB transport | `/Users/ekku/Code/quack/duckdb-quack` |
+| `DuckBasin` | Managed DuckLake control plane and Quack compute | `/Users/ekku/Code/DuckBasin` |
 
 ## How to add an item
 
@@ -29,6 +31,82 @@ Prefer extending an existing item over creating duplicates. Remove completed ite
 the published release; version control retains the history.
 
 ## Wishlist
+
+### Basin CDC streams for the `atlas` lake do not receive new snapshots
+
+- **Atlas caller:** the catalogue ingress, which durably consumes the selected lake's global DDL
+  and DML-tick streams before publishing Atlas-owned catalogue events.
+- **Evidence:** both `BASIN_CDC_ATLAS_LAKE_DDL` and `BASIN_CDC_ATLAS_LAKE_DML_TICKS` exist, but
+  fresh real DDL/DML and DuckLake snapshots through 102 produced zero messages and sequence zero in
+  both. A dedicated disposable table create plus transactional insert also produced no message
+  after 15 seconds. The same service-account and NATS credentials consumed retained, correctly
+  shaped DDL and DML payloads from `atlas_test`. The service account cannot inspect
+  `/api/cdc/pipelines/` because feed status is platform-administrator-only, so the operator must
+  inspect `atlas_lake_ddl` and `atlas_lake_dml_ticks` with `.cdc status`.
+- **Smallest useful upstream contract:** provisioning a lake for CDC must make every committed
+  DuckLake DDL/DML snapshot appear in its configured JetStream stream, with observable sink health
+  and a production smoke test that writes one table and one row then consumes both event types.
+- **Atlas status:** ingress transport, durable consumption, payload parsing, and downstream fan-out
+  are implemented. End-to-end crawl/materialization verification is blocked until CDC production
+  is enabled or repaired for `atlas`.
+
+### Quack replica startup mutates DuckLake history
+
+- **Atlas caller:** horizontally routed, session-affine DuckDB clients minted for ingestion,
+  materialization, and catalogue queries against the Basin-managed `atlas` lake.
+- **Evidence:** a 330.8-second read-only load run issued 7,225 remote `SELECT` operations while
+  Basin scaled from zero to six desired Quack replicas. Across the run and its read-only evidence
+  pass, DuckLake snapshots advanced from 2 to 10; every new snapshot contained only
+  `views_dropped` and `views_created` for `main.duckbasin_access_policy`. Each Quack replica
+  executes `CREATE OR REPLACE VIEW duckbasin_access_policy` during startup in
+  `/Users/ekku/Code/DuckBasin/ducklake/runtime/quack.py`.
+- **Smallest useful upstream contract:** replica startup must not persist per-replica catalogue
+  DDL. Serve the authorization policy from a non-DuckLake/session-local object, or provision the
+  shared persistent view idempotently outside replica startup. Add a scale-from-zero regression
+  asserting that read-only load does not advance the DuckLake snapshot.
+- **Atlas status:** the new minter and load path are read-only and need no workaround. Basin owns
+  the extra snapshots; Atlas should not interpret these policy-view-only snapshots as application
+  DDL.
+
+### Quack remote scans drop non-main schema qualification
+
+- **Atlas caller:** repository, ingestion, and materialization SQL executed through a
+  session-affine Quack attachment to a Basin-managed lake. Atlas uses `main`, `_atlas`, and
+  `_atlas_materializations`, so schema qualification is part of the physical table identity.
+- **Evidence:** `DESCRIBE nl.train_stations` succeeded against the `atlas_test` lake, but
+  `SELECT count(*) FROM nl.train_stations` failed on the server because the generated scan queried
+  unqualified `train_stations`; the error itself suggested `nl.train_stations`. Executing the same
+  count as explicit remote SQL through the catalog's `query(...)` macro returned 578 rows. In
+  Quack's `QuackTableCatalogEntry::GetScanFunction`, scan binding currently records the table name
+  without its parent schema.
+- **Smallest useful upstream contract:** preserve catalog and schema qualification when Quack
+  generates a remote table scan. Add regressions that scan a non-main table and two identically
+  named tables in different schemas through an attached Quack catalog.
+- **Atlas status:** explicitly accepted for the initial managed deployment despite Atlas's
+  non-main schemas. Atlas uses qualified SQL and must not add a permanent `query(...)` rewrite;
+  consume the upstream fix directly.
+
+### Public Quack remote SQL can resolve the Basin control catalog
+
+- **Atlas caller:** service-account-authenticated DuckDB clients attached to one Basin lake through
+  Quack, including the narrow native-metadata lookup needed to translate Basin DML table IDs into
+  Atlas table UUID subjects.
+- **Evidence:** from an `atlas_test` attachment,
+  `query('SELECT database_name, type FROM duckdb_databases()')` exposed the server-side `control`
+  Postgres catalog. Read-only `duckdb_tables()` enumeration then exposed authentication and
+  control-plane table names plus DuckLake metadata schemas for all three lakes granted to the test
+  service account. The probe stopped at catalog and table-name enumeration; no control-plane rows
+  were queried.
+- **Smallest useful upstream contract:** externally supplied remote SQL must execute in a
+  per-lake, least-privilege database boundary that cannot resolve or read Basin control-plane
+  relations or another lake's metadata merely because they are attached in the server process.
+  Prefer a dedicated per-lake PostgreSQL role or a separate internal connection over SQL text
+  filtering. Add negative tests for `control.*`, catalog introspection, and cross-lake metadata
+  access through both `query(...)` and ordinary attached scans.
+- **Atlas status:** explicitly accepted for current private compatibility testing, not considered
+  resolved. Until the boundary is fixed, keep Quack inaccessible to untrusted callers, never pass
+  user-authored SQL to `query(...)`, and treat compromise of the Atlas Quack credential as possible
+  exposure of the Basin control plane.
 
 ### Scoped DuckLake scans do not inherit selective join predicates
 
@@ -162,9 +240,10 @@ the published release; version control retains the history.
   renders only its own typed workbench metadata/status parameters as escaped SQL literals before
   sending those fixed query templates. Crawl failures and worker backlog no longer use Quack.
 
-## In progress
+## Historical inactive client findings
 
-No upstream work is currently in progress.
+These entries are retained as useful library evidence. They are not cutover blockers because Atlas
+no longer imports `ducklake-client`, `ducklake-cdc-client`, or the `ducklake-cdc` extension.
 
 ### `TableInfo.sort_specs` is empty for active DuckLake sort orders
 
@@ -192,11 +271,6 @@ No upstream work is currently in progress.
   content-addressed document. A direct greenfield schema cutover can replace it with
   `ColumnDef(ListType("VARCHAR"), nullable=False)` and delete the JSON encode/decode path.
 
-The CDC releases are fully adopted: Atlas uses `ducklake-cdc-client` 0.7.0 and temporarily pins
-the checksummed `ducklake_cdc` 0.6.1 release artifact for DuckDB 1.5.4 while
-[community PR #2280](https://github.com/duckdb/community-extensions/pull/2280) lands. Atlas validates
-`cdc_version()` at startup. The catalogue relay owns exactly one catalogue-wide DML tick cursor
-and one catalogue-wide DDL cursor; table-specific fan-out happens in NATS. Other high-level
-consumers derive and own dedicated DuckDB connections, and supervisors reopen a fresh consumer
-after typed retryable failures. The underlying H-022 lock-ordering defect remains tracked
-upstream.
+Atlas has retired those CDC packages and extension validation. DuckBasin now owns the source
+cursors and publishes unchanged CDC payloads to Basin JetStream; Atlas owns only the ingress and
+per-table fan-out into its own NATS namespace.

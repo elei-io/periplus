@@ -17,7 +17,7 @@ WorkerRole = Literal[
     "ingestion",
     "catalogue-relay",
     "materialization",
-    "maintenance",
+    "housekeeping",
 ]
 
 WORKER_MODULES: dict[WorkerRole, str] = {
@@ -25,7 +25,7 @@ WORKER_MODULES: dict[WorkerRole, str] = {
     "ingestion": "workers.ingestion",
     "catalogue-relay": "workers.catalogue_relay",
     "materialization": "workers.materialization",
-    "maintenance": "workers.maintenance",
+    "housekeeping": "workers.housekeeping",
 }
 
 

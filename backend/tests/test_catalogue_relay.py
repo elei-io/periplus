@@ -1,135 +1,101 @@
 from __future__ import annotations
 
-import tempfile
+import json
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
-from ducklake_client import DiskStorage, DuckDBCatalog
+import duckdb
 
 from catalogue_relay.executor import (
+    BasinDDLEvent,
     RelayedTable,
-    _open_ddl,
-    _open_dml,
-    _publish_dml,
-    _reconcile,
+    TableResolver,
+    _publish_ddl_message,
+    _publish_dml_message,
+    _retry_transient_source_operation,
     load_relayed_tables,
 )
-from repository.catalogue import Catalogue, CatalogueConfig
-from runtime.catalogue_events import relay_ddl_consumer, relay_dml_consumer
 
 
-def _table(
-    table_id: int,
-    *,
-    name: str = "documents",
-    live: bool = True,
-) -> RelayedTable:
+def _message(payload: dict) -> SimpleNamespace:
+    return SimpleNamespace(
+        data=json.dumps(payload).encode(),
+        ack=AsyncMock(),
+    )
+
+
+def _table(table_id: int, *, name: str = "documents") -> RelayedTable:
     return RelayedTable(
         table_id=table_id,
         table_uuid=uuid4(),
         schema_name="main",
         table_name=name,
-        is_live=live,
     )
 
 
 class CatalogueRelayTests(unittest.IsolatedAsyncioTestCase):
-    def test_table_index_reads_live_physical_identities(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            with Catalogue(
-                CatalogueConfig(
-                    catalog=DuckDBCatalog(root / "catalog.ducklake"),
-                    storage=DiskStorage(root / "lake"),
-                )
-            ) as catalogue:
-                catalogue.bootstrap()
-                tables = load_relayed_tables(catalogue)
-
-        documents = next(
-            table for table in tables.values() if table.table_name == "documents"
-        )
-        self.assertTrue(documents.is_live)
-        self.assertEqual(documents.schema_name, "main")
-
-    def test_relay_opens_one_global_dml_and_one_global_ddl_consumer(self) -> None:
+    def test_table_index_uses_public_ducklake_metadata(self) -> None:
+        table_uuid = uuid4()
         catalogue = MagicMock()
+        catalogue.config.alias = "atlas"
+        catalogue.remote_rows.return_value = [
+            (7, table_uuid, "main", "documents", 1)
+        ]
 
-        with (
-            patch("catalogue_relay.executor.DMLConsumer") as dml,
-            patch("catalogue_relay.executor.DDLConsumer") as ddl,
-        ):
-            _open_dml(catalogue)
-            _open_ddl(catalogue)
+        tables = load_relayed_tables(catalogue)
 
         self.assertEqual(
-            dml.call_args.args[1],
-            relay_dml_consumer(),
+            tables,
+            {
+                7: RelayedTable(
+                    table_id=7,
+                    table_uuid=table_uuid,
+                    schema_name="main",
+                    table_name="documents",
+                )
+            },
         )
-        self.assertEqual(dml.call_args.kwargs["mode"], "ticks")
-        self.assertEqual(
-            dml.call_args.kwargs["connection"],
-            catalogue.connection,
-        )
-        self.assertNotIn("table", dml.call_args.kwargs)
-        self.assertNotIn("table_id", dml.call_args.kwargs)
-        self.assertEqual(ddl.call_args.args[1], relay_ddl_consumer())
-        self.assertEqual(ddl.call_args.kwargs["mode"], "changes")
-        self.assertNotIn("schemas", ddl.call_args.kwargs)
-        self.assertNotIn("connection", ddl.call_args.kwargs)
+        sql = catalogue.remote_rows.call_args.args[0]
+        self.assertIn("ducklake_table_info('atlas')", sql)
+        self.assertNotIn("__ducklake_metadata", sql)
+        self.assertIn("table_type = 'BASE TABLE'", sql)
 
-    async def test_reconcile_updates_identity_metadata_without_opening_consumers(
-        self,
-    ) -> None:
-        previous = _table(7)
-        renamed = RelayedTable(
-            table_id=previous.table_id,
-            table_uuid=previous.table_uuid,
-            schema_name=previous.schema_name,
-            table_name="renamed_documents",
-            is_live=True,
-        )
+    def test_ambiguous_cross_schema_table_names_are_rejected(self) -> None:
+        catalogue = MagicMock()
+        catalogue.config.alias = "atlas"
+        catalogue.remote_rows.return_value = [
+            (7, uuid4(), "main", "documents", 2)
+        ]
 
-        with patch(
-            "catalogue_relay.executor.load_relayed_tables",
-            return_value={renamed.table_id: renamed},
-        ):
-            reconciled = await _reconcile(
-                MagicMock(),
-                {previous.table_id: previous},
-            )
+        with self.assertRaisesRegex(RuntimeError, "unique across schemas"):
+            load_relayed_tables(catalogue)
 
-        self.assertEqual(reconciled, {renamed.table_id: renamed})
-
-    async def test_global_tick_fans_out_one_event_per_touched_table(self) -> None:
+    async def test_global_tick_fans_out_and_then_acks_source(self) -> None:
         first = _table(7)
         second = _table(8, name="urls")
-        batch = MagicMock()
-        batch.ticks = [
-            SimpleNamespace(
-                snapshot_id=10,
-                snapshot_time=None,
-                schema_version=1,
-                table_ids=(first.table_id, second.table_id),
-            )
-        ]
-        consumer = MagicMock()
-        consumer.read.return_value = batch
+        resolver = MagicMock()
+        resolver.resolve.return_value = {
+            first.table_id: first,
+            second.table_id: second,
+        }
+        message = _message(
+            {
+                "consumer_name": "basin",
+                "start_snapshot": 10,
+                "end_snapshot": 10,
+                "snapshot_id": 10,
+                "snapshot_time": None,
+                "schema_version": 1,
+                "table_ids": [first.table_id, second.table_id],
+            }
+        )
         jetstream = MagicMock()
         jetstream.publish = AsyncMock()
 
-        worked, tables = await _publish_dml(
-            jetstream,
-            MagicMock(),
-            {first.table_id: first, second.table_id: second},
-            consumer,
-        )
+        await _publish_dml_message(jetstream, resolver, message)
 
-        self.assertTrue(worked)
-        self.assertEqual(set(tables), {7, 8})
         self.assertEqual(jetstream.publish.await_count, 2)
         self.assertEqual(
             {
@@ -141,100 +107,103 @@ class CatalogueRelayTests(unittest.IsolatedAsyncioTestCase):
                 f"dml:{second.table_uuid}:10",
             },
         )
-        batch.commit.assert_called_once_with()
+        message.ack.assert_awaited_once_with()
 
-    async def test_publish_failure_does_not_advance_the_global_cursor(self) -> None:
+    async def test_publish_failure_does_not_ack_source(self) -> None:
         first = _table(7)
-        second = _table(8, name="urls")
-        batch = MagicMock()
-        batch.ticks = [
-            SimpleNamespace(
-                snapshot_id=10,
-                snapshot_time=None,
-                schema_version=1,
-                table_ids=(first.table_id, second.table_id),
-            )
-        ]
-        consumer = MagicMock()
-        consumer.read.return_value = batch
+        resolver = MagicMock()
+        resolver.resolve.return_value = {first.table_id: first}
+        message = _message(
+            {
+                "snapshot_id": 10,
+                "snapshot_time": None,
+                "schema_version": 1,
+                "table_ids": [first.table_id],
+            }
+        )
         jetstream = MagicMock()
         jetstream.publish = AsyncMock(
-            side_effect=[None, RuntimeError("JetStream unavailable")]
+            side_effect=RuntimeError("JetStream unavailable")
         )
 
         with self.assertRaisesRegex(RuntimeError, "JetStream unavailable"):
-            await _publish_dml(
-                jetstream,
-                MagicMock(),
-                {first.table_id: first, second.table_id: second},
-                consumer,
-            )
+            await _publish_dml_message(jetstream, resolver, message)
 
-        batch.commit.assert_not_called()
+        message.ack.assert_not_awaited()
 
-    async def test_unknown_table_refreshes_identity_index_before_publish(
-        self,
-    ) -> None:
-        table = _table(7)
-        batch = MagicMock()
-        batch.ticks = [
-            SimpleNamespace(
-                snapshot_id=10,
-                snapshot_time=None,
-                schema_version=1,
-                table_ids=(table.table_id,),
-            )
-        ]
-        consumer = MagicMock()
-        consumer.read.return_value = batch
+    async def test_ddl_is_republished_before_source_ack(self) -> None:
+        resolver = MagicMock()
+        message = _message(
+            {
+                "consumer_name": "basin",
+                "start_snapshot": 2,
+                "end_snapshot": 2,
+                "snapshot_id": 2,
+                "snapshot_time": "2026-07-23 13:15:32.529749+00:00",
+                "event_kind": "created",
+                "object_kind": "table",
+                "schema_id": 0,
+                "schema_name": "main",
+                "object_id": 7,
+                "object_name": "documents",
+                "details": "{}",
+            }
+        )
         jetstream = MagicMock()
         jetstream.publish = AsyncMock()
+
+        await _publish_ddl_message(jetstream, resolver, message)
+
+        resolver.note_ddl.assert_called_once()
+        relayed = resolver.note_ddl.call_args.args[0]
+        self.assertIsInstance(relayed, BasinDDLEvent)
+        self.assertEqual(relayed.object_name, "documents")
+        self.assertEqual(
+            jetstream.publish.call_args.kwargs["headers"]["Nats-Msg-Id"],
+            "ddl:2:table:7:created",
+        )
+        message.ack.assert_awaited_once_with()
+
+    def test_retired_tables_do_not_block_historical_dml_replay(self) -> None:
+        resolver = TableResolver(MagicMock())
+        resolver.retired_table_ids.add(7)
+        resolver._tables = {}
+
+        self.assertEqual(resolver.resolve({7}), {})
+
+    @patch("catalogue_relay.executor.load_relayed_tables", return_value={})
+    def test_absent_table_is_retired_during_historical_replay(
+        self,
+        load_tables: MagicMock,
+    ) -> None:
+        resolver = TableResolver(MagicMock())
+
+        self.assertEqual(resolver.resolve({22}), {})
+        self.assertEqual(resolver.retired_table_ids, {22})
+        load_tables.assert_called_once()
+
+    async def test_transient_remote_failure_keeps_source_delivery_alive(self) -> None:
+        operation = AsyncMock(
+            side_effect=[duckdb.IOException("Quack unavailable"), "resolved"]
+        )
+        message = SimpleNamespace(in_progress=AsyncMock())
+        on_retry = MagicMock()
 
         with patch(
-            "catalogue_relay.executor.load_relayed_tables",
-            return_value={table.table_id: table},
+            "catalogue_relay.executor.asyncio.sleep",
+            new=AsyncMock(),
         ):
-            worked, tables = await _publish_dml(
-                jetstream,
-                MagicMock(),
-                {},
-                consumer,
+            result = await _retry_transient_source_operation(
+                operation,
+                message=message,
+                operation_name="resolve table identities",
+                on_retry=on_retry,
             )
 
-        self.assertTrue(worked)
-        self.assertEqual(tables, {table.table_id: table})
-        batch.commit.assert_called_once_with()
-
-    async def test_replayed_batch_uses_the_same_deterministic_message_id(
-        self,
-    ) -> None:
-        table = _table(7)
-        batch = MagicMock()
-        batch.ticks = [
-            SimpleNamespace(
-                snapshot_id=10,
-                snapshot_time=None,
-                schema_version=1,
-                table_ids=(table.table_id,),
-            )
-        ]
-        consumer = MagicMock()
-        consumer.read.return_value = batch
-        jetstream = MagicMock()
-        jetstream.publish = AsyncMock()
-        tables = {table.table_id: table}
-
-        await _publish_dml(jetstream, MagicMock(), tables, consumer)
-        await _publish_dml(jetstream, MagicMock(), tables, consumer)
-
-        self.assertEqual(
-            [
-                call.kwargs["headers"]["Nats-Msg-Id"]
-                for call in jetstream.publish.await_args_list
-            ],
-            [f"dml:{table.table_uuid}:10", f"dml:{table.table_uuid}:10"],
-        )
-        self.assertEqual(batch.commit.call_count, 2)
+        self.assertEqual(result, "resolved")
+        self.assertEqual(operation.await_count, 2)
+        message.in_progress.assert_awaited_once_with()
+        on_retry.assert_called_once_with()
 
 
 if __name__ == "__main__":

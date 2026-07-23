@@ -9,11 +9,12 @@ vendor, proxy, profile, or transport; the CDP service owns those decisions and t
 | System | Owns |
 |---|---|
 | Postgres | Editable graphs, domain politeness, content policies, schedules, matches, schemas, macro and materialization definitions, and durable chat workspace items |
-| NATS JetStream/KV | Graph runs, crawl work, progress, leases, workers, admission, and expiring resource grants |
+| Atlas NATS JetStream/KV | Graph runs, crawl work, progress, leases, workers, admission, resource grants, and per-table catalogue events |
+| Basin NATS JetStream | Managed DuckLake global DDL and DML CDC source streams |
 | CDP service | Acquisition transport, provider selection, browser farm, and acquisition capacity |
-| Quack service | Interactive analytical DuckDB execution and memory |
+| DuckBasin | DuckLake metadata, Parquet storage, Quack compute, session routing, CDC, compaction, and lake maintenance |
 | Object repository | Immutable content-addressed raw HTML and bounded navigation packages |
-| DuckLake | Crawls, documents, DOM, graph provenance, materialized data, and snapshots |
+| Managed DuckLake | Crawls, documents, DOM, graph provenance, materialized data, and snapshots |
 
 The durable path is:
 
@@ -77,21 +78,26 @@ quality findings from immutable crawls, step evidence, and element rows.
 
 ## Catalogue work
 
-Ingestion is `critical`. The catalogue relay is the only owner of DuckLake CDC
-consumers: one catalogue-wide DML tick cursor and one catalogue-wide DDL
-cursor publish physical events to JetStream. Each materialization owns a filtered
-durable NATS consumer, coalesces ticks, and transactionally refreshes its stable
-table using its declared keyed, append-only, or full strategy. Keyed refreshes
-derive composite keys from a stateless bounded CDC range query; they do not open
-another persistent CDC consumer. Maintenance runs off-path in bounded table slices with proportional
-catalogue and object-store permits and consumes the relay's wildcard DML subject only as a coalesced
-wake-up hint. DuckLake transaction conflicts are retried, so compaction can progress during
-continuously active foreground work without deployment-wide quiescence. Each ingestion or
-materialization process owns one embedded DuckDB connection and initially executes one catalogue
-operation at a time; the
-relay owns exactly its DML and DDL connections. Historical graph edges open
-bounded, read-only, per-operation connections and
-are serialized within each acquisition process.
+Ingestion is `critical`. Each process mints one DuckBasin client with an expiring service-account
+token and a routing session ID. Local Arrow or Parquet batches stream through Quack into the remote
+lake; Atlas never receives the lake's object-store credentials.
+
+The catalogue ingress owns two durable consumers in Basin NATS: one global DML tick stream and one
+global DDL stream for the selected lake. It republishes DDL into Atlas NATS and resolves each DML
+`table_id` to its stable DuckLake table UUID before per-table fan-out. A Basin message is ACKed only
+after every Atlas publication receives a PubAck.
+
+Each materialization owns a filtered durable Atlas NATS consumer, coalesces ticks, and
+transactionally refreshes its stable table using its declared keyed, append-only, or full strategy.
+Keyed refreshes derive composite keys from DuckLake's native bounded
+`ducklake_table_changes(...)` history and physically scope every direct scan of the declared
+driving table to those keys before evaluating the materialization SQL. Materialization workers
+never consume Basin CDC directly.
+
+DuckBasin owns file layout, compaction, snapshot expiry, and old-file cleanup. Atlas has no lake
+maintenance API or worker. Atlas housekeeping is limited to its own abandoned ingestion staging
+files and expired navigation packages. Historical graph edges mint bounded, read-only Basin
+connections and are serialized within each acquisition process.
 
 Interactive catalogue reads enter through the Atlas API. Each API replica owns a bounded pool of
 reusable DuckDB Quack client connections; analytical CPU, memory, and DuckLake access remain on the
@@ -116,19 +122,18 @@ own stable SSE progress events, executed SQL, bounded rows, completeness metadat
 tool implementations are independent of HTTP and agent transport so a CLI or future MCP server can
 reuse them without duplicating catalogue access or validation.
 
-Each API process owns exactly one lightweight embedded DuckDB catalogue-control connection, pinned
-to one thread and one operation at a time. It performs only mandatory definition work such as
-creating or updating views, macros, and materializations, plus pinning the snapshot required by a
-historical graph edge. This control connection remains separate from the API's Quack client pool;
-interactive reads never execute against its embedded local catalogue.
+Each API process owns one session-affine Basin catalogue-control connection, pinned to one thread
+and one operation at a time. It performs definition work such as creating or updating views,
+macros, and materializations. This control session remains separate from the API's bounded
+interactive Basin client pool.
 
 The browser uses ordinary authenticated HTTP to Atlas API for workbench queries, cancellation,
 metadata, and status. It does not load DuckDB-Wasm and never receives the Quack URI or token,
 Postgres DSN, object-store credentials, or DuckLake attachment SQL. Cloudflare Access is the
-single-tenant user authentication boundary. Quack remains private, authenticates the API with the
-dedicated Atlas token, and is restricted at the network boundary to API compute. Because attached
-catalogues are Quack-server-global, every Atlas deployment sharing one Quack service must configure
-a distinct `ATLAS_CATALOGUE_ALIAS`; `USE` remains Quack-client-session-local.
+single-tenant user authentication boundary. DuckBasin remains private and authenticates Atlas
+through a dedicated service account. The minter discovers the selected `DUCKBASIN_LAKE`, refreshes
+OAuth credentials before expiry, gives every DuckDB client a session ID, and attaches the
+corresponding horizontally routed Quack endpoint.
 
 ## Repository boundary
 

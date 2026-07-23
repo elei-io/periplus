@@ -6,9 +6,9 @@ Atlas deploys five worker roles:
 |---|---|---|---|
 | Acquisition | graph crawl/readiness/edge work | Immutable HTML, ingestion job, and graph readiness | CDP and traversal coordination |
 | Ingestion | repository ingestion queue | Crawl/DOM catalogue evidence | Critical catalogue capacity |
-| Catalogue relay | DuckLake DML/DDL CDC | Durable per-table DML subjects and global DDL subject | Exactly two DuckDB connections |
+| Catalogue ingress | Basin NATS DML/DDL CDC | Atlas per-table DML subjects and global DDL subject | One durable consumer per Basin stream |
 | Materialization | Filtered catalogue DML subjects | Stable materialization tables | Live catalogue capacity |
-| Maintenance | maintenance triggers | Compaction and cleanup | Bounded background capacity |
+| Housekeeping | periodic timer | Atlas staging and navigation retention | Bounded object-store capacity |
 
 ## Acquisition worker
 
@@ -56,45 +56,38 @@ The ingestion worker verifies immutable HTML, prepares DOM data, commits base ev
 `crawl_attempts` and `crawl_steps` rows under the catalogue fence, records terminal ingestion state, and ACKs. It
 does not publish graph readiness or alter traversal status. It does not calculate quality flags;
 periodic analysis derives quality findings from committed step and element rows. It is critical
-work. One process owns one embedded DuckDB connection and runs one catalogue operation at a time.
+work. One process owns one session-affine DuckBasin connection and runs one catalogue operation at
+a time. Arrow and Parquet staging data stream through Quack; the worker has no lake S3 credentials.
 
-## Materialization and maintenance
+## Catalogue ingress, materialization, and housekeeping
 
-The catalogue relay owns one catalogue-wide tick-mode DML consumer and one
-catalogue-wide DDL consumer. Their two embedded DuckDB connections preserve
-independent lease identities and are closed concurrently during process
-shutdown. Table-specific fan-out exists only in JetStream; the relay publishes
-only after JetStream confirms each deterministic message.
+The catalogue ingress reads one Basin-owned global DML stream and one Basin-owned global DDL
+stream. It resolves physical table IDs through public DuckLake metadata over a minted Basin session.
+Table-specific fan-out exists only in Atlas JetStream; the ingress ACKs a Basin message only after
+JetStream confirms each deterministic Atlas publication.
 Materialization workers own filtered durable NATS consumers. They create the
 consumer before bootstrap, pause by stopping pulls, and coalesce ticks into
 transactional keyed replacement, idempotent append, or explicit full refresh.
-Composite keys come from stateless CDC queries bounded to the retained NATS
-snapshot range; materialization workers do not own persistent DuckLake CDC
-consumers. The target table identity remains stable.
+Composite keys come from native `ducklake_table_changes(...)` queries bounded to the retained NATS
+snapshot range. Keyed and append refreshes replace every direct scan of their declared driving
+table with a changed-key-scoped scan before executing joins, macros, aggregates, or other query
+work; the final result-key predicate remains only a correctness fence. Incremental definitions must
+therefore directly reference their driving table and anchor large dependent scans beneath that
+scoped relation. Materialization workers do not consume Basin CDC directly. The target table
+identity remains stable.
 Schema boundaries block the incarnation instead of being crossed implicitly.
-Maintenance consumes one durable wildcard NATS subscription over catalogue DML
-ticks; it never opens a DuckLake CDC consumer or discovers materialized tables
-through Postgres. It is off-path and uses one catalogue unit plus object pressure proportional to
-the effective bounded pass size (target file size times bounded output count, capped by the maximum
-operation bytes). It never pauses new foreground grants or waits for global
-quiescence; DuckLake transaction conflicts are retried with bounded backoff. Same-class resource
-waiters retain arrival order, and waiting critical object work reclaims capacity from later
-noncritical requests. A catalogue tick is a coalesced wake-up hint for compaction, never a
-maintenance work queue.
-Its periodic recovery sweep also lists only `runtime/navigation/` objects older than
-`ATLAS_GRAPH_MAX_RUN_SECONDS` and deletes one bounded batch owned by terminal or expired-away runs.
+
+DuckBasin owns compaction, old-file cleanup, snapshot retention, and every other physical-lake
+maintenance operation. Atlas housekeeping never opens DuckLake or consumes catalogue ticks. It
+removes abandoned local ingestion staging files and lists only `runtime/navigation/` objects older
+than `ATLAS_GRAPH_MAX_RUN_SECONDS`, deleting one bounded batch owned by terminal or expired-away runs.
 This is the authoritative retention path for S3-compatible providers; Atlas does not require bucket
 lifecycle-policy APIs.
-The worker debounces bursts, derives eligibility from authoritative DuckLake file metadata, and
-rewrites at most one bounded table slice per proportional permit before yielding. A periodic sweep
-remains the recovery path when CDC is idle or unavailable, and outstanding debt retries without
-waiting for the complete sweep interval.
 
 Acknowledgement follows the meaning of each input. Acquisition and ingestion
 ACK commands only after their durable effect and terminal operational state are
 recorded. A materialization ACKs coalesced ticks only after its target
-transaction commits. Maintenance records its local wake-up before ACKing ticks;
-the periodic metadata sweep recovers a process death after that acknowledgement.
+transaction commits. Housekeeping is timer-driven and has no work-message acknowledgement.
 These contracts are intentionally distinct and are not hidden behind a generic
 worker-handler protocol.
 
@@ -105,12 +98,12 @@ failed renewal CAS as loss. None of these mechanisms owns work delivery or workf
 
 ## Packaging and deployment
 
-All roles use the same backend image and the same `atlas-worker <role>` entrypoint. Relay,
-materialization, ingestion, and maintenance share the same process shell for
+All roles use the same backend image and the same `atlas-worker <role>` entrypoint. Ingress,
+materialization, ingestion, and housekeeping share the same process shell for
 signals, health, metrics, event-loop heartbeat, task supervision, and draining.
 Acquisition uses the same lifecycle primitives inside its specialized
 hostname-dispatch and navigation runtime. Acquisition,
-ingestion, catalogue relay, materialization, and maintenance remain separate deployments so each retains independent
+ingestion, catalogue ingress, materialization, and housekeeping remain separate deployments so each retains independent
 autoscaling, rollout, health, queue, and failure boundaries. Sharing packaging must not couple their
 replica counts or cause one workload's backlog to add capacity to another workload.
 
@@ -121,11 +114,13 @@ catalogue, repository, NATS, and control-plane contracts consistent across roles
 Each S3 client derives its connection-pool size from the concurrency of its owning process workload;
 there is no independent pool-size deployment setting.
 
-Atlas accepts a literal NKey seed through `NATS_SEED` and applies it to every application NATS
-connection; omitting it retains unauthenticated local-development behavior. Every Atlas-managed
+Atlas accepts a literal NKey seed through `ATLAS_NATS_SEED` for application state and a separate
+`DUCKBASIN_NATS_SEED` only for managed CDC ingress. Every Atlas-managed
 JetStream stream and KV bucket declares an explicit positive `max_bytes`. Startup enforces those
 bounds when attaching to pre-provisioned infrastructure and never reconciles an omitted bound to
-unlimited storage.
+unlimited storage. Atlas's normal namespace credentials use account-wide `>` permissions inside a
+dedicated NATS account because JetStream KV data uses `$KV.*` wire subjects; account isolation is
+the security boundary, not an `atlas.>` permission filter.
 
 API replicas also use the file-backed `atlas_catalogue_queries` KV bucket for active and recent
 interactive-query status and cross-replica cancellation. It retains one revision per query for one

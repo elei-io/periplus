@@ -28,20 +28,20 @@ table, and archives the control-plane incarnation.
 
 ## Catalogue event relay
 
-The catalogue relay owns one catalogue-wide `DMLConsumer(mode="ticks")`. Each
-schema-independent DuckLake tick carries all touched table IDs; the relay
-resolves their physical identities and publishes one event per table to
-`atlas.catalogue.dml.<table_uuid>`. The table UUID is the physical incarnation
-fence. A deterministic message ID derived from `(table_uuid, snapshot_id)`
-makes publish-before-CDC-commit replay safe.
+DuckBasin publishes the selected lake's unchanged CDC payloads to one global DML tick stream and
+one global DDL stream in Basin JetStream. Atlas's catalogue ingress owns one durable consumer on
+each stream. Every schema-independent DML tick carries all touched table IDs; the ingress resolves
+their physical identities through the managed lake and publishes one event per table to
+`atlas.catalogue.dml.<table_uuid>`. The table UUID is the physical incarnation fence. A
+deterministic message ID derived from `(table_uuid, snapshot_id)` makes redelivery safe.
 
-One catalogue-wide `DDLConsumer(mode="changes")` publishes physical catalogue
-changes to `atlas.catalogue.ddl`. These are the relay's only two DuckDB
-connections.
+DDL payloads are republished to `atlas.catalogue.ddl`. A Basin message is ACKed only after all of
+its Atlas publications receive JetStream PubAcks, so a crash can replay but cannot silently omit a
+downstream event.
 
-No downstream worker opens either DuckLake consumer type. Maintenance uses one
-durable wildcard NATS consumer and treats DML ticks as coalesced wake-up hints;
-materializations retain their filtered ticks until the target refresh commits.
+No downstream worker consumes Basin NATS or opens a DuckLake CDC cursor. Materializations retain
+their filtered Atlas ticks until the target refresh commits. DuckBasin owns physical maintenance
+and consumes no Atlas event.
 
 The DML cursor follows table creation and crosses schema boundaries without
 handoff because ticks have no row schema. DDL still causes dependent workers
@@ -50,10 +50,10 @@ Postgres remains the source of desired user intent.
 
 ## Refresh semantics
 
-DML ticks intentionally contain no row keys. After coalescing its configured
-delay, a materialization worker uses `cdc_dml_changes_query` to read only the
-driving table's retained snapshot range. This is a stateless query on the
-worker's existing connection, not another persistent DuckLake CDC consumer.
+DML ticks intentionally contain no row keys. After coalescing its configured delay, a
+materialization worker queries native `ducklake_table_changes(...)` for only the driving table's
+retained snapshot range. This is a stateless query over its existing Basin connection, not another
+persistent CDC consumer.
 
 `keyed` is the normal strategy. Its ordered, possibly composite key must exist
 in both the driving table and view output. Atlas derives the changed tuples and

@@ -20,6 +20,12 @@ import {
 import { Switch } from "@/components/ui/switch"
 import type { CrawlPolicyRecord, ResponseOutcome } from "@/types/resources"
 
+import {
+  contentTypeGroups,
+  contentTypeGroupState,
+  setContentTypeGroup,
+} from "./content-types"
+
 export type PolicyScope = "site" | "section" | "page"
 export type PolicyHostScope = "exact" | "subdomains"
 export type PolicyDraft = {
@@ -419,24 +425,57 @@ export function PolicyForm({
         </Card>
         <Card size="sm">
           <CardHeader>
-            <CardTitle>Response handling</CardTitle>
+            <CardTitle>Content to keep</CardTitle>
             <CardDescription>
-              Classify the result without exposing browser automation.
+              Web pages are stored as crawl documents. Enabled downloads are
+              retained as exact raw artifacts.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4">
-            <Field label="Accepted content types">
+            <div className="grid gap-3 sm:grid-cols-2">
+              {contentTypeGroups.map((group) => {
+                const state = contentTypeGroupState(
+                  draft.acceptedContentTypes,
+                  group.id
+                )
+                return (
+                  <Toggle
+                    key={group.id}
+                    label={group.label}
+                    description={`${group.description}${state === "partial" ? " Some formats are currently enabled." : ""}`}
+                    checked={state !== "off"}
+                    onCheckedChange={(enabled) =>
+                      patch({
+                        acceptedContentTypes: setContentTypeGroup(
+                          draft.acceptedContentTypes,
+                          group.id,
+                          enabled
+                        ),
+                      })
+                    }
+                  />
+                )
+              })}
+            </div>
+            <Field label="Advanced MIME types">
               <Input
+                placeholder="application/x-custom, image/svg+xml"
                 value={draft.acceptedContentTypes}
                 onChange={(event) =>
                   patch({ acceptedContentTypes: event.target.value })
                 }
               />
               <p className="text-xs text-muted-foreground">
-                Comma separated. Accepted non-HTML responses are retained as raw
-                artifacts.
+                Comma separated. This is the exact saved policy; use it for
+                formats not covered by the switches.
               </p>
             </Field>
+            <div>
+              <p className="font-medium">Response handling</p>
+              <p className="text-xs text-muted-foreground">
+                Choose how HTTP errors and disabled content kinds settle.
+              </p>
+            </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <Outcome
                 label="HTTP 429"

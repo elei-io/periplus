@@ -21,8 +21,8 @@ from control.catalogue_views.models import CatalogueViewReference
 from db.session import session_scope
 from materialization.dematerialization import dematerialize_one
 from repository.catalogue import catalogue_from_env
-from repository.catalogue.cdc import validate_cdc_extension
 from repository.catalogue.materializations import (
+    MaterializationError,
     MaterializationSchemaChangeError,
     MaterializationStore,
 )
@@ -83,7 +83,6 @@ async def run(
         catalogue_from_env,
         memory_limit=materialization_duckdb_memory_limit(),
     )
-    await asyncio.to_thread(validate_cdc_extension, catalogue)
     subscriptions: dict[UUID, object] = {}
     stop = asyncio.Event()
     active_operation_count = [0]
@@ -101,6 +100,7 @@ async def run(
             active_operation_count=lambda: active_operation_count[0],
             healthy=lambda: monitor is None or monitor.status()[0],
             stop=stop,
+            monitor=monitor,
         )
     )
     try:
@@ -343,17 +343,16 @@ def _bootstrap_materialization(catalogue, materialization_id: UUID) -> None:
             raise RuntimeError("Materialization source view reference is missing.")
         view_store = CatalogueViewStore(catalogue)
         # Recover a process death between physical creation and the Postgres update.
-        present = next(
-            (
-                table
-                for table in catalogue.lake.table.list(
-                    schema_name="_atlas_materializations"
-                )
-                if table.table_name == model.name
-            ),
-            None,
-        )
-        if present is not None and model.ducklake_table_uuid is None:
+        try:
+            MaterializationStore(catalogue).table_identity(
+                model.name,
+                schema_name="_atlas_materializations",
+            )
+        except MaterializationError:
+            present = False
+        else:
+            present = True
+        if present and model.ducklake_table_uuid is None:
             current = _source_view(view_store, reference, model)
             restored = view_store.replace(
                 current_uuid=current.view_uuid, sql=model.source_sql
@@ -542,6 +541,7 @@ def _refresh_materialization(
                 name=model.name,
                 expected_uuid=model.ducklake_table_uuid,
                 sql=model.source_sql,
+                source_table=model.source_table,
                 source_table_id=model.source_table_id,
                 from_snapshot=from_snapshot,
                 to_snapshot=processed_snapshot,
@@ -552,6 +552,7 @@ def _refresh_materialization(
                 name=model.name,
                 expected_uuid=model.ducklake_table_uuid,
                 sql=model.source_sql,
+                source_table=model.source_table,
                 source_table_id=model.source_table_id,
                 from_snapshot=from_snapshot,
                 to_snapshot=processed_snapshot,

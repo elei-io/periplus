@@ -6,8 +6,7 @@ import argparse
 from collections.abc import Sequence
 
 from repository.catalogue.benchmark import print_hot_path_benchmark
-from repository.catalogue.client import Catalogue
-from repository.catalogue.config import catalogue_config_from_env
+from repository.catalogue import catalogue_from_env
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -31,7 +30,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     arguments = parser.parse_args(argv)
 
-    with Catalogue(catalogue_config_from_env()) as catalogue:
+    with catalogue_from_env() as catalogue:
         if arguments.command == "bootstrap":
             catalogue.bootstrap()
             print("Atlas catalogue initialized and valid.")

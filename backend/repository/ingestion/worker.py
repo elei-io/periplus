@@ -114,9 +114,10 @@ async def run(*, stop: asyncio.Event, monitor: HealthMonitor) -> None:
             active_operation_count=lambda: active_operation_count,
             healthy=lambda: health_monitor.status()[0],
             stop=stop,
+            monitor=health_monitor,
         )
     )
-    # Keep all access to this embedded connection explicit and serialized. Object
+    # Keep all access to this session-affine Basin connection explicit and serialized. Object
     # reads and DOM parsing occur outside the lock.
     catalogue_connection_lock = catalogue_operation_lane()
     jobs: list[IngestionJob] = []

@@ -1,4 +1,4 @@
-"""One serialized embedded catalogue session for mandatory API control work."""
+"""One serialized Basin catalogue session for mandatory API control work."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ CatalogueOperation = Callable[[Session, Catalogue], T]
 
 
 class CatalogueControl:
-    """Own one DuckDB connection on one thread for the API process lifetime."""
+    """Own one session-affine DuckDB client on one thread for the API lifetime."""
 
     def __init__(
         self,

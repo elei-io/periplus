@@ -6,7 +6,7 @@ import unittest
 
 
 class CatalogueCDCOwnershipTests(unittest.TestCase):
-    def test_only_catalogue_relay_owns_ducklake_change_consumers(self) -> None:
+    def test_atlas_does_not_own_ducklake_cdc_consumers(self) -> None:
         backend = Path(__file__).parents[1]
         violations: list[str] = []
         for path in backend.rglob("*.py"):
@@ -16,17 +16,9 @@ class CatalogueCDCOwnershipTests(unittest.TestCase):
             for node in ast.walk(tree):
                 if not isinstance(node, ast.ImportFrom):
                     continue
-                if node.module != "ducklake_cdc_client":
-                    continue
-                consumer_names = {
-                    alias.name
-                    for alias in node.names
-                    if alias.name in {"DMLConsumer", "DDLConsumer"}
-                }
-                if consumer_names and "catalogue_relay" not in path.parts:
+                if node.module == "ducklake_cdc_client":
                     violations.append(
-                        f"{path.relative_to(backend)} imports "
-                        f"{', '.join(sorted(consumer_names))}"
+                        f"{path.relative_to(backend)} imports ducklake_cdc_client"
                     )
 
         self.assertEqual(violations, [])

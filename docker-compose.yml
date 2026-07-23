@@ -15,25 +15,33 @@ x-atlas-healthcheck: &atlas-healthcheck
   start_period: 10s
 
 x-atlas-control-environment: &atlas-control-environment
-  DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@atlas-postgres:5432/${POSTGRES_DB:-atlas}}
-
-x-atlas-catalogue-environment: &atlas-catalogue-environment
-  ATLAS_CATALOGUE_CATALOG: ${ATLAS_CATALOGUE_CATALOG:-postgres}
-  ATLAS_CATALOGUE_CATALOG_DSN: ${ATLAS_CATALOGUE_CATALOG_DSN:-host=atlas-postgres port=5432 dbname=${POSTGRES_CATALOGUE_DB:-atlas_catalogue} user=${POSTGRES_USER:-atlas} password=${POSTGRES_PASSWORD:-atlas}}
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
 
 x-atlas-nats-environment: &atlas-nats-environment
-  NATS_URL: ${NATS_URL:-nats://atlas-nats:4222}
-  NATS_SEED: ${NATS_SEED:-}
+  ATLAS_NATS_URL: ${ATLAS_NATS_URL:?ATLAS_NATS_URL is required}
+  ATLAS_NATS_SEED: ${ATLAS_NATS_SEED:?ATLAS_NATS_SEED is required}
+
+x-duckbasin-nats-environment: &duckbasin-nats-environment
+  DUCKBASIN_NATS_URL: ${DUCKBASIN_NATS_URL:?DUCKBASIN_NATS_URL is required}
+  DUCKBASIN_NATS_SEED: ${DUCKBASIN_NATS_SEED:?DUCKBASIN_NATS_SEED is required}
+
+x-duckbasin-environment: &duckbasin-environment
+  DUCKBASIN_URL: ${DUCKBASIN_URL:?DUCKBASIN_URL is required}
+  DUCKBASIN_LAKE: ${DUCKBASIN_LAKE:?DUCKBASIN_LAKE is required}
+  DUCKBASIN_TOKEN_ENDPOINT: ${DUCKBASIN_TOKEN_ENDPOINT:?DUCKBASIN_TOKEN_ENDPOINT is required}
+  DUCKBASIN_SERVICE_ACCOUNT: ${DUCKBASIN_SERVICE_ACCOUNT:?DUCKBASIN_SERVICE_ACCOUNT is required}
+  DUCKBASIN_CLIENT_ID: ${DUCKBASIN_CLIENT_ID:?DUCKBASIN_CLIENT_ID is required}
+  DUCKBASIN_CLIENT_SECRET: ${DUCKBASIN_CLIENT_SECRET:?DUCKBASIN_CLIENT_SECRET is required}
 
 x-atlas-repository-environment: &atlas-repository-environment
-  ATLAS_REPOSITORY_STORAGE: ${ATLAS_REPOSITORY_STORAGE:-s3}
-  ATLAS_REPOSITORY_S3_BUCKET: ${ATLAS_REPOSITORY_S3_BUCKET:-atlas}
-  ATLAS_REPOSITORY_S3_ENDPOINT: ${ATLAS_REPOSITORY_S3_ENDPOINT:-http://atlas-minio:9000}
-  ATLAS_REPOSITORY_S3_REGION: ${ATLAS_REPOSITORY_S3_REGION:-us-east-1}
-  ATLAS_REPOSITORY_S3_KEY_ID: ${ATLAS_REPOSITORY_S3_KEY_ID:-${MINIO_ROOT_USER:-atlas}}
-  ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY: ${ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY:-${MINIO_ROOT_PASSWORD:-atlas-secret}}
+  ATLAS_REPOSITORY_STORAGE: s3
+  ATLAS_REPOSITORY_S3_BUCKET: ${ATLAS_REPOSITORY_S3_BUCKET:?ATLAS_REPOSITORY_S3_BUCKET is required}
+  ATLAS_REPOSITORY_S3_ENDPOINT: ${ATLAS_REPOSITORY_S3_ENDPOINT:?ATLAS_REPOSITORY_S3_ENDPOINT is required}
+  ATLAS_REPOSITORY_S3_REGION: ${ATLAS_REPOSITORY_S3_REGION:?ATLAS_REPOSITORY_S3_REGION is required}
+  ATLAS_REPOSITORY_S3_KEY_ID: ${ATLAS_REPOSITORY_S3_KEY_ID:?ATLAS_REPOSITORY_S3_KEY_ID is required}
+  ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY: ${ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY:?ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY is required}
   ATLAS_REPOSITORY_S3_URL_STYLE: ${ATLAS_REPOSITORY_S3_URL_STYLE:-path}
-  ATLAS_REPOSITORY_S3_USE_SSL: ${ATLAS_REPOSITORY_S3_USE_SSL:-}
+  ATLAS_REPOSITORY_S3_USE_SSL: ${ATLAS_REPOSITORY_S3_USE_SSL:-true}
 
 x-atlas-resource-environment: &atlas-resource-environment
   ATLAS_CATALOGUE_MAX_CONCURRENCY: ${ATLAS_CATALOGUE_MAX_CONCURRENCY:-64}
@@ -43,9 +51,6 @@ x-atlas-graph-environment: &atlas-graph-environment
   ATLAS_GRAPH_MAX_RUN_SECONDS: ${ATLAS_GRAPH_MAX_RUN_SECONDS:-604800}
 
 x-atlas-quack-environment: &atlas-quack-environment
-  ATLAS_QUACK_URI: quack:atlas-quack:9494
-  ATLAS_QUACK_TOKEN: ${ATLAS_QUACK_TOKEN:-atlas-local-quack}
-  ATLAS_QUACK_DISABLE_SSL: "true"
   ATLAS_QUACK_MAX_CONCURRENCY: ${ATLAS_QUACK_MAX_CONCURRENCY:-4}
   ATLAS_QUACK_POOL_WAIT_SECONDS: ${ATLAS_QUACK_POOL_WAIT_SECONDS:-5}
   ATLAS_QUACK_QUERY_TIMEOUT_SECONDS: ${ATLAS_QUACK_QUERY_TIMEOUT_SECONDS:-30}
@@ -88,8 +93,8 @@ services:
       <<:
         [
           *atlas-control-environment,
-          *atlas-catalogue-environment,
           *atlas-nats-environment,
+          *duckbasin-environment,
           *atlas-repository-environment,
           *atlas-resource-environment,
           *atlas-graph-environment,
@@ -104,10 +109,6 @@ services:
     depends_on:
       atlas-setup:
         condition: service_completed_successfully
-      atlas-quack:
-        condition: service_healthy
-      atlas-nats:
-        condition: service_healthy
     restart: unless-stopped
 
   atlas-acquisition-worker:
@@ -132,8 +133,8 @@ services:
       <<:
         [
           *atlas-control-environment,
-          *atlas-catalogue-environment,
           *atlas-nats-environment,
+          *duckbasin-environment,
           *atlas-repository-environment,
           *atlas-resource-environment,
           *atlas-graph-environment,
@@ -142,8 +143,6 @@ services:
     depends_on:
       atlas-setup:
         condition: service_completed_successfully
-      atlas-nats:
-        condition: service_healthy
     restart: unless-stopped
 
   atlas-ingestion-worker:
@@ -168,8 +167,8 @@ services:
       <<:
         [
           *atlas-control-environment,
-          *atlas-catalogue-environment,
           *atlas-nats-environment,
+          *duckbasin-environment,
           *atlas-repository-environment,
           *atlas-resource-environment,
         ]
@@ -177,10 +176,6 @@ services:
     depends_on:
       atlas-setup:
         condition: service_completed_successfully
-      atlas-maintenance-worker:
-        condition: service_healthy
-      atlas-nats:
-        condition: service_healthy
     restart: unless-stopped
 
   atlas-materialization-worker:
@@ -205,8 +200,8 @@ services:
       <<:
         [
           *atlas-control-environment,
-          *atlas-catalogue-environment,
           *atlas-nats-environment,
+          *duckbasin-environment,
           *atlas-repository-environment,
           *atlas-resource-environment,
         ]
@@ -215,10 +210,6 @@ services:
       atlas-setup:
         condition: service_completed_successfully
       atlas-catalogue-relay:
-        condition: service_healthy
-      atlas-maintenance-worker:
-        condition: service_healthy
-      atlas-nats:
         condition: service_healthy
     restart: unless-stopped
 
@@ -242,21 +233,20 @@ services:
       <<:
         [
           *atlas-control-environment,
-          *atlas-catalogue-environment,
           *atlas-nats-environment,
+          *duckbasin-nats-environment,
+          *duckbasin-environment,
           *atlas-repository-environment,
           *atlas-resource-environment,
         ]
     depends_on:
       atlas-setup:
         condition: service_completed_successfully
-      atlas-nats:
-        condition: service_healthy
     restart: unless-stopped
 
-  atlas-maintenance-worker:
+  atlas-housekeeping-worker:
     <<: *atlas-backend
-    command: atlas-worker maintenance
+    command: atlas-worker housekeeping
     volumes: *atlas-repository-volumes
     expose:
       - "9094"
@@ -274,7 +264,6 @@ services:
       <<:
         [
           *atlas-control-environment,
-          *atlas-catalogue-environment,
           *atlas-nats-environment,
           *atlas-repository-environment,
           *atlas-resource-environment,
@@ -284,8 +273,6 @@ services:
     depends_on:
       atlas-setup:
         condition: service_completed_successfully
-      atlas-nats:
-        condition: service_healthy
     restart: unless-stopped
 
   atlas-setup:
@@ -294,8 +281,6 @@ services:
     build:
       context: .
       dockerfile: docker/atlas/Dockerfile
-      args:
-        ATLAS_DUCKDB_EXTENSIONS: ducklake,parquet,postgres,httpfs,sqlite
     # Run the image-time package so schema changes require an explicit rebuild.
     command: python -m deployment
     volumes: *atlas-repository-volumes
@@ -303,99 +288,7 @@ services:
       <<:
         [
           *atlas-control-environment,
-          *atlas-catalogue-environment,
+          *duckbasin-environment,
           *atlas-repository-environment,
         ]
     restart: "no"
-
-  atlas-quack:
-    image: duckdb/duckdb:1.5.4
-    container_name: atlas-quack
-    command: ["/duckdb", "-init", "/opt/atlas/quack-init.sql"]
-    stdin_open: true
-    tty: true
-    ports:
-      - "127.0.0.1:9494:9494"
-    environment:
-      ATLAS_QUACK_TOKEN: ${ATLAS_QUACK_TOKEN:-atlas-local-quack}
-    healthcheck:
-      interval: 5s
-      timeout: 3s
-      retries: 12
-      start_period: 10s
-      test:
-        [
-          "CMD",
-          "/duckdb",
-          "-c",
-          "FROM quack_query('quack:127.0.0.1:9494', 'SELECT 1', token=getenv('ATLAS_QUACK_TOKEN'));",
-        ]
-    volumes:
-      - ./docker/quack/init.sql:/opt/atlas/quack-init.sql:ro
-    restart: unless-stopped
-
-  atlas-nats:
-    image: nats:2.11-alpine
-    container_name: atlas-nats
-    command: ["--config", "/etc/nats/atlas-local.conf"]
-    ports:
-      - "127.0.0.1:4222:4222"
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8222/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    volumes:
-      - atlas-nats-data:/data
-      - ./docker/nats/local.conf:/etc/nats/atlas-local.conf:ro
-    restart: unless-stopped
-
-  # atlas-postgres:
-  #   image: postgres:18
-  #   container_name: atlas-postgres
-  #   ports:
-  #     - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
-  #   environment:
-  #     POSTGRES_DB: ${POSTGRES_DB:-atlas}
-  #     POSTGRES_USER: ${POSTGRES_USER:-atlas}
-  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-atlas}
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-  #     interval: 5s
-  #     timeout: 5s
-  #     retries: 10
-  #   volumes:
-  #     - atlas-postgres-data:/var/lib/postgresql
-  #   restart: unless-stopped
-
-  # atlas-minio:
-  #   image: minio/minio:RELEASE.2025-04-22T22-12-26Z
-  #   container_name: atlas-minio
-  #   command: server /data --console-address ":9001"
-  #   ports:
-  #     - "127.0.0.1:9000:9000"
-  #     - "127.0.0.1:9001:9001"
-  #   environment:
-  #     MINIO_ROOT_USER: ${MINIO_ROOT_USER:-atlas}
-  #     MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-atlas-secret}
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
-  #     interval: 5s
-  #     timeout: 3s
-  #     retries: 10
-  #   volumes:
-  #     - atlas-minio-data:/data
-  #   restart: unless-stopped
-
-  # atlas-minio-init:
-  #   <<: *atlas-backend
-  #   command: python -m repository init-s3
-  #   environment:
-  #     <<: *atlas-repository-environment
-  #   depends_on:
-  #     atlas-minio:
-  #       condition: service_healthy
-  #   restart: "no"
-
-volumes:
-  atlas-nats-data:

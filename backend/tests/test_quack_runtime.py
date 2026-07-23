@@ -32,15 +32,9 @@ from runtime.catalogue_queries import (
 
 def _config(root: Path) -> QuackRuntimeConfig:
     return QuackRuntimeConfig(
-        uri="quack:catalogue.internal:9494",
-        token="secret-token",
-        disable_ssl=True,
         catalogue_alias="atlas",
         catalogue_schema="main",
-        metadata_schema="main",
         catalogue_schema_version="test",
-        setup_sql=(),
-        attach_sql=f"ATTACH 'ducklake:{root}' AS atlas",
         maximum_concurrency=2,
         pool_wait_seconds=1,
         query_timeout_seconds=10,
@@ -121,18 +115,13 @@ class QuackRuntimeTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "ATLAS_QUACK_URI": "quack:catalogue.internal:9494",
-                    "ATLAS_QUACK_TOKEN": "secret-token",
-                    "ATLAS_QUACK_DISABLE_SSL": "true",
+                    "DUCKBASIN_LAKE": "atlas",
                     "ATLAS_QUACK_MAX_CONCURRENCY": "2",
                     "ATLAS_QUACK_POOL_WAIT_SECONDS": "1",
                     "ATLAS_QUACK_QUERY_TIMEOUT_SECONDS": "10",
                     "ATLAS_QUACK_QUERY_MAX_ROWS": "100",
                     "ATLAS_QUACK_QUERY_MAX_BYTES": "10000",
-                    "ATLAS_CATALOGUE_CATALOG": "duckdb",
-                    "ATLAS_CATALOGUE_ROOT": temp_dir,
-                    "ATLAS_REPOSITORY_ROOT": temp_dir,
-                    "ATLAS_REPOSITORY_STORAGE": "disk",
+                    "ATLAS_CATALOGUE_SCHEMA": "main",
                 },
                 clear=True,
             ):
@@ -163,15 +152,13 @@ class QuackRuntimeTests(unittest.TestCase):
         self.assertEqual(table.num_rows, 0)
         self.assertIn("2 rows", limited.limit_error or "")
 
-    def test_errors_redact_the_quack_endpoint_and_token(self) -> None:
+    def test_errors_are_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = _config(Path(temp_dir))
             runtime = QuackQueryRuntime(object(), object(), config=config)
-            message = runtime.safe_error(
-                RuntimeError(f"{config.uri} rejected {config.token}")
-            )
+            message = runtime.safe_error(RuntimeError("x" * 3_000))
 
-        self.assertEqual(message, "[redacted] rejected [redacted]")
+        self.assertEqual(len(message), 2_000)
 
 
 class QuackQueryLifecycleTests(unittest.IsolatedAsyncioTestCase):

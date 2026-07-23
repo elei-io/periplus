@@ -55,8 +55,6 @@ dependencies = [
     { name = "boto3" },
     { name = "croniter" },
     { name = "duckdb" },
-    { name = "ducklake-cdc-client" },
-    { name = "ducklake-client" },
     { name = "fastapi", extra = ["standard"] },
     { name = "html5lib" },
     { name = "httpx" },
@@ -69,6 +67,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-ai-slim", extra = ["openai"] },
     { name = "python-dotenv" },
+    { name = "pytz" },
     { name = "rich" },
     { name = "sqlalchemy" },
     { name = "sqlglot" },
@@ -88,8 +87,6 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.42" },
     { name = "croniter", specifier = ">=6.0" },
     { name = "duckdb", specifier = "==1.5.4" },
-    { name = "ducklake-cdc-client", specifier = "==0.7.0" },
-    { name = "ducklake-client", specifier = ">=0.8.2" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.139.0" },
     { name = "html5lib", specifier = ">=1.1" },
     { name = "httpx", specifier = ">=0.28" },
@@ -102,6 +99,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12" },
     { name = "pydantic-ai-slim", extras = ["openai"], specifier = ">=2.14.0" },
     { name = "python-dotenv", specifier = ">=1.2" },
+    { name = "pytz", specifier = ">=2025.2" },
     { name = "rich", specifier = ">=14.0" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "sqlglot", specifier = ">=27" },
@@ -317,34 +315,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b0/f4/d5d633dd7c5138d8f7c434e6ac2553c831b7fb658494efa8d0bc73df8623/duckdb-1.5.4-cp314-cp314-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4d2307a76d199077b0055b354e90e857479461a0d875437535dd4833172c8b6d", size = 21487202, upload-time = "2026-06-17T10:48:45.407Z" },
     { url = "https://files.pythonhosted.org/packages/c0/26/5be13bbd5c3421dccfc1ad4ca9da4b97c5a3ddd73f66542092f3167ec52c/duckdb-1.5.4-cp314-cp314-win_amd64.whl", hash = "sha256:6dcbb81a1276bc48deb4d562bce4f8895e4fc6348750a096e30052345c6d6552", size = 13666989, upload-time = "2026-06-17T10:48:47.764Z" },
     { url = "https://files.pythonhosted.org/packages/dc/82/4d52f3f9f9703a226b26b80bdae3f6905aeefe5221bf1815fc93ff02ca25/duckdb-1.5.4-cp314-cp314-win_arm64.whl", hash = "sha256:0f8722346024e5d9f02b58bf7b0491a629f97fdc8a04a10e432940f471ee387a", size = 14449863, upload-time = "2026-06-17T10:48:50.18Z" },
-]
-
-[[package]]
-name = "ducklake-cdc-client"
-version = "0.7.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "duckdb" },
-    { name = "ducklake-client" },
-    { name = "pytz" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a8/9c/bfa162e216c146c957d933fb52546f001b2d354c2c9b9c291de7231d48bc/ducklake_cdc_client-0.7.0.tar.gz", hash = "sha256:3fd60f4fa3b6e603d207234537c9550db743436eb5914ae4bcac53c986bf5bfd", size = 49205, upload-time = "2026-07-20T16:47:45.778Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/04/aa/46b95efb90fe700a176b2d4d278084b2d2ec1dbaf23c01ae8d87345a0409/ducklake_cdc_client-0.7.0-py3-none-any.whl", hash = "sha256:9202bfc468ec3e9228c3fba77d177123e86bc6d8d1aeec037259236165444793", size = 42713, upload-time = "2026-07-20T16:47:44.585Z" },
-]
-
-[[package]]
-name = "ducklake-client"
-version = "0.8.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "duckdb" },
-    { name = "psycopg", extra = ["binary"] },
-    { name = "pytz" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/0c/89/9a7d4d8542b2ac9e7bbfc4c7ee66ccb79f67d2568e36b0001cb78bf24d9e/ducklake_client-0.8.2.tar.gz", hash = "sha256:6e08df736c4041c0f56b5668435a9de3cd0be8f16ff670744eb163ec89f3d95e", size = 29214, upload-time = "2026-07-14T10:44:36.56Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/6d/c3/eed0914bc5bffbdfc32514bfb56946280a3b641d30b0f0c356ba6f19a903/ducklake_client-0.8.2-py3-none-any.whl", hash = "sha256:e35144b3a72e98bb5f7a80fe23fde23b9a04cd34a3870c444f2ac2b57f27eb85", size = 37135, upload-time = "2026-07-14T10:44:35.553Z" },
 ]
 
 [[package]]

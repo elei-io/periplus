@@ -183,26 +183,12 @@ async def catalogue_status(request: Request) -> CatalogueStatusResponse:
     config = runtime.config
 
     def operation(connection):
-        metadata = _quote_identifier(
-            f"__ducklake_metadata_{config.catalogue_alias}"
-        )
-        metadata_schema = _quote_identifier(config.metadata_schema)
-        schema = _quote_literal(config.catalogue_schema)
         rows = remote_rows(
             connection,
             f"""
-            SELECT count(*), coalesce(sum(data_file.file_size_bytes), 0)
-            FROM {metadata}.{metadata_schema}.ducklake_data_file AS data_file
-            JOIN {metadata}.{metadata_schema}.ducklake_table AS table_info
-              ON table_info.table_id = data_file.table_id
-            JOIN {metadata}.{metadata_schema}.ducklake_schema AS schema_info
-              ON schema_info.schema_id = table_info.schema_id
-            WHERE data_file.end_snapshot IS NULL
-              AND table_info.end_snapshot IS NULL
-              AND schema_info.end_snapshot IS NULL
-              AND schema_info.schema_name IN (
-                {schema}, '_atlas', '_atlas_materializations'
-              )
+            SELECT coalesce(sum(file_count), 0),
+                   coalesce(sum(file_size_bytes), 0)
+            FROM ducklake_table_info({_quote_literal(config.catalogue_alias)})
             """,
         )
         versions = remote_rows(

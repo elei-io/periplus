@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 import hashlib
 import io
 import json
 import logging
 import re
+import tempfile
 import time
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Awaitable, Callable, TypeVar
 from urllib.parse import urlparse
 
@@ -74,6 +77,44 @@ def _is_execution_context_replaced(exc: PlaywrightError) -> bool:
 def _raise_if_playwright_runtime_lost(exc: PlaywrightError) -> None:
     if "connection closed while reading from the driver" in str(exc).lower():
         raise PlaywrightRuntimeLost("local Playwright driver connection was lost") from exc
+
+
+def _is_download_navigation(exc: PlaywrightError) -> bool:
+    return "download is starting" in str(exc).lower()
+
+
+async def _cancel_event_wait(task: asyncio.Task) -> None:
+    if not task.done():
+        task.cancel()
+    with suppress(asyncio.CancelledError, PlaywrightError):
+        await task
+
+
+def _is_navigation_response(response) -> bool:
+    try:
+        return response.request.is_navigation_request()
+    except PlaywrightError:
+        return False
+
+
+async def _final_redirect_response(response):
+    request = response.request
+    while request.redirected_to is not None:
+        request = request.redirected_to
+        redirected_response = await request.response()
+        if redirected_response is not None:
+            response = redirected_response
+    return response
+
+
+async def _download_bytes(download) -> bytes:
+    """Copy a remote-CDP download through Playwright before its context closes."""
+    with tempfile.NamedTemporaryFile(prefix="atlas-download-") as target:
+        await download.save_as(target.name)
+        failure = await download.failure()
+        if failure is not None:
+            raise PlaywrightError(failure)
+        return await asyncio.to_thread(Path(target.name).read_bytes)
 
 
 async def _with_context_recovery(
@@ -438,6 +479,19 @@ async def _acquire(
                 html: str | None = None
                 navigation_timed_out = False
                 navigation_timeout_detail = ""
+                download_wait = asyncio.create_task(
+                    page.wait_for_event(
+                        "download",
+                        timeout=completion.navigation.timeout_ms,
+                    )
+                )
+                response_wait = asyncio.create_task(
+                    page.wait_for_event(
+                        "response",
+                        predicate=_is_navigation_response,
+                        timeout=completion.navigation.timeout_ms,
+                    )
+                )
                 try:
                     response = await page.goto(
                         url,
@@ -445,6 +499,8 @@ async def _acquire(
                         timeout=completion.navigation.timeout_ms,
                     )
                 except PlaywrightTimeoutError as exc:
+                    await _cancel_event_wait(download_wait)
+                    await _cancel_event_wait(response_wait)
                     navigation_timed_out = True
                     navigation_timeout_detail = (
                         str(exc) or "Page navigation timed out"
@@ -478,6 +534,106 @@ async def _acquire(
                             completion.navigation,
                         )
                     response = None
+                except PlaywrightError as exc:
+                    if not _is_download_navigation(exc):
+                        await _cancel_event_wait(download_wait)
+                        await _cancel_event_wait(response_wait)
+                        raise
+                    try:
+                        download, response = await asyncio.gather(
+                            download_wait,
+                            response_wait,
+                        )
+                        response = await _final_redirect_response(response)
+                    except PlaywrightError as download_exc:
+                        await _cancel_event_wait(download_wait)
+                        await _cancel_event_wait(response_wait)
+                        return _failed_page(
+                            url,
+                            started,
+                            started_at,
+                            attempt_number,
+                            str(download_exc),
+                            "download_failed",
+                            "navigation",
+                            True,
+                        )
+                    status = response.status
+                    final_url = response.url or download.url or url
+                    content_type = await response.header_value("content-type")
+                    media_type = _media_type(content_type)
+                    retry_after = _retry_after(
+                        await response.header_value("retry-after")
+                    )
+                    outcome = _status_outcome(status, policy)
+                    if outcome != "accept":
+                        await download.cancel()
+                        return _response_outcome_page(
+                            url=final_url,
+                            requested_url=url,
+                            started=started,
+                            started_at=started_at,
+                            attempt_number=attempt_number,
+                            status=status,
+                            media_type=media_type,
+                            outcome=outcome,
+                            failure_code="http_status",
+                            retry_after=retry_after,
+                        )
+                    if not _accepted_media_type(
+                        media_type, policy.content.accepted_content_types
+                    ):
+                        outcome = (
+                            policy.content.response_rules.unsupported_content_type
+                        )
+                        if outcome != "accept":
+                            await download.cancel()
+                            return _response_outcome_page(
+                                url=final_url,
+                                requested_url=url,
+                                started=started,
+                                started_at=started_at,
+                                attempt_number=attempt_number,
+                                status=status,
+                                media_type=media_type,
+                                outcome=outcome,
+                                failure_code="unsupported_content_type",
+                            )
+                    try:
+                        artifact = await _download_bytes(download)
+                    except (OSError, PlaywrightError) as download_exc:
+                        return _failed_page(
+                            url,
+                            started,
+                            started_at,
+                            attempt_number,
+                            str(download_exc),
+                            "download_failed",
+                            "acquisition",
+                            True,
+                        )
+                    evidence = _attempt(
+                        number=attempt_number,
+                        started_at=started_at,
+                        requested_url=url,
+                        final_url=final_url,
+                        status_code=status,
+                        media_type=media_type,
+                        outcome="success",
+                    )
+                    return CrawlPage(
+                        url=final_url,
+                        success=True,
+                        status_code=status,
+                        duration_seconds=time.perf_counter() - started,
+                        outcome="success",
+                        response_media_type=media_type,
+                        artifact=artifact,
+                        attempt_evidence=evidence,
+                    )
+                else:
+                    await _cancel_event_wait(download_wait)
+                    await _cancel_event_wait(response_wait)
                 status = response.status if response is not None else None
                 final_url = page.url
                 content_type = await response.header_value("content-type") if response is not None else None

@@ -1,6 +1,6 @@
 """The versioned Atlas DOM column contract."""
 
-from ducklake_client import ColumnDef, MapType
+from schema_types import ColumnDef, MapType
 
 DOM_SCHEMA_VERSION = 1
 

@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime
 import logging
-from typing import Literal
+from typing import Literal, Protocol
 
 from config import get_float, get_int
 from config.performance import RESOURCE_STATE_REPLICAS
@@ -24,6 +24,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 CATALOGUE_WORKERS_BUCKET = "atlas_catalogue_workers"
 CatalogueCapability = Literal["ingestion", "materialization"]
+_PRESENCE_SUBSYSTEM = "catalogue_worker_presence"
+
+
+class CatalogueWorkerPresenceMonitor(Protocol):
+    def subsystem_ready(self, name: str) -> None: ...
+
+    def subsystem_unavailable(self, name: str, error: str) -> None: ...
 
 
 class CatalogueWorkerState(BaseModel):
@@ -121,7 +128,13 @@ async def catalogue_worker_presence(
     active_operation_count: Callable[[], int],
     healthy: Callable[[], bool],
     stop: asyncio.Event,
+    monitor: CatalogueWorkerPresenceMonitor | None = None,
 ) -> None:
+    if monitor is not None:
+        monitor.subsystem_unavailable(
+            _PRESENCE_SUBSYSTEM,
+            "catalogue worker presence has not been published",
+        )
     while not stop.is_set():
         try:
             await publish_catalogue_worker_state(
@@ -136,8 +149,16 @@ async def catalogue_worker_presence(
                     healthy=healthy(),
                 ),
             )
-        except Exception:
+        except Exception as exc:
+            if monitor is not None:
+                monitor.subsystem_unavailable(
+                    _PRESENCE_SUBSYSTEM,
+                    str(exc) or type(exc).__name__,
+                )
             logging.warning("catalogue worker presence publication failed", exc_info=True)
+        else:
+            if monitor is not None:
+                monitor.subsystem_ready(_PRESENCE_SUBSYSTEM)
         try:
             await asyncio.wait_for(stop.wait(), timeout=5)
         except TimeoutError:

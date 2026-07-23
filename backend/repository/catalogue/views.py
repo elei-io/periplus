@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
+
+from sqlglot import exp, parse_one
 
 from repository.catalogue.client import Catalogue
 from repository.catalogue.query import classify_select, compile_catalogue_definition
@@ -44,43 +46,42 @@ class CatalogueViewStore:
         self.catalogue = catalogue
 
     def list(self) -> list[DuckLakeView]:
-        metadata = _quote_identifier(f"__ducklake_metadata_{self.catalogue.config.alias}")
-        metadata_schema = _quote_identifier(self.catalogue.metadata_schema)
-        rows = self.catalogue.connection.execute(
-            f"""
-            SELECT v.view_uuid, s.schema_name, v.view_name, v.sql
-            FROM {metadata}.{metadata_schema}.ducklake_view AS v
-            JOIN {metadata}.{metadata_schema}.ducklake_schema AS s USING (schema_id)
-            WHERE v.end_snapshot IS NULL AND s.end_snapshot IS NULL
-              AND s.schema_name = ?
-            ORDER BY v.view_name
-            """,
-            [VIEW_SCHEMA],
-        ).fetchall()
+        alias = _quote_literal(self.catalogue.config.alias)
+        rows = self.catalogue.remote_rows(
+            """
+            SELECT schema_name, view_name, sql
+            FROM duckdb_views()
+            """
+            f"WHERE database_name = {alias} "
+            f"AND schema_name = {_quote_literal(VIEW_SCHEMA)} "
+            "ORDER BY view_name"
+        )
         # DuckLake stores the view SQL, and unqualified names inside it resolve using
         # the caller's current schema. Bind from Atlas main on every fresh connection.
         self._use_main()
         views: list[DuckLakeView] = []
         for row in rows:
-            schema_name = str(row[1])
-            view_name = str(row[2])
+            schema_name = str(row[0])
+            view_name = str(row[1])
             qualified = ".".join(
                 _quote_identifier(value)
                 for value in (self.catalogue.config.alias, schema_name, view_name)
             )
-            cursor = self.catalogue.connection.execute(
-                f"SELECT * FROM {qualified} LIMIT 0"
-            )
+            columns = self.catalogue.remote_rows(f"DESCRIBE {qualified}")
             views.append(
                 DuckLakeView(
-                    view_uuid=UUID(str(row[0])),
+                    view_uuid=_view_uuid(
+                        self.catalogue.config.alias,
+                        schema_name,
+                        view_name,
+                    ),
                     schema_name=schema_name,
                     view_name=view_name,
-                    sql=str(row[3]).replace(
+                    sql=_view_query(str(row[2])).replace(
                         "{DUCKLAKE_CATALOG}", self.catalogue.config.alias
                     ),
-                    columns=tuple(str(column[0]) for column in cursor.description),
-                    column_types=tuple(str(column[1]) for column in cursor.description),
+                    columns=tuple(str(column[0]) for column in columns),
+                    column_types=tuple(str(column[1]) for column in columns),
                 )
             )
         return views
@@ -94,7 +95,7 @@ class CatalogueViewStore:
         if any(view.view_name == name for view in self.list()):
             raise CatalogueViewConflictError(f"View {VIEW_SCHEMA}.{name} already exists.")
         self._use_main()
-        self.catalogue.connection.execute(
+        self.catalogue.remote_execute(
             f"CREATE VIEW {_qualified(self.catalogue, name)} AS {compiled}"
         )
         return self._require_name(name)
@@ -107,7 +108,7 @@ class CatalogueViewStore:
                 "The DuckLake view changed or was removed; refresh before editing."
             )
         self._use_main()
-        self.catalogue.connection.execute(
+        self.catalogue.remote_execute(
             f"CREATE OR REPLACE VIEW {_qualified(self.catalogue, current_name)} "
             f"AS {compiled}"
         )
@@ -116,28 +117,30 @@ class CatalogueViewStore:
     def name_for_uuid(self, view_uuid: UUID) -> str | None:
         """Look up identity without binding the view's possibly broken SQL."""
 
-        metadata = _quote_identifier(
-            f"__ducklake_metadata_{self.catalogue.config.alias}"
+        alias = _quote_literal(self.catalogue.config.alias)
+        rows = self.catalogue.remote_rows(
+            "SELECT view_name FROM duckdb_views() "
+            f"WHERE database_name = {alias} "
+            f"AND schema_name = {_quote_literal(VIEW_SCHEMA)}"
         )
-        metadata_schema = _quote_identifier(self.catalogue.metadata_schema)
-        row = self.catalogue.connection.execute(
-            f"""
-            SELECT v.view_name
-            FROM {metadata}.{metadata_schema}.ducklake_view AS v
-            JOIN {metadata}.{metadata_schema}.ducklake_schema AS s USING (schema_id)
-            WHERE v.end_snapshot IS NULL AND s.end_snapshot IS NULL
-              AND s.schema_name = ? AND v.view_uuid = ?
-            """,
-            [VIEW_SCHEMA, view_uuid],
-        ).fetchone()
-        return str(row[0]) if row is not None else None
+        return next(
+            (
+                str(row[0])
+                for row in rows
+                if _view_uuid(
+                    self.catalogue.config.alias,
+                    VIEW_SCHEMA,
+                    str(row[0]),
+                )
+                == view_uuid
+            ),
+            None,
+        )
 
     def _use_main(self) -> None:
-        namespace = ".".join(
-            _quote_identifier(part)
-            for part in (self.catalogue.config.alias, self.catalogue.config.schema)
-        )
-        self.catalogue.connection.execute(f"USE {namespace}")
+        # Basin sessions start in the selected lake's main schema. Mutation
+        # targets are fully qualified.
+        return
 
     def drop(self, *, current_uuid: UUID) -> DuckLakeView:
         current_name = self.name_for_uuid(current_uuid)
@@ -157,7 +160,7 @@ class CatalogueViewStore:
                 sql="",
                 columns=(),
             )
-        self.catalogue.connection.execute(
+        self.catalogue.remote_execute(
             f"DROP VIEW {_qualified(self.catalogue, current.view_name)}"
         )
         return current
@@ -182,3 +185,21 @@ def _qualified(catalogue: Catalogue, name: str) -> str:
 
 def _quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
+
+
+def _quote_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _view_uuid(alias: str, schema_name: str, view_name: str) -> UUID:
+    return uuid5(
+        NAMESPACE_URL,
+        f"duckbasin:{alias}:view:{schema_name}.{view_name}",
+    )
+
+
+def _view_query(sql: str) -> str:
+    statement = parse_one(sql, dialect="duckdb")
+    if isinstance(statement, exp.Create) and statement.expression is not None:
+        return statement.expression.sql(dialect="duckdb")
+    return sql

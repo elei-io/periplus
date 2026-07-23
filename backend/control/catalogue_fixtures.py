@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 import re
 from uuid import uuid4
@@ -376,9 +377,14 @@ def _seed_view(
             )
         )
         if materialization is not None:
-            raise CatalogueFixtureError(
-                f"Fixture-owned materialized view {VIEW_SCHEMA}.{fixture.name} "
-                "is missing from DuckLake."
+            # The selected managed lake is replaceable deployment state. If
+            # its fixture-owned physical relation is absent, retire the stale
+            # incarnation and let this setup pass recreate it from the
+            # authoritative fixture definition.
+            materialization.archived_at = datetime.now(UTC)
+            materialization.last_error = (
+                "Retired because the selected DuckBasin lake did not contain "
+                "this fixture-owned materialization."
             )
         physical = next(
             (view for view in store.list() if view.view_name == fixture.name),

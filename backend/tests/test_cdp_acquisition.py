@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -153,6 +154,128 @@ class CdpAcquisitionTests(unittest.TestCase):
             page.wait_for_timeout.assert_not_awaited()
             playwright.chromium.connect_over_cdp.assert_awaited_once()
             browser.close.assert_awaited_once_with()
+
+        asyncio.run(scenario())
+
+    def test_disabled_attachment_type_is_a_clean_skip(self):
+        browser = AsyncMock()
+        page = AsyncMock()
+        page.url = "about:blank"
+        download = AsyncMock()
+        download.url = "https://example.com/form.docx"
+        response = MagicMock(
+            status=200,
+            url="https://example.com/form.docx",
+        )
+        response.request.redirected_to = None
+        response.header_value = AsyncMock(
+            side_effect=lambda name: (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                if name == "content-type"
+                else None
+            )
+        )
+
+        async def wait_for_event(event, **_kwargs):
+            return download if event == "download" else response
+
+        page.wait_for_event.side_effect = wait_for_event
+        page.goto.side_effect = PlaywrightError("Page.goto: Download is starting")
+        browser.new_page.return_value = page
+        playwright = MagicMock()
+        playwright.chromium.connect_over_cdp = AsyncMock(return_value=browser)
+
+        async def scenario():
+            result = await _acquire(
+                "https://example.com/form.docx",
+                policy(),
+                attempt_number=1,
+                playwright=playwright,
+            )
+            self.assertTrue(result.success)
+            self.assertEqual(result.outcome, "skipped")
+            self.assertEqual(
+                result.response_media_type,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            self.assertEqual(
+                result.attempt_evidence.failure_code,
+                "unsupported_content_type",
+            )
+            download.cancel.assert_awaited_once_with()
+            download.save_as.assert_not_awaited()
+
+        asyncio.run(scenario())
+
+    def test_enabled_attachment_type_is_captured_as_an_artifact(self):
+        media_type = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        attachment_policy = CrawlPolicySnapshot(
+            id=uuid4(),
+            slug="documents",
+            scheme="*",
+            host="*",
+            path_prefix="/",
+            path_mode="prefix",
+            content={
+                "accepted_content_types": [
+                    "text/html",
+                    "application/xhtml+xml",
+                    media_type,
+                ]
+            },
+        )
+        browser = AsyncMock()
+        page = AsyncMock()
+        page.url = "about:blank"
+        download = AsyncMock()
+        download.url = "https://example.com/form.docx"
+        download.failure.return_value = None
+        payload = b"PK\x03\x04docx"
+
+        async def save_as(path):
+            Path(path).write_bytes(payload)
+
+        download.save_as.side_effect = save_as
+        response = MagicMock(
+            status=200,
+            url="https://cdn.example.com/form.docx",
+        )
+        response.request.redirected_to = None
+        response.header_value = AsyncMock(
+            side_effect=lambda name: media_type if name == "content-type" else None
+        )
+        redirect = MagicMock(
+            status=302,
+            url="https://example.com/form.docx",
+        )
+        redirect.request.redirected_to = response.request
+        response.request.response = AsyncMock(return_value=response)
+
+        async def wait_for_event(event, **_kwargs):
+            return download if event == "download" else redirect
+
+        page.wait_for_event.side_effect = wait_for_event
+        page.goto.side_effect = PlaywrightError("Page.goto: Download is starting")
+        browser.new_page.return_value = page
+        playwright = MagicMock()
+        playwright.chromium.connect_over_cdp = AsyncMock(return_value=browser)
+
+        async def scenario():
+            result = await _acquire(
+                "https://example.com/form.docx",
+                attachment_policy,
+                attempt_number=1,
+                playwright=playwright,
+            )
+            self.assertTrue(result.success)
+            self.assertEqual(result.outcome, "success")
+            self.assertEqual(result.url, "https://cdn.example.com/form.docx")
+            self.assertEqual(result.response_media_type, media_type)
+            self.assertEqual(result.artifact, payload)
+            download.save_as.assert_awaited_once()
+            download.cancel.assert_not_awaited()
 
         asyncio.run(scenario())
 

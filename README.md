@@ -7,7 +7,7 @@ analysis.
 The project is intentionally small: one page-acquisition path, one repository boundary, and a
 clear owner for every kind of state. Atlas scales worker capabilities independently while one
 narrow, KV-backed Resource Governor contract bounds shared pressure on remote sites, DuckLake, and
-S3 / MinIO.
+the object repository.
 
 Atlas is organized around crawl graphs:
 
@@ -26,7 +26,9 @@ queries, views, and materializations without requiring a separate result-renderi
 Requirements:
 
 - Python 3.14 and [uv](https://docs.astral.sh/uv/) for backend development.
-- Docker with Docker Compose for the complete local stack.
+- Docker with Docker Compose for Atlas application processes.
+- Remote Postgres, an Atlas NATS account, a Basin CDC NATS account, DuckBasin, an
+  S3-compatible raw-object repository, and a standard CDP endpoint.
 
 ```sh
 cp .env.example .env
@@ -35,11 +37,12 @@ make check
 make compose-up
 ```
 
-Compose starts the complete local stack, including a development Quack server, exposes the web UI
-at `http://127.0.0.1:8080`, and exposes the API at `http://127.0.0.1:8000`. The accepted
-target topology separates CDP acquisition, ingestion, materialization, and maintenance failure
-domains. The configured CDP service owns acquisition transport and browser-farm capacity.
-[AUDIT.md](AUDIT.md) tracks the direct greenfield cutover.
+Compose starts only Atlas processes, exposes the web UI at `http://127.0.0.1:8080`, and exposes
+the API at `http://127.0.0.1:8000`. Postgres, both NATS accounts, DuckLake storage and compute,
+object storage, and CDP remain remote. Separate acquisition, ingestion, catalogue-ingress,
+materialization, and housekeeping deployments retain independent failure and scaling boundaries.
+The configured CDP service owns acquisition transport and browser-farm capacity.
+[docs/BASIN_CUTOVER.md](docs/BASIN_CUTOVER.md) records the managed-lake boundary and verification.
 
 Compose does not bind-mount the application source tree. After changing Atlas code, rebuild and
 recreate the services with `docker compose up --build -d` (or `make compose-up`) so every running
@@ -51,10 +54,11 @@ Run the API without Compose:
 make api
 ```
 
-`ATLAS_QUACK_URI` and `ATLAS_QUACK_TOKEN` identify the private Quack endpoint reachable only by
-Atlas API compute. The API owns a bounded pool of reusable Quack client connections for validated,
-read-only workbench queries and Arrow IPC result streaming. The browser never receives Quack,
-Postgres, DuckLake, or object-store credentials.
+Atlas authenticates as `DUCKBASIN_SERVICE_ACCOUNT`, discovers `DUCKBASIN_LAKE`, refreshes its
+short-lived OAuth token, and mints a unique session-affine Quack attachment for every DuckDB
+client. The API owns a bounded pool of those managed clients for validated, read-only workbench
+queries and Arrow IPC result streaming. The browser never receives Quack, Postgres, DuckLake, or
+object-store credentials.
 
 The home page runs a server-owned PydanticAI catalogue agent when `OPENAI_API_KEY` is configured.
 It streams progress, bounded query rows, executed SQL, and a short evidence-based summary over SSE.
@@ -76,12 +80,14 @@ Useful development commands:
 make check                  # compile backend modules and run unit tests
 make acquisition-worker     # run `atlas-worker acquisition`
 make ingestion-worker       # run `atlas-worker ingestion`
+make catalogue-relay-worker # run `atlas-worker catalogue-relay`
 make materialization-worker # run `atlas-worker materialization`
-make maintenance-worker     # run `atlas-worker maintenance`
-make setup                  # create databases, migrate, and bootstrap the catalogue
+make housekeeping-worker    # run `atlas-worker housekeeping`
+make setup                  # migrate remote Postgres and bootstrap the managed lake
 make catalogue-check        # validate the DuckLake catalogue
 make catalogue-benchmark    # benchmark service reads and partition/DOM SQL paths
-make compose-down           # stop the local stack
+make verify-remote-runtime  # prove Atlas KV and fresh Basin CDC delivery
+make compose-down           # stop the local Atlas deployment
 ```
 
 Configuration is documented alongside its defaults in [`.env.example`](.env.example).

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from ducklake_client import ColumnDef
-
 from dom.schema import ELEMENT_COLUMNS
+from schema_types import ColumnDef
 
 CATALOGUE_SCHEMA_VERSION = "v0.1.0"
 INTERNAL_SCHEMA = "_atlas"
