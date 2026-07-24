@@ -35,7 +35,8 @@ class CatalogueMaterialization(Base):
         ),
         CheckConstraint(
             "observed_state IN "
-            "('creating', 'live', 'paused', 'deleting', 'blocked_schema', 'failed')",
+            "('creating', 'backfilling', 'live', 'paused', 'deleting', "
+            "'blocked_schema', 'failed')",
             name="ck_catalogue_materializations_observed_state",
         ),
         CheckConstraint(
@@ -81,12 +82,21 @@ class CatalogueMaterialization(Base):
     refresh_delay_seconds: Mapped[float] = mapped_column(Float, default=1.0)
     refresh_strategy: Mapped[str] = mapped_column(Text)
     key_columns: Mapped[list[str]] = mapped_column(JSON)
+    scope_relations: Mapped[dict[str, list[str]]] = mapped_column(
+        JSON, default=dict
+    )
     partition_column: Mapped[str | None] = mapped_column(Text, nullable=True)
     target_table_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ducklake_table_uuid: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), nullable=True
     )
     bootstrap_snapshot: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    bootstrap_partition_count: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    bootstrap_partition_cursor: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
     processed_snapshot: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     last_refreshed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

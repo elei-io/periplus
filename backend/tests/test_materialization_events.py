@@ -13,6 +13,8 @@ from control.catalogue_materializations.schemas import ViewMaterializationPut
 from materialization.dematerialization import dematerialize_one
 from materialization.executor import (
     _backing_view_sql,
+    _bootstrap_materialization,
+    _load_bootstrap_plan,
     _refresh_materialization,
     _source_view,
 )
@@ -39,6 +41,173 @@ from runtime.catalogue_events import (
 
 
 class MaterializationEventContractTests(unittest.TestCase):
+    def test_persisted_backfill_state_remains_loadable_after_restart(self) -> None:
+        model = SimpleNamespace(
+            id=uuid4(),
+            archived_at=None,
+            observed_state="backfilling",
+            desired_state="live",
+            view_reference_id=uuid4(),
+            source_sql="SELECT document_id FROM documents",
+            source_table="documents",
+            refresh_strategy="keyed",
+            key_columns=["document_id"],
+            scope_relations={"elements": ["document_id"]},
+            partition_column=None,
+            ducklake_table_uuid=uuid4(),
+            bootstrap_partition_count=100,
+            bootstrap_partition_cursor=7,
+            source_view_uuid=uuid4(),
+        )
+        reference = SimpleNamespace(
+            ducklake_view_uuid=uuid4(),
+            view_name="page_metadata",
+        )
+        session = MagicMock()
+        session.get.side_effect = [model, reference]
+        with patch(
+            "materialization.executor.session_scope"
+        ) as session_scope:
+            session_scope.return_value.__enter__.return_value = session
+            plan = _load_bootstrap_plan(model.id)
+
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.model["observed_state"], "backfilling")
+        self.assertEqual(plan.model["bootstrap_partition_cursor"], 7)
+
+    def test_keyed_bootstrap_creates_empty_target_before_backfill(self) -> None:
+        materialization_id = uuid4()
+        source_view_uuid = uuid4()
+        reference_uuid = uuid4()
+        plan = SimpleNamespace(
+            model={
+                "id": materialization_id,
+                "view_reference_id": uuid4(),
+                "observed_state": "creating",
+                "source_sql": "SELECT crawl_id FROM crawls",
+                "source_table": "crawls",
+                "refresh_strategy": "keyed",
+                "key_columns": ("crawl_id",),
+                "partition_column": None,
+                "ducklake_table_uuid": None,
+                "bootstrap_partition_count": None,
+                "bootstrap_partition_cursor": None,
+                "source_view_uuid": source_view_uuid,
+                "desired_state": "live",
+            },
+            reference={
+                "ducklake_view_uuid": reference_uuid,
+                "view_name": "page_links",
+            },
+        )
+        table = SimpleNamespace(table_id=81, table_uuid=uuid4())
+        store = MagicMock()
+        store.table_identity.side_effect = MaterializationError("missing")
+        store.create_empty.return_value = (table, 100)
+        store.bootstrap_partition_count.return_value = 14
+        view_store = MagicMock()
+        view_store.get.return_value = SimpleNamespace(
+            view_uuid=source_view_uuid
+        )
+        model = SimpleNamespace(
+            id=materialization_id,
+            archived_at=None,
+            observed_state="creating",
+            desired_state="live",
+            view_reference_id=plan.model["view_reference_id"],
+            source_sql=plan.model["source_sql"],
+            source_view_uuid=source_view_uuid,
+            source_table="crawls",
+            refresh_strategy="keyed",
+            key_columns=["crawl_id"],
+            partition_column=None,
+            target_table_id=None,
+            ducklake_table_uuid=None,
+            bootstrap_snapshot=None,
+            bootstrap_partition_count=None,
+            bootstrap_partition_cursor=None,
+            processed_snapshot=None,
+            last_refreshed_at=None,
+            last_error=None,
+        )
+        reference = SimpleNamespace(ducklake_view_uuid=reference_uuid)
+        session = MagicMock()
+        session.get.side_effect = [model, reference]
+        catalogue = MagicMock()
+        catalogue.latest_snapshot.return_value = 102
+
+        with (
+            patch(
+                "materialization.executor._load_bootstrap_plan",
+                return_value=plan,
+            ),
+            patch(
+                "materialization.executor.MaterializationStore",
+                return_value=store,
+            ),
+            patch(
+                "materialization.executor.CatalogueViewStore",
+                return_value=view_store,
+            ),
+            patch("materialization.executor.session_scope") as session_scope,
+        ):
+            session_scope.return_value.__enter__.return_value = session
+            _bootstrap_materialization(catalogue, materialization_id)
+
+        store.create_empty.assert_called_once_with(
+            name=physical_materialization_name(materialization_id),
+            sql=plan.model["source_sql"],
+        )
+        store.create_full.assert_not_called()
+        store.bootstrap_partition_count.assert_called_once_with(
+            source_table="crawls",
+            key_columns=("crawl_id",),
+        )
+        view_store.replace.assert_not_called()
+        self.assertEqual(model.observed_state, "backfilling")
+        self.assertEqual(model.bootstrap_partition_count, 14)
+        self.assertEqual(model.bootstrap_partition_cursor, 0)
+        self.assertEqual(model.processed_snapshot, 100)
+
+    def test_empty_target_schema_and_backfill_keys_are_bounded(self) -> None:
+        catalogue = MagicMock()
+        catalogue.config = SimpleNamespace(alias="atlas", schema="main")
+        catalogue.latest_snapshot.return_value = 40
+        catalogue.remote_transaction.return_value.__enter__.return_value = None
+        table = SimpleNamespace(table_uuid=uuid4())
+        store = MaterializationStore(catalogue)
+
+        with (
+            patch.object(
+                store,
+                "table_identity",
+                side_effect=MaterializationError("missing"),
+            ),
+            patch.object(store, "inspect", return_value=table),
+        ):
+            created, snapshot = store.create_empty(
+                name="m_test",
+                sql="SELECT crawl_id FROM crawls",
+            )
+
+        self.assertIs(created, table)
+        self.assertEqual(snapshot, 40)
+        create_sql = catalogue.remote_execute.call_args.args[0]
+        self.assertIn('CREATE TABLE "atlas"."_atlas_materializations"."m_test"', create_sql)
+        self.assertIn("LIMIT 0", create_sql)
+
+        catalogue.remote_execute.reset_mock()
+        store._prepare_backfill_keys(
+            source_table="crawls",
+            key_columns=("crawl_id",),
+            scope_relations={},
+            partition=3,
+            partition_count=14,
+        )
+        key_sql = catalogue.remote_execute.call_args.args[0]
+        self.assertIn('FROM "atlas"."main"."crawls"', key_sql)
+        self.assertIn('hash("crawl_id") % 14 = 3', key_sql)
+
     def test_dematerialization_recovers_unrecorded_private_table_identity(self) -> None:
         materialization_id = uuid4()
         reference = SimpleNamespace(
@@ -260,6 +429,7 @@ class MaterializationEventContractTests(unittest.TestCase):
                 "SELECT document_id FROM elements",
                 source_table="documents",
                 key_columns=("document_id",),
+                scope_relations={},
             )
         with self.assertRaisesRegex(MaterializationError, "may not shadow"):
             store._scope_incremental_query(
@@ -267,7 +437,48 @@ class MaterializationEventContractTests(unittest.TestCase):
                 "SELECT document_id FROM documents",
                 source_table="documents",
                 key_columns=("document_id",),
+                scope_relations={},
             )
+
+    def test_incremental_sql_directly_scopes_declared_dependent_scans(self) -> None:
+        catalogue = SimpleNamespace(
+            config=SimpleNamespace(alias="atlas", schema="main")
+        )
+        store = MaterializationStore(catalogue)
+        scoped = store._scope_incremental_query(
+            "SELECT document.document_id "
+            "FROM documents AS document "
+            "JOIN elements AS element USING (document_id)",
+            source_table="documents",
+            key_columns=("document_id",),
+            scope_relations={"elements": ("document_id",)},
+            scope_rows={"elements": (("doc-a",), ("doc-b",))},
+        )
+
+        self.assertIn("_atlas_materialization_changed_keys", scoped)
+        self.assertIn("FROM elements AS", scoped)
+        self.assertIn("'doc-a'", scoped)
+        self.assertIn("'doc-b'", scoped)
+        self.assertGreaterEqual(scoped.count("document_id"), 4)
+
+    def test_incremental_sql_replaces_single_value_scope_marker(self) -> None:
+        catalogue = SimpleNamespace(
+            config=SimpleNamespace(alias="atlas", schema="main")
+        )
+        store = MaterializationStore(catalogue)
+        scoped = store._scope_incremental_query(
+            "SELECT macros.text_content_scoped("
+            "document_id, element_index, "
+            "macros.materialization_scope('document_id')) "
+            "FROM documents JOIN elements USING (document_id)",
+            source_table="documents",
+            key_columns=("document_id",),
+            scope_relations={"elements": ("document_id",)},
+            scope_rows={"elements": (("doc-a",),)},
+        )
+
+        self.assertNotIn("materialization_scope", scoped)
+        self.assertIn("'doc-a'", scoped)
 
     def test_incremental_changes_use_native_ducklake_history(self) -> None:
         catalogue = MagicMock()
@@ -288,6 +499,7 @@ class MaterializationEventContractTests(unittest.TestCase):
             from_snapshot=10,
             to_snapshot=12,
             key_columns=("document_id",),
+            scope_relations={},
         )
 
         sql = catalogue.remote_execute.call_args_list[0].args[0]

@@ -63,6 +63,7 @@ class RelationFixture:
     partition_column: str | None = None
     refresh_strategy: str | None = None
     key_columns: tuple[str, ...] = ()
+    scope_relations: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 _FIXTURE_PARAMETER_DEFAULT = re.compile(
@@ -79,6 +80,12 @@ _FIXTURE_REFRESH = re.compile(
     r"^\s*--\s*atlas:refresh\s*=\s*"
     r"(?P<strategy>keyed|append|full)"
     r"(?:\((?P<columns>[a-z_][a-z0-9_]*(?:\s*,\s*[a-z_][a-z0-9_]*)*)\))?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_FIXTURE_SCOPE = re.compile(
+    r"^\s*--\s*atlas:scope\s*=\s*"
+    r"(?P<relation>[a-z_][a-z0-9_]*)"
+    r"\((?P<columns>[a-z_][a-z0-9_]*(?:\s*,\s*[a-z_][a-z0-9_]*)*)\)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -462,6 +469,8 @@ def _seed_materialization(
     if (
         existing.refresh_strategy != fixture.refresh_strategy
         or tuple(existing.key_columns) != fixture.key_columns
+        or existing.scope_relations
+        != {relation: list(columns) for relation, columns in fixture.scope_relations}
     ):
         raise CatalogueFixtureError(
             f"{fixture.fixture_path} changed its refresh strategy; reset fixture state."
@@ -492,6 +501,10 @@ def _create_seeded_materialization(
         }[driver_kind],
         refresh_strategy=fixture.refresh_strategy,
         key_columns=list(fixture.key_columns),
+        scope_relations={
+            relation: list(columns)
+            for relation, columns in fixture.scope_relations
+        },
         refresh_delay_seconds=1,
         partition_column=fixture.partition_column,
     )
@@ -614,6 +627,24 @@ def _parse_relation_fixture(
         )
     refresh_strategy: str | None = None
     key_columns: tuple[str, ...] = ()
+    scope_relations = tuple(
+        (
+            match.group("relation").lower(),
+            tuple(
+                column.strip().lower()
+                for column in match.group("columns").split(",")
+            ),
+        )
+        for match in _FIXTURE_SCOPE.finditer(source)
+    )
+    if scope_relations and not materialized:
+        raise CatalogueFixtureError(
+            f"{path} may only declare atlas:scope as a materialized view."
+        )
+    if len({relation for relation, _ in scope_relations}) != len(scope_relations):
+        raise CatalogueFixtureError(
+            f"{path} may declare each atlas:scope relation at most once."
+        )
     if refresh_directives:
         directive = refresh_directives[0]
         refresh_strategy = directive.group("strategy").lower()
@@ -704,6 +735,7 @@ def _parse_relation_fixture(
         partition_column=partition_column,
         refresh_strategy=refresh_strategy,
         key_columns=key_columns,
+        scope_relations=scope_relations,
     )
 
 

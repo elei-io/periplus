@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import logging
 from typing import Literal, Protocol
@@ -21,9 +22,12 @@ from nats.js.errors import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
+from .nats_client import connect_nats
+
 
 CATALOGUE_WORKERS_BUCKET = "atlas_catalogue_workers"
 CatalogueCapability = Literal["ingestion", "materialization"]
+CatalogueLaneStatus = Literal["starting", "available", "active", "unavailable"]
 _PRESENCE_SUBSYSTEM = "catalogue_worker_presence"
 
 
@@ -33,6 +37,53 @@ class CatalogueWorkerPresenceMonitor(Protocol):
     def subsystem_unavailable(self, name: str, error: str) -> None: ...
 
 
+@dataclass(slots=True)
+class CatalogueLaneReporter:
+    lane_index: int
+    active_operation_count: int = 0
+    _health: Callable[[], tuple[bool, str]] | None = field(
+        default=None, repr=False
+    )
+
+    def attach(self, health: Callable[[], tuple[bool, str]]) -> None:
+        self._health = health
+
+    def snapshot(self) -> CatalogueLaneState:
+        if self._health is None:
+            return CatalogueLaneState(
+                lane_index=self.lane_index,
+                status="starting",
+                active=False,
+                detail="lane has not initialized",
+            )
+        ready, detail = self._health()
+        if not ready:
+            return CatalogueLaneState(
+                lane_index=self.lane_index,
+                status="unavailable",
+                active=self.active_operation_count > 0,
+                detail=detail,
+            )
+        return CatalogueLaneState(
+            lane_index=self.lane_index,
+            status="active" if self.active_operation_count > 0 else "available",
+            active=self.active_operation_count > 0,
+        )
+
+
+class CatalogueLaneState(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    lane_index: int = Field(ge=0)
+    status: CatalogueLaneStatus
+    active: bool
+    detail: str | None = None
+
+    @property
+    def usable(self) -> bool:
+        return self.status in {"available", "active"}
+
+
 class CatalogueWorkerState(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -40,9 +91,25 @@ class CatalogueWorkerState(BaseModel):
     capability: CatalogueCapability
     started_at: datetime
     last_seen_at: datetime
-    capacity: int = Field(ge=1)
-    active_operation_count: int = Field(ge=0)
-    healthy: bool
+    lanes: tuple[CatalogueLaneState, ...] = Field(min_length=1)
+    process_ready: bool
+    process_detail: str | None = None
+
+    @property
+    def configured_capacity(self) -> int:
+        return len(self.lanes)
+
+    @property
+    def usable_capacity(self) -> int:
+        return sum(lane.usable for lane in self.lanes)
+
+    @property
+    def active_operation_count(self) -> int:
+        return sum(lane.active for lane in self.lanes)
+
+    @property
+    def healthy(self) -> bool:
+        return self.process_ready and self.usable_capacity > 0
 
 
 async def ensure_catalogue_worker_storage(jetstream):
@@ -125,8 +192,8 @@ async def catalogue_worker_presence(
     worker_id: str,
     capability: CatalogueCapability,
     started_at: datetime,
-    active_operation_count: Callable[[], int],
-    healthy: Callable[[], bool],
+    lanes: Callable[[], tuple[CatalogueLaneState, ...]],
+    process_health: Callable[[], tuple[bool, str]],
     stop: asyncio.Event,
     monitor: CatalogueWorkerPresenceMonitor | None = None,
 ) -> None:
@@ -136,6 +203,7 @@ async def catalogue_worker_presence(
             "catalogue worker presence has not been published",
         )
     while not stop.is_set():
+        process_ready, process_detail = process_health()
         try:
             await publish_catalogue_worker_state(
                 bucket,
@@ -144,9 +212,9 @@ async def catalogue_worker_presence(
                     capability=capability,
                     started_at=started_at,
                     last_seen_at=datetime.now(UTC),
-                    capacity=1,
-                    active_operation_count=active_operation_count(),
-                    healthy=healthy(),
+                    lanes=lanes(),
+                    process_ready=process_ready,
+                    process_detail=None if process_ready else process_detail,
                 ),
             )
         except Exception as exc:
@@ -161,5 +229,56 @@ async def catalogue_worker_presence(
                 monitor.subsystem_ready(_PRESENCE_SUBSYSTEM)
         try:
             await asyncio.wait_for(stop.wait(), timeout=5)
+        except TimeoutError:
+            pass
+
+
+async def run_catalogue_process_presence(
+    *,
+    worker_id: str,
+    capability: CatalogueCapability,
+    started_at: datetime,
+    lane_reporters: tuple[CatalogueLaneReporter, ...],
+    process_health: Callable[[], tuple[bool, str]],
+    stop: asyncio.Event,
+    monitor: CatalogueWorkerPresenceMonitor,
+) -> None:
+    client = await connect_nats()
+    try:
+        bucket = await ensure_catalogue_worker_storage(client.jetstream())
+        await catalogue_worker_presence(
+            bucket,
+            worker_id=worker_id,
+            capability=capability,
+            started_at=started_at,
+            lanes=lambda: tuple(lane.snapshot() for lane in lane_reporters),
+            process_health=process_health,
+            stop=stop,
+            monitor=monitor,
+        )
+    finally:
+        await client.drain()
+
+
+async def monitor_catalogue_lanes(
+    *,
+    lane_reporters: tuple[CatalogueLaneReporter, ...],
+    stop: asyncio.Event,
+    monitor: CatalogueWorkerPresenceMonitor,
+) -> None:
+    subsystem = "catalogue_lane_capacity"
+    while not stop.is_set():
+        states = tuple(lane.snapshot() for lane in lane_reporters)
+        usable = sum(lane.usable for lane in states)
+        if usable > 0:
+            monitor.subsystem_ready(subsystem)
+        else:
+            details = "; ".join(
+                f"lane {lane.lane_index}: {lane.detail or lane.status}"
+                for lane in states
+            )
+            monitor.subsystem_unavailable(subsystem, details)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=1)
         except TimeoutError:
             pass

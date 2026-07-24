@@ -16,6 +16,7 @@ from agents.catalogue_analytics import (
     _IDEA_AGENT,
     _SQL_AGENT,
     _SYNTHESIS_AGENT,
+    _planner_usage_limits,
     query_catalogue,
     stream_catalogue_analysis,
 )
@@ -136,49 +137,27 @@ class AnalyticsContractTests(unittest.IsolatedAsyncioTestCase):
             await service.query("DELETE FROM main.documents")
         execute.assert_not_awaited()
 
-    async def test_preliminary_sql_is_streamed_as_orientation_evidence(
+    def test_planner_cannot_execute_analytical_sql(self) -> None:
+        self.assertNotIn(
+            "query_catalogue",
+            {
+                tool.name
+                for toolset in _IDEA_AGENT.toolsets
+                for tool in toolset.tools.values()
+            },
+        )
+
+    def test_planner_is_bounded_by_metadata_calls_not_model_rounds(
         self,
     ) -> None:
-        class Catalogue:
-            async def query(self, sql: str) -> CatalogueQueryResult:
-                return CatalogueQueryResult(
-                    query_id="orientation-query",
-                    sql=sql,
-                    columns=["value"],
-                    column_types=["BIGINT"],
-                    rows=[[1]],
-                    row_count=1,
-                )
+        with patch(
+            "agents.catalogue_analytics.get_int",
+            return_value=32,
+        ):
+            limits = _planner_usage_limits()
 
-        events: list[AnalyticsEvent] = []
-
-        async def emit(event: AnalyticsEvent) -> None:
-            events.append(event)
-
-        dependencies = SqlDependencies(
-            run_id="run",
-            direction_id=None,
-            scope="orientation",
-            catalogue_tools=Catalogue(),  # type: ignore[arg-type]
-            emit=emit,
-        )
-        context = SimpleNamespace(
-            deps=dependencies,
-            tool_call_id="orientation-call",
-        )
-
-        result = await query_catalogue(  # type: ignore[arg-type]
-            context,
-            "SELECT 1",
-        )
-
-        self.assertEqual(result.rows, [[1]])
-        self.assertEqual(
-            [event.type for event in events],
-            ["query.started", "query.completed"],
-        )
-        self.assertTrue(all(event.scope == "orientation" for event in events))
-        self.assertTrue(all(event.direction_id is None for event in events))
+        self.assertEqual(limits.request_limit, 35)
+        self.assertEqual(limits.tool_calls_limit, 32)
 
     async def test_pipeline_runs_dynamic_directions_and_synthesizes(
         self,

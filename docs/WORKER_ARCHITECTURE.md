@@ -62,6 +62,14 @@ serialized; lanes prepare and commit independently. Arrow and Parquet staging da
 Quack; the worker has no lake S3 credentials. Operation leases suppress duplicate durable work;
 Atlas does not hold PostgreSQL advisory locks across the remote commit.
 
+Ingestion and materialization publish one atomic presence record per process. The record retains
+every configured client lane and reports each as starting, available, active, or unavailable.
+Lane-local session, dependency, and operation failures reduce usable capacity without removing the
+lane or overwriting another lane's state. Process readiness aggregates event-loop liveness,
+supervised background tasks, presence publication, and the requirement that at least one lane is
+usable. A busy lane remains healthy. The capacity API distinguishes configured, usable, active,
+and degraded lanes instead of treating a transient lane probe failure as zero configured capacity.
+
 ## Catalogue ingress, materialization, and housekeeping
 
 The catalogue ingress reads one Basin-owned global DML stream and one Basin-owned global DDL
@@ -71,6 +79,11 @@ JetStream confirms each deterministic Atlas publication.
 Materialization workers own filtered durable NATS consumers. They create the
 consumer before bootstrap, pause by stopping pulls, and coalesce ticks into
 transactional keyed replacement, idempotent append, or explicit full refresh.
+Keyed and append bootstrap is incremental: the worker first creates an empty private target, then
+interleaves live CDC refreshes with restart-safe historical hash partitions. Each partition is one
+bounded transaction, partial rows remain private in DuckLake, and Postgres stores the next
+partition cursor. The stable public view switches to the target only after historical coverage is
+complete. Explicit full refresh definitions retain whole-table bootstrap semantics.
 Each immutable materialization incarnation owns a UUID-derived private table name under
 `_atlas_materializations`; the stable public view name is only a wrapper and never doubles as the
 physical table name.

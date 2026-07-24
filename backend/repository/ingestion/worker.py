@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 import logging
-import os
 import time
 from datetime import UTC, datetime
 
@@ -43,10 +42,7 @@ from repository.catalogue.operations import (
     run_with_catalogue_retry,
 )
 from repository.service import PreparedIngestion, repository_ingestor_from_env
-from runtime.catalogue_workers import (
-    catalogue_worker_presence,
-    ensure_catalogue_worker_storage,
-)
+from runtime.catalogue_workers import CatalogueLaneReporter
 from runtime.operation_leases import (
     OperationLeaseLost,
     OperationLeaseUnavailable,
@@ -60,8 +56,11 @@ async def run(
     *,
     stop: asyncio.Event,
     monitor: HealthMonitor,
+    lane: CatalogueLaneReporter | None = None,
     lane_index: int = 0,
 ) -> None:
+    lane = lane or CatalogueLaneReporter(lane_index=lane_index)
+    lane.attach(lambda: monitor.status(include_liveness=False))
     config = IngestionWorkerConfig.defaults()
     client = await connect_nats()
     jetstream = client.jetstream()
@@ -69,7 +68,6 @@ async def run(
     await ensure_dead_letter_stream(jetstream)
     results_store = await ensure_ingestion_results(jetstream)
     operation_lease_store = await ensure_operation_lease_storage(jetstream)
-    catalogue_workers = await ensure_catalogue_worker_storage(jetstream)
     await ensure_repository_consumer(jetstream)
     subscription = await jetstream.pull_subscribe(
         SUBJECT,
@@ -94,20 +92,6 @@ async def run(
     heartbeat_task = None
     fetched_heartbeat_task = None
     active_operation_count = 0
-    presence_task = asyncio.create_task(
-        catalogue_worker_presence(
-            catalogue_workers,
-            worker_id=(
-                f"ingestion:{os.uname().nodename}:{os.getpid()}:{lane_index}"
-            ),
-            capability="ingestion",
-            started_at=datetime.now(UTC),
-            active_operation_count=lambda: active_operation_count,
-            healthy=lambda: health_monitor.status()[0],
-            stop=stop,
-            monitor=health_monitor,
-        )
-    )
     # Keep all access to this session-affine Basin connection explicit and
     # serialized. Object reads and DOM parsing occur outside the lock.
     jobs: list[IngestionJob] = []
@@ -134,6 +118,7 @@ async def run(
         accepted_messages.clear()
         prepared.clear()
         active_operation_count = 0
+        lane.active_operation_count = 0
         batch_started_at = None
         await client.flush()
         await cancel_task(heartbeat_task)
@@ -209,6 +194,7 @@ async def run(
 
             if decoded_messages:
                 active_operation_count = 1
+                lane.active_operation_count = 1
 
             document_ids = [
                 job.crawl.document_id
@@ -312,12 +298,12 @@ async def run(
             await cancel_task(fetched_heartbeat_task)
             fetched_heartbeat_task = None
             active_operation_count = 1 if prepared else 0
+            lane.active_operation_count = active_operation_count
     finally:
         stop.set()
         await cancel_task(heartbeat_task)
         await cancel_task(fetched_heartbeat_task)
         await cancel_task(dependency_probe_task)
-        await cancel_task(presence_task)
         await asyncio.to_thread(ingestor.close)
         await client.drain()
 

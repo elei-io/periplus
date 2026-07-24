@@ -79,6 +79,7 @@ export type CatalogueMaterializationSummary = {
 
 export type MaterializationObservedState =
   | "creating"
+  | "backfilling"
   | "live"
   | "paused"
   | "deleting"
@@ -198,6 +199,8 @@ export type CatalogueMaterializationRecord = {
   target_table_id: number | null
   ducklake_table_uuid: string | null
   bootstrap_snapshot: number | null
+  bootstrap_partition_count: number | null
+  bootstrap_partition_cursor: number | null
   processed_snapshot: number | null
   last_refreshed_at: string | null
   last_error: string | null

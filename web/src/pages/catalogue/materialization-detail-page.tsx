@@ -30,6 +30,9 @@ export function CatalogueMaterializationDetail({
   const terminal = ["deleting", "blocked_schema", "failed"].includes(
     materialization.observed_state
   )
+  const building = ["creating", "backfilling"].includes(
+    materialization.observed_state
+  )
 
   return (
     <>
@@ -48,6 +51,20 @@ export function CatalogueMaterializationDetail({
                 {materialization.observed_state}
               </span>
             </div>
+            {materialization.bootstrap_partition_count !== null ? (
+              <div className="flex items-center justify-between gap-3 py-3">
+                <div>
+                  <div className="text-sm">Historical backfill</div>
+                  <div className="text-xs text-muted-foreground">
+                    Live CDC remains active between bounded batches
+                  </div>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {materialization.bootstrap_partition_cursor ?? 0} /{" "}
+                  {materialization.bootstrap_partition_count} partitions
+                </span>
+              </div>
+            ) : null}
             <div className="flex items-center justify-between gap-3 py-3">
               <div>
                 <div className="text-sm">Refresh strategy</div>
@@ -76,7 +93,7 @@ export function CatalogueMaterializationDetail({
                     desired_state: paused ? "live" : "paused",
                   })
                 }
-                disabled={update.isPending || terminal}
+                disabled={update.isPending || terminal || building}
               >
                 {paused ? <PlayIcon /> : <PauseIcon />}
                 {paused ? "Continue" : "Pause"}

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
+import os
 from types import SimpleNamespace
 
 from config import get_float
@@ -12,6 +14,11 @@ from materialization.executor import (
     run as run_executor,
 )
 from repository.ingestion.health import HealthMonitor
+from runtime.catalogue_workers import (
+    CatalogueLaneReporter,
+    monitor_catalogue_lanes,
+    run_catalogue_process_presence,
+)
 from workers.lifecycle import run_worker_process
 
 
@@ -19,6 +26,7 @@ async def run() -> None:
     stop = asyncio.Event()
     definitions: tuple[SimpleNamespace, ...] = ()
     definitions_ready = asyncio.Event()
+    bootstrap_semaphore = asyncio.Semaphore(1)
 
     def definitions_for_lane(
         lane_index: int, lane_count: int
@@ -49,17 +57,40 @@ async def run() -> None:
             "ATLAS_MATERIALIZATION_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
         )
     )
+    monitor.dependencies_ready()
+    lanes = tuple(
+        CatalogueLaneReporter(lane_index=lane)
+        for lane in range(MATERIALIZATION_QUACK_CLIENTS)
+    )
     tasks = {
         f"materializations-{lane}": run_executor(
-            monitor=monitor,
+            monitor=HealthMonitor(),
+            lane=lanes[lane],
             lane_index=lane,
             lane_count=MATERIALIZATION_QUACK_CLIENTS,
             definition_provider=definitions_for_lane,
             definitions_ready=definitions_ready,
+            bootstrap_semaphore=bootstrap_semaphore,
         )
         for lane in range(MATERIALIZATION_QUACK_CLIENTS)
     }
     tasks["materialization-definitions"] = refresh_definitions()
+    tasks["materialization-presence"] = run_catalogue_process_presence(
+        worker_id=f"materialization:{os.uname().nodename}:{os.getpid()}",
+        capability="materialization",
+        started_at=datetime.now(UTC),
+        lane_reporters=lanes,
+        process_health=lambda: monitor.status(
+            exclude_subsystems=frozenset({"catalogue_worker_presence"})
+        ),
+        stop=stop,
+        monitor=monitor,
+    )
+    tasks["materialization-lane-health"] = monitor_catalogue_lanes(
+        lane_reporters=lanes,
+        stop=stop,
+        monitor=monitor,
+    )
     await run_worker_process(
         role="materialization",
         monitor=monitor,

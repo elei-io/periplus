@@ -177,8 +177,10 @@ export type CrawlConcurrencyLimits = {
   catalogue_executors: Array<{
     capability: "ingestion" | "materialization"
     worker_count: number
+    configured_capacity: number
     capacity: number
     active: number
+    degraded: number
     backlog: number
   }>
   tuning: {

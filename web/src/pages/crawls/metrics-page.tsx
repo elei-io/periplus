@@ -123,8 +123,10 @@ function WorkerCapacity({
           label="Ingestion"
           used={ingestion?.active ?? 0}
           capacity={ingestion?.capacity ?? 0}
+          configuredCapacity={ingestion?.configured_capacity ?? 0}
+          degraded={ingestion?.degraded ?? 0}
           instances={ingestion?.worker_count ?? 0}
-          instanceLabel="client"
+          instanceLabel="replica"
           backlog={ingestionBacklog}
           backlogLabel="catalogue jobs waiting"
         />
@@ -132,8 +134,10 @@ function WorkerCapacity({
           label="Materialization"
           used={materialization?.active ?? 0}
           capacity={materialization?.capacity ?? 0}
+          configuredCapacity={materialization?.configured_capacity ?? 0}
+          degraded={materialization?.degraded ?? 0}
           instances={materialization?.worker_count ?? 0}
-          instanceLabel="client"
+          instanceLabel="replica"
           backlog={materializationBacklog}
           backlogLabel="view updates waiting"
         />
@@ -146,6 +150,8 @@ function WorkerCapacityCard({
   label,
   used,
   capacity,
+  configuredCapacity = capacity,
+  degraded = 0,
   instances,
   instanceLabel,
   backlog,
@@ -154,6 +160,8 @@ function WorkerCapacityCard({
   label: string
   used: number
   capacity: number
+  configuredCapacity?: number
+  degraded?: number
   instances: number
   instanceLabel: string
   backlog: number
@@ -162,7 +170,8 @@ function WorkerCapacityCard({
   const percent = capacity > 0 ? Math.min(100, (used / capacity) * 100) : 0
   const full = capacity > 0 && used >= capacity
   const needsScale = full && backlog > 0
-  const unavailable = capacity === 0
+  const unavailable = configuredCapacity === 0 || capacity === 0
+  const partiallyDegraded = !unavailable && degraded > 0
 
   return (
     <div className="rounded-lg border bg-muted/10 p-4">
@@ -170,7 +179,7 @@ function WorkerCapacityCard({
         <div>
           <p className="font-medium">{label}</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            {instances.toLocaleString()} healthy {instanceLabel}
+            {instances.toLocaleString()} {instanceLabel}
             {instances === 1 ? "" : "s"}
           </p>
         </div>
@@ -178,7 +187,7 @@ function WorkerCapacityCard({
           variant={
             unavailable || needsScale
               ? "destructive"
-              : full
+              : full || partiallyDegraded
                 ? "secondary"
                 : "outline"
           }
@@ -187,6 +196,8 @@ function WorkerCapacityCard({
             ? "Unavailable"
             : needsScale
               ? "Add capacity"
+              : partiallyDegraded
+                ? "Degraded"
               : full
                 ? "At capacity"
                 : "Available"}
@@ -195,10 +206,7 @@ function WorkerCapacityCard({
       <p
         className={`mt-5 text-3xl font-semibold tabular-nums ${unavailable || needsScale ? "text-destructive" : ""}`}
       >
-        {used.toLocaleString()} / {capacity.toLocaleString()}
-      </p>
-      <p className="mt-0.5 text-xs text-muted-foreground">
-        active / total slots
+        {used.toLocaleString()} / {capacity.toLocaleString()} active slots
       </p>
       <div
         className="mt-3 h-2 overflow-hidden rounded-full bg-muted"
@@ -214,7 +222,13 @@ function WorkerCapacityCard({
         />
       </div>
       <p
-        className={`mt-3 text-sm tabular-nums ${backlog > 0 ? "font-medium" : "text-muted-foreground"}`}
+        className={`mt-3 text-sm tabular-nums ${partiallyDegraded || unavailable ? "font-medium text-destructive" : "text-muted-foreground"}`}
+      >
+        {capacity.toLocaleString()} of{" "}
+        {configuredCapacity.toLocaleString()} slots usable
+      </p>
+      <p
+        className={`mt-1 text-sm tabular-nums ${backlog > 0 ? "font-medium" : "text-muted-foreground"}`}
       >
         {backlog.toLocaleString()} {backlogLabel}
       </p>

@@ -84,6 +84,7 @@ def put_for_view(
     source_table: str,
     refresh_strategy: str,
     key_columns: list[str],
+    scope_relations: dict[str, list[str]],
     refresh_delay_seconds: float,
     partition_column: str | None,
 ) -> CatalogueMaterializationRecord:
@@ -109,6 +110,7 @@ def put_for_view(
             or existing.source_table != source_table
             or existing.refresh_strategy != refresh_strategy
             or existing.key_columns != key_columns
+            or existing.scope_relations != scope_relations
             or existing.partition_column != partition_column
         ):
             raise MaterializationConflictError(
@@ -125,6 +127,10 @@ def put_for_view(
         sql=source_view.sql,
         refresh_strategy=refresh_strategy,
         key_columns=tuple(key_columns),
+        scope_relations={
+            relation: tuple(columns)
+            for relation, columns in scope_relations.items()
+        },
     )
     control_snapshot = store.catalogue.latest_snapshot()
     if control_snapshot is None:
@@ -148,6 +154,7 @@ def put_for_view(
         refresh_delay_seconds=refresh_delay_seconds,
         refresh_strategy=refresh_strategy,
         key_columns=key_columns,
+        scope_relations=scope_relations,
         partition_column=partition_column,
     )
     session.add(model)
@@ -164,6 +171,13 @@ def update_state(
 ) -> CatalogueMaterializationRecord:
     if model.desired_state == "deleting":
         raise MaterializationConflictError("This materialization is being removed.")
+    if desired_state is not None and model.observed_state in {
+        "creating",
+        "backfilling",
+    }:
+        raise MaterializationConflictError(
+            "A materialization cannot be paused while its initial backfill is running."
+        )
     if desired_state is not None:
         if desired_state == "live" and model.observed_state in {
             "blocked_schema",
@@ -220,10 +234,13 @@ def record(
         refresh_delay_seconds=model.refresh_delay_seconds,
         refresh_strategy=model.refresh_strategy,
         key_columns=model.key_columns,
+        scope_relations=model.scope_relations,
         partition_column=model.partition_column,
         target_table_id=model.target_table_id,
         ducklake_table_uuid=model.ducklake_table_uuid,
         bootstrap_snapshot=model.bootstrap_snapshot,
+        bootstrap_partition_count=model.bootstrap_partition_count,
+        bootstrap_partition_cursor=model.bootstrap_partition_cursor,
         processed_snapshot=model.processed_snapshot,
         last_refreshed_at=model.last_refreshed_at,
         last_error=model.last_error,

@@ -539,7 +539,9 @@ function MaterializationStatus({
       variant={
         status === "deleting" || status === "blocked_schema" || status === "failed"
           ? "destructive"
-          : status === "live" || status === "creating"
+          : status === "live" ||
+              status === "creating" ||
+              status === "backfilling"
             ? "default"
             : "secondary"
       }
@@ -568,7 +570,9 @@ function MaterializationCell({
       <MaterializationStatus status={materialization.status} />
       <div className="mt-1 text-[10px] text-muted-foreground">
         {materialization.status === "creating"
-          ? "Creating stored table"
+          ? "Creating empty stored table"
+          : materialization.status === "backfilling"
+            ? "Live CDC with historical backfill"
           : materialization.status === "live"
             ? "Live maintenance enabled"
             : "Maintenance paused"}

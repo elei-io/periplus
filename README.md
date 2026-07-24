@@ -62,12 +62,15 @@ validated, read-only workbench queries and Arrow IPC result streaming. The brows
 Quack, Postgres, DuckLake, or object-store credentials.
 
 The home page runs a server-owned PydanticAI analytics agent when `OPENAI_API_KEY` is configured.
-Each question is isolated. `ATLAS_IDEA_MODEL` plans one primary and two supporting analytical
-directions, three concurrent `ATLAS_SQL_MODEL` agents investigate them with read-only catalogue
+Each question is isolated. `ATLAS_IDEA_MODEL` inspects catalogue metadata and plans three to five
+schema-grounded analytical directions without running SQL. Concurrent `ATLAS_SQL_MODEL` agents
+investigate them with read-only catalogue
 discovery and SQL, and the idea model synthesizes their findings. Atlas stores no question, answer,
 conversation, or result history. The response keeps all three directions distinct and streams every
 successful analytical SQL query with its bounded rows. Catalogue tools retain the same read-only
 validator, client-pool limits, timeouts, cancellation, and result limits as the SQL workbench.
+The planner's finite budget is `ATLAS_IDEA_TOOL_CALL_LIMIT`; its model-request allowance is derived
+from that budget so every permitted metadata call still leaves room to return the typed plan.
 
 Use the CLI for configuration and repository administration:
 

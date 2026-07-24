@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 import logging
-import os
 from types import SimpleNamespace
 from collections.abc import Callable
 from uuid import UUID
@@ -39,10 +38,7 @@ from runtime.catalogue_events import (
     dml_subject,
     ensure_catalogue_event_stream,
 )
-from runtime.catalogue_workers import (
-    catalogue_worker_presence,
-    ensure_catalogue_worker_storage,
-)
+from runtime.catalogue_workers import CatalogueLaneReporter
 from runtime.nats_client import connect_nats
 from runtime.operation_leases import (
     OperationLeaseUnavailable,
@@ -60,18 +56,22 @@ async def run(
     initialized: asyncio.Event | None = None,
     monitor: HealthMonitor | None = None,
     *,
+    lane: CatalogueLaneReporter | None = None,
     lane_index: int = 0,
     lane_count: int = 1,
     definition_provider: Callable[
         [int, int], list[SimpleNamespace]
     ] | None = None,
     definitions_ready: asyncio.Event | None = None,
+    bootstrap_semaphore: asyncio.Semaphore | None = None,
 ) -> None:
+    lane = lane or CatalogueLaneReporter(lane_index=lane_index)
+    if monitor is not None:
+        lane.attach(lambda: monitor.status(include_liveness=False))
     client = await connect_nats()
     jetstream = client.jetstream()
     await ensure_catalogue_event_stream(jetstream)
     leases = await ensure_operation_lease_storage(jetstream)
-    workers = await ensure_catalogue_worker_storage(jetstream)
     ddl_subscription = (
         await jetstream.pull_subscribe(
             DDL_SUBJECT,
@@ -97,26 +97,12 @@ async def run(
     pulls: dict[UUID, asyncio.Task] = {}
     ddl_pull: asyncio.Task | None = None
     stop = asyncio.Event()
-    active_operation_count = [0]
+    active_operation_count = lane
     if monitor is not None:
         monitor.dependencies_ready()
         monitor.subsystem_ready("materializations")
     if initialized is not None:
         initialized.set()
-    presence_task = asyncio.create_task(
-        catalogue_worker_presence(
-            workers,
-            worker_id=(
-                f"materialization:{os.uname().nodename}:{os.getpid()}:{lane_index}"
-            ),
-            capability="materialization",
-            started_at=datetime.now(UTC),
-            active_operation_count=lambda: active_operation_count[0],
-            healthy=lambda: monitor is None or monitor.status()[0],
-            stop=stop,
-            monitor=monitor,
-        )
-    )
     try:
         if definitions_ready is not None:
             await definitions_ready.wait()
@@ -176,13 +162,49 @@ async def run(
                         if pull is not None:
                             pull.cancel()
                         worked = (
-                            await _tracked_operation(
+                            await _run_bootstrap(
                                 active_operation_count,
-                                _bootstrap_one(
-                                    catalogue,
-                                    leases,
-                                    definition.id,
-                                ),
+                                bootstrap_semaphore,
+                                catalogue,
+                                leases,
+                                definition.id,
+                            )
+                            or worked
+                        )
+                        continue
+                    if definition.observed_state == "backfilling":
+                        pull = pulls.get(definition.id)
+                        if pull is not None and pull.done():
+                            pulls.pop(definition.id)
+                            try:
+                                messages = pull.result()
+                            except (NatsTimeoutError, TimeoutError):
+                                messages = []
+                            if messages:
+                                worked = (
+                                    await _refresh_messages(
+                                        active_operation_count,
+                                        catalogue,
+                                        leases,
+                                        subscription,
+                                        definition,
+                                        messages,
+                                    )
+                                    or worked
+                                )
+                                continue
+                        if definition.id not in pulls:
+                            pulls[definition.id] = asyncio.create_task(
+                                subscription.fetch(batch=100, timeout=60),
+                                name=f"materialization-{definition.id}-pull",
+                            )
+                        worked = (
+                            await _run_bootstrap(
+                                active_operation_count,
+                                bootstrap_semaphore,
+                                catalogue,
+                                leases,
+                                definition.id,
                             )
                             or worked
                         )
@@ -270,7 +292,6 @@ async def run(
             *pulls.values(),
             return_exceptions=True,
         )
-        await cancel_task(presence_task)
         await asyncio.to_thread(catalogue.close)
         await client.close()
 
@@ -299,8 +320,14 @@ def _active_definitions(
                 refresh_delay_seconds=row.refresh_delay_seconds,
                 refresh_strategy=row.refresh_strategy,
                 key_columns=tuple(row.key_columns),
+                scope_relations={
+                    relation: tuple(columns)
+                    for relation, columns in row.scope_relations.items()
+                },
                 source_table_id=row.source_table_id,
                 bootstrap_snapshot=row.bootstrap_snapshot,
+                bootstrap_partition_count=row.bootstrap_partition_count,
+                bootstrap_partition_cursor=row.bootstrap_partition_cursor,
                 processed_snapshot=row.processed_snapshot,
                 ducklake_table_uuid=row.ducklake_table_uuid,
             )
@@ -403,17 +430,39 @@ async def _bootstrap_one(
     return True
 
 
-async def _tracked_operation(counter: list[int], operation):
-    counter[0] += 1
+async def _tracked_operation(counter: CatalogueLaneReporter, operation):
+    counter.active_operation_count += 1
     try:
         return await operation
     finally:
-        counter[0] -= 1
+        counter.active_operation_count -= 1
+
+
+async def _run_bootstrap(
+    counter: CatalogueLaneReporter,
+    semaphore: asyncio.Semaphore | None,
+    catalogue,
+    leases,
+    materialization_id: UUID,
+) -> bool:
+    if semaphore is None:
+        return await _tracked_operation(
+            counter,
+            _bootstrap_one(catalogue, leases, materialization_id),
+        )
+    async with semaphore:
+        return await _tracked_operation(
+            counter,
+            _bootstrap_one(catalogue, leases, materialization_id),
+        )
 
 
 def _bootstrap_materialization(catalogue, materialization_id: UUID) -> None:
     plan = _load_bootstrap_plan(materialization_id)
     if plan is None:
+        return
+    if plan.model["observed_state"] == "backfilling":
+        _backfill_materialization(catalogue, plan)
         return
     model = SimpleNamespace(**plan.model)
     reference = SimpleNamespace(**plan.reference)
@@ -429,36 +478,45 @@ def _bootstrap_materialization(catalogue, materialization_id: UUID) -> None:
         present = False
     else:
         present = True
-    if present and model.ducklake_table_uuid is None:
-        current = _source_view(view_store, reference, model)
-        restored = view_store.replace(
-            current_uuid=current.view_uuid, sql=model.source_sql
-        )
-        reference.ducklake_view_uuid = restored.view_uuid
-        model.source_view_uuid = restored.view_uuid
-        existing_table = MaterializationStore(catalogue).inspect(physical_name)
-        MaterializationStore(catalogue).drop(
-            name=physical_name, expected_uuid=existing_table.table_uuid
-        )
     _source_view(view_store, reference, model)
     resolved_source_view_uuid = model.source_view_uuid
     store = MaterializationStore(catalogue)
-    table, source_snapshot = store.create_full(
-        name=physical_name,
-        sql=model.source_sql,
-        append_key_columns=(
-            tuple(model.key_columns)
-            if model.refresh_strategy == "append"
-            else ()
-        ),
-    )
+    if present:
+        table = store.inspect(physical_name)
+        source_snapshot = catalogue.latest_snapshot()
+        if source_snapshot is None:
+            raise MaterializationError("DuckLake has no source snapshot.")
+    elif model.refresh_strategy in {"keyed", "append"}:
+        table, source_snapshot = store.create_empty(
+            name=physical_name,
+            sql=model.source_sql,
+        )
+    else:
+        table, source_snapshot = store.create_full(
+            name=physical_name,
+            sql=model.source_sql,
+            append_key_columns=(),
+        )
     if model.partition_column:
         table = store.set_daily_partition(
             name=physical_name, column=model.partition_column
         )
-    wrapper = view_store.replace(
-        current_uuid=reference.ducklake_view_uuid,
-        sql=_backing_view_sql(catalogue, physical_name),
+    batched = model.refresh_strategy in {"keyed", "append"}
+    partition_count = (
+        store.bootstrap_partition_count(
+            source_table=model.source_table,
+            key_columns=tuple(model.key_columns),
+        )
+        if batched
+        else None
+    )
+    wrapper = (
+        None
+        if batched
+        else view_store.replace(
+            current_uuid=reference.ducklake_view_uuid,
+            sql=_backing_view_sql(catalogue, physical_name),
+        )
     )
     bootstrap_snapshot = catalogue.latest_snapshot() or source_snapshot
 
@@ -487,18 +545,109 @@ def _bootstrap_materialization(catalogue, materialization_id: UUID) -> None:
             raise MaterializationControlChanged(
                 f"Materialization {materialization_id} view changed during bootstrap."
             )
-        reference.ducklake_view_uuid = wrapper.view_uuid
+        if wrapper is not None:
+            reference.ducklake_view_uuid = wrapper.view_uuid
         model.source_view_uuid = resolved_source_view_uuid
         model.target_table_id = table.table_id
         model.ducklake_table_uuid = table.table_uuid
         model.bootstrap_snapshot = bootstrap_snapshot
         model.processed_snapshot = source_snapshot
+        model.bootstrap_partition_count = partition_count
+        model.bootstrap_partition_cursor = 0 if batched else None
         model.observed_state = (
-            "live" if model.desired_state == "live" else "paused"
+            "backfilling"
+            if batched
+            else ("live" if model.desired_state == "live" else "paused")
         )
         model.last_refreshed_at = datetime.now(UTC)
         model.last_error = None
         session.flush()
+
+
+def _backfill_materialization(catalogue, plan: SimpleNamespace) -> None:
+    model = SimpleNamespace(**plan.model)
+    if (
+        model.ducklake_table_uuid is None
+        or model.bootstrap_partition_count is None
+        or model.bootstrap_partition_cursor is None
+    ):
+        raise MaterializationError("Batched bootstrap state is incomplete.")
+    store = MaterializationStore(catalogue)
+    physical_name = physical_materialization_name(model.id)
+    if model.bootstrap_partition_cursor < model.bootstrap_partition_count:
+        kwargs = {
+            "name": physical_name,
+            "expected_uuid": model.ducklake_table_uuid,
+            "sql": model.source_sql,
+            "source_table": model.source_table,
+            "key_columns": tuple(model.key_columns),
+            "scope_relations": dict(model.scope_relations),
+            "partition": model.bootstrap_partition_cursor,
+            "partition_count": model.bootstrap_partition_count,
+        }
+        if model.refresh_strategy == "keyed":
+            store.backfill_keyed_partition(**kwargs)
+        elif model.refresh_strategy == "append":
+            store.backfill_append_partition(**kwargs)
+        else:
+            raise MaterializationError(
+                "Only keyed and append materializations use batched bootstrap."
+            )
+        with session_scope() as session:
+            current = session.get(CatalogueMaterialization, model.id)
+            if (
+                current is None
+                or current.archived_at is not None
+                or current.observed_state != "backfilling"
+                or current.ducklake_table_uuid != model.ducklake_table_uuid
+                or current.bootstrap_partition_count
+                != model.bootstrap_partition_count
+                or current.bootstrap_partition_cursor
+                != model.bootstrap_partition_cursor
+            ):
+                raise MaterializationControlChanged(
+                    f"Materialization {model.id} changed during backfill."
+                )
+            current.bootstrap_partition_cursor += 1
+            current.last_refreshed_at = datetime.now(UTC)
+        return
+
+    view_store = CatalogueViewStore(catalogue)
+    reference = SimpleNamespace(**plan.reference)
+    wrapper = view_store.replace(
+        current_uuid=reference.ducklake_view_uuid,
+        sql=_backing_view_sql(catalogue, physical_name),
+    )
+    with session_scope() as session:
+        current = session.get(CatalogueMaterialization, model.id)
+        if (
+            current is None
+            or current.archived_at is not None
+            or current.observed_state != "backfilling"
+            or current.ducklake_table_uuid != model.ducklake_table_uuid
+            or current.bootstrap_partition_cursor
+            != current.bootstrap_partition_count
+        ):
+            raise MaterializationControlChanged(
+                f"Materialization {model.id} changed before publication."
+            )
+        current_reference = session.get(
+            CatalogueViewReference, current.view_reference_id
+        )
+        if (
+            current_reference is None
+            or current_reference.ducklake_view_uuid
+            != plan.reference["ducklake_view_uuid"]
+        ):
+            raise MaterializationControlChanged(
+                f"Materialization {model.id} view changed before publication."
+            )
+        current_reference.ducklake_view_uuid = wrapper.view_uuid
+        current.observed_state = (
+            "live" if current.desired_state == "live" else "paused"
+        )
+        current.last_refreshed_at = datetime.now(UTC)
+        current.last_error = None
 
 
 def _load_bootstrap_plan(
@@ -509,7 +658,7 @@ def _load_bootstrap_plan(
         if (
             model is None
             or model.archived_at is not None
-            or model.observed_state != "creating"
+            or model.observed_state not in {"creating", "backfilling"}
             or model.desired_state == "deleting"
         ):
             return None
@@ -524,11 +673,19 @@ def _load_bootstrap_plan(
             model={
                 "id": model.id,
                 "view_reference_id": model.view_reference_id,
+                "observed_state": model.observed_state,
                 "source_sql": model.source_sql,
+                "source_table": model.source_table,
                 "refresh_strategy": model.refresh_strategy,
                 "key_columns": tuple(model.key_columns),
+                "scope_relations": {
+                    relation: tuple(columns)
+                    for relation, columns in model.scope_relations.items()
+                },
                 "partition_column": model.partition_column,
                 "ducklake_table_uuid": model.ducklake_table_uuid,
+                "bootstrap_partition_count": model.bootstrap_partition_count,
+                "bootstrap_partition_cursor": model.bootstrap_partition_cursor,
                 "source_view_uuid": model.source_view_uuid,
                 "desired_state": model.desired_state,
             },
@@ -671,6 +828,7 @@ def _refresh_materialization(
             from_snapshot=from_snapshot,
             to_snapshot=processed_snapshot,
             key_columns=plan.key_columns,
+            scope_relations=plan.scope_relations,
         )
     elif plan.refresh_strategy == "append":
         store.refresh_append(
@@ -682,6 +840,7 @@ def _refresh_materialization(
             from_snapshot=from_snapshot,
             to_snapshot=processed_snapshot,
             key_columns=plan.key_columns,
+            scope_relations=plan.scope_relations,
         )
     else:
         raise RuntimeError(
@@ -705,7 +864,8 @@ def _refresh_materialization(
             )
         model.processed_snapshot = processed_snapshot
         model.last_refreshed_at = datetime.now(UTC)
-        model.observed_state = "live"
+        if model.observed_state != "backfilling":
+            model.observed_state = "live"
         model.last_error = None
         session.flush()
 
@@ -729,6 +889,12 @@ def _load_refresh_plan(materialization_id: UUID) -> SimpleNamespace | None:
             source_table=getattr(model, "source_table", None),
             source_table_id=getattr(model, "source_table_id", None),
             key_columns=tuple(getattr(model, "key_columns", ())),
+            scope_relations={
+                relation: tuple(columns)
+                for relation, columns in getattr(
+                    model, "scope_relations", {}
+                ).items()
+            },
         )
 
 async def _delete_one(

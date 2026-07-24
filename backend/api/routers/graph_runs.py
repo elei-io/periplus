@@ -131,8 +131,10 @@ class RuntimeWorkerCapacity(BaseModel):
 class CatalogueExecutorCapacity(BaseModel):
     capability: CatalogueCapability
     worker_count: int
+    configured_capacity: int
     capacity: int
     active: int
+    degraded: int
     backlog: int
 
 
@@ -261,18 +263,33 @@ async def capacity(
         CatalogueExecutorCapacity(
             capability=capability,
             worker_count=sum(
-                worker.capability == capability and worker.healthy
+                worker.capability == capability
                 for worker in catalogue_workers
             ),
-            capacity=sum(
-                worker.capacity
+            configured_capacity=sum(
+                worker.configured_capacity
                 for worker in catalogue_workers
-                if worker.capability == capability and worker.healthy
+                if worker.capability == capability
+            ),
+            capacity=sum(
+                worker.usable_capacity
+                for worker in catalogue_workers
+                if worker.capability == capability and worker.process_ready
             ),
             active=sum(
                 worker.active_operation_count
                 for worker in catalogue_workers
-                if worker.capability == capability and worker.healthy
+                if worker.capability == capability
+            ),
+            degraded=sum(
+                worker.configured_capacity
+                - (
+                    worker.usable_capacity
+                    if worker.process_ready
+                    else 0
+                )
+                for worker in catalogue_workers
+                if worker.capability == capability
             ),
             backlog=catalogue_backlogs[capability],
         )

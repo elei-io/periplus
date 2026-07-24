@@ -90,6 +90,15 @@ after every Atlas publication receives a PubAck.
 
 Each materialization owns a filtered durable Atlas NATS consumer, coalesces ticks, and
 transactionally refreshes its stable table using its declared keyed, append-only, or full strategy.
+User-authored SQL remains ordinary DuckDB SQL. The fail-closed
+[materialization compiler](MATERIALIZATION_COMPILER.md) must prove a bounded plan for the selected
+strategy and stable output key; unsupported constructs produce structured diagnostics rather than
+requiring Atlas-only SQL hints.
+Keyed and append-only incarnations create that consumer before an empty private target, service
+live CDC immediately, and populate historical driving keys through bounded hash partitions. The
+virtual source view remains public until every partition commits; the worker then publishes the
+private target while retaining the same consumer for steady-state maintenance. Postgres persists
+only the partition count and next-partition cursor, while the partial result remains in DuckLake.
 Keyed refreshes derive composite keys from DuckLake's native bounded
 `ducklake_table_changes(...)` history and physically scope every direct scan of the declared
 driving table to those keys before evaluating the materialization SQL. Materialization workers
@@ -113,13 +122,18 @@ The Atlas analytics agent is an API-owned adapter over that same interactive que
 PydanticAI loop and typed catalogue tools live under `backend/agents/`; neither the model nor the
 browser receives a Quack connection or storage credentials. Each home-page question is an isolated,
 request-scoped investigation with no conversation context or Atlas persistence. The configured idea
-model first classifies the question and produces exactly three analytical directions: one primary
-brief that directly answers the user and two distinct supporting or otherwise relevant briefs.
-Three SQL-model agents then investigate those directions concurrently. Each can discover public
+model first surveys relation and macro metadata without executing SQL, classifies the question,
+and produces three to five schema-grounded analytical directions. Independent SQL-model agents
+then investigate those directions concurrently. Each can discover public
 catalogue relations and macros and execute validated read-only SQL. After all directions settle, the
 idea model synthesizes their answers and bounded evidence digests into the combined response. None
 of the agents can read graph execution state, crawl or schedule control state, inspect live pages,
 search the public web, propose acquisition, or mutate Atlas.
+
+The planner's model-request limit is derived from its metadata tool-call limit because each
+sequential metadata call requires another model round before the typed plan can be returned. The
+derived limit always reserves the rounds needed to produce and retry that plan. SQL investigators
+retain independent request and tool-call limits.
 
 Atlas streams its own stable analytics events containing every model-invoked analytical SQL query
 that completed successfully, its direction, bounded rows, and completeness metadata; each

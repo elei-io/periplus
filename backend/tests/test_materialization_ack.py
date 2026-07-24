@@ -10,19 +10,20 @@ from materialization.executor import (
     _tracked_operation,
 )
 from runtime.catalogue_events import CatalogueDMLTick
+from runtime.catalogue_workers import CatalogueLaneReporter
 
 class MaterializationAcknowledgementTests(unittest.IsolatedAsyncioTestCase):
     async def test_active_operation_count_is_scoped_to_domain_work(self) -> None:
-        counter = [0]
+        counter = CatalogueLaneReporter(lane_index=0)
 
         async def operation() -> str:
-            self.assertEqual(counter, [1])
+            self.assertEqual(counter.active_operation_count, 1)
             return "done"
 
         result = await _tracked_operation(counter, operation())
 
         self.assertEqual(result, "done")
-        self.assertEqual(counter, [0])
+        self.assertEqual(counter.active_operation_count, 0)
 
     async def test_ticks_are_acked_only_after_target_commit(self) -> None:
         events: list[str] = []
