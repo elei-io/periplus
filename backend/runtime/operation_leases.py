@@ -115,7 +115,14 @@ async def _validate_bucket(bucket) -> None:
         )
 
 
-async def _try_acquire(bucket, *, phase: str, operation_id: str, owner: str) -> bool:
+async def _try_acquire(
+    bucket,
+    *,
+    phase: str,
+    operation_id: str,
+    owner: str,
+    create_first: bool = True,
+) -> bool:
     key = operation_lease_key(phase, operation_id)
     now = datetime.now(UTC)
     lease = OperationLease(
@@ -127,6 +134,13 @@ async def _try_acquire(bucket, *, phase: str, operation_id: str, owner: str) -> 
         expires_at=now
         + timedelta(seconds=CATALOGUE_OPERATION_LEASE_SECONDS),
     )
+    if create_first:
+        try:
+            await bucket.create(key, lease.model_dump_json().encode())
+            return True
+        except KeyWrongLastSequenceError:
+            pass
+
     try:
         entry = await bucket.get(key)
     except (KeyNotFoundError, KeyDeletedError):
@@ -236,7 +250,11 @@ async def operation_leases(
                 await asyncio.sleep(heartbeat_seconds)
                 for operation_id in identities:
                     if not await _try_acquire(
-                        bucket, phase=phase, operation_id=operation_id, owner=owner
+                        bucket,
+                        phase=phase,
+                        operation_id=operation_id,
+                        owner=owner,
+                        create_first=False,
                     ):
                         lost.set()
                         return
