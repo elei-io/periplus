@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import UTC, datetime
 import os
 from pathlib import Path
 import tempfile
@@ -147,7 +148,13 @@ class NavigationPackageTests(unittest.TestCase):
                 payload=payload,
                 row_count=1,
             )
-            RawHtmlRepository(store).put(html)
+            RawHtmlRepository(store).put(
+                html,
+                source_url="https://example.com/start",
+                crawl_id=crawl_id,
+                captured_at=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+                content_type="text/html",
+            )
             store.delete(package.object_name)
             urls = EdgeUrlExecutor(store, package)(
                 "SELECT target_url AS url FROM edge.page_links WHERE crawl_id = $crawl_id",

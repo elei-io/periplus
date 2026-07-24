@@ -15,7 +15,6 @@ from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 from nats.errors import Error as NatsError
 from pydantic import BaseModel, ConfigDict
 
-from config import get_str
 from observability import catalogue_event_metrics
 from repository.catalogue import Catalogue, catalogue_from_env
 from repository.ingestion.health import HealthMonitor
@@ -34,7 +33,7 @@ from runtime.nats_client import connect_basin_nats, connect_nats
 
 
 _FETCH_BATCH = 100
-_FETCH_TIMEOUT_SECONDS = 0.25
+_FETCH_TIMEOUT_SECONDS = 60.0
 _SOURCE_ACK_WAIT_SECONDS = 60
 _TRANSIENT_RETRY_INITIAL_SECONDS = 0.25
 _TRANSIENT_RETRY_MAX_SECONDS = 5.0
@@ -167,14 +166,16 @@ async def run(
     initialized: asyncio.Event | None = None,
     monitor: HealthMonitor | None = None,
 ) -> None:
-    lake = get_str("DUCKBASIN_LAKE")
     basin_client = await connect_basin_nats()
     atlas_client = await connect_nats()
     basin_jetstream = basin_client.jetstream()
     atlas_jetstream = atlas_client.jetstream()
     catalogue: Catalogue | None = None
+    pulls: dict[str, asyncio.Task] = {}
     try:
         await ensure_catalogue_event_stream(atlas_jetstream)
+        catalogue = await asyncio.to_thread(catalogue_from_env)
+        lake = catalogue.lake_slug
         ddl_subscription = await _source_subscription(
             basin_jetstream,
             subject=basin_ddl_subject(lake),
@@ -185,7 +186,6 @@ async def run(
             subject=basin_dml_subject(lake),
             durable=basin_dml_durable(lake),
         )
-        catalogue = await asyncio.to_thread(catalogue_from_env)
         resolver = TableResolver(catalogue)
 
         # Establish table lifecycle before replaying historical DML from the
@@ -203,24 +203,39 @@ async def run(
         if initialized is not None:
             initialized.set()
 
+        pulls = {
+            "ddl": asyncio.create_task(
+                _fetch(ddl_subscription), name="basin-ddl-pull"
+            ),
+            "dml": asyncio.create_task(
+                _fetch(dml_subscription), name="basin-dml-pull"
+            ),
+        }
         while True:
-            worked = await _consume_ddl(
-                ddl_subscription,
-                atlas_jetstream,
-                resolver,
+            await asyncio.wait(
+                set(pulls.values()),
+                return_when=asyncio.FIRST_COMPLETED,
             )
-            worked = (
-                await _consume_dml(
-                    dml_subscription,
-                    atlas_jetstream,
-                    resolver,
+            ddl_task = pulls["ddl"]
+            if ddl_task.done():
+                for message in ddl_task.result():
+                    await _publish_ddl_message(
+                        atlas_jetstream, resolver, message
+                    )
+                pulls["ddl"] = asyncio.create_task(
+                    _fetch(ddl_subscription), name="basin-ddl-pull"
                 )
-                or worked
-            )
+            dml_task = pulls["dml"]
+            if dml_task.done():
+                for message in dml_task.result():
+                    await _publish_dml_message(
+                        atlas_jetstream, resolver, message
+                    )
+                pulls["dml"] = asyncio.create_task(
+                    _fetch(dml_subscription), name="basin-dml-pull"
+                )
             if monitor is not None:
                 monitor.heartbeat()
-            if not worked:
-                await asyncio.sleep(0.05)
     except Exception as exc:
         catalogue_event_metrics.failure(phase="basin_ingress")
         if monitor is not None:
@@ -230,6 +245,12 @@ async def run(
             )
         raise
     finally:
+        for pull in pulls.values():
+            pull.cancel()
+        await asyncio.gather(
+            *pulls.values(),
+            return_exceptions=True,
+        )
         if catalogue is not None:
             await asyncio.to_thread(catalogue.close)
         await asyncio.gather(

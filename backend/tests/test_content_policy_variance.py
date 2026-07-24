@@ -185,8 +185,14 @@ class ContentPolicyVarianceTests(unittest.TestCase):
         )
 
         with (
-            patch("runtime.graph_runs.find_crawl_policy_for_url", return_value=object()),
-            patch("runtime.graph_runs.find_domain_policy_for_url", return_value=object()),
+            patch(
+                "runtime.graph_runs.find_crawl_policies_for_urls",
+                return_value={"https://example.com/": object()},
+            ),
+            patch(
+                "runtime.graph_runs.find_domain_policies_for_urls",
+                return_value={"https://example.com/": object()},
+            ),
             patch("runtime.graph_runs.policy_snapshot", return_value=crawl),
             patch("runtime.graph_runs.domain_policy_snapshot", return_value=domain),
             patch(

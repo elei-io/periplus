@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 import logging
 import time
 from typing import TypeVar
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import duckdb
 import pyarrow as pa
@@ -21,25 +21,22 @@ from observability import catalogue_query_metrics
 from repository.catalogue.duckbasin import (
     DuckBasinClientMinter,
     MintedDuckDB,
+    is_quack_authorization_error,
+    is_recoverable_quack_connection_error,
 )
-from repository.catalogue.query import CatalogueStatementKind
+from repository.catalogue.query import (
+    ClassifiedCatalogueStatement,
+    CatalogueStatementKind,
+)
 from repository.catalogue.schema import CATALOGUE_SCHEMA_VERSION
 from runtime.catalogue_queries import (
     CatalogueQueryState,
     get_catalogue_query,
     update_catalogue_query,
 )
-from runtime.resource_governor import (
-    ResourceCapacityUnavailable,
-    ResourceNeed,
-    ResourcePermitGuard,
-    ResourceRequest,
-    resource_permits,
-)
-
-
 T = TypeVar("T")
 _QUERY_POLL_SECONDS = 0.25
+QueryPreflight = Callable[[ClassifiedCatalogueStatement], Awaitable[None]]
 
 
 class CatalogueQueryExecutionError(RuntimeError):
@@ -60,7 +57,7 @@ class QuackRuntimeConfig:
     @classmethod
     def from_env(cls) -> QuackRuntimeConfig:
         return cls(
-            catalogue_alias=get_str("DUCKBASIN_LAKE"),
+            catalogue_alias="",
             catalogue_schema=get_str("ATLAS_CATALOGUE_SCHEMA"),
             catalogue_schema_version=CATALOGUE_SCHEMA_VERSION,
             maximum_concurrency=get_int("ATLAS_QUACK_MAX_CONCURRENCY"),
@@ -101,6 +98,12 @@ class _QuackSlot:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self.executor, operation)
 
+    async def run(
+        self,
+        operation: Callable[[duckdb.DuckDBPyConnection], T],
+    ) -> T:
+        return await self.submit(lambda: self._run(operation))
+
     def interrupt(self) -> None:
         if self.connection is not None:
             self.connection.interrupt()
@@ -109,8 +112,11 @@ class _QuackSlot:
         if self.connection is not None:
             raise RuntimeError("Quack slot is already open")
         minted = self.minter.mint()
-        self.minted = minted
-        self.connection = minted.connection
+        try:
+            self._activate(minted)
+        except BaseException:
+            minted.close()
+            raise
 
     def _close(self) -> None:
         minted = self.minted
@@ -119,6 +125,62 @@ class _QuackSlot:
         minted.close()
         self.minted = None
         self.connection = None
+
+    def _run(
+        self,
+        operation: Callable[[duckdb.DuckDBPyConnection], T],
+    ) -> T:
+        self._ensure_fresh()
+        minted = self._require_minted()
+        try:
+            return operation(minted.connection)
+        except duckdb.Error as exc:
+            if not is_recoverable_quack_connection_error(exc):
+                raise
+            if is_quack_authorization_error(exc):
+                self.minter.invalidate_connection_credentials(minted)
+        self._replace(minted)
+        return operation(self._require_minted().connection)
+
+    def _ensure_fresh(self) -> None:
+        minted = self._require_minted()
+        if self.minter.connection_credentials_stale(minted):
+            self._replace(minted)
+
+    def _replace(self, stale: MintedDuckDB) -> None:
+        if self.minted is not stale:
+            return
+        replacement = self.minter.mint()
+        try:
+            self._activate(replacement)
+        except BaseException:
+            replacement.close()
+            self.minted = stale
+            self.connection = stale.connection
+            raise
+        try:
+            stale.close()
+        except Exception:
+            logging.warning(
+                "failed to close stale interactive Quack connection",
+                exc_info=True,
+            )
+
+    def _activate(self, minted: MintedDuckDB) -> None:
+        if minted.catalogue_alias != self.config.catalogue_alias:
+            raise RuntimeError("DuckBasin catalogue alias changed for Quack slot")
+        minted.connection.execute(
+            "USE "
+            f"{_quote_identifier(self.config.catalogue_alias)}."
+            f"{_quote_identifier(self.config.catalogue_schema)}"
+        )
+        self.minted = minted
+        self.connection = minted.connection
+
+    def _require_minted(self) -> MintedDuckDB:
+        if self.minted is None:
+            raise RuntimeError("Quack slot is not open")
+        return self.minted
 
 
 class _ChunkSink:
@@ -220,8 +282,6 @@ class ActiveCatalogueQuery:
         statement_kind: CatalogueStatementKind,
         slot: _QuackSlot,
         arrow: _BoundedArrowStream,
-        permit_context,
-        permit_guard: ResourcePermitGuard,
         monitor: asyncio.Task,
         started_monotonic: float,
     ) -> None:
@@ -230,8 +290,6 @@ class ActiveCatalogueQuery:
         self.statement_kind = statement_kind
         self.slot = slot
         self.arrow = arrow
-        self.permit_context = permit_context
-        self.permit_guard = permit_guard
         self.monitor = monitor
         self.started_monotonic = started_monotonic
         self.closed = False
@@ -303,37 +361,39 @@ class QuackQueryRuntime:
     def __init__(
         self,
         query_bucket,
-        resource_bucket,
         *,
         config: QuackRuntimeConfig | None = None,
         minter: DuckBasinClientMinter | None = None,
+        query_preflight: QueryPreflight | None = None,
     ) -> None:
         self.config = config or QuackRuntimeConfig.from_env()
         self.query_bucket = query_bucket
-        self.resource_bucket = resource_bucket
         self._minter = minter
         self._owns_minter = minter is None
+        self._query_preflight = query_preflight
         self._slots: list[_QuackSlot] = []
         self._available: asyncio.Queue[_QuackSlot] = asyncio.Queue()
         self._active: dict[UUID, _QuackSlot] = {}
         self._cancel_reasons: dict[UUID, str] = {}
 
+    async def preflight(self, statement: ClassifiedCatalogueStatement) -> None:
+        if self._query_preflight is not None:
+            await self._query_preflight(statement)
+
     async def start(self) -> None:
         try:
             if self._minter is None:
                 self._minter = DuckBasinClientMinter()
+            target = await asyncio.to_thread(self._minter.target)
+            self.config = replace(
+                self.config,
+                catalogue_alias=target.catalogue_alias,
+            )
             for index in range(self.config.maximum_concurrency):
                 slot = _QuackSlot(index, self.config, self._minter)
                 await slot.open()
                 self._slots.append(slot)
             for slot in self._slots:
-                await slot.submit(
-                    lambda slot=slot: self._connection(slot).execute(
-                        "USE "
-                        f"{_quote_identifier(self.config.catalogue_alias)}."
-                        f"{_quote_identifier(self.config.catalogue_schema)}",
-                    )
-                )
                 self._available.put_nowait(slot)
         except BaseException:
             await self.close()
@@ -361,40 +421,12 @@ class QuackQueryRuntime:
         sql: str,
         statement_kind: CatalogueStatementKind,
     ) -> ActiveCatalogueQuery:
-        request = ResourceRequest(
-            operation_id=f"catalogue-query:{query_id.hex}",
-            service_class="live",
-            resources=(
-                ResourceNeed(
-                    name="quack:query",
-                    units=1,
-                    capacity=self.config.maximum_concurrency,
-                ),
-            ),
-        )
-        permit_context = resource_permits(
-            self.resource_bucket,
-            request,
-            acquire_timeout=self.config.pool_wait_seconds,
-        )
-        try:
-            permit_guard = await permit_context.__aenter__()
-        except ResourceCapacityUnavailable as exc:
-            await self._record_terminal(
-                query_id,
-                outcome="failed",
-                error="interactive query capacity is busy",
-            )
-            raise CatalogueQueryExecutionError(
-                "Interactive query capacity is busy; retry shortly."
-            ) from exc
         try:
             slot = await asyncio.wait_for(
                 self._available.get(),
                 timeout=self.config.pool_wait_seconds,
             )
         except asyncio.CancelledError:
-            await permit_context.__aexit__(None, None, None)
             await self._record_terminal(
                 query_id,
                 outcome="cancelled",
@@ -402,7 +434,6 @@ class QuackQueryRuntime:
             )
             raise
         except TimeoutError as exc:
-            await permit_context.__aexit__(None, None, None)
             await self._record_terminal(
                 query_id,
                 outcome="failed",
@@ -421,8 +452,6 @@ class QuackQueryRuntime:
                 query_id=query_id,
                 statement_kind=statement_kind,
                 slot=slot,
-                permit_context=permit_context,
-                permit_guard=permit_guard,
                 started_monotonic=started_monotonic,
             )
             await active.close(
@@ -443,8 +472,6 @@ class QuackQueryRuntime:
                 query_id=query_id,
                 statement_kind=statement_kind,
                 slot=slot,
-                permit_context=permit_context,
-                permit_guard=permit_guard,
                 started_monotonic=started_monotonic,
             )
             await active.close(outcome="cancelled", error=reason)
@@ -462,8 +489,6 @@ class QuackQueryRuntime:
                 query_id=query_id,
                 statement_kind=statement_kind,
                 slot=slot,
-                permit_context=permit_context,
-                permit_guard=permit_guard,
                 started_monotonic=started_monotonic,
             )
             await active.close(
@@ -474,7 +499,7 @@ class QuackQueryRuntime:
                 "Catalogue query state is unavailable; retry shortly."
             ) from exc
         monitor = asyncio.create_task(
-            self._monitor(query_id, permit_guard, started_monotonic),
+            self._monitor(query_id, started_monotonic),
             name=f"catalogue-query-monitor:{query_id.hex}",
         )
         executable_sql = (
@@ -491,9 +516,9 @@ class QuackQueryRuntime:
             )
         )
         try:
-            arrow = await slot.submit(
-                lambda: _start_arrow_stream(
-                    self._connection(slot),
+            arrow = await slot.run(
+                lambda connection: _start_arrow_stream(
+                    connection,
                     executable_sql,
                     maximum_rows=self.config.maximum_rows,
                     maximum_bytes=self.config.maximum_result_bytes,
@@ -508,8 +533,6 @@ class QuackQueryRuntime:
                 query_id=query_id,
                 statement_kind=statement_kind,
                 slot=slot,
-                permit_context=permit_context,
-                permit_guard=permit_guard,
                 started_monotonic=started_monotonic,
             )
             await active.close(outcome="cancelled", error=reason)
@@ -522,8 +545,6 @@ class QuackQueryRuntime:
                 query_id=query_id,
                 statement_kind=statement_kind,
                 slot=slot,
-                permit_context=permit_context,
-                permit_guard=permit_guard,
                 started_monotonic=started_monotonic,
             )
             await active.close(
@@ -539,65 +560,39 @@ class QuackQueryRuntime:
             statement_kind=statement_kind,
             slot=slot,
             arrow=arrow,
-            permit_context=permit_context,
-            permit_guard=permit_guard,
             monitor=monitor,
             started_monotonic=started_monotonic,
         )
 
     async def run_internal(self, operation: Callable[[duckdb.DuckDBPyConnection], T]) -> T:
-        operation_id = f"catalogue-internal:{uuid4().hex}"
-        request = ResourceRequest(
-            operation_id=operation_id,
-            service_class="live",
-            resources=(
-                ResourceNeed(
-                    name="quack:query",
-                    units=1,
-                    capacity=self.config.maximum_concurrency,
-                ),
-            ),
-        )
         try:
-            async with resource_permits(
-                self.resource_bucket,
-                request,
-                acquire_timeout=self.config.pool_wait_seconds,
-            ):
-                try:
-                    slot = await asyncio.wait_for(
-                        self._available.get(),
-                        timeout=self.config.pool_wait_seconds,
-                    )
-                except TimeoutError as exc:
-                    raise CatalogueQueryExecutionError(
-                        "Interactive query capacity is busy; retry shortly."
-                    ) from exc
-                try:
-                    return await asyncio.wait_for(
-                        slot.submit(lambda: operation(self._connection(slot))),
-                        timeout=self.config.query_timeout_seconds,
-                    )
-                except asyncio.CancelledError:
-                    slot.interrupt()
-                    await slot.submit(lambda: None)
-                    raise
-                except TimeoutError as exc:
-                    slot.interrupt()
-                    await slot.submit(lambda: None)
-                    raise CatalogueQueryExecutionError(
-                        "Catalogue metadata query timed out."
-                    ) from exc
-                except Exception as exc:
-                    raise CatalogueQueryExecutionError(
-                        self.safe_error(exc)
-                    ) from exc
-                finally:
-                    self._available.put_nowait(slot)
-        except ResourceCapacityUnavailable as exc:
+            slot = await asyncio.wait_for(
+                self._available.get(),
+                timeout=self.config.pool_wait_seconds,
+            )
+        except TimeoutError as exc:
             raise CatalogueQueryExecutionError(
                 "Interactive query capacity is busy; retry shortly."
             ) from exc
+        try:
+            return await asyncio.wait_for(
+                slot.run(operation),
+                timeout=self.config.query_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            slot.interrupt()
+            await slot.submit(lambda: None)
+            raise
+        except TimeoutError as exc:
+            slot.interrupt()
+            await slot.submit(lambda: None)
+            raise CatalogueQueryExecutionError(
+                "Catalogue metadata query timed out."
+            ) from exc
+        except Exception as exc:
+            raise CatalogueQueryExecutionError(self.safe_error(exc)) from exc
+        finally:
+            self._available.put_nowait(slot)
 
     def interrupt_local(self, query_id: UUID, reason: str) -> None:
         self._cancel_reasons.setdefault(query_id, reason)
@@ -611,8 +606,6 @@ class QuackQueryRuntime:
         query_id: UUID,
         statement_kind: CatalogueStatementKind,
         slot: _QuackSlot,
-        permit_context,
-        permit_guard: ResourcePermitGuard,
         started_monotonic: float,
     ) -> ActiveCatalogueQuery:
         return ActiveCatalogueQuery(
@@ -624,8 +617,6 @@ class QuackQueryRuntime:
                 self.config.maximum_rows,
                 self.config.maximum_result_bytes,
             ),
-            permit_context=permit_context,
-            permit_guard=permit_guard,
             monitor=asyncio.create_task(asyncio.sleep(0)),
             started_monotonic=started_monotonic,
         )
@@ -640,13 +631,9 @@ class QuackQueryRuntime:
     async def _monitor(
         self,
         query_id: UUID,
-        permit_guard: ResourcePermitGuard,
         started_monotonic: float,
     ) -> None:
         while query_id in self._active:
-            if permit_guard.lost:
-                self.interrupt_local(query_id, "global query permit was lost")
-                return
             if (
                 time.monotonic() - started_monotonic
                 >= self.config.query_timeout_seconds
@@ -740,7 +727,6 @@ class QuackQueryRuntime:
             )
         finally:
             self._available.put_nowait(active.slot)
-            await active.permit_context.__aexit__(None, None, None)
             duration = time.monotonic() - active.started_monotonic
             catalogue_query_metrics.completed(
                 statement_kind=active.statement_kind.value,

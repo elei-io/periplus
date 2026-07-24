@@ -6,8 +6,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from api.catalogue_control import CatalogueControl
-from control.catalogue_materializations.service import list_records
 from repository.catalogue.interactive import execute_interactive_query
 from repository.catalogue.quack_runtime import QuackQueryRuntime, remote_rows
 from repository.catalogue.query import validate_interactive_catalogue_statement
@@ -39,19 +37,6 @@ class CatalogueMacro(BaseModel):
     return_type: str | None
 
 
-class CatalogueMaterialization(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    qualified_name: str
-    display_name: str
-    description: str | None
-    source_table: str
-    refresh_strategy: str
-    key_columns: list[str]
-    status: str
-    last_refreshed_at: str | None
-
-
 class CatalogueQueryResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -72,10 +57,8 @@ class CatalogueTools:
     def __init__(
         self,
         query_runtime: QuackQueryRuntime,
-        catalogue_control: CatalogueControl,
     ) -> None:
         self.query_runtime = query_runtime
-        self.catalogue_control = catalogue_control
 
     async def list_relations(
         self, kind: Literal["table", "view"]
@@ -184,28 +167,6 @@ class CatalogueTools:
             ]
 
         return await self.query_runtime.run_internal(operation)
-
-    async def list_materializations(self) -> list[CatalogueMaterialization]:
-        records = await self.catalogue_control.run(
-            lambda session, _catalogue: list_records(session)
-        )
-        return [
-            CatalogueMaterialization(
-                qualified_name=record.qualified_name,
-                display_name=record.display_name,
-                description=record.description,
-                source_table=record.source_table,
-                refresh_strategy=record.refresh_strategy,
-                key_columns=record.key_columns,
-                status=record.observed_state,
-                last_refreshed_at=(
-                    record.last_refreshed_at.isoformat()
-                    if record.last_refreshed_at is not None
-                    else None
-                ),
-            )
-            for record in records
-        ]
 
     async def query(self, sql: str) -> CatalogueQueryResult:
         statement = validate_interactive_catalogue_statement(

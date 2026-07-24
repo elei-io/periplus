@@ -24,7 +24,6 @@ def _config(*, refresh_seconds: float = 60) -> DuckBasinConfig:
         base_url="https://basin.example",
         lake="atlas",
         token_endpoint="https://basin.example/token",
-        service_account="atlas-production",
         client_id="client-id",
         client_secret="client-secret",
         request_timeout_seconds=1,
@@ -117,6 +116,24 @@ class ServiceAccountTokenProviderTests(unittest.TestCase):
         self.assertEqual(request_count, 1)
         self.assertTrue(all(lease is leases[0] for lease in leases))
 
+    def test_invalidating_rejected_generation_fetches_a_new_token(self) -> None:
+        issued: list[str] = []
+
+        def handler(_: httpx.Request) -> httpx.Response:
+            issued.append(f"token-{len(issued) + 1}")
+            return _token_response(issued[-1])
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        provider = ServiceAccountTokenProvider(_config(), client=client)
+
+        first = provider.get()
+        provider.invalidate_generation(first.generation)
+        second = provider.get()
+
+        self.assertEqual(first.generation, 1)
+        self.assertEqual(second.generation, 2)
+        self.assertEqual(issued, ["token-1", "token-2"])
+
 
 class DuckBasinClientMinterTests(unittest.TestCase):
     def test_mints_unique_session_affine_connections(self) -> None:
@@ -177,8 +194,8 @@ class DuckBasinClientMinterTests(unittest.TestCase):
         first = minter.mint()
         second = minter.mint()
 
-        self.assertEqual(first.lake_id.hex, LAKE_HEX)
         self.assertEqual(first.catalogue_alias, "atlas")
+        self.assertEqual(first.lake_slug, "atlas")
         self.assertEqual(first.token_generation, 1)
         self.assertIn(
             f"quack:0123456789abcdef-{LAKE_HEX}.basin-quack.example:443",

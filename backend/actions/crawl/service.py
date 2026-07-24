@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 from contextlib import suppress
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -36,12 +38,10 @@ from repository.ingestion.acquisition import AcquisitionPipeline
 from repository.objects.artifact import ArtifactIdentity
 from repository.objects.html import identify_html
 from runtime.context import GraphExecutionContext, graph_execution_scope
-from runtime.domain_pacing import record_domain_response, wait_for_domain_interval
-from runtime.resource_governor import (
-    DURABLE_RESOURCE_WAIT,
-    object_request,
-    remote_request,
-    resource_permits,
+from runtime.domain_pacing import (
+    domain_permit as acquire_domain_permit,
+    record_domain_response,
+    wait_for_domain_interval,
 )
 
 from .schemas import AcquisitionAttemptEvidence, CrawlPage, CrawlStepEvidence
@@ -115,6 +115,85 @@ async def _download_bytes(download) -> bytes:
         if failure is not None:
             raise PlaywrightError(failure)
         return await asyncio.to_thread(Path(target.name).read_bytes)
+
+
+class _NavigationArtifactCapture:
+    """Capture a document response before Chromium hands it to a MIME viewer."""
+
+    def __init__(self, accepted_content_types: tuple[str, ...]) -> None:
+        self.accepted_content_types = accepted_content_types
+        self.body: bytes | None = None
+        self.error: str | None = None
+
+    async def handle_paused(self, session, event: dict[str, object]) -> None:
+        request_id = str(event["requestId"])
+        try:
+            status = event.get("responseStatusCode")
+            headers = {
+                str(entry.get("name", "")).lower(): str(entry.get("value", ""))
+                for entry in event.get("responseHeaders", [])
+                if isinstance(entry, dict)
+            }
+            media_type = _media_type(headers.get("content-type"))
+            disposition = headers.get("content-disposition", "").lower()
+            is_redirect = status in {301, 302, 303, 307, 308}
+            should_capture = (
+                not is_redirect
+                and "attachment" not in disposition
+                and media_type not in {"text/html", "application/xhtml+xml"}
+                and _accepted_media_type(
+                    media_type,
+                    self.accepted_content_types,
+                )
+            )
+            if should_capture:
+                response = await session.send(
+                    "Fetch.getResponseBody",
+                    {"requestId": request_id},
+                )
+                encoded = str(response.get("body", ""))
+                self.body = (
+                    base64.b64decode(encoded, validate=True)
+                    if response.get("base64Encoded")
+                    else encoded.encode()
+                )
+        except (binascii.Error, ValueError, PlaywrightError) as exc:
+            self.error = str(exc) or "raw navigation response capture failed"
+        finally:
+            await session.send(
+                "Fetch.continueRequest",
+                {"requestId": request_id},
+            )
+
+
+async def _enable_navigation_artifact_capture(
+    page,
+    accepted_content_types: tuple[str, ...],
+) -> _NavigationArtifactCapture | None:
+    if not any(
+        media_type not in {"text/html", "application/xhtml+xml"}
+        for media_type in accepted_content_types
+    ):
+        return None
+    session = await page.context.new_cdp_session(page)
+    capture = _NavigationArtifactCapture(accepted_content_types)
+    session.on(
+        "Fetch.requestPaused",
+        lambda event: capture.handle_paused(session, event),
+    )
+    await session.send(
+        "Fetch.enable",
+        {
+            "patterns": [
+                {
+                    "urlPattern": "*",
+                    "resourceType": "Document",
+                    "requestStage": "Response",
+                }
+            ]
+        },
+    )
+    return capture
 
 
 async def _with_context_recovery(
@@ -472,6 +551,10 @@ async def _acquire(
                 # such an operation and would force a lazy HTTP CDP facade to
                 # promote the request to a browser.
                 page = await browser.new_page()
+                artifact_capture = await _enable_navigation_artifact_capture(
+                    page,
+                    policy.content.accepted_content_types,
+                )
                 steps: list[CrawlStepEvidence] = []
                 status: int | None = None
                 media_type = "text/html"
@@ -651,7 +734,33 @@ async def _acquire(
                         browser = None
                         return _response_outcome_page(url=final_url, requested_url=url, started=started, started_at=started_at, attempt_number=attempt_number, status=status, media_type=media_type, outcome=outcome, failure_code="unsupported_content_type")
                 if media_type not in {"text/html", "application/xhtml+xml"}:
-                    artifact = await response.body() if response is not None else b""
+                    if artifact_capture is None:
+                        raise AssertionError(
+                            "non-HTML response was accepted without raw capture"
+                        )
+                    if artifact_capture.error is not None:
+                        return _failed_page(
+                            url,
+                            started,
+                            started_at,
+                            attempt_number,
+                            artifact_capture.error,
+                            "artifact_capture_failed",
+                            "acquisition",
+                            True,
+                        )
+                    if artifact_capture.body is None:
+                        return _failed_page(
+                            url,
+                            started,
+                            started_at,
+                            attempt_number,
+                            "raw navigation response body was not captured",
+                            "artifact_capture_failed",
+                            "acquisition",
+                            True,
+                        )
+                    artifact = artifact_capture.body
                     evidence = _attempt(number=attempt_number, started_at=started_at, requested_url=url, final_url=final_url, status_code=status, media_type=media_type, outcome="success")
                     await browser.close()
                     browser = None
@@ -796,7 +905,6 @@ async def crawl_graph_request(
     context: GraphExecutionContext,
     playwright: Playwright,
     repository_pipeline: AcquisitionPipeline | None = None,
-    resource_grants=None,
     domain_pacing=None,
     domain_permit=None,
     persist_retryable_failure: bool = True,
@@ -823,17 +931,12 @@ async def crawl_graph_request(
                     attempt_number=attempt_number,
                     playwright=playwright,
                 )
-        elif resource_grants is None:
-            if domain_pacing is not None:
-                await wait_for_domain_interval(domain_pacing, domain=remote_domain, interval_seconds=domain.minimum_request_interval_seconds)
-            page = await _acquire(
-                normalized,
-                policy,
-                attempt_number=attempt_number,
-                playwright=playwright,
-            )
-        else:
-            async with resource_permits(resource_grants, remote_request(f"domain:{context.crawl_request_id}:{attempt_number}", remote_domain=remote_domain, concurrency=domain.maximum_concurrency), acquire_timeout=DURABLE_RESOURCE_WAIT):
+        elif domain_pacing is not None:
+            async with acquire_domain_permit(
+                domain_pacing,
+                domain=remote_domain,
+                concurrency=domain.maximum_concurrency,
+            ):
                 if domain_pacing is not None:
                     await wait_for_domain_interval(domain_pacing, domain=remote_domain, interval_seconds=domain.minimum_request_interval_seconds)
                 page = await _acquire(
@@ -842,6 +945,13 @@ async def crawl_graph_request(
                     attempt_number=attempt_number,
                     playwright=playwright,
                 )
+        else:
+            page = await _acquire(
+                normalized,
+                policy,
+                attempt_number=attempt_number,
+                playwright=playwright,
+            )
         if domain_pacing is not None:
             try:
                 await record_domain_response(
@@ -910,6 +1020,7 @@ async def crawl_graph_request(
                 for value in (*urls, *attempt_urls)
             }.values()
         )
+        captured_at = datetime.now(UTC)
         record = CrawlRecord(
             crawl_id=context.crawl_request_id,
             document_id=identity.document_id if identity else None,
@@ -922,7 +1033,7 @@ async def crawl_graph_request(
             source_edge_id=context.source_edge_id,
             requested_url_id=requested_url.url_id,
             final_url_id=final_url.url_id if final_url is not None else None,
-            captured_at=datetime.now(UTC),
+            captured_at=captured_at,
             status_code=page.status_code,
             duration_ms=round(page.duration_seconds * 1000),
             response_media_type=page.response_media_type,
@@ -944,20 +1055,25 @@ async def crawl_graph_request(
         )
 
         async def persist(pipeline: AcquisitionPipeline) -> CrawlPage:
+            source_url = final_normalized or normalized
             if identity is not None:
-                request = object_request(f"raw-html:{context.crawl_request_id}", direction="write", byte_count=identity.size_bytes, service_class="critical")
-                if resource_grants is None:
-                    await pipeline.store_raw(captured_html=page.html or "", identity=identity)
-                else:
-                    async with resource_permits(resource_grants, request, acquire_timeout=DURABLE_RESOURCE_WAIT):
-                        await pipeline.store_raw(captured_html=page.html or "", identity=identity)
+                await pipeline.store_raw(
+                    captured_html=page.html or "",
+                    source_url=source_url,
+                    crawl_id=context.crawl_request_id,
+                    captured_at=captured_at,
+                    content_type=page.response_media_type or "text/html",
+                    identity=identity,
+                )
             if artifact_identity is not None:
-                request = object_request(f"raw-artifact:{context.crawl_request_id}", direction="write", byte_count=artifact_identity.size_bytes, service_class="critical")
-                if resource_grants is None:
-                    await pipeline.store_artifact(content=io.BytesIO(page.artifact or b""), identity=artifact_identity)
-                else:
-                    async with resource_permits(resource_grants, request, acquire_timeout=DURABLE_RESOURCE_WAIT):
-                        await pipeline.store_artifact(content=io.BytesIO(page.artifact or b""), identity=artifact_identity)
+                await pipeline.store_artifact(
+                    content=io.BytesIO(page.artifact or b""),
+                    identity=artifact_identity,
+                    source_url=source_url,
+                    crawl_id=context.crawl_request_id,
+                    captured_at=captured_at,
+                    content_type=page.response_media_type or "application/octet-stream",
+                )
             await pipeline.enqueue_stored(
                 record,
                 urls=urls,

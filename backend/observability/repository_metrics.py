@@ -12,6 +12,11 @@ _batch_flushes = Counter(
     "Reasons an ingestion batch was flushed.",
     ("reason",),
 )
+_identity_preflight = Counter(
+    "atlas_repository_ingestion_identity_preflight_total",
+    "Catalogue identities skipped or leased after ingestion preflight.",
+    ("kind", "outcome"),
+)
 _pending = Gauge("atlas_repository_ingestion_jobs_pending", "Repository jobs waiting in JetStream.")
 _ack_pending = Gauge("atlas_repository_ingestion_jobs_ack_pending", "Delivered repository jobs awaiting acknowledgement.")
 _redelivered = Gauge("atlas_repository_ingestion_jobs_redelivered", "Redelivered repository jobs.")
@@ -43,6 +48,11 @@ def batch(*, outcome: str, duration_seconds: float, items: int, element_rows: in
 
 def batch_flush(*, reason: str) -> None:
     _batch_flushes.labels(reason).inc()
+
+
+def identity_preflight(*, kind: str, skipped: int, leased: int) -> None:
+    _identity_preflight.labels(kind, "skipped").inc(skipped)
+    _identity_preflight.labels(kind, "leased").inc(leased)
 
 
 def queue_state(

@@ -46,6 +46,7 @@ async def prepare_interactive_query(
         catalogue_alias=runtime.config.catalogue_alias,
         catalogue_schema=runtime.config.catalogue_schema,
     )
+    await runtime.preflight(statement)
     query_id = uuid4()
     await create_catalogue_query(
         runtime.query_bucket,

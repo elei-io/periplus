@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 import logging
 import os
 import time
@@ -14,6 +15,7 @@ from repository.catalogue import (
     CatalogueValidationError,
     CrawlRecord,
     DocumentRecord,
+    ExistingCatalogueIdentities,
 )
 from observability import repository_metrics
 from config import get_float
@@ -40,8 +42,7 @@ from repository.catalogue.operations import (
     is_retryable_catalogue_unavailability,
     run_with_catalogue_retry,
 )
-from repository.service import repository_ingestor_from_env
-from runtime.catalogue_lane import catalogue_operation_lane
+from repository.service import PreparedIngestion, repository_ingestor_from_env
 from runtime.catalogue_workers import (
     catalogue_worker_presence,
     ensure_catalogue_worker_storage,
@@ -52,34 +53,22 @@ from runtime.operation_leases import (
     ensure_operation_lease_storage,
     operation_leases,
 )
-from runtime.resource_governor import (
-    DURABLE_RESOURCE_WAIT,
-    ResourceCapacityUnavailable,
-    ResourcePermitLost,
-    catalogue_request,
-    ensure_resource_governor_storage,
-    object_request,
-    object_units,
-    resource_permits,
-)
 from workers.lifecycle import cancel_task
 
 
-async def run(*, stop: asyncio.Event, monitor: HealthMonitor) -> None:
+async def run(
+    *,
+    stop: asyncio.Event,
+    monitor: HealthMonitor,
+    lane_index: int = 0,
+) -> None:
     config = IngestionWorkerConfig.defaults()
-    catalogue_request(
-        "ingestion-startup-validation",
-        service_class="critical",
-        object_read_units=object_units(config.max_staged_bytes),
-        object_write_units=object_units(config.max_staged_bytes),
-    )
     client = await connect_nats()
     jetstream = client.jetstream()
     await ensure_repository_stream(jetstream)
     await ensure_dead_letter_stream(jetstream)
     results_store = await ensure_ingestion_results(jetstream)
     operation_lease_store = await ensure_operation_lease_storage(jetstream)
-    resource_grants = await ensure_resource_governor_storage(jetstream)
     catalogue_workers = await ensure_catalogue_worker_storage(jetstream)
     await ensure_repository_consumer(jetstream)
     subscription = await jetstream.pull_subscribe(
@@ -89,8 +78,7 @@ async def run(*, stop: asyncio.Event, monitor: HealthMonitor) -> None:
     )
     ingestor = repository_ingestor_from_env()
     await asyncio.to_thread(ingestor.validate)
-    health_ingestor = repository_ingestor_from_env()
-    await asyncio.to_thread(health_ingestor.validate)
+    catalogue_connection_lock = asyncio.Lock()
     next_queue_snapshot = 0.0
     health_monitor = monitor
     health_monitor.dependencies_ready()
@@ -98,7 +86,8 @@ async def run(*, stop: asyncio.Event, monitor: HealthMonitor) -> None:
     dependency_probe_task = asyncio.create_task(
         _dependency_probe(
             client,
-            health_ingestor,
+            ingestor,
+            catalogue_connection_lock,
             health_monitor,
         )
     )
@@ -108,7 +97,9 @@ async def run(*, stop: asyncio.Event, monitor: HealthMonitor) -> None:
     presence_task = asyncio.create_task(
         catalogue_worker_presence(
             catalogue_workers,
-            worker_id=f"ingestion:{os.uname().nodename}:{os.getpid()}",
+            worker_id=(
+                f"ingestion:{os.uname().nodename}:{os.getpid()}:{lane_index}"
+            ),
             capability="ingestion",
             started_at=datetime.now(UTC),
             active_operation_count=lambda: active_operation_count,
@@ -117,9 +108,8 @@ async def run(*, stop: asyncio.Event, monitor: HealthMonitor) -> None:
             monitor=health_monitor,
         )
     )
-    # Keep all access to this session-affine Basin connection explicit and serialized. Object
-    # reads and DOM parsing occur outside the lock.
-    catalogue_connection_lock = catalogue_operation_lane()
+    # Keep all access to this session-affine Basin connection explicit and
+    # serialized. Object reads and DOM parsing occur outside the lock.
     jobs: list[IngestionJob] = []
     prepared = []
     accepted_messages = []
@@ -139,7 +129,6 @@ async def run(*, stop: asyncio.Event, monitor: HealthMonitor) -> None:
             list(prepared),
             catalogue_connection_lock,
             operation_lease_store,
-            resource_grants,
         )
         jobs.clear()
         accepted_messages.clear()
@@ -230,20 +219,11 @@ async def run(*, stop: asyncio.Event, monitor: HealthMonitor) -> None:
                 _heartbeat_messages([message for message, _job in decoded_messages])
             )
             try:
-                async with resource_permits(
-                    resource_grants,
-                    catalogue_request(
-                        "ingestion-document-preload", service_class="critical"
-                    ),
-                    acquire_timeout=0,
-                ):
-                    async with catalogue_connection_lock:
-                        known_documents = await asyncio.to_thread(
-                            ingestor.catalogue_service.get_documents,
-                            document_ids,
-                        )
-            except ResourceCapacityUnavailable:
-                known_documents = None
+                async with catalogue_connection_lock:
+                    known_documents = await asyncio.to_thread(
+                        ingestor.catalogue_service.get_documents,
+                        document_ids,
+                    )
             except Exception:
                 logging.warning(
                     "repository batch document preload unavailable; falling back",
@@ -281,19 +261,8 @@ async def run(*, stop: asyncio.Event, monitor: HealthMonitor) -> None:
                         job,
                         known_documents,
                         catalogue_connection_lock,
-                        resource_grants,
                         heartbeat_message=False,
                     )
-                except ResourcePermitLost:
-                    repository_metrics.preparation(
-                        outcome="unavailable",
-                        duration_seconds=time.perf_counter() - preparation_started,
-                    )
-                    logging.warning(
-                        "repository ingestion permit was lost; retaining work"
-                    )
-                    await message.nak(delay=1)
-                    continue
                 except Exception as exc:
                     repository_metrics.preparation(
                         outcome="failed",
@@ -312,7 +281,6 @@ async def run(*, stop: asyncio.Event, monitor: HealthMonitor) -> None:
                         job,
                         exc,
                         catalogue_connection_lock,
-                        resource_grants,
                     )
                     continue
                 repository_metrics.preparation(
@@ -350,7 +318,6 @@ async def run(*, stop: asyncio.Event, monitor: HealthMonitor) -> None:
         await cancel_task(fetched_heartbeat_task)
         await cancel_task(dependency_probe_task)
         await cancel_task(presence_task)
-        await asyncio.to_thread(health_ingestor.close)
         await asyncio.to_thread(ingestor.close)
         await client.drain()
 
@@ -410,7 +377,6 @@ async def _commit_batch_isolated(
     prepared,
     catalogue_connection_lock: asyncio.Lock,
     operation_lease_store,
-    resource_grants,
 ) -> None:
     """Commit valid jobs while recursively isolating deterministic poison entries."""
 
@@ -418,6 +384,15 @@ async def _commit_batch_isolated(
     element_rows = sum(value.element_count for value in prepared)
     staged_bytes = sum(value.staged_bytes for value in prepared)
     try:
+        def preflight():
+            def attempt():
+                return ingestor.preflight_existing_identities(prepared)
+
+            return run_with_catalogue_retry(
+                attempt,
+                description="repository ingestion identity preflight",
+            )
+
         def commit_fenced():
             def attempt():
                 return ingestor.commit_prepared_batch(
@@ -429,23 +404,24 @@ async def _commit_batch_isolated(
                 attempt, description="repository ingestion commit"
             )
 
-        async with resource_permits(
-            resource_grants,
-            catalogue_request(
-                f"ingestion-batch:{jobs[0].request_id}",
-                service_class="critical",
-                object_read_units=object_units(staged_bytes),
-                object_write_units=object_units(staged_bytes),
-            ),
-            acquire_timeout=DURABLE_RESOURCE_WAIT,
+        async with catalogue_connection_lock:
+            existing_identities = await asyncio.to_thread(preflight)
+        operation_ids = _ingestion_commit_operation_ids(
+            jobs,
+            prepared,
+            existing_identities=existing_identities,
+        )
+        _observe_identity_preflight(
+            prepared,
+            operation_ids=operation_ids,
+        )
+        async with operation_leases(
+            operation_lease_store,
+            operation_ids,
+            phase="ingestion-commit",
         ):
-            async with operation_leases(
-                operation_lease_store,
-                (job.request_id for job in jobs),
-                phase="ingestion-commit",
-            ):
-                async with catalogue_connection_lock:
-                    results = await asyncio.to_thread(commit_fenced)
+            async with catalogue_connection_lock:
+                results = await asyncio.to_thread(commit_fenced)
     except (OperationLeaseUnavailable, OperationLeaseLost):
         repository_metrics.batch(
             outcome="contended",
@@ -459,9 +435,7 @@ async def _commit_batch_isolated(
             await message.nak(delay=1)
         return
     except Exception as exc:
-        if is_retryable_catalogue_unavailability(exc) or isinstance(
-            exc, ResourcePermitLost
-        ):
+        if is_retryable_catalogue_unavailability(exc):
             repository_metrics.batch(
                 outcome="unavailable",
                 duration_seconds=time.perf_counter() - commit_started,
@@ -512,7 +486,6 @@ async def _commit_batch_isolated(
                 prepared[:midpoint],
                 catalogue_connection_lock,
                 operation_lease_store,
-                resource_grants,
             )
             await _commit_batch_isolated(
                 client,
@@ -523,7 +496,6 @@ async def _commit_batch_isolated(
                 prepared[midpoint:],
                 catalogue_connection_lock,
                 operation_lease_store,
-                resource_grants,
             )
             return
 
@@ -545,7 +517,6 @@ async def _commit_batch_isolated(
                     job,
                     exc,
                     catalogue_connection_lock,
-                    resource_grants,
                 )
             return
 
@@ -564,7 +535,6 @@ async def _commit_batch_isolated(
             job,
             exc,
             catalogue_connection_lock,
-            resource_grants,
         )
         return
 
@@ -589,6 +559,73 @@ async def _commit_batch_isolated(
         await message.ack()
 
 
+def _ingestion_commit_operation_ids(
+    jobs: Sequence[IngestionJob],
+    prepared: Sequence[PreparedIngestion],
+    *,
+    existing_identities: ExistingCatalogueIdentities | None = None,
+) -> tuple[str, ...]:
+    """Fence requests plus identities that the authoritative commit may create."""
+
+    existing = existing_identities or ExistingCatalogueIdentities()
+    identities = {f"request:{job.request_id}" for job in jobs}
+    for value in prepared:
+        identities.update(
+            f"url:{url.url_id}"
+            for url in value.urls
+            if url.url_id not in existing.urls
+        )
+        if value.document is not None and (
+            value.document.document_id not in existing.documents
+            or value.replace_projection
+        ):
+            identities.add(f"document:{value.document.document_id}")
+        if (
+            value.artifact is not None
+            and value.artifact.artifact_id not in existing.artifacts
+        ):
+            identities.add(f"artifact:{value.artifact.artifact_id}")
+    return tuple(sorted(identities))
+
+
+def _observe_identity_preflight(
+    prepared: Sequence[PreparedIngestion],
+    *,
+    operation_ids: Sequence[str],
+) -> None:
+    candidates = {
+        "url": {
+            url.url_id
+            for value in prepared
+            for url in value.urls
+        },
+        "document": {
+            value.document.document_id
+            for value in prepared
+            if value.document is not None
+        },
+        "artifact": {
+            value.artifact.artifact_id
+            for value in prepared
+            if value.artifact is not None
+        },
+    }
+    leased = {
+        kind: {
+            operation_id.removeprefix(f"{kind}:")
+            for operation_id in operation_ids
+            if operation_id.startswith(f"{kind}:")
+        }
+        for kind in candidates
+    }
+    for kind, values in candidates.items():
+        repository_metrics.identity_preflight(
+            kind=kind,
+            skipped=len(values - leased[kind]),
+            leased=len(leased[kind]),
+        )
+
+
 async def _retry_or_fail(
     client,
     results_store,
@@ -597,7 +634,6 @@ async def _retry_or_fail(
     job: IngestionJob,
     exc: Exception,
     catalogue_connection_lock: asyncio.Lock,
-    resource_grants,
 ) -> None:
     heartbeat = asyncio.create_task(_heartbeat_messages([message]))
     try:
@@ -609,7 +645,6 @@ async def _retry_or_fail(
             job,
             exc,
             catalogue_connection_lock,
-            resource_grants,
         )
     finally:
         await cancel_task(heartbeat)
@@ -623,7 +658,6 @@ async def _retry_or_fail_with_heartbeat(
     job: IngestionJob,
     exc: Exception,
     catalogue_connection_lock: asyncio.Lock,
-    resource_grants,
 ) -> None:
     try:
         processing_failure_count = await record_ingestion_processing_failure(
@@ -638,20 +672,11 @@ async def _retry_or_fail_with_heartbeat(
         return
     if processing_failure_count >= max_delivery_attempts():
         try:
-            async with resource_permits(
-                resource_grants,
-                catalogue_request(
-                    f"ingestion-reconcile:{job.request_id}",
-                    service_class="critical",
-                    object_read_units=1,
-                ),
-                acquire_timeout=DURABLE_RESOURCE_WAIT,
-            ):
-                async with catalogue_connection_lock:
-                    reconciled = await asyncio.to_thread(
-                        ingestor.reconcile_crawl_commit,
-                        crawl=job.crawl,
-                    )
+            async with catalogue_connection_lock:
+                reconciled = await asyncio.to_thread(
+                    ingestor.reconcile_crawl_commit,
+                    crawl=job.crawl,
+                )
         except CatalogueConflictError as reconcile_exc:
             # The stable operation identity points at different durable data, so
             # it cannot be reconciled as this job's success.
@@ -744,7 +769,6 @@ async def _prepare_ingestion_job(
     job: IngestionJob,
     known_documents,
     catalogue_connection_lock: asyncio.Lock,
-    resource_grants,
     *,
     heartbeat_message: bool = True,
 ):
@@ -762,26 +786,15 @@ async def _prepare_ingestion_job(
                 ingestor,
                 job.crawl,
                 catalogue_connection_lock,
-                resource_grants,
             )
-        async with resource_permits(
-            resource_grants,
-            object_request(
-                f"ingestion-raw-read:{job.request_id}",
-                direction="read",
-                byte_count=1,
-                service_class="critical",
-            ),
-            acquire_timeout=DURABLE_RESOURCE_WAIT,
-        ):
-            return await asyncio.to_thread(
-                ingestor.prepare_from_raw,
-                crawl=job.crawl,
-                urls=job.urls,
-                crawl_attempts=job.crawl_attempts,
-                crawl_steps=job.crawl_steps,
-                known_documents=job_known_documents,
-            )
+        return await asyncio.to_thread(
+            ingestor.prepare_from_raw,
+            crawl=job.crawl,
+            urls=job.urls,
+            crawl_attempts=job.crawl_attempts,
+            crawl_steps=job.crawl_steps,
+            known_documents=job_known_documents,
+        )
     finally:
         await cancel_task(heartbeat)
 
@@ -790,30 +803,23 @@ async def _known_document_for_crawl(
     ingestor,
     crawl: CrawlRecord,
     catalogue_connection_lock: asyncio.Lock,
-    resource_grants,
 ) -> dict[str, DocumentRecord]:
     """Read canonical document state without holding the connection during parsing."""
 
     if crawl.document_id is None:
         return {}
-    async with resource_permits(
-        resource_grants,
-        catalogue_request(
-            f"ingestion-document-read:{crawl.crawl_id}", service_class="critical"
-        ),
-        acquire_timeout=DURABLE_RESOURCE_WAIT,
-    ):
-        async with catalogue_connection_lock:
-            existing = await asyncio.to_thread(
-                ingestor.catalogue_service.get_document,
-                crawl.document_id,
-            )
+    async with catalogue_connection_lock:
+        existing = await asyncio.to_thread(
+            ingestor.catalogue_service.get_document,
+            crawl.document_id,
+        )
     return {crawl.document_id: existing} if existing is not None else {}
 
 
 async def _dependency_probe(
     client,
     ingestor,
+    catalogue_connection_lock: asyncio.Lock,
     monitor: HealthMonitor,
 ) -> None:
     interval = get_float("ATLAS_INGESTION_WORKER_HEALTH_PROBE_INTERVAL_SECONDS")
@@ -824,12 +830,14 @@ async def _dependency_probe(
         )
         return
     while True:
-        try:
-            await asyncio.wait_for(client.flush(), timeout=timeout)
-        except Exception as exc:
-            monitor.dependencies_unavailable(str(exc) or type(exc).__name__)
+        if not client.is_connected:
+            monitor.dependencies_unavailable("NATS is not connected")
         else:
-            validation = asyncio.create_task(asyncio.to_thread(ingestor.probe))
+            async def validate() -> None:
+                async with catalogue_connection_lock:
+                    await asyncio.to_thread(ingestor.probe)
+
+            validation = asyncio.create_task(validate())
             try:
                 await asyncio.wait_for(asyncio.shield(validation), timeout=timeout)
             except TimeoutError:

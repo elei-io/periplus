@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-import io
+import base64
 import hashlib
+import io
 import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import ANY, MagicMock, patch
+from uuid import UUID, uuid4
 
 import boto3
 from botocore.exceptions import ClientError
@@ -18,12 +22,31 @@ from repository import (
     RawHtmlRepository,
     RawArtifactRepository,
     RepositoryIntegrityError,
+    RepositoryIngestor,
     RepositoryKeyError,
     RepositoryObjectNotFound,
     S3ObjectStore,
+    detect_artifact_media_type,
 )
+from repository.catalogue import CrawlRecord, UrlRecord
 from repository.objects.config import ensure_s3_bucket_from_env, object_store_from_env
+from repository.objects.store import ObjectWriteHeaders
 from repository.exceptions import RepositoryConfigError
+
+
+CAPTURED_AT = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+CRAWL_ID = UUID("12345678-1234-5678-1234-567812345678")
+HTML_WRITE_CONTEXT = {
+    "source_url": "https://example.com/",
+    "crawl_id": CRAWL_ID,
+    "captured_at": CAPTURED_AT,
+    "content_type": "text/html",
+}
+ARTIFACT_WRITE_CONTEXT = {
+    **HTML_WRITE_CONTEXT,
+    "source_url": "https://example.com/report.pdf",
+    "content_type": "application/pdf",
+}
 
 
 class ObjectStoreContract:
@@ -88,19 +111,27 @@ class RawHtmlRepositoryTests(unittest.TestCase):
         html = "<html><body>Atlas</body></html>"
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = RawHtmlRepository(FileObjectStore(Path(temp_dir)))
-            stored = repository.put(html)
+            stored = repository.put(html, **HTML_WRITE_CONTEXT)
             repository.store.delete(stored.object_key)
             repository.store.put_if_absent(stored.object_key, io.BytesIO(b"not-zstd"))
 
             with self.assertRaises(RepositoryIntegrityError):
-                repository.put(html)
+                repository.put(html, **HTML_WRITE_CONTEXT)
 
     def test_concurrent_writes_do_not_share_native_compressor_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = RawHtmlRepository(FileObjectStore(Path(temp_dir)))
             values = [f"<html><body>{index}</body></html>" for index in range(16)]
             with ThreadPoolExecutor(max_workers=8) as executor:
-                stored = list(executor.map(repository.put, values))
+                stored = list(
+                    executor.map(
+                        lambda value: repository.put(
+                            value,
+                            **HTML_WRITE_CONTEXT,
+                        ),
+                        values,
+                    )
+                )
 
             self.assertEqual(len({value.sha256 for value in stored}), len(values))
             self.assertEqual(
@@ -111,8 +142,14 @@ class RawHtmlRepositoryTests(unittest.TestCase):
     def test_html_is_content_addressed_compressed_and_deduplicated(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = RawHtmlRepository(FileObjectStore(Path(temp_dir)))
-            first = repository.put("<html><body>Atlas</body></html>")
-            second = repository.put("<html><body>Atlas</body></html>")
+            first = repository.put(
+                "<html><body>Atlas</body></html>",
+                **HTML_WRITE_CONTEXT,
+            )
+            second = repository.put(
+                "<html><body>Atlas</body></html>",
+                **HTML_WRITE_CONTEXT,
+            )
 
             self.assertTrue(first.created)
             self.assertFalse(second.created)
@@ -132,7 +169,11 @@ class RawHtmlRepositoryTests(unittest.TestCase):
             repository = RawHtmlRepository(FileObjectStore(Path(temp_dir)))
 
             for html in values:
-                stored = repository.put(html, chunk_chars=7)
+                stored = repository.put(
+                    html,
+                    chunk_chars=7,
+                    **HTML_WRITE_CONTEXT,
+                )
                 restored = repository.read(stored.object_key)
 
                 self.assertEqual(restored, html)
@@ -141,6 +182,50 @@ class RawHtmlRepositoryTests(unittest.TestCase):
 
 
 class RawArtifactRepositoryTests(unittest.TestCase):
+    def test_artifact_detection_retains_low_confidence_raw_prediction(self) -> None:
+        detector = MagicMock()
+        detector.identify_bytes.return_value = SimpleNamespace(
+            dl=SimpleNamespace(mime_type="application/pdf"),
+            output=SimpleNamespace(mime_type="application/octet-stream"),
+            score=0.2,
+        )
+        with patch(
+            "repository.objects.artifact._artifact_media_type_detector",
+            return_value=detector,
+        ):
+            detection = detect_artifact_media_type(b"ambiguous bytes")
+
+        self.assertEqual(detection.media_type, "application/pdf")
+        self.assertEqual(detection.confidence, 0.2)
+
+    def test_artifact_media_type_is_detected_from_bytes(self) -> None:
+        pdf = (
+            b"%PDF-1.4\n"
+            b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+            b"2 0 obj\n<< /Type /Pages /Count 0 >>\nendobj\n"
+            b"trailer\n<< /Root 1 0 R >>\n%%EOF\n"
+        )
+        detection = detect_artifact_media_type(pdf)
+        self.assertEqual(detection.media_type, "application/pdf")
+        self.assertEqual(detection.detector_name, "magika")
+        self.assertRegex(detection.detector_version, r"^1\.\d+\.\d+$")
+        self.assertGreater(detection.confidence, 0.9)
+
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lE"
+            "QVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+        self.assertEqual(
+            detect_artifact_media_type(png).media_type,
+            "image/png",
+        )
+        self.assertEqual(
+            detect_artifact_media_type(
+                b'<!doctype html><link href="chrome-extension://pdf-viewer">'
+            ).media_type,
+            "text/html",
+        )
+
     def test_artifact_is_exact_content_addressed_and_deduplicated(self) -> None:
         payload = b"%PDF-1.7\r\n\x00exact-binary"
         identity = ArtifactIdentity(
@@ -149,8 +234,16 @@ class RawArtifactRepositoryTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = RawArtifactRepository(FileObjectStore(Path(temp_dir)))
-            first = repository.put(io.BytesIO(payload), identity=identity)
-            second = repository.put(io.BytesIO(payload), identity=identity)
+            first = repository.put(
+                io.BytesIO(payload),
+                identity=identity,
+                **ARTIFACT_WRITE_CONTEXT,
+            )
+            second = repository.put(
+                io.BytesIO(payload),
+                identity=identity,
+                **ARTIFACT_WRITE_CONTEXT,
+            )
 
             self.assertTrue(first.created)
             self.assertFalse(second.created)
@@ -171,7 +264,133 @@ class RawArtifactRepositoryTests(unittest.TestCase):
             repository.store.put_if_absent(identity.object_key, io.BytesIO(b"wrong"))
 
             with self.assertRaises(RepositoryIntegrityError):
-                repository.put(io.BytesIO(payload), identity=identity)
+                repository.put(
+                    io.BytesIO(payload),
+                    identity=identity,
+                    **ARTIFACT_WRITE_CONTEXT,
+                )
+
+
+class ArtifactIngestionTests(unittest.TestCase):
+    def test_artifact_row_includes_declared_and_detected_media_types(self) -> None:
+        payload = (
+            b"%PDF-1.4\n"
+            b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+            b"2 0 obj\n<< /Type /Pages /Count 0 >>\nendobj\n"
+            b"trailer\n<< /Root 1 0 R >>\n%%EOF\n"
+        )
+        identity = ArtifactIdentity(
+            sha256=hashlib.sha256(payload).hexdigest(),
+            size_bytes=len(payload),
+        )
+        requested_url = UrlRecord.from_normalized_url(
+            "https://example.com/report.pdf"
+        )
+        crawl = CrawlRecord(
+            crawl_id=uuid4(),
+            artifact_id=identity.artifact_id,
+            graph_id=uuid4(),
+            graph_run_id=uuid4(),
+            graph_node_id=uuid4(),
+            crawl_request_id=uuid4(),
+            requested_url_id=requested_url.url_id,
+            final_url_id=requested_url.url_id,
+            captured_at=datetime.now(UTC),
+            status_code=200,
+            response_media_type="application/pdf",
+            outcome="success",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = FileObjectStore(Path(temp_dir) / "objects")
+            artifact_repository = RawArtifactRepository(store)
+            artifact_repository.put(
+                io.BytesIO(payload),
+                identity=identity,
+                **ARTIFACT_WRITE_CONTEXT,
+            )
+            ingestor = RepositoryIngestor(
+                html_repository=RawHtmlRepository(store),
+                artifact_repository=artifact_repository,
+                catalogue=MagicMock(),
+                staging_root=Path(temp_dir) / "staging",
+            )
+
+            prepared = ingestor.prepare_from_raw(
+                crawl=crawl,
+                urls=(requested_url,),
+                crawl_attempts=(),
+            )
+
+        self.assertIsNotNone(prepared.artifact)
+        assert prepared.artifact is not None
+        self.assertEqual(
+            prepared.artifact.response_media_type,
+            "application/pdf",
+        )
+        self.assertEqual(
+            prepared.artifact.detected_media_type,
+            "application/pdf",
+        )
+        self.assertEqual(prepared.artifact.detector_name, "magika")
+        self.assertGreater(prepared.artifact.detection_confidence, 0.9)
+
+
+class S3ObjectHeadersTests(unittest.TestCase):
+    def test_put_sets_representation_and_crawl_metadata_headers(self) -> None:
+        client = MagicMock()
+        store = S3ObjectStore(client, bucket="atlas", prefix="repository")
+
+        created = store.put_if_absent(
+            "raw/artifacts/example",
+            io.BytesIO(b"artifact"),
+            headers=ObjectWriteHeaders(
+                content_type="application/pdf",
+                metadata={
+                    "url": "https://example.com/report.pdf",
+                    "crawl-id": str(CRAWL_ID),
+                    "captured-at": CAPTURED_AT.isoformat(),
+                },
+            ),
+        )
+
+        self.assertTrue(created)
+        client.put_object.assert_called_once_with(
+            Bucket="atlas",
+            Key="repository/raw/artifacts/example",
+            Body=ANY,
+            IfNoneMatch="*",
+            ContentType="application/pdf",
+            Metadata={
+                "url": "https://example.com/report.pdf",
+                "crawl-id": str(CRAWL_ID),
+                "captured-at": CAPTURED_AT.isoformat(),
+            },
+        )
+
+    def test_html_sets_content_encoding_and_charset(self) -> None:
+        client = MagicMock()
+        client.head_object.side_effect = ClientError(
+            {
+                "Error": {"Code": "NotFound"},
+                "ResponseMetadata": {"HTTPStatusCode": 404},
+            },
+            "HeadObject",
+        )
+        repository = RawHtmlRepository(
+            S3ObjectStore(client, bucket="atlas")
+        )
+
+        repository.put("<html></html>", **HTML_WRITE_CONTEXT)
+
+        options = client.put_object.call_args.kwargs
+        self.assertEqual(options["ContentType"], "text/html; charset=utf-8")
+        self.assertEqual(options["ContentEncoding"], "zstd")
+        self.assertEqual(options["Metadata"]["url"], "https://example.com/")
+        self.assertEqual(options["Metadata"]["crawl-id"], str(CRAWL_ID))
+        self.assertEqual(
+            options["Metadata"]["captured-at"],
+            CAPTURED_AT.isoformat(),
+        )
 
 
 class RepositoryConfigTests(unittest.TestCase):

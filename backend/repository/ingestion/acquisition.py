@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime
 import time
 from types import TracebackType
 from uuid import UUID
@@ -71,6 +72,10 @@ class AcquisitionPipeline:
         self,
         *,
         captured_html: str,
+        source_url: str,
+        crawl_id: UUID,
+        captured_at: datetime,
+        content_type: str,
         identity: HtmlIdentity | None = None,
     ) -> None:
         self._require_running()
@@ -79,6 +84,10 @@ class AcquisitionPipeline:
             stored = await asyncio.to_thread(
                 self.html_repository.put,
                 captured_html,
+                source_url=source_url,
+                crawl_id=crawl_id,
+                captured_at=captured_at,
+                content_type=content_type,
                 identity=identity,
             )
         except BaseException:
@@ -118,6 +127,10 @@ class AcquisitionPipeline:
         *,
         content,
         identity: ArtifactIdentity,
+        source_url: str,
+        crawl_id: UUID,
+        captured_at: datetime,
+        content_type: str,
     ) -> None:
         self._require_running()
         started_at = time.perf_counter()
@@ -126,6 +139,10 @@ class AcquisitionPipeline:
                 self.artifact_repository.put,
                 content,
                 identity=identity,
+                source_url=source_url,
+                crawl_id=crawl_id,
+                captured_at=captured_at,
+                content_type=content_type,
             )
         except BaseException:
             repository_metrics.raw_write(

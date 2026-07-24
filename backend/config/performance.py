@@ -1,20 +1,12 @@
-"""Code-owned runtime sizing for Atlas workloads.
-
-Replica counts are the normal scaling control.  The two deployment-wide maxima
-below are safety rails for shared infrastructure, not per-worker tuning knobs.
-Everything else is deliberately derived or fixed by workload type.
-"""
+"""Code-owned runtime sizing for Atlas workloads."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from config.environment import get_int
 
-
-# Local executor lanes. Catalogue-owning processes remain single-lane by
-# architecture; acquisition workers keep bounded process-local coordination.
+# Local executor lanes.
 CRAWL_ACQUISITION_LANES = 12
 # Keep a small delivery look-ahead so a saturated hostname cannot hide other
 # ready hostnames behind its own politeness waiters. This is deliberately
@@ -25,10 +17,10 @@ CRAWL_DISPATCH_WINDOW = CRAWL_ACQUISITION_LANES * 4
 # completed acquisitions no longer consume the window while their edges run.
 CRAWL_RUN_ACQUISITION_PENDING_LIMIT = CRAWL_DISPATCH_WINDOW
 # A denied nonblocking domain probe is retried soon, but not on every worker
-# loop iteration. Permit release remains responsive while saturated hosts avoid
-# generating avoidable Resource Governor reads and admission metrics.
+# loop iteration.
 CRAWL_DOMAIN_PERMIT_RETRY_SECONDS = 0.25
-CATALOGUE_EXECUTOR_LANES = 1
+INGESTION_QUACK_CLIENTS = 4
+MATERIALIZATION_QUACK_CLIENTS = 8
 # Navigation retention is recovery cleanup, not a bulk-delete job. One bounded
 # batch per housekeeping sweep keeps object-store pressure predictable.
 NAVIGATION_CLEANUP_BATCH_SIZE = 500
@@ -42,14 +34,11 @@ INGESTION_CONSUMER_MAX_ACK_PENDING = 1024
 GRAPH_ACK_WAIT_SECONDS = 60.0
 INGESTION_ACK_WAIT_SECONDS = 60.0
 
-# Resource-governor mechanics are protocol constants.  Operators size only the
-# shared maximum pressure accepted by their state/storage platform.
-RESOURCE_LEASE_SECONDS = 120.0
-RESOURCE_HEARTBEAT_SECONDS = 30.0
-RESOURCE_ACQUIRE_TIMEOUT_SECONDS = 10.0
-RESOURCE_STATE_REPLICAS = 1
-OBJECT_IO_UNIT_BYTES = 8 * 1024 * 1024
-CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS = 60.0
+# Domain concurrency is a website-politeness contract, separate from generic
+# infrastructure admission. Each hostname has an independent expiring state key.
+DOMAIN_PERMIT_LEASE_SECONDS = 120.0
+DOMAIN_PERMIT_HEARTBEAT_SECONDS = 30.0
+OPERATIONAL_STATE_REPLICAS = 1
 CATALOGUE_OPERATION_MAX_ATTEMPTS = 5
 CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS = 0.1
 CATALOGUE_OPERATION_RETRY_MAX_SECONDS = 2.0
@@ -64,16 +53,6 @@ INGEST_BATCH_MAX_ITEMS = 100
 INGEST_BATCH_MAX_ELEMENT_ROWS = 250_000
 INGEST_BATCH_MAX_BYTES = 256 * 1024 * 1024
 INGEST_BATCH_MAX_WAIT_SECONDS = 10.0
-
-
-def catalogue_max_concurrency() -> int:
-    return get_int("ATLAS_CATALOGUE_MAX_CONCURRENCY")
-
-
-def object_io_max_concurrency() -> int:
-    return get_int("ATLAS_OBJECT_IO_MAX_CONCURRENCY")
-
-
 def process_cpu_count() -> int:
     """Return CPU capacity visible to this container/process."""
 
@@ -87,20 +66,20 @@ def duckdb_threads() -> int:
 
 
 def duckdb_memory_limit() -> str:
-    """Derive a conservative per-process DuckDB limit from its cgroup."""
+    """Derive a conservative per-client DuckDB limit from its cgroup."""
 
     memory_bytes = _cgroup_memory_limit() or 8 * 1024**3
-    derived = memory_bytes // 20
-    bounded = min(2 * 1024**3, max(512 * 1024**2, derived))
+    derived = memory_bytes // (INGESTION_QUACK_CLIENTS * 4)
+    bounded = min(512 * 1024**2, max(128 * 1024**2, derived))
     return f"{bounded // (1024**2)}MB"
 
 
 def materialization_duckdb_memory_limit() -> str:
-    """Allow whole-table builds enough memory without widening every worker."""
+    """Bound each client while leaving Basin responsible for analytical memory."""
 
     memory_bytes = _cgroup_memory_limit() or 8 * 1024**3
-    derived = memory_bytes // 8
-    bounded = min(4 * 1024**3, max(1024 * 1024**2, derived))
+    derived = memory_bytes // (MATERIALIZATION_QUACK_CLIENTS * 2)
+    bounded = min(1024 * 1024**2, max(256 * 1024**2, derived))
     return f"{bounded // (1024**2)}MB"
 
 

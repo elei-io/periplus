@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
 import secrets
 import threading
 import time
@@ -32,12 +31,11 @@ class DuckBasinAuthenticationError(DuckBasinError):
 
 @dataclass(frozen=True, slots=True)
 class DuckBasinConfig:
-    """Service-account and lake selection needed by the minter."""
+    """OAuth client credentials and lake selection needed by the minter."""
 
     base_url: str
     lake: str
     token_endpoint: str
-    service_account: str
     client_id: str
     client_secret: str = field(repr=False)
     request_timeout_seconds: float = 15
@@ -49,7 +47,6 @@ class DuckBasinConfig:
             base_url=get_str("DUCKBASIN_URL").rstrip("/"),
             lake=get_str("DUCKBASIN_LAKE"),
             token_endpoint=get_str("DUCKBASIN_TOKEN_ENDPOINT"),
-            service_account=get_str("DUCKBASIN_SERVICE_ACCOUNT"),
             client_id=get_str("DUCKBASIN_CLIENT_ID"),
             client_secret=get_str("DUCKBASIN_CLIENT_SECRET"),
             request_timeout_seconds=get_float(
@@ -63,10 +60,9 @@ class DuckBasinConfig:
 
 @dataclass(frozen=True, slots=True)
 class DuckBasinToken:
-    """A cached access token and its local refresh deadline."""
+    """One cached access-token generation."""
 
     value: str = field(repr=False)
-    expires_at: datetime
     generation: int
 
 
@@ -92,11 +88,6 @@ class ServiceAccountTokenProvider:
         self._refreshing = False
         self._generation = 0
 
-    @property
-    def refresh_count(self) -> int:
-        with self._condition:
-            return self._generation
-
     def get(self) -> DuckBasinToken:
         while True:
             with self._condition:
@@ -119,7 +110,6 @@ class ServiceAccountTokenProvider:
                 self._generation += 1
                 lease = DuckBasinToken(
                     value=token,
-                    expires_at=datetime.now(UTC) + timedelta(seconds=lifetime),
                     generation=self._generation,
                 )
                 self._token = lease
@@ -133,6 +123,17 @@ class ServiceAccountTokenProvider:
     def invalidate(self, token: DuckBasinToken) -> None:
         with self._condition:
             if self._token is token:
+                self._token = None
+                self._expires_monotonic = 0
+
+    def invalidate_generation(self, generation: int) -> None:
+        """Discard a credential generation rejected by Quack."""
+
+        with self._condition:
+            if (
+                self._token is not None
+                and self._token.generation == generation
+            ):
                 self._token = None
                 self._expires_monotonic = 0
 
@@ -170,6 +171,7 @@ class DuckBasinTarget:
     """The stable Basin lake target before session affinity is added."""
 
     lake_id: UUID
+    lake_slug: str
     catalogue_alias: str
     quack_uri: str
     quack_scope: str
@@ -180,6 +182,7 @@ class DuckBasinTarget:
         lake_hex = self.lake_id.hex
         return DuckBasinTarget(
             lake_id=self.lake_id,
+            lake_slug=self.lake_slug,
             catalogue_alias=self.catalogue_alias,
             quack_uri=_horizontalize(self.quack_uri, lake_hex, session_id),
             quack_scope=_horizontalize(
@@ -197,11 +200,10 @@ class MintedDuckDB:
 
     connection: duckdb.DuckDBPyConnection = field(repr=False)
     session_id: str
-    lake_id: UUID
+    lake_slug: str
     catalogue_alias: str
     quack_uri: str
     token_generation: int
-    token_expires_at: datetime
     _closed: bool = field(default=False, init=False, repr=False)
 
     def close(self) -> None:
@@ -234,7 +236,10 @@ class DuckBasinClientMinter:
             timeout=self.config.request_timeout_seconds
         )
         self._owns_client = client is None
-        self.tokens = tokens or ServiceAccountTokenProvider(self.config)
+        self.tokens = tokens or ServiceAccountTokenProvider(
+            self.config,
+            client=self._client,
+        )
         self._owns_tokens = tokens is None
         self._connect = connect
         self._session_id_factory = session_id_factory or (
@@ -262,12 +267,6 @@ class DuckBasinClientMinter:
             with self._target_condition:
                 self._resolving_target = False
                 self._target_condition.notify_all()
-
-    def lake_status(self) -> Mapping[str, Any]:
-        lakes = self._authorized_get("/api/ducklakes/")
-        if not isinstance(lakes, list):
-            raise DuckBasinError("DuckBasin returned an invalid lake list")
-        return self._select_lake(lakes)
 
     def mint(
         self,
@@ -311,12 +310,21 @@ class DuckBasinClientMinter:
         return MintedDuckDB(
             connection=connection,
             session_id=session_id,
-            lake_id=horizontal.lake_id,
+            lake_slug=horizontal.lake_slug,
             catalogue_alias=horizontal.catalogue_alias,
             quack_uri=horizontal.quack_uri,
             token_generation=token.generation,
-            token_expires_at=token.expires_at,
         )
+
+    def connection_credentials_stale(self, minted: MintedDuckDB) -> bool:
+        """Return whether a connection predates the provider's current token."""
+
+        return self.tokens.get().generation != minted.token_generation
+
+    def invalidate_connection_credentials(self, minted: MintedDuckDB) -> None:
+        """Invalidate the token generation rejected by a remote connection."""
+
+        self.tokens.invalidate_generation(minted.token_generation)
 
     def close(self) -> None:
         if self._owns_tokens:
@@ -351,6 +359,7 @@ class DuckBasinClientMinter:
                 raise TypeError("disable_ssl is not a boolean")
             target = DuckBasinTarget(
                 lake_id=UUID(str(payload["id"])),
+                lake_slug=str(lake["slug"]),
                 catalogue_alias=str(payload["catalog_alias"]),
                 quack_uri=str(payload["quack_uri"]),
                 quack_scope=str(payload["secret_scope"]),
@@ -362,6 +371,8 @@ class DuckBasinClientMinter:
             ) from exc
         if target.lake_id != lake_id:
             raise DuckBasinError("DuckBasin connection target changed lake identity")
+        if not target.lake_slug:
+            raise DuckBasinError("DuckBasin returned an empty lake slug")
         target.horizontal("0" * _SESSION_HEX_LENGTH)
         return target
 
@@ -428,3 +439,15 @@ def _quote_literal(value: str) -> str:
 
 def _quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
+
+
+def is_quack_authorization_error(exc: BaseException) -> bool:
+    return "authorization failed" in str(exc).lower()
+
+
+def is_recoverable_quack_connection_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return (
+        "invalid connection id" in message
+        or "authorization failed" in message
+    )

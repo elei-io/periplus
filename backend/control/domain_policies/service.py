@@ -29,12 +29,29 @@ def _specificity(pattern: str) -> tuple[int, int]:
 
 
 def find_domain_policy_for_url(session: Session, *, url: str) -> DomainPolicy:
-    host = (urlparse(normalize_url(url)).hostname or "").lower()
+    return find_domain_policies_for_urls(session, urls=[url])[url]
+
+
+def find_domain_policies_for_urls(
+    session: Session, *, urls: list[str]
+) -> dict[str, DomainPolicy]:
     policies = list(session.scalars(select(DomainPolicy).where(DomainPolicy.enabled.is_(True))))
-    matches = [policy for policy in policies if _matches(host, policy.host_match)]
-    if not matches:
-        raise RuntimeError("Atlas has no enabled catch-all DomainPolicy; run deployment setup")
-    return max(matches, key=lambda policy: _specificity(policy.host_match))
+    result = {}
+    for url in urls:
+        host = (urlparse(normalize_url(url)).hostname or "").lower()
+        matches = [
+            policy
+            for policy in policies
+            if _matches(host, policy.host_match)
+        ]
+        if not matches:
+            raise RuntimeError(
+                "Atlas has no enabled catch-all DomainPolicy; run deployment setup"
+            )
+        result[url] = max(
+            matches, key=lambda policy: _specificity(policy.host_match)
+        )
+    return result
 
 
 def ensure_default_domain_policy(session: Session) -> DomainPolicy:

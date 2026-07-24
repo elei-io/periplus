@@ -1,4 +1,4 @@
-.PHONY: sync check setup catalogue-check catalogue-benchmark verify-remote-runtime resource-governor-smoke worker-independence-smoke worker-horizontal-smoke reliability-check docs-diagrams api acquisition-worker ingestion-worker catalogue-relay-worker materialization-worker housekeeping-worker cli db-revision compose-up compose-down
+.PHONY: sync check setup catalogue-check catalogue-benchmark verify-remote-runtime worker-independence-smoke worker-horizontal-smoke reliability-check docs-diagrams api acquisition-worker ingestion-worker catalogue-relay-worker materialization-worker housekeeping-worker cli db-revision compose-up compose-down
 
 sync:
 	cd backend && uv sync
@@ -19,9 +19,6 @@ catalogue-benchmark:
 verify-remote-runtime:
 	cd backend && uv run python scripts/verify_remote_runtime.py
 
-resource-governor-smoke:
-	cd backend && uv run python ../scripts/verify-resource-governor-reliability.py
-
 worker-independence-smoke:
 	cd backend && uv run python ../scripts/verify-worker-independence.py
 
@@ -30,7 +27,6 @@ worker-horizontal-smoke:
 
 reliability-check:
 	docker compose up -d --wait
-	$(MAKE) resource-governor-smoke
 	$(MAKE) worker-independence-smoke
 	$(MAKE) worker-horizontal-smoke
 

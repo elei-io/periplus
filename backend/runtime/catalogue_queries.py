@@ -8,7 +8,7 @@ from typing import Literal
 from uuid import UUID
 
 from config import get_float, get_int
-from config.performance import RESOURCE_STATE_REPLICAS
+from config.performance import OPERATIONAL_STATE_REPLICAS
 from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import (
     BadRequestError,
@@ -55,7 +55,7 @@ async def ensure_catalogue_query_storage(jetstream):
         ttl=get_float("ATLAS_QUACK_QUERY_STATE_TTL_SECONDS"),
         max_bytes=get_int("ATLAS_QUACK_QUERY_STATE_MAX_BYTES"),
         storage=StorageType.FILE,
-        replicas=RESOURCE_STATE_REPLICAS,
+        replicas=OPERATIONAL_STATE_REPLICAS,
     )
     try:
         bucket = await jetstream.key_value(CATALOGUE_QUERIES_BUCKET)

@@ -1,4 +1,16 @@
 export const catalogueTables = {
+  artifacts: [
+    "artifact_id",
+    "sha256",
+    "object_key",
+    "size_bytes",
+    "response_media_type",
+    "detected_media_type",
+    "detector_name",
+    "detector_version",
+    "detection_confidence",
+    "created_at",
+  ],
   documents: [
     "document_id",
     "html_sha256",

@@ -365,7 +365,13 @@ The seeded historical `views.page_links` relation stores `source_url_id` and `ta
 instead of repeating URL text; join both identities to `urls`. Its self-contained definition derives
 links from `crawls`, `urls`, and `elements`, and its placement under
 `fixtures/materialized_views/crawl/` activates a materialization driven by crawl-table ticks.
-The materialization worker creates and fully populates the backing relation,
+The materialization worker creates and fully populates an incarnation-named backing relation under
+`_atlas_materializations`, then replaces the public view with a thin wrapper over that private
+table. Public view names and physical table names are deliberately independent, so arbitrary
+user-created views cannot collide with their backing tables across schemas. Interactive reads fail
+fast while an intended materialization is creating, failed, blocked, or deleting instead of
+executing its potentially expensive source definition.
+The worker
 then replaces affected `crawl_id` groups after coalesced ticks. Ingestion also inserts newly discovered normalized targets into `urls`, so every link
 identity is resolvable. Historical graph edges never wait
 for either pipeline and may observe an incomplete recent materialization refresh at their pinned

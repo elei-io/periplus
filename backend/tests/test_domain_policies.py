@@ -9,7 +9,9 @@ from pydantic import ValidationError
 from control.domain_policies.schemas import DomainPolicyCreateRequest
 from control.domain_policies.service import DEFAULT_DOMAIN_POLICY_SLUG, find_domain_policy_for_url
 from runtime.domain_pacing import (
+    DomainCapacityUnavailable,
     DomainPacingState,
+    domain_permit,
     domain_backoff_seconds,
     record_domain_response,
     wait_for_domain_interval,
@@ -55,28 +57,74 @@ class DomainPolicyResolutionTests(unittest.TestCase):
 
 class FakeBucket:
     def __init__(self):
-        self.value = None
-        self.revision = 0
+        self.values = {}
+        self.revisions = {}
 
-    async def get(self, _key):
-        if self.value is None:
+    @property
+    def value(self):
+        return next(iter(self.values.values()), None)
+
+    async def get(self, key):
+        if key not in self.values:
             raise KeyNotFoundError
-        return SimpleNamespace(value=self.value, revision=self.revision)
+        return SimpleNamespace(
+            value=self.values[key],
+            revision=self.revisions[key],
+        )
 
-    async def create(self, _key, value):
-        if self.value is not None:
+    async def create(self, key, value):
+        if key in self.values:
             raise KeyWrongLastSequenceError
-        self.value = value
-        self.revision = 1
+        self.values[key] = value
+        self.revisions[key] = 1
 
-    async def update(self, _key, value, last):
-        if last != self.revision:
+    async def update(self, key, value, last):
+        if last != self.revisions.get(key):
             raise KeyWrongLastSequenceError
-        self.value = value
-        self.revision += 1
+        self.values[key] = value
+        self.revisions[key] += 1
 
 
 class DomainPacingTests(unittest.TestCase):
+    def test_concurrency_is_scoped_to_the_domain_key(self):
+        bucket = FakeBucket()
+
+        async def scenario():
+            first = domain_permit(
+                bucket,
+                domain="example.com",
+                concurrency=1,
+                acquire_timeout=0,
+            )
+            await first.__aenter__()
+            try:
+                with self.assertRaises(DomainCapacityUnavailable):
+                    async with domain_permit(
+                        bucket,
+                        domain="example.com",
+                        concurrency=1,
+                        acquire_timeout=0,
+                    ):
+                        pass
+                async with domain_permit(
+                    bucket,
+                    domain="other.example",
+                    concurrency=1,
+                    acquire_timeout=0,
+                ):
+                    pass
+            finally:
+                await first.__aexit__(None, None, None)
+            async with domain_permit(
+                bucket,
+                domain="example.com",
+                concurrency=1,
+                acquire_timeout=0,
+            ):
+                pass
+
+        asyncio.run(scenario())
+
     def test_reservations_serialize_the_minimum_interval(self):
         bucket = FakeBucket()
 

@@ -2,55 +2,17 @@ from __future__ import annotations
 
 import unittest
 from unittest.mock import MagicMock, call, patch
-from uuid import UUID
 
 import duckdb
 import psycopg
 
 from repository.catalogue.operations import (
-    _advisory_key,
     is_retryable_catalogue_unavailability,
-    operation_locks,
-    repository_commit_lock,
     run_with_catalogue_retry,
 )
 
 
-class CatalogueOperationLockTests(unittest.TestCase):
-    def test_operation_locks_use_sorted_deduplicated_postgres_keys(self) -> None:
-        with patch(
-            "repository.catalogue.operations._advisory_locks"
-        ) as locks:
-            locks.return_value.__enter__.return_value = None
-            with operation_locks(MagicMock(), ("second", "first", "first")):
-                pass
-
-        self.assertEqual(
-            locks.call_args.args[0],
-            [
-                _advisory_key("operation", "first"),
-                _advisory_key("operation", "second"),
-            ],
-        )
-
-    def test_repository_batch_fences_each_identity(self) -> None:
-        crawl_ids = [UUID(int=value) for value in range(1, 4)]
-        content_ids = ["content-b", "content-a"]
-        url_ids = ["url-b", "url-a"]
-        with patch(
-            "repository.catalogue.operations._advisory_locks"
-        ) as locks:
-            locks.return_value.__enter__.return_value = None
-            with repository_commit_lock(
-                MagicMock(),
-                crawl_ids=crawl_ids,
-                content_ids=content_ids,
-                url_ids=url_ids,
-            ):
-                pass
-
-        self.assertEqual(len(locks.call_args.args[0]), 7)
-
+class CatalogueOperationRetryTests(unittest.TestCase):
     def test_control_plane_outage_is_retryable_unavailability(self) -> None:
         self.assertTrue(
             is_retryable_catalogue_unavailability(

@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
+from uuid import UUID
 
 import zstandard
 
-from repository.objects.store import ObjectStore
+from repository.objects.store import ObjectStore, ObjectWriteHeaders
 from repository.exceptions import RepositoryIntegrityError
 
 
@@ -68,6 +70,10 @@ class RawHtmlRepository:
         self,
         captured_html: str,
         *,
+        source_url: str,
+        crawl_id: UUID,
+        captured_at: datetime,
+        content_type: str,
         identity: HtmlIdentity | None = None,
         chunk_chars: int = 1_048_576,
     ) -> StoredHtml:
@@ -92,7 +98,19 @@ class RawHtmlRepository:
                     )
             compressed_size = compressed.tell()
             compressed.seek(0)
-            created = self.store.put_if_absent(key, compressed)
+            created = self.store.put_if_absent(
+                key,
+                compressed,
+                headers=ObjectWriteHeaders(
+                    content_type=f"{content_type}; charset=utf-8",
+                    content_encoding="zstd",
+                    metadata={
+                        "url": source_url,
+                        "crawl-id": str(crawl_id),
+                        "captured-at": captured_at.isoformat(),
+                    },
+                ),
+            )
         return StoredHtml(
             sha256=identity.sha256,
             object_key=key,

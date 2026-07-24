@@ -22,6 +22,7 @@ from nats.js.errors import (
     KeyDeletedError,
     KeyNotFoundError,
     KeyWrongLastSequenceError,
+    NotFoundError,
 )
 from pydantic import BaseModel, ConfigDict, model_validator
 import zstandard
@@ -208,11 +209,17 @@ def repository_consumer_config() -> ConsumerConfig:
 
 
 async def ensure_repository_consumer(jetstream) -> None:
-    """Create or reconcile the writer consumer, then verify its safety contract."""
+    """Create the writer consumer if absent, then verify its safety contract."""
 
     expected = repository_consumer_config()
-    await jetstream.add_consumer(STREAM, config=expected)
-    info = await jetstream.consumer_info(STREAM, DURABLE)
+    try:
+        info = await jetstream.consumer_info(STREAM, DURABLE)
+    except NotFoundError:
+        try:
+            info = await jetstream.add_consumer(STREAM, config=expected)
+        except BadRequestError:
+            # Concurrent ingestion lanes may race only on first deployment.
+            info = await jetstream.consumer_info(STREAM, DURABLE)
     config = info.config
     mismatches: list[str] = []
     if config.ack_policy != AckPolicy.EXPLICIT:

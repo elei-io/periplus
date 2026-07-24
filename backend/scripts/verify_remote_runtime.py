@@ -80,7 +80,6 @@ def drop_probe(catalogue, table_name: str) -> None:
 
 async def verify(wait_seconds: float) -> dict[str, object]:
     from catalogue_relay.executor import BasinDDLEvent, BasinDMLTick
-    from config import get_str
     from repository.catalogue import catalogue_from_env
     from runtime.catalogue_events import basin_ddl_subject, basin_dml_subject
     from runtime.catalogue_workers import ensure_catalogue_worker_storage
@@ -97,14 +96,14 @@ async def verify(wait_seconds: float) -> dict[str, object]:
         entry = await bucket.get(key)
         await bucket.purge(key)
 
-        lake = get_str("DUCKBASIN_LAKE")
+        catalogue = await asyncio.to_thread(catalogue_from_env)
+        lake = catalogue.lake_slug
         ddl_subject = basin_ddl_subject(lake)
         dml_subject = basin_dml_subject(lake)
         basin_js = basin.jetstream()
         ddl_before = await stream_state(basin_js, ddl_subject)
         dml_before = await stream_state(basin_js, dml_subject)
 
-        catalogue = await asyncio.to_thread(catalogue_from_env)
         await asyncio.to_thread(create_probe, catalogue, table_name)
         ddl_after, dml_after = await asyncio.gather(
             wait_for_advance(

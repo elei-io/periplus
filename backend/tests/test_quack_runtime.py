@@ -9,6 +9,7 @@ from unittest.mock import patch
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import duckdb
 from nats.js.errors import (
     KeyDeletedError,
     KeyNotFoundError,
@@ -21,6 +22,7 @@ from repository.catalogue.quack_runtime import (
     QuackQueryRuntime,
     QuackRuntimeConfig,
     _BoundedArrowStream,
+    _QuackSlot,
 )
 from repository.catalogue.query import CatalogueStatementKind
 from runtime.catalogue_queries import (
@@ -30,9 +32,13 @@ from runtime.catalogue_queries import (
 )
 
 
-def _config(root: Path) -> QuackRuntimeConfig:
+def _config(
+    root: Path,
+    *,
+    catalogue_alias: str = "atlas",
+) -> QuackRuntimeConfig:
     return QuackRuntimeConfig(
-        catalogue_alias="atlas",
+        catalogue_alias=catalogue_alias,
         catalogue_schema="main",
         catalogue_schema_version="test",
         maximum_concurrency=2,
@@ -105,8 +111,63 @@ class FakeSlot:
     async def submit(self, operation):
         return operation()
 
+    async def run(self, operation):
+        return operation(self.connection)
+
     def interrupt(self) -> None:
         self.interrupted = True
+
+
+class FakeQuackConnection:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.closed = False
+        self.failure_once: str | None = None
+
+    def execute(self, sql: str):
+        self.calls.append(sql)
+        if self.failure_once is not None:
+            message = self.failure_once
+            self.failure_once = None
+            raise duckdb.InvalidInputException(message)
+        return self
+
+    def close(self) -> None:
+        self.closed = True
+
+    def interrupt(self) -> None:
+        return
+
+
+class FakeQuackMinter:
+    def __init__(self) -> None:
+        self.current_token_generation = 1
+        self.connections: list[FakeQuackConnection] = []
+        self.invalidated_generations: list[int] = []
+
+    def target(self):
+        return SimpleNamespace(catalogue_alias="basin_catalogue")
+
+    def mint(self):
+        connection = FakeQuackConnection()
+        self.connections.append(connection)
+        return SimpleNamespace(
+            connection=connection,
+            session_id=f"{len(self.connections):016x}",
+            lake_slug="atlas",
+            catalogue_alias="basin_catalogue",
+            quack_uri=f"quack:session-{len(self.connections)}",
+            token_generation=self.current_token_generation,
+            close=connection.close,
+        )
+
+    def connection_credentials_stale(self, minted) -> bool:
+        return minted.token_generation != self.current_token_generation
+
+    def invalidate_connection_credentials(self, minted) -> None:
+        self.invalidated_generations.append(minted.token_generation)
+        if minted.token_generation == self.current_token_generation:
+            self.current_token_generation += 1
 
 
 class QuackRuntimeTests(unittest.TestCase):
@@ -115,7 +176,6 @@ class QuackRuntimeTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "DUCKBASIN_LAKE": "atlas",
                     "ATLAS_QUACK_MAX_CONCURRENCY": "2",
                     "ATLAS_QUACK_POOL_WAIT_SECONDS": "1",
                     "ATLAS_QUACK_QUERY_TIMEOUT_SECONDS": "10",
@@ -127,7 +187,7 @@ class QuackRuntimeTests(unittest.TestCase):
             ):
                 config = QuackRuntimeConfig.from_env()
 
-        runtime = QuackQueryRuntime(object(), object(), config=config)
+        runtime = QuackQueryRuntime(object(), config=config)
         request = SimpleNamespace(
             app=SimpleNamespace(state=SimpleNamespace(quack_runtime=runtime))
         )
@@ -135,6 +195,7 @@ class QuackRuntimeTests(unittest.TestCase):
         public = response.model_dump()
 
         self.assertEqual(response.transport, "api")
+        self.assertEqual(config.catalogue_alias, "")
         self.assertEqual(response.mutation_policy, "read_only")
         self.assertNotIn("uri", public)
         self.assertNotIn("token", public)
@@ -155,20 +216,63 @@ class QuackRuntimeTests(unittest.TestCase):
     def test_errors_are_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = _config(Path(temp_dir))
-            runtime = QuackQueryRuntime(object(), object(), config=config)
+            runtime = QuackQueryRuntime(object(), config=config)
             message = runtime.safe_error(RuntimeError("x" * 3_000))
 
         self.assertEqual(len(message), 2_000)
+
+
+class QuackSlotCredentialTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stale_pool_slot_is_reminted_before_the_next_query(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            minter = FakeQuackMinter()
+            config = _config(
+                Path(temp_dir),
+                catalogue_alias="basin_catalogue",
+            )
+            slot = _QuackSlot(0, config, minter)  # type: ignore[arg-type]
+            await slot.open()
+            original = minter.connections[0]
+            minter.current_token_generation = 2
+
+            await slot.run(lambda connection: connection.execute("SELECT 1"))
+            await slot.close()
+
+        self.assertTrue(original.closed)
+        self.assertEqual(len(minter.connections), 2)
+        self.assertEqual(
+            minter.connections[1].calls,
+            ['USE "basin_catalogue"."main"', "SELECT 1"],
+        )
+
+    async def test_authorization_failure_refreshes_an_idle_pool_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            minter = FakeQuackMinter()
+            config = _config(
+                Path(temp_dir),
+                catalogue_alias="basin_catalogue",
+            )
+            slot = _QuackSlot(0, config, minter)  # type: ignore[arg-type]
+            await slot.open()
+            minter.connections[0].failure_once = "Authorization failed"
+
+            await slot.run(lambda connection: connection.execute("SELECT 1"))
+            await slot.close()
+
+        self.assertEqual(minter.invalidated_generations, [1])
+        self.assertEqual(len(minter.connections), 2)
+        self.assertEqual(
+            minter.connections[1].calls,
+            ['USE "basin_catalogue"."main"', "SELECT 1"],
+        )
 
 
 class QuackQueryLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_success_updates_durable_state_and_releases_capacity(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             query_bucket = FakeBucket()
-            resource_bucket = FakeBucket()
             runtime = QuackQueryRuntime(
                 query_bucket,
-                resource_bucket,
                 config=_config(Path(temp_dir)),
             )
             slot = FakeSlot()
@@ -223,7 +327,6 @@ class QuackQueryLifecycleTests(unittest.IsolatedAsyncioTestCase):
             query_bucket = FakeBucket()
             runtime = QuackQueryRuntime(
                 query_bucket,
-                FakeBucket(),
                 config=_config(Path(temp_dir)),
             )
             slot = FakeSlot()
@@ -261,7 +364,6 @@ class QuackQueryLifecycleTests(unittest.IsolatedAsyncioTestCase):
             query_bucket = FakeBucket()
             runtime = QuackQueryRuntime(
                 query_bucket,
-                FakeBucket(),
                 config=_config(Path(temp_dir)),
             )
             slot = FakeSlot()

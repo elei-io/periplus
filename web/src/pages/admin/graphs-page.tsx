@@ -1,6 +1,7 @@
 import {
   GitForkIcon,
   LoaderCircleIcon,
+  PauseIcon,
   PlayIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -42,6 +43,8 @@ import {
   useActiveGraphRuns,
   useCancelGraphRun,
   useGraphRun,
+  usePauseGraphRun,
+  useResumeGraphRun,
   useSetCrawlGraphRoot,
   useTriggerCrawlGraph,
 } from "@/hooks/use-crawl-graphs"
@@ -218,6 +221,8 @@ function GraphDetail({
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const runQuery = useGraphRun(activeRunId)
   const cancelRun = useCancelGraphRun()
+  const pauseRun = usePauseGraphRun()
+  const resumeRun = useResumeGraphRun()
   const announcedRuns = useRef(new Set<string>())
 
   useEffect(() => {
@@ -234,6 +239,7 @@ function GraphDetail({
       !run ||
       run.status === "queued" ||
       run.status === "running" ||
+      run.status === "paused" ||
       announcedRuns.current.has(run.id)
     )
       return
@@ -309,13 +315,34 @@ function GraphDetail({
             </Select>
           ) : null}
           {activeRunId ? (
-            <Button
-              variant="outline"
-              disabled={cancelRun.isPending}
-              onClick={() => cancelRun.mutate(activeRunId)}
-            >
-              Cancel
-            </Button>
+            <>
+              {runQuery.data?.status === "paused" ? (
+                <Button
+                  variant="outline"
+                  disabled={resumeRun.isPending}
+                  onClick={() => resumeRun.mutate(activeRunId)}
+                >
+                  <PlayIcon />
+                  Resume
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  disabled={pauseRun.isPending}
+                  onClick={() => pauseRun.mutate(activeRunId)}
+                >
+                  <PauseIcon />
+                  Pause
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                disabled={cancelRun.isPending}
+                onClick={() => cancelRun.mutate(activeRunId)}
+              >
+                Cancel
+              </Button>
+            </>
           ) : null}
           <Button variant="outline" disabled={isRefreshing} onClick={onRefresh}>
             <RefreshCwIcon />
@@ -643,6 +670,7 @@ function RunGraphButton({
   const trigger = useTriggerCrawlGraph(graph.id)
   const [urlsText, setUrlsText] = useState("")
   const [maxCrawls, setMaxCrawls] = useState("1000")
+  const [maxRunDays, setMaxRunDays] = useState("7")
   const [open, setOpen] = useState(false)
 
   const run = () => {
@@ -659,8 +687,17 @@ function RunGraphButton({
       toast.error("Maximum crawls must be at least the number of root URLs.")
       return
     }
+    const runDays = Number(maxRunDays)
+    if (!Number.isInteger(runDays) || runDays < 1 || runDays > 365) {
+      toast.error("Maximum run duration must be between 1 and 365 days.")
+      return
+    }
     trigger.mutate(
-      { urls, max_crawls: crawlBudget },
+      {
+        urls,
+        max_crawls: crawlBudget,
+        max_run_seconds: runDays * 24 * 60 * 60,
+      },
       {
         onSuccess: (submission) => {
           toast.success(`Graph run ${submission.run_id} queued.`)
@@ -702,6 +739,19 @@ function RunGraphButton({
           />
           <p className="text-xs text-muted-foreground">
             Stops admitting new URLs when this run reaches its budget.
+          </p>
+        </div>
+        <div className="space-y-1.5">
+          <p className="text-sm font-medium">Maximum run duration (days)</p>
+          <Input
+            min={1}
+            max={365}
+            type="number"
+            value={maxRunDays}
+            onChange={(event) => setMaxRunDays(event.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            The persisted deadline survives worker and service restarts.
           </p>
         </div>
         <DialogFooter>

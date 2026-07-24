@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from api.catalogue_control import CatalogueControl, get_catalogue_control
+from api.graph_runtime import ApiGraphRuntime, get_graph_runtime
 from api.graph_submission import submit_graph_run
 from api.routers.graph_runs import GraphRunSubmission
 from control.crawl_graphs.service import (
@@ -213,11 +214,13 @@ async def run_now(
     schedule_id: UUID,
     session: Annotated[Session, Depends(get_session)],
     control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
+    runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
 ) -> GraphRunSubmission:
     try:
         schedule = get_schedule(session, graph_id, schedule_id)
         run = await submit_graph_run(
             session,
+            runtime=runtime,
             graph_id=graph_id,
             urls=list(schedule.root_urls),
             catalogue_snapshot_resolver=control.latest_snapshot,

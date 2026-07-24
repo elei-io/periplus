@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 import unittest
+from unittest.mock import AsyncMock
 
-from nats.js.api import KeyValueConfig, StorageType, StreamConfig
+from nats.js.api import ConsumerConfig, KeyValueConfig, StorageType, StreamConfig
+from nats.js.errors import NotFoundError
 
-from runtime.graph_queue import _bucket
+from runtime.graph_queue import _bucket, _ensure_consumer
 
 
 class FakeBucket:
@@ -31,6 +33,39 @@ class FakeJetStream:
 
 
 class GraphQueueStorageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_existing_durable_consumer_is_not_reconfigured(self) -> None:
+        expected = ConsumerConfig(durable_name="existing")
+        existing = SimpleNamespace(config=expected)
+        jetstream = SimpleNamespace(
+            consumer_info=AsyncMock(return_value=existing),
+            add_consumer=AsyncMock(),
+        )
+
+        returned = await _ensure_consumer(jetstream, expected)
+
+        self.assertIs(returned, existing)
+        jetstream.consumer_info.assert_awaited_once_with(
+            "ATLAS_GRAPH_WORK",
+            "existing",
+        )
+        jetstream.add_consumer.assert_not_awaited()
+
+    async def test_missing_durable_consumer_is_created_once(self) -> None:
+        expected = ConsumerConfig(durable_name="missing")
+        created = SimpleNamespace(config=expected)
+        jetstream = SimpleNamespace(
+            consumer_info=AsyncMock(side_effect=NotFoundError()),
+            add_consumer=AsyncMock(return_value=created),
+        )
+
+        returned = await _ensure_consumer(jetstream, expected)
+
+        self.assertIs(returned, created)
+        jetstream.add_consumer.assert_awaited_once_with(
+            "ATLAS_GRAPH_WORK",
+            config=expected,
+        )
+
     async def test_bucket_rejects_an_unbounded_contract(self) -> None:
         actual = StreamConfig(
             name="KV_atlas_graph_workers",
@@ -53,7 +88,7 @@ class GraphQueueStorageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_existing_bucket_adopts_bounded_retention(self) -> None:
         actual = StreamConfig(
-            name="KV_atlas_graph_runs",
+            name="KV_atlas_graph_workers",
             max_msgs_per_subject=1,
             max_age=0,
             max_bytes=256,
@@ -66,7 +101,7 @@ class GraphQueueStorageTests(unittest.IsolatedAsyncioTestCase):
         returned = await _bucket(
             jetstream,
             KeyValueConfig(
-                bucket="atlas_graph_runs",
+                bucket="atlas_graph_workers",
                 history=1,
                 ttl=60,
                 max_bytes=512,

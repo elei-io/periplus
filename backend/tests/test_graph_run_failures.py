@@ -70,20 +70,12 @@ class GraphRunFailureApiTests(unittest.TestCase):
                     ),
                 ),
             )
-            client = SimpleNamespace(drain=AsyncMock())
-            with (
-                patch(
-                    "api.routers.graph_runs._storage",
-                    AsyncMock(
-                        return_value=(client, object(), object(), object())
-                    ),
-                ),
-                patch(
-                    "api.routers.graph_runs.get_graph_run",
-                    AsyncMock(return_value=run),
-                ),
+            runtime = SimpleNamespace(runs=object())
+            with patch(
+                "api.routers.graph_runs.get_graph_run",
+                AsyncMock(return_value=run),
             ):
-                result = await failure_summary(uuid4())
+                result = await failure_summary(uuid4(), runtime)
 
             self.assertEqual(result.total, 4)
             self.assertEqual(len(result.items), 2)
@@ -94,8 +86,6 @@ class GraphRunFailureApiTests(unittest.TestCase):
                 result.items[0].example_url,
                 "https://example.com/unavailable",
             )
-            client.drain.assert_awaited_once_with()
-
         asyncio.run(scenario())
 
 

@@ -1,78 +1,22 @@
-"""Cooperative fencing for deterministic DuckLake write operations."""
+"""Bounded retry classification for deterministic DuckLake operations."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
-from contextlib import contextmanager
-import hashlib
+from collections.abc import Callable
 import logging
 import time
-from typing import Callable, TypeVar
-from uuid import UUID
+from typing import TypeVar
 
 import duckdb
 import psycopg
 
-from config import get_str
 from config.performance import (
-    CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS,
     CATALOGUE_OPERATION_MAX_ATTEMPTS,
     CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS,
     CATALOGUE_OPERATION_RETRY_MAX_SECONDS,
 )
-from repository.catalogue.client import Catalogue
 
 _T = TypeVar("_T")
-
-
-@contextmanager
-def operation_lock(catalogue: Catalogue, operation_id: str) -> Iterator[None]:
-    """Fence identity resolution and commit across DuckLake writer processes."""
-
-    with operation_locks(catalogue, (operation_id,)):
-        yield
-
-
-@contextmanager
-def operation_locks(
-    catalogue: Catalogue, operation_ids: Iterable[str]
-) -> Iterator[None]:
-    """Fence independent identities in Atlas's remote control-plane Postgres."""
-
-    keys = [
-        _advisory_key("operation", operation_id)
-        for operation_id in sorted(set(operation_ids))
-    ]
-    with _advisory_locks(keys):
-        yield
-
-
-@contextmanager
-def repository_commit_lock(
-    catalogue: Catalogue,
-    *,
-    crawl_ids: Sequence[UUID],
-    content_ids: Sequence[str],
-    url_ids: Sequence[str],
-) -> Iterator[None]:
-    """Fence every independently overlapping identity in one repository batch."""
-
-    keys = [
-        *(
-            _advisory_key("crawl", str(crawl_id))
-            for crawl_id in sorted(set(crawl_ids), key=str)
-        ),
-        *(
-            _advisory_key("content", content_id)
-            for content_id in sorted(set(content_ids))
-        ),
-        *(
-            _advisory_key("url", url_id)
-            for url_id in sorted(set(url_ids))
-        ),
-    ]
-    with _advisory_locks(keys):
-        yield
 
 
 def is_retryable_catalogue_unavailability(exc: BaseException) -> bool:
@@ -114,24 +58,3 @@ def run_with_catalogue_retry(
             time.sleep(delay)
             delay = min(maximum_delay, max(delay * 2, 0.001))
     raise AssertionError("unreachable")
-
-
-@contextmanager
-def _advisory_locks(keys: Sequence[int]) -> Iterator[None]:
-    with psycopg.connect(get_str("DATABASE_URL")) as connection:
-        with connection.transaction():
-            connection.execute(
-                "SELECT set_config('lock_timeout', %s, true)",
-                [f"{CATALOGUE_OPERATION_LOCK_TIMEOUT_SECONDS}s"],
-            )
-            for key in sorted(set(keys)):
-                connection.execute("SELECT pg_advisory_xact_lock(%s)", [key])
-            yield
-
-
-def _advisory_key(kind: str, identity: str) -> int:
-    digest = hashlib.blake2b(
-        f"atlas\\0{kind}\\0{identity}".encode(),
-        digest_size=8,
-    ).digest()
-    return int.from_bytes(digest, byteorder="big", signed=True)

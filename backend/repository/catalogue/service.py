@@ -12,7 +12,6 @@ from uuid import UUID
 
 from repository.catalogue.client import Catalogue
 from repository.catalogue.exceptions import CatalogueConflictError, CatalogueValidationError
-from repository.catalogue.operations import repository_commit_lock
 from repository.catalogue.records import (
     ArtifactRecord,
     CatalogueWriteResult,
@@ -39,6 +38,15 @@ class CatalogueBatchEntry:
     replace_projection: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ExistingCatalogueIdentities:
+    """Immutable catalogue identities confirmed present before commit fencing."""
+
+    urls: frozenset[str] = frozenset()
+    documents: frozenset[str] = frozenset()
+    artifacts: frozenset[str] = frozenset()
+
+
 class CatalogueService:
     """The only application boundary for Atlas catalogue reads and writes."""
 
@@ -51,33 +59,6 @@ class CatalogueService:
     ) -> list[CatalogueWriteResult]:
         """Commit a microbatch with one append per logical DuckLake table."""
 
-        content_ids = sorted(
-            {
-                identity
-                for entry in entries
-                for identity in (entry.crawl.document_id, entry.crawl.artifact_id)
-                if identity is not None
-            }
-        )
-        url_ids = sorted(
-            {
-                url.url_id
-                for entry in entries
-                for url in entry.urls
-            }
-        )
-        with repository_commit_lock(
-            self.catalogue,
-            crawl_ids=[entry.crawl.crawl_id for entry in entries],
-            content_ids=content_ids,
-            url_ids=url_ids,
-        ):
-            return self._record_crawl_batch_unfenced(entries)
-
-    def _record_crawl_batch_unfenced(
-        self,
-        entries: Sequence[CatalogueBatchEntry],
-    ) -> list[CatalogueWriteResult]:
         if not entries:
             return []
         new_documents: dict[str, DocumentRecord] = {}
@@ -417,6 +398,68 @@ class CatalogueService:
         )
         row = _one_or_none(rows, identity=f"artifact_id {artifact_id!r}")
         return ArtifactRecord.model_validate(row) if row is not None else None
+
+    def preflight_existing_identities(
+        self,
+        *,
+        url_ids: Sequence[str],
+        document_ids: Sequence[str],
+        artifact_ids: Sequence[str],
+    ) -> ExistingCatalogueIdentities:
+        """Resolve existing immutable identities in one bounded DuckLake scan."""
+
+        requested = {
+            "url": (
+                "urls",
+                "url_id",
+                list(dict.fromkeys(url_ids)),
+            ),
+            "document": (
+                "documents",
+                "document_id",
+                list(dict.fromkeys(document_ids)),
+            ),
+            "artifact": (
+                "artifacts",
+                "artifact_id",
+                list(dict.fromkeys(artifact_ids)),
+            ),
+        }
+        branches: list[str] = []
+        for kind, (table_name, column_name, values) in requested.items():
+            if not values:
+                continue
+            requested_values = ", ".join(
+                f"({_sql_literal(value)})" for value in values
+            )
+            branches.append(
+                f"SELECT '{kind}' AS identity_kind, "
+                f"stored.{column_name} AS identity_value "
+                f"FROM {self._table(table_name)} AS stored "
+                f"JOIN (VALUES {requested_values}) AS requested(value) "
+                f"ON requested.value = stored.{column_name}"
+            )
+        if not branches:
+            return ExistingCatalogueIdentities()
+
+        rows = self.catalogue.remote_rows(" UNION ALL ".join(branches))
+        existing: dict[str, set[str]] = {
+            "url": set(),
+            "document": set(),
+            "artifact": set(),
+        }
+        for kind, value in rows:
+            identity_kind = str(kind)
+            if identity_kind not in existing:
+                raise CatalogueValidationError(
+                    f"unexpected preflight identity kind {identity_kind!r}"
+                )
+            existing[identity_kind].add(str(value))
+        return ExistingCatalogueIdentities(
+            urls=frozenset(existing["url"]),
+            documents=frozenset(existing["document"]),
+            artifacts=frozenset(existing["artifact"]),
+        )
 
     def get_urls(self, url_ids: Sequence[str]) -> dict[str, UrlRecord]:
         rows = self._lookup_rows_by_identity("urls", "url_id", url_ids)

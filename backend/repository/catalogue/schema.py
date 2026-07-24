@@ -5,7 +5,7 @@ from __future__ import annotations
 from dom.schema import ELEMENT_COLUMNS
 from schema_types import ColumnDef
 
-CATALOGUE_SCHEMA_VERSION = "v0.1.0"
+CATALOGUE_SCHEMA_VERSION = "v0.2.0"
 INTERNAL_SCHEMA = "_atlas"
 CRAWL_STEPS_TABLE = "crawl_steps"
 CRAWL_ATTEMPTS_TABLE = "crawl_attempts"
@@ -26,6 +26,11 @@ ARTIFACT_COLUMNS: dict[str, ColumnDef] = {
     "sha256": ColumnDef("VARCHAR", nullable=False),
     "object_key": ColumnDef("VARCHAR", nullable=False),
     "size_bytes": ColumnDef("BIGINT", nullable=False),
+    "response_media_type": ColumnDef("VARCHAR", nullable=False),
+    "detected_media_type": ColumnDef("VARCHAR", nullable=False),
+    "detector_name": ColumnDef("VARCHAR", nullable=False),
+    "detector_version": ColumnDef("VARCHAR", nullable=False),
+    "detection_confidence": ColumnDef("DOUBLE", nullable=False),
     "created_at": ColumnDef("TIMESTAMPTZ", nullable=False),
 }
 

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import logging
 import os
 from types import SimpleNamespace
+from collections.abc import Callable
 from uuid import UUID
 
 from nats.errors import TimeoutError as NatsTimeoutError
@@ -14,7 +15,7 @@ from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 from nats.js.errors import NotFoundError
 from sqlalchemy import select
 
-from config import get_float, get_int
+from config import get_float
 from config.performance import materialization_duckdb_memory_limit
 from control.catalogue_materializations.models import CatalogueMaterialization
 from control.catalogue_views.models import CatalogueViewReference
@@ -25,6 +26,7 @@ from repository.catalogue.materializations import (
     MaterializationError,
     MaterializationSchemaChangeError,
     MaterializationStore,
+    physical_materialization_name,
 )
 from repository.catalogue.views import CatalogueViewStore
 from repository.ingestion.health import HealthMonitor
@@ -47,43 +49,53 @@ from runtime.operation_leases import (
     ensure_operation_lease_storage,
     operation_leases,
 )
-from runtime.resource_governor import (
-    DURABLE_RESOURCE_WAIT,
-    catalogue_request,
-    ensure_resource_governor_storage,
-    object_units,
-    resource_permits,
-)
 from workers.lifecycle import cancel_task
 
 
+class MaterializationControlChanged(RuntimeError):
+    """The Postgres definition changed while remote work was in flight."""
+
+
 async def run(
-    initialized: asyncio.Event | None = None, monitor: HealthMonitor | None = None
+    initialized: asyncio.Event | None = None,
+    monitor: HealthMonitor | None = None,
+    *,
+    lane_index: int = 0,
+    lane_count: int = 1,
+    definition_provider: Callable[
+        [int, int], list[SimpleNamespace]
+    ] | None = None,
+    definitions_ready: asyncio.Event | None = None,
 ) -> None:
     client = await connect_nats()
     jetstream = client.jetstream()
     await ensure_catalogue_event_stream(jetstream)
     leases = await ensure_operation_lease_storage(jetstream)
-    resources = await ensure_resource_governor_storage(jetstream)
     workers = await ensure_catalogue_worker_storage(jetstream)
-    ddl_subscription = await jetstream.pull_subscribe(
-        DDL_SUBJECT,
-        durable=DDL_RECONCILER_DURABLE,
-        stream=EVENT_STREAM,
-        config=ConsumerConfig(
-            durable_name=DDL_RECONCILER_DURABLE,
-            deliver_policy=DeliverPolicy.ALL,
-            ack_policy=AckPolicy.EXPLICIT,
-            ack_wait=60,
-            max_ack_pending=100,
-            filter_subject=DDL_SUBJECT,
-        ),
+    ddl_subscription = (
+        await jetstream.pull_subscribe(
+            DDL_SUBJECT,
+            durable=DDL_RECONCILER_DURABLE,
+            stream=EVENT_STREAM,
+            config=ConsumerConfig(
+                durable_name=DDL_RECONCILER_DURABLE,
+                deliver_policy=DeliverPolicy.ALL,
+                ack_policy=AckPolicy.EXPLICIT,
+                ack_wait=60,
+                max_ack_pending=100,
+                filter_subject=DDL_SUBJECT,
+            ),
+        )
+        if lane_index == 0
+        else None
     )
     catalogue = await asyncio.to_thread(
         catalogue_from_env,
         memory_limit=materialization_duckdb_memory_limit(),
     )
     subscriptions: dict[UUID, object] = {}
+    pulls: dict[UUID, asyncio.Task] = {}
+    ddl_pull: asyncio.Task | None = None
     stop = asyncio.Event()
     active_operation_count = [0]
     if monitor is not None:
@@ -94,7 +106,9 @@ async def run(
     presence_task = asyncio.create_task(
         catalogue_worker_presence(
             workers,
-            worker_id=f"materialization:{os.uname().nodename}:{os.getpid()}",
+            worker_id=(
+                f"materialization:{os.uname().nodename}:{os.getpid()}:{lane_index}"
+            ),
             capability="materialization",
             started_at=datetime.now(UTC),
             active_operation_count=lambda: active_operation_count[0],
@@ -104,24 +118,49 @@ async def run(
         )
     )
     try:
+        if definitions_ready is not None:
+            await definitions_ready.wait()
         while True:
-            ddl_worked = await _reconcile_ddl(ddl_subscription)
-            definitions = await asyncio.to_thread(_active_definitions)
+            worked = False
+            if ddl_pull is not None and ddl_pull.done():
+                try:
+                    ddl_messages = ddl_pull.result()
+                except (NatsTimeoutError, TimeoutError):
+                    ddl_messages = []
+                ddl_pull = None
+                worked = await _apply_ddl_messages(ddl_messages) or worked
+            if ddl_subscription is not None and ddl_pull is None:
+                ddl_pull = asyncio.create_task(
+                    ddl_subscription.fetch(batch=100, timeout=60),
+                    name="materialization-ddl-pull",
+                )
+            definitions = (
+                definition_provider(lane_index, lane_count)
+                if definition_provider is not None
+                else await asyncio.to_thread(
+                    _active_definitions,
+                    lane_index=lane_index,
+                    lane_count=lane_count,
+                )
+            )
             active_ids = {item.id for item in definitions}
+            for materialization_id in set(pulls).difference(active_ids):
+                pulls.pop(materialization_id).cancel()
             subscriptions = {
                 key: value for key, value in subscriptions.items() if key in active_ids
             }
-            worked = ddl_worked
             for definition in definitions:
                 try:
                     if definition.desired_state == "deleting":
+                        pull = pulls.pop(definition.id, None)
+                        if pull is not None:
+                            pull.cancel()
                         await _tracked_operation(
                             active_operation_count,
                             _delete_one(
                                 jetstream,
                                 catalogue,
                                 leases,
-                                resources,
                                 definition,
                             ),
                         )
@@ -133,13 +172,15 @@ async def run(
                         subscription = await _subscription(jetstream, definition)
                         subscriptions[definition.id] = subscription
                     if definition.observed_state == "creating":
+                        pull = pulls.pop(definition.id, None)
+                        if pull is not None:
+                            pull.cancel()
                         worked = (
                             await _tracked_operation(
                                 active_operation_count,
                                 _bootstrap_one(
                                     catalogue,
                                     leases,
-                                    resources,
                                     definition.id,
                                 ),
                             )
@@ -147,6 +188,9 @@ async def run(
                         )
                         continue
                     if definition.desired_state == "paused":
+                        pull = pulls.pop(definition.id, None)
+                        if pull is not None:
+                            pull.cancel()
                         await asyncio.to_thread(
                             _mark_observed, definition.id, "paused"
                         )
@@ -158,19 +202,37 @@ async def run(
                         worked = True
                         continue
                     if definition.observed_state in {"blocked_schema", "failed"}:
+                        pull = pulls.pop(definition.id, None)
+                        if pull is not None:
+                            pull.cancel()
                         continue
-                    worked = (
-                        await _refresh_from_ticks(
-                            active_operation_count,
-                            catalogue,
-                            leases,
-                            resources,
-                            subscription,
-                            definition,
+                    pull = pulls.get(definition.id)
+                    if pull is not None and pull.done():
+                        pulls.pop(definition.id)
+                        try:
+                            messages = pull.result()
+                        except (NatsTimeoutError, TimeoutError):
+                            messages = []
+                        if messages:
+                            worked = (
+                                await _refresh_messages(
+                                    active_operation_count,
+                                    catalogue,
+                                    leases,
+                                    subscription,
+                                    definition,
+                                    messages,
+                                )
+                                or worked
+                            )
+                    if definition.id not in pulls:
+                        pulls[definition.id] = asyncio.create_task(
+                            subscription.fetch(batch=100, timeout=60),
+                            name=f"materialization-{definition.id}-pull",
                         )
-                        or worked
-                    )
                 except OperationLeaseUnavailable:
+                    continue
+                except MaterializationControlChanged:
                     continue
                 except asyncio.CancelledError:
                     raise
@@ -180,17 +242,44 @@ async def run(
                     )
                     await asyncio.to_thread(_mark_failed, definition.id, exc)
             if not worked:
-                await asyncio.sleep(
-                    get_float("ATLAS_MATERIALIZATION_CONTROL_POLL_SECONDS")
-                )
+                waiters = set(pulls.values())
+                if ddl_pull is not None:
+                    waiters.add(ddl_pull)
+                if waiters:
+                    await asyncio.wait(
+                        waiters,
+                        timeout=get_float(
+                            "ATLAS_MATERIALIZATION_CONTROL_POLL_SECONDS"
+                        ),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                else:
+                    await asyncio.sleep(
+                        get_float(
+                            "ATLAS_MATERIALIZATION_CONTROL_POLL_SECONDS"
+                        )
+                    )
     finally:
         stop.set()
+        if ddl_pull is not None:
+            ddl_pull.cancel()
+        for pull in pulls.values():
+            pull.cancel()
+        await asyncio.gather(
+            *((ddl_pull,) if ddl_pull is not None else ()),
+            *pulls.values(),
+            return_exceptions=True,
+        )
         await cancel_task(presence_task)
         await asyncio.to_thread(catalogue.close)
         await client.close()
 
 
-def _active_definitions() -> list[SimpleNamespace]:
+def _active_definitions(
+    *, lane_index: int = 0, lane_count: int = 1
+) -> list[SimpleNamespace]:
+    if lane_count <= 0 or lane_index < 0 or lane_index >= lane_count:
+        raise ValueError("invalid materialization lane")
     with session_scope() as session:
         rows = list(
             session.scalars(
@@ -216,14 +305,11 @@ def _active_definitions() -> list[SimpleNamespace]:
                 ducklake_table_uuid=row.ducklake_table_uuid,
             )
             for row in rows
+            if row.id.int % lane_count == lane_index
         ]
 
 
-async def _reconcile_ddl(subscription) -> bool:
-    try:
-        messages = await subscription.fetch(batch=100, timeout=0.01)
-    except (NatsTimeoutError, TimeoutError):
-        return False
+async def _apply_ddl_messages(messages) -> bool:
     for message in messages:
         try:
             event = CatalogueDDLEvent.model_validate_json(message.data)
@@ -303,7 +389,7 @@ async def _subscription(jetstream, definition):
 
 
 async def _bootstrap_one(
-    catalogue, leases, resources, materialization_id: UUID
+    catalogue, leases, materialization_id: UUID
 ) -> bool:
     async with operation_leases(
         leases,
@@ -311,12 +397,9 @@ async def _bootstrap_one(
         phase="materialization",
         acquire_timeout=0,
     ):
-        async with _materialization_permit(
-            resources, materialization_id, "bootstrap"
-        ):
-            await asyncio.to_thread(
-                _bootstrap_materialization, catalogue, materialization_id
-            )
+        await asyncio.to_thread(
+            _bootstrap_materialization, catalogue, materialization_id
+        )
     return True
 
 
@@ -329,6 +412,98 @@ async def _tracked_operation(counter: list[int], operation):
 
 
 def _bootstrap_materialization(catalogue, materialization_id: UUID) -> None:
+    plan = _load_bootstrap_plan(materialization_id)
+    if plan is None:
+        return
+    model = SimpleNamespace(**plan.model)
+    reference = SimpleNamespace(**plan.reference)
+    view_store = CatalogueViewStore(catalogue)
+    physical_name = physical_materialization_name(model.id)
+    # Recover a process death between physical creation and the Postgres update.
+    try:
+        MaterializationStore(catalogue).table_identity(
+            physical_name,
+            schema_name="_atlas_materializations",
+        )
+    except MaterializationError:
+        present = False
+    else:
+        present = True
+    if present and model.ducklake_table_uuid is None:
+        current = _source_view(view_store, reference, model)
+        restored = view_store.replace(
+            current_uuid=current.view_uuid, sql=model.source_sql
+        )
+        reference.ducklake_view_uuid = restored.view_uuid
+        model.source_view_uuid = restored.view_uuid
+        existing_table = MaterializationStore(catalogue).inspect(physical_name)
+        MaterializationStore(catalogue).drop(
+            name=physical_name, expected_uuid=existing_table.table_uuid
+        )
+    _source_view(view_store, reference, model)
+    resolved_source_view_uuid = model.source_view_uuid
+    store = MaterializationStore(catalogue)
+    table, source_snapshot = store.create_full(
+        name=physical_name,
+        sql=model.source_sql,
+        append_key_columns=(
+            tuple(model.key_columns)
+            if model.refresh_strategy == "append"
+            else ()
+        ),
+    )
+    if model.partition_column:
+        table = store.set_daily_partition(
+            name=physical_name, column=model.partition_column
+        )
+    wrapper = view_store.replace(
+        current_uuid=reference.ducklake_view_uuid,
+        sql=_backing_view_sql(catalogue, physical_name),
+    )
+    bootstrap_snapshot = catalogue.latest_snapshot() or source_snapshot
+
+    with session_scope() as session:
+        model = session.get(CatalogueMaterialization, materialization_id)
+        if (
+            model is None
+            or model.archived_at is not None
+            or model.observed_state != "creating"
+            or model.desired_state == "deleting"
+            or model.view_reference_id != plan.model["view_reference_id"]
+            or model.source_sql != plan.model["source_sql"]
+            or model.refresh_strategy != plan.model["refresh_strategy"]
+            or tuple(model.key_columns) != tuple(plan.model["key_columns"])
+            or model.partition_column != plan.model["partition_column"]
+        ):
+            raise MaterializationControlChanged(
+                f"Materialization {materialization_id} changed during bootstrap."
+            )
+        reference = session.get(CatalogueViewReference, model.view_reference_id)
+        if (
+            reference is None
+            or reference.ducklake_view_uuid
+            != plan.reference["ducklake_view_uuid"]
+        ):
+            raise MaterializationControlChanged(
+                f"Materialization {materialization_id} view changed during bootstrap."
+            )
+        reference.ducklake_view_uuid = wrapper.view_uuid
+        model.source_view_uuid = resolved_source_view_uuid
+        model.target_table_id = table.table_id
+        model.ducklake_table_uuid = table.table_uuid
+        model.bootstrap_snapshot = bootstrap_snapshot
+        model.processed_snapshot = source_snapshot
+        model.observed_state = (
+            "live" if model.desired_state == "live" else "paused"
+        )
+        model.last_refreshed_at = datetime.now(UTC)
+        model.last_error = None
+        session.flush()
+
+
+def _load_bootstrap_plan(
+    materialization_id: UUID,
+) -> SimpleNamespace | None:
     with session_scope() as session:
         model = session.get(CatalogueMaterialization, materialization_id)
         if (
@@ -337,62 +512,31 @@ def _bootstrap_materialization(catalogue, materialization_id: UUID) -> None:
             or model.observed_state != "creating"
             or model.desired_state == "deleting"
         ):
-            return
-        reference = session.get(CatalogueViewReference, model.view_reference_id)
+            return None
+        reference = session.get(
+            CatalogueViewReference, model.view_reference_id
+        )
         if reference is None:
-            raise RuntimeError("Materialization source view reference is missing.")
-        view_store = CatalogueViewStore(catalogue)
-        # Recover a process death between physical creation and the Postgres update.
-        try:
-            MaterializationStore(catalogue).table_identity(
-                model.name,
-                schema_name="_atlas_materializations",
+            raise RuntimeError(
+                "Materialization source view reference is missing."
             )
-        except MaterializationError:
-            present = False
-        else:
-            present = True
-        if present and model.ducklake_table_uuid is None:
-            current = _source_view(view_store, reference, model)
-            restored = view_store.replace(
-                current_uuid=current.view_uuid, sql=model.source_sql
-            )
-            reference.ducklake_view_uuid = restored.view_uuid
-            model.source_view_uuid = restored.view_uuid
-            table = MaterializationStore(catalogue).inspect(model.name)
-            MaterializationStore(catalogue).drop(
-                name=model.name, expected_uuid=table.table_uuid
-            )
-        current = _source_view(view_store, reference, model)
-        store = MaterializationStore(catalogue)
-        table, source_snapshot = store.create_full(
-            name=model.name,
-            sql=model.source_sql,
-            append_key_columns=(
-                tuple(model.key_columns)
-                if model.refresh_strategy == "append"
-                else ()
-            ),
+        return SimpleNamespace(
+            model={
+                "id": model.id,
+                "view_reference_id": model.view_reference_id,
+                "source_sql": model.source_sql,
+                "refresh_strategy": model.refresh_strategy,
+                "key_columns": tuple(model.key_columns),
+                "partition_column": model.partition_column,
+                "ducklake_table_uuid": model.ducklake_table_uuid,
+                "source_view_uuid": model.source_view_uuid,
+                "desired_state": model.desired_state,
+            },
+            reference={
+                "ducklake_view_uuid": reference.ducklake_view_uuid,
+                "view_name": reference.view_name,
+            },
         )
-        if model.partition_column:
-            table = store.set_daily_partition(
-                name=model.name, column=model.partition_column
-            )
-        wrapper = view_store.replace(
-            current_uuid=reference.ducklake_view_uuid,
-            sql=_backing_view_sql(catalogue, model.name),
-        )
-        reference.ducklake_view_uuid = wrapper.view_uuid
-        model.target_table_id = table.table_id
-        model.ducklake_table_uuid = table.table_uuid
-        model.bootstrap_snapshot = catalogue.latest_snapshot() or source_snapshot
-        model.processed_snapshot = source_snapshot
-        model.observed_state = (
-            "live" if model.desired_state == "live" else "paused"
-        )
-        model.last_refreshed_at = datetime.now(UTC)
-        model.last_error = None
-        session.flush()
 
 
 def _source_view(view_store, reference, model):
@@ -416,57 +560,44 @@ def _source_view(view_store, reference, model):
     return current
 
 
-async def _refresh_from_ticks(
+async def _refresh_messages(
     active_operation_count,
     catalogue,
     leases,
-    resources,
     subscription,
     definition,
+    messages,
 ) -> bool:
-    async with operation_leases(
-        leases,
-        (str(definition.id),),
-        phase="materialization",
-        acquire_timeout=0,
-    ):
-        return await _refresh_from_ticks_owned(
-            active_operation_count,
-            catalogue,
-            resources,
-            subscription,
-            definition,
-        )
+    """Acquire execution ownership only after a blocking pull returns work."""
 
-
-async def _refresh_from_ticks_owned(
-    active_operation_count,
-    catalogue,
-    resources,
-    subscription,
-    definition,
-) -> bool:
     try:
-        messages = await subscription.fetch(batch=100, timeout=0.1)
-    except (NatsTimeoutError, TimeoutError):
+        async with operation_leases(
+            leases,
+            (str(definition.id),),
+            phase="materialization",
+            acquire_timeout=0,
+        ):
+            return await _tracked_operation(
+                active_operation_count,
+                _apply_ticks(
+                    catalogue,
+                    subscription,
+                    definition,
+                    messages,
+                ),
+            )
+    except OperationLeaseUnavailable:
+        for message in messages:
+            await message.nak(delay=1)
         return False
-    if not messages:
+    except MaterializationControlChanged:
+        for message in messages:
+            await message.nak(delay=1)
         return False
-    return await _tracked_operation(
-        active_operation_count,
-        _apply_ticks(
-            catalogue,
-            resources,
-            subscription,
-            definition,
-            messages,
-        ),
-    )
 
 
 async def _apply_ticks(
     catalogue,
-    resources,
     subscription,
     definition,
     messages,
@@ -499,16 +630,13 @@ async def _apply_ticks(
     # driving table. Source/target table shape changes are fenced by the
     # global DDL relay and the materialization DDL reconciler, which matches
     # stable table IDs before marking an incarnation blocked.
-    async with _materialization_permit(
-        resources, definition.id, "refresh"
-    ):
-        await asyncio.to_thread(
-            _refresh_materialization,
-            catalogue,
-            definition.id,
-            min(tick.snapshot_id for tick in fresh),
-            max(tick.snapshot_id for tick in fresh),
-        )
+    await asyncio.to_thread(
+        _refresh_materialization,
+        catalogue,
+        definition.id,
+        min(tick.snapshot_id for tick in fresh),
+        max(tick.snapshot_id for tick in fresh),
+    )
     for message in messages:
         await message.ack()
     return True
@@ -520,6 +648,69 @@ def _refresh_materialization(
     from_snapshot: int,
     processed_snapshot: int,
 ) -> None:
+    plan = _load_refresh_plan(materialization_id)
+    if plan is None:
+        raise MaterializationControlChanged(
+            f"Materialization {materialization_id} is no longer live."
+        )
+    store = MaterializationStore(catalogue)
+    physical_name = physical_materialization_name(plan.id)
+    if plan.refresh_strategy == "full":
+        store.refresh_full(
+            name=physical_name,
+            expected_uuid=plan.ducklake_table_uuid,
+            sql=plan.source_sql,
+        )
+    elif plan.refresh_strategy == "keyed":
+        store.refresh_keyed(
+            name=physical_name,
+            expected_uuid=plan.ducklake_table_uuid,
+            sql=plan.source_sql,
+            source_table=plan.source_table,
+            source_table_id=plan.source_table_id,
+            from_snapshot=from_snapshot,
+            to_snapshot=processed_snapshot,
+            key_columns=plan.key_columns,
+        )
+    elif plan.refresh_strategy == "append":
+        store.refresh_append(
+            name=physical_name,
+            expected_uuid=plan.ducklake_table_uuid,
+            sql=plan.source_sql,
+            source_table=plan.source_table,
+            source_table_id=plan.source_table_id,
+            from_snapshot=from_snapshot,
+            to_snapshot=processed_snapshot,
+            key_columns=plan.key_columns,
+        )
+    else:
+        raise RuntimeError(
+            f"Unknown materialization refresh strategy {plan.refresh_strategy!r}."
+        )
+    with session_scope() as session:
+        model = session.get(CatalogueMaterialization, materialization_id)
+        if (
+            model is None
+            or model.archived_at is not None
+            or model.desired_state != "live"
+            or model.ducklake_table_uuid != plan.ducklake_table_uuid
+            or model.processed_snapshot != plan.processed_snapshot
+            or model.refresh_strategy != plan.refresh_strategy
+            or model.source_sql != plan.source_sql
+            or getattr(model, "source_table_id", None) != plan.source_table_id
+            or tuple(getattr(model, "key_columns", ())) != plan.key_columns
+        ):
+            raise MaterializationControlChanged(
+                f"Materialization {materialization_id} changed during refresh."
+            )
+        model.processed_snapshot = processed_snapshot
+        model.last_refreshed_at = datetime.now(UTC)
+        model.observed_state = "live"
+        model.last_error = None
+        session.flush()
+
+
+def _load_refresh_plan(materialization_id: UUID) -> SimpleNamespace | None:
     with session_scope() as session:
         model = session.get(CatalogueMaterialization, materialization_id)
         if (
@@ -528,48 +719,20 @@ def _refresh_materialization(
             or model.desired_state != "live"
             or model.ducklake_table_uuid is None
         ):
-            return
-        store = MaterializationStore(catalogue)
-        if model.refresh_strategy == "full":
-            store.refresh_full(
-                name=model.name,
-                expected_uuid=model.ducklake_table_uuid,
-                sql=model.source_sql,
-            )
-        elif model.refresh_strategy == "keyed":
-            store.refresh_keyed(
-                name=model.name,
-                expected_uuid=model.ducklake_table_uuid,
-                sql=model.source_sql,
-                source_table=model.source_table,
-                source_table_id=model.source_table_id,
-                from_snapshot=from_snapshot,
-                to_snapshot=processed_snapshot,
-                key_columns=tuple(model.key_columns),
-            )
-        elif model.refresh_strategy == "append":
-            store.refresh_append(
-                name=model.name,
-                expected_uuid=model.ducklake_table_uuid,
-                sql=model.source_sql,
-                source_table=model.source_table,
-                source_table_id=model.source_table_id,
-                from_snapshot=from_snapshot,
-                to_snapshot=processed_snapshot,
-                key_columns=tuple(model.key_columns),
-            )
-        else:
-            raise RuntimeError(
-                f"Unknown materialization refresh strategy {model.refresh_strategy!r}."
-            )
-        model.processed_snapshot = processed_snapshot
-        model.last_refreshed_at = datetime.now(UTC)
-        model.observed_state = "live"
-        model.last_error = None
-        session.flush()
+            return None
+        return SimpleNamespace(
+            id=model.id,
+            ducklake_table_uuid=model.ducklake_table_uuid,
+            processed_snapshot=model.processed_snapshot,
+            refresh_strategy=model.refresh_strategy,
+            source_sql=model.source_sql,
+            source_table=getattr(model, "source_table", None),
+            source_table_id=getattr(model, "source_table_id", None),
+            key_columns=tuple(getattr(model, "key_columns", ())),
+        )
 
 async def _delete_one(
-    jetstream, catalogue, leases, resources, definition
+    jetstream, catalogue, leases, definition
 ) -> None:
     try:
         await jetstream.delete_consumer(
@@ -583,26 +746,9 @@ async def _delete_one(
         phase="materialization",
         acquire_timeout=0,
     ):
-        async with _materialization_permit(
-            resources, definition.id, "dematerialize"
-        ):
-            await asyncio.to_thread(
-                dematerialize_one, catalogue, definition.id
-            )
-
-
-def _materialization_permit(resources, materialization_id: UUID, phase: str):
-    units = object_units(get_int("ATLAS_MATERIALIZATION_REFRESH_MAX_BYTES"))
-    return resource_permits(
-        resources,
-        catalogue_request(
-            f"materialization:{materialization_id}:{phase}",
-            service_class="live",
-            object_read_units=units,
-            object_write_units=units,
-        ),
-        acquire_timeout=DURABLE_RESOURCE_WAIT,
-    )
+        await asyncio.to_thread(
+            dematerialize_one, catalogue, definition.id
+        )
 
 
 def _mark_observed(materialization_id: UUID, state: str) -> None:

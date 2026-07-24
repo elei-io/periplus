@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from types import TracebackType
 from uuid import UUID
 from config.performance import (
@@ -90,17 +91,29 @@ class RepositoryPipeline:
         *,
         captured_html: str,
         crawl: CrawlRecord,
+        source_url: str,
         identity: HtmlIdentity | None = None,
     ) -> CatalogueWriteResult:
         if not self._running:
             raise RuntimeError("repository pipeline is not running")
-        await self.store_raw(captured_html=captured_html, identity=identity)
+        await self.store_raw(
+            captured_html=captured_html,
+            source_url=source_url,
+            crawl_id=crawl.crawl_id,
+            captured_at=crawl.captured_at,
+            content_type=crawl.response_media_type or "text/html",
+            identity=identity,
+        )
         return await self.submit_stored(crawl)
 
     async def store_raw(
         self,
         *,
         captured_html: str,
+        source_url: str,
+        crawl_id: UUID,
+        captured_at: datetime,
+        content_type: str,
         identity: HtmlIdentity | None = None,
     ) -> None:
         if not self._running:
@@ -110,6 +123,10 @@ class RepositoryPipeline:
             stored = await asyncio.to_thread(
                 self.ingestor.store_raw,
                 captured_html,
+                source_url=source_url,
+                crawl_id=crawl_id,
+                captured_at=captured_at,
+                content_type=content_type,
                 identity=identity,
             )
         except BaseException:
@@ -150,6 +167,10 @@ class RepositoryPipeline:
         *,
         content,
         identity: ArtifactIdentity,
+        source_url: str,
+        crawl_id: UUID,
+        captured_at: datetime,
+        content_type: str,
     ) -> None:
         if not self._running:
             raise RuntimeError("repository pipeline is not running")
@@ -159,6 +180,10 @@ class RepositoryPipeline:
                 self.ingestor.artifact_repository.put,
                 content,
                 identity=identity,
+                source_url=source_url,
+                crawl_id=crawl_id,
+                captured_at=captured_at,
+                content_type=content_type,
             )
         except BaseException:
             repository_metrics.raw_write(

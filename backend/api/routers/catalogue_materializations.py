@@ -24,7 +24,6 @@ from repository.catalogue.materializations import (
     MaterializationError,
     MaterializationStore,
 )
-from repository.catalogue.operations import operation_lock
 from repository.catalogue.query import CatalogueQueryError
 
 router = APIRouter(tags=["catalogue-materializations"])
@@ -71,13 +70,12 @@ async def materialize_view(
     control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
 ) -> CatalogueMaterializationRecord:
     def operation(session, catalogue):
-        with operation_lock(catalogue, f"materialize-view:{view_reference_id}"):
-            return put_for_view(
-                session,
-                MaterializationStore(catalogue),
-                view_reference_id=view_reference_id,
-                **payload.model_dump(),
-            )
+        return put_for_view(
+            session,
+            MaterializationStore(catalogue),
+            view_reference_id=view_reference_id,
+            **payload.model_dump(),
+        )
 
     try:
         return await control.run(operation)

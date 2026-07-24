@@ -23,13 +23,10 @@ from control.crawl_schedules.service import (
 from db.session import SessionLocal
 from runtime.graph_queue import (
     GraphRun,
-    ensure_graph_progress_storage,
-    ensure_graph_storage,
     get_graph_run,
     list_graph_runs,
 )
-from runtime.nats_client import connect_nats
-from runtime.graph_runs import create_graph_run, resolve_policy_snapshot
+from runtime.graph_runs import create_graph_run, resolve_policy_snapshots
 
 
 _SCHEDULE_RUN_NAMESPACE = UUID("9bd8a69b-a0a6-4ff0-bf4c-f4f30148bfa8")
@@ -151,6 +148,7 @@ async def _process_due_schedule(
 
         snapshot = freeze_graph(session, schedule.graph_id)
         urls = list(schedule.root_urls)
+        policies = resolve_policy_snapshots(session, urls)
         schedule_snapshot = schedule
         session.commit()
 
@@ -162,7 +160,7 @@ async def _process_due_schedule(
                 jetstream=jetstream,
                 snapshot=snapshot,
                 urls=urls,
-                policy_resolver=lambda url: resolve_policy_snapshot(session, url),
+                policy_resolver=policies.__getitem__,
                 catalogue_snapshot_resolver=catalogue_snapshot_resolver,
                 trigger_kind="schedule",
                 run_id=run_id,
@@ -230,6 +228,10 @@ def _schedule_graph_id(session, schedule_id: UUID) -> UUID:
 
 async def run_schedule_tick(
     *,
+    runs,
+    requests,
+    progress,
+    jetstream,
     catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]],
     now: datetime | None = None,
 ) -> int:
@@ -242,44 +244,45 @@ async def run_schedule_tick(
         ]
     if not due:
         return 0
-    client = await connect_nats()
-    try:
-        jetstream = client.jetstream()
-        runs, requests, _workers = await ensure_graph_storage(jetstream)
-        progress = await ensure_graph_progress_storage(jetstream)
-        processed = 0
-        for schedule_id, occurrence_at in due:
-            try:
-                await _process_due_schedule(
-                    schedule_id,
-                    occurrence_at,
-                    runs=runs,
-                    requests=requests,
-                    progress=progress,
-                    jetstream=jetstream,
-                    now=now,
-                    catalogue_snapshot_resolver=catalogue_snapshot_resolver,
-                )
-            except Exception:
-                logging.exception(
-                    "scheduled graph occurrence failed",
-                    extra={"schedule_id": str(schedule_id)},
-                )
-            processed += 1
-        return processed
-    finally:
-        await client.drain()
+    processed = 0
+    for schedule_id, occurrence_at in due:
+        try:
+            await _process_due_schedule(
+                schedule_id,
+                occurrence_at,
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                jetstream=jetstream,
+                now=now,
+                catalogue_snapshot_resolver=catalogue_snapshot_resolver,
+            )
+        except Exception:
+            logging.exception(
+                "scheduled graph occurrence failed",
+                extra={"schedule_id": str(schedule_id)},
+            )
+        processed += 1
+    return processed
 
 
 async def run_scheduler(
     stop: asyncio.Event,
     *,
+    runs,
+    requests,
+    progress,
+    jetstream,
     catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]],
 ) -> None:
     interval = get_float("ATLAS_SCHEDULE_POLL_SECONDS")
     while not stop.is_set():
         try:
             await run_schedule_tick(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                jetstream=jetstream,
                 catalogue_snapshot_resolver=catalogue_snapshot_resolver
             )
         except Exception:

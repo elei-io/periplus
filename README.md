@@ -5,9 +5,9 @@ content-addressed raw HTML, and stores a structural projection for later search,
 analysis.
 
 The project is intentionally small: one page-acquisition path, one repository boundary, and a
-clear owner for every kind of state. Atlas scales worker capabilities independently while one
-narrow, KV-backed Resource Governor contract bounds shared pressure on remote sites, DuckLake, and
-the object repository.
+clear owner for every kind of state. Atlas uses bounded local client pools for managed DuckLake and
+object-store work, while cross-replica website politeness is coordinated by independent per-domain
+NATS keys.
 
 Atlas is organized around crawl graphs:
 
@@ -42,7 +42,8 @@ the API at `http://127.0.0.1:8000`. Postgres, both NATS accounts, DuckLake stora
 object storage, and CDP remain remote. Separate acquisition, ingestion, catalogue-ingress,
 materialization, and housekeeping deployments retain independent failure and scaling boundaries.
 The configured CDP service owns acquisition transport and browser-farm capacity.
-[docs/BASIN_CUTOVER.md](docs/BASIN_CUTOVER.md) records the managed-lake boundary and verification.
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
+[docs/WORKER_ARCHITECTURE.md](docs/WORKER_ARCHITECTURE.md) define the managed-lake boundary.
 
 Compose does not bind-mount the application source tree. After changing Atlas code, rebuild and
 recreate the services with `docker compose up --build -d` (or `make compose-up`) so every running
@@ -54,16 +55,19 @@ Run the API without Compose:
 make api
 ```
 
-Atlas authenticates as `DUCKBASIN_SERVICE_ACCOUNT`, discovers `DUCKBASIN_LAKE`, refreshes its
-short-lived OAuth token, and mints a unique session-affine Quack attachment for every DuckDB
-client. The API owns a bounded pool of those managed clients for validated, read-only workbench
-queries and Arrow IPC result streaming. The browser never receives Quack, Postgres, DuckLake, or
-object-store credentials.
+Atlas authenticates with the OAuth client credentials issued for its DuckBasin service account,
+discovers `DUCKBASIN_LAKE`, refreshes its short-lived token, and mints a unique session-affine Quack
+attachment for every DuckDB client. The API owns a bounded pool of those managed clients for
+validated, read-only workbench queries and Arrow IPC result streaming. The browser never receives
+Quack, Postgres, DuckLake, or object-store credentials.
 
-The home page runs a server-owned PydanticAI catalogue agent when `OPENAI_API_KEY` is configured.
-It streams progress, bounded query rows, executed SQL, and a short evidence-based summary over SSE.
-`ATLAS_SEARCH_MODEL` selects the PydanticAI model identifier; catalogue tools retain the same
-read-only validator, permits, timeouts, and result limits as the SQL workbench.
+The home page runs a server-owned PydanticAI analytics agent when `OPENAI_API_KEY` is configured.
+Each question is isolated. `ATLAS_IDEA_MODEL` plans one primary and two supporting analytical
+directions, three concurrent `ATLAS_SQL_MODEL` agents investigate them with read-only catalogue
+discovery and SQL, and the idea model synthesizes their findings. Atlas stores no question, answer,
+conversation, or result history. The response keeps all three directions distinct and streams every
+successful analytical SQL query with its bounded rows. Catalogue tools retain the same read-only
+validator, client-pool limits, timeouts, cancellation, and result limits as the SQL workbench.
 
 Use the CLI for configuration and repository administration:
 
@@ -96,8 +100,8 @@ Configuration is documented alongside its defaults in [`.env.example`](.env.exam
 
 - [Vision](docs/VISION.md) — what Atlas is for, and what it is not.
 - [Architecture](docs/ARCHITECTURE.md) — components, state ownership, and execution paths.
-- [Worker and resource architecture](docs/WORKER_ARCHITECTURE.md) — process boundaries, queue
-  routing, resource admission, and scaling.
+- [Worker architecture](docs/WORKER_ARCHITECTURE.md) — process boundaries, queue routing,
+  managed-client concurrency, and scaling.
 - [Crawl graphs](docs/CRAWL_GRAPHS.md) — graph entities, runtime semantics, messaging, and readiness.
 - [Catalogue SQL](docs/CATALOGUE_SQL.md) — analytical tables and DOM-style query helpers.
 - [Hazards](docs/HAZARDS.md) — mistakes and complexity traps to avoid.

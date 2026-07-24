@@ -3,7 +3,9 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
+from api.app import _preflight_catalogue_query
 from api.routers.catalogue import CatalogueSqlRequest, lint_sql
+from repository.catalogue.quack_runtime import CatalogueQueryExecutionError
 from repository.catalogue.query import (
     CatalogueQueryError,
     CatalogueStatementKind,
@@ -11,6 +13,7 @@ from repository.catalogue.query import (
     classify_select,
     lint_select,
     prepare_catalogue_query,
+    referenced_catalogue_views,
     validate_interactive_catalogue_statement,
 )
 
@@ -123,6 +126,51 @@ class CatalogueQueryContractTests(unittest.TestCase):
                     catalogue_alias="atlas",
                     catalogue_schema="main",
                 )
+
+    def test_explicit_public_view_references_are_identified(self) -> None:
+        statement = classify_catalogue_statement(
+            "WITH local AS (SELECT 1) "
+            "SELECT * FROM views.page_links JOIN local ON true"
+        )
+
+        self.assertEqual(
+            referenced_catalogue_views(statement),
+            frozenset({"page_links"}),
+        )
+
+
+class CatalogueQueryPreflightTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_materialization_blocks_source_view_fallback(self) -> None:
+        class Control:
+            async def run(self, _operation):
+                return [
+                    (
+                        "page_links",
+                        "failed",
+                        'Table with name "page_links" already exists!',
+                    )
+                ]
+
+        statement = classify_catalogue_statement(
+            "SELECT count(*) FROM views.page_links"
+        )
+
+        with self.assertRaisesRegex(
+            CatalogueQueryExecutionError,
+            "views.page_links materialization is failed",
+        ):
+            await _preflight_catalogue_query(Control(), statement)  # type: ignore[arg-type]
+
+    async def test_dynamic_views_without_unavailable_incarnation_are_allowed(
+        self,
+    ) -> None:
+        class Control:
+            async def run(self, _operation):
+                return []
+
+        statement = classify_catalogue_statement("SELECT * FROM views.documents")
+
+        await _preflight_catalogue_query(Control(), statement)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

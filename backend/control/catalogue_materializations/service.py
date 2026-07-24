@@ -34,6 +34,38 @@ def get_model(
     return model if model is not None and model.archived_at is None else None
 
 
+def unavailable_materialized_views(
+    session: Session,
+    view_names: frozenset[str],
+) -> list[tuple[str, str, str | None]]:
+    """Return requested views whose intended physical incarnation is unavailable."""
+
+    if not view_names:
+        return []
+    rows = session.execute(
+        select(
+            CatalogueViewReference.view_name,
+            CatalogueMaterialization.observed_state,
+            CatalogueMaterialization.last_error,
+        )
+        .join(
+            CatalogueViewReference,
+            CatalogueViewReference.id
+            == CatalogueMaterialization.view_reference_id,
+        )
+        .where(
+            CatalogueMaterialization.archived_at.is_(None),
+            CatalogueViewReference.view_name.in_(view_names),
+            CatalogueMaterialization.observed_state.not_in(("live", "paused")),
+        )
+        .order_by(CatalogueViewReference.view_name)
+    )
+    return [
+        (str(view_name), str(observed_state), last_error)
+        for view_name, observed_state, last_error in rows
+    ]
+
+
 def summary(model: CatalogueMaterialization) -> CatalogueMaterializationSummary:
     return CatalogueMaterializationSummary(
         id=model.id,

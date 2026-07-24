@@ -24,9 +24,9 @@ const CatalogueWorkbenchPage = lazy(() =>
     default: module.CatalogueWorkbenchPage,
   }))
 )
-const SearchPage = lazy(() =>
-  import("@/pages/chat-page").then((module) => ({
-    default: module.ChatPage,
+const AnalyticsPage = lazy(() =>
+  import("@/pages/analytics-page").then((module) => ({
+    default: module.AnalyticsPage,
   }))
 )
 const CatalogueViewsPage = lazy(() =>
@@ -115,19 +115,12 @@ function getCurrentPathname() {
   return window.location.pathname
 }
 
-function getCurrentChatId() {
-  return new URLSearchParams(window.location.search).get("chat")
-}
-
 export function App() {
   const [pathname, setPathname] = useState(getCurrentPathname)
-  const [activeChatId, setActiveChatId] = useState(getCurrentChatId)
-  const [chatBusy, setChatBusy] = useState(false)
 
   useEffect(() => {
     const handlePopState = () => {
       setPathname(getCurrentPathname())
-      setActiveChatId(getCurrentChatId())
     }
 
     window.addEventListener("popstate", handlePopState)
@@ -157,20 +150,11 @@ export function App() {
 
     window.history.pushState(null, "", href)
     setPathname(targetPathname)
-    setActiveChatId(target.searchParams.get("chat"))
   }, [])
 
   const page = (() => {
     if (pathname === "/") {
-      return (
-        <SearchPage
-          chatId={activeChatId}
-          onBusyChange={setChatBusy}
-          onChatChange={(chatId: string | null) =>
-            handleNavigate(chatId ? `/?chat=${chatId}` : "/")
-          }
-        />
-      )
+      return <AnalyticsPage />
     }
 
     if (activeItem.href === "/catalogue/workbench") {
@@ -271,8 +255,6 @@ export function App() {
   return (
     <SidebarProvider>
       <AppSidebar
-        activeChatId={activeChatId}
-        chatBusy={chatBusy}
         pathname={pathname === "/" ? pathname : activeItem.href}
         onNavigate={handleNavigate}
       />
@@ -282,12 +264,12 @@ export function App() {
           <div className="flex min-w-0 flex-col">
             <span className="truncate text-sm font-medium">
               {pathname === "/"
-                ? "Atlas chat"
+                ? "Atlas analytics"
                 : (activeItem.title ?? activeItem.name)}
             </span>
             <span className="text-xs text-muted-foreground">
               {pathname === "/"
-                ? "Analyze retained evidence or plan new acquisition"
+                ? "Ask one-off questions about retained catalogue data"
                 : (activeItem.description ?? activeGroup.name)}
             </span>
           </div>

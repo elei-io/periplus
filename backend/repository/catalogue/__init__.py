@@ -20,7 +20,11 @@ from repository.catalogue.records import (
     ElementRecord,
     UrlRecord,
 )
-from repository.catalogue.service import CatalogueBatchEntry, CatalogueService
+from repository.catalogue.service import (
+    CatalogueBatchEntry,
+    CatalogueService,
+    ExistingCatalogueIdentities,
+)
 
 
 def catalogue_from_env(
@@ -32,24 +36,27 @@ def catalogue_from_env(
 
     if threads is not None and threads <= 0:
         raise ValueError("threads must be greater than zero")
-    config = catalogue_config_from_env()
     duckdb_config: dict[str, str] = {}
     if threads is not None:
         duckdb_config["threads"] = str(threads)
     if memory_limit is not None:
         duckdb_config["memory_limit"] = memory_limit
     minter = DuckBasinClientMinter()
+    minted = None
     try:
         minted = minter.mint(duckdb_config=duckdb_config or None)
+        config = catalogue_config_from_env(alias=minted.catalogue_alias)
+        return Catalogue(
+            config,
+            minted=minted,
+            minter=minter,
+            duckdb_config=duckdb_config,
+        )
     except BaseException:
+        if minted is not None:
+            minted.close()
         minter.close()
         raise
-    return Catalogue(
-        config,
-        minted=minted,
-        minter=minter,
-        duckdb_config=duckdb_config,
-    )
 
 
 __all__ = [
@@ -69,6 +76,7 @@ __all__ = [
     "CrawlStepRecord",
     "DocumentRecord",
     "ElementRecord",
+    "ExistingCatalogueIdentities",
     "UrlRecord",
     "catalogue_config_from_env",
     "catalogue_from_env",

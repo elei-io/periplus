@@ -24,9 +24,9 @@ class CatalogueConfig:
         _validate_name("schema", self.schema)
 
 
-def catalogue_config_from_env() -> CatalogueConfig:
+def catalogue_config_from_env(*, alias: str) -> CatalogueConfig:
     return CatalogueConfig(
-        alias=get_str("DUCKBASIN_LAKE"),
+        alias=alias,
         schema=get_str("ATLAS_CATALOGUE_SCHEMA"),
     )
 

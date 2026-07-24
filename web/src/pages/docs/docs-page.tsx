@@ -221,6 +221,10 @@ ORDER BY captured_at DESC;`}
               groups: [
                 ["Identity", "artifact_id, sha256"],
                 ["Storage", "object_key, size_bytes"],
+                [
+                  "Media type",
+                  "response_media_type, detected_media_type, detector_name, detector_version, detection_confidence",
+                ],
                 ["Time", "created_at"],
               ],
             },
@@ -542,9 +546,8 @@ LIMIT 10;`}
 
 const resourcesToc: TocItem[] = [
   { id: "model", label: "Scaling model" },
-  { id: "resources", label: "Governed resources" },
+  { id: "clients", label: "Client pools" },
   { id: "diagnosis", label: "Diagnose pressure" },
-  { id: "classes", label: "Service classes" },
   { id: "rules", label: "Operating rules" },
 ]
 
@@ -553,7 +556,7 @@ export function ResourcesScalingDocsPage({ onNavigate }: DocsPageProps) {
     <DocsArticle toc={resourcesToc}>
       <DocsHeader
         title="Scale the limiting resource"
-        description="Atlas separates worker capacity from shared-resource admission. Replica counts determine who can perform work; permits determine how much pressure may run at once."
+        description="Atlas starts with one ingestion process with four managed Quack clients and one materialization process with eight; Basin owns remote compute admission and scaling."
         action={
           <Button
             variant="outline"
@@ -566,8 +569,8 @@ export function ResourcesScalingDocsPage({ onNavigate }: DocsPageProps) {
 
       <DocsSection
         id="model"
-        title="There are two independent scaling knobs"
-        lead="Adding workers can reduce a shortage of executors. It cannot raise a catalogue or object-store safety ceiling."
+        title="Scale clients before processes"
+        lead="A session-affine client is the unit of catalogue concurrency. Horizontal replicas remain available for resilience and post-saturation growth."
       >
         <ScalingModelDiagram />
 
@@ -575,67 +578,66 @@ export function ResourcesScalingDocsPage({ onNavigate }: DocsPageProps) {
           headers={["Mechanism", "Question it answers", "Changed by"]}
           rows={[
             [
+              <TableName key="clients">Quack client lanes</TableName>,
+              "How many independent catalogue operations can this process submit?",
+              "Code-owned pool size; four for ingestion and eight for materialization",
+            ],
+            [
               <TableName key="replicas">Worker replicas</TableName>,
-              "Is a process available to perform this kind of work?",
-              "Deployment replica counts and process-local concurrency",
+              "Does this role need another failure boundary or more capacity?",
+              "Deployment scaling after the local client pool is saturated",
             ],
             [
-              <TableName key="permits">Capacity permits</TableName>,
-              "May this shared resource pressure start now?",
-              "Typed deployment resource budgets",
+              <TableName key="basin">Basin capacity</TableName>,
+              "How much remote DuckLake work can run?",
+              "DuckBasin Quack autoscaling and provider-side admission",
             ],
             [
-              <TableName key="leases">Operation leases</TableName>,
-              "Is this deterministic operation already executing?",
-              "Runtime coordination; not a performance knob",
-            ],
-            [
-              <TableName key="fences">Commit fences</TableName>,
-              "May this durable identity commit safely?",
-              "Correctness coordination; not a capacity knob",
+              <TableName key="domains">Domain limits</TableName>,
+              "May another request reach this website now?",
+              "Per-domain policy, independently coordinated across replicas",
             ],
           ]}
         />
       </DocsSection>
 
       <DocsSection
-        id="resources"
-        title="Know what Atlas governs"
-        lead="A worker asks for one complete permit bundle before an expensive phase starts. It never holds one shared resource while waiting indefinitely for another."
+        id="clients"
+        title="One connection remains one lane"
+        lead="The pool adds concurrency without allowing concurrent use of a session-affine DuckDB connection."
       >
         <ReferenceTable
-          headers={["Resource", "Protects", "Important distinction"]}
+          headers={["Role", "Default", "Ownership"]}
           rows={[
             [
-              <InlineCode key="catalogue">catalogue:hot</InlineCode>,
-              "Combined DuckLake ingestion and materialization pressure",
-              "It is a capacity pool, not the correctness lock for commits",
+              <TableName key="ingestion">Ingestion</TableName>,
+              "1 process × 4 clients",
+              "Each lane pulls, prepares and commits its own ingestion batches",
             ],
             [
-              <InlineCode key="read">object:read</InlineCode>,
-              "Weighted in-flight repository reads",
-              "Units may represent known bytes or a bounded operation estimate",
+              <TableName key="materialization">Materialization</TableName>,
+              "1 process × 8 clients",
+              "Stable materialization-ID sharding assigns definitions to lanes",
             ],
             [
-              <InlineCode key="write">object:write</InlineCode>,
-              "Weighted in-flight repository writes",
-              "Storage throughput must support the configured budget",
+              <TableName key="api">Interactive API</TableName>,
+              "Bounded configured pool",
+              "A query borrows one client until its Arrow stream closes",
             ],
           ]}
         />
 
         <p>
-          Work messages, permits, leases and commit fences are deliberately
-          separate. If a worker dies, its durable work can redeliver and its
-          permit expires. Correctness does not depend on capacity state
-          surviving forever.
+          Operation leases suppress duplicate durable execution. Ingestion
+          does not hold PostgreSQL advisory locks across remote DuckLake
+          commits.
         </p>
       </DocsSection>
 
       <DocsSection
         id="diagnosis"
         title="Diagnose before changing capacity"
-        lead="Queue age and local saturation identify worker shortages. Permit wait age and resource utilization identify shared-resource bottlenecks."
+        lead="Queue age, active client lanes, transfer latency and Basin metrics identify the limiting layer."
       >
         <ReferenceTable
           headers={["Observed signal", "Likely constraint", "Next action"]}
@@ -646,74 +648,33 @@ export function ResourcesScalingDocsPage({ onNavigate }: DocsPageProps) {
               "Add acquisition replicas; domain policies continue to enforce website politeness",
             ],
             [
-              "Ingestion queue age rises; catalogue permits have room",
-              "Ingestion executors",
-              "Add ingestion replicas or inspect a stuck process-owned DuckDB lane",
+              "Ingestion queue age rises while fewer than four lanes are active",
+              "Local preparation or a stuck client",
+              "Inspect staging, raw-object latency and the affected client session",
             ],
             [
-              "Catalogue permit wait and utilization rise together",
-              "DuckLake capacity",
-              "Benchmark catalogue and object storage, then adjust the hot budget and executors together",
+              "All four lanes remain active and Basin scales Quack",
+              "Managed DuckLake capacity",
+              "Inspect Basin and Quack latency before adding another Atlas process",
             ],
             [
-              "Object permits fill while latency rises",
+              "Object latency rises while catalogue lanes idle",
               "Object-store throughput",
-              "Increase MinIO, S3 or disk throughput before raising the corresponding budget",
+              "Inspect S3 networking and the owning process-local client pool",
             ],
             [
               "Materialized views lag while graph ingestion is healthy",
-              "Materialization executors or noncritical share",
-              "Scale materialization without consuming the critical ingestion reservation",
+              "Materialization lanes or query cost",
+              "Inspect per-definition work, then add a replica only after all lanes saturate",
             ],
           ]}
         />
 
-        <Callout title="Adding replicas is safe, but may not improve throughput">
-          Ingestion and materialization workers still wait behind catalogue and
-          object-store budgets. A flat throughput line after adding replicas is
-          evidence to inspect permit pressure, not a reason to keep adding
-          processes.
+        <Callout title="Basin is the managed capacity boundary">
+          Atlas deliberately has no deployment-wide catalogue or object-store
+          admission layer. Client pools bound submitted work; Basin decides
+          how remote analytical capacity is scheduled and scaled.
         </Callout>
-      </DocsSection>
-
-      <DocsSection
-        id="classes"
-        title="Service classes protect useful work"
-        lead="Scheduling policy is fixed and code-owned. Deployment configuration controls capacities and reserved shares, not arbitrary user-authored priorities."
-      >
-        <ReferenceTable
-          headers={["Class", "Work", "Admission behavior"]}
-          rows={[
-            [
-              <ServiceName key="critical" tone="critical">
-                critical
-              </ServiceName>,
-              "Acquisition persistence, base ingestion and historical graph joins",
-              "Reserved shared capacity protects critical durable work",
-            ],
-            [
-              <ServiceName key="live" tone="live">
-                live
-              </ServiceName>,
-              "Current materialization refreshes",
-              "Uses the noncritical share while preserving live freshness",
-            ],
-            [
-              <ServiceName key="backfill" tone="backfill">
-                backfill
-              </ServiceName>,
-              "Explicit catalogue backfills",
-              "Shares noncritical capacity and has an explicit concurrency ceiling",
-            ],
-            [
-              <ServiceName key="maintenance" tone="maintenance">
-                maintenance
-              </ServiceName>,
-              "Compaction, cleanup and bounded repair",
-              "Receives the full catalogue pool only after hot grants drain",
-            ],
-          ]}
-        />
       </DocsSection>
 
       <DocsSection
@@ -730,15 +691,15 @@ export function ResourcesScalingDocsPage({ onNavigate }: DocsPageProps) {
             Slow ingestion or materialization may make catalogue state stale,
             but neither may hold browser capacity or keep a graph run active.
           </LifecycleRow>
-          <LifecycleRow title="Change budgets from measured evidence">
-            Static budgets are intentional. Compare permit utilization, wait
-            age, actual bytes, storage latency and DuckLake benchmarks before
-            increasing pressure.
+          <LifecycleRow title="Keep distributed coordination narrow">
+            Website concurrency is keyed per hostname. Do not put unrelated
+            domains, catalogue clients, queries and object transfers behind one
+            global state record.
           </LifecycleRow>
-          <LifecycleRow title="Validate the largest bounded operation">
-            An object budget must be large enough for the biggest admitted
-            operation. Atlas rejects impossible configurations rather than
-            waiting forever for a grant that cannot exist.
+          <LifecycleRow title="Measure before adding replicas">
+            Compare active client lanes, queue age, transfer latency and Basin
+            scaling decisions. A second process is useful after the first
+            process&apos;s four ingestion lanes are consistently busy.
           </LifecycleRow>
         </div>
       </DocsSection>
@@ -1053,43 +1014,43 @@ function ScalingModelDiagram() {
           />
           <DiagramEntity
             icon={DatabaseIcon}
-            name="Ingestion workers"
-            detail="base evidence · DOM"
+            name="Ingestion process"
+            detail="8 session-affine clients"
           />
           <DiagramEntity
             icon={Layers3Icon}
-            name="Materialization workers"
-            detail="live · backfill"
+            name="Materialization process"
+            detail="8 session-affine clients"
           />
         </div>
         <div className="my-4 flex items-center gap-3 text-[10px] tracking-wider text-muted-foreground uppercase">
-          <span className="h-px flex-1 bg-border" /> request permits before
-          pressure starts <span className="h-px flex-1 bg-border" />
+          <span className="h-px flex-1 bg-border" /> bounded work reaches its
+          owning system <span className="h-px flex-1 bg-border" />
         </div>
         <div className="grid gap-3 sm:grid-cols-3">
           <DiagramEntity
             icon={CircleGaugeIcon}
             name="Domain politeness"
-            detail="concurrency · pacing"
+            detail="one NATS key per hostname"
             subdued
           />
           <DiagramEntity
             icon={DatabaseIcon}
-            name="Catalogue budget"
-            detail="shared hot capacity"
+            name="DuckBasin"
+            detail="remote admission · autoscaling"
             subdued
           />
           <DiagramEntity
             icon={HardDriveIcon}
-            name="Object budgets"
-            detail="weighted reads · writes"
+            name="Raw object store"
+            detail="process-local bounded clients"
             subdued
           />
         </div>
       </div>
       <figcaption className="mt-2 text-xs text-muted-foreground">
-        Worker pools scale capability; Governor budgets cap shared pressure
-        across every replica.
+        Local pools bound submitted work. Distributed coordination exists only
+        for website politeness and exact-operation correctness.
       </figcaption>
     </figure>
   )
@@ -1311,26 +1272,5 @@ function TableName({ children }: { children: ReactNode }) {
     <code className="font-mono text-xs font-semibold text-foreground">
       {children}
     </code>
-  )
-}
-
-function ServiceName({
-  children,
-  tone,
-}: {
-  children: ReactNode
-  tone: "critical" | "live" | "backfill" | "maintenance"
-}) {
-  const colors = {
-    critical: "bg-violet-500",
-    live: "bg-blue-500",
-    backfill: "bg-cyan-500",
-    maintenance: "bg-muted-foreground",
-  }
-  return (
-    <span className="inline-flex items-center gap-2 font-mono text-xs font-semibold text-foreground">
-      <span className={cn("size-1.5 rounded-full", colors[tone])} />
-      {children}
-    </span>
   )
 }

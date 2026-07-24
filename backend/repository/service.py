@@ -22,6 +22,7 @@ from repository.catalogue import (
     CrawlRecord,
     CrawlStepRecord,
     DocumentRecord,
+    ExistingCatalogueIdentities,
     UrlRecord,
     catalogue_from_env,
 )
@@ -40,6 +41,7 @@ from repository.objects.artifact import (
     ArtifactIdentity,
     RawArtifactRepository,
     artifact_object_key,
+    detect_artifact_media_type,
 )
 
 
@@ -131,11 +133,18 @@ class RepositoryIngestor:
                 )
             if identity.sha256 != sha256:
                 raise ValueError("raw artifact does not match crawl.artifact_id")
+            content = self.artifact_repository.read_bytes(object_key)
+            detection = detect_artifact_media_type(content)
             artifact = ArtifactRecord(
                 artifact_id=crawl.artifact_id,
                 sha256=sha256,
                 object_key=object_key,
                 size_bytes=identity.size_bytes,
+                response_media_type=crawl.response_media_type,
+                detected_media_type=detection.media_type,
+                detector_name=detection.detector_name,
+                detector_version=detection.detector_version,
+                detection_confidence=detection.confidence,
                 created_at=crawl.captured_at,
             )
             return PreparedIngestion(
@@ -296,6 +305,30 @@ class RepositoryIngestor:
             if committed or cleanup_on_error:
                 self.discard_prepared(prepared)
 
+    def preflight_existing_identities(
+        self,
+        prepared: list[PreparedIngestion],
+    ) -> ExistingCatalogueIdentities:
+        """Resolve identities that cannot require an append in this commit."""
+
+        return self.catalogue_service.preflight_existing_identities(
+            url_ids=[
+                url.url_id
+                for value in prepared
+                for url in value.urls
+            ],
+            document_ids=[
+                value.document.document_id
+                for value in prepared
+                if value.document is not None
+            ],
+            artifact_ids=[
+                value.artifact.artifact_id
+                for value in prepared
+                if value.artifact is not None
+            ],
+        )
+
     def reconcile_crawl_commit(
         self,
         *,
@@ -352,11 +385,22 @@ class RepositoryIngestor:
         self,
         captured_html: str,
         *,
+        source_url: str,
+        crawl_id: UUID,
+        captured_at: datetime,
+        content_type: str,
         identity: HtmlIdentity | None = None,
     ) -> StoredHtml:
         identity = identity or self.html_repository.identify(captured_html)
         self._validate_html_size(identity)
-        return self.html_repository.put(captured_html, identity=identity)
+        return self.html_repository.put(
+            captured_html,
+            source_url=source_url,
+            crawl_id=crawl_id,
+            captured_at=captured_at,
+            content_type=content_type,
+            identity=identity,
+        )
 
     def _validate_html_size(self, identity: HtmlIdentity) -> None:
         if identity.size_bytes > self.limits.max_html_bytes:

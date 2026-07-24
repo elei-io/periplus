@@ -15,21 +15,6 @@ from repository.objects.store import ObjectMetadata, ObjectStore
 from repository.service import cleanup_staging_files
 from runtime.graph_queue import ensure_graph_storage, get_graph_run
 from runtime.nats_client import connect_nats
-from runtime.operation_leases import (
-    OperationLeaseLost,
-    OperationLeaseUnavailable,
-    ensure_operation_lease_storage,
-    operation_leases,
-)
-from runtime.resource_governor import (
-    DURABLE_RESOURCE_WAIT,
-    ResourceCapacityUnavailable,
-    ResourceNeed,
-    ResourcePermitLost,
-    ResourceRequest,
-    ensure_resource_governor_storage,
-    resource_permits,
-)
 from workers.lifecycle import run_worker_process
 
 
@@ -65,74 +50,62 @@ async def _cleanup_navigation(
     *,
     runs,
     store: ObjectStore,
-    leases,
-    resources,
     monitor: HealthMonitor,
 ) -> None:
-    cutoff = datetime.now(UTC) - timedelta(
+    now = datetime.now(UTC)
+    terminal_cutoff = now - timedelta(
+        seconds=get_float("ATLAS_NAVIGATION_CLEANUP_GRACE_SECONDS")
+    )
+    orphan_cutoff = now - timedelta(
         seconds=get_int("ATLAS_GRAPH_MAX_RUN_SECONDS")
     )
     try:
-        async with operation_leases(
-            leases,
-            ("navigation-retention",),
-            phase="housekeeping",
-            acquire_timeout=0,
-        ):
-            async with resource_permits(
-                resources,
-                ResourceRequest(
-                    operation_id="housekeeping:navigation-retention",
-                    service_class="maintenance",
-                    resources=(
-                        ResourceNeed(name="object:read", units=1),
-                        ResourceNeed(name="object:write", units=1),
-                    ),
+        candidates = await asyncio.to_thread(
+            _aged_navigation_objects,
+            store,
+            cutoff=terminal_cutoff,
+        )
+        run_ids = {
+            item.key: _navigation_run_id(item.key) for item in candidates
+        }
+        unique_ids = {
+            run_id for run_id in run_ids.values() if run_id is not None
+        }
+        states = dict(
+            zip(
+                unique_ids,
+                await asyncio.gather(
+                    *(get_graph_run(runs, run_id) for run_id in unique_ids)
                 ),
-                acquire_timeout=DURABLE_RESOURCE_WAIT,
-            ):
-                candidates = await asyncio.to_thread(
-                    _aged_navigation_objects,
-                    store,
-                    cutoff=cutoff,
+                strict=True,
+            )
+        )
+        terminal = {
+            "completed",
+            "completed_with_errors",
+            "failed",
+            "cancelled",
+        }
+        keys = tuple(
+            item.key
+            for item in candidates
+            if (run_id := run_ids[item.key]) is not None
+            and (
+                (
+                    states.get(run_id) is None
+                    and item.last_modified <= orphan_cutoff
                 )
-                run_ids = {
-                    item.key: _navigation_run_id(item.key) for item in candidates
-                }
-                unique_ids = {
-                    run_id for run_id in run_ids.values() if run_id is not None
-                }
-                states = dict(
-                    zip(
-                        unique_ids,
-                        await asyncio.gather(
-                            *(get_graph_run(runs, run_id) for run_id in unique_ids)
-                        ),
-                        strict=True,
-                    )
+                or (
+                    (state := states.get(run_id)) is not None
+                    and state.status in terminal
+                    and state.completed_at is not None
+                    and state.completed_at <= terminal_cutoff
                 )
-                terminal = {
-                    "completed",
-                    "completed_with_errors",
-                    "failed",
-                    "cancelled",
-                }
-                keys = tuple(
-                    item.key
-                    for item in candidates
-                    if (run_id := run_ids[item.key]) is not None
-                    and (
-                        states.get(run_id) is None
-                        or states[run_id].status in terminal
-                    )
-                )
-                if keys:
-                    await asyncio.to_thread(store.delete_many, keys)
+            )
+        )
+        if keys:
+            await asyncio.to_thread(store.delete_many, keys)
         monitor.subsystem_ready("navigation_retention")
-    except (OperationLeaseUnavailable, ResourceCapacityUnavailable):
-        return
-    except (OperationLeaseLost, ResourcePermitLost) as exc:
-        monitor.subsystem_unavailable("navigation_retention", str(exc))
     except Exception as exc:
         logging.exception("Atlas navigation retention cleanup failed")
         monitor.subsystem_unavailable(
@@ -144,13 +117,12 @@ async def _cleanup_navigation(
 async def _run(stop: asyncio.Event, monitor: HealthMonitor) -> None:
     client = await connect_nats()
     jetstream = client.jetstream()
-    leases = await ensure_operation_lease_storage(jetstream)
-    resources = await ensure_resource_governor_storage(jetstream)
     runs, _requests, _workers = await ensure_graph_storage(jetstream)
     object_store = object_store_from_env()
     monitor.dependencies_ready()
     monitor.subsystem_ready("staging_retention")
     monitor.subsystem_ready("navigation_retention")
+    monitor.subsystem_ready("graph_runtime_retention")
     try:
         while not stop.is_set():
             try:
@@ -171,10 +143,22 @@ async def _run(stop: asyncio.Event, monitor: HealthMonitor) -> None:
             await _cleanup_navigation(
                 runs=runs,
                 store=object_store,
-                leases=leases,
-                resources=resources,
                 monitor=monitor,
             )
+            try:
+                cutoff = datetime.now(UTC) - timedelta(
+                    seconds=get_int(
+                        "ATLAS_GRAPH_RUN_RETENTION_SECONDS"
+                    )
+                )
+                await runs.delete_terminal_runs_before(cutoff)
+                monitor.subsystem_ready("graph_runtime_retention")
+            except Exception as exc:
+                logging.exception("Atlas graph runtime retention failed")
+                monitor.subsystem_unavailable(
+                    "graph_runtime_retention",
+                    str(exc) or type(exc).__name__,
+                )
             monitor.heartbeat()
             try:
                 await asyncio.wait_for(

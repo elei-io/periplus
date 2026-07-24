@@ -189,6 +189,19 @@ def validate_interactive_catalogue_statement(
     return statement
 
 
+def referenced_catalogue_views(
+    statement: ClassifiedCatalogueStatement,
+) -> frozenset[str]:
+    """Return explicitly referenced public view names."""
+
+    return frozenset(
+        table.name
+        for table in statement.query.find_all(exp.Table)
+        if isinstance(table.this, exp.Identifier)
+        and table.db.lower() == "views"
+    )
+
+
 def lint_catalogue_statement(sql: str) -> list[CatalogueLintDiagnostic]:
     """Lint the query contained in a native query or EXPLAIN statement."""
 

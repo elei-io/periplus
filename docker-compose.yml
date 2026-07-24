@@ -29,7 +29,6 @@ x-duckbasin-environment: &duckbasin-environment
   DUCKBASIN_URL: ${DUCKBASIN_URL:?DUCKBASIN_URL is required}
   DUCKBASIN_LAKE: ${DUCKBASIN_LAKE:?DUCKBASIN_LAKE is required}
   DUCKBASIN_TOKEN_ENDPOINT: ${DUCKBASIN_TOKEN_ENDPOINT:?DUCKBASIN_TOKEN_ENDPOINT is required}
-  DUCKBASIN_SERVICE_ACCOUNT: ${DUCKBASIN_SERVICE_ACCOUNT:?DUCKBASIN_SERVICE_ACCOUNT is required}
   DUCKBASIN_CLIENT_ID: ${DUCKBASIN_CLIENT_ID:?DUCKBASIN_CLIENT_ID is required}
   DUCKBASIN_CLIENT_SECRET: ${DUCKBASIN_CLIENT_SECRET:?DUCKBASIN_CLIENT_SECRET is required}
 
@@ -42,10 +41,6 @@ x-atlas-repository-environment: &atlas-repository-environment
   ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY: ${ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY:?ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY is required}
   ATLAS_REPOSITORY_S3_URL_STYLE: ${ATLAS_REPOSITORY_S3_URL_STYLE:-path}
   ATLAS_REPOSITORY_S3_USE_SSL: ${ATLAS_REPOSITORY_S3_USE_SSL:-true}
-
-x-atlas-resource-environment: &atlas-resource-environment
-  ATLAS_CATALOGUE_MAX_CONCURRENCY: ${ATLAS_CATALOGUE_MAX_CONCURRENCY:-64}
-  ATLAS_OBJECT_IO_MAX_CONCURRENCY: ${ATLAS_OBJECT_IO_MAX_CONCURRENCY:-64}
 
 x-atlas-graph-environment: &atlas-graph-environment
   ATLAS_GRAPH_MAX_RUN_SECONDS: ${ATLAS_GRAPH_MAX_RUN_SECONDS:-604800}
@@ -88,7 +83,6 @@ services:
           "-c",
           "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=2).read()",
         ]
-    volumes: *atlas-repository-volumes
     environment:
       <<:
         [
@@ -96,16 +90,16 @@ services:
           *atlas-nats-environment,
           *duckbasin-environment,
           *atlas-repository-environment,
-          *atlas-resource-environment,
           *atlas-graph-environment,
           *atlas-quack-environment,
         ]
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ATLAS_SEARCH_MODEL: ${ATLAS_SEARCH_MODEL:-openai:gpt-5.6-luna}
-      ATLAS_SEARCH_MODEL_TIMEOUT_SECONDS: ${ATLAS_SEARCH_MODEL_TIMEOUT_SECONDS:-60}
-      ATLAS_SEARCH_MODEL_REQUEST_LIMIT: ${ATLAS_SEARCH_MODEL_REQUEST_LIMIT:-32}
-      ATLAS_SEARCH_TOOL_CALL_LIMIT: ${ATLAS_SEARCH_TOOL_CALL_LIMIT:-24}
-      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      ATLAS_IDEA_MODEL: ${ATLAS_IDEA_MODEL:-openai:gpt-5.6-luna}
+      ATLAS_SQL_MODEL: ${ATLAS_SQL_MODEL:-openai:gpt-5.6-luna}
+      ATLAS_ANALYTICS_MODEL_TIMEOUT_SECONDS: ${ATLAS_ANALYTICS_MODEL_TIMEOUT_SECONDS:-60}
+      ATLAS_IDEA_REQUEST_LIMIT: ${ATLAS_IDEA_REQUEST_LIMIT:-4}
+      ATLAS_SQL_REQUEST_LIMIT: ${ATLAS_SQL_REQUEST_LIMIT:-32}
+      ATLAS_SQL_TOOL_CALL_LIMIT: ${ATLAS_SQL_TOOL_CALL_LIMIT:-24}
     depends_on:
       atlas-setup:
         condition: service_completed_successfully
@@ -116,7 +110,6 @@ services:
     command: atlas-worker acquisition
     deploy:
       replicas: 2
-    volumes: *atlas-repository-volumes
     expose:
       - "9090"
       - "9099"
@@ -136,7 +129,6 @@ services:
           *atlas-nats-environment,
           *duckbasin-environment,
           *atlas-repository-environment,
-          *atlas-resource-environment,
           *atlas-graph-environment,
         ]
       CDP_URL: ${CDP_URL:-ws://192.168.30.201:8411/v1/connect}
@@ -149,7 +141,7 @@ services:
     <<: *atlas-backend
     command: atlas-worker ingestion
     deploy:
-      replicas: 4
+      replicas: 1
     volumes: *atlas-repository-volumes
     expose:
       - "9091"
@@ -170,7 +162,6 @@ services:
           *atlas-nats-environment,
           *duckbasin-environment,
           *atlas-repository-environment,
-          *atlas-resource-environment,
         ]
       ATLAS_REPOSITORY_STAGING_ROOT: /app/.atlas/repository/staging
     depends_on:
@@ -182,8 +173,7 @@ services:
     <<: *atlas-backend
     command: atlas-worker materialization
     deploy:
-      replicas: 2
-    volumes: *atlas-repository-volumes
+      replicas: 1
     expose:
       - "9093"
       - "9096"
@@ -202,10 +192,7 @@ services:
           *atlas-control-environment,
           *atlas-nats-environment,
           *duckbasin-environment,
-          *atlas-repository-environment,
-          *atlas-resource-environment,
         ]
-      ATLAS_REPOSITORY_STAGING_ROOT: /app/.atlas/repository/staging
     depends_on:
       atlas-setup:
         condition: service_completed_successfully
@@ -216,7 +203,6 @@ services:
   atlas-catalogue-relay:
     <<: *atlas-backend
     command: atlas-worker catalogue-relay
-    volumes: *atlas-repository-volumes
     expose:
       - "9097"
       - "9098"
@@ -232,12 +218,9 @@ services:
     environment:
       <<:
         [
-          *atlas-control-environment,
           *atlas-nats-environment,
           *duckbasin-nats-environment,
           *duckbasin-environment,
-          *atlas-repository-environment,
-          *atlas-resource-environment,
         ]
     depends_on:
       atlas-setup:
@@ -266,7 +249,6 @@ services:
           *atlas-control-environment,
           *atlas-nats-environment,
           *atlas-repository-environment,
-          *atlas-resource-environment,
           *atlas-graph-environment,
         ]
       ATLAS_REPOSITORY_STAGING_ROOT: /app/.atlas/repository/staging
@@ -283,12 +265,10 @@ services:
       dockerfile: docker/atlas/Dockerfile
     # Run the image-time package so schema changes require an explicit rebuild.
     command: python -m deployment
-    volumes: *atlas-repository-volumes
     environment:
       <<:
         [
           *atlas-control-environment,
           *duckbasin-environment,
-          *atlas-repository-environment,
         ]
     restart: "no"

@@ -4,10 +4,50 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import datetime
+from functools import cache
+from importlib.metadata import version
 from typing import BinaryIO
+from uuid import UUID
+
+from magika import Magika, MagikaError
 
 from repository.exceptions import RepositoryIntegrityError
-from repository.objects.store import ObjectStore
+from repository.objects.store import ObjectStore, ObjectWriteHeaders
+
+
+ARTIFACT_MEDIA_TYPE_DETECTOR = "magika"
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactMediaTypeDetection:
+    media_type: str
+    detector_name: str
+    detector_version: str
+    confidence: float
+
+
+@cache
+def _artifact_media_type_detector() -> Magika:
+    return Magika()
+
+
+def detect_artifact_media_type(content: bytes) -> ArtifactMediaTypeDetection:
+    """Return Magika's raw prediction and score for immutable artifact bytes."""
+
+    detector = _artifact_media_type_detector()
+    try:
+        result = detector.identify_bytes(content)
+    except MagikaError as exc:
+        raise RepositoryIntegrityError(
+            "artifact media type detection failed"
+        ) from exc
+    return ArtifactMediaTypeDetection(
+        media_type=result.dl.mime_type,
+        detector_name=ARTIFACT_MEDIA_TYPE_DETECTOR,
+        detector_version=version("magika"),
+        confidence=float(result.score),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +82,16 @@ class RawArtifactRepository:
     def __init__(self, store: ObjectStore) -> None:
         self.store = store
 
-    def put(self, content: BinaryIO, *, identity: ArtifactIdentity) -> StoredArtifact:
+    def put(
+        self,
+        content: BinaryIO,
+        *,
+        identity: ArtifactIdentity,
+        source_url: str,
+        crawl_id: UUID,
+        captured_at: datetime,
+        content_type: str,
+    ) -> StoredArtifact:
         key = identity.object_key
         if self.store.exists(key):
             self.verify(key, expected=identity)
@@ -54,7 +103,18 @@ class RawArtifactRepository:
             )
 
         content.seek(0)
-        created = self.store.put_if_absent(key, content)
+        created = self.store.put_if_absent(
+            key,
+            content,
+            headers=ObjectWriteHeaders(
+                content_type=content_type,
+                metadata={
+                    "url": source_url,
+                    "crawl-id": str(crawl_id),
+                    "captured-at": captured_at.isoformat(),
+                },
+            ),
+        )
         self.verify(key, expected=identity)
         return StoredArtifact(
             sha256=identity.sha256,

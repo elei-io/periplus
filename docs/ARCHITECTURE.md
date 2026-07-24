@@ -8,8 +8,8 @@ vendor, proxy, profile, or transport; the CDP service owns those decisions and t
 
 | System | Owns |
 |---|---|
-| Postgres | Editable graphs, domain politeness, content policies, schedules, matches, schemas, macro and materialization definitions, and durable chat workspace items |
-| Atlas NATS JetStream/KV | Graph runs, crawl work, progress, leases, workers, admission, resource grants, and per-table catalogue events |
+| Postgres | Editable control state plus current graph runs, requests, edge evaluations, admission deduplication, progress counters, and the graph outbox |
+| Atlas NATS JetStream/KV | Graph work delivery, leases, workers, domain pacing, query status, and catalogue events |
 | Basin NATS JetStream | Managed DuckLake global DDL and DML CDC source streams |
 | CDP service | Acquisition transport, provider selection, browser farm, and acquisition capacity |
 | DuckBasin | DuckLake metadata, Parquet storage, Quack compute, session routing, CDC, compaction, and lake maintenance |
@@ -42,8 +42,9 @@ changing the Atlas contract.
 
 The acquisition handler never opens DuckLake or waits for catalogue processing. The co-located
 graph-navigation runtime opens a bounded read-only connection only for edges that explicitly join
-historical catalogue state. Acquisition publishes navigation readiness after ingestion work has a
-durable JetStream PubAck, so traversal completion means every catalogue job was accepted, not that
+historical catalogue state. Acquisition transactionally checkpoints navigation readiness into the
+graph outbox after ingestion work has a durable JetStream PubAck. The relay marks delivery only
+after its own PubAck, so traversal completion means every catalogue job was accepted, not that
 DuckLake has committed it. Atlas has one crawl
 subject and one horizontally scalable acquisition-worker deployment. The CDP service, not Atlas, is
 responsible for transport-specific queues and browser capacity.
@@ -78,9 +79,9 @@ quality findings from immutable crawls, step evidence, and element rows.
 
 ## Catalogue work
 
-Ingestion is `critical`. Each process mints one DuckBasin client with an expiring service-account
-token and a routing session ID. Local Arrow or Parquet batches stream through Quack into the remote
-lake; Atlas never receives the lake's object-store credentials.
+Ingestion is `critical`. Each process mints four independent DuckBasin clients with expiring
+service-account tokens and routing session IDs. Local Arrow or Parquet batches stream through Quack
+into the remote lake; Atlas never receives the lake's object-store credentials.
 
 The catalogue ingress owns two durable consumers in Basin NATS: one global DML tick stream and one
 global DDL stream for the selected lake. It republishes DDL into Atlas NATS and resolves each DML
@@ -102,25 +103,33 @@ connections and are serialized within each acquisition process.
 Interactive catalogue reads enter through the Atlas API. Each API replica owns a bounded pool of
 reusable DuckDB Quack client connections; analytical CPU, memory, and DuckLake access remain on the
 private Quack service. The API validates one read-only statement, rejects external file, dynamic
-SQL, secret, and non-Atlas catalogue access, acquires a deployment-wide `quack:query` permit, and
-streams bounded Arrow IPC results. Query status and cancellation requests use the expiring
+SQL, secret, and non-Atlas catalogue access, borrows one client from its local pool, and streams
+bounded Arrow IPC results. Query status and cancellation requests use the expiring
 `atlas_catalogue_queries` NATS KV bucket, so another API replica can observe or cancel an execution.
-Timeout, row, encoded-byte, local-pool, and global-concurrency limits are mandatory.
+Timeout, row, encoded-byte, and local-pool limits are mandatory. Basin owns remote admission and
+compute scaling.
 
-The Atlas chat agent is an API-owned adapter over that same interactive query boundary. Its
+The Atlas analytics agent is an API-owned adapter over that same interactive query boundary. Its
 PydanticAI loop and typed catalogue tools live under `backend/agents/`; neither the model nor the
-browser receives a Quack connection or storage credentials. Postgres retains Atlas-owned chat
-messages, bounded normalized tool artifacts, and explicit user actions; it never stores raw provider
-responses or graph execution state. The agent reads current graph-run state directly from NATS and
-live graph and schedule definitions from Postgres. A turn may retain several independently
-approvable acquisition plans and schedule-change proposals. The sole bounded acquisition
-capability is a one-page reconnaissance probe: it submits the seeded `single-page` graph through
-the ordinary run path and observes that crawl's NATS ingestion result until its base evidence is
-catalogue-visible or the bounded wait expires. Corpus execution and schedule mutation remain
-explicit user actions. Each agent turn remains request-attached while Atlas emits its
-own stable SSE progress events, executed SQL, bounded rows, completeness metadata, and final response. The
-tool implementations are independent of HTTP and agent transport so a CLI or future MCP server can
-reuse them without duplicating catalogue access or validation.
+browser receives a Quack connection or storage credentials. Each home-page question is an isolated,
+request-scoped investigation with no conversation context or Atlas persistence. The configured idea
+model first classifies the question and produces exactly three analytical directions: one primary
+brief that directly answers the user and two distinct supporting or otherwise relevant briefs.
+Three SQL-model agents then investigate those directions concurrently. Each can discover public
+catalogue relations and macros and execute validated read-only SQL. After all directions settle, the
+idea model synthesizes their answers and bounded evidence digests into the combined response. None
+of the agents can read graph execution state, crawl or schedule control state, inspect live pages,
+search the public web, propose acquisition, or mutate Atlas.
+
+Atlas streams its own stable analytics events containing every model-invoked analytical SQL query
+that completed successfully, its direction, bounded rows, and completeness metadata; each
+direction's answer; and the final idea-model synthesis. SQL result rows remain separated by
+direction in the UI.
+Questions, answers, and query results remain only in request and browser memory and disappear on
+replacement, navigation, or reload. The expiring NATS query-status record remains part of the shared
+interactive-query boundary; it contains operational status rather than question or result history.
+The tool implementations remain independent of HTTP and agent transport so another adapter can reuse
+catalogue validation without gaining a second catalogue path.
 
 Each API process owns one session-affine Basin catalogue-control connection, pinned to one thread
 and one operation at a time. It performs definition work such as creating or updating views,
@@ -137,12 +146,12 @@ corresponding horizontally routed Quack endpoint.
 
 ## Repository boundary
 
-Raw HTML is immutable and content addressed. Object keys are repository-relative. Postgres never
-stores crawl history, NATS never becomes analytical history, and DuckLake never becomes the editable
-control plane. NATS execution records are deliberately bounded operational state. A graph run may
-remain active for at most `ATLAS_GRAPH_MAX_RUN_SECONDS` (seven days by default); crawl-request,
-edge-evaluation, sharded admission-deduplication, compact run-summary, and progress records expire
-after thirty days by default. DuckLake remains the only long-lived crawl history.
+Raw HTML is immutable and content addressed. Object keys are repository-relative. Postgres stores
+current workflow state, never crawl evidence; NATS is a delivery fabric, never workflow authority or
+analytical history; DuckLake never becomes the editable control plane. Each run persists its own
+deadline, defaulting from `ATLAS_GRAPH_MAX_RUN_SECONDS`, and may be paused and resumed without losing
+its frontier. Housekeeping deletes terminal operational rows in bounded batches after
+`ATLAS_GRAPH_RUN_RETENTION_SECONDS`. DuckLake remains the only long-lived crawl history.
 
 Root feeding and edge traversal admit only a bounded window of acquisition work per run. A durable
 root cursor refills that window after slot release and worker restart. The shared crawl consumer
@@ -159,6 +168,7 @@ fixed overlap and misfire behavior. The API process runs the thin scheduler adap
 admission and deterministic identity live under `runtime/`.
 
 Every admitted occurrence uses the ordinary graph-run path: Atlas snapshots the latest saved graph,
-freezes the schedule's current root URLs and per-run maximum crawl budget, and creates NATS-owned execution state. A deterministic
+freezes the schedule's current root URLs and per-run maximum crawl budget, and creates transactional
+Postgres execution state plus outbox rows. A deterministic
 run ID derived from the schedule and occurrence makes concurrent API replicas and crash recovery
 converge on one graph run. Manual “run now” actions do not consume the schedule run count.

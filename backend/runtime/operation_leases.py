@@ -174,8 +174,8 @@ async def operation_leases(
 ) -> AsyncIterator[OperationLeaseGuard]:
     """Lease operations in stable order and renew them until the work exits.
 
-    PostgreSQL advisory locks remain the commit fence. These leases prevent a
-    redelivered message from repeating expensive compute or waiting on that fence.
+    These leases prevent redelivered messages or horizontal replicas from
+    repeating the same expensive durable operation.
     """
 
     identities = sorted(set(operation_ids))

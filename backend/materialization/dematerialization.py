@@ -13,6 +13,7 @@ from db.session import session_scope
 from repository.catalogue.materializations import (
     MaterializationError,
     MaterializationStore,
+    physical_materialization_name,
 )
 from repository.catalogue.views import CatalogueViewStore
 from repository.catalogue.views import CatalogueViewError
@@ -59,21 +60,23 @@ def dematerialize_one(catalogue, materialization_id: UUID) -> None:
             # A dropped or incompatible source can make the original SQL
             # unbindable. Removal must still self-destruct cleanly.
             view_store.drop(current_uuid=current_uuid)
-        if model.ducklake_table_uuid is not None:
-            try:
-                MaterializationStore(catalogue).table_identity(
-                    model.name,
-                    schema_name="_atlas_materializations",
-                )
-            except MaterializationError:
-                present = False
-            else:
-                present = True
-            if present:
-                MaterializationStore(catalogue).drop(
-                    name=model.name,
-                    expected_uuid=model.ducklake_table_uuid,
-                )
+        materializations = MaterializationStore(catalogue)
+        physical_name = physical_materialization_name(model.id)
+        try:
+            target = materializations.table_identity(
+                physical_name,
+                schema_name="_atlas_materializations",
+            )
+        except MaterializationError:
+            target = None
+        if target is not None:
+            # Bootstrap may have committed the private table before Atlas
+            # recorded its UUID in Postgres. The incarnation-derived private
+            # name still resolves its exact identity for cleanup.
+            materializations.drop(
+                name=physical_name,
+                expected_uuid=model.ducklake_table_uuid or target.table_uuid,
+            )
         model.archived_at = datetime.now(UTC)
         model.last_error = None
         session.flush()

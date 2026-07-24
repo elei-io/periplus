@@ -21,16 +21,17 @@ which standard CDP endpoint is configured.
 
 ## State ownership
 
-**Putting crawl history in Postgres.** Postgres is editable control state. Crawl evidence belongs in
-DuckLake; current work and progress belong in NATS.
+**Putting crawl history in Postgres.** Postgres owns editable control state and current workflow
+state. Crawl evidence belongs in DuckLake; current graph rows are checkpoints, not crawl history.
 
-**Using NATS as analytical history.** JetStream/KV state is current, bounded, and repairable. Durable
-evidence belongs in DuckLake and immutable objects.
+**Using NATS as workflow authority or analytical history.** JetStream delivers graph work from the
+transactional Postgres outbox. Redelivery is expected; Postgres generation and checkpoint state
+decide whether work is current. Durable evidence belongs in DuckLake and immutable objects.
 
-**Putting graph execution state in DuckLake.** Runs, crawl requests, admission frontiers,
-deduplication markers, claims, retries, scheduler state, and completion counters are operational
-NATS state. DuckLake contains retained crawl evidence only and must never become a workflow recovery
-path.
+**Putting graph execution state in DuckLake or NATS KV.** Runs, crawl requests, admission frontiers,
+deduplication markers, claims, retries, scheduler state, and completion counters are transactional
+Postgres state. DuckLake contains retained crawl evidence only; NATS only delivers work. Neither is
+a workflow recovery database.
 
 **Scoring content quality during ingestion.** Ingestion produces faithful structural evidence.
 Quality hypotheses change independently and must run later over DuckLake crawl attempts and element
@@ -57,19 +58,50 @@ independently and must not settle or fail graph traversal.
 **Creating action-specific traversal loops.** `crawl` is the only acquisition primitive. Express
 navigation with nodes and scoped SQL edges.
 
-**Using a generic completion or lock workflow.** Workers retain their durable work message while
-waiting for atomic expiring permit bundles. Permits, operation leases, and advisory locks have
-separate pressure, duplication, and correctness roles.
+**Reintroducing global resource locking.** Basin owns managed-lake capacity and each Atlas process
+owns bounded client and object-store pools. Do not coordinate unrelated catalogue, object, query,
+and hostname work through one deployment-wide lock or KV record. Distributed concurrency belongs
+only where Atlas owns the cross-replica contract, currently one independent key per website domain.
 
-**Letting Resource Governor own workflow.** It is an admission controller, not a queue, completion
-ledger, materialization orchestrator, or catalogue RPC service.
+**Holding Atlas Postgres locks across remote lake work.** A lock that starts around identity
+resolution and remains held while Quack performs a DuckLake transaction turns shared URL and
+content identities into a writer convoy. Durable ingestion uses its operation lease and the
+DuckLake transaction contract; do not wrap it in PostgreSQL advisory locks. Advisory locks are
+not part of Atlas's catalogue execution model.
+
+**Holding a Postgres connection across remote work.** Load and validate the bounded state required
+for CDP, object-store, NATS, or DuckBasin work, release the session, perform the remote operation,
+then open a short transaction to fence and commit the result. Row locks belong only around local
+state transitions. The fixed no-overflow pool is a hard safety rail, not a reason to hold sessions
+while waiting.
+
+**Leasing only a crawl request while appending shared catalogue identities.** Different crawls can
+discover the same URL or capture identical content. DuckLake append transactions and insert-only
+`MERGE` statements do not enforce Atlas's logical uniqueness by themselves, so fencing only the
+request identity lets concurrent batches both observe a missing canonical row and append it.
+Preflight existing immutable URL, document, and artifact identities in one bounded lookup, then
+lease every still-missing identity in stable order. The transaction must authoritatively re-read
+those identities after acquiring the leases. Existing documents undergoing projection replacement
+remain leased because their document and element rows are mutated.
+
+**Provisioning JetStream from request or polling paths.** `add_consumer()` is a control-plane
+mutation even when the durable already exists. Repeating it from API reads, scheduler ticks, or
+worker loops can force consumer leader elections and make a healthy NATS cluster time out. Reconcile
+streams, consumers, and KV contracts once during process startup, look up a durable before creating
+it, and reuse the resulting process-owned handles for ordinary work.
 
 ## Catalogue correctness
 
 **Sharing session-affine Basin connections.** Every DuckDB client has a routing session ID and owns
-its minted Quack attachment for its lifetime. A process serializes use of its catalogue-control
-connection and scales with replicas under shared permits; never hand one connection to concurrent
-operations or reconstruct its URI without the same session ID.
+its minted Quack attachment for its lifetime. One client remains serialized, while a process gains
+concurrency from its bounded client pool. Never hand one connection to concurrent operations or
+reconstruct its URI without the same session ID.
+
+**Reminting an active Basin transaction.** Before an operation starts, Atlas replaces a connection
+whose OAuth credential generation is stale. It may also retry one nontransactional operation after
+Quack reports an invalid session or rejected credential. Once `BEGIN` succeeds, never move work to
+a replacement session: surface the failure so the owning durable job can retry the whole
+transaction.
 
 **Running interactive analytics on the API's catalogue-control connection.** Each API replica has
 one small, serialized Basin connection for mandatory definition work. Interactive routes use the
@@ -77,8 +109,12 @@ separate bounded Basin client pool; they never share the definition connection.
 
 **Giving agents a second catalogue path.** Agent tools must use the same validated interactive
 Quack boundary as the workbench. Do not let a model connect directly to DuckLake, execute SQL on the
-API control connection, call an internal HTTP route, or move the tool loop into the browser. Keep
-typed capabilities transport-neutral and adapt them to PydanticAI, CLI, or MCP at the edge.
+API control connection, call an internal HTTP route, or move the tool loop into the browser. The
+analytics pipeline is catalogue-only and request-scoped. The idea model plans and synthesizes but
+has no catalogue tools; the three SQL agents use only the shared interactive boundary. Do not give
+either role crawl, schedule, NATS graph, live-page, web-search, acquisition, mutation, or
+conversation-history capabilities. Keep typed catalogue capabilities transport-neutral and adapt
+them to PydanticAI, CLI, or MCP at the edge.
 
 **Exposing Quack or storage configuration to the browser.** Cloudflare Access protects Atlas Web/API,
 not Quack. The browser submits SQL to Atlas API and consumes Arrow IPC. Keep the Quack URI and token,
@@ -95,6 +131,14 @@ reproduced against `nl.train_stations` and directly affects Atlas's `_atlas` and
 `_atlas_materializations` schemas. Do not hide it behind an Atlas `query(...)` rewrite or collapse
 tables into `main`. The risk is explicitly accepted for the initial managed deployment; retain
 qualified SQL and consume the upstream Quack fix when released.
+
+**Treating a long Quack mutation as exactly-once without query-completion acknowledgement.** The
+pre-acknowledgement Quack build can replay a long CTAS against the same server connection: the
+second execution reports that its new table already exists, then rollback leaves no committed
+target. Making the statement `OR REPLACE` is not a correctness fix because the transaction itself
+can disappear before Atlas observes `COMMIT`. Do not acknowledge materialization work, advance its
+snapshot fence, or retry it as ordinary SQL until the deployed client and server include and enable
+Quack's query-completion acknowledgement/reconnect contract.
 
 **Treating Quack's public `query(...)` macro as a lake sandbox.** A Basin Quack server currently
 lets remote SQL resolve its attached `control` Postgres catalog. Catalog enumeration exposed

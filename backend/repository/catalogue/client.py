@@ -12,7 +12,12 @@ import duckdb
 import pyarrow as pa
 
 from repository.catalogue.config import CatalogueConfig
-from repository.catalogue.duckbasin import DuckBasinClientMinter, MintedDuckDB
+from repository.catalogue.duckbasin import (
+    DuckBasinClientMinter,
+    MintedDuckDB,
+    is_quack_authorization_error,
+    is_recoverable_quack_connection_error,
+)
 from repository.catalogue.exceptions import CatalogueSchemaError
 from repository.catalogue.schema import (
     INTERNAL_SCHEMA,
@@ -51,6 +56,10 @@ class Catalogue:
     @property
     def session_id(self) -> str:
         return self._minted.session_id
+
+    @property
+    def lake_slug(self) -> str:
+        return self._minted.lake_slug
 
     @contextmanager
     def transaction(self) -> Iterator[Catalogue]:
@@ -144,7 +153,14 @@ class Catalogue:
         return int(value) if value is not None else None
 
     def last_committed_snapshot(self) -> int | None:
-        return self.latest_snapshot()
+        """Return the snapshot committed most recently by this remote session."""
+
+        rows = self.remote_rows(
+            "SELECT id FROM "
+            f"{_quote_identifier(self.config.alias)}.last_committed_snapshot()"
+        )
+        value = rows[0][0] if rows else None
+        return int(value) if value is not None else None
 
     def remote_rows(
         self,
@@ -228,21 +244,32 @@ class Catalogue:
     def _execute_remote(self, local_sql: str, remote_sql: str):
         return self._execute_local(local_sql, [remote_sql])
 
+    def _ensure_fresh_connection(self) -> None:
+        failed_minted = self._minted
+        if (
+            not self._remote_transaction_active
+            and self._minter.connection_credentials_stale(failed_minted)
+        ):
+            self._remint_connection(failed_minted)
+
     def _execute_local(self, sql: str, parameters=None):
+        self._ensure_fresh_connection()
         failed_minted = self._minted
         try:
             return failed_minted.connection.execute(sql, parameters)
-        except duckdb.InvalidInputException as exc:
+        except duckdb.Error as exc:
             if (
                 self._remote_transaction_active
-                or "Invalid connection id" not in str(exc)
+                or not is_recoverable_quack_connection_error(exc)
             ):
                 raise
-        self._remint_after_expired_connection(failed_minted)
+            if is_quack_authorization_error(exc):
+                self._minter.invalidate_connection_credentials(failed_minted)
+        self._remint_connection(failed_minted)
         return self._minted.connection.execute(sql, parameters)
 
-    def _remint_after_expired_connection(self, failed: MintedDuckDB) -> None:
-        """Replace a Quack connection invalidated by scale-to-zero."""
+    def _remint_connection(self, failed: MintedDuckDB) -> None:
+        """Replace a Quack connection with stale routing or credentials."""
 
         with self._remint_lock:
             if self._minted is not failed:
@@ -281,6 +308,7 @@ class _ResilientDuckDBConnection:
         return self._catalogue._execute_local(sql, parameters)
 
     def __getattr__(self, name: str):
+        self._catalogue._ensure_fresh_connection()
         return getattr(self._catalogue._minted.connection, name)
 
 

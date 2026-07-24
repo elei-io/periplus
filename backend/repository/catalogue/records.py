@@ -27,6 +27,11 @@ class ArtifactRecord(CatalogueRecord):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     object_key: str = Field(min_length=1)
     size_bytes: int = Field(ge=0)
+    response_media_type: str = Field(min_length=1)
+    detected_media_type: str = Field(min_length=1)
+    detector_name: str = Field(min_length=1)
+    detector_version: str = Field(min_length=1)
+    detection_confidence: float = Field(ge=0, le=1)
     created_at: datetime
 
 

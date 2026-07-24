@@ -4,8 +4,10 @@ import hashlib
 import io
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
+from uuid import UUID
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -33,7 +35,14 @@ class RepositoryOperationsApiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = FileObjectStore(Path(temp_dir) / "objects")
             html_repository = RawHtmlRepository(store)
-            stored = html_repository.put(html, chunk_chars=7)
+            stored = html_repository.put(
+                html,
+                source_url="https://example.com/",
+                crawl_id=UUID("12345678-1234-5678-1234-567812345678"),
+                captured_at=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+                content_type="text/html",
+                chunk_chars=7,
+            )
             with patch(
                 "api.routers.repository_operations.object_store_from_env",
                 return_value=store,
@@ -76,6 +85,10 @@ class RepositoryOperationsApiTests(unittest.TestCase):
             stored = artifact_repository.put(
                 io.BytesIO(payload),
                 identity=identity,
+                source_url="https://example.com/report.pdf",
+                crawl_id=UUID("12345678-1234-5678-1234-567812345678"),
+                captured_at=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+                content_type="application/pdf",
             )
             with patch(
                 "api.routers.repository_operations.object_store_from_env",

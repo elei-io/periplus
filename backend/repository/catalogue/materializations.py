@@ -17,6 +17,7 @@ _SAFE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _CHANGED_KEYS_TABLE = "_atlas_materialization_changed_keys"
 _SCOPED_SOURCE_ALIAS = "_atlas_materialization_source"
 _SCOPED_CHANGED_ALIAS = "_atlas_materialization_changed"
+_PHYSICAL_NAME_PREFIX = "m_"
 
 
 class MaterializationError(ValueError):
@@ -33,6 +34,12 @@ class MaterializationSchemaChangeError(MaterializationError):
 
 class MaterializationAppendOnlyViolation(MaterializationError):
     pass
+
+
+def physical_materialization_name(materialization_id: UUID) -> str:
+    """Return the private table name owned by one immutable incarnation."""
+
+    return f"{_PHYSICAL_NAME_PREFIX}{materialization_id.hex}"
 
 
 @dataclass(frozen=True, slots=True)
