@@ -7,7 +7,9 @@ separately in [COMPATIBILITY.md](COMPATIBILITY.md).
 ## Final goal
 
 Every SQL statement whose meaning is authored or influenced by a user enters
-Atlas through `atlas_sql.AtlasCompiler` before it reaches DuckDB or DuckLake.
+Atlas through the embedded `atlas_sql.AtlasCompiler` adapter before it reaches
+DuckDB or DuckLake. External Python callers enter through `atlas-sdk` and receive
+the same versioned wire result.
 The caller supplies an execution purpose and receives one typed decision:
 
 - `invalid`: the SQL is not valid for the selected public boundary and must not
@@ -82,13 +84,13 @@ Every SQL call site must be classified into one of these classes:
 | Analytics agents | Adopted | Agent SQL uses the same interactive compiler and bounded execution runtime as the workbench. |
 | Materialization eligibility | Adopted | Full/keyed/append eligibility uses compiler purposes and fails closed when a refresh proof is unavailable. |
 | Materialization execution | Adopted | Refresh SQL is compiled from the current DuckLake definition snapshot before execution. |
-| Python SDK and HTTP compilation | Adopted | Embedded and remote `AtlasCompiler.compile()` return the same typed result contract. |
-| Comparative lake analysis | Adopted, incomplete failure model | `AtlasCompiler.analyze()` uses the bounded runtime, but an authored-plan failure currently prevents a partial comparison result. |
+| Python SDK and HTTP compilation | Adopted | The independent `atlas-sdk` distribution provides typed sync and async remote clients; Atlas's embedded adapter returns the same wire models. |
+| Comparative lake analysis | Adopted | Authored and compiled plans retain independent bounded outcomes, including partial results when only one plan succeeds. |
 | DuckLake definitions | Adopted for compilation | Macro, view, and scalar-function safety metadata are read from DuckLake, fingerprinted, cached for 60 seconds, and invalidated by DDL events. |
 | Saved-query create/update | Adopted | Every revision stores its advisory outcome, diagnostics, dependencies, compiler version, and definition revision. Execution still recompiles through the interactive boundary. |
 | View definition create/update | Adopted | Definition analysis runs against the current DuckLake snapshot before DDL; managed references retain diagnostics and dependency paths. |
 | Scalar/table macro create/update | Adopted | Definition analysis runs before DDL and retained control records expose diagnostics and direct or transitive dependency paths. |
-| Crawl graph-edge validation/execution | Adopted | Definition validation and frozen runtime execution use `GraphEdgePurpose`; page-only edges retain standalone DuckDB execution and historical edges retain their run-pinned DuckLake snapshot. |
+| Crawl graph-edge validation/execution | Adopted | Definition validation and frozen runtime execution use `GraphEdgePurpose`; executable edge SQL and its catalogue-definition revision are frozen before admission, page-only edges retain standalone DuckDB execution, and historical edges retain their run-pinned DuckLake snapshot. |
 | Administrative previews | Adopted | User-authored execution uses the interactive boundary; metadata-only reads use explicitly named trusted operations. |
 | Internal SQL | Adopted | Repository and worker SQL uses explicitly named trusted connection, row, or execution APIs, enforced by architecture tests. |
 

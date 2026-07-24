@@ -17,8 +17,6 @@ from catalogue.compiler import (
     PartitionColumn,
     ScalarMacroDefinition,
     ScalarFunctionDefinition,
-    SqlCompilationOutcome as CompilationOutcome,
-    SqlCompilationPurpose as CompilationPurposeName,
     TableMacroDefinition,
     ViewDefinition,
     classify_catalogue_statement,
@@ -41,6 +39,8 @@ from .models import (
     CompilationDiagnostic,
     CompilationResult,
     CompilationEstimate,
+    CompilationOutcome,
+    CompilationPurposeName,
     DefinitionDependency,
     ScanEstimate,
 )

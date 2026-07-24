@@ -14,7 +14,9 @@ for materialization.
 
 ## Product boundary
 
-All user-authored catalogue SQL passes through `atlas_sql.AtlasCompiler`. It returns one typed result:
+All in-process user-authored catalogue SQL passes through the embedded
+`atlas_sql.AtlasCompiler` adapter. External callers use `atlas-sdk`; both return
+the same typed result:
 `invalid`, `unsupported`, `unchanged`, or `optimized`. Invalid SQL has no executable form.
 Unsupported interactive SQL retains the authored executable SQL and a warning. Unsupported
 materialization SQL is ineligible. Expected coverage gaps are data, not exceptions; compiler
@@ -177,8 +179,8 @@ that could change results belong in advisory diagnostics and are never applied a
 
 | Purpose | Implementation coverage | Fallback |
 |---|---|---|
-| Keyed materialization | Implemented | Original SQL wrapped in result-level changed-key filtering. |
-| Full materialization | Implemented | Authored SQL after read-only validation when catalogue-definition resolution is unavailable. |
+| Keyed materialization | Implemented | No executable fallback. Unsupported proof makes the definition ineligible. |
+| Full materialization | Implemented | No executable fallback. Definition-resolution or generated-SQL failure makes the definition ineligible. |
 | Interactive catalogue query | Implemented | Validate through the public read boundary, execute compiled SQL when available, and preserve the authored SQL as the non-blocking fallback. |
 | Catalogue definition analysis | Implemented | Preserve the authored definition unchanged; report advisory diagnostics and direct or transitive catalogue dependency paths. |
 | Graph-edge query | Implemented | Requires exactly one `$crawl_id`, an outer literal bounded `LIMIT`, a `url` output, and `edge.page_links`; valid unsupported optimization retains authored SQL only after those edge proofs pass. |

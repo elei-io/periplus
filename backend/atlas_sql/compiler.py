@@ -18,7 +18,11 @@ from catalogue.compiler import (
     compile_catalogue_sql,
 )
 
-from .models import AnalysisResult, CompilationResult
+from .models import (
+    AnalysisResult,
+    CompilationResult,
+    compilation_result_from_internal,
+)
 
 
 try:
@@ -169,7 +173,7 @@ class _EmbeddedCompilerBackend:
                 compiler_version=COMPILER_VERSION,
                 catalogue_revision=catalogue_revision,
             )
-        result = CompilationResult.from_internal(
+        result = compilation_result_from_internal(
             internal,
             catalogue_revision=catalogue_revision,
             compiler_version=COMPILER_VERSION,
@@ -272,6 +276,12 @@ class _RemoteCompilerBackend:
 
 
 def _public_diagnostic_category(code: str) -> str:
+    if code in {
+        "absurd_limit",
+        "missing_limit",
+        "unbounded_dom_helper",
+    }:
+        return "performance_advisory"
     if code == "invalid_query" or "syntax" in code:
         return "unsupported_syntax"
     if code in {"unsupported_function", "unsupported_relation"}:
@@ -281,6 +291,10 @@ def _public_diagnostic_category(code: str) -> str:
         "unbounded_relation",
         "key_not_preserved",
         "key_required",
+        "reserved_relation",
+        "source_not_read",
+        "unsupported_projection",
+        "unsupported_query_shape",
     }:
         return "unsafe_semantics"
     if code in {"unmanaged_relation", "unsupported_purpose"}:

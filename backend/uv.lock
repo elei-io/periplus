@@ -52,6 +52,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
+    { name = "atlas-sdk" },
     { name = "boto3" },
     { name = "croniter" },
     { name = "duckdb" },
@@ -85,6 +86,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.18" },
+    { name = "atlas-sdk", editable = "../sdk" },
     { name = "boto3", specifier = ">=1.42" },
     { name = "croniter", specifier = ">=6.0" },
     { name = "duckdb", specifier = "==1.5.4" },
@@ -112,6 +114,21 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [{ name = "httpx2", specifier = ">=2.5" }]
+
+[[package]]
+name = "atlas-sdk"
+version = "0.1.0"
+source = { editable = "../sdk" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "pydantic", specifier = ">=2.12" },
+]
 
 [[package]]
 name = "boto3"

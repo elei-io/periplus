@@ -176,6 +176,34 @@ class CatalogueCompilerTests(unittest.TestCase):
             [rewrite.rule for rewrite in result.applied_rewrites],
         )
 
+    def test_same_named_safe_metadata_cannot_approve_anonymous_udf(self) -> None:
+        result = compile_catalogue_sql(
+            "SELECT macros.effect(key) FROM source ORDER BY key LIMIT 3",
+            purpose=InteractiveQueryPurpose(
+                scalar_macros=(
+                    ScalarMacroDefinition(
+                        schema_name="macros",
+                        macro_name="effect",
+                        parameters=("key",),
+                        sql="effect_udf(key)",
+                    ),
+                ),
+                scalar_functions=(
+                    ScalarFunctionDefinition(
+                        schema_name="other_schema",
+                        function_name="effect_udf",
+                        has_side_effects=False,
+                        stability="CONSISTENT",
+                    ),
+                ),
+            ),
+        )
+
+        self.assertNotIn(
+            "bounded_scalar_input",
+            [rewrite.rule for rewrite in result.applied_rewrites],
+        )
+
     def test_central_sql_chokepoint_is_non_throwing_for_expected_outcomes(
         self,
     ) -> None:
@@ -259,6 +287,42 @@ class CatalogueCompilerTests(unittest.TestCase):
             SqlCompilationOutcome.UNSUPPORTED,
         )
         self.assertFalse(incompatible.materialization_eligible)
+        self.assertIsNone(incompatible.executable_sql)
+
+    def test_duckdb_sampling_is_preserved_or_fails_materialization_closed(
+        self,
+    ) -> None:
+        sql = "SELECT id FROM t USING SAMPLE 100 PERCENT ORDER BY id"
+
+        interactive = compile_catalogue_sql(
+            sql,
+            purpose=InteractiveQueryPurpose(),
+        )
+        full = compile_catalogue_sql(
+            sql,
+            purpose=FullMaterializationPurpose(),
+        )
+        keyed = compile_catalogue_sql(
+            sql,
+            purpose=KeyedMaterializationPurpose(
+                source_table="t",
+                key_columns=("id",),
+            ),
+        )
+
+        self.assertEqual(interactive.outcome, SqlCompilationOutcome.UNCHANGED)
+        self.assertEqual(interactive.executable_sql, sql)
+        with duckdb.connect() as connection:
+            connection.execute("CREATE TABLE t(id INTEGER)")
+            connection.execute("INSERT INTO t VALUES (1), (2)")
+            self.assertEqual(
+                connection.execute(interactive.executable_sql).fetchall(),
+                [(1,), (2,)],
+            )
+        for result in (full, keyed):
+            self.assertEqual(result.outcome, SqlCompilationOutcome.UNSUPPORTED)
+            self.assertFalse(result.materialization_eligible)
+            self.assertIsNone(result.executable_sql)
 
     def test_central_sql_chokepoint_logs_coverage_without_raw_sql(
         self,

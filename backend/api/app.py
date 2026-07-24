@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from api.catalogue_control import CatalogueControl
 from api.graph_runtime import ApiGraphRuntime
+from api.graph_submission import frozen_edge_compiler
 from api.routers import (
     catalogue,
     catalogue_queries,
@@ -125,6 +126,10 @@ async def lifespan(app: FastAPI):
         async def invalidate_compiler_definitions(_message) -> None:
             compiler_definitions.invalidate()
 
+        async def compile_scheduled_edge(sql: str):
+            definitions = await compiler_definitions.get()
+            return await frozen_edge_compiler(definitions)(sql)
+
         ddl_subscription = await nats_client.subscribe(
             DDL_SUBJECT,
             cb=invalidate_compiler_definitions,
@@ -138,6 +143,7 @@ async def lifespan(app: FastAPI):
                 progress=runs,
                 jetstream=jetstream,
                 catalogue_snapshot_resolver=catalogue_control.latest_snapshot,
+                edge_compiler=compile_scheduled_edge,
             ),
             name="crawl-scheduler",
         )

@@ -1,11 +1,21 @@
-.PHONY: sync check setup catalogue-check catalogue-benchmark verify-remote-runtime worker-independence-smoke worker-horizontal-smoke reliability-check docs-diagrams api acquisition-worker ingestion-worker catalogue-relay-worker materialization-worker housekeeping-worker cli db-revision compose-up compose-down
+.PHONY: sync check console-check sdk-check setup catalogue-check catalogue-benchmark verify-remote-runtime worker-independence-smoke worker-horizontal-smoke reliability-check docs-diagrams api acquisition-worker ingestion-worker catalogue-relay-worker materialization-worker housekeeping-worker cli db-revision compose-up compose-down
 
 sync:
 	cd backend && uv sync
+	npm install
 
 check:
 	cd backend && uv run python -m compileall actions agents api catalogue catalogue_relay cli config control db dom materialization observability repository runtime workers
 	cd backend && uv run python -m unittest discover -s tests
+	$(MAKE) sdk-check
+	$(MAKE) console-check
+
+sdk-check:
+	cd backend && uv run python -m unittest discover -s ../sdk/tests
+
+console-check:
+	npm run check:console
+	npm run test:console
 
 setup:
 	cd backend && uv run atlas-setup
@@ -52,7 +62,7 @@ housekeeping-worker:
 	cd backend && uv run atlas-worker housekeeping
 
 cli:
-	cd backend && uv run atlas --help
+	npm run atlas
 
 db-revision:
 	cd backend && uv run alembic -c db/alembic.ini revision --autogenerate -m "$(m)"

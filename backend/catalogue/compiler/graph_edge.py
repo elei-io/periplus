@@ -69,6 +69,11 @@ def graph_edge_uses_catalogue(sql: str) -> bool:
             "text_content",
         }:
             return True
+    for dot in statement.find_all(exp.Dot):
+        if isinstance(dot.this, exp.Identifier) and isinstance(
+            dot.expression, exp.Func
+        ):
+            return True
     for table in statement.find_all(exp.Table):
         if table.name.lower() in cte_names and not table.db:
             continue
@@ -92,7 +97,6 @@ def _validate_graph_edge_query(
     if (
         len(placeholders) != 1
         or placeholders[0].name != "crawl_id"
-        or sql.count("$crawl_id") != 1
     ):
         _invalid(
             "edge_crawl_id_required",

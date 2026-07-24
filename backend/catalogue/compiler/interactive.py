@@ -74,6 +74,7 @@ _DETERMINISTIC_ROW_LOCAL_FUNCTION_TYPES = (
 
 class InteractiveRewrite(StrEnum):
     BOUNDED_SCALAR_INPUT = "bounded_scalar_input"
+    CATALOGUE_DEFINITION_EXPANSION = "catalogue_definition_expansion"
     REPEATED_DERIVED_SCAN = "repeated_derived_scan"
     REDUNDANT_SCOPE = "redundant_scope"
     LEFT_JOIN_PREDICATE = "left_join_predicate"
@@ -108,6 +109,10 @@ _REWRITE_EVIDENCE = {
     InteractiveRewrite.BOUNDED_SCALAR_INPUT: (
         "A materialized ORDER BY/LIMIT/OFFSET boundary selects source rows "
         "before deterministic scalar macro evaluation."
+    ),
+    InteractiveRewrite.CATALOGUE_DEFINITION_EXPANSION: (
+        "Authoritative catalogue macro or view definitions were expanded "
+        "into the executable query."
     ),
     InteractiveRewrite.REPEATED_DERIVED_SCAN: (
         "Identical deterministic scans share one totally ordered row context."
@@ -181,6 +186,15 @@ def compile_interactive_query_with_explanation(
                 rule=InteractiveRewrite.BOUNDED_SCALAR_INPUT,
                 evidence=_REWRITE_EVIDENCE[
                     InteractiveRewrite.BOUNDED_SCALAR_INPUT
+                ],
+            )
+        )
+    if analysis.catalogue_resolution_applied:
+        applied.append(
+            AppliedInteractiveRewrite(
+                rule=InteractiveRewrite.CATALOGUE_DEFINITION_EXPANSION,
+                evidence=_REWRITE_EVIDENCE[
+                    InteractiveRewrite.CATALOGUE_DEFINITION_EXPANSION
                 ],
             )
         )

@@ -48,7 +48,7 @@ from .graph_queue import (
     update_edge_evaluation,
     update_graph_run,
 )
-from .edge_sql import edge_uses_catalogue
+from .edge_sql import FrozenEdgeSql, freeze_edge_sql
 
 _REQUEST_NAMESPACE = UUID("869ee36c-76ad-46f0-a1b7-9b28f4b71386")
 _TERMINAL_RUNS = {"completed", "completed_with_errors", "failed", "cancelled"}
@@ -310,6 +310,7 @@ async def create_graph_run(
     urls: list[str],
     policy_resolver: Callable[[str], dict],
     catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]] | None = None,
+    edge_compiler: Callable[[str], Awaitable[FrozenEdgeSql]] | None = None,
     trigger_kind: str = "manual",
     run_id: UUID | None = None,
     trigger_schedule_id: UUID | None = None,
@@ -318,11 +319,31 @@ async def create_graph_run(
     now: datetime | None = None,
 ) -> GraphRun:
     existing = await get_graph_run(runs, run_id) if run_id is not None else None
+    if existing is None:
+        compiled_edges = []
+        for edge in snapshot.edges:
+            compilation = (
+                await edge_compiler(edge.sql)
+                if edge_compiler is not None
+                else freeze_edge_sql(edge.sql)
+            )
+            compiled_edges.append(
+                edge.model_copy(
+                    update={
+                        "executable_sql": compilation.executable_sql,
+                        "uses_catalogue": compilation.uses_catalogue,
+                        "catalogue_revision": compilation.catalogue_revision,
+                    }
+                )
+            )
+        snapshot = snapshot.model_copy(update={"edges": compiled_edges})
+    else:
+        snapshot = existing.snapshot
     catalogue_snapshot_id = (
         existing.catalogue_snapshot_id if existing is not None else None
     )
     if existing is None and any(
-        edge_uses_catalogue(edge.sql) for edge in snapshot.edges
+        edge.uses_catalogue for edge in snapshot.edges
     ):
         if catalogue_snapshot_resolver is None:
             raise RuntimeError(
@@ -537,9 +558,7 @@ async def handle_navigation_readiness(
                 generation=event.generation,
                 navigation=event.navigation,
                 catalogue_snapshot_id=(
-                    run.catalogue_snapshot_id
-                    if edge_uses_catalogue(edge.sql)
-                    else None
+                    run.catalogue_snapshot_id if edge.uses_catalogue else None
                 ),
             )
             identity = edge_evaluation_identity(
@@ -659,7 +678,9 @@ async def evaluate_edge(
             asyncio.to_thread(
                 lambda: list(
                     execute_urls(
-                        edge.sql,
+                        edge.executable_sql
+                        if edge.executable_sql is not None
+                        else _missing_frozen_edge_sql(edge.id),
                         {
                             "crawl_id": work.crawl_id,
                             "_page_url": request.url,
@@ -780,3 +801,7 @@ async def evaluate_edge(
             f"edge evaluation {identity} was reclaimed before completion"
         )
     return count
+
+
+def _missing_frozen_edge_sql(edge_id: UUID) -> str:
+    raise RuntimeError(f"Frozen edge {edge_id} has no executable SQL.")

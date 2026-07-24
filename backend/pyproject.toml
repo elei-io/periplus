@@ -5,6 +5,7 @@ description = "Web acquisition and normalization for SQL-centric data pipelines"
 readme = { text = "Atlas backend services and command-line tools.", content-type = "text/markdown" }
 requires-python = ">=3.14"
 dependencies = [
+    "atlas-sdk>=0.1.0",
     "alembic>=1.18",
     "fastapi[standard]>=0.139.0",
     "httpx>=0.28",
@@ -30,6 +31,9 @@ dependencies = [
     "duckdb==1.5.4",
     "pydantic-ai-slim[openai]>=2.14.0",
 ]
+
+[tool.uv.sources]
+atlas-sdk = { path = "../sdk", editable = true }
 
 [dependency-groups]
 dev = [

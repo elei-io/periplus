@@ -28,7 +28,11 @@ from .relational import (
     analyze_query_lineage,
     analyze_scope_relations,
 )
-from .syntax import CatalogueQueryError, classify_select
+from .syntax import (
+    CatalogueQueryError,
+    CatalogueUnsupportedReadError,
+    classify_select,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +44,7 @@ class AnalyzedCatalogueQuery:
     relational_facts: tuple[ScopeRelationalFacts, ...]
     column_lineage: FrozenColumnLineage
     bounded_scalar_input: bool = False
+    catalogue_resolution_applied: bool = False
 
     @property
     def normalized_sql(self) -> str:
@@ -65,6 +70,16 @@ def analyze_catalogue_query(
 
     try:
         query = classify_select(sql)
+    except CatalogueUnsupportedReadError as exc:
+        error = QueryOptimizationUnavailable(
+            OptimizationDiagnostic(
+                code=OptimizationCode.UNSUPPORTED_QUERY_SHAPE,
+                message=str(exc),
+                sql_fragment=sql,
+                documentation_anchor="supported-subset",
+            )
+        )
+        raise error from exc
     except CatalogueQueryError as exc:
         error = QueryOptimizationUnavailable(
             OptimizationDiagnostic(
@@ -77,10 +92,13 @@ def analyze_catalogue_query(
     if not isinstance(query, exp.Query):
         raise QueryOptimizationUnavailable(
             OptimizationDiagnostic(
-                code=OptimizationCode.INVALID_QUERY,
-                message="Catalogue compilation requires one read-only query.",
+                code=OptimizationCode.UNSUPPORTED_QUERY_SHAPE,
+                message=(
+                    f"{type(query).__name__} is valid DuckDB read SQL but "
+                    "is not structurally optimized yet."
+                ),
                 sql_fragment=query.sql(dialect="duckdb"),
-                documentation_anchor="query-boundary",
+                documentation_anchor="supported-subset",
             )
         )
     bounded_query, bounded_scalar_input = (
@@ -110,6 +128,7 @@ def analyze_catalogue_query(
         relational_facts=relational_facts,
         column_lineage=analyze_query_lineage(scopes, relational_facts),
         bounded_scalar_input=bounded_scalar_input,
+        catalogue_resolution_applied=resolved != bounded_query,
     )
 
 

@@ -11,7 +11,11 @@ from catalogue.compiler import (
     SqlCompilationOutcome,
     SqlCompilationPurpose,
 )
-from runtime.edge_sql import compile_edge_sql, edge_uses_catalogue
+from runtime.edge_sql import (
+    compile_edge_sql,
+    edge_uses_catalogue,
+    freeze_edge_sql,
+)
 
 
 class GraphEdgeCompilerTests(unittest.TestCase):
@@ -139,6 +143,60 @@ class GraphEdgeCompilerTests(unittest.TestCase):
                 "WHERE p.crawl_id = $crawl_id LIMIT 10"
             )
         )
+        self.assertTrue(
+            edge_uses_catalogue(
+                "SELECT macros.choose_url(target_url) AS url "
+                "FROM edge.page_links "
+                "WHERE crawl_id = $crawl_id LIMIT 10"
+            )
+        )
+
+    def test_comments_and_literals_do_not_duplicate_crawl_binding(self) -> None:
+        for sql in (
+            "SELECT target_url AS url FROM edge.page_links "
+            "WHERE crawl_id = $crawl_id -- bind $crawl_id here\nLIMIT 10",
+            "SELECT target_url AS url FROM edge.page_links "
+            "WHERE crawl_id = $crawl_id AND '$crawl_id' <> '' LIMIT 10",
+        ):
+            with self.subTest(sql=sql):
+                result = AtlasCompiler.embedded().compile(
+                    sql,
+                    purpose=GraphEdgePurpose(),
+                )
+                self.assertTrue(result.valid)
+
+    def test_frozen_edge_classification_uses_expanded_sql(
+        self,
+    ) -> None:
+        frozen = freeze_edge_sql(
+            "SELECT macros.choose_url(target_url) AS url "
+            "FROM edge.page_links "
+            "WHERE crawl_id = $crawl_id LIMIT 10",
+            purpose=GraphEdgePurpose(
+                scalar_macros=(
+                    ScalarMacroDefinition(
+                        schema_name="macros",
+                        macro_name="choose_url",
+                        parameters=("value",),
+                        sql="value",
+                    ),
+                ),
+            ),
+            catalogue_revision="revision-9",
+        )
+
+        self.assertNotIn("macros.choose_url", frozen.executable_sql)
+        self.assertFalse(frozen.uses_catalogue)
+        self.assertEqual(frozen.catalogue_revision, "revision-9")
+
+        historical = freeze_edge_sql(
+            "SELECT p.target_url AS url FROM edge.page_links AS p "
+            "JOIN views.previous AS h USING (document_id) "
+            "WHERE p.crawl_id = $crawl_id LIMIT 10",
+            catalogue_revision="revision-9",
+        )
+        self.assertTrue(historical.uses_catalogue)
+        self.assertEqual(historical.catalogue_revision, "revision-9")
 
     def test_single_compilation_may_copy_the_crawl_predicate(self) -> None:
         sql = (

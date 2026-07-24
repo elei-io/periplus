@@ -13,7 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from api.graph_submission import submit_graph_run
+from api.graph_submission import frozen_edge_compiler, submit_graph_run
+from api.routers.catalogue import get_compiler_definitions
 from api.graph_runtime import ApiGraphRuntime, get_graph_runtime
 from api.catalogue_control import CatalogueControl, get_catalogue_control
 from config.performance import (
@@ -35,6 +36,9 @@ from control.crawl_graphs.service import (
 )
 from db.session import get_session
 from repository.ingestion.queue import DURABLE as INGESTION_DURABLE
+from repository.catalogue.compiler_definitions import (
+    CatalogueCompilerDefinitions,
+)
 from runtime.catalogue_events import DML_SUBJECT_PREFIX, EVENT_STREAM
 from runtime.catalogue_queue import WORK_STREAM
 from runtime.graph_queue import (
@@ -324,6 +328,10 @@ async def trigger(
     session: Annotated[Session, Depends(get_session)],
     control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
     runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
+    definitions: Annotated[
+        CatalogueCompilerDefinitions,
+        Depends(get_compiler_definitions),
+    ],
 ) -> GraphRunSubmission:
     try:
         run = await submit_graph_run(
@@ -332,6 +340,7 @@ async def trigger(
             graph_id=graph_id,
             urls=payload.urls,
             catalogue_snapshot_resolver=control.latest_snapshot,
+            edge_compiler=frozen_edge_compiler(definitions),
             max_crawls=payload.max_crawls,
             max_run_seconds=payload.max_run_seconds,
         )

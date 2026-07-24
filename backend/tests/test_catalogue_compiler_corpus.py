@@ -79,6 +79,45 @@ class CatalogueCompilerCombinationCorpusTests(unittest.TestCase):
                 connection.execute(sql).fetchall(),
             )
 
+    def test_valid_duckdb_pivot_syntax_is_an_authored_fallback(self) -> None:
+        with duckdb.connect() as connection:
+            _seed(connection)
+            for sql in (
+                (
+                    "PIVOT documents ON url USING count(*) "
+                    "GROUP BY document_id"
+                ),
+                (
+                    "UNPIVOT (SELECT CAST(document_id AS VARCHAR) AS "
+                    "document_id, url FROM documents) ON document_id, url "
+                    "INTO NAME source VALUE value"
+                ),
+                (
+                    "PIVOT documents ON url USING count(*) "
+                    "GROUP BY document_id ORDER BY document_id"
+                ),
+                (
+                    "UNPIVOT (SELECT CAST(document_id AS VARCHAR) AS "
+                    "document_id, url FROM documents) ON document_id, url "
+                    "INTO NAME source VALUE value ORDER BY source"
+                ),
+            ):
+                with self.subTest(sql=sql):
+                    authored = connection.execute(sql).fetchall()
+                    result = compile_catalogue_sql(
+                        sql,
+                        purpose=InteractiveQueryPurpose(),
+                    )
+                    self.assertEqual(
+                        result.outcome,
+                        SqlCompilationOutcome.UNSUPPORTED,
+                    )
+                    self.assertEqual(result.executable_sql, sql)
+                    self.assertEqual(
+                        connection.execute(result.executable_sql).fetchall(),
+                        authored,
+                    )
+
 
 def _query(*, wrapper: str, predicate: str, join: str) -> str:
     source = "SELECT document_id, url FROM documents"

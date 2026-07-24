@@ -9,6 +9,8 @@ import logging
 import time
 from typing import Literal
 
+import duckdb
+
 from .compiler import (
     compile_catalogue_query,
     compile_interactive_catalogue_query,
@@ -19,12 +21,17 @@ from .definition import (
 )
 from .errors import (
     OptimizationCode,
+    OptimizationDiagnostic,
     QueryOptimizationUnavailable,
 )
 from .metadata import CompilationEstimate
-from .lint import lint_catalogue_statement
+from .lint import (
+    CatalogueStatementKind,
+    classify_catalogue_statement,
+    lint_catalogue_statement,
+)
 from .physical import estimate_compilation
-from .syntax import classify_select
+from .syntax import CatalogueQueryError, classify_select
 from .graph_edge import (
     GraphEdgeCompilationError,
     compile_graph_edge_query,
@@ -140,6 +147,20 @@ def compile_catalogue_sql(
     applied: tuple[SqlAppliedRewrite, ...] = ()
     dependencies: tuple[CatalogueDefinitionDependency, ...] = ()
     normalized_authored: str | None = None
+    compilation_sql = sql
+    explain_prefix: str | None = None
+    if isinstance(purpose, InteractiveQueryPurpose):
+        try:
+            classified = classify_catalogue_statement(sql)
+        except CatalogueQueryError:
+            classified = None
+        if classified is not None and classified.kind is not CatalogueStatementKind.QUERY:
+            compilation_sql = classified.sql
+            explain_prefix = (
+                "EXPLAIN ANALYZE "
+                if classified.kind is CatalogueStatementKind.EXPLAIN_ANALYZE
+                else "EXPLAIN "
+            )
     try:
         if isinstance(purpose, CatalogueDefinitionPurpose):
             definition = analyze_catalogue_definition(sql, purpose=purpose)
@@ -158,10 +179,14 @@ def compile_catalogue_sql(
             )
         elif isinstance(purpose, InteractiveQueryPurpose):
             compilation = compile_interactive_catalogue_query(
-                sql,
+                compilation_sql,
                 purpose=purpose,
             )
-            executable_sql = compilation.sql
+            executable_sql = (
+                explain_prefix + compilation.sql
+                if explain_prefix is not None
+                else compilation.sql
+            )
             applied = tuple(
                 SqlAppliedRewrite(
                     rule=rewrite.rule.value,
@@ -184,16 +209,44 @@ def compile_catalogue_sql(
                 purpose=purpose,
             )
         if normalized_authored is None:
-            normalized_authored = classify_select(sql).sql(
+            normalized_authored = classify_select(compilation_sql).sql(
                 dialect="duckdb",
                 pretty=True,
             )
+        if isinstance(purpose, InteractiveQueryPurpose) and not applied:
+            executable_sql = sql
+        elif isinstance(purpose, FullMaterializationPurpose):
+            if executable_sql != normalized_authored:
+                applied = (
+                    SqlAppliedRewrite(
+                        rule="catalogue_definition_expansion",
+                        evidence=(
+                            "Authoritative catalogue definitions were expanded "
+                            "into the full-refresh query."
+                        ),
+                    ),
+                )
+        elif isinstance(purpose, KeyedMaterializationPurpose):
+            applied = (
+                SqlAppliedRewrite(
+                    rule="changed_key_scan_scope",
+                    evidence=(
+                        "Every proven dependent physical scan was restricted "
+                        "to the declared changed-key relation."
+                    ),
+                ),
+            )
+        if not (
+            isinstance(purpose, CatalogueDefinitionPurpose)
+            and purpose.kind == "scalar_macro"
+        ):
+            _validate_generated_sql(executable_sql)
         outcome = (
             SqlCompilationOutcome.UNCHANGED
             if isinstance(purpose, CatalogueDefinitionPurpose)
             else (
                 SqlCompilationOutcome.OPTIMIZED
-                if applied or executable_sql != normalized_authored
+                if applied
                 else SqlCompilationOutcome.UNCHANGED
             )
         )
@@ -206,6 +259,7 @@ def compile_catalogue_sql(
             )
             if isinstance(purpose, InteractiveQueryPurpose)
             and purpose.metadata is not None
+            and explain_prefix is None
             else None
         )
         result = SqlCompilationResult(
@@ -237,6 +291,14 @@ def compile_catalogue_sql(
         )
     except QueryOptimizationUnavailable as exc:
         invalid = exc.code is OptimizationCode.INVALID_QUERY
+        fallback_allowed = isinstance(
+            purpose,
+            (
+                CatalogueDefinitionPurpose,
+                GraphEdgePurpose,
+                InteractiveQueryPurpose,
+            ),
+        )
         diagnostics.append(
             SqlCompilationDiagnostic(
                 code=exc.code.value,
@@ -256,7 +318,9 @@ def compile_catalogue_sql(
                 else SqlCompilationOutcome.UNSUPPORTED
             ),
             authored_sql=sql,
-            executable_sql=None if invalid else sql,
+            executable_sql=(
+                sql if not invalid and fallback_allowed else None
+            ),
             diagnostics=tuple(diagnostics),
         )
     except Exception as exc:
@@ -285,6 +349,32 @@ def compile_catalogue_sql(
         duration_seconds=time.perf_counter() - started,
     )
     return result
+
+
+def _validate_generated_sql(sql: str) -> None:
+    """Fail closed when the generated DuckDB SQL is not one valid statement."""
+
+    try:
+        statements = duckdb.extract_statements(sql)
+    except duckdb.ParserException as exc:
+        raise QueryOptimizationUnavailable(
+            OptimizationDiagnostic(
+                code=OptimizationCode.UNSUPPORTED_QUERY_SHAPE,
+                message=(
+                    "Atlas could not render this DuckDB query safely; "
+                    "interactive execution should use the authored SQL."
+                ),
+                documentation_anchor="query-boundary",
+            )
+        ) from exc
+    if len(statements) != 1:
+        raise QueryOptimizationUnavailable(
+            OptimizationDiagnostic(
+                code=OptimizationCode.UNSUPPORTED_QUERY_SHAPE,
+                message="Generated SQL must contain exactly one statement.",
+                documentation_anchor="query-boundary",
+            )
+        )
 
 
 def _purpose_name(purpose: CompilationPurpose) -> SqlCompilationPurpose:
@@ -347,6 +437,12 @@ def _record_coverage(
 
 
 def _diagnostic_category(code: str) -> str:
+    if code in {
+        "absurd_limit",
+        "missing_limit",
+        "unbounded_dom_helper",
+    }:
+        return "performance_advisory"
     if code == OptimizationCode.INVALID_QUERY.value or "syntax" in code:
         return "unsupported_syntax"
     if code in {
@@ -359,6 +455,10 @@ def _diagnostic_category(code: str) -> str:
         OptimizationCode.UNBOUNDED_RELATION.value,
         OptimizationCode.KEY_NOT_PRESERVED.value,
         OptimizationCode.KEY_REQUIRED.value,
+        OptimizationCode.RESERVED_RELATION.value,
+        OptimizationCode.SOURCE_NOT_READ.value,
+        OptimizationCode.UNSUPPORTED_PROJECTION.value,
+        OptimizationCode.UNSUPPORTED_QUERY_SHAPE.value,
     }:
         return "unsafe_semantics"
     if code in {

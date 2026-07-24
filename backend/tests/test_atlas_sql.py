@@ -60,6 +60,18 @@ class AtlasSqlEmbeddedCompilerTests(unittest.TestCase):
         self.assertEqual(result.outcome, CompilationOutcome.OPTIMIZED)
         self.assertNotIn("suggest_records", result.executable_sql or "")
 
+    def test_explain_is_valid_interactive_sql(self) -> None:
+        result = AtlasCompiler.embedded().compile(
+            "EXPLAIN SELECT * FROM documents"
+        )
+
+        self.assertTrue(result.valid)
+        self.assertEqual(result.outcome, CompilationOutcome.UNCHANGED)
+        self.assertEqual(
+            result.executable_sql,
+            "EXPLAIN SELECT * FROM documents",
+        )
+
 
 class AtlasSqlRemoteCompilerTests(unittest.TestCase):
     def test_remote_facade_uses_public_compile_contract(self) -> None:

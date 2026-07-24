@@ -29,7 +29,7 @@ class CatalogueStatementKind(StrEnum):
 class ClassifiedCatalogueStatement:
     kind: CatalogueStatementKind
     sql: str
-    query: exp.Query
+    query: exp.Expression
 
 
 @dataclass(frozen=True, slots=True)

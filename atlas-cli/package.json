@@ -1,0 +1,17 @@
+{
+  "name": "atlas-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "atlas": "dist/main.js"
+  },
+  "dependencies": {
+    "@atlas/console-core": "*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build --silent && node --test dist/*.test.js"
+  }
+}

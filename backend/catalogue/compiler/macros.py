@@ -120,16 +120,12 @@ def bound_scalar_macro_inputs(
         for node in expanded_probe.walk()
     ):
         return query, False
-    approved_anonymous = {
-        definition.function_name.lower()
-        for definition in scalar_functions
-        if not definition.has_side_effects
-        and (definition.stability or "").lower() != "volatile"
-    }
-    if any(
-        node.name.lower() not in approved_anonymous
-        for node in expanded_probe.find_all(exp.Anonymous)
-    ):
+    # DuckDB's function metadata does not prove that a user-defined function
+    # is total or identify the exact overload selected by an unbound SQLGlot
+    # tree. Moving any anonymous function across LIMIT could therefore suppress
+    # errors or observable calls even when one same-named metadata row claims
+    # to be stable and side-effect free.
+    if next(expanded_probe.find_all(exp.Anonymous), None) is not None:
         return query, False
 
     rewritten = query.copy()

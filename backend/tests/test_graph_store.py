@@ -25,6 +25,7 @@ from runtime.graph_queue import (
     edge_evaluation_identity,
 )
 from runtime.graph_runs import create_graph_run
+from runtime.edge_sql import FrozenEdgeSql
 from runtime.graph_store import AsyncGraphRuntimeStore, GraphRuntimeStore
 from tests.graph_fixtures import policy_snapshot, snapshot
 
@@ -481,6 +482,17 @@ class AsyncGraphRuntimeStoreTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         graph = snapshot()
         run_id = uuid4()
+        compilations = 0
+
+        async def compile_edge(sql: str) -> FrozenEdgeSql:
+            nonlocal compilations
+            compilations += 1
+            return FrozenEdgeSql(
+                executable_sql=sql,
+                uses_catalogue=False,
+                catalogue_revision=None,
+            )
+
         arguments = {
             "runs": self.store,
             "requests": self.store,
@@ -490,6 +502,7 @@ class AsyncGraphRuntimeStoreTests(unittest.IsolatedAsyncioTestCase):
             "urls": ["https://example.com/"],
             "policy_resolver": policy_snapshot,
             "run_id": run_id,
+            "edge_compiler": compile_edge,
         }
 
         first = await create_graph_run(**arguments)
@@ -500,6 +513,7 @@ class AsyncGraphRuntimeStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repeated.request_count, 1)
         self.assertEqual(repeated.root_admission_cursor, 1)
         self.assertEqual(len(await self.store.list_requests()), 1)
+        self.assertEqual(compilations, len(graph.edges))
 
 
 if __name__ == "__main__":

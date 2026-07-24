@@ -26,6 +26,7 @@ queries, views, and materializations without requiring a separate result-renderi
 Requirements:
 
 - Python 3.14 and [uv](https://docs.astral.sh/uv/) for backend development.
+- Node.js 24 and npm for the Atlas console and web development.
 - Docker with Docker Compose for Atlas application processes.
 - Remote Postgres, an Atlas NATS account, a Basin CDC NATS account, DuckBasin, an
   S3-compatible raw-object repository, and a standard CDP endpoint.
@@ -74,19 +75,44 @@ validator, client-pool limits, timeouts, cancellation, and result limits as the 
 The planner's finite budget is `ATLAS_IDEA_TOOL_CALL_LIMIT`; its model-request allowance is derived
 from that budget so every permitted metadata call still leaves room to return the typed plan.
 
-Use the CLI for configuration and repository administration:
+Run `atlas` without a command to enter the interactive console. Interactive
+commands start with a dot:
 
 ```sh
-cd backend
-uv run atlas --help
+npm run atlas
+
+atlas> .help
+atlas> .clear
+atlas> .graphs list
+atlas> .graphs show single-page
 ```
 
+Pass a command directly for headless use:
+
+```sh
+npm run atlas -- graphs list
+npm run atlas -- --format json graphs list
+```
+
+Commands that open a resource use `ATLAS_WEB_URL`, the optional `web_url` in
+`atlas.json`, or `http://127.0.0.1:8080` by default.
+
 Create and trigger crawl graphs through the `/crawl-graphs` API or the Crawl Graphs web interface.
+
+The independently buildable Python SDK lives under `sdk/`:
+
+```sh
+uv build --project sdk
+```
+
+It supports typed synchronous and asynchronous compiler access without pulling
+in the Atlas backend, DuckDB, or SQLGlot.
 
 Useful development commands:
 
 ```sh
 make check                  # compile backend modules and run unit tests
+make console-check          # typecheck and test the shared console and terminal CLI
 make acquisition-worker     # run `atlas-worker acquisition`
 make ingestion-worker       # run `atlas-worker ingestion`
 make catalogue-relay-worker # run `atlas-worker catalogue-relay`

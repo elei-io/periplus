@@ -13,18 +13,19 @@ adoption work are defined in
 
 ## Public SDK and HTTP contract
 
-`atlas_sql.AtlasCompiler` is the only application-facing compiler entrypoint. Atlas execution,
-analytics, linting, and materialization use its embedded backend. External Python callers use the
-same result model through its remote backend:
+Atlas execution, analytics, linting, and materialization use the internal embedded
+`atlas_sql.AtlasCompiler` adapter. External callers use the independently
+packaged `atlas-sdk`, which contains only the typed HTTP contract and has no
+DuckDB, SQLGlot, worker, storage, or control-plane dependency:
 
 ```python
-from atlas_sql import AtlasCompiler
+from atlas_sdk import AtlasClient
 
-with AtlasCompiler.remote(
+with AtlasClient(
     "https://atlas.example.com",
     token=atlas_token,
-) as compiler:
-    result = compiler.compile(
+) as atlas:
+    result = atlas.compiler.compile(
         """
         SELECT macros.readable_text(document_id, element_index)
         FROM elements
@@ -36,15 +37,17 @@ if result.valid:
     rows = connection.sql(result.executable_sql).fetchall()
 ```
 
-The remote backend calls `POST /catalogue/sql/compile`; it never executes SQL. Embedded and remote
-results include the authored and executable SQL, outcome, diagnostics, applied rewrites, compiler
-version, and catalogue-definition revision. Remote unavailability raises
-`AtlasCompilerUnavailable` rather than claiming that unvalidated SQL is valid.
+The SDK calls `POST /catalogue/sql/compile`; it never executes SQL. Embedded and
+remote results include the authored and executable SQL, outcome, diagnostics,
+applied rewrites, compiler version, protocol version, and catalogue-definition
+revision. Transport, authentication, permission, request, service, and protocol
+failures use distinct SDK exceptions and never claim that unvalidated SQL is
+valid.
 
 Lake-backed comparison is explicit because it executes both plans:
 
 ```python
-analysis = compiler.analyze("""
+analysis = atlas.compiler.analyze("""
     SELECT macros.readable_text(document_id, element_index)
     FROM elements
     LIMIT 100
@@ -54,7 +57,7 @@ print(analysis.comparison.latency_speedup)
 print(analysis.comparison.rows_scanned_reduction)
 ```
 
-The remote backend calls `POST /catalogue/sql/analyze`. Atlas runs
+The SDK calls `POST /catalogue/sql/analyze`. Atlas runs
 `EXPLAIN (ANALYZE, FORMAT JSON)` through the same bounded interactive query
 runtime used for catalogue reads and returns latency, CPU, bytes read, peak
 buffer memory, rows scanned, cardinality, and comparative ratios. Analysis is
@@ -91,11 +94,20 @@ Interactive callers execute the authored SQL for valid unsupported queries and s
 structured degraded-performance diagnostic. Materialization callers require a supported result,
 because an unproved refresh plan cannot safely maintain the view.
 
+When no rewrite or catalogue-definition expansion is applied, interactive
+compilation returns the authored SQL byte-for-byte. Every generated statement is
+parsed by DuckDB before it can be returned. A generated statement that DuckDB
+cannot parse becomes an interactive authored-SQL fallback and makes full or
+incremental materialization ineligible.
+
 `GraphEdgePurpose` validates the navigation contract before any optimization
 fallback: exactly one `$crawl_id`, an outer literal bounded `LIMIT`, a `url`
 output, and a read of `edge.page_links`. Page-only edges execute through bounded
 standalone DuckDB. Historical edges compile with authoritative catalogue
-definitions and execute against the graph run's pinned DuckLake snapshot.
+definitions and execute against the graph run's pinned DuckLake snapshot. A
+graph run freezes each edge's executable SQL, catalogue dependency, compiler
+definition revision, and snapshot requirement before admitting its first URL;
+redelivery never recompiles an edge against newer definitions.
 
 The lower-level proof functions retain their SQL-or-`QueryOptimizationUnavailable` contract. Only
 the chokepoint translates that expected coverage exception into result data; unexpected compiler
