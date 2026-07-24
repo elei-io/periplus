@@ -655,8 +655,6 @@ async def evaluate_edge(
     seen = 0
     batch_selected = 0
     try:
-        if "$crawl_id" not in edge.sql:
-            raise ValueError("Edge SQL must contain $crawl_id.")
         query = asyncio.create_task(
             asyncio.to_thread(
                 lambda: list(

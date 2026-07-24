@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 from api.app import _preflight_catalogue_query
-from api.routers.catalogue import CatalogueSqlRequest, lint_sql
+from api.routers.catalogue import (
+    CatalogueCompileRequest,
+    CatalogueSqlRequest,
+    compile_sql,
+    compile_sql_result,
+)
+from catalogue.compiler import InteractiveQueryPurpose, TableMacroDefinition
+from repository.catalogue.interactive import prepare_interactive_query
+from repository.catalogue.compiler_definitions import (
+    CatalogueCompilerDefinitions,
+)
 from repository.catalogue.quack_runtime import CatalogueQueryExecutionError
 from repository.catalogue.query import (
     CatalogueQueryError,
@@ -38,15 +50,86 @@ class CatalogueQueryClassificationTests(unittest.TestCase):
         with self.assertRaises(CatalogueQueryError):
             classify_select("SELECT 1; SELECT 2")
         with self.assertRaises(CatalogueQueryError):
-            classify_select("SELECT FROM")
+            classify_select("SELECT FROM documents")
 
 
 class CatalogueQueryLintTests(unittest.TestCase):
+    def test_lint_endpoint_expands_authoritative_table_macro_definition(
+        self,
+    ) -> None:
+        response = asyncio.run(
+            compile_sql(
+                CatalogueCompileRequest(
+                    sql=(
+                        "SELECT * "
+                        "FROM macros.suggest_records('%toscrape%') "
+                        "LIMIT 10"
+                    )
+                ),
+                CatalogueCompilerDefinitions(
+                    revision="lake-1",
+                    scalar_macros=(),
+                    table_macros=(
+                        TableMacroDefinition(
+                            schema_name="macros",
+                            macro_name="suggest_records",
+                            parameters=("p_url",),
+                            parameter_defaults=(),
+                            sql="SELECT p_url AS pattern",
+                        ),
+                    ),
+                    views=(),
+                    scalar_functions=(),
+                ),
+            )
+        )
+
+        self.assertTrue(response.valid)
+        self.assertTrue(response.supported)
+        self.assertEqual(response.outcome, "optimized")
+        self.assertNotIn(
+            "unsupported_function",
+            [diagnostic.code for diagnostic in response.diagnostics],
+        )
+
     def test_lint_endpoint_reports_unbounded_interactive_query(self) -> None:
-        response = lint_sql(CatalogueSqlRequest(sql="SELECT * FROM documents"))
+        response = compile_sql_result(
+            CatalogueSqlRequest(sql="SELECT * FROM documents")
+        )
+        self.assertTrue(response.valid)
+        self.assertTrue(response.supported)
+        self.assertEqual(response.outcome, "unchanged")
         self.assertEqual(
             [diagnostic.code for diagnostic in response.diagnostics],
             ["missing_limit"],
+        )
+
+    def test_lint_endpoint_blocks_invalid_but_not_unsupported_sql(
+        self,
+    ) -> None:
+        invalid = compile_sql_result(
+            CatalogueSqlRequest(sql="SELECT FROM documents")
+        )
+        self.assertFalse(invalid.valid)
+        self.assertFalse(invalid.supported)
+        self.assertEqual(invalid.outcome, "invalid")
+        self.assertEqual(invalid.diagnostics[-1].severity, "error")
+
+        unsupported = compile_sql_result(
+            CatalogueSqlRequest(
+                sql="SELECT macros.installed(title) FROM documents"
+            )
+        )
+        self.assertTrue(unsupported.valid)
+        self.assertFalse(unsupported.supported)
+        self.assertEqual(unsupported.outcome, "unsupported")
+        self.assertEqual(
+            unsupported.diagnostics[-1].code,
+            "unsupported_function",
+        )
+        self.assertEqual(
+            unsupported.diagnostics[-1].severity,
+            "warning",
         )
 
     def test_dom_helper_requires_a_bounded_materialized_cte(self) -> None:
@@ -171,6 +254,193 @@ class CatalogueQueryPreflightTests(unittest.IsolatedAsyncioTestCase):
         statement = classify_catalogue_statement("SELECT * FROM views.documents")
 
         await _preflight_catalogue_query(Control(), statement)  # type: ignore[arg-type]
+
+
+class InteractiveQueryCompilationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_public_boundary_executes_expanded_stored_table_macro(
+        self,
+    ) -> None:
+        runtime = SimpleNamespace(
+            config=SimpleNamespace(
+                catalogue_alias="atlas",
+                catalogue_schema="main",
+            ),
+            query_bucket=object(),
+            preflight=AsyncMock(),
+            prepare=AsyncMock(return_value=object()),
+        )
+        purpose = InteractiveQueryPurpose(
+            table_macros=(
+                TableMacroDefinition(
+                    schema_name="macros",
+                    macro_name="suggest_records",
+                    parameters=("p_url",),
+                    parameter_defaults=(),
+                    sql="SELECT p_url AS pattern",
+                ),
+            )
+        )
+        create_query = AsyncMock()
+
+        with patch(
+            "repository.catalogue.interactive.create_catalogue_query",
+            new=create_query,
+        ):
+            await prepare_interactive_query(
+                runtime,  # type: ignore[arg-type]
+                "SELECT * FROM macros.suggest_records('%toscrape%') LIMIT 10",
+                purpose=purpose,
+            )
+
+        executed_sql = (
+            runtime.prepare.await_args.kwargs["compilation"].executable_sql
+        )
+        self.assertIsNotNone(executed_sql)
+        self.assertNotIn("suggest_records", executed_sql.lower())
+        self.assertIn("'%toscrape%'", executed_sql)
+        state = create_query.await_args.args[1]
+        self.assertEqual(state.optimization_status, "optimized")
+        self.assertNotIn(
+            "unsupported_function",
+            [
+                diagnostic.code
+                for diagnostic in state.optimization_diagnostics
+            ],
+        )
+
+    async def test_public_boundary_executes_compiled_interactive_sql(
+        self,
+    ) -> None:
+        active = object()
+        runtime = SimpleNamespace(
+            config=SimpleNamespace(
+                catalogue_alias="atlas",
+                catalogue_schema="main",
+            ),
+            query_bucket=object(),
+            preflight=AsyncMock(),
+            prepare=AsyncMock(return_value=active),
+        )
+        sql = (
+            "SELECT document_id, upper(title) AS first_title, "
+            "  upper(title) AS second_title "
+            "FROM documents "
+            "ORDER BY document_id, first_title, second_title"
+        )
+        create_query = AsyncMock()
+        with patch(
+            "repository.catalogue.interactive.create_catalogue_query",
+            new=create_query,
+        ):
+            _query_id, statement, prepared = await prepare_interactive_query(
+                runtime,  # type: ignore[arg-type]
+                sql,
+            )
+
+        self.assertIs(prepared, active)
+        self.assertEqual(statement.sql, sql)
+        executed_sql = (
+            runtime.prepare.await_args.kwargs["compilation"].executable_sql
+        )
+        self.assertIsNotNone(executed_sql)
+        self.assertIn("CROSS JOIN LATERAL", executed_sql)
+        self.assertEqual(executed_sql.count("UPPER("), 1)
+        state = create_query.await_args.args[1]
+        self.assertEqual(state.optimization_status, "optimized")
+        self.assertEqual(
+            [rewrite.rule for rewrite in state.applied_rewrites],
+            ["repeated_scalar_expression"],
+        )
+        self.assertIn(
+            "deterministic",
+            state.applied_rewrites[0].evidence,
+        )
+        self.assertEqual(
+            [diagnostic.code for diagnostic in state.optimization_diagnostics],
+            ["missing_limit"],
+        )
+        self.assertEqual(
+            state.optimization_diagnostics[0].severity,
+            "warning",
+        )
+
+    async def test_public_boundary_falls_back_to_authored_valid_sql(
+        self,
+    ) -> None:
+        active = object()
+        runtime = SimpleNamespace(
+            config=SimpleNamespace(
+                catalogue_alias="atlas",
+                catalogue_schema="main",
+            ),
+            query_bucket=object(),
+            preflight=AsyncMock(),
+            prepare=AsyncMock(return_value=active),
+        )
+        sql = "SELECT macros.installed(title) AS title FROM documents"
+        create_query = AsyncMock()
+        with patch(
+            "repository.catalogue.interactive.create_catalogue_query",
+            new=create_query,
+        ):
+            _query_id, statement, _prepared = await prepare_interactive_query(
+                runtime,  # type: ignore[arg-type]
+                sql,
+            )
+
+        self.assertEqual(statement.sql, sql)
+        self.assertEqual(
+            runtime.prepare.await_args.kwargs["compilation"].executable_sql,
+            sql,
+        )
+        state = create_query.await_args.args[1]
+        self.assertEqual(
+            state.optimization_status,
+            "degraded_fallback",
+        )
+        self.assertEqual(state.applied_rewrites, ())
+        self.assertEqual(
+            [diagnostic.code for diagnostic in state.optimization_diagnostics],
+            ["missing_limit", "unsupported_function"],
+        )
+        self.assertEqual(
+            state.optimization_diagnostics[1].documentation_anchor,
+            "macro-expansion",
+        )
+
+    async def test_public_boundary_records_unchanged_compilation(
+        self,
+    ) -> None:
+        runtime = SimpleNamespace(
+            config=SimpleNamespace(
+                catalogue_alias="atlas",
+                catalogue_schema="main",
+            ),
+            query_bucket=object(),
+            preflight=AsyncMock(),
+            prepare=AsyncMock(return_value=object()),
+        )
+        sql = (
+            "SELECT document_id FROM documents "
+            "ORDER BY document_id"
+        )
+        create_query = AsyncMock()
+        with patch(
+            "repository.catalogue.interactive.create_catalogue_query",
+            new=create_query,
+        ):
+            await prepare_interactive_query(
+                runtime,  # type: ignore[arg-type]
+                sql,
+            )
+
+        state = create_query.await_args.args[1]
+        self.assertEqual(state.optimization_status, "unchanged")
+        self.assertEqual(state.applied_rewrites, ())
+        self.assertEqual(
+            [diagnostic.code for diagnostic in state.optimization_diagnostics],
+            ["missing_limit"],
+        )
 
 
 if __name__ == "__main__":

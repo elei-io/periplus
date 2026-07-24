@@ -109,7 +109,7 @@ class ManagedCatalogueClientTests(unittest.TestCase):
         catalogue, connection, _minter = _catalogue()
 
         with catalogue.transaction():
-            catalogue.remote_execute("INSERT INTO main.events VALUES (1)")
+            catalogue.trusted_remote_execute("INSERT INTO main.events VALUES (1)")
 
         self.assertEqual(
             connection.calls,
@@ -145,7 +145,7 @@ class ManagedCatalogueClientTests(unittest.TestCase):
         catalogue, connection, _minter = _catalogue()
 
         with self.assertRaisesRegex(ValueError, "already-bound"):
-            catalogue.remote_rows("SELECT $value", {"value": 1})
+            catalogue.trusted_remote_rows("SELECT $value", {"value": 1})
 
         self.assertEqual(connection.calls, [])
 
@@ -176,7 +176,7 @@ class ManagedCatalogueClientTests(unittest.TestCase):
         )
         connection.failure_once = "Invalid connection id"
 
-        rows = catalogue.remote_rows("SELECT 1")
+        rows = catalogue.trusted_remote_rows("SELECT 1")
 
         self.assertEqual(rows, [])
         self.assertTrue(connection.closed)
@@ -209,7 +209,7 @@ class ManagedCatalogueClientTests(unittest.TestCase):
         )
         connection.failure_once = "Invalid connection id"
 
-        catalogue.connection.execute(
+        catalogue.trusted_connection.execute(
             "SELECT * FROM atlas.main.documents WHERE document_id = $id",
             {"id": "document"},
         )
@@ -228,7 +228,7 @@ class ManagedCatalogueClientTests(unittest.TestCase):
         catalogue, connection, minter = _catalogue()
         minter.current_token_generation = 2
 
-        catalogue.remote_rows("SELECT 1")
+        catalogue.trusted_remote_rows("SELECT 1")
 
         self.assertTrue(connection.closed)
         self.assertEqual(len(minter.minted), 1)
@@ -245,7 +245,7 @@ class ManagedCatalogueClientTests(unittest.TestCase):
         catalogue, connection, minter = _catalogue()
         connection.failure_once = "Authorization failed"
 
-        catalogue.remote_rows("SELECT 1")
+        catalogue.trusted_remote_rows("SELECT 1")
 
         self.assertEqual(minter.invalidated_generations, [1])
         self.assertEqual(minter.current_token_generation, 2)
@@ -258,7 +258,7 @@ class ManagedCatalogueClientTests(unittest.TestCase):
         with self.assertRaisesRegex(duckdb.InvalidInputException, "Authorization"):
             with catalogue.remote_transaction():
                 connection.failure_once = "Authorization failed"
-                catalogue.remote_execute("INSERT INTO main.events VALUES (1)")
+                catalogue.trusted_remote_execute("INSERT INTO main.events VALUES (1)")
 
         self.assertEqual(minter.invalidated_generations, [])
         self.assertEqual(minter.minted, [])

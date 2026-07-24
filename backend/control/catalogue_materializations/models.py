@@ -82,9 +82,6 @@ class CatalogueMaterialization(Base):
     refresh_delay_seconds: Mapped[float] = mapped_column(Float, default=1.0)
     refresh_strategy: Mapped[str] = mapped_column(Text)
     key_columns: Mapped[list[str]] = mapped_column(JSON)
-    scope_relations: Mapped[dict[str, list[str]]] = mapped_column(
-        JSON, default=dict
-    )
     partition_column: Mapped[str | None] = mapped_column(Text, nullable=True)
     target_table_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ducklake_table_uuid: Mapped[UUID | None] = mapped_column(

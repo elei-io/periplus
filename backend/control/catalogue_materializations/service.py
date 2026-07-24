@@ -9,13 +9,83 @@ from sqlalchemy.orm import Session
 from control.catalogue_views.models import CatalogueViewReference
 from repository.catalogue.materializations import (
     MaterializationConflictError,
+    MaterializationError,
     MaterializationStore,
+)
+from repository.catalogue.compiler_definitions import (
+    read_catalogue_compiler_definitions,
 )
 from repository.catalogue.views import CatalogueViewStore
 from runtime.catalogue_events import materialization_durable
 
 from .models import CatalogueMaterialization
-from .schemas import CatalogueMaterializationRecord, CatalogueMaterializationSummary
+from .schemas import (
+    CatalogueMaterializationRecord,
+    CatalogueMaterializationSummary,
+    MaterializationEligibilityDiagnostic,
+    ViewMaterializationEligibility,
+)
+
+
+def materialization_store(session: Session, catalogue) -> MaterializationStore:
+    """Build a store from the same authoritative macro definitions as execution."""
+
+    definitions = read_catalogue_compiler_definitions(
+        catalogue.trusted_connection,
+        catalogue_alias=catalogue.config.alias,
+    )
+    return MaterializationStore(
+        catalogue,
+        scalar_macros=definitions.scalar_macros,
+        table_macros=definitions.table_macros,
+        views=definitions.views,
+        scalar_functions=definitions.scalar_functions,
+    )
+
+
+def materialization_eligibility(
+    session: Session,
+    store: MaterializationStore,
+    *,
+    view_reference_id: UUID,
+    source_table: str,
+    refresh_strategy: str,
+    key_columns: list[str],
+) -> ViewMaterializationEligibility:
+    reference = session.scalar(
+        select(CatalogueViewReference).where(
+            CatalogueViewReference.id == view_reference_id,
+            CatalogueViewReference.archived_at.is_(None),
+        )
+    )
+    if reference is None:
+        raise LookupError("Managed view not found.")
+    source_view = CatalogueViewStore(store.catalogue).get(
+        reference.ducklake_view_uuid
+    )
+    if source_view is None:
+        raise LookupError("DuckLake view not found.")
+    try:
+        source = store.table_identity(source_table)
+        store.validate_refresh_strategy(
+            source_table=source.table_name,
+            sql=source_view.sql,
+            refresh_strategy=refresh_strategy,
+            key_columns=tuple(key_columns),
+            coverage_source=None,
+        )
+    except MaterializationError as exc:
+        return ViewMaterializationEligibility(
+            eligible=False,
+            diagnostics=[
+                MaterializationEligibilityDiagnostic(
+                    code="materialization_incompatible",
+                    severity="error",
+                    message=str(exc),
+                )
+            ],
+        )
+    return ViewMaterializationEligibility(eligible=True, diagnostics=[])
 
 
 def list_records(session: Session) -> list[CatalogueMaterializationRecord]:
@@ -84,7 +154,6 @@ def put_for_view(
     source_table: str,
     refresh_strategy: str,
     key_columns: list[str],
-    scope_relations: dict[str, list[str]],
     refresh_delay_seconds: float,
     partition_column: str | None,
 ) -> CatalogueMaterializationRecord:
@@ -110,7 +179,6 @@ def put_for_view(
             or existing.source_table != source_table
             or existing.refresh_strategy != refresh_strategy
             or existing.key_columns != key_columns
-            or existing.scope_relations != scope_relations
             or existing.partition_column != partition_column
         ):
             raise MaterializationConflictError(
@@ -127,10 +195,7 @@ def put_for_view(
         sql=source_view.sql,
         refresh_strategy=refresh_strategy,
         key_columns=tuple(key_columns),
-        scope_relations={
-            relation: tuple(columns)
-            for relation, columns in scope_relations.items()
-        },
+        coverage_source="materialization_create",
     )
     control_snapshot = store.catalogue.latest_snapshot()
     if control_snapshot is None:
@@ -154,7 +219,6 @@ def put_for_view(
         refresh_delay_seconds=refresh_delay_seconds,
         refresh_strategy=refresh_strategy,
         key_columns=key_columns,
-        scope_relations=scope_relations,
         partition_column=partition_column,
     )
     session.add(model)
@@ -234,7 +298,6 @@ def record(
         refresh_delay_seconds=model.refresh_delay_seconds,
         refresh_strategy=model.refresh_strategy,
         key_columns=model.key_columns,
-        scope_relations=model.scope_relations,
         partition_column=model.partition_column,
         target_table_id=model.target_table_id,
         ducklake_table_uuid=model.ducklake_table_uuid,

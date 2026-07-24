@@ -16,6 +16,7 @@ from uuid import UUID
 import duckdb
 import pyarrow as pa
 
+from atlas_sql import CompilationResult
 from config import get_float, get_int, get_str
 from observability import catalogue_query_metrics
 from repository.catalogue.duckbasin import (
@@ -418,9 +419,13 @@ class QuackQueryRuntime:
         self,
         *,
         query_id: UUID,
-        sql: str,
+        compilation: CompilationResult,
         statement_kind: CatalogueStatementKind,
     ) -> ActiveCatalogueQuery:
+        if not compilation.valid or compilation.executable_sql is None:
+            raise CatalogueQueryExecutionError(
+                "Quack execution requires a valid compiler result."
+            )
         try:
             slot = await asyncio.wait_for(
                 self._available.get(),
@@ -503,7 +508,7 @@ class QuackQueryRuntime:
             name=f"catalogue-query-monitor:{query_id.hex}",
         )
         executable_sql = (
-            sql
+            compilation.executable_sql
             if statement_kind == CatalogueStatementKind.QUERY
             else (
                 "EXPLAIN ("
@@ -512,7 +517,7 @@ class QuackQueryRuntime:
                     if statement_kind == CatalogueStatementKind.EXPLAIN_ANALYZE
                     else "FORMAT JSON"
                 )
-                + f") {sql}"
+                + f") {compilation.executable_sql}"
             )
         )
         try:
@@ -755,14 +760,16 @@ class QuackQueryRuntime:
         return slot.connection
 
 
-def remote_rows(
+def trusted_remote_rows(
     connection: duckdb.DuckDBPyConnection,
     sql: str,
 ) -> list[tuple]:
-    return _remote_rows(connection, sql)
+    """Execute trusted Atlas metadata or infrastructure SQL."""
+
+    return _trusted_remote_rows(connection, sql)
 
 
-def _remote_rows(
+def _trusted_remote_rows(
     connection: duckdb.DuckDBPyConnection,
     sql: str,
 ) -> list[tuple]:

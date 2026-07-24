@@ -13,6 +13,9 @@ from agents.catalogue_analytics import (
     AnalyticsEvent,
     AnalyticsQuestion,
     SqlDependencies,
+    DirectionHandoffQuery,
+    _HANDOFF_AGENT,
+    _IDEA_INSTRUCTIONS,
     _IDEA_AGENT,
     _SQL_AGENT,
     _SYNTHESIS_AGENT,
@@ -62,7 +65,23 @@ def analysis_plan() -> AnalysisPlan:
     )
 
 
+def handoff_query() -> DirectionHandoffQuery:
+    return DirectionHandoffQuery(
+        title="Continue retained crawl analysis",
+        sql="SELECT COUNT(*) AS retained_crawls FROM main.crawls",
+        explanation="Counts the retained crawls for continued analysis.",
+        caveats=[],
+    )
+
+
 class AnalyticsContractTests(unittest.IsolatedAsyncioTestCase):
+    def test_planner_keeps_every_direction_inside_the_catalogue(self) -> None:
+        self.assertIn(
+            "Every objective must be fully executable inside the Atlas catalogue",
+            _IDEA_INSTRUCTIONS,
+        )
+        self.assertIn("never ask for downstream validation", _IDEA_INSTRUCTIONS)
+
     def test_question_plan_and_events_are_strict(self) -> None:
         self.assertEqual(
             AnalyticsQuestion(question="What changed?").question,
@@ -193,6 +212,12 @@ class AnalyticsContractTests(unittest.IsolatedAsyncioTestCase):
             _SYNTHESIS_AGENT.override(
                 model=TestModel(custom_output_text="Combined finding.")
             ),
+            _HANDOFF_AGENT.override(
+                model=TestModel(
+                    call_tools=[],
+                    custom_output_args=handoff_query().model_dump(mode="json"),
+                )
+            ),
         ):
             events = [
                 event
@@ -238,6 +263,16 @@ class AnalyticsContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(events[-1].type, "analysis.completed")
         self.assertEqual(events[-1].summary, "Combined finding.")
+        handoffs = [
+            event
+            for event in events
+            if event.type == "handoff.completed"
+        ]
+        self.assertEqual(len(handoffs), 4)
+        self.assertEqual(
+            handoffs[0].handoff_query,
+            handoff_query(),
+        )
 
     async def test_invalid_sql_is_returned_for_retry_per_direction(self) -> None:
         class Catalogue:
@@ -274,6 +309,12 @@ class AnalyticsContractTests(unittest.IsolatedAsyncioTestCase):
             ),
             _SYNTHESIS_AGENT.override(
                 model=TestModel(custom_output_text="Recovered synthesis.")
+            ),
+            _HANDOFF_AGENT.override(
+                model=TestModel(
+                    call_tools=[],
+                    custom_output_args=handoff_query().model_dump(mode="json"),
+                )
             ),
         ):
             events = [
@@ -316,6 +357,12 @@ class AnalyticsContractTests(unittest.IsolatedAsyncioTestCase):
             ),
             _SYNTHESIS_AGENT.override(
                 model=TestModel(custom_output_text="Unavailable synthesis.")
+            ),
+            _HANDOFF_AGENT.override(
+                model=TestModel(
+                    call_tools=[],
+                    custom_output_args=handoff_query().model_dump(mode="json"),
+                )
             ),
         ):
             events = [

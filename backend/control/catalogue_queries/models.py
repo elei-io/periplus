@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -63,6 +63,13 @@ class CatalogueQueryRevision(Base):
     sql: Mapped[str] = mapped_column(Text)
     sql_hash: Mapped[str] = mapped_column(Text)
     change_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    compiler_outcome: Mapped[str] = mapped_column(Text)
+    compiler_diagnostics: Mapped[list[dict[str, object]]] = mapped_column(JSON)
+    compiler_dependencies: Mapped[list[dict[str, object]]] = mapped_column(JSON)
+    compiler_version: Mapped[str] = mapped_column(Text)
+    catalogue_definition_revision: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     query: Mapped[CatalogueQuery] = relationship(
         back_populates="revisions", foreign_keys=[query_id]

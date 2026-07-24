@@ -40,7 +40,7 @@ class CatalogueRelayTests(unittest.IsolatedAsyncioTestCase):
         table_uuid = uuid4()
         catalogue = MagicMock()
         catalogue.config.alias = "atlas"
-        catalogue.remote_rows.return_value = [
+        catalogue.trusted_remote_rows.return_value = [
             (7, table_uuid, "main", "documents", 1)
         ]
 
@@ -57,7 +57,7 @@ class CatalogueRelayTests(unittest.IsolatedAsyncioTestCase):
                 )
             },
         )
-        sql = catalogue.remote_rows.call_args.args[0]
+        sql = catalogue.trusted_remote_rows.call_args.args[0]
         self.assertIn("ducklake_table_info('atlas')", sql)
         self.assertNotIn("__ducklake_metadata", sql)
         self.assertIn("table_type = 'BASE TABLE'", sql)
@@ -65,7 +65,7 @@ class CatalogueRelayTests(unittest.IsolatedAsyncioTestCase):
     def test_ambiguous_cross_schema_table_names_are_rejected(self) -> None:
         catalogue = MagicMock()
         catalogue.config.alias = "atlas"
-        catalogue.remote_rows.return_value = [
+        catalogue.trusted_remote_rows.return_value = [
             (7, uuid4(), "main", "documents", 2)
         ]
 

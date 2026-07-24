@@ -35,6 +35,11 @@ class CatalogueQueryRevisionRecord(BaseModel):
     sql: str
     sql_hash: str
     change_note: str | None
+    compiler_outcome: str
+    compiler_diagnostics: list[dict[str, object]]
+    compiler_dependencies: list[dict[str, object]]
+    compiler_version: str
+    catalogue_definition_revision: str | None
     created_at: datetime
 
 
@@ -46,6 +51,11 @@ class CatalogueQueryRecord(BaseModel):
     current_revision_id: UUID
     current_revision: int
     sql: str
+    compiler_outcome: str
+    compiler_diagnostics: list[dict[str, object]]
+    compiler_dependencies: list[dict[str, object]]
+    compiler_version: str
+    catalogue_definition_revision: str | None
     archived_at: datetime | None
     created_at: datetime
     updated_at: datetime

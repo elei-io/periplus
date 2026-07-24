@@ -28,11 +28,16 @@ from repository.catalogue.quack_runtime import (
     CatalogueQueryExecutionError,
     QuackQueryRuntime,
 )
+from repository.catalogue.compiler_definitions import (
+    CatalogueCompilerDefinitionCache,
+    read_catalogue_compiler_definitions,
+)
 from repository.catalogue.query import (
     ClassifiedCatalogueStatement,
     referenced_catalogue_views,
 )
 from runtime.catalogue_workers import ensure_catalogue_worker_storage
+from runtime.catalogue_events import DDL_SUBJECT
 from runtime.catalogue_queries import ensure_catalogue_query_storage
 from runtime.crawl_scheduler import run_scheduler
 from runtime.graph_queue import (
@@ -75,6 +80,7 @@ async def lifespan(app: FastAPI):
     scheduler_task = None
     outbox_stop = None
     outbox_task = None
+    ddl_subscription = None
     try:
         jetstream = nats_client.jetstream()
         runs, requests, workers = await ensure_graph_storage(jetstream)
@@ -105,6 +111,24 @@ async def lifespan(app: FastAPI):
         )
         await quack_runtime.start()
         app.state.quack_runtime = quack_runtime
+        compiler_definitions = CatalogueCompilerDefinitionCache(
+            lambda: quack_runtime.run_internal(
+                lambda connection: read_catalogue_compiler_definitions(
+                    connection,
+                    catalogue_alias=quack_runtime.config.catalogue_alias,
+                )
+            ),
+            ttl_seconds=60,
+        )
+        app.state.compiler_definitions = compiler_definitions
+
+        async def invalidate_compiler_definitions(_message) -> None:
+            compiler_definitions.invalidate()
+
+        ddl_subscription = await nats_client.subscribe(
+            DDL_SUBJECT,
+            cb=invalidate_compiler_definitions,
+        )
         scheduler_stop = asyncio.Event()
         scheduler_task = asyncio.create_task(
             run_scheduler(
@@ -131,6 +155,8 @@ async def lifespan(app: FastAPI):
             await asyncio.gather(outbox_task, return_exceptions=True)
         if catalogue_control is not None:
             await catalogue_control.close()
+        if ddl_subscription is not None:
+            await ddl_subscription.unsubscribe()
         if quack_runtime is not None:
             await quack_runtime.close()
         await nats_client.drain()

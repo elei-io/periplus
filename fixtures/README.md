@@ -39,16 +39,8 @@ that key to uniquely identify every result row and refuses source updates or del
 is the explicit fallback for inherently global queries. Key columns must exist with the same names
 in both the driving table and the view result so Atlas can derive them from bounded CDC changes.
 
-When a selective definition joins a large dependent table whose partition key is carried by the
-driving table, it declares that direct scan scope explicitly:
-
-```sql
--- atlas:scope=elements(document_id)
-```
-
-Atlas carries those source columns beside each changed result key and injects the predicate into
-every declared dependent-table scan during live refresh and historical backfill. This avoids
-relying on join-predicate propagation for DuckLake partition pruning.
+Atlas derives dependent scan scoping from the SQL and stored macro lineage. Fixtures never contain
+Atlas-specific scope directives, marker functions, or special scoped macro variants.
 
 A materialized-view fixture may request daily DuckLake partitioning with a single leading
 `-- atlas:partition-by-day=<column>` directive. The selected `DATE` or `TIMESTAMP` result column is

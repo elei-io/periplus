@@ -8,6 +8,7 @@ import {
   DownloadIcon,
   LockKeyholeIcon,
   TriangleAlertIcon,
+  ZapIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -53,6 +54,7 @@ import {
 import { apiUrl, extractApiError } from "@/lib/api"
 import type {
   CatalogueLintDiagnostic,
+  CatalogueLintResult,
   CatalogueQueryResult,
 } from "@/types/catalogue"
 
@@ -596,6 +598,46 @@ function FooterLintDiagnostics({
       >
         {diagnostics.map((item) => (
           <span key={item.code}>{item.message}</span>
+        ))}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function FooterCompilerActivity({
+  result,
+}: {
+  result?: CatalogueLintResult
+}) {
+  if (result?.outcome !== "optimized") return null
+
+  const rewrites =
+    result.applied_rewrites.length > 0
+      ? result.applied_rewrites.map((rewrite) => rewrite.evidence)
+      : ["Atlas expanded catalogue definitions and optimized the executable SQL."]
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            role="status"
+            aria-live="polite"
+            tabIndex={0}
+            className="flex min-w-0 items-center gap-1.5 text-blue-600 outline-none dark:text-blue-400"
+          />
+        }
+      >
+        <ZapIcon aria-hidden="true" className="size-3 shrink-0 fill-current" />
+        <span className="shrink-0">optimized</span>
+      </TooltipTrigger>
+      <TooltipContent
+        side="top"
+        align="start"
+        className="max-w-md flex-col items-start font-mono text-[10px] whitespace-normal"
+      >
+        {rewrites.map((rewrite, index) => (
+          <span key={`${index}:${rewrite}`}>{rewrite}</span>
         ))}
       </TooltipContent>
     </Tooltip>
@@ -1338,6 +1380,17 @@ export function CatalogueWorkbenchPage() {
 
     if (!isTerminatedSql(sql)) return
     if (catalogueQuery.isPending) return
+    if (catalogueLint.data && !catalogueLint.data.valid) {
+      const message =
+        catalogueLint.data.diagnostics.find(
+          (item) => item.severity === "error"
+        )?.message ?? "The SQL is invalid."
+      setTranscript((entries) => [
+        ...entries,
+        { id: crypto.randomUUID(), sql, status: "error", error: message },
+      ])
+      return
+    }
 
     const id = crypto.randomUUID()
     const startedAt = performance.now()
@@ -1548,9 +1601,12 @@ export function CatalogueWorkbenchPage() {
           {catalogueQuery.isPending ? (
             <DelayedRunningIndicator />
           ) : (
-            <FooterLintDiagnostics
-              diagnostics={catalogueLint.data?.diagnostics ?? []}
-            />
+            <>
+              <FooterCompilerActivity result={catalogueLint.data} />
+              <FooterLintDiagnostics
+                diagnostics={catalogueLint.data?.diagnostics ?? []}
+              />
+            </>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-3">

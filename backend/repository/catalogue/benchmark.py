@@ -11,7 +11,10 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from repository.catalogue.client import Catalogue
-from repository.catalogue.query import execute_arrow_query, prepare_catalogue_query
+from repository.catalogue.query import (
+    prepare_catalogue_query,
+    trusted_execute_arrow_query,
+)
 from repository.catalogue.service import CatalogueService
 
 
@@ -33,12 +36,12 @@ def run_hot_path_benchmark(
         raise ValueError("query_repetitions must be greater than zero")
     service = CatalogueService(catalogue)
     table = service._table
-    document_rows = catalogue.connection.execute(
+    document_rows = catalogue.trusted_connection.execute(
         "SELECT document_id FROM "
         f"{table('documents')} LIMIT ?",
         [samples],
     ).fetchall()
-    crawl_rows = catalogue.connection.execute(
+    crawl_rows = catalogue.trusted_connection.execute(
         "SELECT crawl.document_id, requested.normalized_url, "
         "effective.normalized_url, crawl.policy_config_hash, crawl.captured_at FROM "
         f"{table('crawls')} AS crawl "
@@ -235,14 +238,14 @@ def _measure_query(
     repetitions: int,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    first_result = execute_arrow_query(catalogue, sql, parameters).read_all()
+    first_result = trusted_execute_arrow_query(catalogue, sql, parameters).read_all()
     first_run_seconds = time.perf_counter() - started
 
     warm_timings: list[float] = []
     warm_rows: list[int] = []
     for _ in range(repetitions):
         started = time.perf_counter()
-        result = execute_arrow_query(catalogue, sql, parameters).read_all()
+        result = trusted_execute_arrow_query(catalogue, sql, parameters).read_all()
         warm_timings.append(time.perf_counter() - started)
         warm_rows.append(result.num_rows)
     if any(rows != first_result.num_rows for rows in warm_rows):
@@ -263,12 +266,12 @@ def _profile_query(
     parameters: dict[str, object],
 ) -> dict[str, Any]:
     prepared = prepare_catalogue_query(catalogue, sql, parameters)
-    catalogue.connection.execute(f"USE {prepared.namespace}")
+    catalogue.trusted_connection.execute(f"USE {prepared.namespace}")
     explain_sql = f"EXPLAIN (ANALYZE, FORMAT JSON) {prepared.sql}"
     row = (
-        catalogue.connection.execute(explain_sql, prepared.bindings).fetchone()
+        catalogue.trusted_connection.execute(explain_sql, prepared.bindings).fetchone()
         if prepared.bindings
-        else catalogue.connection.execute(explain_sql).fetchone()
+        else catalogue.trusted_connection.execute(explain_sql).fetchone()
     )
     if row is None:
         raise RuntimeError("EXPLAIN ANALYZE returned no profile")

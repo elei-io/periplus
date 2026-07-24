@@ -75,6 +75,15 @@ class AnalysisPlan(BaseModel):
         return self
 
 
+class DirectionHandoffQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=100)
+    sql: str = Field(min_length=1, max_length=100_000)
+    explanation: str = Field(min_length=1, max_length=2_000)
+    caveats: list[str] = Field(default_factory=list, max_length=8)
+
+
 class AnalyticsEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -85,6 +94,9 @@ class AnalyticsEvent(BaseModel):
         "direction.started",
         "direction.completed",
         "direction.failed",
+        "handoff.started",
+        "handoff.completed",
+        "handoff.failed",
         "query.started",
         "query.completed",
         "query.failed",
@@ -97,6 +109,7 @@ class AnalyticsEvent(BaseModel):
     direction: AnalysisDirection | None = None
     direction_id: DirectionId | None = None
     direction_answer: str | None = None
+    handoff_query: DirectionHandoffQuery | None = None
     scope: QueryScope | None = None
     call_id: str | None = None
     message: str | None = None
@@ -130,6 +143,23 @@ class DirectionResult:
     direction: AnalysisDirection
     answer: str
     queries: list[CatalogueQueryResult]
+    handoff_query: DirectionHandoffQuery | None = None
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class HandoffDependencies:
+    catalogue_tools: CatalogueTools
+    validated_sql: set[str] = field(default_factory=set)
+
+
+class HandoffValidation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    valid: bool
+    columns: list[str] = Field(default_factory=list)
+    row_count: int = 0
+    truncated: bool = False
     error: str | None = None
 
 
@@ -281,6 +311,30 @@ async def query_catalogue(
     return result
 
 
+async def validate_handoff_query(
+    ctx: RunContext[HandoffDependencies],
+    sql: str,
+) -> HandoffValidation:
+    """Execute a proposed standalone handoff query through Atlas's read-only boundary."""
+
+    try:
+        result = await ctx.deps.catalogue_tools.query(sql)
+    except (CatalogueQueryError, CatalogueQueryExecutionError, ValueError) as exc:
+        return HandoffValidation(
+            valid=False,
+            error=_safe_tool_error(exc),
+        )
+    if result.status != "completed":
+        return HandoffValidation(valid=False, error=result.error)
+    ctx.deps.validated_sql.add(sql.strip())
+    return HandoffValidation(
+        valid=True,
+        columns=result.columns,
+        row_count=result.row_count,
+        truncated=result.truncated,
+    )
+
+
 _IDEA_INSTRUCTIONS = """You are Atlas's preliminary analytical idea agent.
 
 Read one isolated user question and classify its high-level analytical intent however is most
@@ -302,7 +356,12 @@ direction is grounded in an inspected relation or macro.
 The directions must describe analytical work over data already retained in the Atlas catalogue.
 They must not request web research, crawling, acquisition, operational graph state, mutations, or
 conversation history. Make each objective concrete enough for an independent SQL agent to execute.
-Do not answer the question yourself and do not invent catalogue schema.
+Every objective must be fully executable inside the Atlas catalogue. Assess freshness, coverage,
+and completeness only from retained evidence such as capture timestamps, source URLs, and observed
+records. When the catalogue cannot resolve an uncertainty, instruct the investigator to report that
+specific limitation; never ask for downstream validation, external verification, live-source
+checking, or later web research. Do not answer the question yourself and do not invent catalogue
+schema.
 """
 
 _SQL_INSTRUCTIONS = """You are one Atlas SQL investigation agent.
@@ -328,6 +387,26 @@ support, context, or caveats from the other results. Preserve disagreements and 
 limitations. Do not add factual claims that are absent from the supplied results.
 The UI separately shows every direction and its exact SQL evidence, so synthesize rather than
 repeating every row.
+"""
+
+_HANDOFF_INSTRUCTIONS = """You turn one completed Atlas SQL investigation into one clean,
+standalone query that a user can paste into the Atlas workbench to continue investigating.
+
+Use the assigned objective, final finding, and successful investigative SQL as your only factual
+and schema basis. Consolidate the useful analytical path; do not concatenate every exploratory
+query. Produce one read-only DuckDB SELECT or WITH ... SELECT with no placeholders, external
+dependencies, or invented relations, columns, or macros.
+
+Make the query approachable and performant: use descriptive CTE and output names, select useful
+columns, push selective predicates early, avoid repeated scans, deduplicate intentionally, include
+stable ordering, and apply a sensible result limit. Preserve source URL and capture-time columns
+when they materially help continued investigation. Prefer durable expressions such as CURRENT_DATE
+when the question is time-relative.
+
+Call validate_handoff_query with the exact proposed SQL. Repair and revalidate failures. Return the
+exact SQL that validated successfully without changing it afterward. Caveats must be specific to
+this query's interpretation or data coverage; never state Atlas-wide facts such as only retained
+catalogue data being searched. Use an empty caveats list when none are material.
 """
 
 
@@ -369,6 +448,16 @@ _SYNTHESIS_AGENT = Agent[None, str](
     defer_model_check=True,
 )
 
+_HANDOFF_AGENT = Agent[HandoffDependencies, DirectionHandoffQuery](
+    None,
+    deps_type=HandoffDependencies,
+    output_type=DirectionHandoffQuery,
+    instructions=_HANDOFF_INSTRUCTIONS,
+    tools=[validate_handoff_query],
+    retries=2,
+    defer_model_check=True,
+)
+
 
 def _model_settings() -> dict[str, Any]:
     return {
@@ -386,6 +475,71 @@ def _planner_usage_limits() -> UsageLimits:
         request_limit=tool_calls_limit + 3,
         tool_calls_limit=tool_calls_limit,
     )
+
+
+def _handoff_usage_limits() -> UsageLimits:
+    tool_calls_limit = get_int("ATLAS_HANDOFF_TOOL_CALL_LIMIT")
+    return UsageLimits(
+        request_limit=tool_calls_limit + 3,
+        tool_calls_limit=tool_calls_limit,
+    )
+
+
+def _handoff_prompt(
+    *,
+    question: str,
+    direction: AnalysisDirection,
+    answer: str,
+    queries: list[CatalogueQueryResult],
+) -> str:
+    payload = {
+        "original_question": question,
+        "direction": direction.model_dump(mode="json"),
+        "investigator_answer": answer,
+        "successful_queries": [
+            {
+                "sql": query.sql,
+                "columns": query.columns,
+                "row_count": query.row_count,
+                "truncated": query.truncated,
+            }
+            for query in queries
+            if query.status == "completed"
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+async def _compile_handoff_query(
+    *,
+    question: str,
+    direction: AnalysisDirection,
+    answer: str,
+    queries: list[CatalogueQueryResult],
+    catalogue_tools: CatalogueTools,
+) -> DirectionHandoffQuery:
+    dependencies = HandoffDependencies(catalogue_tools=catalogue_tools)
+    result = await _HANDOFF_AGENT.run(
+        _handoff_prompt(
+            question=question,
+            direction=direction,
+            answer=answer,
+            queries=queries,
+        ),
+        deps=dependencies,
+        model=get_str("ATLAS_HANDOFF_MODEL"),
+        model_settings=_model_settings(),
+        usage_limits=_handoff_usage_limits(),
+    )
+    handoff = result.output
+    normalized_sql = handoff.sql.strip()
+    if normalized_sql not in dependencies.validated_sql:
+        validation = await catalogue_tools.query(normalized_sql)
+        if validation.status != "completed":
+            raise CatalogueQueryExecutionError(
+                validation.error or "The handoff query could not be validated."
+            )
+    return handoff.model_copy(update={"sql": normalized_sql})
 
 
 async def _run_direction(
@@ -430,18 +584,60 @@ async def _run_direction(
             ),
         )
         answer = str(result.output).strip()
+        handoff_query = None
+        await emit(
+            AnalyticsEvent(
+                type="handoff.started",
+                run_id=run_id,
+                direction_id=direction.id,
+            )
+        )
+        try:
+            handoff_query = await _compile_handoff_query(
+                question=question,
+                direction=direction,
+                answer=answer,
+                queries=dependencies.queries,
+                catalogue_tools=catalogue_tools,
+            )
+            await emit(
+                AnalyticsEvent(
+                    type="handoff.completed",
+                    run_id=run_id,
+                    direction_id=direction.id,
+                    handoff_query=handoff_query,
+                )
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Atlas handoff query compilation failed",
+                extra={"direction_id": direction.id},
+                exc_info=exc,
+            )
+            await emit(
+                AnalyticsEvent(
+                    type="handoff.failed",
+                    run_id=run_id,
+                    direction_id=direction.id,
+                    message=_safe_agent_error(exc),
+                )
+            )
         await emit(
             AnalyticsEvent(
                 type="direction.completed",
                 run_id=run_id,
                 direction_id=direction.id,
                 direction_answer=answer,
+                handoff_query=handoff_query,
             )
         )
         return DirectionResult(
             direction=direction,
             answer=answer,
             queries=dependencies.queries,
+            handoff_query=handoff_query,
         )
     except asyncio.CancelledError:
         raise

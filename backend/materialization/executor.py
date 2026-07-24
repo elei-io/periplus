@@ -27,6 +27,9 @@ from repository.catalogue.materializations import (
     MaterializationStore,
     physical_materialization_name,
 )
+from repository.catalogue.compiler_definitions import (
+    read_catalogue_compiler_definitions,
+)
 from repository.catalogue.views import CatalogueViewStore
 from repository.ingestion.health import HealthMonitor
 from runtime.catalogue_events import (
@@ -50,6 +53,22 @@ from workers.lifecycle import cancel_task
 
 class MaterializationControlChanged(RuntimeError):
     """The Postgres definition changed while remote work was in flight."""
+
+
+def _materialization_store(catalogue) -> MaterializationStore:
+    """Build a store with one authoritative macro-definition snapshot."""
+
+    definitions = read_catalogue_compiler_definitions(
+        catalogue.trusted_connection,
+        catalogue_alias=catalogue.config.alias,
+    )
+    return MaterializationStore(
+        catalogue,
+        scalar_macros=definitions.scalar_macros,
+        table_macros=definitions.table_macros,
+        views=definitions.views,
+        scalar_functions=definitions.scalar_functions,
+    )
 
 
 async def run(
@@ -320,10 +339,6 @@ def _active_definitions(
                 refresh_delay_seconds=row.refresh_delay_seconds,
                 refresh_strategy=row.refresh_strategy,
                 key_columns=tuple(row.key_columns),
-                scope_relations={
-                    relation: tuple(columns)
-                    for relation, columns in row.scope_relations.items()
-                },
                 source_table_id=row.source_table_id,
                 bootstrap_snapshot=row.bootstrap_snapshot,
                 bootstrap_partition_count=row.bootstrap_partition_count,
@@ -470,7 +485,7 @@ def _bootstrap_materialization(catalogue, materialization_id: UUID) -> None:
     physical_name = physical_materialization_name(model.id)
     # Recover a process death between physical creation and the Postgres update.
     try:
-        MaterializationStore(catalogue).table_identity(
+        _materialization_store(catalogue).table_identity(
             physical_name,
             schema_name="_atlas_materializations",
         )
@@ -480,7 +495,7 @@ def _bootstrap_materialization(catalogue, materialization_id: UUID) -> None:
         present = True
     _source_view(view_store, reference, model)
     resolved_source_view_uuid = model.source_view_uuid
-    store = MaterializationStore(catalogue)
+    store = _materialization_store(catalogue)
     if present:
         table = store.inspect(physical_name)
         source_snapshot = catalogue.latest_snapshot()
@@ -572,7 +587,7 @@ def _backfill_materialization(catalogue, plan: SimpleNamespace) -> None:
         or model.bootstrap_partition_cursor is None
     ):
         raise MaterializationError("Batched bootstrap state is incomplete.")
-    store = MaterializationStore(catalogue)
+    store = _materialization_store(catalogue)
     physical_name = physical_materialization_name(model.id)
     if model.bootstrap_partition_cursor < model.bootstrap_partition_count:
         kwargs = {
@@ -581,7 +596,6 @@ def _backfill_materialization(catalogue, plan: SimpleNamespace) -> None:
             "sql": model.source_sql,
             "source_table": model.source_table,
             "key_columns": tuple(model.key_columns),
-            "scope_relations": dict(model.scope_relations),
             "partition": model.bootstrap_partition_cursor,
             "partition_count": model.bootstrap_partition_count,
         }
@@ -678,10 +692,6 @@ def _load_bootstrap_plan(
                 "source_table": model.source_table,
                 "refresh_strategy": model.refresh_strategy,
                 "key_columns": tuple(model.key_columns),
-                "scope_relations": {
-                    relation: tuple(columns)
-                    for relation, columns in model.scope_relations.items()
-                },
                 "partition_column": model.partition_column,
                 "ducklake_table_uuid": model.ducklake_table_uuid,
                 "bootstrap_partition_count": model.bootstrap_partition_count,
@@ -810,7 +820,7 @@ def _refresh_materialization(
         raise MaterializationControlChanged(
             f"Materialization {materialization_id} is no longer live."
         )
-    store = MaterializationStore(catalogue)
+    store = _materialization_store(catalogue)
     physical_name = physical_materialization_name(plan.id)
     if plan.refresh_strategy == "full":
         store.refresh_full(
@@ -828,7 +838,6 @@ def _refresh_materialization(
             from_snapshot=from_snapshot,
             to_snapshot=processed_snapshot,
             key_columns=plan.key_columns,
-            scope_relations=plan.scope_relations,
         )
     elif plan.refresh_strategy == "append":
         store.refresh_append(
@@ -840,7 +849,6 @@ def _refresh_materialization(
             from_snapshot=from_snapshot,
             to_snapshot=processed_snapshot,
             key_columns=plan.key_columns,
-            scope_relations=plan.scope_relations,
         )
     else:
         raise RuntimeError(
@@ -889,12 +897,6 @@ def _load_refresh_plan(materialization_id: UUID) -> SimpleNamespace | None:
             source_table=getattr(model, "source_table", None),
             source_table_id=getattr(model, "source_table_id", None),
             key_columns=tuple(getattr(model, "key_columns", ())),
-            scope_relations={
-                relation: tuple(columns)
-                for relation, columns in getattr(
-                    model, "scope_relations", {}
-                ).items()
-            },
         )
 
 async def _delete_one(

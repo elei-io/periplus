@@ -33,7 +33,7 @@ def main() -> None:
         deadline = time.monotonic() + arguments.timeout_seconds
         rows: list[tuple] = []
         while time.monotonic() < deadline:
-            rows = catalogue.remote_rows(
+            rows = catalogue.trusted_remote_rows(
                 f"""
                 SELECT c.crawl_id,
                        c.document_id,

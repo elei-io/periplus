@@ -32,6 +32,11 @@ class CatalogueScalarMacroRecord(BaseModel):
     available: bool
     created_at: datetime
     updated_at: datetime
+    compiler_outcome: str | None = None
+    compiler_diagnostics: list[dict[str, object]] = Field(default_factory=list)
+    compiler_dependencies: list[dict[str, object]] = Field(default_factory=list)
+    compiler_version: str | None = None
+    catalogue_definition_revision: str | None = None
 
 
 class CatalogueScalarMacroListResponse(BaseModel):

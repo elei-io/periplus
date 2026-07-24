@@ -122,7 +122,7 @@ def load_relayed_tables(catalogue: Catalogue) -> dict[int, RelayedTable]:
     """Load current DuckLake identities without reading its control catalogue."""
 
     alias = _quote_literal(catalogue.config.alias)
-    rows = catalogue.remote_rows(
+    rows = catalogue.trusted_remote_rows(
         f"""
         WITH names AS (
             SELECT table_name,

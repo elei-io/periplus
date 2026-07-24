@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from nats.js.api import DiscardPolicy, RetentionPolicy, StorageType, StreamConfig
 from nats.js.errors import BadRequestError, NotFoundError
 
+from catalogue.compiler import ScalarMacroDefinition
 from control.catalogue_materializations.models import CatalogueMaterialization
 from control.catalogue_materializations.schemas import ViewMaterializationPut
 from materialization.dematerialization import dematerialize_one
@@ -40,6 +41,12 @@ from runtime.catalogue_events import (
 )
 
 
+def _mock_compiler_snapshot(catalogue: MagicMock) -> None:
+    catalogue.trusted_connection.execute.return_value.fetchall.side_effect = (
+        [[(17,)], [], [], [], [], [(17,)]] * 3
+    )
+
+
 class MaterializationEventContractTests(unittest.TestCase):
     def test_persisted_backfill_state_remains_loadable_after_restart(self) -> None:
         model = SimpleNamespace(
@@ -52,7 +59,6 @@ class MaterializationEventContractTests(unittest.TestCase):
             source_table="documents",
             refresh_strategy="keyed",
             key_columns=["document_id"],
-            scope_relations={"elements": ["document_id"]},
             partition_column=None,
             ducklake_table_uuid=uuid4(),
             bootstrap_partition_count=100,
@@ -135,6 +141,7 @@ class MaterializationEventContractTests(unittest.TestCase):
         session.get.side_effect = [model, reference]
         catalogue = MagicMock()
         catalogue.latest_snapshot.return_value = 102
+        _mock_compiler_snapshot(catalogue)
 
         with (
             patch(
@@ -192,19 +199,18 @@ class MaterializationEventContractTests(unittest.TestCase):
 
         self.assertIs(created, table)
         self.assertEqual(snapshot, 40)
-        create_sql = catalogue.remote_execute.call_args.args[0]
+        create_sql = catalogue.trusted_remote_execute.call_args.args[0]
         self.assertIn('CREATE TABLE "atlas"."_atlas_materializations"."m_test"', create_sql)
         self.assertIn("LIMIT 0", create_sql)
 
-        catalogue.remote_execute.reset_mock()
+        catalogue.trusted_remote_execute.reset_mock()
         store._prepare_backfill_keys(
             source_table="crawls",
             key_columns=("crawl_id",),
-            scope_relations={},
             partition=3,
             partition_count=14,
         )
-        key_sql = catalogue.remote_execute.call_args.args[0]
+        key_sql = catalogue.trusted_remote_execute.call_args.args[0]
         self.assertIn('FROM "atlas"."main"."crawls"', key_sql)
         self.assertIn('hash("crawl_id") % 14 = 3', key_sql)
 
@@ -313,6 +319,8 @@ class MaterializationEventContractTests(unittest.TestCase):
         session = MagicMock()
         session.get.return_value = model
         store = MagicMock()
+        catalogue = MagicMock()
+        _mock_compiler_snapshot(catalogue)
 
         with (
             patch("materialization.executor.session_scope") as session_scope,
@@ -323,7 +331,7 @@ class MaterializationEventContractTests(unittest.TestCase):
         ):
             session_scope.return_value.__enter__.return_value = session
             _refresh_materialization(
-                MagicMock(),
+                catalogue,
                 materialization_id,
                 from_snapshot=10,
                 processed_snapshot=12,
@@ -416,69 +424,165 @@ class MaterializationEventContractTests(unittest.TestCase):
         )
         self.assertEqual(ddl.message_id, "ddl:20:table:7:altered")
 
-    def test_incremental_sql_requires_direct_unshadowed_driver(self) -> None:
+    def test_unavailable_optimization_blocks_materialization(self) -> None:
         catalogue = SimpleNamespace(
             config=SimpleNamespace(alias="atlas", schema="main")
         )
         store = MaterializationStore(catalogue)
-        with self.assertRaisesRegex(
-            MaterializationError,
-            "must directly read its declared driving table",
-        ):
-            store._scope_incremental_query(
-                "SELECT document_id FROM elements",
-                source_table="documents",
-                key_columns=("document_id",),
-                scope_relations={},
-            )
-        with self.assertRaisesRegex(MaterializationError, "may not shadow"):
-            store._scope_incremental_query(
+        for sql in (
+            "SELECT document_id FROM elements",
+            (
                 "WITH documents AS (SELECT 1 AS document_id) "
-                "SELECT document_id FROM documents",
-                source_table="documents",
-                key_columns=("document_id",),
-                scope_relations={},
-            )
+                "SELECT document_id FROM documents"
+            ),
+        ):
+            with self.subTest(sql=sql), self.assertRaisesRegex(
+                MaterializationError,
+                "cannot be materialized",
+            ):
+                store._scope_incremental_query(
+                    sql,
+                    source_table="documents",
+                    refresh_strategy="keyed",
+                    key_columns=("document_id",),
+                )
 
-    def test_incremental_sql_directly_scopes_declared_dependent_scans(self) -> None:
+    def test_full_refresh_unavailable_optimization_blocks_materialization(
+        self,
+    ) -> None:
         catalogue = SimpleNamespace(
             config=SimpleNamespace(alias="atlas", schema="main")
         )
+        store = MaterializationStore(catalogue)
+
+        with self.assertRaisesRegex(
+            MaterializationError,
+            "cannot be materialized",
+        ):
+            store._compile_full_query(
+                "SELECT macros.installed(title) AS title FROM documents;"
+            )
+
+    def test_full_refresh_sql_uses_broad_materialization_purpose(self) -> None:
+        catalogue = SimpleNamespace(
+            config=SimpleNamespace(alias="atlas", schema="main")
+        )
+        store = MaterializationStore(
+            catalogue,
+            scalar_macros=(
+                ScalarMacroDefinition(
+                    schema_name="macros",
+                    macro_name="normalized",
+                    parameters=("value",),
+                    sql="lower(trim(value))",
+                ),
+            ),
+        )
+
+        compiled = store._compile_full_query(
+            "SELECT macros.normalized(title) AS title "
+            "FROM documents ORDER BY title LIMIT 5"
+        )
+
+        self.assertIn("LOWER(TRIM(title))", compiled)
+        self.assertIn("LIMIT 5", compiled)
+        self.assertNotIn("macros.normalized", compiled)
+
+    def test_refresh_full_executes_compiled_sql(self) -> None:
+        catalogue = MagicMock()
+        catalogue.config.alias = "atlas"
+        catalogue.config.schema = "main"
+        store = MaterializationStore(catalogue)
+        table_uuid = uuid4()
+        table = SimpleNamespace(table_uuid=table_uuid)
+        store.inspect = MagicMock(side_effect=(table, table))
+        store._compile_full_query = MagicMock(
+            return_value="SELECT lower(title) AS title FROM documents"
+        )
+
+        result = store.refresh_full(
+            name="m_materialized",
+            expected_uuid=table_uuid,
+            sql="SELECT macros.normalized(title) AS title FROM documents",
+        )
+
+        self.assertIs(result, table)
+        store._compile_full_query.assert_called_once_with(
+            "SELECT macros.normalized(title) AS title FROM documents"
+        )
+        statements = [
+            call.args[0] for call in catalogue.trusted_remote_execute.call_args_list
+        ]
+        self.assertTrue(
+            any(
+                "SELECT lower(title) AS title FROM documents"
+                in statement
+                for statement in statements
+            )
+        )
+
+    def test_single_table_keyed_sql_uses_compiler_plan(self) -> None:
+        catalogue = SimpleNamespace(
+            config=SimpleNamespace(alias="atlas", schema="main")
+        )
+        store = MaterializationStore(catalogue)
+
+        scoped = store._scope_incremental_query(
+            "SELECT document.document_id, document.captured_at "
+            "FROM documents AS document "
+            "WHERE document.captured_at IS NOT NULL",
+            source_table="documents",
+            refresh_strategy="keyed",
+            key_columns=("document_id",),
+        )
+
+        self.assertIn("_atlas_materialization_changed_keys", scoped)
+        self.assertIn("IS NOT DISTINCT FROM", scoped)
+        self.assertIn("document.captured_at IS NULL", scoped)
+        self.assertIn("EXISTS", scoped)
+
+    def test_inner_join_without_scope_hints_uses_catalogue_compiler(self) -> None:
+        catalogue = SimpleNamespace(
+            config=SimpleNamespace(alias="atlas", schema="main")
+        )
+        store = MaterializationStore(catalogue)
+
+        scoped = store._scope_incremental_query(
+            "SELECT document.document_id, element.element_index "
+            "FROM documents AS document "
+            "JOIN elements AS element USING (document_id)",
+            source_table="documents",
+            refresh_strategy="keyed",
+            key_columns=("document_id",),
+        )
+
+        self.assertEqual(
+            scoped.count("_atlas_materialization_changed_keys"),
+            2,
+        )
+        self.assertNotIn("materialized_source.*", scoped)
+
+    def test_incremental_sql_binds_compiler_derived_dependent_scans(self) -> None:
+        catalogue = MagicMock()
+        catalogue.config.alias = "atlas"
+        catalogue.config.schema = "main"
+        catalogue.trusted_remote_rows.return_value = [("doc-a",), ("doc-b",)]
         store = MaterializationStore(catalogue)
         scoped = store._scope_incremental_query(
             "SELECT document.document_id "
             "FROM documents AS document "
             "JOIN elements AS element USING (document_id)",
             source_table="documents",
+            refresh_strategy="keyed",
             key_columns=("document_id",),
-            scope_relations={"elements": ("document_id",)},
-            scope_rows={"elements": (("doc-a",), ("doc-b",))},
+            bind_key_rows=True,
         )
 
-        self.assertIn("_atlas_materialization_changed_keys", scoped)
+        self.assertNotIn("_atlas_materialization_changed_keys", scoped)
         self.assertIn("FROM elements AS", scoped)
         self.assertIn("'doc-a'", scoped)
         self.assertIn("'doc-b'", scoped)
         self.assertGreaterEqual(scoped.count("document_id"), 4)
-
-    def test_incremental_sql_replaces_single_value_scope_marker(self) -> None:
-        catalogue = SimpleNamespace(
-            config=SimpleNamespace(alias="atlas", schema="main")
-        )
-        store = MaterializationStore(catalogue)
-        scoped = store._scope_incremental_query(
-            "SELECT macros.text_content_scoped("
-            "document_id, element_index, "
-            "macros.materialization_scope('document_id')) "
-            "FROM documents JOIN elements USING (document_id)",
-            source_table="documents",
-            key_columns=("document_id",),
-            scope_relations={"elements": ("document_id",)},
-            scope_rows={"elements": (("doc-a",),)},
-        )
-
-        self.assertNotIn("materialization_scope", scoped)
-        self.assertIn("'doc-a'", scoped)
 
     def test_incremental_changes_use_native_ducklake_history(self) -> None:
         catalogue = MagicMock()
@@ -499,10 +603,9 @@ class MaterializationEventContractTests(unittest.TestCase):
             from_snapshot=10,
             to_snapshot=12,
             key_columns=("document_id",),
-            scope_relations={},
         )
 
-        sql = catalogue.remote_execute.call_args_list[0].args[0]
+        sql = catalogue.trusted_remote_execute.call_args_list[0].args[0]
         self.assertIn("ducklake_table_changes(", sql)
         self.assertNotIn("cdc_dml_changes_query", sql)
 

@@ -10,10 +10,10 @@ async function lintCatalogueQuery(
   sql: string,
   signal: AbortSignal
 ): Promise<CatalogueLintResult> {
-  const response = await fetch(apiUrl("/catalogue/sql/lint"), {
+  const response = await fetch(apiUrl("/catalogue/sql/compile"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sql }),
+    body: JSON.stringify({ sql, purpose: "interactive" }),
     signal,
   })
   if (!response.ok) {

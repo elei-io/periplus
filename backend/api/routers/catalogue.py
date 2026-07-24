@@ -2,23 +2,33 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from atlas_sql import (
+    AnalysisResult,
+    AtlasCompiler,
+    CompilationResult,
+    InteractiveQueryPurpose,
+)
+from repository.catalogue.compiler_definitions import (
+    CatalogueCompilerDefinitionCache,
+    CatalogueCompilerDefinitions,
+)
 from repository.catalogue.quack_runtime import (
     CatalogueQueryExecutionError,
     QuackQueryRuntime,
-    remote_rows,
+    trusted_remote_rows,
 )
 from repository.catalogue.interactive import prepare_interactive_query
+from repository.catalogue.analysis import analyze_compilation
 from repository.catalogue.query import (
     CatalogueQueryError,
     CatalogueStatementKind,
-    lint_catalogue_statement,
 )
 from runtime.catalogue_queries import (
     CatalogueQueryState,
@@ -38,14 +48,15 @@ class CatalogueSqlRequest(BaseModel):
     sql: str = Field(min_length=1, max_length=100_000)
 
 
-class CatalogueLintDiagnosticResponse(BaseModel):
-    code: str
-    severity: str
-    message: str
+class CatalogueCompileRequest(CatalogueSqlRequest):
+    purpose: Literal["interactive"] = "interactive"
 
 
-class CatalogueLintResponse(BaseModel):
-    diagnostics: list[CatalogueLintDiagnosticResponse]
+class CatalogueAnalyzeRequest(CatalogueCompileRequest):
+    per_plan_budget_seconds: float = Field(default=60.0, gt=0, le=600)
+    execution_policy: Literal["cold", "warm"] = "cold"
+    warmup_runs: int = Field(default=1, ge=0, le=10)
+    equivalence_hashes: bool = False
 
 
 class CatalogueQueryRuntimeResponse(BaseModel):
@@ -111,6 +122,24 @@ def get_quack_runtime(request: Request) -> QuackQueryRuntime:
     return runtime
 
 
+def get_compiler_definition_cache(
+    request: Request,
+) -> CatalogueCompilerDefinitionCache:
+    cache = getattr(request.app.state, "compiler_definitions", None)
+    if not isinstance(cache, CatalogueCompilerDefinitionCache):
+        raise RuntimeError("Catalogue compiler definitions are unavailable.")
+    return cache
+
+
+async def get_compiler_definitions(
+    cache: Annotated[
+        CatalogueCompilerDefinitionCache,
+        Depends(get_compiler_definition_cache),
+    ],
+) -> CatalogueCompilerDefinitions:
+    return await cache.get()
+
+
 @router.get("/query-runtime", response_model=CatalogueQueryRuntimeResponse)
 def query_runtime(request: Request) -> CatalogueQueryRuntimeResponse:
     config = get_quack_runtime(request).config
@@ -126,10 +155,19 @@ def query_runtime(request: Request) -> CatalogueQueryRuntimeResponse:
 async def execute_query(
     payload: CatalogueSqlRequest,
     request: Request,
+    definitions: Annotated[
+        CatalogueCompilerDefinitions,
+        Depends(get_compiler_definitions),
+    ],
 ) -> StreamingResponse:
     try:
         query_id, statement, active = await prepare_interactive_query(
-            get_quack_runtime(request), payload.sql
+            get_quack_runtime(request),
+            payload.sql,
+            compiler=AtlasCompiler.embedded(
+                catalogue_revision=definitions.revision
+            ),
+            purpose=definitions.interactive_purpose(),
         )
     except CatalogueQueryError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -183,7 +221,7 @@ async def catalogue_status(request: Request) -> CatalogueStatusResponse:
     config = runtime.config
 
     def operation(connection):
-        rows = remote_rows(
+        rows = trusted_remote_rows(
             connection,
             f"""
             SELECT coalesce(sum(file_count), 0),
@@ -191,7 +229,7 @@ async def catalogue_status(request: Request) -> CatalogueStatusResponse:
             FROM ducklake_table_info({_quote_literal(config.catalogue_alias)})
             """,
         )
-        versions = remote_rows(
+        versions = trusted_remote_rows(
             connection,
             """
             SELECT extension_version
@@ -223,7 +261,7 @@ async def catalogue_metadata(request: Request) -> CatalogueMetadataResponse:
 
     def operation(connection):
         alias = _quote_literal(config.catalogue_alias)
-        relation_rows = remote_rows(
+        relation_rows = trusted_remote_rows(
             connection,
             f"""
             SELECT table_catalog, table_schema, table_name, table_type
@@ -238,7 +276,7 @@ async def catalogue_metadata(request: Request) -> CatalogueMetadataResponse:
             raise CatalogueQueryExecutionError(
                 "Catalogue metadata exceeds the limit of 5,000 relations."
             )
-        column_rows = remote_rows(
+        column_rows = trusted_remote_rows(
             connection,
             f"""
             SELECT table_catalog, table_schema, table_name, column_name,
@@ -254,7 +292,7 @@ async def catalogue_metadata(request: Request) -> CatalogueMetadataResponse:
             raise CatalogueQueryExecutionError(
                 "Catalogue metadata exceeds the limit of 100,000 columns."
             )
-        function_rows = remote_rows(
+        function_rows = trusted_remote_rows(
             connection,
             """
             SELECT database_name, schema_name, function_name, function_type,
@@ -342,18 +380,62 @@ async def catalogue_metadata(request: Request) -> CatalogueMetadataResponse:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@router.post("/sql/lint", response_model=CatalogueLintResponse)
-def lint_sql(payload: CatalogueSqlRequest) -> CatalogueLintResponse:
-    return CatalogueLintResponse(
-        diagnostics=[
-            CatalogueLintDiagnosticResponse(
-                code=item.code,
-                severity=item.severity,
-                message=item.message,
-            )
-            for item in lint_catalogue_statement(payload.sql)
-        ]
+@router.post("/sql/compile", response_model=CompilationResult)
+async def compile_sql(
+    payload: CatalogueCompileRequest,
+    definitions: Annotated[
+        CatalogueCompilerDefinitions,
+        Depends(get_compiler_definitions),
+    ],
+) -> CompilationResult:
+    return compile_sql_result(
+        payload,
+        purpose=definitions.interactive_purpose(),
+        catalogue_revision=definitions.revision,
     )
+
+
+def compile_sql_result(
+    payload: CatalogueSqlRequest,
+    *,
+    purpose: InteractiveQueryPurpose | None = None,
+    catalogue_revision: str | None = None,
+) -> CompilationResult:
+    return AtlasCompiler.embedded(
+        catalogue_revision=catalogue_revision,
+    ).compile(
+        payload.sql,
+        purpose=purpose or InteractiveQueryPurpose(),
+    )
+
+
+@router.post("/sql/analyze", response_model=AnalysisResult)
+async def analyze_sql(
+    payload: CatalogueAnalyzeRequest,
+    request: Request,
+    definitions: Annotated[
+        CatalogueCompilerDefinitions,
+        Depends(get_compiler_definitions),
+    ],
+) -> AnalysisResult:
+    compilation = compile_sql_result(
+        payload,
+        purpose=definitions.interactive_purpose(),
+        catalogue_revision=definitions.revision,
+    )
+    try:
+        return await analyze_compilation(
+            get_quack_runtime(request),
+            compilation,
+            per_plan_budget_seconds=payload.per_plan_budget_seconds,
+            execution_policy=payload.execution_policy,
+            warmup_runs=payload.warmup_runs,
+            equivalence_hashes=payload.equivalence_hashes,
+        )
+    except CatalogueQueryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except CatalogueQueryExecutionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _table_macro_result_columns(
@@ -368,7 +450,7 @@ def _table_macro_result_columns(
     )
     arguments = ", ".join("NULL" for _ in _array_values(row[6]))
     try:
-        rows = remote_rows(
+        rows = trusted_remote_rows(
             connection,
             f"DESCRIBE SELECT * FROM {qualified}({arguments})",
         )

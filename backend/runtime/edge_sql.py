@@ -1,36 +1,34 @@
-"""Classification helpers for bounded crawl-graph edge SQL."""
+"""Public compiler-backed helpers for bounded crawl-graph edge SQL."""
 
-from sqlglot import exp, parse_one
+from atlas_sql import AtlasCompiler, GraphEdgePurpose, graph_edge_uses_catalogue
 
-_CATALOGUE_DOM_FUNCTIONS = frozenset(
-    {
-        "get_attribute",
-        "has_attribute",
-        "inner_html",
-        "readable_text",
-        "text_content",
-    }
-)
+
+def compile_edge_sql(
+    sql: str,
+    *,
+    purpose: GraphEdgePurpose | None = None,
+) -> str:
+    """Return executable edge SQL or reject an invalid edge contract."""
+
+    result = AtlasCompiler.embedded().compile(
+        sql,
+        purpose=purpose or GraphEdgePurpose(),
+        coverage_source="graph_edge",
+    )
+    if not result.valid:
+        message = next(
+            (
+                diagnostic.message
+                for diagnostic in result.diagnostics
+                if diagnostic.severity == "error"
+            ),
+            "Edge SQL is invalid.",
+        )
+        raise ValueError(message)
+    if result.executable_sql is None:
+        raise RuntimeError("Valid edge compilation did not return executable SQL.")
+    return result.executable_sql
 
 
 def edge_uses_catalogue(sql: str) -> bool:
-    """Return whether an edge reads anything beyond its current page package."""
-
-    statement = parse_one(sql, dialect="duckdb")
-    if any(
-        function.name.lower() in _CATALOGUE_DOM_FUNCTIONS
-        for function in statement.find_all(exp.Func)
-    ):
-        return True
-    cte_names = {
-        cte.alias_or_name.lower()
-        for cte in statement.find_all(exp.CTE)
-        if cte.alias_or_name
-    }
-    for table in statement.find_all(exp.Table):
-        if table.name.lower() in cte_names and not table.db:
-            continue
-        if table.db.lower() == "edge" and table.name.lower() == "page_links":
-            continue
-        return True
-    return False
+    return graph_edge_uses_catalogue(sql)

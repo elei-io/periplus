@@ -29,7 +29,7 @@ def _catalogue() -> MagicMock:
 class ManagedDefinitionStoreTests(unittest.TestCase):
     def test_view_list_uses_remote_metadata_and_describes_columns(self) -> None:
         catalogue = _catalogue()
-        catalogue.remote_rows.side_effect = [
+        catalogue.trusted_remote_rows.side_effect = [
             [
                 (
                     "views",
@@ -49,10 +49,10 @@ class ManagedDefinitionStoreTests(unittest.TestCase):
         self.assertEqual(views[0].column_types, ("BIGINT",))
         self.assertIn(
             "duckdb_views()",
-            catalogue.remote_rows.call_args_list[0].args[0],
+            catalogue.trusted_remote_rows.call_args_list[0].args[0],
         )
         self.assertEqual(
-            catalogue.remote_rows.call_args_list[1].args[0],
+            catalogue.trusted_remote_rows.call_args_list[1].args[0],
             'DESCRIBE "atlas"."views"."document_counts"',
         )
 
@@ -70,7 +70,7 @@ class ManagedDefinitionStoreTests(unittest.TestCase):
             result = store.create(name="document_counts", sql="SELECT 1 AS n")
 
         self.assertIs(result, created)
-        catalogue.remote_execute.assert_called_once_with(
+        catalogue.trusted_remote_execute.assert_called_once_with(
             'CREATE VIEW "atlas"."views"."document_counts" AS SELECT 1 AS n'
         )
 
@@ -90,7 +90,7 @@ class ManagedDefinitionStoreTests(unittest.TestCase):
             )
 
         self.assertIs(result, created)
-        catalogue.remote_execute.assert_called_once_with(
+        catalogue.trusted_remote_execute.assert_called_once_with(
             'CREATE MACRO "atlas"."macros"."increment"("value") AS (value + 1)'
         )
 
@@ -111,7 +111,7 @@ class ManagedDefinitionStoreTests(unittest.TestCase):
             )
 
         self.assertIs(result, replaced)
-        catalogue.remote_execute.assert_called_once_with(
+        catalogue.trusted_remote_execute.assert_called_once_with(
             'CREATE OR REPLACE MACRO "atlas"."macros"."numbers_between"'
             '("minimum", "maximum" := 4) AS TABLE '
             "(SELECT value FROM RANGE(0, maximum) AS values(value))"

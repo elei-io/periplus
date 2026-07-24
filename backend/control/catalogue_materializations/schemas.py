@@ -28,7 +28,6 @@ class ViewMaterializationPut(BaseModel):
     source_table: str = Field(min_length=1, max_length=63)
     refresh_strategy: MaterializationRefreshStrategy
     key_columns: list[str] = Field(default_factory=list, max_length=16)
-    scope_relations: dict[str, list[str]] = Field(default_factory=dict)
     refresh_delay_seconds: float = Field(default=1.0, ge=0, le=3600)
     partition_column: str | None = Field(default=None, max_length=63)
 
@@ -49,19 +48,26 @@ class ViewMaterializationPut(BaseModel):
             )
         if self.refresh_strategy == "full" and self.key_columns:
             raise ValueError("The full refresh strategy does not use key columns.")
-        for relation, columns in self.scope_relations.items():
-            if re.fullmatch(r"[a-z][a-z0-9_]{0,62}", relation) is None:
-                raise ValueError("Scope relation names must be safe identifiers.")
-            if not columns or len(columns) > 16:
-                raise ValueError("Each scope relation requires 1–16 columns.")
-            if any(
-                re.fullmatch(r"[a-z][a-z0-9_]{0,62}", column) is None
-                for column in columns
-            ):
-                raise ValueError("Scope columns must be safe identifiers.")
-        if self.refresh_strategy == "full" and self.scope_relations:
-            raise ValueError("The full refresh strategy does not use scoped relations.")
         return self
+
+
+class ViewMaterializationEligibilityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_table: str = Field(min_length=1, max_length=63)
+    refresh_strategy: MaterializationRefreshStrategy
+    key_columns: list[str] = Field(default_factory=list, max_length=16)
+
+
+class MaterializationEligibilityDiagnostic(BaseModel):
+    code: str
+    severity: Literal["warning", "error"]
+    message: str
+
+
+class ViewMaterializationEligibility(BaseModel):
+    eligible: bool
+    diagnostics: list[MaterializationEligibilityDiagnostic]
 
 
 class CatalogueMaterializationStateUpdate(BaseModel):
@@ -101,7 +107,6 @@ class CatalogueMaterializationRecord(BaseModel):
     refresh_delay_seconds: float
     refresh_strategy: MaterializationRefreshStrategy
     key_columns: list[str]
-    scope_relations: dict[str, list[str]]
     partition_column: str | None
     target_table_id: int | None
     ducklake_table_uuid: UUID | None

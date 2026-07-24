@@ -295,7 +295,7 @@ class CatalogueService:
             if replacement_documents:
                 identifiers = list(replacement_documents)
                 values = ", ".join(_sql_literal(value) for value in identifiers)
-                self.catalogue.remote_execute(
+                self.catalogue.trusted_remote_execute(
                     f"DELETE FROM {self._table('elements')} "
                     f"WHERE document_id IN ({values})"
                 )
@@ -320,7 +320,7 @@ class CatalogueService:
                 # DuckDBPyRelation.query() creates a helper view in ``memory``;
                 # after the document append that becomes an illegal second
                 # database write in the same transaction.
-                self.catalogue.connection.execute(
+                self.catalogue.trusted_connection.execute(
                     f"INSERT INTO {self._table('elements')} BY NAME "
                     "SELECT * FROM read_parquet(?, union_by_name = true)",
                     [[str(path) for path in element_paths.values()]],
@@ -392,7 +392,7 @@ class CatalogueService:
         ]
 
     def get_artifact(self, artifact_id: str) -> ArtifactRecord | None:
-        rows = self.catalogue.sql_dicts(
+        rows = self.catalogue.trusted_sql_dicts(
             f"SELECT * FROM {self._table('artifacts')} WHERE artifact_id = $artifact_id",
             {"artifact_id": artifact_id},
         )
@@ -442,7 +442,7 @@ class CatalogueService:
         if not branches:
             return ExistingCatalogueIdentities()
 
-        rows = self.catalogue.remote_rows(" UNION ALL ".join(branches))
+        rows = self.catalogue.trusted_remote_rows(" UNION ALL ".join(branches))
         existing: dict[str, set[str]] = {
             "url": set(),
             "document": set(),
@@ -494,7 +494,7 @@ class CatalogueService:
         return result
 
     def get_document(self, document_id: str) -> DocumentRecord | None:
-        rows = self.catalogue.sql_dicts(
+        rows = self.catalogue.trusted_sql_dicts(
             f"SELECT * FROM {self._table('documents')} WHERE document_id = $document_id",
             {"document_id": document_id},
         )
@@ -524,7 +524,7 @@ class CatalogueService:
         return result
 
     def get_crawl(self, crawl_id: UUID) -> CrawlRecord | None:
-        rows = self.catalogue.sql_dicts(
+        rows = self.catalogue.trusted_sql_dicts(
             f"SELECT * FROM {self._table('crawls')} WHERE crawl_id = $crawl_id",
             {"crawl_id": crawl_id},
         )
@@ -562,7 +562,7 @@ class CatalogueService:
         if captured_before is not None:
             conditions.append("captured_at < $captured_before")
             params["captured_before"] = captured_before
-        rows = self.catalogue.sql_dicts(
+        rows = self.catalogue.trusted_sql_dicts(
             f"SELECT * FROM {self._table('crawls')} WHERE "
             + " AND ".join(conditions)
             + " ORDER BY captured_at DESC LIMIT $limit",
@@ -591,7 +591,7 @@ class CatalogueService:
         elif offset:
             sql += " LIMIT ALL OFFSET $offset"
             params["offset"] = offset
-        rows = self.catalogue.sql_dicts(sql, params)
+        rows = self.catalogue.trusted_sql_dicts(sql, params)
         return [ElementRecord.model_validate(row) for row in rows]
 
     def iter_elements(
@@ -604,7 +604,7 @@ class CatalogueService:
 
         if batch_size <= 0:
             raise CatalogueValidationError("batch_size must be greater than zero")
-        reader = self.catalogue.connection.execute(
+        reader = self.catalogue.trusted_connection.execute(
             "SELECT element_index, parent_index, subtree_end_index, depth, tag, "
             "namespace_uri, attributes, text_direct, text_tail "
             f"FROM {self._table('elements')} WHERE document_id = ? "
@@ -701,7 +701,7 @@ class CatalogueService:
             + ")"
             for document in documents
         )
-        self.catalogue.remote_execute(
+        self.catalogue.trusted_remote_execute(
             f"UPDATE {self._table('documents')} AS target SET "
             "dom_schema_version = staged.dom_schema_version, "
             "parser_name = staged.parser_name, "
@@ -719,7 +719,7 @@ class CatalogueService:
         sql: str,
         parameters: Sequence[object],
     ) -> list[dict[str, Any]]:
-        cursor = self.catalogue.connection.execute(sql, list(parameters))
+        cursor = self.catalogue.trusted_connection.execute(sql, list(parameters))
         names = [description[0] for description in cursor.description]
         return [
             dict(zip(names, row, strict=True))

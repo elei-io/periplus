@@ -59,6 +59,8 @@ export function applyAnalyticsEvent(
         direction,
         answer: "",
         error: null,
+        handoffError: null,
+        handoffQuery: null,
         queries: [],
         status: "waiting",
       })),
@@ -208,6 +210,48 @@ export function applyAnalyticsEvent(
       ),
     }
   }
+  if (event.type === "handoff.started" && event.direction_id) {
+    return {
+      ...state,
+      directions: updateDirection(
+        state.directions,
+        event.direction_id,
+        (direction) => ({ ...direction, status: "compiling" })
+      ),
+    }
+  }
+  if (
+    event.type === "handoff.completed" &&
+    event.direction_id &&
+    event.handoff_query
+  ) {
+    return {
+      ...state,
+      directions: updateDirection(
+        state.directions,
+        event.direction_id,
+        (direction) => ({
+          ...direction,
+          handoffQuery: event.handoff_query,
+          handoffError: null,
+        })
+      ),
+    }
+  }
+  if (event.type === "handoff.failed" && event.direction_id) {
+    return {
+      ...state,
+      directions: updateDirection(
+        state.directions,
+        event.direction_id,
+        (direction) => ({
+          ...direction,
+          handoffError:
+            event.message ?? "Atlas could not prepare a reusable query.",
+        })
+      ),
+    }
+  }
   if (
     event.type === "direction.completed" &&
     event.direction_id &&
@@ -219,6 +263,7 @@ export function applyAnalyticsEvent(
       (direction) => ({
         ...direction,
         answer: event.direction_answer ?? "",
+        handoffQuery: event.handoff_query ?? direction.handoffQuery,
         status: "completed",
       })
     )

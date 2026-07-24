@@ -82,3 +82,22 @@ Resolved and retired-client investigations remain available in version control.
   changing their value, and invoke the reopened macro with and without its optional argument.
 - **Atlas status:** Atlas uses an impossible empty-document-ID sentinel and converts it to `NULL`
   inside the macro. A DuckLake fix would remove the sentinel.
+
+## Quack lacks a lake-scoped physical-metadata snapshot for compilation
+
+- **Atlas caller:** the catalogue SQL compiler's partition-aware planning and scan/byte estimates.
+- **Evidence:** the public `ducklake_table_info(catalog)` function exposes stable table identity,
+  file count, and total file bytes, but not partition columns, partition transforms, table/column
+  statistics, or the metadata revision that makes those facts coherent with `duckdb_views()` and
+  `duckdb_functions()`. The missing facts exist in DuckLake metadata tables such as
+  `ducklake_partition_column`, `ducklake_table_stats`, and `ducklake_table_column_stats`, but Atlas
+  intentionally has no metadata-database credentials and must not reach through Quack's lake
+  isolation boundary.
+- **Smallest useful upstream contract:** expose one read-only, lake-scoped metadata function that
+  returns a revision plus stable table UUIDs, schemas, columns, current partition transforms, table
+  cardinality, file count/bytes, and available column statistics from the same snapshot. Add a
+  concurrent-DDL test proving definitions and physical facts share that revision.
+- **Atlas status:** the compiler accepts and tests an immutable `CatalogueMetadataSnapshot`, keeps
+  bound values separate from authored SQL, and declines physical estimates when facts are absent.
+  Production loading of partition transforms and statistics remains blocked on the upstream
+  primitive; Atlas will not query DuckLake's private metadata database directly.

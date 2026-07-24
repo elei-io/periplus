@@ -4,7 +4,7 @@ sync:
 	cd backend && uv sync
 
 check:
-	cd backend && uv run python -m compileall actions agents api catalogue_relay cli config control db dom materialization observability repository runtime workers
+	cd backend && uv run python -m compileall actions agents api catalogue catalogue_relay cli config control db dom materialization observability repository runtime workers
 	cd backend && uv run python -m unittest discover -s tests
 
 setup:

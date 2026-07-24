@@ -13,6 +13,13 @@ export type AnalysisPlan = {
   directions: AnalysisDirection[]
 }
 
+export type DirectionHandoffQuery = {
+  title: string
+  sql: string
+  explanation: string
+  caveats: string[]
+}
+
 export type AnalyticsEventType =
   | "analysis.started"
   | "orientation.activity"
@@ -20,6 +27,9 @@ export type AnalyticsEventType =
   | "direction.started"
   | "direction.completed"
   | "direction.failed"
+  | "handoff.started"
+  | "handoff.completed"
+  | "handoff.failed"
   | "query.started"
   | "query.completed"
   | "query.failed"
@@ -34,6 +44,7 @@ export type AnalyticsEvent = {
   direction: AnalysisDirection | null
   direction_id: DirectionId | null
   direction_answer: string | null
+  handoff_query: DirectionHandoffQuery | null
   scope: "orientation" | "analysis" | null
   call_id: string | null
   message: string | null
@@ -65,8 +76,10 @@ export type DirectionState = {
   direction: AnalysisDirection
   answer: string
   error: string | null
+  handoffError: string | null
+  handoffQuery: DirectionHandoffQuery | null
   queries: AnalyticsQuery[]
-  status: "waiting" | "running" | "completed" | "failed"
+  status: "waiting" | "running" | "compiling" | "completed" | "failed"
 }
 
 export type AnalyticsState = {

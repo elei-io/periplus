@@ -50,7 +50,9 @@ class Catalogue:
         self._use_schema_if_available()
 
     @property
-    def connection(self):
+    def trusted_connection(self):
+        """Return the raw local connection for trusted Atlas infrastructure SQL."""
+
         return self._connection_proxy
 
     @property
@@ -72,19 +74,19 @@ class Catalogue:
     def remote_transaction(self) -> Iterator[Catalogue]:
         """Transaction executed by the session-affine Basin DuckDB process."""
 
-        self.remote_execute("BEGIN TRANSACTION")
+        self.trusted_remote_execute("BEGIN TRANSACTION")
         self._remote_transaction_active = True
         try:
             yield self
         except BaseException:
             try:
-                self.remote_execute("ROLLBACK")
+                self.trusted_remote_execute("ROLLBACK")
             finally:
                 self._remote_transaction_active = False
             raise
         else:
             try:
-                self.remote_execute("COMMIT")
+                self.trusted_remote_execute("COMMIT")
             finally:
                 self._remote_transaction_active = False
 
@@ -98,7 +100,7 @@ class Catalogue:
         )
         with self.remote_transaction():
             for schema in schemas:
-                self.remote_execute(
+                self.trusted_remote_execute(
                     "CREATE SCHEMA IF NOT EXISTS "
                     f"{_qualified(self.config.alias, schema)}"
                 )
@@ -108,7 +110,7 @@ class Catalogue:
                     + ("" if column.nullable else " NOT NULL")
                     for name, column in columns.items()
                 )
-                self.remote_execute(
+                self.trusted_remote_execute(
                     "CREATE TABLE IF NOT EXISTS "
                     f"{_qualified(self.config.alias, self.config.schema, table_name)} "
                     f"({definitions})"
@@ -125,7 +127,7 @@ class Catalogue:
                 table_name,
             )
             try:
-                rows = self.remote_rows(f"DESCRIBE {relation}")
+                rows = self.trusted_remote_rows(f"DESCRIBE {relation}")
             except Exception as exc:
                 errors.append(f"{self.config.schema}.{table_name}: {exc}")
                 continue
@@ -145,7 +147,7 @@ class Catalogue:
             raise CatalogueSchemaError("; ".join(errors))
 
     def latest_snapshot(self) -> int | None:
-        rows = self.remote_rows(
+        rows = self.trusted_remote_rows(
             "SELECT max(snapshot_id) "
             f"FROM ducklake_snapshots({_quote_literal(self.config.alias)})"
         )
@@ -155,40 +157,44 @@ class Catalogue:
     def last_committed_snapshot(self) -> int | None:
         """Return the snapshot committed most recently by this remote session."""
 
-        rows = self.remote_rows(
+        rows = self.trusted_remote_rows(
             "SELECT id FROM "
             f"{_quote_identifier(self.config.alias)}.last_committed_snapshot()"
         )
         value = rows[0][0] if rows else None
         return int(value) if value is not None else None
 
-    def remote_rows(
+    def trusted_remote_rows(
         self,
         sql: str,
         parameters: Sequence[object] | Mapping[str, object] | None = None,
     ) -> list[tuple]:
         if parameters is not None:
-            raise ValueError("remote_rows accepts already-bound server SQL only")
+            raise ValueError(
+                "trusted_remote_rows accepts already-bound server SQL only"
+            )
         cursor = self._execute_remote(
             "FROM quack_query_by_name(current_catalog(), ?)",
             sql,
         )
         return cursor.fetchall()
 
-    def remote_execute(self, sql: str) -> list[tuple]:
-        """Execute one statement in the session-affine Basin DuckDB process."""
+    def trusted_remote_execute(self, sql: str) -> list[tuple]:
+        """Execute trusted Atlas SQL in the session-affine Basin process."""
 
         return self._execute_remote(
             "CALL quack_query_by_name(current_catalog(), ?)",
             sql,
         ).fetchall()
 
-    def sql_dicts(
+    def trusted_sql_dicts(
         self,
         sql: str,
         parameters: Mapping[str, object] | None = None,
     ) -> list[dict[str, Any]]:
-        cursor = self.connection.execute(sql, dict(parameters or {}))
+        """Execute trusted Atlas SQL and return rows keyed by column name."""
+
+        cursor = self.trusted_connection.execute(sql, dict(parameters or {}))
         names = [description[0] for description in cursor.description]
         return [
             dict(zip(names, row, strict=True))
@@ -205,19 +211,19 @@ class Catalogue:
         if not rows:
             return
         registration = f"_atlas_upload_{id(rows):x}"
-        self.connection.register(registration, pa.Table.from_pylist(rows))
+        self.trusted_connection.register(registration, pa.Table.from_pylist(rows))
         try:
             relation = _qualified(
                 self.config.alias,
                 schema_name or self.config.schema,
                 table_name,
             )
-            self.connection.execute(
+            self.trusted_connection.execute(
                 f"INSERT INTO {relation} BY NAME "
                 f"SELECT * FROM {_quote_identifier(registration)}"
             )
         finally:
-            self.connection.unregister(registration)
+            self.trusted_connection.unregister(registration)
 
     def close(self) -> None:
         try:
@@ -234,10 +240,10 @@ class Catalogue:
     def _use_schema_if_available(self) -> None:
         namespace = _qualified(self.config.alias, self.config.schema)
         try:
-            self.connection.execute(f"USE {namespace}")
+            self.trusted_connection.execute(f"USE {namespace}")
         except Exception:
             # A newly provisioned lake has no Atlas schema until bootstrap.
-            self.connection.execute(
+            self.trusted_connection.execute(
                 f"USE {_quote_identifier(self.config.alias)}"
             )
 

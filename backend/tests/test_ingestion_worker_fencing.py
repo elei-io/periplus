@@ -385,7 +385,7 @@ class IngestionFenceFailureTests(unittest.IsolatedAsyncioTestCase):
         catalogue = MagicMock()
         catalogue.config.alias = "atlas_test"
         catalogue.config.schema = "main"
-        catalogue.remote_rows.return_value = [
+        catalogue.trusted_remote_rows.return_value = [
             ("url", "existing-url"),
             ("document", "sha256:document"),
             ("artifact", "sha256:artifact"),
@@ -404,13 +404,13 @@ class IngestionFenceFailureTests(unittest.IsolatedAsyncioTestCase):
                 artifacts=frozenset({"sha256:artifact"}),
             ),
         )
-        sql = catalogue.remote_rows.call_args.args[0]
+        sql = catalogue.trusted_remote_rows.call_args.args[0]
         self.assertEqual(sql.count(" UNION ALL "), 2)
         self.assertEqual(sql.count("'existing-url'"), 1)
         self.assertIn("'new-url'", sql)
         self.assertIn("'sha256:document'", sql)
         self.assertIn("'sha256:artifact'", sql)
-        catalogue.connection.execute.assert_not_called()
+        catalogue.trusted_connection.execute.assert_not_called()
 
 
 if __name__ == "__main__":

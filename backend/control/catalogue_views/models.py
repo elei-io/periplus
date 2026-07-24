@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Index, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, JSON, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -34,6 +34,17 @@ class CatalogueViewReference(Base):
         PG_UUID(as_uuid=True),
         ForeignKey("catalogue_query_revisions.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    compiler_outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
+    compiler_diagnostics: Mapped[list[dict[str, object]] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    compiler_dependencies: Mapped[list[dict[str, object]] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    compiler_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    catalogue_definition_revision: Mapped[str | None] = mapped_column(
+        Text, nullable=True
     )
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

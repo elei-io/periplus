@@ -36,7 +36,7 @@ class CatalogueTableMacroStore:
         self.catalogue = catalogue
 
     def list(self) -> list[DuckLakeTableMacro]:
-        rows = self.catalogue.remote_rows(
+        rows = self.catalogue.trusted_remote_rows(
             """
             SELECT schema_name, function_name, parameters
             FROM duckdb_functions()
@@ -104,7 +104,7 @@ class CatalogueTableMacroStore:
 
     def drop(self, *, name: str) -> None:
         _validate_name(name, "Table macro name")
-        self.catalogue.remote_execute(
+        self.catalogue.trusted_remote_execute(
             f"DROP MACRO TABLE IF EXISTS {_qualified(self.catalogue, name)}"
         )
 
@@ -126,7 +126,7 @@ class CatalogueTableMacroStore:
             )
             for value in parameters
         )
-        self.catalogue.remote_execute(
+        self.catalogue.trusted_remote_execute(
             f"{operation} {_qualified(self.catalogue, name)}({signature}) "
             f"AS TABLE ({compiled})"
         )

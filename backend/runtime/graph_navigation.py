@@ -20,13 +20,16 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from config import get_float, get_int, get_str
 from config.performance import CRAWL_ACQUISITION_LANES, GRAPH_ACK_WAIT_SECONDS
 from repository.catalogue import catalogue_from_env
+from repository.catalogue.compiler_definitions import (
+    read_catalogue_compiler_definitions,
+)
 from repository.catalogue.query import prepare_catalogue_query
 from repository.ingestion.health import HealthMonitor
 from repository.exceptions import RepositoryObjectNotFound
 from repository.objects.config import object_store_from_env
 from repository.objects.html import RawHtmlRepository, html_object_key
 from runtime.catalogue_lane import catalogue_operation_lane
-from runtime.edge_sql import edge_uses_catalogue
+from runtime.edge_sql import compile_edge_sql, edge_uses_catalogue
 from runtime.graph_queue import (
     EDGE_CONSUMER,
     EDGE_SUBJECT,
@@ -167,16 +170,9 @@ class EdgeUrlExecutor:
         table = table.append_column(
             "crawl_id", pa.array([crawl_id] * table.num_rows, type=pa.string())
         )
-        statement = parse_one(sql, dialect="duckdb")
-        for source in statement.find_all(exp.Table):
-            if (
-                source.db.lower() == "edge"
-                and source.name.lower() == "page_links"
-            ):
-                source.set("db", None)
-                source.set("this", exp.to_identifier("atlas_navigation_links"))
-
-        if not edge_uses_catalogue(sql):
+        executable_sql = compile_edge_sql(sql)
+        if not edge_uses_catalogue(executable_sql):
+            statement = self._prepare_statement(executable_sql)
             with duckdb.connect(":memory:") as connection:
                 with self._lock:
                     self._connection = connection
@@ -200,13 +196,23 @@ class EdgeUrlExecutor:
                 )
             with catalogue_from_env() as catalogue:
                 with self._lock:
-                    self._connection = catalogue.connection
+                    self._connection = catalogue.trusted_connection
                 try:
-                    catalogue.connection.execute(
+                    definitions = read_catalogue_compiler_definitions(
+                        catalogue.trusted_connection,
+                        catalogue_alias=catalogue.config.alias,
+                    )
+                    statement = self._prepare_statement(
+                        compile_edge_sql(
+                            sql,
+                            purpose=definitions.graph_edge_purpose(),
+                        )
+                    )
+                    catalogue.trusted_connection.execute(
                         "SET memory_limit = ?",
                         [get_str("ATLAS_EDGE_QUERY_MEMORY_LIMIT")],
                     )
-                    catalogue.connection.register("atlas_navigation_links", table)
+                    catalogue.trusted_connection.register("atlas_navigation_links", table)
                     prepared = prepare_catalogue_query(
                         catalogue, statement.sql(dialect="duckdb"), bound
                     )
@@ -214,8 +220,8 @@ class EdgeUrlExecutor:
                         prepared.sql, dialect="duckdb"
                     )
                     self._pin_catalogue_sources(catalogue, prepared_statement)
-                    catalogue.connection.execute(f"USE {prepared.namespace}")
-                    reader = catalogue.connection.execute(
+                    catalogue.trusted_connection.execute(f"USE {prepared.namespace}")
+                    reader = catalogue.trusted_connection.execute(
                         prepared_statement.sql(dialect="duckdb"),
                         prepared.bindings,
                     ).to_arrow_reader(batch_size=65_536)
@@ -225,6 +231,23 @@ class EdgeUrlExecutor:
                         self._connection = None
         self._remember(tuple(urls))
         return urls
+
+    @staticmethod
+    def _prepare_statement(sql: str) -> exp.Query:
+        statement = parse_one(sql, dialect="duckdb")
+        if not isinstance(statement, exp.Query):
+            raise ValueError("Compiled edge SQL must be a query.")
+        for source in statement.find_all(exp.Table):
+            if (
+                source.db.lower() == "edge"
+                and source.name.lower() == "page_links"
+            ):
+                source.set("db", None)
+                source.set(
+                    "this",
+                    exp.to_identifier("atlas_navigation_links"),
+                )
+        return statement
 
     def _remember(self, urls: tuple[str, ...]) -> None:
         self._selected_urls = urls
@@ -255,7 +278,7 @@ class EdgeUrlExecutor:
                     "catalog", exp.to_identifier(catalogue.config.alias)
                 )
             view_name = f"atlas_edge_snapshot_{ordinal}"
-            catalogue.connection.execute(
+            catalogue.trusted_connection.execute(
                 f"CREATE OR REPLACE TEMP VIEW {view_name} AS "
                 f"SELECT * FROM {original.sql(dialect='duckdb')} "
                 f"AT (VERSION => {self._catalogue_snapshot_id})"

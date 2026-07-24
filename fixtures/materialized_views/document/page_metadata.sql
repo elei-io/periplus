@@ -1,5 +1,4 @@
 -- atlas:refresh=keyed(document_id)
--- atlas:scope=elements(document_id)
 CREATE VIEW views.page_metadata AS
 WITH raw_candidates AS (
     SELECT
@@ -14,11 +13,7 @@ WITH raw_candidates AS (
         END AS language,
         CASE
             WHEN tag = 'title'
-            THEN macros.text_content_scoped(
-                document_id,
-                element_index,
-                macros.materialization_scope('document_id')
-            )
+            THEN macros.text_content(document_id, element_index)
         END AS title,
         CASE
             WHEN tag = 'meta'

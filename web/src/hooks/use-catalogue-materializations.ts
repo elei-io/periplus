@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useEffect, useState } from "react"
 import { toast } from "sonner"
 
 import { apiErrorFromResponse, apiUrl, extractApiError } from "@/lib/api"
 import type {
   CatalogueMaterializationList,
   CatalogueMaterializationRecord,
+  MaterializationEligibility,
 } from "@/types/catalogue"
 
 const key = ["catalogue-materializations"] as const
@@ -28,9 +30,74 @@ export type CreateCatalogueMaterializationInput = {
   source_table: string
   refresh_strategy: "keyed" | "append" | "full"
   key_columns: string[]
-  scope_relations?: Record<string, string[]>
   refresh_delay_seconds?: number
   partition_column?: string
+}
+
+export function useMaterializationEligibility({
+  viewReferenceId,
+  sourceTable,
+  refreshStrategy,
+  keyColumns,
+  enabled,
+}: {
+  viewReferenceId: string | null
+  sourceTable: string
+  refreshStrategy: "keyed" | "append" | "full"
+  keyColumns: string[]
+  enabled: boolean
+}) {
+  const [debouncedInput, setDebouncedInput] = useState({
+    sourceTable,
+    refreshStrategy,
+    keyColumns,
+  })
+
+  useEffect(() => {
+    const timeout = window.setTimeout(
+      () => setDebouncedInput({ sourceTable, refreshStrategy, keyColumns }),
+      500
+    )
+    return () => window.clearTimeout(timeout)
+  }, [sourceTable, refreshStrategy, keyColumns.join("\u0000")])
+
+  const ready =
+    enabled &&
+    Boolean(viewReferenceId) &&
+    (refreshStrategy === "full" || keyColumns.length > 0)
+  const current =
+    debouncedInput.sourceTable === sourceTable &&
+    debouncedInput.refreshStrategy === refreshStrategy &&
+    debouncedInput.keyColumns.join("\u0000") === keyColumns.join("\u0000")
+
+  const query = useQuery({
+    queryKey: [
+      "catalogue-materialization-eligibility",
+      viewReferenceId,
+      debouncedInput,
+    ],
+    queryFn: () =>
+      json<MaterializationEligibility>(
+        `/catalogue/views/${viewReferenceId}/materialization-eligibility`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source_table: debouncedInput.sourceTable,
+            refresh_strategy: debouncedInput.refreshStrategy,
+            key_columns: debouncedInput.keyColumns,
+          }),
+        }
+      ),
+    enabled: ready && current,
+    retry: false,
+  })
+
+  return {
+    ...query,
+    data: ready && current ? query.data : undefined,
+    isDebouncing: ready && !current,
+  }
 }
 
 export function useCatalogueMaterializations() {

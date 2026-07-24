@@ -1,5 +1,4 @@
 -- atlas:refresh=keyed(document_id)
--- atlas:scope=elements(document_id)
 CREATE VIEW views.passages AS
 WITH candidates AS (
     SELECT
@@ -22,9 +21,5 @@ SELECT
     document_id,
     element_index,
     tag,
-    macros.readable_text_scoped(
-        document_id,
-        element_index,
-        macros.materialization_scope('document_id')
-    ) AS passage
+    macros.readable_text(document_id, element_index) AS passage
 FROM candidates;

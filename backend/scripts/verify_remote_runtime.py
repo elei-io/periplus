@@ -64,18 +64,18 @@ async def wait_for_advance(
 
 
 def create_probe(catalogue, table_name: str) -> None:
-    catalogue.remote_execute(
+    catalogue.trusted_remote_execute(
         f'CREATE TABLE main."{table_name}" (id BIGINT, value VARCHAR)'
     )
     with catalogue.transaction():
-        catalogue.remote_execute(
+        catalogue.trusted_remote_execute(
             f'INSERT INTO main."{table_name}" '
             "VALUES (1, 'basin-cdc-probe')"
         )
 
 
 def drop_probe(catalogue, table_name: str) -> None:
-    catalogue.remote_execute(f'DROP TABLE IF EXISTS main."{table_name}"')
+    catalogue.trusted_remote_execute(f'DROP TABLE IF EXISTS main."{table_name}"')
 
 
 async def verify(wait_seconds: float) -> dict[str, object]:

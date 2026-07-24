@@ -13,6 +13,10 @@ from repository.catalogue.scalar_macros import (
     CatalogueScalarMacroConflictError,
     CatalogueScalarMacroStore,
 )
+from repository.catalogue.definition_compiler import (
+    compile_definition_authoring,
+    store_compilation,
+)
 
 from .models import CatalogueScalarMacroDefinition
 from .schemas import CatalogueScalarMacroRecord
@@ -58,6 +62,14 @@ def create_definition(
     sql: str,
     description: str | None,
 ) -> CatalogueScalarMacroRecord:
+    compilation = compile_definition_authoring(
+        store.catalogue,
+        sql,
+        kind="scalar_macro",
+        schema_name=SCALAR_MACRO_SCHEMA,
+        object_name=slug,
+        parameters=tuple(parameters),
+    )
     existing = session.scalar(
         select(CatalogueScalarMacroDefinition).where(
             CatalogueScalarMacroDefinition.schema_name == SCALAR_MACRO_SCHEMA,
@@ -77,6 +89,7 @@ def create_definition(
         parameters=list(macro.parameters),
         sql=sql.strip(),
     )
+    store_compilation(definition, compilation)
     session.add(definition)
     try:
         session.flush()
@@ -111,12 +124,21 @@ def update_definition(
         raise CatalogueScalarMacroConflictError(
             "The scalar macro changed; refresh before editing."
         )
+    compilation = compile_definition_authoring(
+        store.catalogue,
+        sql,
+        kind="scalar_macro",
+        schema_name=SCALAR_MACRO_SCHEMA,
+        object_name=locked.macro_name,
+        parameters=tuple(parameters),
+    )
     macro = store.replace(name=locked.macro_name, parameters=parameters, sql=sql)
     locked.parameters = list(macro.parameters)
     locked.sql = sql.strip()
     locked.slug = slug
     locked.description = description
     locked.definition_revision_id = uuid4()
+    store_compilation(locked, compilation)
     try:
         session.flush()
     except IntegrityError as exc:
@@ -168,4 +190,9 @@ def _record(
         available=available,
         created_at=definition.created_at,
         updated_at=definition.updated_at,
+        compiler_outcome=definition.compiler_outcome,
+        compiler_diagnostics=definition.compiler_diagnostics or [],
+        compiler_dependencies=definition.compiler_dependencies or [],
+        compiler_version=definition.compiler_version,
+        catalogue_definition_revision=definition.catalogue_definition_revision,
     )

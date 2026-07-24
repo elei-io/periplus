@@ -18,7 +18,9 @@ from nats.js.errors import (
 import pyarrow as pa
 
 from api.routers.catalogue import query_runtime
+from atlas_sql import AtlasCompiler, InteractiveQueryPurpose
 from repository.catalogue.quack_runtime import (
+    CatalogueQueryExecutionError,
     QuackQueryRuntime,
     QuackRuntimeConfig,
     _BoundedArrowStream,
@@ -30,6 +32,13 @@ from runtime.catalogue_queries import (
     create_catalogue_query,
     get_catalogue_query,
 )
+
+
+def _compilation(sql: str):
+    return AtlasCompiler.embedded().compile(
+        sql,
+        purpose=InteractiveQueryPurpose(),
+    )
 
 
 def _config(
@@ -268,6 +277,19 @@ class QuackSlotCredentialTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QuackQueryLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prepare_rejects_an_invalid_compiler_result(self) -> None:
+        runtime = QuackQueryRuntime(FakeBucket(), config=_config(Path(".")))
+
+        with self.assertRaisesRegex(
+            CatalogueQueryExecutionError,
+            "requires a valid compiler result",
+        ):
+            await runtime.prepare(
+                query_id=uuid4(),
+                compilation=_compilation(""),
+                statement_kind=CatalogueStatementKind.QUERY,
+            )
+
     async def test_success_updates_durable_state_and_releases_capacity(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             query_bucket = FakeBucket()
@@ -283,6 +305,9 @@ class QuackQueryLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 CatalogueQueryState(
                     id=query_id,
                     statement_kind=CatalogueStatementKind.QUERY,
+                    optimization_status="unchanged",
+                    applied_rewrites=(),
+                    optimization_diagnostics=(),
                     status="queued",
                     created_at=datetime.now(UTC),
                 ),
@@ -293,7 +318,7 @@ class QuackQueryLifecycleTests(unittest.IsolatedAsyncioTestCase):
             ):
                 active = await runtime.prepare(
                     query_id=query_id,
-                    sql="SELECT 1",
+                    compilation=_compilation("SELECT 1"),
                     statement_kind=CatalogueStatementKind.QUERY,
                 )
                 chunks = active.stream()
@@ -337,6 +362,9 @@ class QuackQueryLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 CatalogueQueryState(
                     id=query_id,
                     statement_kind=CatalogueStatementKind.QUERY,
+                    optimization_status="unchanged",
+                    applied_rewrites=(),
+                    optimization_diagnostics=(),
                     status="queued",
                     created_at=datetime.now(UTC),
                 ),
@@ -347,7 +375,7 @@ class QuackQueryLifecycleTests(unittest.IsolatedAsyncioTestCase):
             ):
                 active = await runtime.prepare(
                     query_id=query_id,
-                    sql="SELECT 1",
+                    compilation=_compilation("SELECT 1"),
                     statement_kind=CatalogueStatementKind.QUERY,
                 )
                 runtime.interrupt_local(query_id, "cancelled by test")
@@ -374,6 +402,9 @@ class QuackQueryLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 CatalogueQueryState(
                     id=query_id,
                     statement_kind=CatalogueStatementKind.QUERY,
+                    optimization_status="unchanged",
+                    applied_rewrites=(),
+                    optimization_diagnostics=(),
                     status="queued",
                     created_at=datetime.now(UTC),
                 ),
@@ -384,7 +415,7 @@ class QuackQueryLifecycleTests(unittest.IsolatedAsyncioTestCase):
             ):
                 active = await runtime.prepare(
                     query_id=query_id,
-                    sql="SELECT 1",
+                    compilation=_compilation("SELECT 1"),
                     statement_kind=CatalogueStatementKind.QUERY,
                 )
                 chunks = active.stream()

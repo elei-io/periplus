@@ -30,6 +30,30 @@ CatalogueQueryStatus = Literal[
     "failed",
     "cancelled",
 ]
+CatalogueQueryOptimizationStatus = Literal[
+    "optimized",
+    "unchanged",
+    "degraded_fallback",
+]
+
+
+class CatalogueQueryAppliedRewrite(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rule: str = Field(min_length=1, max_length=64)
+    evidence: str = Field(min_length=1, max_length=500)
+
+
+class CatalogueQueryOptimizationDiagnostic(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    code: str = Field(min_length=1, max_length=64)
+    severity: Literal["info", "warning"]
+    message: str = Field(min_length=1, max_length=2_000)
+    documentation_anchor: str | None = Field(
+        default=None,
+        max_length=128,
+    )
 
 
 class CatalogueQueryState(BaseModel):
@@ -37,6 +61,14 @@ class CatalogueQueryState(BaseModel):
 
     id: UUID
     statement_kind: CatalogueStatementKind
+    optimization_status: CatalogueQueryOptimizationStatus
+    applied_rewrites: tuple[CatalogueQueryAppliedRewrite, ...] = Field(
+        max_length=16,
+    )
+    optimization_diagnostics: tuple[
+        CatalogueQueryOptimizationDiagnostic,
+        ...,
+    ] = Field(max_length=16)
     status: CatalogueQueryStatus
     created_at: datetime
     started_at: datetime | None = None

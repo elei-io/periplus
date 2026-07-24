@@ -47,7 +47,7 @@ class CatalogueViewStore:
 
     def list(self) -> list[DuckLakeView]:
         alias = _quote_literal(self.catalogue.config.alias)
-        rows = self.catalogue.remote_rows(
+        rows = self.catalogue.trusted_remote_rows(
             """
             SELECT schema_name, view_name, sql
             FROM duckdb_views()
@@ -67,7 +67,7 @@ class CatalogueViewStore:
                 _quote_identifier(value)
                 for value in (self.catalogue.config.alias, schema_name, view_name)
             )
-            columns = self.catalogue.remote_rows(f"DESCRIBE {qualified}")
+            columns = self.catalogue.trusted_remote_rows(f"DESCRIBE {qualified}")
             views.append(
                 DuckLakeView(
                     view_uuid=_view_uuid(
@@ -95,7 +95,7 @@ class CatalogueViewStore:
         if any(view.view_name == name for view in self.list()):
             raise CatalogueViewConflictError(f"View {VIEW_SCHEMA}.{name} already exists.")
         self._use_main()
-        self.catalogue.remote_execute(
+        self.catalogue.trusted_remote_execute(
             f"CREATE VIEW {_qualified(self.catalogue, name)} AS {compiled}"
         )
         return self._require_name(name)
@@ -108,7 +108,7 @@ class CatalogueViewStore:
                 "The DuckLake view changed or was removed; refresh before editing."
             )
         self._use_main()
-        self.catalogue.remote_execute(
+        self.catalogue.trusted_remote_execute(
             f"CREATE OR REPLACE VIEW {_qualified(self.catalogue, current_name)} "
             f"AS {compiled}"
         )
@@ -118,7 +118,7 @@ class CatalogueViewStore:
         """Look up identity without binding the view's possibly broken SQL."""
 
         alias = _quote_literal(self.catalogue.config.alias)
-        rows = self.catalogue.remote_rows(
+        rows = self.catalogue.trusted_remote_rows(
             "SELECT view_name FROM duckdb_views() "
             f"WHERE database_name = {alias} "
             f"AND schema_name = {_quote_literal(VIEW_SCHEMA)}"
@@ -160,7 +160,7 @@ class CatalogueViewStore:
                 sql="",
                 columns=(),
             )
-        self.catalogue.remote_execute(
+        self.catalogue.trusted_remote_execute(
             f"DROP VIEW {_qualified(self.catalogue, current.view_name)}"
         )
         return current

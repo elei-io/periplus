@@ -4,6 +4,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from api.routers.catalogue import get_compiler_definitions
+from atlas_sql import AtlasCompiler, CompilationResult
 from control.catalogue_queries.schemas import (
     CatalogueQueryCreate,
     CatalogueQueryDetail,
@@ -25,6 +27,7 @@ from control.catalogue_queries.service import (
 )
 from db.session import get_session
 from repository.catalogue.query import CatalogueQueryError
+from repository.catalogue.compiler_definitions import CatalogueCompilerDefinitions
 
 router = APIRouter(prefix="/catalogue/queries", tags=["catalogue-queries"])
 
@@ -38,13 +41,34 @@ def list_(
     return CatalogueQueryListResponse(items=items, total=len(items))
 
 
+def _compile_saved_query(
+    sql: str,
+    definitions: CatalogueCompilerDefinitions,
+) -> CompilationResult:
+    return AtlasCompiler.embedded(
+        catalogue_revision=definitions.revision,
+    ).compile(
+        sql,
+        purpose=definitions.interactive_purpose(),
+        coverage_source="saved_query_authoring",
+    )
+
+
 @router.post("/", response_model=CatalogueQueryDetail, status_code=201)
-def create(
+async def create(
     payload: CatalogueQueryCreate,
     session: Annotated[Session, Depends(get_session)],
+    definitions: Annotated[
+        CatalogueCompilerDefinitions,
+        Depends(get_compiler_definitions),
+    ],
 ) -> CatalogueQueryDetail:
     try:
-        return create_query(session, **payload.model_dump())
+        return create_query(
+            session,
+            **payload.model_dump(),
+            compilation=_compile_saved_query(payload.sql, definitions),
+        )
     except CatalogueQueryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except CatalogueQueryError as exc:
@@ -62,10 +86,14 @@ def get(
 
 
 @router.put("/{query_id}", response_model=CatalogueQueryDetail)
-def update(
+async def update(
     query_id: UUID,
     payload: CatalogueQueryUpdate,
     session: Annotated[Session, Depends(get_session)],
+    definitions: Annotated[
+        CatalogueCompilerDefinitions,
+        Depends(get_compiler_definitions),
+    ],
 ) -> CatalogueQueryDetail:
     query = get_query(session, query_id)
     if query is None:
@@ -79,6 +107,7 @@ def update(
             slug=payload.slug,
             description=payload.description,
             change_note=payload.change_note,
+            compilation=_compile_saved_query(payload.sql, definitions),
         )
         return updated
     except CatalogueQueryConflictError as exc:
@@ -88,11 +117,15 @@ def update(
 
 
 @router.post("/{query_id}/revisions/{revision_id}/restore", response_model=CatalogueQueryDetail)
-def restore_revision_(
+async def restore_revision_(
     query_id: UUID,
     revision_id: UUID,
     payload: CatalogueQueryRestore,
     session: Annotated[Session, Depends(get_session)],
+    definitions: Annotated[
+        CatalogueCompilerDefinitions,
+        Depends(get_compiler_definitions),
+    ],
 ) -> CatalogueQueryDetail:
     query = get_query(session, query_id)
     revision = get_revision(session, query_id, revision_id)
@@ -105,6 +138,7 @@ def restore_revision_(
             revision,
             expected_revision_id=payload.expected_current_revision_id,
             change_note=payload.change_note,
+            compilation=_compile_saved_query(revision.sql, definitions),
         )
         return restored
     except CatalogueQueryConflictError as exc:

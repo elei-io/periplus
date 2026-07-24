@@ -18,7 +18,7 @@ DEFAULTS: Final[dict[str, str | None]] = {
     "ATLAS_API_URL": None,
     "DATABASE_URL": None,
     "ATLAS_POSTGRES_POOL_SIZE": "4",
-    "ATLAS_POSTGRES_POOL_TIMEOUT_SECONDS": "5",
+    "ATLAS_POSTGRES_POOL_TIMEOUT_SECONDS": "10",
     "ATLAS_CATALOGUE_SCHEMA": "main",
     "ATLAS_QUACK_MAX_CONCURRENCY": "4",
     "ATLAS_QUACK_POOL_WAIT_SECONDS": "5",
@@ -38,11 +38,13 @@ DEFAULTS: Final[dict[str, str | None]] = {
     "DUCKBASIN_NATS_SEED": None,
     "ATLAS_IDEA_MODEL": "openai:gpt-5.6-luna",
     "ATLAS_SQL_MODEL": "openai:gpt-5.6-luna",
+    "ATLAS_HANDOFF_MODEL": "openai:gpt-5.6-luna",
     "ATLAS_ANALYTICS_MODEL_TIMEOUT_SECONDS": "180",
     "ATLAS_IDEA_TOOL_CALL_LIMIT": "32",
     "ATLAS_SYNTHESIS_REQUEST_LIMIT": "12",
     "ATLAS_SQL_REQUEST_LIMIT": "64",
     "ATLAS_SQL_TOOL_CALL_LIMIT": "48",
+    "ATLAS_HANDOFF_TOOL_CALL_LIMIT": "6",
     "ATLAS_REPOSITORY_STORAGE": "disk",
     "ATLAS_REPOSITORY_ROOT": str(DEFAULT_REPOSITORY_ROOT),
     "ATLAS_REPOSITORY_S3_PREFIX": "",
@@ -159,7 +161,9 @@ def get_int(name: str, *, minimum: int | None = 1) -> int:
     return value
 
 
-def get_float(name: str, *, minimum: float | None = 0.0, exclusive: bool = True) -> float:
+def get_float(
+    name: str, *, minimum: float | None = 0.0, exclusive: bool = True
+) -> float:
     raw = get_str(name)
     try:
         value = float(raw)

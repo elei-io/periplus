@@ -53,6 +53,7 @@ function event(
     direction: null,
     direction_id: null,
     direction_answer: null,
+    handoff_query: null,
     scope: null,
     call_id: null,
     message: null,
@@ -210,4 +211,41 @@ test("moves to synthesis after every planned direction settles", () => {
       "outcomes answer",
     ]
   )
+})
+
+test("attaches a validated handoff query to its direction", () => {
+  let state = beginDirections()
+  state = applyAnalyticsEvent(
+    state,
+    event("handoff.started", {
+      direction_id: "retained_volume",
+    })
+  )
+  assert.equal(state.directions[0]?.status, "compiling")
+
+  state = applyAnalyticsEvent(
+    state,
+    event("handoff.completed", {
+      direction_id: "retained_volume",
+      handoff_query: {
+        title: "Retained crawl count",
+        sql: "SELECT COUNT(*) AS retained_crawls FROM main.crawls",
+        explanation: "Continue from the retained crawl total.",
+        caveats: [],
+      },
+    })
+  )
+  state = applyAnalyticsEvent(
+    state,
+    event("direction.completed", {
+      direction_id: "retained_volume",
+      direction_answer: "There are four retained crawls.",
+    })
+  )
+
+  assert.equal(
+    state.directions[0]?.handoffQuery?.sql,
+    "SELECT COUNT(*) AS retained_crawls FROM main.crawls"
+  )
+  assert.equal(state.directions[0]?.status, "completed")
 })

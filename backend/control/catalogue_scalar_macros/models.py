@@ -35,6 +35,17 @@ class CatalogueScalarMacroDefinition(Base):
     definition_revision_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True), default=uuid4
     )
+    compiler_outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
+    compiler_diagnostics: Mapped[list[dict[str, object]] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    compiler_dependencies: Mapped[list[dict[str, object]] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    compiler_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    catalogue_definition_revision: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
     fixture_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(

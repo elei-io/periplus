@@ -299,6 +299,7 @@ function directionActivity(
   completedQueries: number
 ) {
   if (direction.status === "waiting") return "Getting oriented"
+  if (direction.status === "compiling") return "Preparing reusable SQL"
   if (direction.status === "running") {
     return completedQueries > 0
       ? `Following the evidence · ${queryCountLabel(completedQueries)}`
@@ -306,6 +307,66 @@ function directionActivity(
   }
   if (direction.status === "failed") return "Couldn’t complete"
   return queryCountLabel(completedQueries)
+}
+
+function HandoffQuery({
+  handoff,
+}: {
+  handoff: NonNullable<DirectionState["handoffQuery"]>
+}) {
+  async function copySql() {
+    try {
+      await navigator.clipboard.writeText(handoff.sql)
+      toast.success("Reusable SQL copied.")
+    } catch (error) {
+      toast.error(extractApiError(error))
+    }
+  }
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-primary/20 bg-primary/[0.035]">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-primary/15 px-4 py-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <TerminalSquareIcon className="size-4 text-primary" />
+            <h3 className="text-sm font-semibold">Continue in Workbench</h3>
+            <Badge className="gap-1" variant="secondary">
+              <CheckIcon className="size-3" /> Validated
+            </Badge>
+          </div>
+          <p className="mt-1 text-xs font-medium">{handoff.title}</p>
+          <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
+            {handoff.explanation}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button onClick={copySql} size="sm" variant="outline">
+            <CopyIcon /> Copy SQL
+          </Button>
+          <Button
+            nativeButton={false}
+            render={<a href={workbenchHref(handoff.sql)} />}
+            size="sm"
+          >
+            <ArrowUpRightIcon /> Open Workbench
+          </Button>
+        </div>
+      </div>
+      <pre className="max-h-96 overflow-auto p-4 font-mono text-xs leading-5 whitespace-pre-wrap">
+        {formatSql(handoff.sql)}
+      </pre>
+      {handoff.caveats.length > 0 && (
+        <div className="border-t border-primary/15 px-4 py-3">
+          <h4 className="text-xs font-medium">Query caveats</h4>
+          <ul className="mt-1.5 list-disc space-y-1 pl-4 text-xs leading-5 text-muted-foreground">
+            {handoff.caveats.map((caveat) => (
+              <li key={caveat}>{caveat}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  )
 }
 
 function DirectionResultCard({
@@ -332,7 +393,7 @@ function DirectionResultCard({
       <CollapsibleTrigger className="flex w-full cursor-pointer items-start gap-3 px-4 py-4 text-left transition-colors hover:bg-muted/25 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary">
         <span className="flex min-w-0 flex-1 items-start gap-3">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted">
-            {direction.status === "running" ? (
+            {["running", "compiling"].includes(direction.status) ? (
               <span className="relative flex size-4 items-center justify-center">
                 <span className="absolute size-3 animate-ping rounded-full bg-primary/25 motion-reduce:animate-none" />
                 <span className="relative size-2 rounded-full bg-primary" />
@@ -368,6 +429,9 @@ function DirectionResultCard({
               {direction.answer}
             </MarkdownContent>
           )}
+          {direction.handoffQuery && (
+            <HandoffQuery handoff={direction.handoffQuery} />
+          )}
           {direction.status === "waiting" && (
             <p className="text-sm text-muted-foreground">
               Atlas is deciding where to begin.
@@ -378,14 +442,26 @@ function DirectionResultCard({
               Atlas is looking through the catalogue and checking the evidence.
             </p>
           )}
+          {direction.status === "compiling" && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <LoaderCircleIcon className="size-4 animate-spin text-primary" />
+              Turning the investigation into reusable SQL…
+            </div>
+          )}
           {direction.error && (
             <p className="text-sm text-destructive">{direction.error}</p>
+          )}
+          {direction.handoffError && (
+            <p className="text-xs text-muted-foreground">
+              The finding is complete, but Atlas could not prepare a validated
+              reusable query.
+            </p>
           )}
           {completedQueries.length > 0 && (
             <Collapsible className="group/evidence overflow-hidden rounded-lg border">
               <CollapsibleTrigger className="flex w-full cursor-pointer items-center justify-between gap-3 px-3 py-2.5 text-left text-sm font-medium transition-colors hover:bg-muted/35 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary">
                 <span>
-                  Evidence{" "}
+                  Investigation evidence{" "}
                   <span className="font-normal text-muted-foreground">
                     · {queryCountLabel(completedQueries.length)}
                   </span>
@@ -435,6 +511,7 @@ function localEvent(
     direction: null,
     direction_id: null,
     direction_answer: null,
+    handoff_query: null,
     scope: null,
     call_id: null,
     message,

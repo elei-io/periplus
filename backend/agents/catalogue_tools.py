@@ -6,8 +6,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from atlas_sql import AtlasCompiler, InteractiveQueryPurpose
 from repository.catalogue.interactive import execute_interactive_query
-from repository.catalogue.quack_runtime import QuackQueryRuntime, remote_rows
+from repository.catalogue.quack_runtime import QuackQueryRuntime, trusted_remote_rows
 from repository.catalogue.query import validate_interactive_catalogue_statement
 
 
@@ -57,8 +58,13 @@ class CatalogueTools:
     def __init__(
         self,
         query_runtime: QuackQueryRuntime,
+        *,
+        compiler: AtlasCompiler | None = None,
+        compiler_purpose: InteractiveQueryPurpose | None = None,
     ) -> None:
         self.query_runtime = query_runtime
+        self.compiler = compiler
+        self.compiler_purpose = compiler_purpose
 
     async def list_relations(
         self, kind: Literal["table", "view"]
@@ -66,7 +72,7 @@ class CatalogueTools:
         config = self.query_runtime.config
 
         def operation(connection):
-            rows = remote_rows(
+            rows = trusted_remote_rows(
                 connection,
                 f"""
                 SELECT table_schema, table_name, table_type
@@ -97,7 +103,7 @@ class CatalogueTools:
         config = self.query_runtime.config
 
         def operation(connection):
-            rows = remote_rows(
+            rows = trusted_remote_rows(
                 connection,
                 f"""
                 SELECT t.table_schema, t.table_name, t.table_type,
@@ -141,7 +147,7 @@ class CatalogueTools:
         config = self.query_runtime.config
 
         def operation(connection):
-            rows = remote_rows(
+            rows = trusted_remote_rows(
                 connection,
                 f"""
                 SELECT schema_name, function_name, function_type,
@@ -175,7 +181,12 @@ class CatalogueTools:
             catalogue_schema=self.query_runtime.config.catalogue_schema,
         )
         bounded_sql = statement.query.limit(201).sql(dialect="duckdb")
-        result = await execute_interactive_query(self.query_runtime, bounded_sql)
+        result = await execute_interactive_query(
+            self.query_runtime,
+            bounded_sql,
+            compiler=self.compiler,
+            purpose=self.compiler_purpose,
+        )
         truncated = len(result.rows) > 200
         rows = result.rows[:200]
         return CatalogueQueryResult(

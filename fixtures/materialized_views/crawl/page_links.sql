@@ -1,6 +1,5 @@
 -- atlas:partition-by-day=captured_at
 -- atlas:refresh=keyed(crawl_id)
--- atlas:scope=elements(document_id)
 CREATE VIEW views.page_links AS
 WITH successful_crawls AS MATERIALIZED (
     SELECT

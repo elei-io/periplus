@@ -65,7 +65,9 @@ The home page runs a server-owned PydanticAI analytics agent when `OPENAI_API_KE
 Each question is isolated. `ATLAS_IDEA_MODEL` inspects catalogue metadata and plans three to five
 schema-grounded analytical directions without running SQL. Concurrent `ATLAS_SQL_MODEL` agents
 investigate them with read-only catalogue
-discovery and SQL, and the idea model synthesizes their findings. Atlas stores no question, answer,
+discovery and SQL. `ATLAS_HANDOFF_MODEL` turns each completed investigation into one validated,
+standalone query that can be opened in the workbench, and the idea model synthesizes the findings.
+Atlas stores no question, answer,
 conversation, or result history. The response keeps all three directions distinct and streams every
 successful analytical SQL query with its bounded rows. Catalogue tools retain the same read-only
 validator, client-pool limits, timeouts, cancellation, and result limits as the SQL workbench.

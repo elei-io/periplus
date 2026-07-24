@@ -6,9 +6,8 @@ from uuid import UUID
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
-from sqlglot import exp
 
-from repository.catalogue.query import CatalogueQueryError, classify_select
+from atlas_sql import AtlasCompiler, GraphEdgePurpose
 
 from .fixtures import (
     SYSTEM_CRAWL_GRAPH_SLUGS,
@@ -335,41 +334,22 @@ def freeze_graph(session: Session, graph_id: UUID) -> FrozenGraphSnapshot:
 
 
 def validate_edge_sql(sql: str) -> None:
-    try:
-        statement = classify_select(sql)
-    except CatalogueQueryError as exc:
-        raise CrawlGraphValidationError(str(exc)) from exc
-    placeholders = list(statement.find_all(exp.Placeholder))
-    if (
-        len(placeholders) != 1
-        or placeholders[0].name != "crawl_id"
-        or sql.count("$crawl_id") != 1
-    ):
-        raise CrawlGraphValidationError("Edge SQL must bind $crawl_id exactly once.")
-    limit = statement.args.get("limit")
-    expression = limit.args.get("expression") if isinstance(limit, exp.Limit) else None
-    if not isinstance(expression, exp.Literal) or expression.is_string:
-        raise CrawlGraphValidationError("Edge SQL must have an outer literal LIMIT.")
-    try:
-        limit_value = int(expression.this)
-    except ValueError as exc:
-        raise CrawlGraphValidationError("Edge SQL LIMIT must be an integer.") from exc
-    if limit_value < 1 or limit_value > 100_000:
-        raise CrawlGraphValidationError("Edge SQL LIMIT must be between 1 and 100000.")
-    if "url" not in {selection.alias_or_name.lower() for selection in statement.selects}:
-        raise CrawlGraphValidationError("Edge SQL must project a column named url.")
-    if any(
-        not isinstance(table.this, exp.Identifier)
-        for table in statement.find_all(exp.Table)
-    ):
-        raise CrawlGraphValidationError(
-            "Edge SQL may only read edge.page_links and catalogue relations."
-        )
-    if not any(
-        table.db.lower() == "edge" and table.name.lower() == "page_links"
-        for table in statement.find_all(exp.Table)
-    ):
-        raise CrawlGraphValidationError("Edge SQL must read edge.page_links.")
+    result = AtlasCompiler.embedded().compile(
+        sql,
+        purpose=GraphEdgePurpose(),
+        coverage_source="crawl_graph_definition",
+    )
+    if result.valid:
+        return
+    message = next(
+        (
+            diagnostic.message
+            for diagnostic in result.diagnostics
+            if diagnostic.severity == "error"
+        ),
+        "Edge SQL is invalid.",
+    )
+    raise CrawlGraphValidationError(message)
 
 
 def _get_node(session: Session, graph_id: UUID, node_id: UUID, *, lock: bool = False) -> CrawlGraphNode:

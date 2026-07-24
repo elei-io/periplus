@@ -88,21 +88,30 @@ global DDL stream for the selected lake. It republishes DDL into Atlas NATS and 
 `table_id` to its stable DuckLake table UUID before per-table fan-out. A Basin message is ACKed only
 after every Atlas publication receives a PubAck.
 
+The catalogue-wide SQL compiler core lives under `backend/catalogue/compiler/`; every application
+caller enters through the public `atlas_sql.AtlasCompiler` SDK facade. Embedded Atlas callers and
+the remote `POST /catalogue/sql/compile` transport return the same typed result containing validity,
+support status, executable SQL, diagnostics, rewrites, compiler version, and catalogue revision.
+Interactive callers execute authored SQL when optimization is unsupported. Materialization requires
+a supported proof and remains ineligible otherwise.
+
 Each materialization owns a filtered durable Atlas NATS consumer, coalesces ticks, and
 transactionally refreshes its stable table using its declared keyed, append-only, or full strategy.
 User-authored SQL remains ordinary DuckDB SQL. The fail-closed
-[materialization compiler](MATERIALIZATION_COMPILER.md) must prove a bounded plan for the selected
-strategy and stable output key; unsupported constructs produce structured diagnostics rather than
-requiring Atlas-only SQL hints.
+[catalogue compiler](CATALOGUE_COMPILER.md) attempts to prove a bounded plan for the selected
+strategy and stable output key. When optimization is unavailable, the logical view remains valid
+for interactive use but is not eligible for materialization; Atlas never requires authored SQL
+hints or silently substitutes an unproved refresh plan.
 Keyed and append-only incarnations create that consumer before an empty private target, service
 live CDC immediately, and populate historical driving keys through bounded hash partitions. The
 virtual source view remains public until every partition commits; the worker then publishes the
 private target while retaining the same consumer for steady-state maintenance. Postgres persists
 only the partition count and next-partition cursor, while the partial result remains in DuckLake.
 Keyed refreshes derive composite keys from DuckLake's native bounded
-`ducklake_table_changes(...)` history and physically scope every direct scan of the declared
-driving table to those keys before evaluating the materialization SQL. Materialization workers
-never consume Basin CDC directly.
+`ducklake_table_changes(...)` history. The catalogue compiler derives physical scan bindings from
+ordinary SQL and stored macro lineage, then injects those keys into every proven dependent scan
+before evaluating the materialization SQL. Materialization workers never consume Basin CDC
+directly.
 
 DuckBasin owns file layout, compaction, snapshot expiry, and old-file cleanup. Atlas has no lake
 maintenance API or worker. Atlas housekeeping is limited to its own abandoned ingestion staging
@@ -126,9 +135,16 @@ model first surveys relation and macro metadata without executing SQL, classifie
 and produces three to five schema-grounded analytical directions. Independent SQL-model agents
 then investigate those directions concurrently. Each can discover public
 catalogue relations and macros and execute validated read-only SQL. After all directions settle, the
-idea model synthesizes their answers and bounded evidence digests into the combined response. None
+SQL handoff model compiles each direction's objective, answer, and successful query history into
+one standalone workbench query. Atlas executes that exact query through the bounded interactive
+boundary before marking it validated; handoff failure does not discard the direction's finding.
+The idea model then synthesizes the direction answers and bounded evidence digests into the combined
+response. None
 of the agents can read graph execution state, crawl or schedule control state, inspect live pages,
 search the public web, propose acquisition, or mutate Atlas.
+Planner directions must be completely executable within the retained catalogue. Unresolved
+freshness or coverage uncertainty is reported as a catalogue limitation and is never delegated to
+external, live-source, or downstream validation.
 
 The planner's model-request limit is derived from its metadata tool-call limit because each
 sequential metadata call requires another model round before the typed plan can be returned. The
@@ -138,7 +154,9 @@ retain independent request and tool-call limits.
 Atlas streams its own stable analytics events containing every model-invoked analytical SQL query
 that completed successfully, its direction, bounded rows, and completeness metadata; each
 direction's answer; and the final idea-model synthesis. SQL result rows remain separated by
-direction in the UI.
+direction in the UI. Each completed direction presents its finding and validated handoff query as
+primary content, with the investigator's individual SQL and results retained as collapsible
+evidence.
 Questions, answers, and query results remain only in request and browser memory and disappear on
 replacement, navigation, or reload. The expiring NATS query-status record remains part of the shared
 interactive-query boundary; it contains operational status rather than question or result history.
