@@ -51,6 +51,14 @@ class InteractiveQueryPurpose:
     scalar_functions: tuple[ScalarFunctionDefinition, ...] = ()
     metadata: CatalogueMetadataSnapshot | None = None
     bound_parameters: tuple[BoundParameter, ...] = ()
+    maximum_document_scope: int = 10_000
+    maximum_element_scope: int = 50_000_000
+
+    def __post_init__(self) -> None:
+        if self.maximum_document_scope <= 0:
+            raise ValueError("maximum_document_scope must be positive")
+        if self.maximum_element_scope <= 0:
+            raise ValueError("maximum_element_scope must be positive")
 
 
 @dataclass(frozen=True, slots=True)

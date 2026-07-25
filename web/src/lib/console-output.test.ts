@@ -83,6 +83,6 @@ test("AI suggestions render metadata without their SQL", () => {
   )
 
   assert.match(output, /2\..*Price distribution/)
-  assert.match(output, /\.ai show <number> · \.ai run <number>/)
+  assert.match(output, /\.ai <number> · --copy · --show/)
   assert.doesNotMatch(output, /SELECT/)
 })

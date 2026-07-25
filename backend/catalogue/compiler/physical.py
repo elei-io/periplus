@@ -46,6 +46,63 @@ def estimate_compilation(
     )
 
 
+def add_document_scope_estimate(
+    estimate: CompilationEstimate,
+    *,
+    elements: ManagedTableMetadata,
+    maximum_documents: int,
+    maximum_elements: int,
+) -> CompilationEstimate:
+    """Add the conservative upper bound for one runtime-hydrated elements scan."""
+
+    rows = (
+        min(elements.estimated_rows, maximum_elements)
+        if elements.estimated_rows is not None
+        else maximum_elements
+    )
+    bytes_read = (
+        max(
+            1,
+            round(
+                elements.file_size_bytes
+                * rows
+                / elements.estimated_rows
+            ),
+        )
+        if elements.file_size_bytes is not None
+        and elements.estimated_rows is not None
+        and elements.estimated_rows > 0
+        else None
+    )
+    executable = (
+        *estimate.executable_scans,
+        ScanEstimate(
+            relation=elements.qualified_name,
+            table_uuid=elements.table_uuid,
+            estimated_rows_read=rows,
+            estimated_bytes_read=bytes_read,
+            partition_predicates=(
+                "runtime document_id scope "
+                f"(at most {maximum_documents:,} documents)",
+            ),
+        ),
+    )
+    return CompilationEstimate(
+        authored_scans=estimate.authored_scans,
+        executable_scans=executable,
+        estimated_rows_avoided=_difference(
+            estimate.authored_scans,
+            executable,
+            "estimated_rows_read",
+        ),
+        estimated_bytes_avoided=_difference(
+            estimate.authored_scans,
+            executable,
+            "estimated_bytes_read",
+        ),
+    )
+
+
 def _estimate_query(
     sql: str,
     metadata: CatalogueMetadataSnapshot,

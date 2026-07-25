@@ -65,6 +65,7 @@ _FORBIDDEN_INTERACTIVE_FUNCTIONS = frozenset(
     }
 )
 _FORBIDDEN_INTERACTIVE_RELATION_PREFIXES = (
+    "_atlas_",
     "duckdb_",
     "pg_",
     "pragma_",
@@ -117,19 +118,6 @@ def validate_interactive_catalogue_statement(
         if function.name.lower() in _FORBIDDEN_INTERACTIVE_FUNCTIONS:
             raise CatalogueQueryError(f"interactive SQL may not call {function.name}")
     return statement
-
-
-def referenced_catalogue_views(
-    statement: ClassifiedCatalogueStatement,
-) -> frozenset[str]:
-    """Return explicitly referenced public view names."""
-
-    return frozenset(
-        table.name
-        for table in statement.query.find_all(exp.Table)
-        if isinstance(table.this, exp.Identifier)
-        and table.db.lower() == "views"
-    )
 
 
 def trusted_execute_arrow_query(

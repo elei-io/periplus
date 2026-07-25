@@ -187,3 +187,28 @@ dematerialize, edit, and create a new incarnation.
 **Reintroducing Atlas lake maintenance.** DuckBasin owns compaction, snapshot expiry, old-file
 cleanup, and all physical lake upkeep. Atlas housekeeping may remove only Atlas-owned local staging
 and expired navigation objects; it never opens DuckLake or consumes catalogue events.
+
+## Analytical correctness
+
+**Promoting interpretations into canonical evidence tables.** Claims, products, organizations,
+places, concepts, clusters, and confidence scores depend on a user's derivation. Keep them in
+ordinary user-owned views or materializations and retain crawl and document provenance. The
+canonical lake schema records what Atlas captured, not one universal interpretation of it.
+
+**Treating repetition as independence.** Distinct pages or domains can mirror one source, share an
+owner, follow a citation chain, or repeat near-identical text. Consensus and emergence queries must
+state and preserve their independence evidence rather than substituting a domain count.
+
+**Inferring disappearance from missing rows.** A missing recent observation may mean removal,
+redirect, acquisition failure, policy exclusion, paused scheduling, or no attempted crawl.
+Disappearance requires continued measured coverage and must retain the crawl outcomes supporting
+the classification.
+
+**Calling first observation the origin.** `min(captured_at)` identifies the earliest evidence Atlas
+retained, not necessarily the true author, invention, publication, or real-world beginning. Name
+the result accordingly and preserve earlier-source and citation uncertainty.
+
+**Rescanning all historical DOM for every aggregate.** Large cross-domain questions should
+incrementally derive compact observations keyed by changed crawls or documents, then analyze those
+relations. An output `LIMIT` does not bound input work. The interactive compiler must reject
+unbounded managed DOM scans, and materialization bootstrap must remain explicit and observable.

@@ -19,6 +19,7 @@ from .definition import (
     CatalogueDefinitionDependency,
     analyze_catalogue_definition,
 )
+from .document_scope import compile_document_scope
 from .errors import (
     OptimizationCode,
     OptimizationDiagnostic,
@@ -30,7 +31,7 @@ from .lint import (
     classify_catalogue_statement,
     lint_catalogue_statement,
 )
-from .physical import estimate_compilation
+from .physical import add_document_scope_estimate, estimate_compilation
 from .syntax import CatalogueQueryError, classify_select
 from .graph_edge import (
     GraphEdgeCompilationError,
@@ -78,6 +79,14 @@ class SqlAppliedRewrite:
 
 
 @dataclass(frozen=True, slots=True)
+class SqlDocumentScopePlan:
+    scope_sql: str
+    element_columns: tuple[str, ...]
+    maximum_documents: int
+    maximum_elements: int
+
+
+@dataclass(frozen=True, slots=True)
 class SqlCompilationResult:
     purpose: SqlCompilationPurpose
     outcome: SqlCompilationOutcome
@@ -87,6 +96,7 @@ class SqlCompilationResult:
     applied_rewrites: tuple[SqlAppliedRewrite, ...] = ()
     dependencies: tuple[CatalogueDefinitionDependency, ...] = ()
     estimate: CompilationEstimate | None = None
+    document_scope: SqlDocumentScopePlan | None = None
 
     @property
     def valid(self) -> bool:
@@ -146,6 +156,7 @@ def compile_catalogue_sql(
     ]
     applied: tuple[SqlAppliedRewrite, ...] = ()
     dependencies: tuple[CatalogueDefinitionDependency, ...] = ()
+    document_scope: SqlDocumentScopePlan | None = None
     normalized_authored: str | None = None
     compilation_sql = sql
     explain_prefix: str | None = None
@@ -236,6 +247,35 @@ def compile_catalogue_sql(
                     ),
                 ),
             )
+        if (
+            isinstance(purpose, InteractiveQueryPurpose)
+            and purpose.metadata is not None
+            and explain_prefix is None
+        ):
+            scoped = compile_document_scope(
+                executable_sql,
+                metadata=purpose.metadata,
+                maximum_documents=purpose.maximum_document_scope,
+            )
+            if scoped is not None:
+                _validate_generated_sql(scoped.scope_sql)
+                executable_sql = scoped.sql
+                document_scope = SqlDocumentScopePlan(
+                    scope_sql=scoped.scope_sql,
+                    element_columns=scoped.element_columns,
+                    maximum_documents=purpose.maximum_document_scope,
+                    maximum_elements=purpose.maximum_element_scope,
+                )
+                applied = (
+                    *applied,
+                    SqlAppliedRewrite(
+                        rule="bounded_document_scan_scope",
+                        evidence=(
+                            "Managed relationship lineage proves a selective "
+                            "document set that is budgeted before elements are read."
+                        ),
+                    ),
+                )
         if not (
             isinstance(purpose, CatalogueDefinitionPurpose)
             and purpose.kind == "scalar_macro"
@@ -262,6 +302,18 @@ def compile_catalogue_sql(
             and explain_prefix is None
             else None
         )
+        if estimate is not None and document_scope is not None:
+            elements = purpose.metadata.table(
+                "elements",
+                schema_name="main",
+            )
+            if elements is not None:
+                estimate = add_document_scope_estimate(
+                    estimate,
+                    elements=elements,
+                    maximum_documents=document_scope.maximum_documents,
+                    maximum_elements=document_scope.maximum_elements,
+                )
         result = SqlCompilationResult(
             purpose=purpose_name,
             outcome=outcome,
@@ -271,6 +323,7 @@ def compile_catalogue_sql(
             applied_rewrites=applied,
             dependencies=dependencies,
             estimate=estimate,
+            document_scope=document_scope,
         )
     except GraphEdgeCompilationError as exc:
         diagnostics.append(
@@ -299,6 +352,8 @@ def compile_catalogue_sql(
                 InteractiveQueryPurpose,
             ),
         )
+        if exc.code is OptimizationCode.UNBOUNDED_RELATION:
+            fallback_allowed = False
         diagnostics.append(
             SqlCompilationDiagnostic(
                 code=exc.code.value,

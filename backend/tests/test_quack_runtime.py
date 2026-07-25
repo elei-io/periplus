@@ -18,13 +18,19 @@ from nats.js.errors import (
 import pyarrow as pa
 
 from api.routers.catalogue import query_runtime
-from atlas_sql import AtlasCompiler, InteractiveQueryPurpose
+from atlas_sql import (
+    AtlasCompiler,
+    DocumentScopePlan,
+    InteractiveQueryPurpose,
+)
 from repository.catalogue.quack_runtime import (
     CatalogueQueryExecutionError,
     QuackQueryRuntime,
     QuackRuntimeConfig,
     _BoundedArrowStream,
     _QuackSlot,
+    _finish_document_scope,
+    _prepare_document_scope,
 )
 from repository.catalogue.query import CatalogueStatementKind
 from runtime.catalogue_queries import (
@@ -180,6 +186,19 @@ class FakeQuackMinter:
             self.current_token_generation += 1
 
 
+class LocalRemoteConnection:
+    def __init__(self) -> None:
+        self.connection = duckdb.connect()
+        self.remote_sql: list[str] = []
+
+    def execute(self, _wrapper_sql: str, parameters: list[str]):
+        self.remote_sql.append(parameters[0])
+        return self.connection.execute(parameters[0])
+
+    def close(self) -> None:
+        self.connection.close()
+
+
 class QuackRuntimeTests(unittest.TestCase):
     def test_environment_configuration_remains_server_side(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -230,6 +249,87 @@ class QuackRuntimeTests(unittest.TestCase):
             message = runtime.safe_error(RuntimeError("x" * 3_000))
 
         self.assertEqual(len(message), 2_000)
+
+    def test_document_scope_hydrates_only_budgeted_projected_rows(self) -> None:
+        remote = LocalRemoteConnection()
+        try:
+            remote.connection.execute(
+                "CREATE TABLE documents(document_id VARCHAR, element_count BIGINT)"
+            )
+            remote.connection.execute(
+                "CREATE TABLE elements("
+                "document_id VARCHAR, element_index BIGINT, tag VARCHAR, "
+                "attributes MAP(VARCHAR, VARCHAR))"
+            )
+            remote.connection.execute(
+                "INSERT INTO documents VALUES ('doc-1', 2), ('doc-2', 1)"
+            )
+            remote.connection.execute(
+                "INSERT INTO elements VALUES "
+                "('doc-1', 0, 'html', MAP()), "
+                "('doc-1', 1, 'body', MAP()), "
+                "('doc-2', 0, 'html', MAP())"
+            )
+
+            active = _prepare_document_scope(
+                remote,  # type: ignore[arg-type]
+                DocumentScopePlan(
+                    scope_sql=(
+                        "SELECT document_id FROM documents "
+                        "WHERE document_id = 'doc-1'"
+                    ),
+                    element_columns=("document_id", "tag"),
+                    maximum_documents=10,
+                    maximum_elements=10,
+                ),
+            )
+
+            self.assertTrue(active)
+            self.assertEqual(
+                remote.connection.execute(
+                    "SELECT * FROM _atlas_interactive_scoped_elements "
+                    "ORDER BY tag"
+                ).fetchall(),
+                [("doc-1", "body"), ("doc-1", "html")],
+            )
+            self.assertEqual(
+                [
+                    row[1]
+                    for row in remote.connection.execute(
+                        "PRAGMA table_info('_atlas_interactive_scoped_elements')"
+                    ).fetchall()
+                ],
+                ["document_id", "tag"],
+            )
+            hydration_sql = next(
+                sql
+                for sql in remote.remote_sql
+                if sql.startswith("CREATE TEMP TABLE")
+            )
+            budget_sql = next(
+                sql
+                for sql in remote.remote_sql
+                if sql.startswith("SELECT document_id, element_count")
+            )
+            self.assertIn(
+                "WHERE document_id IN ('doc-1')",
+                budget_sql,
+            )
+            self.assertIn(
+                "WHERE element.document_id IN ('doc-1')",
+                hydration_sql,
+            )
+            self.assertNotIn("JOIN (VALUES", hydration_sql)
+            _finish_document_scope(
+                remote,  # type: ignore[arg-type]
+                commit=True,
+            )
+            with self.assertRaises(duckdb.CatalogException):
+                remote.connection.execute(
+                    "SELECT * FROM _atlas_interactive_scoped_elements"
+                )
+        finally:
+            remote.close()
 
 
 class QuackSlotCredentialTests(unittest.IsolatedAsyncioTestCase):
@@ -428,6 +528,167 @@ class QuackQueryLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.status, "cancelled")
         self.assertEqual(state.error, "client disconnected")
         self.assertTrue(slot.interrupted)
+
+    async def test_document_scope_is_hydrated_in_one_remote_transaction(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            query_bucket = FakeBucket()
+            runtime = QuackQueryRuntime(
+                query_bucket,
+                config=_config(Path(temp_dir)),
+            )
+            slot = FakeSlot()
+            runtime._available.put_nowait(slot)
+            query_id = uuid4()
+            await create_catalogue_query(
+                query_bucket,
+                CatalogueQueryState(
+                    id=query_id,
+                    statement_kind=CatalogueStatementKind.QUERY,
+                    optimization_status="optimized",
+                    applied_rewrites=(),
+                    optimization_diagnostics=(),
+                    status="queued",
+                    created_at=datetime.now(UTC),
+                ),
+            )
+            compilation = _compilation("SELECT 1").model_copy(
+                update={
+                    "executable_sql": (
+                        "SELECT document_id, tag "
+                        "FROM _atlas_interactive_scoped_elements"
+                    ),
+                    "document_scope": DocumentScopePlan(
+                        scope_sql=(
+                            "SELECT document_id FROM documents LIMIT 10001"
+                        ),
+                        element_columns=("document_id", "tag"),
+                        maximum_documents=10_000,
+                        maximum_elements=50_000_000,
+                    ),
+                }
+            )
+            remote_sql: list[str] = []
+
+            def prepare_scope(_connection, plan):
+                remote_sql.extend(
+                    [
+                        "BEGIN TRANSACTION",
+                        plan.scope_sql,
+                        (
+                            "CREATE TEMP TABLE "
+                            "_atlas_interactive_scoped_elements"
+                        ),
+                    ]
+                )
+                return True
+
+            def finish_scope(_connection, *, commit):
+                remote_sql.extend(
+                    [
+                        "DROP TABLE _atlas_interactive_scoped_elements",
+                        "COMMIT" if commit else "ROLLBACK",
+                    ]
+                )
+
+            with (
+                patch(
+                    "repository.catalogue.quack_runtime._prepare_document_scope",
+                    side_effect=prepare_scope,
+                ),
+                patch(
+                    "repository.catalogue.quack_runtime._finish_document_scope",
+                    side_effect=finish_scope,
+                ),
+                patch(
+                    "repository.catalogue.quack_runtime._start_arrow_stream",
+                    return_value=_stream(maximum_rows=3, maximum_bytes=10_000),
+                ) as start,
+            ):
+                active = await runtime.prepare(
+                    query_id=query_id,
+                    compilation=compilation,
+                    statement_kind=CatalogueStatementKind.QUERY,
+                )
+                _ = b"".join([chunk async for chunk in active.stream()])
+
+        self.assertEqual(
+            start.call_args.args[1],
+            compilation.executable_sql,
+        )
+        self.assertEqual(
+            remote_sql,
+            [
+                "BEGIN TRANSACTION",
+                compilation.document_scope.scope_sql,
+                "CREATE TEMP TABLE _atlas_interactive_scoped_elements",
+                "DROP TABLE _atlas_interactive_scoped_elements",
+                "COMMIT",
+            ],
+        )
+
+    async def test_document_scope_rolls_back_when_hydration_exceeds_budget(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            query_bucket = FakeBucket()
+            runtime = QuackQueryRuntime(
+                query_bucket,
+                config=_config(Path(temp_dir)),
+            )
+            slot = FakeSlot()
+            runtime._available.put_nowait(slot)
+            query_id = uuid4()
+            await create_catalogue_query(
+                query_bucket,
+                CatalogueQueryState(
+                    id=query_id,
+                    statement_kind=CatalogueStatementKind.QUERY,
+                    optimization_status="optimized",
+                    applied_rewrites=(),
+                    optimization_diagnostics=(),
+                    status="queued",
+                    created_at=datetime.now(UTC),
+                ),
+            )
+            compilation = _compilation("SELECT 1").model_copy(
+                update={
+                    "document_scope": DocumentScopePlan(
+                        scope_sql="SELECT document_id FROM documents",
+                        element_columns=("document_id",),
+                        maximum_documents=10_000,
+                        maximum_elements=50_000_000,
+                    ),
+                }
+            )
+            finished: list[bool] = []
+
+            with (
+                patch(
+                    "repository.catalogue.quack_runtime._prepare_document_scope",
+                    side_effect=CatalogueQueryExecutionError(
+                        "document scope exceeds 50,000,000 elements"
+                    ),
+                ),
+                patch(
+                    "repository.catalogue.quack_runtime._finish_document_scope",
+                    side_effect=lambda _connection, *, commit: finished.append(commit),
+                ),
+                self.assertRaisesRegex(
+                    CatalogueQueryExecutionError,
+                    "exceeds 50,000,000 elements",
+                ),
+            ):
+                await runtime.prepare(
+                    query_id=query_id,
+                    compilation=compilation,
+                    statement_kind=CatalogueStatementKind.QUERY,
+                )
+
+        self.assertEqual(finished, [False])
+        state = await get_catalogue_query(query_bucket, query_id)
+        self.assertIsNotNone(state)
+        self.assertEqual(state.status, "failed")
+        self.assertIs(runtime._available.get_nowait(), slot)
 
 
 if __name__ == "__main__":

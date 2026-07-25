@@ -61,6 +61,13 @@ class CompilationEstimate(_WireModel):
     estimated_bytes_avoided: int | None
 
 
+class DocumentScopePlan(_WireModel):
+    scope_sql: str
+    element_columns: tuple[str, ...]
+    maximum_documents: int
+    maximum_elements: int
+
+
 class CompilationResult(_WireModel):
     protocol_version: Literal[1] = 1
     purpose: CompilationPurposeName
@@ -71,6 +78,7 @@ class CompilationResult(_WireModel):
     applied_rewrites: tuple[AppliedRewrite, ...] = ()
     dependencies: tuple[DefinitionDependency, ...] = ()
     estimate: CompilationEstimate | None = None
+    document_scope: DocumentScopePlan | None = None
     catalogue_revision: str | None = None
     compiler_version: str
     valid: bool

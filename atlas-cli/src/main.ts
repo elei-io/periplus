@@ -103,6 +103,7 @@ async function emitResult(
   format: "table" | "json",
 ): Promise<void> {
   let activity: { stop(): void } | undefined;
+  let transientLines = 0;
   const emit = async (event: AtomicCommandResult) => {
     if (
       format === "table" &&
@@ -118,7 +119,19 @@ async function emitResult(
     }
     activity?.stop();
     activity = undefined;
-    await emitAtomicResult(event, webUrl, format);
+    if (format === "table" && process.stdout.isTTY && transientLines > 0) {
+      process.stdout.write("\u001b[1A\u001b[2K".repeat(transientLines));
+      transientLines = 0;
+    }
+    const rendered = await emitAtomicResult(event, webUrl, format);
+    if (
+      format === "table" &&
+      process.stdout.isTTY &&
+      event.kind === "table" &&
+      event.transient
+    ) {
+      transientLines = rendered.split("\n").length - 1;
+    }
   };
   if (result.kind === "stream") {
     try {
@@ -137,16 +150,19 @@ async function emitAtomicResult(
   result: AtomicCommandResult,
   webUrl: string,
   format: "table" | "json",
-): Promise<void> {
+): Promise<string> {
   if (result.kind === "navigate") {
     await openBrowser(resourceUrl(webUrl, result.path));
   }
-  process.stdout.write(
-    renderResult(result, {
-      format,
-      columns: process.stdout.columns,
-    }),
-  );
+  if (result.kind === "copy") {
+    process.stdout.write(`\u001b]52;c;${Buffer.from(result.text).toString("base64")}\u0007`);
+  }
+  const rendered = renderResult(result, {
+    format,
+    columns: process.stdout.columns,
+  });
+  process.stdout.write(rendered);
+  return rendered;
 }
 
 function errorMessage(reason: unknown): string {

@@ -224,7 +224,10 @@ class DomEncoderTests(unittest.TestCase):
                 "internal": [
                     _link_payload(
                         raw_href="guide?utm_source=mail&b=2&a=1#section",
-                        target_url="https://www.example.com/assets/guide?a=1&b=2",
+                        target_url=(
+                            "https://www.example.com/assets/guide"
+                            "?utm_source=mail&b=2&a=1"
+                        ),
                         target_fragment="section",
                         element_index=4,
                         relation_kind="same_origin",

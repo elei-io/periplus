@@ -2,6 +2,13 @@
 
 Status: accepted target design.
 
+Materialization is an optional user choice for a derived relation, not a prerequisite for querying
+the canonical evidence tables. Claims, products, entities, ownership hypotheses, and other user
+meanings remain ordinary user-defined SQL; they are not added to the canonical lake schema. A
+materialized definition should preserve the crawl and document provenance needed to audit
+downstream aggregates. The raw-lake baseline used to judge Atlas is defined in
+[Analytical benchmarks](ANALYTICAL_BENCHMARKS.md).
+
 ## Contract
 
 A managed view is either virtual or materialized. A view has at most one active

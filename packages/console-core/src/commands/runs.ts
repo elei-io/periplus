@@ -257,6 +257,7 @@ async function* followResults(
         edges.filter((edge) => edge.settled).length + "/" + edges.length,
         edges.reduce((total, edge) => total + edge.urls_selected, 0),
       ]],
+      transient: true,
     };
   }
 }

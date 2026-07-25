@@ -15,6 +15,7 @@ from atlas_sdk.compiler.models import (
     CompilationPurposeName,
     CompilationResult,
     DefinitionDependency,
+    DocumentScopePlan,
     ScanEstimate,
 )
 from catalogue.compiler import SqlCompilationResult
@@ -76,6 +77,16 @@ def compilation_result_from_internal(
             if estimate is not None
             else None
         ),
+        document_scope=(
+            DocumentScopePlan(
+                scope_sql=result.document_scope.scope_sql,
+                element_columns=result.document_scope.element_columns,
+                maximum_documents=result.document_scope.maximum_documents,
+                maximum_elements=result.document_scope.maximum_elements,
+            )
+            if result.document_scope is not None
+            else None
+        ),
         catalogue_revision=catalogue_revision,
         compiler_version=compiler_version,
         valid=result.valid,
@@ -99,6 +110,7 @@ __all__ = [
     "CompilationPurposeName",
     "CompilationResult",
     "DefinitionDependency",
+    "DocumentScopePlan",
     "ScanEstimate",
     "compilation_result_from_internal",
 ]

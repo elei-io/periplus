@@ -132,6 +132,7 @@ export function CatalogueWorkbenchPage() {
 
 class ConsoleOutput {
   private animation?: ReturnType<typeof setInterval>
+  private transientLines = 0
   private frame = 0
   private readonly frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
   private readonly terminal: WtermTerminal
@@ -150,9 +151,13 @@ class ConsoleOutput {
     }
     this.stop()
     if (result.kind === "navigate") navigate(result.path)
-    this.terminal.writeRaw(
-      renderConsoleResult(result, this.terminal.columns())
-    )
+    if (result.kind === "copy") await navigator.clipboard.writeText(result.text)
+    this.clearTransient()
+    const rendered = renderConsoleResult(result, this.terminal.columns())
+    this.terminal.writeRaw(rendered)
+    if (result.kind === "table" && result.transient) {
+      this.transientLines = rendered.split("\r\n").length - 1
+    }
   }
 
   start(label: string): void {
@@ -171,6 +176,14 @@ class ConsoleOutput {
     clearInterval(this.animation)
     this.animation = undefined
     this.terminal.writeRaw("\r\u001b[2K")
+  }
+
+  private clearTransient(): void {
+    if (this.transientLines === 0) return
+    this.terminal.writeRaw(
+      "\u001b[1A\u001b[2K".repeat(this.transientLines)
+    )
+    this.transientLines = 0
   }
 }
 

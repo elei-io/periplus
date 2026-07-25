@@ -48,6 +48,7 @@ def main() -> None:
         ServiceAccountTokenProvider,
     )
     from repository.catalogue.operations import (
+        is_retryable_catalogue_transaction_conflict,
         is_retryable_catalogue_unavailability,
     )
     from repository.catalogue.synthetic_load import (
@@ -139,7 +140,16 @@ def main() -> None:
                                 unavailable = (
                                     is_retryable_catalogue_unavailability(exc)
                                 )
-                                if not (capacity_pressure or unavailable):
+                                transaction_conflict = (
+                                    is_retryable_catalogue_transaction_conflict(
+                                        exc
+                                    )
+                                )
+                                if not (
+                                    capacity_pressure
+                                    or unavailable
+                                    or transaction_conflict
+                                ):
                                     raise
                                 with counter_lock:
                                     counters["retried"] += 1
@@ -147,7 +157,11 @@ def main() -> None:
                                     "status": (
                                         "capacity_retry"
                                         if capacity_pressure
-                                        else "session_retry"
+                                        else (
+                                            "session_retry"
+                                            if unavailable
+                                            else "transaction_retry"
+                                        )
                                     ),
                                     "worker": worker_index,
                                     "session": session_id,

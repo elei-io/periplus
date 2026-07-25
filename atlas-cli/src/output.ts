@@ -23,6 +23,7 @@ export function renderResult(
   }
   if (result.kind === "message") return `${result.text}\n`;
   if (result.kind === "navigate") return `${result.label}\n`;
+  if (result.kind === "copy") return `${result.label}\n`;
   if (result.kind === "clear") return "\u001b[2J\u001b[H";
   const table = formatTable(
     result.columns,
@@ -156,7 +157,7 @@ function renderAssistant(
       )
       .join("\n");
     const actions = result.suggestions?.length
-      ? "\u001b[2m└ .ai show <number> · .ai run <number>\u001b[0m\n\n"
+      ? "\u001b[2m└ .ai <number> · --copy · --show\u001b[0m\n\n"
       : "";
     return (
       `\u001b[2m│\u001b[0m\n${answer}\n` +
@@ -173,7 +174,7 @@ function renderAssistant(
     .join("\n");
   return (
     `\u001b[2m│\u001b[0m\n${answer}\n\u001b[2m│\u001b[0m\n` +
-    `${sql}\n\u001b[2m└ Run with ${result.sqlRunCommand ?? ".ai run"}\u001b[0m\n\n`
+    `${sql}\n\u001b[2m└ Run with ${result.sqlRunCommand ?? ".ai <number>"}\u001b[0m\n\n`
   );
 }
 

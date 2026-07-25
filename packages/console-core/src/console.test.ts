@@ -223,9 +223,10 @@ test(".help is generated from the command registry", async () => {
     [".graphs list", "List crawl graphs"],
     [".graphs show <slug>", "Open a crawl graph in Atlas Web"],
     [
-      ".graphs run <slug> [--url <value> ...] [--max-crawls <value>]",
+      ".graphs run <slug> [--url <value> ...] [--from-result <value>] [--max-crawls <value>]",
       "Start a crawl graph run",
     ],
+    [".graphs confirm", "Confirm the pending crawl graph run"],
     [".runs list", "List graph runs"],
     [".runs show <run>", "Show a graph run"],
     [".runs follow <run>", "Follow graph run progress until it settles"],
@@ -279,10 +280,16 @@ test(".graphs show rejects an unknown slug", async () => {
 
 test(".graphs run validates options, starts a run, and selects it for the session", async () => {
   const console = new AtlasConsole(api());
-  const started = await console.execute(
+  const preview = await console.execute(
     ".graphs run single-page --url https://example.com/ " +
       "--url https://example.org/ --max-crawls 25",
   );
+  assert.equal(preview?.kind, "message");
+  if (preview?.kind === "message") {
+    assert.match(preview.text, /2 distinct root URLs/);
+    assert.match(preview.text, /Confirm with \.graphs confirm/);
+  }
+  const started = await console.execute(".graphs confirm");
   assert.deepEqual(started, {
     kind: "message",
     text:
@@ -301,7 +308,7 @@ test(".graphs run validates options, starts a run, and selects it for the sessio
 test(".graphs run requires safe root URLs", async () => {
   await assert.rejects(
     new AtlasConsole(api()).execute(".graphs run single-page"),
-    /At least one --url is required/,
+    /Provide --url or --from-result/,
   );
   await assert.rejects(
     new AtlasConsole(api()).execute(
@@ -309,6 +316,42 @@ test(".graphs run requires safe root URLs", async () => {
     ),
     /Crawl URL must be absolute HTTP\(S\)/,
   );
+});
+
+test(".graphs run can re-execute the latest SQL query as a URL source", async () => {
+  const service = api();
+  const executed: string[] = [];
+  service.catalogue.execute = async (sql) => {
+    executed.push(sql);
+    return {
+      statementKind: "query",
+      columns: ["url"],
+      columnTypes: ["Utf8"],
+      rows: [
+        ["https://example.com/a"],
+        ["https://example.com/a"],
+        ["not a URL"],
+        ["https://example.org/b"],
+      ],
+    };
+  };
+  const console = new AtlasConsole(service);
+  await console.execute("SELECT url FROM candidate_urls");
+
+  const preview = await console.execute(
+    ".graphs run single-page --from-result url --max-crawls 2",
+  );
+
+  assert.deepEqual(executed, [
+    "SELECT url FROM candidate_urls",
+    "SELECT url FROM candidate_urls",
+  ]);
+  assert.equal(preview?.kind, "message");
+  if (preview?.kind === "message") {
+    assert.match(preview.text, /2 distinct root URLs/);
+    assert.match(preview.text, /Duplicates removed: 1 · Invalid ignored: 1/);
+    assert.match(preview.text, /https:\/\/example\.com\/a/);
+  }
 });
 
 test(".runs commands expose run state, failures, and controls", async () => {
@@ -366,6 +409,7 @@ test(".runs follow streams progress and the settled run", async () => {
   assert.equal(events[1]?.kind, "table");
   if (events[1]?.kind === "table") {
     assert.deepEqual(events[1].rows, [[1, 0, 1, 0, 0, 0, "0/0", 0]]);
+    assert.equal(events[1].transient, true);
   }
   assert.equal(events[2]?.kind, "table");
   if (events[2]?.kind === "table") {
@@ -446,7 +490,7 @@ test(".completion reload reports the refreshed metadata index", async () => {
   );
 });
 
-test(".ai keeps bounded context and shows or runs numbered SQL suggestions", async () => {
+test(".ai keeps bounded context and acts on numbered SQL suggestions", async () => {
   const service = api();
   const contexts: unknown[][] = [];
   const executed: string[] = [];
@@ -533,8 +577,9 @@ test(".ai keeps bounded context and shows or runs numbered SQL suggestions", asy
       // Drain the response so it becomes session context.
     }
   }
-  const shown = await atlas.execute(".ai show 2");
-  const query = await atlas.execute(".ai run 2");
+  const shown = await atlas.execute(".ai 2 --show");
+  const copied = await atlas.execute(".ai 2 --copy");
+  const query = await atlas.execute(".ai 2");
 
   assert.deepEqual(contexts[0], []);
   assert.deepEqual(contexts[1], [
@@ -549,13 +594,22 @@ test(".ai keeps bounded context and shows or runs numbered SQL suggestions", asy
     state: "completed",
     text: "Document count\nCount retained documents.",
     sql: "select count(*) from documents limit 1;",
-    sqlRunCommand: ".ai run 2",
+    sqlRunCommand: ".ai 2",
+  });
+  assert.deepEqual(copied, {
+    kind: "copy",
+    text: "select count(*) from documents limit 1;",
+    label: "Copied suggestion 2 SQL.",
   });
   assert.equal(query?.kind, "table");
   assert.deepEqual(executed, ["select count(*) from documents limit 1;"]);
+  assert.equal(
+    atlas.history.at(-1),
+    "select count(*) from documents limit 1;",
+  );
   await assert.rejects(
-    atlas.execute(".ai run"),
-    /Choose a suggestion from 1 to 2/,
+    atlas.execute(".ai 3"),
+    /Suggestion 3 does not exist/,
   );
 });
 

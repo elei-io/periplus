@@ -1,4 +1,4 @@
-.PHONY: sync check console-check sdk-check setup catalogue-check catalogue-benchmark catalogue-load-synthetic verify-remote-runtime worker-independence-smoke worker-horizontal-smoke reliability-check docs-diagrams api acquisition-worker ingestion-worker catalogue-relay-worker materialization-worker housekeeping-worker cli db-revision compose-up compose-down
+.PHONY: sync check console-check sdk-check setup catalogue-check catalogue-benchmark catalogue-load-synthetic analytical-ground-truth-test analytical-ground-truth-plan analytical-ground-truth-load analytical-ground-truth-verify analytical-ground-truth-run verify-remote-runtime worker-independence-smoke worker-horizontal-smoke reliability-check docs-diagrams api acquisition-worker ingestion-worker catalogue-relay-worker materialization-worker housekeeping-worker cli db-revision compose-up compose-down
 
 sync:
 	cd backend && uv sync
@@ -7,6 +7,7 @@ sync:
 check:
 	cd backend && uv run python -m compileall actions agents api catalogue catalogue_relay cli config control db dom materialization observability repository runtime workers
 	cd backend && uv run python -m unittest discover -s tests
+	$(MAKE) analytical-ground-truth-test
 	$(MAKE) sdk-check
 	$(MAKE) console-check
 
@@ -28,6 +29,21 @@ catalogue-benchmark:
 
 catalogue-load-synthetic:
 	cd backend && uv run python scripts/load_synthetic_catalogue.py
+
+analytical-ground-truth-test:
+	cd backend && uv run python -m unittest discover -s ../benchmarks/analytical_ground_truth/tests
+
+analytical-ground-truth-plan:
+	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py plan
+
+analytical-ground-truth-load:
+	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py load
+
+analytical-ground-truth-verify:
+	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py verify
+
+analytical-ground-truth-run:
+	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py run
 
 verify-remote-runtime:
 	cd backend && uv run python scripts/verify_remote_runtime.py

@@ -4,6 +4,11 @@ Atlas turns web pages into durable, queryable evidence. It acquires a page once,
 content-addressed raw HTML, and stores a structural projection for later search, extraction, and
 analysis.
 
+Its distinctive analytical surface begins where search ends: users can derive answers from
+observations across pages, domains, and time even when no individual page contains the answer.
+Those interpretations remain ordinary DuckDB-compatible SQL and retain the crawl evidence needed
+to audit them.
+
 The project is intentionally small: one page-acquisition path, one repository boundary, and a
 clear owner for every kind of state. Atlas uses bounded local client pools for managed DuckLake and
 object-store work, while cross-replica website politeness is coordinated by independent per-domain
@@ -67,7 +72,8 @@ configured. `.ai "question"` sends a small, bounded slice of context held by the
 process. The API persists no prompts or replies. One agent may inspect public catalogue metadata and
 run validated read-only SQL through the same bounded query path as the workbench. It returns either
 a concise message or up to three validated SQL suggestions. The response lists only suggestion
-titles and descriptions; `.ai show 2` reveals SQL and `.ai run 2` explicitly executes it.
+titles and descriptions; `.ai 2` executes one, `.ai 2 --copy` copies its SQL, and
+`.ai 2 --show` reveals it without running.
 
 Run `atlas` without a command to enter the interactive console. Interactive
 commands start with a dot:
@@ -80,9 +86,9 @@ atlas> .clear
 atlas> .graphs list
 atlas> .graphs show single-page
 atlas> .ai "How are book prices distributed?"
-atlas> .ai show 2
-atlas> .ai run 2
-atlas> select * from elements limit 10;
+atlas> .ai 2 --show
+atlas> .ai 2
+atlas> select url, outcome, completed_at from crawls order by completed_at desc limit 10;
 atlas> .describe elements
 atlas> .status
 atlas> .history
@@ -132,12 +138,20 @@ Configuration is documented alongside its defaults in [`.env.example`](.env.exam
 
 ## Documentation
 
-- [Vision](docs/VISION.md) — what Atlas is for, and what it is not.
+- [Vision](docs/VISION.md) — the evidence-first product thesis and the questions Atlas exists to
+  answer.
+- [Analytical benchmarks](docs/ANALYTICAL_BENCHMARKS.md) — hero queries, semantic ground truth,
+  performance tiers, and acceptance criteria.
 - [Architecture](docs/ARCHITECTURE.md) — components, state ownership, and execution paths.
 - [Worker architecture](docs/WORKER_ARCHITECTURE.md) — process boundaries, queue routing,
   managed-client concurrency, and scaling.
 - [Crawl graphs](docs/CRAWL_GRAPHS.md) — graph entities, runtime semantics, messaging, and readiness.
+- [Lake schema](LAKE_SCHEMA.md) — canonical physical tables, columns, comments, partitioning, and
+  sorting.
 - [Catalogue SQL](docs/CATALOGUE_SQL.md) — analytical tables and DOM-style query helpers.
+- [Catalogue compiler](docs/CATALOGUE_COMPILER.md) — SQL purposes, proven rewrites, document
+  scoping, and execution boundaries.
+- [Materializations](docs/PUBLICATIONS.md) — incremental refresh and catalogue-event contracts.
 - [Console](docs/CONSOLE.md) — shared commands, completion providers, SQL completion, and adapters.
 - [Hazards](docs/HAZARDS.md) — mistakes and complexity traps to avoid.
 - [Agent guide](AGENTS.md) — concise working rules for coding agents.

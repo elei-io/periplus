@@ -22,20 +22,10 @@ from api.routers import (
     repository_operations,
     ai,
 )
-from control.catalogue_materializations.service import (
-    unavailable_materialized_views,
-)
-from repository.catalogue.quack_runtime import (
-    CatalogueQueryExecutionError,
-    QuackQueryRuntime,
-)
+from repository.catalogue.quack_runtime import QuackQueryRuntime
 from repository.catalogue.compiler_definitions import (
     CatalogueCompilerDefinitionCache,
     read_catalogue_compiler_definitions,
-)
-from repository.catalogue.query import (
-    ClassifiedCatalogueStatement,
-    referenced_catalogue_views,
 )
 from runtime.catalogue_workers import ensure_catalogue_worker_storage
 from runtime.catalogue_events import DDL_SUBJECT
@@ -46,30 +36,6 @@ from runtime.graph_queue import (
 )
 from runtime.graph_outbox import run_outbox_relay
 from runtime.nats_client import connect_nats
-
-
-async def _preflight_catalogue_query(
-    control: CatalogueControl,
-    statement: ClassifiedCatalogueStatement,
-) -> None:
-    view_names = referenced_catalogue_views(statement)
-    if not view_names:
-        return
-    unavailable = await control.run(
-        lambda session, _catalogue: unavailable_materialized_views(
-            session, view_names
-        )
-    )
-    if not unavailable:
-        return
-    details = "; ".join(
-        (
-            f"views.{name} materialization is {state}"
-            + (f": {error}" if error else "")
-        )
-        for name, state, error in unavailable
-    )
-    raise CatalogueQueryExecutionError(details[:2_000])
 
 
 @asynccontextmanager
@@ -104,12 +70,7 @@ async def lifespan(app: FastAPI):
         catalogue_control = CatalogueControl()
         await catalogue_control.start()
         app.state.catalogue_control = catalogue_control
-        quack_runtime = QuackQueryRuntime(
-            query_bucket,
-            query_preflight=lambda statement: _preflight_catalogue_query(
-                catalogue_control, statement
-            ),
-        )
+        quack_runtime = QuackQueryRuntime(query_bucket)
         await quack_runtime.start()
         app.state.quack_runtime = quack_runtime
         compiler_definitions = CatalogueCompilerDefinitionCache(

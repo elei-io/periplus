@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -16,7 +16,7 @@ from uuid import UUID
 import duckdb
 import pyarrow as pa
 
-from atlas_sql import CompilationResult
+from atlas_sql import CompilationResult, DocumentScopePlan
 from config import get_float, get_int, get_str
 from observability import catalogue_query_metrics
 from repository.catalogue.duckbasin import (
@@ -37,9 +37,6 @@ from runtime.catalogue_queries import (
 )
 T = TypeVar("T")
 _QUERY_POLL_SECONDS = 0.25
-QueryPreflight = Callable[[ClassifiedCatalogueStatement], Awaitable[None]]
-
-
 class CatalogueQueryExecutionError(RuntimeError):
     """An interactive query could not be prepared or streamed."""
 
@@ -301,6 +298,7 @@ class ActiveCatalogueQuery:
         arrow: _BoundedArrowStream,
         monitor: asyncio.Task,
         started_monotonic: float,
+        document_scope_active: bool = False,
     ) -> None:
         self.runtime = runtime
         self.query_id = query_id
@@ -309,6 +307,7 @@ class ActiveCatalogueQuery:
         self.arrow = arrow
         self.monitor = monitor
         self.started_monotonic = started_monotonic
+        self.document_scope_active = document_scope_active
         self.closed = False
 
     async def stream(self) -> AsyncIterator[bytes]:
@@ -365,6 +364,17 @@ class ActiveCatalogueQuery:
         if outcome != "succeeded":
             self.slot.interrupt()
         await self.slot.submit(lambda: None)
+        if self.document_scope_active:
+            try:
+                await self.slot.submit(
+                    lambda: _finish_document_scope(
+                        self.runtime._connection(self.slot),
+                        commit=outcome == "succeeded",
+                    )
+                )
+            except Exception as exc:
+                outcome = "failed"
+                error = self.runtime.safe_error(exc)
         self.monitor.cancel()
         await asyncio.gather(self.monitor, return_exceptions=True)
         await self.runtime._finish_query(
@@ -381,21 +391,15 @@ class QuackQueryRuntime:
         *,
         config: QuackRuntimeConfig | None = None,
         minter: DuckBasinClientMinter | None = None,
-        query_preflight: QueryPreflight | None = None,
     ) -> None:
         self.config = config or QuackRuntimeConfig.from_env()
         self.query_bucket = query_bucket
         self._minter = minter
         self._owns_minter = minter is None
-        self._query_preflight = query_preflight
         self._slots: list[_QuackSlot] = []
         self._available: asyncio.Queue[_QuackSlot] = asyncio.Queue()
         self._active: dict[UUID, _QuackSlot] = {}
         self._cancel_reasons: dict[UUID, str] = {}
-
-    async def preflight(self, statement: ClassifiedCatalogueStatement) -> None:
-        if self._query_preflight is not None:
-            await self._query_preflight(statement)
 
     async def start(self) -> None:
         try:
@@ -524,6 +528,7 @@ class QuackQueryRuntime:
             self._monitor(query_id, started_monotonic),
             name=f"catalogue-query-monitor:{query_id.hex}",
         )
+        document_scope_active = False
         executable_sql = (
             compilation.executable_sql
             if statement_kind == CatalogueStatementKind.QUERY
@@ -538,6 +543,13 @@ class QuackQueryRuntime:
             )
         )
         try:
+            if compilation.document_scope is not None:
+                document_scope_active = await slot.run(
+                    lambda connection: _prepare_document_scope(
+                        connection,
+                        compilation.document_scope,
+                    )
+                )
             arrow = await slot.run(
                 lambda connection: _start_arrow_stream(
                     connection,
@@ -551,6 +563,14 @@ class QuackQueryRuntime:
             self.interrupt_local(query_id, reason)
             monitor.cancel()
             await asyncio.gather(monitor, return_exceptions=True)
+            if document_scope_active:
+                await slot.submit(
+                    lambda: _finish_document_scope(
+                        self._connection(slot),
+                        commit=False,
+                    )
+                )
+                document_scope_active = False
             active = self._empty_active_query(
                 query_id=query_id,
                 statement_kind=statement_kind,
@@ -562,6 +582,21 @@ class QuackQueryRuntime:
         except Exception as exc:
             monitor.cancel()
             await asyncio.gather(monitor, return_exceptions=True)
+            if compilation.document_scope is not None:
+                try:
+                    await slot.submit(
+                        lambda: _finish_document_scope(
+                            self._connection(slot),
+                            commit=False,
+                        )
+                    )
+                except Exception:
+                    logging.warning(
+                        "document scope rollback failed",
+                        extra={"query_id": query_id.hex},
+                        exc_info=True,
+                    )
+                document_scope_active = False
             reason = self._cancel_reasons.get(query_id)
             active = self._empty_active_query(
                 query_id=query_id,
@@ -584,6 +619,7 @@ class QuackQueryRuntime:
             arrow=arrow,
             monitor=monitor,
             started_monotonic=started_monotonic,
+            document_scope_active=document_scope_active,
         )
 
     async def run_internal(self, operation: Callable[[duckdb.DuckDBPyConnection], T]) -> T:
@@ -814,6 +850,158 @@ def _start_arrow_stream(
     )
 
 
+def _prepare_document_scope(
+    connection: duckdb.DuckDBPyConnection,
+    plan: DocumentScopePlan,
+) -> bool:
+    _trusted_remote_execute(connection, "BEGIN TRANSACTION")
+    rows = _trusted_remote_rows(connection, plan.scope_sql)
+    if len(rows) > plan.maximum_documents:
+        raise CatalogueQueryExecutionError(
+            "document scope exceeds "
+            f"{plan.maximum_documents:,} documents"
+        )
+    document_ids: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not row or row[0] is None:
+            raise CatalogueQueryExecutionError(
+                "document scope returned an invalid document identity"
+            )
+        document_id = str(row[0])
+        if document_id in seen:
+            continue
+        seen.add(document_id)
+        document_ids.append(document_id)
+
+    budget_rows = _trusted_remote_rows(
+        connection,
+        _document_budget_sql(document_ids),
+    )
+    budgeted_ids: set[str] = set()
+    element_count = 0
+    for row in budget_rows:
+        if len(row) < 2 or row[0] is None:
+            raise CatalogueQueryExecutionError(
+                "document budget returned an invalid row"
+            )
+        document_id = str(row[0])
+        try:
+            count = int(row[1])
+        except (TypeError, ValueError) as exc:
+            raise CatalogueQueryExecutionError(
+                "document budget returned an invalid element count"
+            ) from exc
+        if count < 0 or document_id in budgeted_ids:
+            raise CatalogueQueryExecutionError(
+                "document budget returned inconsistent metadata"
+            )
+        budgeted_ids.add(document_id)
+        element_count += count
+        if element_count > plan.maximum_elements:
+            raise CatalogueQueryExecutionError(
+                "document scope exceeds "
+                f"{plan.maximum_elements:,} elements"
+            )
+    if budgeted_ids != seen:
+        raise CatalogueQueryExecutionError(
+            "document scope references missing document metadata"
+        )
+    _trusted_remote_execute(
+        connection,
+        _hydrate_elements_sql(
+            document_ids,
+            element_columns=plan.element_columns,
+        ),
+    )
+    return True
+
+
+def _document_budget_sql(document_ids: list[str]) -> str:
+    if not document_ids:
+        return (
+            "SELECT document_id, element_count "
+            "FROM documents WHERE false"
+        )
+    values = ", ".join(
+        _quote_literal(document_id)
+        for document_id in document_ids
+    )
+    return (
+        "SELECT document_id, element_count "
+        "FROM documents "
+        f"WHERE document_id IN ({values})"
+    )
+
+
+def _finish_document_scope(
+    connection: duckdb.DuckDBPyConnection,
+    *,
+    commit: bool,
+) -> None:
+    if commit:
+        _trusted_remote_execute(
+            connection,
+            f"DROP TABLE IF EXISTS {_quote_identifier('_atlas_interactive_scoped_elements')}",
+        )
+        _trusted_remote_execute(connection, "COMMIT")
+        return
+    try:
+        _trusted_remote_execute(connection, "ROLLBACK")
+    finally:
+        try:
+            _trusted_remote_execute(
+                connection,
+                f"DROP TABLE IF EXISTS {_quote_identifier('_atlas_interactive_scoped_elements')}",
+            )
+        except Exception:
+            logging.warning(
+                "document scope temporary table cleanup failed",
+                exc_info=True,
+            )
+
+
+def _hydrate_elements_sql(
+    document_ids: list[str],
+    *,
+    element_columns: tuple[str, ...],
+) -> str:
+    relation = _quote_identifier("_atlas_interactive_scoped_elements")
+    projected = (
+        "element.*"
+        if element_columns == ("*",)
+        else ", ".join(
+            f"element.{_quote_identifier(column)}"
+            for column in element_columns
+        )
+    )
+    if not document_ids:
+        return (
+            f"CREATE TEMP TABLE {relation} AS "
+            f"SELECT {projected} FROM elements AS element WHERE false"
+        )
+    values = ", ".join(
+        _quote_literal(document_id)
+        for document_id in document_ids
+    )
+    return (
+        f"CREATE TEMP TABLE {relation} AS "
+        f"SELECT {projected} "
+        "FROM elements AS element "
+        f"WHERE element.document_id IN ({values})"
+    )
+
+
+def _trusted_remote_execute(
+    connection: duckdb.DuckDBPyConnection,
+    sql: str,
+) -> list[tuple]:
+    return connection.execute(
+        "CALL quack_query_by_name(current_catalog(), ?)",
+        [sql],
+    ).fetchall()
+
+
 def _empty_arrow_stream(
     maximum_rows: int,
     maximum_bytes: int,
@@ -828,3 +1016,7 @@ def _empty_arrow_stream(
 
 def _quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
+
+
+def _quote_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"

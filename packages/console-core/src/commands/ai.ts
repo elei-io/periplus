@@ -23,10 +23,63 @@ export const askAiCommand = defineCommand({
       minimum: 0,
       maximum: 20,
     }),
+    option.boolean("copy", {
+      description: "Copy the selected suggestion SQL",
+    }),
+    option.boolean("show", {
+      description: "Show the selected suggestion SQL without running it",
+    }),
   ],
-  examples: ['.ai "How are book prices distributed?"'],
-  execute({ positionals, options }, context) {
+  examples: ['.ai "How are book prices distributed?"', ".ai 2 --show"],
+  async execute({ positionals, options }, context) {
     const prompt = positionals.prompt!;
+    if (/^[1-9]\d*$/.test(prompt)) {
+      if (options.copy && options.show) {
+        throw new ConsoleError("Choose either --copy or --show, not both.");
+      }
+      if (options.context !== undefined) {
+        throw new ConsoleError("--context is only available when asking Atlas AI.");
+      }
+      const suggestion = selectSuggestion(
+        context.session.lastAiSuggestions,
+        prompt,
+      );
+      if (options.copy) {
+        return {
+          kind: "copy",
+          text: suggestion.authored_sql,
+          label: `Copied suggestion ${prompt} SQL.`,
+        };
+      }
+      if (options.show) {
+        return {
+          kind: "assistant",
+          state: "completed",
+          text: `${suggestion.title}\n${suggestion.description}`,
+          sql: suggestion.authored_sql,
+          sqlRunCommand: `.ai ${prompt}`,
+        };
+      }
+      const startedAt = performance.now();
+      const result = await context.api.catalogue.execute(
+        suggestion.authored_sql,
+        context.signal,
+      );
+      context.session.lastSqlQuery = { sql: suggestion.authored_sql };
+      if (context.session.history.at(-1) !== suggestion.authored_sql) {
+        context.session.history.push(suggestion.authored_sql);
+      }
+      const elapsed = Math.max(1, Math.round(performance.now() - startedAt));
+      return {
+        kind: "table",
+        columns: result.columns,
+        rows: result.rows,
+        summary: `${result.rows.length} ${result.rows.length === 1 ? "row" : "rows"} · ${elapsed}ms`,
+      };
+    }
+    if (options.copy || options.show) {
+      throw new ConsoleError("--copy and --show require a suggestion number.");
+    }
     const contextLength =
       typeof options.context === "number"
         ? options.context
@@ -47,60 +100,6 @@ export const askAiCommand = defineCommand({
           context.session.lastAiSuggestions = suggestions;
         },
       ),
-    };
-  },
-});
-
-export const runAiSqlCommand = defineCommand({
-  path: ["ai", "run"],
-  summary: "Run a SQL query suggested by Atlas AI",
-  arguments: [
-    argument.string("suggestion", {
-      description: "One-based suggestion number",
-      required: false,
-    }),
-  ],
-  examples: [".ai run 2"],
-  async execute({ positionals }, context) {
-    const suggestion = selectSuggestion(
-      context.session.lastAiSuggestions,
-      positionals.suggestion,
-    );
-    const startedAt = performance.now();
-    const result = await context.api.catalogue.execute(
-      suggestion.authored_sql,
-      context.signal,
-    );
-    const elapsed = Math.max(1, Math.round(performance.now() - startedAt));
-    return {
-      kind: "table",
-      columns: result.columns,
-      rows: result.rows,
-      summary: `${result.rows.length} ${result.rows.length === 1 ? "row" : "rows"} · ${elapsed}ms`,
-    };
-  },
-});
-
-export const showAiSqlCommand = defineCommand({
-  path: ["ai", "show"],
-  summary: "Show a SQL query suggested by Atlas AI",
-  arguments: [
-    argument.string("suggestion", {
-      description: "One-based suggestion number",
-    }),
-  ],
-  examples: [".ai show 2"],
-  execute({ positionals }, context) {
-    const suggestion = selectSuggestion(
-      context.session.lastAiSuggestions,
-      positionals.suggestion,
-    );
-    return {
-      kind: "assistant",
-      state: "completed",
-      text: `${suggestion.title}\n${suggestion.description}`,
-      sql: suggestion.authored_sql,
-      sqlRunCommand: `.ai run ${positionals.suggestion}`,
     };
   },
 });

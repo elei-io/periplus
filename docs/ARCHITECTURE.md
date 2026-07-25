@@ -23,6 +23,34 @@ URL -> crawl request -> CDP session -> immutable HTML -> navigation package -> s
                                              \-> durable ingestion -> DOM/catalogue
 ```
 
+## Analytical path
+
+Atlas preserves crawl and retained-content evidence in the canonical lake, then lets users derive
+their own claims, products, entities, relationships, and other analytical observations through
+ordinary DuckDB-compatible SQL. Those interpretations are not universal base-table facts. Views
+retain crawl, document, URL, and capture-time provenance so an aggregate answer can be inspected at
+its source evidence. User-owned materializations remain optional.
+
+The intended analytical path is:
+
+```text
+new crawl evidence
+  -> compiler-scoped SQL over crawls, documents, and elements
+  -> user-defined observations and relationships
+  -> cross-page, cross-domain, temporal, or graph analysis
+  -> auditable result or new crawl inputs
+```
+
+Interactive queries may analyze a bounded document population directly. Repeated or global
+analysis can use ordinary virtual views and CTEs while retaining the same compiler boundary. Atlas
+first improves execution over the canonical evidence relations. A user may choose to materialize a
+derived relation, and Atlas may eventually introduce transparent physical acceleration, but neither
+is required by the logical query contract.
+
+[Vision](VISION.md) defines the product thesis.
+[Analytical benchmarks](ANALYTICAL_BENCHMARKS.md) defines the ground-truth and performance contract
+used to prove it.
+
 ## Acquisition boundary
 
 Every admitted URL resolves and freezes a `DomainPolicy` and `CrawlPolicy`. Domain policy owns
@@ -132,6 +160,16 @@ bounded Arrow IPC results. Query status and cancellation requests use the expiri
 Timeout, row, encoded-byte, and local-pool limits are mandatory. Basin owns remote admission and
 compute scaling.
 
+Interactive scans of the managed `elements` table have an additional compiler-enforced boundary.
+Ordinary SQL may constrain `document_id` directly or derive it through canonical managed-table
+relationships. For a derived scope, one session-affine Quack client opens a snapshot transaction
+that performs no lake mutation,
+resolves at most 10,000 distinct documents, verifies that their declared element total is at most
+50,000,000, hydrates one temporary projected `elements` relation, and evaluates the compiled query
+against it before committing. Every stage observes the same DuckLake snapshot. If the compiler
+cannot prove the document lineage, Atlas rejects the query as an unbounded DOM scan rather than
+executing it unchanged.
+
 Atlas AI is an API-owned adapter over that same interactive query boundary. Its single PydanticAI
 loop and typed catalogue tools live under `backend/agents/`; neither the model nor a console
 receives a Quack connection or storage credentials. Each request contains one prompt and an
@@ -143,8 +181,8 @@ and every executed agent query returns that same compilation decision and its di
 the bounded rows. A separate suggestion tool registers up to three read-only SQL handoffs only when
 the compiler reports no errors or warnings. The agent emits tool progress and finishes with a
 concise message plus the accepted suggestions. The console renders only their titles and
-descriptions, retains them in process memory, reveals one with `.ai show N`, and executes its
-authored SQL only after an explicit `.ai run N`.
+descriptions, retains them in process memory, and acts on one with `.ai N`: execution is the
+default, while `--copy` copies its SQL and `--show` reveals it without execution.
 
 The agent cannot read graph execution state, crawl or schedule control state, inspect live pages,
 search the public web, propose acquisition, or mutate Atlas. The expiring NATS query-status record

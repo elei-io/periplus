@@ -221,6 +221,7 @@ def seed_system_catalogue_fixtures(
                 slug=path.stem,
                 parameters=parameters,
                 sql=sql,
+                description=metadata.get("description"),
             )
             existing = session.get(CatalogueScalarMacroDefinition, created.id)
             if existing is None:

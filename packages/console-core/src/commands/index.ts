@@ -1,5 +1,6 @@
 import { helpCommand } from "./help.js";
 import {
+  confirmGraphRunCommand,
   listGraphsCommand,
   runGraphCommand,
   showGraphCommand,
@@ -22,11 +23,7 @@ import {
   statusCommand,
 } from "./general.js";
 import { CommandRegistry } from "../registry.js";
-import {
-  askAiCommand,
-  runAiSqlCommand,
-  showAiSqlCommand,
-} from "./ai.js";
+import { askAiCommand } from "./ai.js";
 
 let registry: CommandRegistry;
 
@@ -38,11 +35,10 @@ registry = new CommandRegistry([
   describeCommand,
   reloadCompletionCommand,
   askAiCommand,
-  showAiSqlCommand,
-  runAiSqlCommand,
   listGraphsCommand,
   showGraphCommand,
   runGraphCommand,
+  confirmGraphRunCommand,
   listRunsCommand,
   showRunCommand,
   followRunCommand,

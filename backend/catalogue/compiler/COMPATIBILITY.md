@@ -7,8 +7,9 @@ compiler.
 
 Atlas users write ordinary DuckDB SQL. This matrix defines the SQL breadth Atlas intends to
 optimize and the subset the compiler has proved today. It is a product contract and a test roadmap,
-not a list of SQL hints for users. Optimization failure never makes valid SQL invalid: interactive
-callers execute the original SQL and surface degraded performance. Materialization is stricter
+not a list of SQL hints for users. Ordinary optimization failure never makes valid SQL invalid:
+interactive callers execute the original SQL and surface degraded performance. An unbounded
+managed `elements` scan is the explicit exception and has no executable fallback. Materialization is stricter
 because Atlas must prove its refresh plan; unsupported SQL remains queryable but is not eligible
 for materialization.
 
@@ -18,7 +19,8 @@ All in-process user-authored catalogue SQL passes through the embedded
 `atlas_sql.AtlasCompiler` adapter. External callers use `atlas-sdk`; both return
 the same typed result:
 `invalid`, `unsupported`, `unchanged`, or `optimized`. Invalid SQL has no executable form.
-Unsupported interactive SQL retains the authored executable SQL and a warning. Unsupported
+Unsupported interactive SQL retains the authored executable SQL and a warning, except an
+unbounded managed `elements` scan, which has no executable fallback. Unsupported
 materialization SQL is ineligible. Expected coverage gaps are data, not exceptions; compiler
 defects still raise.
 
@@ -136,6 +138,7 @@ does not imply that the same query shape is incrementally materializable.
 | Predicate propagation across inner equijoins and `USING` | Implemented | Implemented | Qualified column equalities form transitive equivalence classes; derived predicates retain the authored filter and compose with scope pushdown. |
 | Predicate propagation across left joins | Implemented | Implemented | Preserved-side predicates constrain the nullable input through `ON`, a safe child scope, or a filtered physical wrapper; nullable-origin predicates never cross to the preserved side. |
 | DuckLake partition-aware scan predicates | Implemented | Partial | Existing lineage rewrites render proven predicates at managed physical scans; snapshot partition metadata and bound parameters identify prunable predicates. Transformed-partition-specific rendering awaits production physical metadata. |
+| Runtime document scope for managed `elements` scans | Implemented | Implemented | Direct finite `document_id` predicates remain single-stage. Selective managed relationship lineage produces a typed staged plan; separate literal lookups budget document metadata and hydrate only referenced element columns into one shared temporary relation on one transaction-pinned Quack session. Unprovable scans fail closed with `unbounded_relation`. |
 | Projection pruning in CTEs, derived tables, and expanded table macros | Implemented | Implemented | Unused direct-column outputs are removed to a fixed point; shared consumers are unioned and results, filters, joins, grouping, ordering, aggregates, and windows retain their dependencies. Wildcards, duplicate/explicit output names, positional clauses, distinctness, computed outputs, and volatile/unknown scopes are barriers. |
 | Repeated scalar-macro expression elimination | Implemented | Implemented | Exact repeated deterministic scalar projections, including expanded macros, are evaluated once per row through collision-free lateral scalar projections for a totally ordered single ordinary-table query. Filters, joins, limits, partial ordering, aggregates/windows, volatile or unknown functions, and unmanaged scans are barriers. |
 | Repeated derived-subquery elimination | Implemented | Implemented | Identical deterministic direct-column filtered scans used repeatedly by one totally ordered root query are hoisted into one collision-free generated `MATERIALIZED` CTE; relation aliases remain. Partial output ordering, limits, computed/volatile expressions, external scans, correlation, and differing definitions are barriers. |
@@ -158,11 +161,11 @@ does not imply that the same query shape is incrementally materializable.
 | Capability | Intended status | Implementation coverage | Notes |
 |---|---|---|---|
 | Structured optimization-unavailable diagnostic | Implemented | Implemented | The compiler returns SQL or raises `QueryOptimizationUnavailable`. |
-| Non-blocking performance diagnostics | Implemented | Implemented | Query status carries bounded advisory lint warnings plus structured compiler-fallback codes, messages, and documentation anchors. Diagnostics never block already validated SQL; applied rewrite proof remains a separate field. |
+| Non-blocking performance diagnostics | Implemented | Implemented | Query status carries bounded advisory lint warnings plus structured compiler-fallback codes, messages, and documentation anchors. Diagnostics do not block validated SQL except for the explicit unbounded managed-DOM guard; applied rewrite proof remains a separate field. |
 | Explain applied rewrites | Implemented | Implemented | An auxiliary interactive compilation result reports stable rule identifiers and bounded proof evidence only for rules that changed the query. The primary compiler contract remains SQL-or-raise, and execution status never exposes rewritten SQL. |
 | Compare authored and compiled execution | Implemented | Implemented | Explicit `compiler.analyze()` calls run bounded JSON `EXPLAIN ANALYZE` profiles and report latency, CPU, rows scanned, bytes read, peak memory, cardinality, and comparative ratios. It never runs during lint debounce. |
 | Estimate avoided scans or bytes without execution | Implemented | Partial | Compilation returns explicitly estimated rows and bytes avoided when coherent table size, partition, and distinct-count facts are supplied. Production estimates remain absent rather than guessed until Quack exposes those facts. |
-| Public interactive execution integration | Implemented | Implemented | The shared API/agent boundary compiles after read-only catalogue validation, executes optimized SQL on success, and catches only `QueryOptimizationUnavailable` to execute the already validated authored SQL unchanged. Definition snapshots remain a separate catalogue-aware enhancement. |
+| Public interactive execution integration | Implemented | Implemented | The shared API/agent boundary compiles after read-only catalogue validation and executes optimized SQL on success. Ordinary unsupported shapes use validated authored SQL unchanged; unbounded managed `elements` scans have no executable fallback. |
 | Query-status visibility of optimization outcome | Implemented | Implemented | The existing expiring query-state record stores `optimized`, `unchanged`, or `degraded_fallback` when the execution is registered; status consumers never need the internal rewritten SQL. |
 
 Interactive compilation does not add arbitrary filters or limits, alter duplicate behavior, change

@@ -5,6 +5,10 @@ semantics-preserving performance rewrites using knowledge that is unavailable to
 managed table identities, stable keys, macro definitions, DuckLake partitioning, and Quack
 execution boundaries.
 
+The compiler exists to make the evidence-to-analysis path safe and incremental, not to introduce a
+new query language. The cross-page and cross-domain workloads used to judge that path are defined
+in [Analytical benchmarks](ANALYTICAL_BENCHMARKS.md).
+
 The executable support contract and implementation status live beside the compiler in
 [`COMPATIBILITY.md`](../backend/catalogue/compiler/COMPATIBILITY.md).
 The final system-wide chokepoint, current caller inventory, and remaining
@@ -27,8 +31,12 @@ with AtlasClient(
 ) as atlas:
     result = atlas.compiler.compile(
         """
-        SELECT macros.readable_text(document_id, element_index)
+        SELECT element_index,
+               macros.readable_text(document_id, element_index)
         FROM elements
+        WHERE document_id =
+              '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+        ORDER BY element_index
         LIMIT 100
         """
     )
@@ -48,8 +56,12 @@ Lake-backed comparison is explicit because it executes both plans:
 
 ```python
 analysis = atlas.compiler.analyze("""
-    SELECT macros.readable_text(document_id, element_index)
+    SELECT element_index,
+           macros.readable_text(document_id, element_index)
     FROM elements
+    WHERE document_id =
+          '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+    ORDER BY element_index
     LIMIT 100
 """)
 
@@ -609,6 +621,29 @@ During bounded execution, the materialization purpose supplies the selected key 
 compiler renders them as typed direct literal predicates—including native UUID literals—in every
 directly bound scan. This is required for current DuckLake partition pruning. Validation can
 compile against the changed-key relation contract without reading data.
+
+## Interactive document scoping
+
+`elements` is the exceptional interactive relation whose global logical row count makes an
+unchanged fallback unsafe. Users still write ordinary DuckDB SQL. The compiler accepts either:
+
+- a finite literal `document_id` predicate at every physical `elements` scan; or
+- an inner-equijoin lineage from every `elements.document_id` to a selective managed source whose
+  canonical relationship targets `documents.document_id`.
+
+For the second form, compilation returns a typed document-scope plan as well as executable SQL. The
+plan resolves distinct document IDs from the element-free source, performs a second literal
+`documents.document_id IN (...)` lookup to obtain the authoritative `element_count` budget, and
+replaces every physical `elements` alias with one shared temporary relation containing only the
+columns used by the query. Runtime executes scope
+resolution, hydration, and the user query on one session-affine Quack client inside one snapshot
+transaction that performs no lake mutation, so every stage observes one DuckLake snapshot.
+
+The default ceiling is 10,000 documents and 50,000,000 elements. Scope resolution requests one
+extra document so an over-budget result is rejected deterministically before DOM hydration.
+Unprovable or over-budget scans fail closed with `unbounded_relation`; this is the deliberate
+exception to interactive authored-SQL fallback. The compiler never infers scope from names,
+arbitrary joins, or user hints.
 
 ## Test-driven extension
 

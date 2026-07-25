@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 from uuid import uuid4
 
 from control import catalogue_fixtures
@@ -27,6 +27,45 @@ def _catalogue() -> MagicMock:
 
 
 class ManagedDefinitionStoreTests(unittest.TestCase):
+    def test_scalar_macro_fixture_passes_description_to_managed_definition(
+        self,
+    ) -> None:
+        catalogue = _catalogue()
+        session = MagicMock()
+        session.scalar.return_value = None
+        session.scalars.return_value = []
+        definition = SimpleNamespace(fixture_path=None)
+        session.get.return_value = definition
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fixture = root / "scalar_macros" / "normalize.sql"
+            fixture.parent.mkdir(parents=True)
+            fixture.write_text(
+                "-- atlas:description=Normalize a value.\n"
+                "CREATE OR REPLACE MACRO normalize(value) AS value;",
+                encoding="utf-8",
+            )
+            with patch.object(
+                catalogue_fixtures,
+                "create_scalar_macro",
+                return_value=SimpleNamespace(id=uuid4()),
+            ) as create_scalar_macro:
+                catalogue_fixtures.seed_system_catalogue_fixtures(
+                    session,
+                    catalogue,
+                    root,
+                )
+
+        create_scalar_macro.assert_called_once_with(
+            session,
+            ANY,
+            slug="normalize",
+            parameters=["value"],
+            sql="value",
+            description="Normalize a value.",
+        )
+        self.assertEqual(definition.fixture_path, "scalar_macros/normalize.sql")
+
     def test_view_list_uses_remote_metadata_and_describes_columns(self) -> None:
         catalogue = _catalogue()
         catalogue.trusted_remote_rows.side_effect = [

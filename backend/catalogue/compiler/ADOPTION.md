@@ -19,9 +19,10 @@ The caller supplies an execution purpose and receives one typed decision:
 - `optimized`: Atlas produced equivalent executable SQL and explains every
   applied rewrite.
 
-For interactive purposes, `unsupported` always retains the valid authored SQL
-as the executable fallback. Compiler coverage must never become a second SQL
-validity gate. Materialization is deliberately stricter: Atlas may create or
+For interactive purposes, `unsupported` retains the valid authored SQL as the
+executable fallback, except when the managed `elements` relation has no proven
+document scope. That explicit safety guard has no executable fallback.
+Materialization is deliberately stricter: Atlas may create or
 refresh a materialization only when the selected refresh strategy has a
 successful compiler proof.
 
@@ -67,7 +68,7 @@ Every SQL call site must be classified into one of these classes:
 
 | Class | Required path |
 |---|---|
-| Interactive user SQL | Validate the public read boundary, compile with the interactive purpose, then execute compiled SQL or valid authored fallback through the bounded runtime. |
+| Interactive user SQL | Validate the public read boundary, compile with the interactive purpose, then execute compiled SQL or valid authored fallback through the bounded runtime. Managed `elements` scans additionally require a direct or relationship-derived document scope. |
 | Stored user query | Compile for diagnostics when created or edited; compile again against the current DuckLake definition revision when executed. Saving valid unsupported SQL remains allowed. |
 | User view or macro definition | Compile/analyze the definition with a definition purpose before DDL. Unsupported optimization does not invalidate otherwise valid DuckDB DDL, but materialization eligibility remains unavailable. |
 | Materialization SQL | Compile with full, keyed, or append purpose. No unproved execution fallback is permitted for creation or refresh. |
@@ -194,8 +195,8 @@ Atlas can call compiler adoption complete when:
 1. every user-influenced SQL surface in the table above is adopted;
 2. the direct-execution audit has no unclassified production call sites;
 3. DuckLake is the only compiler source for macro and view definitions;
-4. interactive unsupported SQL always remains executable after public
-   validation;
+4. interactive unsupported SQL remains executable after public validation
+   except for the explicit unbounded managed-DOM safety guard;
 5. materialization never executes an unproved refresh plan;
 6. graph-edge semantics and pinned snapshots are preserved through their
    compiler purpose;

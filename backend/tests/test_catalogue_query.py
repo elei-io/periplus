@@ -5,14 +5,17 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from api.app import _preflight_catalogue_query
 from api.routers.catalogue import (
     CatalogueCompileRequest,
     CatalogueSqlRequest,
     compile_sql,
     compile_sql_result,
 )
-from catalogue.compiler import InteractiveQueryPurpose, TableMacroDefinition
+from catalogue.compiler import (
+    InteractiveQueryPurpose,
+    TableMacroDefinition,
+)
+from tests.test_catalogue_compiler_physical import _dom_metadata
 from repository.catalogue.interactive import prepare_interactive_query
 from repository.catalogue.compiler_definitions import (
     CatalogueCompilerDefinitions,
@@ -25,7 +28,6 @@ from repository.catalogue.query import (
     classify_select,
     lint_select,
     prepare_catalogue_query,
-    referenced_catalogue_views,
     validate_interactive_catalogue_statement,
 )
 
@@ -210,53 +212,30 @@ class CatalogueQueryContractTests(unittest.TestCase):
                     catalogue_schema="main",
                 )
 
-    def test_explicit_public_view_references_are_identified(self) -> None:
-        statement = classify_catalogue_statement(
-            "WITH local AS (SELECT 1) "
-            "SELECT * FROM views.page_links JOIN local ON true"
-        )
-
-        self.assertEqual(
-            referenced_catalogue_views(statement),
-            frozenset({"page_links"}),
-        )
-
-
-class CatalogueQueryPreflightTests(unittest.IsolatedAsyncioTestCase):
-    async def test_failed_materialization_blocks_source_view_fallback(self) -> None:
-        class Control:
-            async def run(self, _operation):
-                return [
-                    (
-                        "page_links",
-                        "failed",
-                        'Table with name "page_links" already exists!',
-                    )
-                ]
-
-        statement = classify_catalogue_statement(
-            "SELECT count(*) FROM views.page_links"
+class InteractiveQueryCompilationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_public_boundary_rejects_an_unbounded_element_scan(self) -> None:
+        runtime = SimpleNamespace(
+            config=SimpleNamespace(
+                catalogue_alias="atlas",
+                catalogue_schema="main",
+            ),
+            query_bucket=object(),
+            preflight=AsyncMock(),
+            prepare=AsyncMock(),
         )
 
         with self.assertRaisesRegex(
-            CatalogueQueryExecutionError,
-            "views.page_links materialization is failed",
+            CatalogueQueryError,
+            "must constrain document_id",
         ):
-            await _preflight_catalogue_query(Control(), statement)  # type: ignore[arg-type]
+            await prepare_interactive_query(
+                runtime,  # type: ignore[arg-type]
+                "SELECT attributes FROM elements LIMIT 100",
+                purpose=InteractiveQueryPurpose(metadata=_dom_metadata()),
+            )
 
-    async def test_dynamic_views_without_unavailable_incarnation_are_allowed(
-        self,
-    ) -> None:
-        class Control:
-            async def run(self, _operation):
-                return []
+        runtime.prepare.assert_not_awaited()
 
-        statement = classify_catalogue_statement("SELECT * FROM views.documents")
-
-        await _preflight_catalogue_query(Control(), statement)  # type: ignore[arg-type]
-
-
-class InteractiveQueryCompilationTests(unittest.IsolatedAsyncioTestCase):
     async def test_public_boundary_executes_expanded_stored_table_macro(
         self,
     ) -> None:

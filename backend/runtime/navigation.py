@@ -13,7 +13,7 @@ from repository.objects.store import ObjectStore
 from runtime.navigation_contract import EdgeSelectionPackage, NavigationPackage
 
 NAVIGATION_RECIPE = sha256(
-    f"{PARSER_NAME}:{PARSER_VERSION}:{PARSER_OPTIONS_HASH}:page-links-v5".encode()
+    f"{PARSER_NAME}:{PARSER_VERSION}:{PARSER_OPTIONS_HASH}:page-links-v6".encode()
 ).hexdigest()
 _EVENT_NAMESPACE = UUID("f0d15d8a-a735-48b7-a576-a08f85ecac74")
 

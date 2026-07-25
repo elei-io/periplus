@@ -9,6 +9,8 @@ import type {
   AiSqlSuggestion,
   CommandResult,
   CompletionItem,
+  PendingGraphSubmission,
+  SqlQuerySnapshot,
 } from "./types.js";
 
 export class AtlasConsole {
@@ -18,10 +20,12 @@ export class AtlasConsole {
   readonly status: LiveConsoleStatus;
   readonly history: string[] = [];
   private readonly session: {
-    history: readonly string[];
+    history: string[];
     lastRunId?: string;
     aiHistory: import("./types.js").AiMessage[];
     lastAiSuggestions?: AiSqlSuggestion[];
+    lastSqlQuery?: SqlQuerySnapshot;
+    pendingGraphSubmission?: PendingGraphSubmission;
   };
 
   constructor(private readonly api: AtlasApi) {
@@ -62,6 +66,7 @@ export class AtlasConsole {
           input,
           controller.signal,
         );
+        this.session.lastSqlQuery = { sql: input };
         return {
           kind: "table",
           columns: result.columns,

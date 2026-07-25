@@ -46,6 +46,7 @@ from .result import (
     SqlCompilationOutcome,
     SqlCompilationPurpose,
     SqlCompilationResult,
+    SqlDocumentScopePlan,
     compile_catalogue_sql,
 )
 from .syntax import CatalogueQueryError, classify_select
@@ -78,6 +79,7 @@ __all__ = [
     "SqlCompilationOutcome",
     "SqlCompilationPurpose",
     "SqlCompilationResult",
+    "SqlDocumentScopePlan",
     "ScanEstimate",
     "TableMacroDefinition",
     "ViewDefinition",

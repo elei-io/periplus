@@ -262,18 +262,19 @@ Atlas AI is also an ordinary shared command:
 
 ```text
 .ai "How are book prices distributed?" [--context 6]
-.ai show 2
-.ai run 2
+.ai 2
+.ai 2 --copy
+.ai 2 --show
 ```
 
 The first command sends at most the selected number of recent user/assistant
 messages, held only by the current `AtlasConsole` instance. `--context 0`
 starts a context-free turn. Tool completions stream as timed progress messages.
 The terminal response is concise prose followed by at most three numbered SQL
-suggestion titles and descriptions; it does not inline the SQL. `.ai show N`
-reveals one suggestion and `.ai run N` executes its authored SQL through the
-normal interactive catalogue boundary. The number may be omitted from `.ai run`
-when there is exactly one suggestion. A suggestion is registered only after the
+suggestion titles and descriptions; it does not inline the SQL. `.ai N`
+executes its authored SQL through the normal interactive catalogue boundary,
+`.ai N --copy` copies it, and `.ai N --show` reveals it without execution.
+A suggestion is registered only after the
 read-only validator and compiler accept it without errors or warnings. The agent
 never executes that handoff implicitly. Atlas API, Postgres, and NATS do not
 persist prompts, responses, suggestions, or chat context. Browser-local command
@@ -292,6 +293,8 @@ Graph runs are the first complete operational workflow:
 .graphs list
 .graphs show <slug>
 .graphs run <slug> --url <url> [--url <url> ...] [--max-crawls N]
+.graphs run <slug> --from-result <column> [--max-crawls N]
+.graphs confirm
 
 .runs list
 .runs show <id|last>
@@ -303,12 +306,27 @@ Graph runs are the first complete operational workflow:
 .runs open <id|last>
 ```
 
+Every graph submission is first held in the console session and displayed with
+its distinct URL count, rejected and duplicate counts, and a five-URL sample.
+`.graphs confirm` submits exactly that frozen URL list.
+
+`--from-result` refers to the latest successfully executed SQL statement, not
+its displayed rows. Atlas re-executes the statement through the catalogue query
+boundary, reads the selected column, and then applies the 10,000-root graph-run
+limit. This avoids the AI investigation tool's 200-row display bound. Both an
+ordinary SQL statement and `.ai N` replace the session's latest SQL
+statement.
+
 Starting or inspecting a run selects it for the current session. Subsequent
 commands may use `last`, avoiding run-ID copying through the common
 start/follow/failures loop:
 
 ```text
 atlas> .graphs run single-page --url https://example.com --max-crawls 1
+Ready to start single-page with 1 distinct root URL.
+Confirm with .graphs confirm
+
+atlas> .graphs confirm
 Started single-page run 0198….
 Follow with .runs follow 0198…
 
@@ -317,9 +335,11 @@ Following run 0198…
 ```
 
 `.runs follow` consumes server-sent progress snapshots and yields structured
-table events until the terminal run record arrives. Ctrl-C aborts the event
-request without cancelling the graph run; `.runs cancel last` is the explicit
-durable cancellation operation. `.graphs show` and `.runs open` return
+table events until the terminal run record arrives. Interactive terminals redraw
+each progress table in place; JSON and non-interactive consumers retain every
+snapshot. Ctrl-C aborts the event request without cancelling the graph run;
+`.runs cancel last` is the explicit durable cancellation operation. `.graphs show`
+and `.runs open` return
 navigation actions, so the Node adapter opens Atlas Web and the web adapter
 routes in place.
 

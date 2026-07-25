@@ -31,6 +31,7 @@ export function renderConsoleResult(
   }
   if (result.kind === "message") return `${result.text}\r\n`
   if (result.kind === "navigate") return `${BLUE}${result.label}${RESET}\r\n`
+  if (result.kind === "copy") return `${result.label}\r\n`
   if (result.kind === "clear") return "\u001b[2J\u001b[H"
 
   const displayedRows = result.rows.slice(0, MAXIMUM_DISPLAY_ROWS)
@@ -189,7 +190,7 @@ function renderAssistant(
       )
       .join("\r\n")
     const actions = result.suggestions?.length
-      ? `${DIM}└ .ai show <number> · .ai run <number>${RESET}\r\n\r\n`
+      ? `${DIM}└ .ai <number> · --copy · --show${RESET}\r\n\r\n`
       : ""
     return (
       `${DIM}│${RESET}\r\n${answer}\r\n` +
@@ -206,7 +207,7 @@ function renderAssistant(
     `${DIM}│${RESET}\r\n` +
     `${lines.map((line) => `${DIM}│${RESET} ${line}`).join("\r\n")}\r\n` +
     `${DIM}│${RESET}\r\n${sql}\r\n` +
-    `${DIM}└ Run with ${result.sqlRunCommand ?? ".ai run"}${RESET}\r\n\r\n`
+    `${DIM}└ Run with ${result.sqlRunCommand ?? ".ai <number>"}${RESET}\r\n\r\n`
   )
 }
 

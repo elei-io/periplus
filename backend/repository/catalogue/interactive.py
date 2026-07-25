@@ -23,6 +23,7 @@ from repository.catalogue.quack_runtime import (
     QuackQueryRuntime,
 )
 from repository.catalogue.query import (
+    CatalogueQueryError,
     ClassifiedCatalogueStatement,
     validate_interactive_catalogue_statement,
 )
@@ -59,7 +60,6 @@ async def prepare_interactive_query(
         catalogue_alias=runtime.config.catalogue_alias,
         catalogue_schema=runtime.config.catalogue_schema,
     )
-    await runtime.preflight(statement)
     compilation = compilation or (compiler or AtlasCompiler.embedded()).compile(
         statement.sql,
         purpose=purpose or InteractiveQueryPurpose(),
@@ -69,6 +69,8 @@ async def prepare_interactive_query(
         raise CatalogueQueryExecutionError(
             "The prepared compilation does not match the validated SQL."
         )
+    if compilation.valid and compilation.executable_sql is None:
+        raise CatalogueQueryError(compilation.diagnostics[-1].message)
     if not compilation.valid or compilation.executable_sql is None:
         raise CatalogueQueryExecutionError(
             compilation.diagnostics[-1].message

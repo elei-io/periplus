@@ -44,6 +44,7 @@ from .models import (
     CompilationOutcome,
     CompilationPurposeName,
     DefinitionDependency,
+    DocumentScopePlan,
     ScanEstimate,
 )
 
@@ -72,6 +73,7 @@ __all__ = [
     "CompilationResult",
     "COMPILER_VERSION",
     "DefinitionDependency",
+    "DocumentScopePlan",
     "ColumnStatistics",
     "FullMaterializationPurpose",
     "GraphEdgePurpose",

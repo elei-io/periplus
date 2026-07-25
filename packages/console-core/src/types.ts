@@ -197,6 +197,17 @@ export interface CatalogueQueryResult {
   rows: unknown[][];
 }
 
+export interface SqlQuerySnapshot {
+  sql: string;
+}
+
+export interface PendingGraphSubmission {
+  graphId: string;
+  graphSlug: string;
+  urls: string[];
+  maxCrawls?: number;
+}
+
 export interface CatalogueQueryRuntime {
   transport: "api";
   mutation_policy: "read_only";
@@ -355,10 +366,16 @@ export type AtomicCommandResult =
       columns: string[];
       rows: unknown[][];
       summary?: string;
+      transient?: boolean;
     }
   | {
       kind: "navigate";
       path: string;
+      label: string;
+    }
+  | {
+      kind: "copy";
+      text: string;
       label: string;
     }
   | {
@@ -376,10 +393,12 @@ export interface CommandContext {
   api: AtlasApi;
   signal: AbortSignal;
   session: {
-    history: readonly string[];
+    history: string[];
     lastRunId?: string;
     aiHistory?: AiMessage[];
     lastAiSuggestions?: AiSqlSuggestion[];
+    lastSqlQuery?: SqlQuerySnapshot;
+    pendingGraphSubmission?: PendingGraphSubmission;
   };
   completion: {
     reload(signal?: AbortSignal): Promise<CatalogueMetadata>;
