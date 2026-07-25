@@ -32,6 +32,7 @@ Requirements:
 
 - Python 3.14 and [uv](https://docs.astral.sh/uv/) for backend development.
 - Node.js 22 or newer and npm for the Atlas console and web development.
+- A C11 compiler, CMake, Make, and Git submodules for DuckDB extension development.
 - Docker with Docker Compose for Atlas application processes.
 - Remote Postgres, an Atlas NATS account, a Basin CDC NATS account, DuckBasin, an
   S3-compatible raw-object repository, and a standard CDP endpoint.
@@ -42,6 +43,19 @@ make sync
 make check
 make compose-up
 ```
+
+Initialize submodules and build the experimental stable-C-API DuckDB extension
+separately when working on catalogue compilation:
+
+```sh
+git submodule update --init --recursive
+make duckdb-extension-configure
+make duckdb-extension-check
+```
+
+The extension package lives under
+[`packages/atlas-duckdb-extension`](packages/atlas-duckdb-extension/) and is
+not yet part of the Atlas runtime or the default `make check`.
 
 Compose starts only Atlas processes, exposes the web UI at `http://127.0.0.1:8080`, and exposes
 the API at `http://127.0.0.1:8000`. Postgres, both NATS accounts, DuckLake storage and compute,
@@ -122,6 +136,7 @@ Useful development commands:
 ```sh
 make check                  # compile backend modules and run unit tests
 make console-check          # typecheck and test the shared console and terminal CLI
+make duckdb-extension-check # build and load-test the stable-C-API extension
 make acquisition-worker     # run `atlas-worker acquisition`
 make ingestion-worker       # run `atlas-worker ingestion`
 make catalogue-relay-worker # run `atlas-worker catalogue-relay`

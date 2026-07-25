@@ -1,4 +1,4 @@
-.PHONY: sync check console-check sdk-check setup catalogue-check catalogue-benchmark catalogue-load-synthetic analytical-ground-truth-test analytical-ground-truth-plan analytical-ground-truth-load analytical-ground-truth-verify analytical-ground-truth-run analytical-ground-truth-claim-plan analytical-ground-truth-claim-load analytical-ground-truth-claim-verify analytical-ground-truth-claim-run verify-remote-runtime worker-independence-smoke worker-horizontal-smoke reliability-check docs-diagrams api acquisition-worker ingestion-worker catalogue-relay-worker materialization-worker housekeeping-worker cli db-revision compose-up compose-down
+.PHONY: sync check console-check sdk-check duckdb-extension-configure duckdb-extension-check duckdb-extension-release duckdb-extension-clean setup catalogue-check catalogue-benchmark catalogue-load-synthetic analytical-ground-truth-test analytical-ground-truth-plan analytical-ground-truth-load analytical-ground-truth-verify analytical-ground-truth-run analytical-ground-truth-claim-plan analytical-ground-truth-claim-load analytical-ground-truth-claim-verify analytical-ground-truth-claim-run verify-remote-runtime worker-independence-smoke worker-horizontal-smoke reliability-check docs-diagrams api acquisition-worker ingestion-worker catalogue-relay-worker materialization-worker housekeeping-worker cli db-revision compose-up compose-down
 
 sync:
 	cd backend && uv sync
@@ -17,6 +17,19 @@ sdk-check:
 console-check:
 	npm run check:console
 	npm run test:console
+
+duckdb-extension-configure:
+	$(MAKE) -C packages/atlas-duckdb-extension configure
+
+duckdb-extension-check: duckdb-extension-configure
+	$(MAKE) -C packages/atlas-duckdb-extension debug
+	$(MAKE) -C packages/atlas-duckdb-extension test_debug
+
+duckdb-extension-release: duckdb-extension-configure
+	$(MAKE) -C packages/atlas-duckdb-extension release
+
+duckdb-extension-clean:
+	$(MAKE) -C packages/atlas-duckdb-extension clean_all
 
 setup:
 	cd backend && uv run atlas-setup

@@ -1,0 +1,15 @@
+# name: test/sql/atlas.test
+# description: Atlas stable C API extension smoke test
+# group: [atlas]
+
+statement error
+SELECT atlas_extension_api();
+----
+Catalog Error: Scalar Function with name atlas_extension_api does not exist!
+
+require atlas
+
+query T
+SELECT atlas_extension_api();
+----
+stable-c-api

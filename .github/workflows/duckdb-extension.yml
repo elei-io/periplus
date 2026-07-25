@@ -1,0 +1,67 @@
+name: DuckDB extension
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/duckdb-extension.yml"
+      - ".gitmodules"
+      - "Makefile"
+      - "packages/atlas-duckdb-extension/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/duckdb-extension.yml"
+      - ".gitmodules"
+      - "Makefile"
+      - "packages/atlas-duckdb-extension/**"
+  workflow_dispatch:
+
+concurrency:
+  group: duckdb-extension-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  stable:
+    name: DuckDB 1.5.4 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Configure, build, and test
+        working-directory: packages/atlas-duckdb-extension
+        run: make configure debug test_debug
+
+  duckdb-main:
+    name: DuckDB prerelease compatibility
+    runs-on: macos-14
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Test stable ABI against DuckDB prerelease
+        working-directory: packages/atlas-duckdb-extension
+        run: DUCKDB_TEST_VERSION=main make configure debug test_debug
