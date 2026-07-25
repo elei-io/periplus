@@ -230,11 +230,43 @@ class InteractiveQueryCompilationTests(unittest.IsolatedAsyncioTestCase):
         ):
             await prepare_interactive_query(
                 runtime,  # type: ignore[arg-type]
-                "SELECT attributes FROM elements LIMIT 100",
+                (
+                    "SELECT attributes FROM elements "
+                    "WHERE tag = 'article' LIMIT 100"
+                ),
                 purpose=InteractiveQueryPurpose(metadata=_dom_metadata()),
             )
 
         runtime.prepare.assert_not_awaited()
+
+    async def test_public_boundary_executes_a_direct_bounded_element_scan(
+        self,
+    ) -> None:
+        runtime = SimpleNamespace(
+            config=SimpleNamespace(
+                catalogue_alias="atlas",
+                catalogue_schema="main",
+            ),
+            query_bucket=object(),
+            preflight=AsyncMock(),
+            prepare=AsyncMock(return_value=object()),
+        )
+        create_query = AsyncMock()
+        sql = "SELECT * FROM elements LIMIT 10"
+
+        with patch(
+            "repository.catalogue.interactive.create_catalogue_query",
+            new=create_query,
+        ):
+            await prepare_interactive_query(
+                runtime,  # type: ignore[arg-type]
+                sql,
+                purpose=InteractiveQueryPurpose(metadata=_dom_metadata()),
+            )
+
+        compilation = runtime.prepare.await_args.kwargs["compilation"]
+        self.assertEqual(compilation.executable_sql, sql)
+        self.assertTrue(compilation.supported)
 
     async def test_public_boundary_executes_expanded_stored_table_macro(
         self,

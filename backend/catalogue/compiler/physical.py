@@ -13,6 +13,8 @@ from .metadata import (
     ManagedTableMetadata,
     ScanEstimate,
 )
+from .metadata_aggregates import metadata_only_row_count_table
+from .streaming_limit import direct_streaming_limit
 
 
 def estimate_compilation(
@@ -109,8 +111,15 @@ def _estimate_query(
     parameters: dict[str, object],
 ) -> tuple[ScanEstimate, ...]:
     query = parse_one(sql, dialect="duckdb")
+    metadata_count_table = metadata_only_row_count_table(query)
+    streaming_limit = direct_streaming_limit(
+        query,
+        bound_parameters=parameters,
+    )
     scans: list[ScanEstimate] = []
     for table in query.find_all(exp.Table):
+        if table is metadata_count_table:
+            continue
         managed = metadata.table(
             table.name,
             schema_name=table.db or None,
@@ -124,16 +133,39 @@ def _estimate_query(
             managed,
             parameters,
         )
-        rows = (
-            max(1, round(managed.estimated_rows * selectivity))
-            if managed.estimated_rows is not None
-            else None
-        )
-        bytes_read = (
-            max(1, round(managed.file_size_bytes * selectivity))
-            if managed.file_size_bytes is not None
-            else None
-        )
+        if streaming_limit is not None and table is streaming_limit.table:
+            rows = streaming_limit.maximum_rows_read
+            if managed.estimated_rows is not None:
+                rows = min(rows, managed.estimated_rows)
+            bytes_read = (
+                (
+                    0
+                    if rows == 0
+                    else max(
+                        1,
+                        round(
+                            managed.file_size_bytes
+                            * rows
+                            / managed.estimated_rows
+                        ),
+                    )
+                )
+                if managed.file_size_bytes is not None
+                and managed.estimated_rows is not None
+                and managed.estimated_rows > 0
+                else None
+            )
+        else:
+            rows = (
+                max(1, round(managed.estimated_rows * selectivity))
+                if managed.estimated_rows is not None
+                else None
+            )
+            bytes_read = (
+                max(1, round(managed.file_size_bytes * selectivity))
+                if managed.file_size_bytes is not None
+                else None
+            )
         scans.append(
             ScanEstimate(
                 relation=managed.qualified_name,

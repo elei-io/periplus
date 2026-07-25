@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from datetime import timedelta
 import json
 import os
@@ -21,21 +22,63 @@ if str(BACKEND_ROOT) not in sys.path:
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
+from benchmarks.analytical_ground_truth import claim_lineage  # noqa: E402
+from benchmarks.analytical_ground_truth import pack as product_market  # noqa: E402
 from benchmarks.analytical_ground_truth.pack import (  # noqa: E402
-    GRAPH_ID,
-    GRAPH_NODE_ID,
-    GRAPH_RUN_ID,
-    POLICY,
-    POLICY_HASH,
     STEP_CONFIG,
     STEP_CONFIG_HASH,
-    expected_counts,
-    expected_rows,
-    attempts_for,
-    manifest,
-    normalized_result_rows,
-    observations,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class Scenario:
+    name: str
+    graph_id: Any
+    graph_run_id: Any
+    graph_node_id: Any
+    policy: dict[str, Any]
+    policy_hash: str
+    manifest: Any
+    observations: Any
+    expected_counts: Any
+    expected_rows: Any
+    attempts_for: Any
+    normalized_result_rows: Any
+    query_filename: str
+
+
+SCENARIOS = {
+    "product_market": Scenario(
+        name="product_market",
+        graph_id=product_market.GRAPH_ID,
+        graph_run_id=product_market.GRAPH_RUN_ID,
+        graph_node_id=product_market.GRAPH_NODE_ID,
+        policy=product_market.POLICY,
+        policy_hash=product_market.POLICY_HASH,
+        manifest=product_market.manifest,
+        observations=product_market.observations,
+        expected_counts=product_market.expected_counts,
+        expected_rows=product_market.expected_rows,
+        attempts_for=product_market.attempts_for,
+        normalized_result_rows=product_market.normalized_result_rows,
+        query_filename="product_market.sql",
+    ),
+    "claim_lineage": Scenario(
+        name="claim_lineage",
+        graph_id=claim_lineage.GRAPH_ID,
+        graph_run_id=claim_lineage.GRAPH_RUN_ID,
+        graph_node_id=claim_lineage.GRAPH_NODE_ID,
+        policy=claim_lineage.POLICY,
+        policy_hash=claim_lineage.POLICY_HASH,
+        manifest=claim_lineage.manifest,
+        observations=claim_lineage.observations,
+        expected_counts=claim_lineage.expected_counts,
+        expected_rows=claim_lineage.expected_rows,
+        attempts_for=claim_lineage.attempts_for,
+        normalized_result_rows=claim_lineage.normalized_result_rows,
+        query_filename="claim_lineage.sql",
+    ),
+}
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -43,6 +86,11 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "command",
         choices=("plan", "load", "verify", "run"),
+    )
+    parser.add_argument(
+        "--scenario",
+        choices=tuple(SCENARIOS),
+        default="product_market",
     )
     parser.add_argument("--lake", default="atlas_test")
     parser.add_argument(
@@ -62,13 +110,18 @@ def main() -> None:
         allow_load_lake=arguments.allow_load_lake,
     )
     os.environ["DUCKBASIN_LAKE"] = arguments.lake
-    source = observations(filler_elements=arguments.filler_elements)
+    scenario = SCENARIOS[arguments.scenario]
+    source = scenario.observations(
+        filler_elements=arguments.filler_elements
+    )
     if arguments.command == "plan":
+        scenario_manifest = scenario.manifest()
         _emit(
             {
                 "lake": arguments.lake,
-                "manifest": manifest(),
-                "expected_counts": expected_counts(source),
+                "scenario": scenario.name,
+                "manifest": scenario_manifest,
+                "expected_counts": scenario.expected_counts(source),
                 "distinct_html_documents": len(
                     {
                         item.document_id
@@ -76,11 +129,18 @@ def main() -> None:
                         if item.document_id is not None
                     }
                 ),
-                "expected_result_rows": len(expected_rows(source)),
+                "expected_result_rows": len(
+                    scenario.expected_rows(source)
+                ),
                 "filler_elements": (
                     arguments.filler_elements
                     if arguments.filler_elements is not None
-                    else manifest()["default_filler_elements"]
+                    else (
+                        scenario_manifest.get("default_filler_elements")
+                        or scenario_manifest.get(
+                            "default_filler_paragraphs"
+                        )
+                    )
                 ),
             }
         )
@@ -88,14 +148,14 @@ def main() -> None:
     if arguments.batch_size <= 0 or arguments.batch_size > 250:
         raise SystemExit("--batch-size must be between 1 and 250")
     if arguments.command == "load":
-        _load(source, batch_size=arguments.batch_size)
+        _load(scenario, source, batch_size=arguments.batch_size)
     elif arguments.command == "verify":
-        _verify(source)
+        _verify(scenario, source)
     else:
-        _run(source)
+        _run(scenario, source)
 
 
-def _load(source, *, batch_size: int) -> None:
+def _load(scenario: Scenario, source, *, batch_size: int) -> None:
     from repository import repository_ingestor_from_env
     from repository.catalogue import (
         CrawlAttemptRecord,
@@ -112,11 +172,17 @@ def _load(source, *, batch_size: int) -> None:
         "raw_objects": 0,
     }
     with repository_ingestor_from_env() as ingestor:
-        expected = expected_counts(source)
+        expected = scenario.expected_counts(source)
         expected_crawl_ids = {item.crawl_id for item in source}
-        existing_crawl_ids = _existing_pack_crawl_ids(ingestor.catalogue)
+        existing_crawl_ids = _existing_pack_crawl_ids(
+            ingestor.catalogue,
+            scenario.graph_id,
+        )
         if existing_crawl_ids == expected_crawl_ids:
-            actual = _current_counts(ingestor.catalogue)
+            actual = _current_counts(
+                ingestor.catalogue,
+                scenario.graph_id,
+            )
             if actual != expected:
                 raise SystemExit(
                     "all deterministic crawls exist but related counts differ:\n"
@@ -173,7 +239,7 @@ def _load(source, *, batch_size: int) -> None:
                 normalized = NormalizedUrl.from_normalized_url(
                     item.requested_url
                 )
-                attempt_count = attempts_for(item)
+                attempt_count = scenario.attempts_for(item)
                 completed_at = item.captured_at + timedelta(milliseconds=200)
                 started_at = item.captured_at - timedelta(
                     seconds=attempt_count
@@ -181,9 +247,9 @@ def _load(source, *, batch_size: int) -> None:
                 crawl = CrawlRecord(
                     crawl_id=item.crawl_id,
                     document_id=item.document_id,
-                    graph_id=GRAPH_ID,
-                    graph_run_id=GRAPH_RUN_ID,
-                    graph_node_id=GRAPH_NODE_ID,
+                    graph_id=scenario.graph_id,
+                    graph_run_id=scenario.graph_run_id,
+                    graph_node_id=scenario.graph_node_id,
                     requested_url=item.requested_url,
                     url=item.requested_url,
                     scheme=normalized.scheme,
@@ -206,8 +272,8 @@ def _load(source, *, batch_size: int) -> None:
                         else None
                     ),
                     policy_schema_version=1,
-                    effective_policy_hash=POLICY_HASH,
-                    effective_policy=POLICY,
+                    effective_policy_hash=scenario.policy_hash,
+                    effective_policy=scenario.policy,
                     outcome=item.outcome,
                     failure_code=(
                         "http_503" if item.outcome == "failed" else None
@@ -302,7 +368,10 @@ def _load(source, *, batch_size: int) -> None:
                 },
                 compact=True,
             )
-        actual = _current_counts(ingestor.catalogue)
+        actual = _current_counts(
+            ingestor.catalogue,
+            scenario.graph_id,
+        )
         if actual != expected:
             raise SystemExit(
                 "post-load counts differ from the frozen pack:\n"
@@ -373,12 +442,12 @@ def _attempt_records(
     return tuple(records)
 
 
-def _verify(source) -> None:
+def _verify(scenario: Scenario, source) -> None:
     from repository.catalogue import catalogue_from_env
 
-    expected = expected_counts(source)
+    expected = scenario.expected_counts(source)
     with catalogue_from_env(threads=4, memory_limit="4GB") as catalogue:
-        actual = _current_counts(catalogue)
+        actual = _current_counts(catalogue, scenario.graph_id)
     if actual != expected:
         raise SystemExit(
             "ground-truth load verification failed:\n"
@@ -391,22 +460,22 @@ def _verify(source) -> None:
     _emit({"status": "verified", "counts": actual})
 
 
-def _existing_pack_crawl_ids(catalogue) -> set:
+def _existing_pack_crawl_ids(catalogue, graph_id) -> set:
     cursor = catalogue.trusted_connection.execute(
         "SELECT crawl_id FROM main.crawls WHERE graph_id = $graph_id",
-        {"graph_id": str(GRAPH_ID)},
+        {"graph_id": str(graph_id)},
     )
     return {row[0] for row in cursor.fetchall()}
 
 
-def _current_counts(catalogue) -> dict[str, int]:
+def _current_counts(catalogue, graph_id) -> dict[str, int]:
     crawl_cursor = catalogue.trusted_connection.execute(
         """
         SELECT crawl_id, document_id
         FROM main.crawls
         WHERE graph_id = $graph_id
         """,
-        {"graph_id": str(GRAPH_ID)},
+        {"graph_id": str(graph_id)},
     )
     crawl_rows = crawl_cursor.fetchall()
     crawl_ids = [row[0] for row in crawl_rows]
@@ -446,7 +515,7 @@ def _current_counts(catalogue) -> dict[str, int]:
     }
 
 
-def _run(source) -> None:
+def _run(scenario: Scenario, source) -> None:
     import httpx
     import pyarrow as pa
 
@@ -456,7 +525,7 @@ def _run(source) -> None:
         read_catalogue_compiler_definitions,
     )
 
-    sql = (PACK_ROOT / "queries" / "product_market.sql").read_text(
+    sql = (PACK_ROOT / "queries" / scenario.query_filename).read_text(
         encoding="utf-8"
     )
     negative_sql = (
@@ -478,7 +547,9 @@ def _run(source) -> None:
         compilation = compiler.compile(
             sql,
             purpose=definitions.interactive_purpose(),
-            coverage_source="analytical_ground_truth",
+            coverage_source=(
+                f"analytical_ground_truth_{scenario.name}"
+            ),
         )
         compile_seconds = time.perf_counter() - compile_started
         if not compilation.valid or compilation.executable_sql is None:
@@ -515,8 +586,8 @@ def _run(source) -> None:
             else None
         )
     execution_seconds = time.perf_counter() - execute_started
-    actual = normalized_result_rows(table.to_pylist())
-    expected = expected_rows(source)
+    actual = scenario.normalized_result_rows(table.to_pylist())
+    expected = scenario.expected_rows(source)
     if actual != expected:
         mismatch = next(
             (
@@ -540,6 +611,7 @@ def _run(source) -> None:
     _emit(
         {
             "status": "passed",
+            "scenario": scenario.name,
             "query_id": query_id,
             "query_state": query_state,
             "result_rows": len(actual),

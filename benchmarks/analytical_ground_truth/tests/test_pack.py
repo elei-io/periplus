@@ -140,6 +140,12 @@ class ProductMarketPackTests(unittest.TestCase):
         cli._validate_lake("atlas_test", allow_load_lake=False)
         cli._validate_lake("atlas_load", allow_load_lake=True)
 
+    def test_single_cli_exposes_both_frozen_scenarios(self) -> None:
+        self.assertEqual(
+            set(cli.SCENARIOS),
+            {"product_market", "claim_lineage"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,27 @@
+{
+  "comparison": "exact_rows",
+  "row_count": 3,
+  "expected_order": [
+    "Station A17|412.7|2026-06-03",
+    "Station B04|87.3|2026-06-04",
+    "Station C09|19.4|2026-06-05"
+  ],
+  "controls": {
+    "independent_consensus": {
+      "claim_key": "Station A17|412.7|2026-06-03",
+      "occurrences": 8,
+      "independent_origins": 8
+    },
+    "copied_reach": {
+      "claim_key": "Station B04|87.3|2026-06-04",
+      "occurrences": 12,
+      "independent_origins": 1,
+      "maximum_citation_depth": 4
+    },
+    "weak_repetition": {
+      "claim_key": "Station C09|19.4|2026-06-05",
+      "occurrences": 10,
+      "independent_origins": 1
+    }
+  }
+}

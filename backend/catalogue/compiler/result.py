@@ -160,6 +160,7 @@ def compile_catalogue_sql(
     normalized_authored: str | None = None
     compilation_sql = sql
     explain_prefix: str | None = None
+    interactive_compiled_sql: str | None = None
     if isinstance(purpose, InteractiveQueryPurpose):
         try:
             classified = classify_catalogue_statement(sql)
@@ -193,6 +194,7 @@ def compile_catalogue_sql(
                 compilation_sql,
                 purpose=purpose,
             )
+            interactive_compiled_sql = compilation.sql
             executable_sql = (
                 explain_prefix + compilation.sql
                 if explain_prefix is not None
@@ -250,16 +252,30 @@ def compile_catalogue_sql(
         if (
             isinstance(purpose, InteractiveQueryPurpose)
             and purpose.metadata is not None
-            and explain_prefix is None
+            and explain_prefix != "EXPLAIN "
         ):
+            scope_input_sql = (
+                interactive_compiled_sql
+                if explain_prefix == "EXPLAIN ANALYZE "
+                else executable_sql
+            )
+            assert scope_input_sql is not None
             scoped = compile_document_scope(
-                executable_sql,
+                scope_input_sql,
                 metadata=purpose.metadata,
                 maximum_documents=purpose.maximum_document_scope,
+                maximum_unscoped_element_rows=(
+                    purpose.maximum_unscoped_element_rows
+                ),
+                bound_parameters=purpose.bound_parameters,
             )
             if scoped is not None:
                 _validate_generated_sql(scoped.scope_sql)
-                executable_sql = scoped.sql
+                executable_sql = (
+                    explain_prefix + scoped.sql
+                    if explain_prefix is not None
+                    else scoped.sql
+                )
                 document_scope = SqlDocumentScopePlan(
                     scope_sql=scoped.scope_sql,
                     element_columns=scoped.element_columns,

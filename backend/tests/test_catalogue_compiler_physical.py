@@ -306,20 +306,203 @@ class CatalogueCompilerPhysicalTests(unittest.TestCase):
         )
 
     def test_literal_document_scope_keeps_a_single_stage_element_scan(self) -> None:
+        for predicate in (
+            "document_id = 'sha256:one'",
+            (
+                "document_id = 'sha256:one' "
+                "OR document_id = 'sha256:two'"
+            ),
+            "document_id IN ('sha256:one', 'sha256:two')",
+        ):
+            with self.subTest(predicate=predicate):
+                result = compile_catalogue_sql(
+                    "SELECT element_index, tag "
+                    "FROM elements "
+                    f"WHERE {predicate} "
+                    "ORDER BY element_index LIMIT 100",
+                    purpose=InteractiveQueryPurpose(
+                        metadata=_dom_metadata()
+                    ),
+                )
+
+                self.assertTrue(result.supported)
+                self.assertIsNone(result.document_scope)
+                self.assertIn("FROM elements", result.executable_sql or "")
+
+    def test_statically_empty_element_scan_is_executable(self) -> None:
         result = compile_catalogue_sql(
-            """
-            SELECT element_index, tag
-            FROM elements
-            WHERE document_id = 'sha256:one'
-            ORDER BY element_index
-            LIMIT 100
-            """,
+            "SELECT * FROM elements WHERE false",
             purpose=InteractiveQueryPurpose(metadata=_dom_metadata()),
         )
 
         self.assertTrue(result.supported)
         self.assertIsNone(result.document_scope)
-        self.assertIn("FROM elements", result.executable_sql or "")
+
+    def test_common_finite_document_subqueries_build_a_staged_scope(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "in subquery",
+                "SELECT * FROM elements "
+                "WHERE document_id IN ("
+                "SELECT document_id FROM crawls "
+                "WHERE registrable_domain = 'example.com')",
+            ),
+            (
+                "cte in subquery",
+                "WITH chosen AS ("
+                "SELECT document_id FROM crawls "
+                "WHERE registrable_domain = 'example.com') "
+                "SELECT * FROM elements "
+                "WHERE document_id IN (SELECT document_id FROM chosen)",
+            ),
+            (
+                "correlated exists",
+                "SELECT * FROM elements AS element "
+                "WHERE EXISTS ("
+                "SELECT 1 FROM crawls AS crawl "
+                "WHERE crawl.document_id = element.document_id "
+                "AND crawl.registrable_domain = 'example.com')",
+            ),
+            (
+                "values join",
+                "SELECT element.* FROM elements AS element "
+                "JOIN (VALUES ('doc-1'), ('doc-2')) "
+                "AS chosen(document_id) USING (document_id)",
+            ),
+        )
+        for name, sql in cases:
+            with self.subTest(name=name):
+                result = compile_catalogue_sql(
+                    sql,
+                    purpose=InteractiveQueryPurpose(metadata=_dom_metadata()),
+                )
+
+                self.assertTrue(result.supported)
+                self.assertIsNotNone(result.document_scope)
+                assert result.document_scope is not None
+                self.assertIn(
+                    "_atlas_interactive_scoped_elements",
+                    result.executable_sql or "",
+                )
+                if name == "values join":
+                    self.assertIn(
+                        "'doc-1'",
+                        result.document_scope.scope_sql,
+                    )
+                else:
+                    self.assertIn(
+                        "registrable_domain = 'example.com'",
+                        result.document_scope.scope_sql,
+                    )
+
+    def test_unselective_document_subqueries_still_fail_closed(self) -> None:
+        for sql in (
+            (
+                "SELECT * FROM elements WHERE document_id IN "
+                "(SELECT document_id FROM crawls)"
+            ),
+            (
+                "SELECT * FROM elements AS element WHERE EXISTS ("
+                "SELECT 1 FROM crawls AS crawl "
+                "WHERE crawl.document_id = element.document_id)"
+            ),
+            (
+                "SELECT * FROM elements AS same WHERE EXISTS ("
+                "SELECT 1 FROM crawls AS same "
+                "WHERE same.document_id = same.document_id "
+                "AND same.registrable_domain = 'example.com')"
+            ),
+        ):
+            with self.subTest(sql=sql):
+                result = compile_catalogue_sql(
+                    sql,
+                    purpose=InteractiveQueryPurpose(metadata=_dom_metadata()),
+                )
+
+                self.assertFalse(result.supported)
+                self.assertEqual(
+                    result.diagnostics[-1].code,
+                    "unbounded_relation",
+                )
+
+    def test_finite_document_idiom_rewrites_preserve_rows(self) -> None:
+        queries = (
+            (
+                "SELECT element.document_id, element.tag "
+                "FROM elements AS element "
+                "WHERE element.document_id IN ("
+                "SELECT crawl.document_id FROM crawls AS crawl "
+                "WHERE crawl.registrable_domain = 'example.com')",
+                [("doc-1", "title")],
+            ),
+            (
+                "SELECT element.document_id, element.tag "
+                "FROM elements AS element "
+                "WHERE EXISTS ("
+                "SELECT 1 FROM crawls AS crawl "
+                "WHERE crawl.document_id = element.document_id "
+                "AND crawl.registrable_domain = 'example.com')",
+                [("doc-1", "title")],
+            ),
+            (
+                "SELECT element.document_id, element.tag "
+                "FROM elements AS element "
+                "JOIN (VALUES ('doc-1'), ('doc-2')) "
+                "AS chosen(document_id) USING (document_id) "
+                "ORDER BY element.document_id",
+                [("doc-1", "title"), ("doc-2", "h1")],
+            ),
+        )
+        with duckdb.connect() as connection:
+            connection.execute(
+                "CREATE TABLE crawls("
+                "document_id VARCHAR, registrable_domain VARCHAR)"
+            )
+            connection.execute(
+                "CREATE TABLE elements("
+                "document_id VARCHAR, tag VARCHAR)"
+            )
+            connection.execute(
+                "INSERT INTO crawls VALUES "
+                "('doc-1', 'example.com'), ('doc-2', 'other.test')"
+            )
+            connection.execute(
+                "INSERT INTO elements VALUES "
+                "('doc-1', 'title'), ('doc-2', 'h1')"
+            )
+            for sql, expected in queries:
+                with self.subTest(sql=sql):
+                    result = compile_catalogue_sql(
+                        sql,
+                        purpose=InteractiveQueryPurpose(
+                            metadata=_dom_metadata()
+                        ),
+                    )
+                    assert result.document_scope is not None
+                    assert result.executable_sql is not None
+                    scope_rows = connection.execute(
+                        result.document_scope.scope_sql
+                    ).fetchall()
+                    values = ", ".join(
+                        f"('{row[0]}')" for row in scope_rows
+                    )
+                    connection.execute(
+                        "CREATE OR REPLACE TEMP TABLE "
+                        "_atlas_interactive_scoped_elements AS "
+                        "SELECT element.* FROM elements AS element "
+                        f"JOIN (VALUES {values}) AS scope(document_id) "
+                        "USING (document_id)"
+                    )
+
+                    authored = connection.execute(sql).fetchall()
+                    executable = connection.execute(
+                        result.executable_sql
+                    ).fetchall()
+
+                    self.assertEqual(executable, authored)
+                    self.assertEqual(executable, expected)
 
     def test_staged_scope_includes_an_independent_literal_element_branch(
         self,
@@ -352,7 +535,7 @@ class CatalogueCompilerPhysicalTests(unittest.TestCase):
 
     def test_unbounded_element_scan_is_not_executable(self) -> None:
         result = compile_catalogue_sql(
-            "SELECT attributes FROM elements LIMIT 100",
+            "SELECT attributes FROM elements WHERE tag = 'article' LIMIT 100",
             purpose=InteractiveQueryPurpose(metadata=_dom_metadata()),
         )
 
@@ -360,6 +543,181 @@ class CatalogueCompilerPhysicalTests(unittest.TestCase):
         self.assertFalse(result.supported)
         self.assertIsNone(result.executable_sql)
         self.assertEqual(result.diagnostics[-1].code, "unbounded_relation")
+
+    def test_direct_element_limit_is_a_bounded_streaming_scan(self) -> None:
+        cases = (
+            ("SELECT * FROM elements LIMIT 10", 10),
+            (
+                "SELECT document_id, tag FROM main.elements AS e "
+                "LIMIT 10 OFFSET 5",
+                15,
+            ),
+            (
+                "SELECT * FROM elements FETCH FIRST 10 ROWS ONLY",
+                10,
+            ),
+        )
+        for sql, estimated_rows in cases:
+            with self.subTest(sql=sql):
+                result = compile_catalogue_sql(
+                    sql,
+                    purpose=InteractiveQueryPurpose(metadata=_dom_metadata()),
+                )
+
+                self.assertTrue(result.supported)
+                self.assertEqual(result.executable_sql, sql)
+                self.assertIsNone(result.document_scope)
+                assert result.estimate is not None
+                self.assertEqual(
+                    result.estimate.executable_scans[0].estimated_rows_read,
+                    estimated_rows,
+                )
+
+    def test_direct_element_limit_respects_the_interactive_row_budget(
+        self,
+    ) -> None:
+        purpose = InteractiveQueryPurpose(
+            metadata=_dom_metadata(),
+            maximum_unscoped_element_rows=100,
+        )
+        for sql in (
+            "SELECT * FROM elements LIMIT 101",
+            "SELECT * FROM elements LIMIT 90 OFFSET 11",
+            "SELECT * FROM elements LIMIT $limit",
+        ):
+            with self.subTest(sql=sql):
+                result = compile_catalogue_sql(sql, purpose=purpose)
+
+                self.assertTrue(result.valid)
+                self.assertFalse(result.supported)
+                self.assertIsNone(result.executable_sql)
+                self.assertEqual(
+                    result.diagnostics[-1].code,
+                    "unbounded_relation",
+                )
+
+        bounded = compile_catalogue_sql(
+            "SELECT * FROM elements LIMIT $limit",
+            purpose=InteractiveQueryPurpose(
+                metadata=_dom_metadata(),
+                bound_parameters=(BoundParameter("limit", 100),),
+                maximum_unscoped_element_rows=100,
+            ),
+        )
+        self.assertTrue(bounded.supported)
+
+    def test_scan_capable_limit_shapes_still_require_document_scope(
+        self,
+    ) -> None:
+        for sql in (
+            "SELECT * FROM elements WHERE tag = 'a' LIMIT 10",
+            "SELECT * FROM elements ORDER BY element_index LIMIT 10",
+            "SELECT DISTINCT tag FROM elements LIMIT 10",
+            "SELECT COUNT(tag) FROM elements LIMIT 10",
+            (
+                "SELECT row_number() OVER (ORDER BY element_index) "
+                "FROM elements LIMIT 10"
+            ),
+            "SELECT * FROM elements USING SAMPLE 10 ROWS LIMIT 10",
+            "SELECT * FROM elements AT (VERSION => 2) LIMIT 10",
+            "SELECT * FROM elements JOIN documents USING (document_id) LIMIT 10",
+            "SELECT * FROM (SELECT * FROM elements) AS nested LIMIT 10",
+            "SELECT * FROM elements LIMIT 10 PERCENT",
+        ):
+            with self.subTest(sql=sql):
+                result = compile_catalogue_sql(
+                    sql,
+                    purpose=InteractiveQueryPurpose(metadata=_dom_metadata()),
+                )
+
+                self.assertTrue(result.valid)
+                self.assertFalse(result.supported)
+                self.assertIsNone(result.executable_sql)
+                self.assertEqual(
+                    result.diagnostics[-1].code,
+                    "unbounded_relation",
+                )
+
+    def test_explain_analyze_cannot_bypass_element_scan_safety(self) -> None:
+        explained = compile_catalogue_sql(
+            "EXPLAIN SELECT * FROM elements",
+            purpose=InteractiveQueryPurpose(metadata=_dom_metadata()),
+        )
+        analyzed = compile_catalogue_sql(
+            "EXPLAIN ANALYZE SELECT * FROM elements",
+            purpose=InteractiveQueryPurpose(metadata=_dom_metadata()),
+        )
+        bounded_analyze = compile_catalogue_sql(
+            "EXPLAIN ANALYZE SELECT * FROM elements LIMIT 10",
+            purpose=InteractiveQueryPurpose(metadata=_dom_metadata()),
+        )
+
+        self.assertTrue(explained.supported)
+        self.assertEqual(
+            explained.executable_sql,
+            "EXPLAIN SELECT * FROM elements",
+        )
+        self.assertFalse(analyzed.supported)
+        self.assertIsNone(analyzed.executable_sql)
+        self.assertEqual(
+            analyzed.diagnostics[-1].code,
+            "unbounded_relation",
+        )
+        self.assertTrue(bounded_analyze.supported)
+        self.assertEqual(
+            bounded_analyze.executable_sql,
+            "EXPLAIN ANALYZE SELECT * FROM elements LIMIT 10",
+        )
+
+    def test_metadata_only_element_row_count_is_executable(self) -> None:
+        for sql in (
+            "SELECT COUNT(*) FROM elements",
+            "SELECT COUNT() AS element_count FROM main.elements",
+            "SELECT COUNT(1) FROM elements",
+        ):
+            with self.subTest(sql=sql):
+                result = compile_catalogue_sql(
+                    sql,
+                    purpose=InteractiveQueryPurpose(metadata=_dom_metadata()),
+                )
+
+                self.assertTrue(result.supported)
+                self.assertEqual(result.executable_sql, sql)
+                self.assertIsNone(result.document_scope)
+                assert result.estimate is not None
+                self.assertEqual(result.estimate.authored_scans, ())
+                self.assertEqual(result.estimate.executable_scans, ())
+
+    def test_only_proven_metadata_only_element_aggregates_bypass_scope(
+        self,
+    ) -> None:
+        for sql in (
+            "SELECT COUNT(document_id) FROM elements",
+            "SELECT COUNT(DISTINCT document_id) FROM elements",
+            "SELECT COUNT(*) FROM elements WHERE tag = 'a'",
+            "SELECT tag, COUNT(*) FROM elements GROUP BY tag",
+            "SELECT MIN(element_index) FROM elements",
+            "SELECT MAX(element_index) FROM elements",
+            "SELECT AVG(element_index) FROM elements",
+            "SELECT COUNT(*) FILTER (WHERE tag = 'a') FROM elements",
+            "SELECT COUNT(*) FROM elements JOIN documents USING (document_id)",
+            "SELECT COUNT(*) FROM (SELECT * FROM elements) AS nested",
+            "SELECT COUNT(*) FROM elements USING SAMPLE 10 PERCENT",
+            "SELECT COUNT(*) FROM elements AT (VERSION => 2)",
+        ):
+            with self.subTest(sql=sql):
+                result = compile_catalogue_sql(
+                    sql,
+                    purpose=InteractiveQueryPurpose(metadata=_dom_metadata()),
+                )
+
+                self.assertTrue(result.valid)
+                self.assertFalse(result.supported)
+                self.assertIsNone(result.executable_sql)
+                self.assertEqual(
+                    result.diagnostics[-1].code,
+                    "unbounded_relation",
+                )
 
     def test_staged_document_scope_preserves_query_rows(self) -> None:
         sql = """

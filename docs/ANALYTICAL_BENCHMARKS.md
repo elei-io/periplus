@@ -210,9 +210,8 @@ while SQL measures supporting observations, separation, and missing links.
 
 ## Ground-truth pack
 
-The pack is named `atlas-analytical-ground-truth-v1`. Its first implemented slice is the product
-market scenario, not all hero and supporting scenarios at once. Exact identities and counts are
-frozen in the manifest before implementation. The initial target is deliberately small:
+The first implemented slice is the product-market scenario. Exact identities and counts are frozen
+in its manifest before implementation. Its target is deliberately small:
 
 - 14 days with 10 deterministic observation points;
 - 12 retailer domains under distinct registrable domains;
@@ -224,8 +223,8 @@ frozen in the manifest before implementation. The initial target is deliberately
 
 Semantic evidence should occupy only a small fraction of each document. The existing load corpus
 provides the large irrelevant backdrop; the pack should not add billions of rows merely to imitate
-scale already present. Claim lineage and emerging-phenomenon scenarios are added only after the
-product slice passes end to end.
+scale already present. The product slice passed end to end before claim lineage was added as the
+second scenario. The emerging-phenomenon scenario remains a later milestone.
 
 ### Scenario sources
 
@@ -237,10 +236,13 @@ benchmarks/analytical_ground_truth/
   templates/
   scenarios/
     product_market.json
+    claim_lineage.json
   queries/
     product_market.sql
+    claim_lineage.sql
   expected/
     product_market.json
+    claim_lineage.json
 ```
 
 Templates and generator modules produce deterministic pages and content fragments without checking
@@ -362,17 +364,18 @@ The first milestone is complete when:
 
 Passing only a small isolated corpus is not sufficient. Passing only a large scan with no known
 answer is not sufficient. Atlas proves the vision when it finds the planted, auditable signal
-inside the realistically large body of irrelevant web evidence. Claim lineage becomes the second
-milestone and emerging-phenomenon detection the third.
+inside the realistically large body of irrelevant web evidence. Claim lineage is implemented as the
+second isolated correctness slice; both slices still need the `atlas_load` overlay before the
+scale claim is complete. Emerging-phenomenon detection is the third milestone.
 
-## Executable product-market pack
+## Executable packs
 
-The first slice is implemented entirely under
+Both implemented slices live entirely under
 [`benchmarks/analytical_ground_truth/`](../benchmarks/analytical_ground_truth/README.md). Removing
 that directory and its explicit Make targets removes the benchmark; production code does not import
 it.
 
-The workflow is:
+The product-market workflow is:
 
 ```sh
 make analytical-ground-truth-test
@@ -382,6 +385,15 @@ make analytical-ground-truth-verify
 make analytical-ground-truth-run
 ```
 
+The claim-lineage workflow is:
+
+```sh
+make analytical-ground-truth-claim-plan
+make analytical-ground-truth-claim-load
+make analytical-ground-truth-claim-verify
+make analytical-ground-truth-claim-run
+```
+
 `load` passes generated HTML through `RepositoryIngestor`, so content hashing, immutable raw-object
 storage, the normal HTML5 DOM encoder, staged Parquet projection, and canonical DuckLake commits are
 all exercised. A complete rerun verifies related counts before skipping every deterministic crawl.
@@ -389,3 +401,10 @@ all exercised. A complete rerun verifies related counts before skipping every de
 runtime so compiler document scope is hydrated normally, compares every result and evidence
 identity with the external oracle, and proves the unbounded DOM control is rejected before
 execution.
+
+The claim-lineage query derives measurable facts from paraphrased article prose, reads declared
+citation anchors from the same scoped DOM population, and uses a recursive CTE to find independent
+roots. Its controls prove that 12 domains can represent one origin while eight domains can represent
+eight origins. This is a proof of evidence extraction, explicit citation lineage, publisher-aware
+root counting, and recursive cross-domain SQL. General semantic claim equivalence, hidden
+syndication, undeclared ownership, and inferred citations remain outside this slice.

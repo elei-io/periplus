@@ -1,4 +1,4 @@
-.PHONY: sync check console-check sdk-check setup catalogue-check catalogue-benchmark catalogue-load-synthetic analytical-ground-truth-test analytical-ground-truth-plan analytical-ground-truth-load analytical-ground-truth-verify analytical-ground-truth-run verify-remote-runtime worker-independence-smoke worker-horizontal-smoke reliability-check docs-diagrams api acquisition-worker ingestion-worker catalogue-relay-worker materialization-worker housekeeping-worker cli db-revision compose-up compose-down
+.PHONY: sync check console-check sdk-check setup catalogue-check catalogue-benchmark catalogue-load-synthetic analytical-ground-truth-test analytical-ground-truth-plan analytical-ground-truth-load analytical-ground-truth-verify analytical-ground-truth-run analytical-ground-truth-claim-plan analytical-ground-truth-claim-load analytical-ground-truth-claim-verify analytical-ground-truth-claim-run verify-remote-runtime worker-independence-smoke worker-horizontal-smoke reliability-check docs-diagrams api acquisition-worker ingestion-worker catalogue-relay-worker materialization-worker housekeeping-worker cli db-revision compose-up compose-down
 
 sync:
 	cd backend && uv sync
@@ -44,6 +44,18 @@ analytical-ground-truth-verify:
 
 analytical-ground-truth-run:
 	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py run
+
+analytical-ground-truth-claim-plan:
+	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py plan --scenario claim_lineage
+
+analytical-ground-truth-claim-load:
+	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py load --scenario claim_lineage --batch-size 30
+
+analytical-ground-truth-claim-verify:
+	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py verify --scenario claim_lineage
+
+analytical-ground-truth-claim-run:
+	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py run --scenario claim_lineage
 
 verify-remote-runtime:
 	cd backend && uv run python scripts/verify_remote_runtime.py

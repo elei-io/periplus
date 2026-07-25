@@ -627,11 +627,33 @@ compile against the changed-key relation contract without reading data.
 `elements` is the exceptional interactive relation whose global logical row count makes an
 unchanged fallback unsafe. Users still write ordinary DuckDB SQL. The compiler accepts either:
 
-- a finite literal `document_id` predicate at every physical `elements` scan; or
-- an inner-equijoin lineage from every `elements.document_id` to a selective managed source whose
-  canonical relationship targets `documents.document_id`.
+- a finite literal `document_id` predicate at every physical `elements` scan, including finite
+  disjunctions;
+- ordinary SQL lineage from every `elements.document_id` to a selective managed source whose
+  canonical relationship targets `documents.document_id`, expressed as an inner equijoin,
+  `IN (SELECT ...)`, a correlated `EXISTS`, a CTE, or a finite literal `VALUES` join;
+- a direct, unfiltered `COUNT(*)`, `COUNT()`, or `COUNT(non-null literal)` over `elements`, which
+  DuckLake answers from exact snapshot metadata without reading element rows; or
+- one direct, unfiltered, unordered `elements` scan with a statically known `LIMIT`/`FETCH` and
+  bounded `OFFSET`, whose maximum rows read does not exceed the interactive row budget.
 
-For the second form, compilation returns a typed document-scope plan as well as executable SQL. The
+The metadata-count exception is deliberately narrow: one direct `elements` source and one row-count
+projection, with no join, filter, grouping, distinctness, sampling, time travel, window, CTE, or
+derived-table boundary. `COUNT(column)`, filtered and distinct counts, `MIN`, `MAX`, `SUM`, and
+`AVG` do not receive this static exemption. Some current DuckLake snapshots can fold `MIN`, `MAX`,
+or a non-nullable `COUNT(column)`, but that depends on exact column statistics and delete history;
+the compiler cannot treat those shapes as scan-free without matching snapshot evidence.
+
+The streaming exception is similarly structural. Projection expressions are evaluated only for the
+bounded rows, but a filter can search arbitrarily far for matches, an `ORDER BY`, aggregate, window,
+or `DISTINCT` can consume the full input, and joins, nested queries, sampling, time travel, and
+percentage limits change the scan proof. Those shapes still require document scope. The default
+unscoped ceiling is 100,000 rows, aligned with the interactive result ceiling; `LIMIT` plus
+`OFFSET` must fit within it. A bound parameter is accepted only when its integer value is available
+to compilation. `LIMIT 0` and an element scan with a local literal `WHERE false` are zero-work
+cases.
+
+For the lineage form, compilation returns a typed document-scope plan as well as executable SQL. The
 plan resolves distinct document IDs from the element-free source, performs a second literal
 `documents.document_id IN (...)` lookup to obtain the authoritative `element_count` budget, and
 replaces every physical `elements` alias with one shared temporary relation containing only the
@@ -644,6 +666,10 @@ extra document so an over-budget result is rejected deterministically before DOM
 Unprovable or over-budget scans fail closed with `unbounded_relation`; this is the deliberate
 exception to interactive authored-SQL fallback. The compiler never infers scope from names,
 arbitrary joins, or user hints.
+
+Plain `EXPLAIN` is allowed for an otherwise unbounded query because it does not execute the scan.
+`EXPLAIN ANALYZE` does execute its child and therefore passes through the same document-scope and
+bounded-streaming proof as the query itself.
 
 ## Test-driven extension
 

@@ -19,8 +19,14 @@ from .function_safety import (
     VOLATILE_FUNCTION_NAMES,
     VOLATILE_FUNCTION_TYPES,
 )
-from .metadata import CatalogueMetadataSnapshot, ManagedTableMetadata
+from .metadata import (
+    BoundParameter,
+    CatalogueMetadataSnapshot,
+    ManagedTableMetadata,
+)
+from .metadata_aggregates import metadata_only_row_count_table
 from .relational import RelationColumn
+from .streaming_limit import direct_streaming_limit
 from .syntax import classify_select
 
 SCOPED_ELEMENTS_RELATION = "_atlas_interactive_scoped_elements"
@@ -41,6 +47,8 @@ def compile_document_scope(
     *,
     metadata: CatalogueMetadataSnapshot,
     maximum_documents: int,
+    maximum_unscoped_element_rows: int,
+    bound_parameters: tuple[BoundParameter, ...] = (),
 ) -> DocumentScopeCompilation | None:
     """Replace derived elements scans after proving a selective document source."""
 
@@ -58,10 +66,33 @@ def compile_document_scope(
     scans = _element_scans(analysis, elements)
     if not scans:
         return None
+    metadata_count_table = metadata_only_row_count_table(query)
+    if (
+        metadata_count_table is not None
+        and _is_table(metadata_count_table, elements)
+    ):
+        return None
+    streaming_limit = direct_streaming_limit(
+        query,
+        bound_parameters={
+            parameter.name: parameter.value
+            for parameter in bound_parameters
+        },
+    )
+    if (
+        streaming_limit is not None
+        and _is_table(streaming_limit.table, elements)
+        and len(scans) == 1
+        and streaming_limit.maximum_rows_read
+        <= maximum_unscoped_element_rows
+    ):
+        return None
     if all(
         _has_literal_document_scope(scope, alias)
         for scope, alias in scans
     ):
+        return None
+    if all(_has_statically_empty_filter(scope) for scope, _ in scans):
         return None
 
     anchors: dict[str, exp.Query] = {}
@@ -124,7 +155,21 @@ def _has_literal_document_scope(scope, alias: str) -> bool:
         condition = join.args.get("on")
         if condition is not None:
             predicates.extend(_conjuncts(condition))
-    return any(_literal_document_predicate(item, alias=alias) for item in predicates)
+    return any(
+        _literal_document_predicate(item, alias=alias)
+        for item in predicates
+    )
+
+
+def _has_statically_empty_filter(scope) -> bool:
+    expression = scope.expression
+    if not isinstance(expression, exp.Select):
+        return False
+    where = expression.args.get("where")
+    return isinstance(where, exp.Where) and any(
+        isinstance(predicate, exp.Boolean) and not predicate.this
+        for predicate in _conjuncts(where.this)
+    )
 
 
 def _literal_document_predicate(
@@ -132,6 +177,24 @@ def _literal_document_predicate(
     *,
     alias: str,
 ) -> bool:
+    if isinstance(predicate, exp.Paren):
+        return _literal_document_predicate(predicate.this, alias=alias)
+    if isinstance(predicate, exp.And):
+        return _literal_document_predicate(
+            predicate.this,
+            alias=alias,
+        ) or _literal_document_predicate(
+            predicate.expression,
+            alias=alias,
+        )
+    if isinstance(predicate, exp.Or):
+        return _literal_document_predicate(
+            predicate.this,
+            alias=alias,
+        ) and _literal_document_predicate(
+            predicate.expression,
+            alias=alias,
+        )
     if isinstance(predicate, (exp.EQ, exp.NullSafeEQ)):
         return (
             _is_document_column(predicate.this, alias=alias)
@@ -163,24 +226,13 @@ def _literal_document_anchor(scope, *, alias: str) -> exp.Query | None:
             predicates.extend(_conjuncts(condition))
     values: list[exp.Expression] = []
     for predicate in predicates:
-        if isinstance(predicate, (exp.EQ, exp.NullSafeEQ)):
-            if (
-                _is_document_column(predicate.this, alias=alias)
-                and _is_literal_value(predicate.expression)
-            ):
-                values.append(predicate.expression.copy())
-            elif (
-                _is_document_column(predicate.expression, alias=alias)
-                and _is_literal_value(predicate.this)
-            ):
-                values.append(predicate.this.copy())
-        elif (
-            isinstance(predicate, exp.In)
-            and _is_document_column(predicate.this, alias=alias)
-            and predicate.expressions
-            and all(_is_literal_value(value) for value in predicate.expressions)
-        ):
-            values.extend(value.copy() for value in predicate.expressions)
+        values.extend(
+            value.copy()
+            for value in _literal_document_values(
+                predicate,
+                alias=alias,
+            )
+        )
     if not values:
         return None
     tuples = [exp.Tuple(expressions=[value]) for value in values]
@@ -193,6 +245,44 @@ def _literal_document_anchor(scope, *, alias: str) -> exp.Query | None:
             ),
         )
     )
+
+
+def _literal_document_values(
+    predicate: exp.Expression,
+    *,
+    alias: str,
+) -> tuple[exp.Expression, ...]:
+    if isinstance(predicate, exp.Paren):
+        return _literal_document_values(predicate.this, alias=alias)
+    if isinstance(predicate, (exp.And, exp.Or)):
+        left = _literal_document_values(predicate.this, alias=alias)
+        right = _literal_document_values(
+            predicate.expression,
+            alias=alias,
+        )
+        if isinstance(predicate, exp.Or) and (not left or not right):
+            return ()
+        return (*left, *right)
+    if isinstance(predicate, (exp.EQ, exp.NullSafeEQ)):
+        if (
+            _is_document_column(predicate.this, alias=alias)
+            and _is_literal_value(predicate.expression)
+        ):
+            return (predicate.expression,)
+        if (
+            _is_document_column(predicate.expression, alias=alias)
+            and _is_literal_value(predicate.this)
+        ):
+            return (predicate.this,)
+        return ()
+    if (
+        isinstance(predicate, exp.In)
+        and _is_document_column(predicate.this, alias=alias)
+        and predicate.expressions
+        and all(_is_literal_value(value) for value in predicate.expressions)
+    ):
+        return tuple(predicate.expressions)
+    return ()
 
 
 def _is_document_column(
@@ -229,6 +319,15 @@ def _find_anchor(
     metadata: CatalogueMetadataSnapshot,
     elements: ManagedTableMetadata,
 ) -> exp.Query | None:
+    predicate_anchor = _find_predicate_anchor(
+        analysis,
+        scope=scope,
+        element_alias=element_alias,
+        metadata=metadata,
+        elements=elements,
+    )
+    if predicate_anchor is not None:
+        return predicate_anchor
     facts = analysis.facts_for(scope)
     equivalents = facts.equivalents(
         RelationColumn(element_alias, _DOCUMENT_ID)
@@ -248,6 +347,123 @@ def _find_anchor(
         if anchor is not None:
             return anchor
     return None
+
+
+def _find_predicate_anchor(
+    analysis: AnalyzedCatalogueQuery,
+    *,
+    scope,
+    element_alias: str,
+    metadata: CatalogueMetadataSnapshot,
+    elements: ManagedTableMetadata,
+) -> exp.Query | None:
+    expression = scope.expression
+    if not isinstance(expression, exp.Select):
+        return None
+    where = expression.args.get("where")
+    if not isinstance(where, exp.Where):
+        return None
+    for predicate in _conjuncts(where.this):
+        if (
+            isinstance(predicate, exp.In)
+            and _is_document_column(predicate.this, alias=element_alias)
+        ):
+            query = predicate.args.get("query")
+            if not isinstance(query, exp.Subquery):
+                continue
+            inner_scope = _scope_for_expression(analysis, query.this)
+            if inner_scope is None:
+                continue
+            projections = analysis.facts_for(inner_scope).direct_projections
+            if len(projections) != 1:
+                continue
+            projection = projections[0]
+            anchor = _trace_source(
+                analysis,
+                inner_scope,
+                relation=projection.source.relation,
+                column=projection.source.column,
+                metadata=metadata,
+                elements=elements,
+                visited=set(),
+            )
+            if anchor is not None:
+                return anchor
+        if isinstance(predicate, exp.Exists):
+            inner_scope = _scope_for_expression(analysis, predicate.this)
+            if (
+                inner_scope is None
+                or element_alias in inner_scope.sources
+            ):
+                continue
+            candidates = _correlated_document_sources(
+                inner_scope,
+                element_alias=element_alias,
+            )
+            for candidate in candidates:
+                anchor = _trace_source(
+                    analysis,
+                    inner_scope,
+                    relation=candidate.relation,
+                    column=candidate.column,
+                    metadata=metadata,
+                    elements=elements,
+                    visited=set(),
+                )
+                if anchor is not None:
+                    return anchor
+    return None
+
+
+def _correlated_document_sources(
+    inner_scope,
+    *,
+    element_alias: str,
+) -> tuple[RelationColumn, ...]:
+    expression = inner_scope.expression
+    if not isinstance(expression, exp.Select):
+        return ()
+    where = expression.args.get("where")
+    if not isinstance(where, exp.Where):
+        return ()
+    found: set[RelationColumn] = set()
+    for predicate in _conjuncts(where.this):
+        if not isinstance(predicate, (exp.EQ, exp.NullSafeEQ)):
+            continue
+        for outer, inner in (
+            (predicate.this, predicate.expression),
+            (predicate.expression, predicate.this),
+        ):
+            if (
+                not isinstance(outer, exp.Column)
+                or outer.name.lower() != _DOCUMENT_ID
+                or outer.table.lower() != element_alias
+                or not isinstance(inner, exp.Column)
+                or not inner.table
+                or inner.table.lower() not in inner_scope.sources
+            ):
+                continue
+            found.add(
+                RelationColumn(
+                    inner.table.lower(),
+                    inner.name.lower(),
+                )
+            )
+    return tuple(sorted(found))
+
+
+def _scope_for_expression(
+    analysis: AnalyzedCatalogueQuery,
+    expression: exp.Expression,
+):
+    return next(
+        (
+            candidate
+            for candidate in analysis.scopes
+            if candidate.expression is expression
+        ),
+        None,
+    )
 
 
 def _trace_source(
@@ -298,6 +514,8 @@ def _trace_source(
 
     if not isinstance(source, Scope):
         return None
+    if isinstance(source.expression, exp.Values):
+        return _values_document_anchor(source.expression, column=column)
     projection = next(
         (
             item
@@ -317,6 +535,49 @@ def _trace_source(
         elements=elements,
         visited=visited,
     )
+
+
+def _values_document_anchor(
+    values: exp.Values,
+    *,
+    column: str,
+) -> exp.Query | None:
+    alias = values.args.get("alias")
+    if not isinstance(alias, exp.TableAlias) or not alias.name:
+        return None
+    columns = tuple(alias.args.get("columns") or ())
+    position = next(
+        (
+            index
+            for index, candidate in enumerate(columns)
+            if candidate.name.lower() == column.lower()
+        ),
+        None,
+    )
+    if position is None:
+        return None
+    selected_values: list[exp.Expression] = []
+    for row in values.expressions:
+        if (
+            not isinstance(row, exp.Tuple)
+            or position >= len(row.expressions)
+            or not _is_literal_value(row.expressions[position])
+        ):
+            return None
+        selected_values.append(row.expressions[position].copy())
+    if not selected_values:
+        return None
+    literal_values = exp.Values(
+        expressions=[
+            exp.Tuple(expressions=[value])
+            for value in selected_values
+        ],
+        alias=exp.TableAlias(
+            this=exp.to_identifier("_atlas_values_documents"),
+            columns=[exp.to_identifier(_DOCUMENT_ID)],
+        ),
+    )
+    return exp.select(_DOCUMENT_ID).from_(literal_values)
 
 
 def _relation_predicates(
@@ -539,7 +800,9 @@ def _unbounded() -> None:
             code=OptimizationCode.UNBOUNDED_RELATION,
             message=(
                 "Interactive elements queries must constrain document_id "
-                "directly or through a selective managed crawl/document lineage."
+                "directly or derive it through selective managed "
+                "crawl/document lineage, unless the query is a direct "
+                "unfiltered row count or a bounded direct streaming scan."
             ),
             documentation_anchor="bounded-document-scans",
         )

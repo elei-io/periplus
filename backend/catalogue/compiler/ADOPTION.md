@@ -20,8 +20,9 @@ The caller supplies an execution purpose and receives one typed decision:
   applied rewrite.
 
 For interactive purposes, `unsupported` retains the valid authored SQL as the
-executable fallback, except when the managed `elements` relation has no proven
-document scope. That explicit safety guard has no executable fallback.
+executable fallback, except when the managed `elements` relation has neither a
+proven document scope nor a proven scan-free or bounded-streaming shape. That
+explicit safety guard has no executable fallback.
 Materialization is deliberately stricter: Atlas may create or
 refresh a materialization only when the selected refresh strategy has a
 successful compiler proof.
@@ -68,7 +69,7 @@ Every SQL call site must be classified into one of these classes:
 
 | Class | Required path |
 |---|---|
-| Interactive user SQL | Validate the public read boundary, compile with the interactive purpose, then execute compiled SQL or valid authored fallback through the bounded runtime. Managed `elements` scans additionally require a direct or relationship-derived document scope. |
+| Interactive user SQL | Validate the public read boundary, compile with the interactive purpose, then execute compiled SQL or valid authored fallback through the bounded runtime. Managed `elements` scans additionally require direct or relationship-derived document scope, a metadata-only row count, or a bounded direct streaming scan. |
 | Stored user query | Compile for diagnostics when created or edited; compile again against the current DuckLake definition revision when executed. Saving valid unsupported SQL remains allowed. |
 | User view or macro definition | Compile/analyze the definition with a definition purpose before DDL. Unsupported optimization does not invalidate otherwise valid DuckDB DDL, but materialization eligibility remains unavailable. |
 | Materialization SQL | Compile with full, keyed, or append purpose. No unproved execution fallback is permitted for creation or refresh. |
