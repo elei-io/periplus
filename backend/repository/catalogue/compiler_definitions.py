@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from hashlib import sha256
 import inspect
+import re
 import time
 
 from sqlglot import exp, parse_one
@@ -16,12 +17,25 @@ from atlas_sql import (
     CatalogueDefinitionPurpose,
     InteractiveQueryPurpose,
     ManagedTableMetadata,
+    PartitionColumn,
     ScalarMacroDefinition,
     ScalarFunctionDefinition,
+    SortKey,
+    TableRelationship,
     TableMacroDefinition,
     ViewDefinition,
 )
 from repository.catalogue.quack_runtime import trusted_remote_rows
+from repository.catalogue.schema import (
+    CATALOGUE_SCHEMA_VERSION,
+    TABLE_LAYOUTS,
+    TABLE_RELATIONSHIPS,
+    TABLE_STABLE_KEYS,
+)
+
+
+class CatalogueCompilerSnapshotChanged(RuntimeError):
+    """The metadata reader could not observe one coherent lake snapshot."""
 
 
 class CatalogueCompilerDefinitions(CatalogueMetadataSnapshot):
@@ -75,7 +89,7 @@ def read_catalogue_compiler_definitions(
         )
         if _current_snapshot(connection, alias=alias) == start_snapshot:
             return definitions
-    raise RuntimeError(
+    raise CatalogueCompilerSnapshotChanged(
         "DuckLake catalogue metadata changed during three consecutive "
         "compiler snapshot reads."
     )
@@ -183,9 +197,18 @@ def _read_catalogue_compiler_definitions_once(
             schema_name=str(row[0]),
             table_name=str(row[1]),
             table_uuid=str(row[2]),
+            contract_version=(
+                CATALOGUE_SCHEMA_VERSION
+                if str(row[1]) in TABLE_STABLE_KEYS
+                else None
+            ),
             estimated_rows=int(row[3]) if row[3] is not None else None,
             file_count=int(row[4]) if row[4] is not None else None,
             file_size_bytes=int(row[5]) if row[5] is not None else None,
+            stable_key=TABLE_STABLE_KEYS.get(str(row[1]), ()),
+            partition_columns=_partition_columns(str(row[1])),
+            sort_keys=_sort_keys(str(row[1])),
+            relationships=_relationships(str(row[0]), str(row[1])),
         )
         for row in table_rows
     )
@@ -221,6 +244,89 @@ def _current_snapshot(connection, *, alias: str) -> int:
             "DuckLake did not return exactly one current snapshot ID."
         )
     return int(rows[0][0])
+
+
+_BUCKET_PARTITION = re.compile(
+    r"^bucket\((?P<count>[1-9][0-9]*),\s*(?P<column>[A-Za-z_][A-Za-z0-9_]*)\)$",
+    re.IGNORECASE,
+)
+_TRANSFORM_PARTITION = re.compile(
+    r"^(?P<transform>year|month|day|hour)"
+    r"\((?P<column>[A-Za-z_][A-Za-z0-9_]*)\)$",
+    re.IGNORECASE,
+)
+_SORT_KEY = re.compile(
+    r"^(?P<expression>.+?)\s+(?P<direction>ASC|DESC)"
+    r"(?:\s+(?P<null_order>NULLS FIRST|NULLS LAST))?$",
+    re.IGNORECASE,
+)
+
+
+def _partition_columns(table_name: str) -> tuple[PartitionColumn, ...]:
+    layout = TABLE_LAYOUTS.get(table_name)
+    if layout is None:
+        return ()
+    columns: list[PartitionColumn] = []
+    for expression in layout.partition_by:
+        if bucket := _BUCKET_PARTITION.fullmatch(expression):
+            columns.append(
+                PartitionColumn(
+                    column_name=bucket.group("column"),
+                    transform="bucket",
+                    bucket_count=int(bucket.group("count")),
+                )
+            )
+        elif transformed := _TRANSFORM_PARTITION.fullmatch(expression):
+            columns.append(
+                PartitionColumn(
+                    column_name=transformed.group("column"),
+                    transform=transformed.group("transform").lower(),  # type: ignore[arg-type]
+                )
+            )
+        else:
+            columns.append(PartitionColumn(column_name=expression))
+    return tuple(columns)
+
+
+def _sort_keys(table_name: str) -> tuple[SortKey, ...]:
+    layout = TABLE_LAYOUTS.get(table_name)
+    if layout is None:
+        return ()
+    keys: list[SortKey] = []
+    for value in layout.sort_by:
+        match = _SORT_KEY.fullmatch(value)
+        if match is None:
+            keys.append(SortKey(expression=value))
+            continue
+        null_order = match.group("null_order")
+        keys.append(
+            SortKey(
+                expression=match.group("expression"),
+                direction=match.group("direction").upper(),  # type: ignore[arg-type]
+                null_order=(
+                    null_order.upper() if null_order is not None else None
+                ),  # type: ignore[arg-type]
+            )
+        )
+    return tuple(keys)
+
+
+def _relationships(
+    schema_name: str,
+    table_name: str,
+) -> tuple[TableRelationship, ...]:
+    return tuple(
+        TableRelationship(
+            columns=columns,
+            target_schema=schema_name,
+            target_table=target_table,
+            target_columns=target_columns,
+            optional=optional,
+        )
+        for columns, target_table, target_columns, optional in TABLE_RELATIONSHIPS.get(
+            table_name, ()
+        )
+    )
 
 
 DefinitionLoader = Callable[

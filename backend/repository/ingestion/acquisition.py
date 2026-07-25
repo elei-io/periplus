@@ -15,7 +15,6 @@ from repository.catalogue import (
     CrawlRecord,
     CrawlStepRecord,
     DocumentRecord,
-    UrlRecord,
 )
 from repository.ingestion.queue import (
     IngestionQueueClient,
@@ -108,7 +107,6 @@ class AcquisitionPipeline:
         self,
         crawl: CrawlRecord,
         *,
-        urls: tuple[UrlRecord, ...],
         crawl_attempts: tuple[CrawlAttemptRecord, ...],
         request_id: str | None = None,
         crawl_steps: tuple[CrawlStepRecord, ...] = (),
@@ -116,7 +114,6 @@ class AcquisitionPipeline:
         self._require_running()
         await self.queue.enqueue(
             crawl,
-            urls=urls,
             crawl_attempts=crawl_attempts,
             request_id=request_id,
             crawl_steps=crawl_steps,

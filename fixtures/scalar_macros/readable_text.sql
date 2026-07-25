@@ -1,3 +1,4 @@
+-- atlas:description=Returns normalized human-readable descendant text for one structural DOM element.
 CREATE OR REPLACE MACRO readable_text(p_document_id, p_element_index) AS (
     WITH parameters AS (
         SELECT
@@ -63,7 +64,12 @@ CREATE OR REPLACE MACRO readable_text(p_document_id, p_element_index) AS (
     SELECT trim(regexp_replace(
         coalesce(string_agg(
             fragment,
-            '' ORDER BY event_index, event_phase, depth DESC, depth_phase
+            '' ORDER BY
+                event_index,
+                event_phase,
+                depth DESC,
+                depth_phase,
+                fragment
         ), ''),
         '\s+',
         ' ',

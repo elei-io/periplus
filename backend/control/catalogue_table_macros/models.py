@@ -36,17 +36,6 @@ class CatalogueTableMacroDefinition(Base):
     definition_revision_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True), default=uuid4
     )
-    compiler_outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
-    compiler_diagnostics: Mapped[list[dict[str, object]] | None] = mapped_column(
-        JSON, nullable=True
-    )
-    compiler_dependencies: Mapped[list[dict[str, object]] | None] = mapped_column(
-        JSON, nullable=True
-    )
-    compiler_version: Mapped[str | None] = mapped_column(Text, nullable=True)
-    catalogue_definition_revision: Mapped[str | None] = mapped_column(
-        Text, nullable=True
-    )
     fixture_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_from_query_revision_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),

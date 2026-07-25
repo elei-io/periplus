@@ -110,11 +110,11 @@ separate bounded Basin client pool; they never share the definition connection.
 **Giving agents a second catalogue path.** Agent tools must use the same validated interactive
 Quack boundary as the workbench. Do not let a model connect directly to DuckLake, execute SQL on the
 API control connection, call an internal HTTP route, or move the tool loop into the browser. The
-analytics pipeline is catalogue-only and request-scoped. The idea model plans and synthesizes but
-has no catalogue tools; the three SQL agents use only the shared interactive boundary. Do not give
-either role crawl, schedule, NATS graph, live-page, web-search, acquisition, mutation, or
-conversation-history capabilities. Keep typed catalogue capabilities transport-neutral and adapt
-them to PydanticAI, CLI, or MCP at the edge.
+assistant is catalogue-only and request-scoped and uses only the shared interactive boundary. Do
+not give it crawl, schedule, NATS graph, live-page, web-search, acquisition, mutation, or
+server-side conversation-history capabilities. A console may send a small bounded context slice
+that exists only in that console session. Keep typed catalogue capabilities transport-neutral and
+adapt them to PydanticAI, CLI, or MCP at the edge.
 
 **Exposing Quack or storage configuration to the browser.** Cloudflare Access protects Atlas Web/API,
 not Quack. The browser submits SQL to Atlas API and consumes Arrow IPC. Keep the Quack URI and token,

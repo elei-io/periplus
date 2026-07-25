@@ -14,6 +14,15 @@ from api.catalogue_control import CatalogueControl
 class _FakeCatalogue:
     def __init__(self) -> None:
         self.closed = False
+        self.validated = False
+        self.validation_error: RuntimeError | None = None
+        self.lake_slug = "atlas_test"
+        self.config = SimpleNamespace(schema="main")
+
+    def validate_schema(self) -> None:
+        self.validated = True
+        if self.validation_error is not None:
+            raise self.validation_error
 
     def close(self) -> None:
         self.closed = True
@@ -23,6 +32,16 @@ class _FakeCatalogue:
 
 
 class CatalogueControlTests(unittest.IsolatedAsyncioTestCase):
+    async def test_schema_mismatch_fails_startup_and_closes_catalogue(self) -> None:
+        catalogue = _FakeCatalogue()
+        catalogue.validation_error = RuntimeError("schema mismatch")
+        control = CatalogueControl(factory=lambda: catalogue)
+
+        with self.assertRaisesRegex(RuntimeError, "schema mismatch"):
+            await control.start()
+
+        self.assertTrue(catalogue.closed)
+
     async def test_one_connection_and_thread_serialize_all_operations(self) -> None:
         catalogue = _FakeCatalogue()
         factory_calls = 0
@@ -60,6 +79,7 @@ class CatalogueControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(thread_ids), 1)
         self.assertEqual(snapshot, 42)
         self.assertTrue(catalogue.closed)
+        self.assertTrue(catalogue.validated)
 
 
 if __name__ == "__main__":

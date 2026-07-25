@@ -17,6 +17,8 @@ from .metadata import (
     ManagedTableMetadata,
     PartitionColumn,
     ScanEstimate,
+    SortKey,
+    TableRelationship,
 )
 from .lint import (
     CatalogueLintDiagnostic,
@@ -67,6 +69,8 @@ __all__ = [
     "OptimizationDiagnostic",
     "QueryOptimizationUnavailable",
     "PartitionColumn",
+    "SortKey",
+    "TableRelationship",
     "ScalarMacroDefinition",
     "ScalarFunctionDefinition",
     "SqlAppliedRewrite",

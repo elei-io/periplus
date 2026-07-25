@@ -1,21 +1,35 @@
-import type { CommandResult } from "@atlas/console-core";
+import type { AtomicCommandResult } from "@atlas/console-core";
 
 export function renderResult(
-  result: CommandResult,
+  result: AtomicCommandResult,
   options: {
     format: "table" | "json";
     columns?: number;
   },
 ): string {
-  if (options.format === "json") return `${JSON.stringify(result, null, 2)}\n`;
+  if (options.format === "json") {
+    return `${JSON.stringify(result, jsonReplacer, 2)}\n`;
+  }
+  if (result.kind === "progress") {
+    const symbol =
+      result.state === "completed" ? "\u001b[32m✓\u001b[0m" : "\u001b[31m✗\u001b[0m";
+    const duration = result.durationMilliseconds === undefined
+      ? ""
+      : ` \u001b[2m· ${formatDuration(result.durationMilliseconds)}\u001b[0m`;
+    return `\u001b[2m│\u001b[0m ${symbol} ${result.label}${duration}\n`;
+  }
+  if (result.kind === "assistant") {
+    return renderAssistant(result, options.columns ?? 100);
+  }
   if (result.kind === "message") return `${result.text}\n`;
   if (result.kind === "navigate") return `${result.label}\n`;
   if (result.kind === "clear") return "\u001b[2J\u001b[H";
-  return `${formatTable(
+  const table = formatTable(
     result.columns,
     result.rows,
     options.columns ?? 100,
-  ).join("\n")}\n`;
+  ).join("\n");
+  return `${table}${result.summary ? `\n${result.summary}` : ""}\n`;
 }
 
 export function formatTable(
@@ -64,7 +78,123 @@ function truncate(value: string, width: number): string {
 }
 
 function formatValue(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "object") return JSON.stringify(value);
+  if (value === null || value === undefined) return "NULL";
+  if (value instanceof Uint8Array) {
+    return `0x${[...value].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  }
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value === "object") return JSON.stringify(value, jsonReplacer);
   return String(value).replaceAll(/\s+/g, " ");
+}
+
+function jsonReplacer(_key: string, value: unknown): unknown {
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Uint8Array) {
+    return `0x${[...value].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  }
+  return value;
+}
+
+export function startProgress(
+  message: string,
+  delayMilliseconds = 150,
+  prefix = "",
+): { stop(): void } {
+  if (!process.stdout.isTTY) return { stop() {} };
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  const startedAt = performance.now();
+  let frame = 0;
+  let visible = false;
+  const render = () => {
+    visible = true;
+    const elapsed = ((performance.now() - startedAt) / 1_000).toFixed(1);
+    process.stdout.write(
+      `\r\u001b[2K${prefix}\u001b[1;34m${frames[frame % frames.length]}\u001b[0m ${message} \u001b[2m${elapsed}s\u001b[0m`,
+    );
+    frame += 1;
+  };
+  let interval: ReturnType<typeof setInterval> | undefined;
+  const delay = setTimeout(() => {
+    render();
+    interval = setInterval(render, 80);
+  }, delayMilliseconds);
+  return {
+    stop() {
+      clearTimeout(delay);
+      if (interval) clearInterval(interval);
+      if (visible) process.stdout.write("\r\u001b[2K");
+    },
+  };
+}
+
+function formatDuration(milliseconds: number): string {
+  return milliseconds < 1_000
+    ? `${milliseconds}ms`
+    : `${(milliseconds / 1_000).toFixed(1)}s`;
+}
+
+function renderAssistant(
+  result: Extract<AtomicCommandResult, { kind: "assistant" }>,
+  columns: number,
+): string {
+  const width = Math.max(24, Math.min(100, columns - 4));
+  const lines = wrapText(result.text, width);
+  const error = result.state === "failed";
+  if (!result.sql) {
+    const answer = lines.map((line, index) => {
+      const prefix = index === 0 ? "└ " : "  ";
+      return `\u001b[2m${prefix}\u001b[0m${
+        error ? `\u001b[31m${line}\u001b[0m` : line
+      }`;
+    }).join("\n");
+    const suggestions = (result.suggestions ?? [])
+      .map(
+        (suggestion) =>
+          `\u001b[2m│\u001b[0m  \u001b[34m${suggestion.index}.\u001b[0m ${suggestion.title}` +
+          ` \u001b[2m— ${suggestion.description}\u001b[0m`,
+      )
+      .join("\n");
+    const actions = result.suggestions?.length
+      ? "\u001b[2m└ .ai show <number> · .ai run <number>\u001b[0m\n\n"
+      : "";
+    return (
+      `\u001b[2m│\u001b[0m\n${answer}\n` +
+      (suggestions ? `\u001b[2m│\u001b[0m\n${suggestions}\n${actions}` : "\n")
+    );
+  }
+  const answer = lines
+    .map((line) => `\u001b[2m│\u001b[0m ${line}`)
+    .join("\n");
+  const sql = result.sql
+    .replaceAll("\r\n", "\n")
+    .split("\n")
+    .map((line) => `\u001b[2m│   ${line}\u001b[0m`)
+    .join("\n");
+  return (
+    `\u001b[2m│\u001b[0m\n${answer}\n\u001b[2m│\u001b[0m\n` +
+    `${sql}\n\u001b[2m└ Run with ${result.sqlRunCommand ?? ".ai run"}\u001b[0m\n\n`
+  );
+}
+
+function wrapText(value: string, width: number): string[] {
+  const output: string[] = [];
+  for (const paragraph of value.replaceAll("\r\n", "\n").split("\n")) {
+    const words = paragraph.trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      output.push("");
+      continue;
+    }
+    let line = "";
+    for (const word of words) {
+      if (line && line.length + word.length + 1 > width) {
+        output.push(line);
+        line = word;
+      } else {
+        line = line ? `${line} ${word}` : word;
+      }
+    }
+    if (line) output.push(line);
+  }
+  return output.length ? output : [""];
 }

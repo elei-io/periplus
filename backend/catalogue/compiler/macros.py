@@ -10,6 +10,11 @@ from .errors import (
     OptimizationDiagnostic,
     QueryOptimizationUnavailable,
 )
+from .function_safety import (
+    DETERMINISTIC_DUCKDB_FUNCTION_NAMES,
+    VOLATILE_FUNCTION_NAMES,
+    VOLATILE_FUNCTION_TYPES,
+)
 from .purpose import (
     ScalarMacroDefinition,
     ScalarFunctionDefinition,
@@ -18,28 +23,6 @@ from .purpose import (
 )
 
 _MAX_EXPANSION_DEPTH = 32
-_VOLATILE_FUNCTION_TYPES = (
-    exp.CurrentDate,
-    exp.CurrentDatetime,
-    exp.CurrentTime,
-    exp.CurrentTimestamp,
-    exp.CurrentUser,
-    exp.NextValueFor,
-    exp.Rand,
-    exp.SessionUser,
-    exp.Uuid,
-)
-_VOLATILE_FUNCTION_NAMES = frozenset(
-    {
-        "currval",
-        "error",
-        "gen_random_uuid",
-        "nextval",
-        "now",
-        "setval",
-        "today",
-    }
-)
 
 
 def bound_scalar_macro_inputs(
@@ -112,20 +95,26 @@ def bound_scalar_macro_inputs(
         view_definitions=view_definitions,
     )
     if any(
-        isinstance(node, _VOLATILE_FUNCTION_TYPES)
+        isinstance(node, VOLATILE_FUNCTION_TYPES)
         or (
             isinstance(node, exp.Anonymous)
-            and node.name.lower() in _VOLATILE_FUNCTION_NAMES
+            and node.name.lower() in VOLATILE_FUNCTION_NAMES
         )
         for node in expanded_probe.walk()
     ):
         return query, False
     # DuckDB's function metadata does not prove that a user-defined function
     # is total or identify the exact overload selected by an unbound SQLGlot
-    # tree. Moving any anonymous function across LIMIT could therefore suppress
+    # tree. Moving an anonymous function across LIMIT could therefore suppress
     # errors or observable calls even when one same-named metadata row claims
-    # to be stable and side-effect free.
-    if next(expanded_probe.find_all(exp.Anonymous), None) is not None:
+    # to be stable and side-effect free. The sole exception is DuckDB's stored
+    # representation of built-ins: macro definitions qualify some built-ins as
+    # main."function"(), which SQLGlot necessarily parses as Anonymous despite
+    # the function having already resolved to a known DuckDB built-in.
+    if any(
+        not _is_stored_duckdb_builtin(function)
+        for function in expanded_probe.find_all(exp.Anonymous)
+    ):
         return query, False
 
     rewritten = query.copy()
@@ -189,6 +178,19 @@ def bound_scalar_macro_inputs(
             ],
         )
     return rewritten, True
+
+
+def _is_stored_duckdb_builtin(function: exp.Anonymous) -> bool:
+    """Recognize DuckDB-normalized built-ins without approving user UDFs."""
+
+    parent = function.parent
+    return (
+        function.name.lower() in DETERMINISTIC_DUCKDB_FUNCTION_NAMES
+        and isinstance(parent, exp.Dot)
+        and parent.expression is function
+        and isinstance(parent.this, exp.Identifier)
+        and parent.this.name.lower() == "main"
+    )
 
 
 def _unused_selected_name(query: exp.Query) -> str:

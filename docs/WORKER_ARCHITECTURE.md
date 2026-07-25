@@ -69,6 +69,25 @@ lane or overwriting another lane's state. Process readiness aggregates event-loo
 supervised background tasks, presence publication, and the requirement that at least one lane is
 usable. A busy lane remains healthy. The capacity API distinguishes configured, usable, active,
 and degraded lanes instead of treating a transient lane probe failure as zero configured capacity.
+Queue throughput is a separate signal: no-progress age can alarm without poisoning lane usability,
+and the capacity API reports pending, ACK-pending, redelivered, and quiescent redelivery-wait counts
+independently. Per-lane telemetry reports the current operation duration, last successful commit,
+client and token generations, remints, readiness-circuit state, and recovery reason.
+
+The ingestion durable's `max_ack_pending` is one maximum batch per local client lane. During
+shutdown, fetched or prepared work that cannot have entered a DuckLake commit is NAKed immediately.
+Only a delivery whose commit call was entered is left for its ACK timeout, because its durable
+outcome may be uncertain and must be reconciled on redelivery.
+
+The four clients share one process-owned, single-flight OAuth token provider while retaining
+independent Quack sessions. Provider throttling and outages apply jittered exponential backoff and
+honour `Retry-After`; Quack authentication rejection invalidates the affected token generation.
+A process-local DuckBasin circuit stops new pulls after typed transport or provider failures,
+NAKs known-uncommitted deliveries with a bounded delay, admits one half-open probe, and restores
+the remaining lanes one successful probe at a time. These infrastructure failures never consume a
+job's deterministic processing-failure budget. Because native DuckDB calls cannot be cancelled
+safely, a call that exceeds the code-owned hard deadline terminates the process non-zero so the
+deployment supervisor replaces every client.
 
 ## Catalogue ingress, materialization, and housekeeping
 
@@ -79,6 +98,10 @@ JetStream confirms each deterministic Atlas publication.
 Materialization workers own filtered durable NATS consumers. They create the
 consumer before bootstrap, pause by stopping pulls, and coalesce ticks into
 transactional keyed replacement, idempotent append, or explicit full refresh.
+Concurrent DuckLake transaction and compaction conflicts receive bounded local retries. Persistent
+conflicts leave bootstrap state unchanged or NAK live ticks for redelivery; they do not fail the
+incarnation. Other failures retain their Postgres checkpoint and can be explicitly retried, while
+incompatible source or target DDL remains a terminal schema block for that incarnation.
 Keyed and append bootstrap is incremental: the worker first creates an empty private target, then
 interleaves live CDC refreshes with restart-safe historical hash partitions. Each partition is one
 bounded transaction, partial rows remain private in DuckLake, and Postgres stores the next
@@ -97,6 +120,10 @@ work; the final result-key predicate remains only a correctness fence. Increment
 therefore directly reference their driving table and anchor large dependent scans beneath that
 scoped relation. Materialization workers do not consume Basin CDC directly. The target table
 identity remains stable.
+Compiler definitions and physical metadata are read inside one short, session-affine remote
+transaction. Unrelated materialization DML may advance the lake between reads, but cannot create a
+mixed compiler snapshot or permanently fail an incarnation; residual snapshot contention is
+retried from the persisted materialization cursor.
 Schema boundaries block the incarnation instead of being crossed implicitly.
 
 DuckBasin owns compaction, old-file cleanup, snapshot retention, and every other physical-lake
@@ -151,8 +178,10 @@ unlimited storage. Atlas's normal namespace credentials use account-wide `>` per
 dedicated NATS account because JetStream KV data uses `$KV.*` wire subjects; account isolation is
 the security boundary, not an `atlas.>` permission filter.
 Consumer reconciliation is also startup-only: Atlas reads an existing durable with
-`consumer_info()` and calls `add_consumer()` only when it is absent. API requests and scheduler
-ticks reuse the API process's initialized graph-runtime handles and never provision JetStream.
+`consumer_info()` and creates it when absent. The ingestion worker also reconciles its mutable ACK
+wait, delivery ceiling, and delivery-attempt limits to the current code-owned contract; immutable
+subject or acknowledgement-policy mismatches fail closed. API requests and scheduler ticks reuse
+the API process's initialized graph-runtime handles and never provision JetStream.
 
 API replicas also use the file-backed `atlas_catalogue_queries` KV bucket for active and recent
 interactive-query status and cross-replica cancellation. It retains one revision per query for one

@@ -10,7 +10,6 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from atlas_sql import AtlasCompiler, CompilationResult
 from repository.catalogue.query import classify_select
 from .models import CatalogueQuery, CatalogueQueryRevision
 from .schemas import (
@@ -31,10 +30,8 @@ def create_query(
     description: str | None,
     sql: str,
     change_note: str | None,
-    compilation: CompilationResult | None = None,
 ) -> CatalogueQueryDetail:
     classify_select(sql)
-    compilation = compilation or _compile_without_catalogue_snapshot(sql)
     query = CatalogueQuery(slug=slug, description=description)
     session.add(query)
     _flush_slug(session)
@@ -43,7 +40,6 @@ def create_query(
         sql=sql,
         change_note=change_note,
         number=1,
-        compilation=compilation,
     )
     session.add(revision)
     session.flush()
@@ -90,12 +86,10 @@ def update_query(
     slug: str | None,
     description: str | None,
     change_note: str | None,
-    compilation: CompilationResult | None = None,
 ) -> CatalogueQueryDetail:
     locked = _lock(session, query.id)
     _expect_revision(locked, expected_revision_id)
     classify_select(sql)
-    compilation = compilation or _compile_without_catalogue_snapshot(sql)
     current = _current_revision(locked)
     if slug is not None:
         locked.slug = slug
@@ -114,7 +108,6 @@ def update_query(
             sql=sql,
             change_note=change_note,
             number=next_number,
-            compilation=compilation,
         )
         session.add(revision)
         session.flush()
@@ -130,7 +123,6 @@ def restore_revision(
     *,
     expected_revision_id: UUID,
     change_note: str | None,
-    compilation: CompilationResult | None = None,
 ) -> CatalogueQueryDetail:
     return update_query(
         session,
@@ -140,7 +132,6 @@ def restore_revision(
         slug=None,
         description=query.description,
         change_note=change_note or f"Restore revision {revision.revision}",
-        compilation=compilation,
     )
 
 
@@ -165,11 +156,6 @@ def record(query: CatalogueQuery) -> CatalogueQueryRecord:
         current_revision_id=current.id,
         current_revision=current.revision,
         sql=current.sql,
-        compiler_outcome=current.compiler_outcome,
-        compiler_diagnostics=current.compiler_diagnostics,
-        compiler_dependencies=current.compiler_dependencies,
-        compiler_version=current.compiler_version,
-        catalogue_definition_revision=current.catalogue_definition_revision,
         archived_at=query.archived_at,
         created_at=query.created_at,
         updated_at=query.updated_at,
@@ -191,11 +177,6 @@ def revision_record(revision: CatalogueQueryRevision) -> CatalogueQueryRevisionR
         sql=revision.sql,
         sql_hash=revision.sql_hash,
         change_note=revision.change_note,
-        compiler_outcome=revision.compiler_outcome,
-        compiler_diagnostics=revision.compiler_diagnostics,
-        compiler_dependencies=revision.compiler_dependencies,
-        compiler_version=revision.compiler_version,
-        catalogue_definition_revision=revision.catalogue_definition_revision,
         created_at=revision.created_at,
     )
 
@@ -234,7 +215,6 @@ def _append_revision(
     sql: str,
     change_note: str | None,
     number: int,
-    compilation: CompilationResult,
 ) -> CatalogueQueryRevision:
     return CatalogueQueryRevision(
         query=query,
@@ -242,29 +222,11 @@ def _append_revision(
         sql=sql.strip(),
         sql_hash=_hash(sql),
         change_note=change_note,
-        compiler_outcome=compilation.outcome.value,
-        compiler_diagnostics=[
-            item.model_dump(mode="json") for item in compilation.diagnostics
-        ],
-        compiler_dependencies=[
-            item.model_dump(mode="json") for item in compilation.dependencies
-        ],
-        compiler_version=compilation.compiler_version,
-        catalogue_definition_revision=compilation.catalogue_revision,
     )
 
 
 def _hash(sql: str) -> str:
     return sha256(sql.strip().encode()).hexdigest()
-
-
-def _compile_without_catalogue_snapshot(sql: str) -> CompilationResult:
-    """Compile non-API authoring paths that have no live definition loader."""
-
-    return AtlasCompiler.embedded().compile(
-        sql,
-        coverage_source="saved_query_authoring",
-    )
 
 
 def _flush_slug(session: Session) -> None:

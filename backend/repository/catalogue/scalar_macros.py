@@ -62,7 +62,11 @@ class CatalogueScalarMacroStore:
         return next((macro for macro in self.list() if macro.macro_name == name), None)
 
     def create(
-        self, *, name: str, parameters: list[str], sql: str
+        self,
+        *,
+        name: str,
+        parameters: list[str],
+        sql: str,
     ) -> DuckLakeScalarMacro:
         normalized = _validate(name, parameters, sql)
         if self.get(name) is not None:
@@ -75,7 +79,11 @@ class CatalogueScalarMacroStore:
         return self._require(name)
 
     def replace(
-        self, *, name: str, parameters: list[str], sql: str
+        self,
+        *,
+        name: str,
+        parameters: list[str],
+        sql: str,
     ) -> DuckLakeScalarMacro:
         normalized = _validate(name, parameters, sql)
         self._execute_definition(
@@ -110,7 +118,6 @@ class CatalogueScalarMacroStore:
                 f"Scalar macro {SCALAR_MACRO_SCHEMA}.{name} was not found after mutation."
             )
         return macro
-
 
 def _validate(name: str, parameters: list[str], sql: str) -> tuple[str, ...]:
     _validate_name(name, "Scalar macro name")

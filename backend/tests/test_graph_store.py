@@ -5,6 +5,7 @@ import unittest
 from uuid import uuid4
 
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -24,7 +25,11 @@ from runtime.graph_queue import (
     NavigationReadinessWork,
     edge_evaluation_identity,
 )
-from runtime.graph_runs import create_graph_run
+from runtime.graph_runs import (
+    EdgeEvaluationRetryable,
+    create_graph_run,
+    evaluate_edge,
+)
 from runtime.edge_sql import FrozenEdgeSql
 from runtime.graph_store import AsyncGraphRuntimeStore, GraphRuntimeStore
 from tests.graph_fixtures import policy_snapshot, snapshot
@@ -514,6 +519,118 @@ class AsyncGraphRuntimeStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repeated.root_admission_cursor, 1)
         self.assertEqual(len(await self.store.list_requests()), 1)
         self.assertEqual(compilations, len(graph.edges))
+
+    async def test_postgres_pool_timeout_returns_edge_to_pending(self) -> None:
+        graph = snapshot()
+        frozen_edge = graph.edges[0].model_copy(
+            update={"executable_sql": graph.edges[0].sql}
+        )
+        graph = graph.model_copy(update={"edges": [frozen_edge]})
+        run = await self.store.create_run(
+            new_graph_run(graph, ["https://example.com/"])
+        )
+        admitted = await self.store.admit_request(
+            run_id=run.id,
+            node_id=run.snapshot.root_node_id,
+            url="https://example.com/",
+            effective_policy_snapshot=policy_snapshot(),
+        )
+        assert admitted.request is not None
+        request_claim = uuid4()
+        await self.store.update_request(
+            admitted.request.id,
+            lambda request: request.model_copy(
+                update={
+                    "status": "crawling",
+                    "claim_token": request_claim,
+                }
+            ),
+        )
+        crawl_id = uuid4()
+        readiness = NavigationReadinessWork(
+            event_id=uuid4(),
+            crawl_id=crawl_id,
+            graph_run_id=run.id,
+            crawl_request_id=admitted.request.id,
+            generation=1,
+            occurred_at=datetime.now(UTC),
+        )
+        await self.store.complete_acquisition(
+            request_id=admitted.request.id,
+            generation=1,
+            claim_token=request_claim,
+            document_id="document",
+            acquisition_attempts=(),
+            readiness=readiness,
+        )
+        identity = edge_evaluation_identity(
+            run.id,
+            admitted.request.id,
+            crawl_id,
+            frozen_edge.id,
+        )
+        work = EdgeWork(
+            graph_run_id=run.id,
+            crawl_request_id=admitted.request.id,
+            crawl_id=crawl_id,
+            edge_id=frozen_edge.id,
+            generation=1,
+            navigation={
+                "object_name": "runtime/navigation/document.arrow",
+                "sha256": "a" * 64,
+                "schema_version": 1,
+                "recipe": "page-links-v1",
+                "row_count": 1,
+                "byte_size": 1,
+            },
+        )
+        evaluation = EdgeEvaluation(
+            identity=identity,
+            graph_run_id=run.id,
+            crawl_request_id=admitted.request.id,
+            crawl_id=crawl_id,
+            edge_id=frozen_edge.id,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        await self.store.activate_navigation(
+            event=readiness,
+            edges=((evaluation, work),),
+        )
+
+        class ExhaustedPolicyResolver:
+            def prepare(self, _urls) -> None:
+                raise SQLAlchemyTimeoutError("pool exhausted")
+
+            def __call__(self, _url: str) -> dict:
+                raise AssertionError("admission must not run")
+
+        with self.assertRaises(EdgeEvaluationRetryable):
+            await evaluate_edge(
+                runs=self.store,
+                requests=self.store,
+                progress=self.store,
+                jetstream=None,
+                work=work,
+                execute_urls=lambda _sql, _parameters: [
+                    "https://example.com/child"
+                ],
+                policy_resolver=ExhaustedPolicyResolver(),
+            )
+
+        current_evaluation = await self.store.get_edge_evaluation(identity)
+        assert current_evaluation is not None
+        self.assertEqual(current_evaluation.status, "pending")
+        self.assertIsNone(current_evaluation.claim_token)
+        self.assertIsNone(current_evaluation.claim_expires_at)
+        self.assertEqual(current_evaluation.output_count, 0)
+        current_request = await self.store.get_request(admitted.request.id)
+        assert current_request is not None
+        self.assertEqual(current_request.status, "evaluating_edges")
+        current_run = await self.store.get_run(run.id)
+        assert current_run is not None
+        self.assertEqual(current_run.failed_request_count, 0)
+        self.assertEqual(current_run.error_count, 0)
 
 
 if __name__ == "__main__":

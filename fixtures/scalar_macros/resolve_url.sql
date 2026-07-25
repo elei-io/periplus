@@ -1,3 +1,4 @@
+-- atlas:description=Resolves a relative or absolute URL value against its captured source URL.
 CREATE OR REPLACE MACRO resolve_url(source, href) AS (
     WITH RECURSIVE
     parts AS (

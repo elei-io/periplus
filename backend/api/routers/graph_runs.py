@@ -25,6 +25,7 @@ from config.performance import (
     duckdb_memory_limit,
     duckdb_threads,
 )
+from control.catalogue_materializations.models import CatalogueMaterialization
 from control.crawl_graphs.models import CrawlGraph
 from control.crawl_graphs.schemas import (
     DEFAULT_GRAPH_RUN_MAX_CRAWLS,
@@ -140,6 +141,10 @@ class CatalogueExecutorCapacity(BaseModel):
     active: int
     degraded: int
     backlog: int
+    pending: int
+    ack_pending: int
+    redelivered: int
+    waiting_for_redelivery: int
 
 
 class CrawlConcurrencyLimits(BaseModel):
@@ -148,7 +153,7 @@ class CrawlConcurrencyLimits(BaseModel):
     runtime_active: int
     workers: list[RuntimeWorkerCapacity]
     catalogue_executors: list[CatalogueExecutorCapacity]
-    tuning: RuntimeSizing
+    tuning: "RuntimeSizing"
 
 
 class RuntimeSizing(BaseModel):
@@ -230,6 +235,7 @@ async def _run_stage_counts(progress, run: GraphRun) -> tuple[int, int, int]:
 @router.get("/capacity", response_model=CrawlConcurrencyLimits)
 async def capacity(
     runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
+    session: Annotated[Session, Depends(get_session)],
 ) -> CrawlConcurrencyLimits:
     workers = sorted(
         await list_worker_states(runtime.workers),
@@ -240,12 +246,16 @@ async def capacity(
         key=lambda value: value.worker_id,
     )
 
-    async def consumer_backlog(durable: str) -> int:
+    async def consumer_counts(durable: str) -> tuple[int, int, int]:
         try:
             info = await runtime.jetstream.consumer_info(WORK_STREAM, durable)
         except NotFoundError:
-            return 0
-        return int(info.num_pending or 0) + int(info.num_ack_pending or 0)
+            return 0, 0, 0
+        return (
+            int(info.num_pending or 0),
+            int(info.num_ack_pending or 0),
+            int(info.num_redelivered or 0),
+        )
 
     try:
         materialization_consumers = await runtime.jetstream.consumers_info(
@@ -253,52 +263,82 @@ async def capacity(
         )
     except NotFoundError:
         materialization_consumers = []
-    catalogue_backlogs = {
-        "ingestion": await consumer_backlog(INGESTION_DURABLE),
-        "materialization": sum(
-            int(info.num_pending or 0) + int(info.num_ack_pending or 0)
-            for info in materialization_consumers
-            if (info.config.filter_subject or "").startswith(
+    active_materialization_consumers = set(
+        session.scalars(
+            select(CatalogueMaterialization.nats_consumer_name).where(
+                CatalogueMaterialization.archived_at.is_(None)
+            )
+        )
+    )
+    relevant_materialization_consumers = [
+        info
+        for info in materialization_consumers
+        if (
+            (info.config.filter_subject or "").startswith(
                 f"{DML_SUBJECT_PREFIX}."
             )
+            and (info.name or info.config.durable_name)
+            in active_materialization_consumers
+        )
+    ]
+    catalogue_queues = {
+        "ingestion": await consumer_counts(INGESTION_DURABLE),
+        "materialization": (
+            sum(
+                int(info.num_pending or 0)
+                for info in relevant_materialization_consumers
+            ),
+            sum(
+                int(info.num_ack_pending or 0)
+                for info in relevant_materialization_consumers
+            ),
+            sum(
+                int(info.num_redelivered or 0)
+                for info in relevant_materialization_consumers
+            ),
         ),
     }
-    catalogue_executors = [
-        CatalogueExecutorCapacity(
-            capability=capability,
-            worker_count=sum(
-                worker.capability == capability
-                for worker in catalogue_workers
-            ),
-            configured_capacity=sum(
-                worker.configured_capacity
-                for worker in catalogue_workers
-                if worker.capability == capability
-            ),
-            capacity=sum(
-                worker.usable_capacity
-                for worker in catalogue_workers
-                if worker.capability == capability and worker.process_ready
-            ),
-            active=sum(
-                worker.active_operation_count
-                for worker in catalogue_workers
-                if worker.capability == capability
-            ),
-            degraded=sum(
-                worker.configured_capacity
-                - (
-                    worker.usable_capacity
-                    if worker.process_ready
-                    else 0
-                )
-                for worker in catalogue_workers
-                if worker.capability == capability
-            ),
-            backlog=catalogue_backlogs[capability],
+    catalogue_executors: list[CatalogueExecutorCapacity] = []
+    for capability in ("ingestion", "materialization"):
+        configured_capacity = sum(
+            worker.configured_capacity
+            for worker in catalogue_workers
+            if worker.capability == capability
         )
-        for capability in ("ingestion", "materialization")
-    ]
+        usable_capacity = sum(
+            worker.usable_capacity
+            for worker in catalogue_workers
+            if worker.capability == capability and worker.process_ready
+        )
+        active = sum(
+            worker.active_operation_count
+            for worker in catalogue_workers
+            if worker.capability == capability
+        )
+        pending, ack_pending, redelivered = catalogue_queues[capability]
+        catalogue_executors.append(
+            CatalogueExecutorCapacity(
+                capability=capability,
+                worker_count=sum(
+                    worker.capability == capability
+                    for worker in catalogue_workers
+                ),
+                configured_capacity=configured_capacity,
+                capacity=usable_capacity,
+                active=active,
+                degraded=configured_capacity - usable_capacity,
+                backlog=pending + ack_pending,
+                pending=pending,
+                ack_pending=ack_pending,
+                redelivered=redelivered,
+                # JetStream does not publish per-message delayed-NAK deadlines.
+                # A quiescent consumer with only ACK-pending deliveries is the
+                # bounded, server-authoritative wait state we can prove.
+                waiting_for_redelivery=(
+                    ack_pending if pending == 0 and active == 0 else 0
+                ),
+            )
+        )
     return CrawlConcurrencyLimits(
         worker_count=len(workers),
         runtime_capacity=sum(worker.capacity for worker in workers),

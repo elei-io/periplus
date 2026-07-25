@@ -42,13 +42,9 @@ def run_hot_path_benchmark(
         [samples],
     ).fetchall()
     crawl_rows = catalogue.trusted_connection.execute(
-        "SELECT crawl.document_id, requested.normalized_url, "
-        "effective.normalized_url, crawl.policy_config_hash, crawl.captured_at FROM "
+        "SELECT crawl.document_id, crawl.requested_url, "
+        "crawl.url, crawl.effective_policy_hash, crawl.content_captured_at FROM "
         f"{table('crawls')} AS crawl "
-        f"JOIN {table('urls')} AS requested "
-        "ON requested.url_id = crawl.requested_url_id "
-        f"JOIN {table('urls')} AS effective "
-        "ON effective.url_id = coalesce(crawl.final_url_id, crawl.requested_url_id) "
         "WHERE crawl.document_id IS NOT NULL "
         "LIMIT ?",
         [samples],
@@ -64,7 +60,7 @@ def run_hot_path_benchmark(
             lambda normalized_url=normalized_url, config_hash=config_hash: (
                 service.find_cached_crawls(
                     normalized_url=str(normalized_url),
-                    policy_config_hash=str(config_hash),
+                    effective_policy_hash=str(config_hash),
                     limit=1,
                 )
             )
@@ -155,11 +151,11 @@ def _representative_queries(
     queries = {
         "date_bounded_crawls": (
             """
-            SELECT crawl_id, document_id, captured_at, requested_url_id
+            SELECT crawl_id, document_id, content_captured_at, requested_url
             FROM crawls
-            WHERE captured_at >= $window_start
-              AND captured_at < $window_end
-            ORDER BY captured_at DESC
+            WHERE completed_at >= $window_start
+              AND completed_at < $window_end
+            ORDER BY completed_at DESC
             LIMIT $limit
             """,
             window_parameters,
@@ -176,15 +172,15 @@ def _representative_queries(
         "date_bounded_crawl_element_join": (
             """
             WITH bounded_crawls AS MATERIALIZED (
-                SELECT crawl_id, document_id, captured_at
+                SELECT crawl_id, document_id, completed_at
                 FROM crawls
-                WHERE captured_at >= $window_start
-                  AND captured_at < $window_end
+                WHERE completed_at >= $window_start
+                  AND completed_at < $window_end
                   AND document_id IS NOT NULL
-                ORDER BY captured_at DESC
+                ORDER BY completed_at DESC
                 LIMIT $limit
             )
-            SELECT c.crawl_id, c.captured_at, e.element_index,
+            SELECT c.crawl_id, c.completed_at, e.element_index,
                    macros.get_attribute(e.attributes, 'href') AS href
             FROM bounded_crawls AS c
             JOIN macros.query_selector_all(

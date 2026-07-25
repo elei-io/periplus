@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 from repository.catalogue.compiler_definitions import (
     CatalogueCompilerDefinitionCache,
+    CatalogueCompilerSnapshotChanged,
     read_catalogue_compiler_definitions,
 )
 
@@ -67,6 +68,7 @@ class CatalogueCompilerDefinitionSnapshotTests(unittest.TestCase):
         )
         self.assertTrue(snapshot.revision)
         self.assertEqual(snapshot.tables[0].table_name, "documents")
+        self.assertEqual(snapshot.tables[0].contract_version, "1.0.0")
         self.assertEqual(snapshot.tables[0].estimated_rows, 1000)
         self.assertEqual(snapshot.tables[0].file_size_bytes, 32_000)
 
@@ -99,7 +101,10 @@ class CatalogueCompilerDefinitionSnapshotTests(unittest.TestCase):
             )
         connection.execute.return_value.fetchall.side_effect = rows
 
-        with self.assertRaisesRegex(RuntimeError, "three consecutive"):
+        with self.assertRaisesRegex(
+            CatalogueCompilerSnapshotChanged,
+            "three consecutive",
+        ):
             read_catalogue_compiler_definitions(
                 connection,
                 catalogue_alias="atlas",

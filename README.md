@@ -26,7 +26,7 @@ queries, views, and materializations without requiring a separate result-renderi
 Requirements:
 
 - Python 3.14 and [uv](https://docs.astral.sh/uv/) for backend development.
-- Node.js 24 and npm for the Atlas console and web development.
+- Node.js 22 or newer and npm for the Atlas console and web development.
 - Docker with Docker Compose for Atlas application processes.
 - Remote Postgres, an Atlas NATS account, a Basin CDC NATS account, DuckBasin, an
   S3-compatible raw-object repository, and a standard CDP endpoint.
@@ -62,18 +62,12 @@ attachment for every DuckDB client. The API owns a bounded pool of those managed
 validated, read-only workbench queries and Arrow IPC result streaming. The browser never receives
 Quack, Postgres, DuckLake, or object-store credentials.
 
-The home page runs a server-owned PydanticAI analytics agent when `OPENAI_API_KEY` is configured.
-Each question is isolated. `ATLAS_IDEA_MODEL` inspects catalogue metadata and plans three to five
-schema-grounded analytical directions without running SQL. Concurrent `ATLAS_SQL_MODEL` agents
-investigate them with read-only catalogue
-discovery and SQL. `ATLAS_HANDOFF_MODEL` turns each completed investigation into one validated,
-standalone query that can be opened in the workbench, and the idea model synthesizes the findings.
-Atlas stores no question, answer,
-conversation, or result history. The response keeps all three directions distinct and streams every
-successful analytical SQL query with its bounded rows. Catalogue tools retain the same read-only
-validator, client-pool limits, timeouts, cancellation, and result limits as the SQL workbench.
-The planner's finite budget is `ATLAS_IDEA_TOOL_CALL_LIMIT`; its model-request allowance is derived
-from that budget so every permitted metadata call still leaves room to return the typed plan.
+The console exposes a server-owned PydanticAI catalogue assistant when `OPENAI_API_KEY` is
+configured. `.ai "question"` sends a small, bounded slice of context held by the current console
+process. The API persists no prompts or replies. One agent may inspect public catalogue metadata and
+run validated read-only SQL through the same bounded query path as the workbench. It returns either
+a concise message or up to three validated SQL suggestions. The response lists only suggestion
+titles and descriptions; `.ai show 2` reveals SQL and `.ai run 2` explicitly executes it.
 
 Run `atlas` without a command to enter the interactive console. Interactive
 commands start with a dot:
@@ -85,6 +79,14 @@ atlas> .help
 atlas> .clear
 atlas> .graphs list
 atlas> .graphs show single-page
+atlas> .ai "How are book prices distributed?"
+atlas> .ai show 2
+atlas> .ai run 2
+atlas> select * from elements limit 10;
+atlas> .describe elements
+atlas> .status
+atlas> .history
+atlas> .completion reload
 ```
 
 Pass a command directly for headless use:
@@ -92,6 +94,7 @@ Pass a command directly for headless use:
 ```sh
 npm run atlas -- graphs list
 npm run atlas -- --format json graphs list
+npm run atlas -- "select count(*) from crawls;"
 ```
 
 Commands that open a resource use `ATLAS_WEB_URL`, the optional `web_url` in
@@ -135,5 +138,6 @@ Configuration is documented alongside its defaults in [`.env.example`](.env.exam
   managed-client concurrency, and scaling.
 - [Crawl graphs](docs/CRAWL_GRAPHS.md) — graph entities, runtime semantics, messaging, and readiness.
 - [Catalogue SQL](docs/CATALOGUE_SQL.md) — analytical tables and DOM-style query helpers.
+- [Console](docs/CONSOLE.md) — shared commands, completion providers, SQL completion, and adapters.
 - [Hazards](docs/HAZARDS.md) — mistakes and complexity traps to avoid.
 - [Agent guide](AGENTS.md) — concise working rules for coding agents.

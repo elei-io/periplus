@@ -9,6 +9,8 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4, uuid5
 
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+
 from config import get_float, get_int
 from config.performance import (
     CRAWL_RUN_ACQUISITION_PENDING_LIMIT,
@@ -79,6 +81,10 @@ class EdgeEvaluationFailed(RuntimeError):
 
 class EdgeEvaluationDeferred(RuntimeError):
     pass
+
+
+class EdgeEvaluationRetryable(RuntimeError):
+    """Transient infrastructure failure that must preserve edge work."""
 
 
 def deterministic_request_id(identity: str) -> UUID:
@@ -775,6 +781,26 @@ async def evaluate_edge(
                 batch_selected = 0
     except EdgeEvaluationDeferred:
         raise
+    except SQLAlchemyTimeoutError as exc:
+        retry_count = count
+        await update_edge_evaluation(
+            requests,
+            identity,
+            lambda value: (
+                value
+                if value.claim_token != claim_token
+                else value.model_copy(
+                    update={
+                        "status": "pending",
+                        "output_count": retry_count,
+                        "claim_token": None,
+                        "claim_expires_at": None,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+            ),
+        )
+        raise EdgeEvaluationRetryable(str(exc)) from exc
     except Exception as exc:
         error_message = str(exc)
         evaluation, _request_settled = await requests.finish_edge(

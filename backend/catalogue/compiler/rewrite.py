@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from uuid import UUID
 
 from sqlglot import exp, parse_one
 from sqlglot.optimizer.scope import traverse_scope
@@ -96,7 +97,7 @@ def render_keyed_plan(
                                     table=source_alias,
                                     quoted=True,
                                 ),
-                                expression=exp.convert(value),
+                                expression=_key_literal(value),
                             )
                             for binding, value in zip(
                                 scan.key_bindings,
@@ -118,6 +119,12 @@ def render_keyed_plan(
         )
         table.replace(exp.Subquery(this=scoped, alias=outer_alias))
     return query.sql(dialect="duckdb", pretty=True)
+
+
+def _key_literal(value: object) -> exp.Expression:
+    if isinstance(value, UUID):
+        return exp.cast(exp.Literal.string(str(value)), "UUID")
+    return exp.convert(value)
 
 
 def _and(predicates: list[exp.Expression]) -> exp.Expression:

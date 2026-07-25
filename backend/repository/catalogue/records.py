@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 from ipaddress import ip_address
+import json
 from typing import Literal
 from urllib.parse import urlparse
 from uuid import UUID
@@ -24,7 +25,6 @@ _TLD_EXTRACT = tldextract.TLDExtract(suffix_list_urls=())
 
 class ArtifactRecord(CatalogueRecord):
     artifact_id: str = Field(min_length=1)
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     object_key: str = Field(min_length=1)
     size_bytes: int = Field(ge=0)
     response_media_type: str = Field(min_length=1)
@@ -32,28 +32,26 @@ class ArtifactRecord(CatalogueRecord):
     detector_name: str = Field(min_length=1)
     detector_version: str = Field(min_length=1)
     detection_confidence: float = Field(ge=0, le=1)
-    created_at: datetime
+    first_seen_at: datetime
 
 
 class DocumentRecord(CatalogueRecord):
     document_id: str = Field(min_length=1)
-    html_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    html_object_key: str = Field(min_length=1)
-    html_content_type: str = Field(min_length=1)
-    html_encoding: str = Field(min_length=1)
-    html_size_bytes: int = Field(ge=0)
-    html_compressed_size_bytes: int = Field(ge=0)
+    object_key: str = Field(min_length=1)
+    content_type: str = Field(min_length=1)
+    encoding: str = Field(min_length=1)
+    size_bytes: int = Field(ge=0)
+    compressed_size_bytes: int = Field(ge=0)
     compression: str = Field(min_length=1)
     dom_schema_version: int = Field(ge=1)
     parser_name: str = Field(min_length=1)
     parser_version: str = Field(min_length=1)
     parser_options_hash: str = Field(min_length=1)
     element_count: int = Field(ge=0)
-    created_at: datetime
+    first_seen_at: datetime
 
 
-class UrlRecord(CatalogueRecord):
-    url_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+class NormalizedUrl(CatalogueRecord):
     normalized_url: str = Field(min_length=1)
     scheme: str = Field(min_length=1)
     host: str = Field(min_length=1)
@@ -63,7 +61,7 @@ class UrlRecord(CatalogueRecord):
     query: str
 
     @classmethod
-    def from_normalized_url(cls, normalized_url: str) -> UrlRecord:
+    def from_normalized_url(cls, normalized_url: str) -> NormalizedUrl:
         parsed = urlparse(normalized_url)
         host = (parsed.hostname or "").lower()
         scheme = parsed.scheme.lower()
@@ -75,7 +73,6 @@ class UrlRecord(CatalogueRecord):
         else:
             registrable_domain = host
         return cls(
-            url_id=hashlib.sha256(normalized_url.encode()).hexdigest(),
             normalized_url=normalized_url,
             scheme=scheme,
             host=host,
@@ -93,24 +90,30 @@ class CrawlRecord(CatalogueRecord):
     graph_id: UUID
     graph_run_id: UUID
     graph_node_id: UUID
-    crawl_request_id: UUID
     source_crawl_id: UUID | None = None
     source_edge_id: UUID | None = None
-    requested_url_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    final_url_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    captured_at: datetime
+    requested_url: str = Field(min_length=1)
+    url: str = Field(min_length=1)
+    scheme: str = Field(min_length=1)
+    host: str = Field(min_length=1)
+    port: int = Field(ge=0, le=65535)
+    registrable_domain: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    query: str
+    started_at: datetime
+    completed_at: datetime
+    content_captured_at: datetime | None = None
     status_code: int | None = Field(default=None, ge=100, le=599)
-    duration_ms: int | None = Field(default=None, ge=0)
     response_media_type: str | None = Field(default=None, min_length=1)
-    response_filename: str | None = Field(default=None, min_length=1, max_length=1024)
-    policy_config_hash: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
-    policy_config_json: dict[str, JsonValue] = Field(default_factory=dict)
-    crawl_policy_id: UUID | None = None
+    policy_schema_version: int = Field(ge=1)
+    effective_policy_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    effective_policy: dict[str, JsonValue]
     outcome: Literal["success", "skipped", "failed"]
     failure_code: str | None = None
     failure_stage: str | None = None
     failure_retryable: bool | None = None
     failure_detail: str | None = Field(default=None, max_length=2048)
+
     @model_validator(mode="after")
     def validate_outcome(self) -> CrawlRecord:
         has_failure = self.failure_code is not None
@@ -137,8 +140,46 @@ class CrawlRecord(CatalogueRecord):
             raise ValueError("a contentless crawl must be failed or skipped")
         if captured_count == 1 and self.outcome == "failed":
             raise ValueError("a crawl with captured content cannot have a failed outcome")
+        if (self.content_captured_at is not None) != (captured_count == 1):
+            raise ValueError(
+                "content_captured_at must be present exactly when content was retained"
+            )
         if self.artifact_id is not None and self.response_media_type is None:
             raise ValueError("an artifact crawl requires its response media type")
+        if self.started_at > self.completed_at:
+            raise ValueError("crawl completed_at cannot precede started_at")
+        if (
+            self.content_captured_at is not None
+            and self.content_captured_at > self.completed_at
+        ):
+            raise ValueError("content capture cannot follow crawl completion")
+        effective = NormalizedUrl.from_normalized_url(self.url)
+        if (
+            self.scheme,
+            self.host,
+            self.port,
+            self.registrable_domain,
+            self.path,
+            self.query,
+        ) != (
+            effective.scheme,
+            effective.host,
+            effective.port,
+            effective.registrable_domain,
+            effective.path,
+            effective.query,
+        ):
+            raise ValueError("crawl URL components must match its effective URL")
+        NormalizedUrl.from_normalized_url(self.requested_url)
+        policy_json = json.dumps(
+            self.effective_policy,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        if hashlib.sha256(policy_json.encode()).hexdigest() != self.effective_policy_hash:
+            raise ValueError(
+                "effective_policy_hash must match canonical effective_policy JSON"
+            )
         return self
 
 
@@ -147,8 +188,8 @@ class CrawlAttemptRecord(CatalogueRecord):
     attempt_number: int = Field(ge=1)
     started_at: datetime
     completed_at: datetime
-    requested_url_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    final_url_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    requested_url: str = Field(min_length=1)
+    url: str = Field(min_length=1)
     status_code: int | None = Field(default=None, ge=100, le=599)
     response_media_type: str | None = Field(default=None, min_length=1)
     outcome: Literal["success", "retry", "skipped", "failed"]
@@ -159,6 +200,8 @@ class CrawlAttemptRecord(CatalogueRecord):
     def validate_timing(self) -> CrawlAttemptRecord:
         if self.completed_at < self.started_at:
             raise ValueError("crawl attempt completed_at cannot precede started_at")
+        NormalizedUrl.from_normalized_url(self.requested_url)
+        NormalizedUrl.from_normalized_url(self.url)
         return self
 
 

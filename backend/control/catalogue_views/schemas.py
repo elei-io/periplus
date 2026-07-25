@@ -50,11 +50,6 @@ class CatalogueViewRecord(BaseModel):
     updated_at: datetime | None = None
     created_from_query_revision_id: UUID | None = None
     materialization: CatalogueMaterializationSummary | None = None
-    compiler_outcome: str | None = None
-    compiler_diagnostics: list[dict[str, object]] = Field(default_factory=list)
-    compiler_dependencies: list[dict[str, object]] = Field(default_factory=list)
-    compiler_version: str | None = None
-    catalogue_definition_revision: str | None = None
 
 
 class CatalogueViewListResponse(BaseModel):

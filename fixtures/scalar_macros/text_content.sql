@@ -1,3 +1,4 @@
+-- atlas:description=Returns the exact descendant text content of one structural DOM element.
 CREATE OR REPLACE MACRO text_content(p_document_id, p_element_index) AS (
     WITH parameters AS (
         SELECT
@@ -38,7 +39,7 @@ CREATE OR REPLACE MACRO text_content(p_document_id, p_element_index) AS (
     SELECT coalesce(
         string_agg(
             fragment,
-            '' ORDER BY event_index, event_phase, depth DESC
+            '' ORDER BY event_index, event_phase, depth DESC, fragment
         ) FILTER (WHERE fragment <> ''),
         ''
     )

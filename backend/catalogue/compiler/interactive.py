@@ -10,6 +10,11 @@ from sqlglot import exp
 from sqlglot.optimizer.scope import Scope
 
 from .analysis import AnalyzedCatalogueQuery, analyze_resolved_query
+from .function_safety import (
+    DETERMINISTIC_ROW_LOCAL_FUNCTION_TYPES,
+    VOLATILE_FUNCTION_NAMES,
+    VOLATILE_FUNCTION_TYPES,
+)
 
 _PUSHDOWN_BARRIERS = (
     "distinct",
@@ -20,58 +25,6 @@ _PUSHDOWN_BARRIERS = (
     "qualify",
     "windows",
 )
-_VOLATILE_FUNCTION_TYPES = (
-    exp.CurrentDate,
-    exp.CurrentDatetime,
-    exp.CurrentTime,
-    exp.CurrentTimestamp,
-    exp.CurrentUser,
-    exp.NextValueFor,
-    exp.Rand,
-    exp.SessionUser,
-    exp.Uuid,
-)
-_VOLATILE_FUNCTION_NAMES = frozenset(
-    {
-        "currval",
-        "gen_random_uuid",
-        "nextval",
-        "now",
-        "setval",
-        "today",
-    }
-)
-_DETERMINISTIC_ROW_LOCAL_FUNCTION_TYPES = (
-    exp.Abs,
-    exp.And,
-    exp.Case,
-    exp.Cast,
-    exp.Ceil,
-    exp.Coalesce,
-    exp.Concat,
-    exp.ConcatWs,
-    exp.Extract,
-    exp.Floor,
-    exp.Greatest,
-    exp.If,
-    exp.Least,
-    exp.Left,
-    exp.Length,
-    exp.Lower,
-    exp.Not,
-    exp.Nullif,
-    exp.Or,
-    exp.Replace,
-    exp.Right,
-    exp.Round,
-    exp.StrPosition,
-    exp.Substring,
-    exp.TimestampTrunc,
-    exp.Trim,
-    exp.TryCast,
-    exp.Upper,
-)
-
 class InteractiveRewrite(StrEnum):
     BOUNDED_SCALAR_INPUT = "bounded_scalar_input"
     CATALOGUE_DEFINITION_EXPANSION = "catalogue_definition_expansion"
@@ -2322,17 +2275,17 @@ def _predicate_is_rewrite_safe(predicate: exp.Expression) -> bool:
             isinstance(
                 function,
                 (
-                    *_VOLATILE_FUNCTION_TYPES,
+                    *VOLATILE_FUNCTION_TYPES,
                     exp.AggFunc,
                     exp.Anonymous,
                     exp.Explode,
                     exp.Unnest,
                 ),
             )
-            or function.name.lower() in _VOLATILE_FUNCTION_NAMES
+            or function.name.lower() in VOLATILE_FUNCTION_NAMES
             or not isinstance(
                 function,
-                _DETERMINISTIC_ROW_LOCAL_FUNCTION_TYPES,
+                DETERMINISTIC_ROW_LOCAL_FUNCTION_TYPES,
             )
         ):
             return False
@@ -2347,15 +2300,15 @@ def _has_unapproved_scalar_function(expression: exp.Expression) -> bool:
         ):
             continue
         if (
-            isinstance(function, _VOLATILE_FUNCTION_TYPES)
-            or function.name.lower() in _VOLATILE_FUNCTION_NAMES
+            isinstance(function, VOLATILE_FUNCTION_TYPES)
+            or function.name.lower() in VOLATILE_FUNCTION_NAMES
             or isinstance(
                 function,
                 (exp.Anonymous, exp.Explode, exp.Unnest),
             )
             or not isinstance(
                 function,
-                _DETERMINISTIC_ROW_LOCAL_FUNCTION_TYPES,
+                DETERMINISTIC_ROW_LOCAL_FUNCTION_TYPES,
             )
         ):
             return True

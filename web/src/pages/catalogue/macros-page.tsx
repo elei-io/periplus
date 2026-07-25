@@ -13,7 +13,6 @@ import {
   CatalogueHero,
   CataloguePanel,
 } from "@/components/catalogue/catalogue-workspace"
-import { CompilerAdvisory } from "@/components/catalogue/compiler-advisory"
 import { formatSql } from "@/components/catalogue/sql-format"
 import { SqlEditor } from "@/components/catalogue/sql-editor"
 import { SaveTableMacroDialog } from "@/components/catalogue/save-table-macro-dialog"
@@ -331,13 +330,6 @@ function TableMacroDetail({ macro }: { macro: CatalogueTableMacroRecord }) {
         </Button>
       </div>
       <div className="grid gap-4 p-5">
-        <CompilerAdvisory
-          outcome={macro.compiler_outcome}
-          diagnostics={macro.compiler_diagnostics}
-          dependencies={macro.compiler_dependencies}
-          compilerVersion={macro.compiler_version}
-          catalogueRevision={macro.catalogue_definition_revision}
-        />
         <div className="grid gap-3 md:grid-cols-2">
           <div className="grid gap-1.5">
             <Label>Display name</Label>
@@ -468,13 +460,6 @@ function ScalarMacroDetail({ macro }: { macro: CatalogueScalarMacroRecord }) {
         </Button>
       </div>
       <div className="grid gap-4 p-5">
-        <CompilerAdvisory
-          outcome={macro.compiler_outcome}
-          diagnostics={macro.compiler_diagnostics}
-          dependencies={macro.compiler_dependencies}
-          compilerVersion={macro.compiler_version}
-          catalogueRevision={macro.catalogue_definition_revision}
-        />
         <div className="grid gap-3 md:grid-cols-2">
           <div className="grid gap-1.5">
             <Label>Display name</Label>

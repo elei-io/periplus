@@ -45,7 +45,7 @@ def main() -> None:
                            FROM main.elements AS e
                            WHERE e.document_id = c.document_id
                        ) AS stored_elements,
-                       d.html_object_key
+                       d.object_key
                 FROM main.crawls AS c
                 LEFT JOIN main.documents AS d USING (document_id)
                 WHERE c.graph_run_id = UUID '{arguments.run_id}'

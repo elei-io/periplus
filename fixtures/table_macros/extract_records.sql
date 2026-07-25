@@ -1,29 +1,26 @@
+-- atlas:description=Extracts structured records from captured pages matching a URL or URL pattern using a selector returned by macros.suggest_records.
 CREATE MACRO macros.extract_records(p_url, p_record_selector) AS TABLE (
     WITH pages AS MATERIALIZED (
         SELECT
             crawl_id,
             graph_run_id,
-            captured_at,
+            content_captured_at AS captured_at,
             document_id,
-            coalesce(final_url.normalized_url, requested_url.normalized_url) AS page_url
+            url AS page_url
         FROM crawls AS crawl
-        JOIN urls AS requested_url
-          ON requested_url.url_id = crawl.requested_url_id
-        LEFT JOIN urls AS final_url
-          ON final_url.url_id = crawl.final_url_id
         WHERE (
                 (
                     contains(p_url, '%')
                     AND (
-                        requested_url.normalized_url ILIKE p_url
-                        OR final_url.normalized_url ILIKE p_url
+                        requested_url ILIKE p_url
+                        OR url ILIKE p_url
                     )
                 )
                 OR (
                     NOT contains(p_url, '%')
                     AND (
-                        requested_url.normalized_url = p_url
-                        OR final_url.normalized_url = p_url
+                        requested_url = p_url
+                        OR url = p_url
                     )
                 )
               )

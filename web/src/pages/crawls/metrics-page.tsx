@@ -129,6 +129,11 @@ function WorkerCapacity({
           instanceLabel="replica"
           backlog={ingestionBacklog}
           backlogLabel="catalogue jobs waiting"
+          queueDetail={
+            ingestion
+              ? `${ingestion.pending.toLocaleString()} queued · ${ingestion.ack_pending.toLocaleString()} ACK-pending · ${ingestion.redelivered.toLocaleString()} redelivered · ${ingestion.waiting_for_redelivery.toLocaleString()} waiting for redelivery`
+              : undefined
+          }
         />
         <WorkerCapacityCard
           label="Materialization"
@@ -140,6 +145,11 @@ function WorkerCapacity({
           instanceLabel="replica"
           backlog={materializationBacklog}
           backlogLabel="view updates waiting"
+          queueDetail={
+            materialization
+              ? `${materialization.pending.toLocaleString()} queued · ${materialization.ack_pending.toLocaleString()} ACK-pending · ${materialization.redelivered.toLocaleString()} redelivered · ${materialization.waiting_for_redelivery.toLocaleString()} waiting for redelivery`
+              : undefined
+          }
         />
       </CardContent>
     </Card>
@@ -156,6 +166,7 @@ function WorkerCapacityCard({
   instanceLabel,
   backlog,
   backlogLabel,
+  queueDetail,
 }: {
   label: string
   used: number
@@ -166,6 +177,7 @@ function WorkerCapacityCard({
   instanceLabel: string
   backlog: number
   backlogLabel: string
+  queueDetail?: string
 }) {
   const percent = capacity > 0 ? Math.min(100, (used / capacity) * 100) : 0
   const full = capacity > 0 && used >= capacity
@@ -232,6 +244,11 @@ function WorkerCapacityCard({
       >
         {backlog.toLocaleString()} {backlogLabel}
       </p>
+      {queueDetail ? (
+        <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+          {queueDetail}
+        </p>
+      ) : null}
     </div>
   )
 }

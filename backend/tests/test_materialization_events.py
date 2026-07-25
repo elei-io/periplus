@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 from nats.js.api import DiscardPolicy, RetentionPolicy, StorageType, StreamConfig
@@ -16,8 +16,10 @@ from materialization.executor import (
     _backing_view_sql,
     _bootstrap_materialization,
     _load_bootstrap_plan,
+    _materialization_store,
     _refresh_materialization,
     _source_view,
+    reconcile_materialization_consumers,
 )
 from repository.catalogue.materializations import (
     DuckLakeTableIdentity,
@@ -26,6 +28,7 @@ from repository.catalogue.materializations import (
     physical_materialization_name,
 )
 from runtime.catalogue_events import (
+    DDL_RECONCILER_DURABLE,
     DDL_SUBJECT,
     DML_ALL_SUBJECT,
     EVENT_STREAM,
@@ -48,6 +51,29 @@ def _mock_compiler_snapshot(catalogue: MagicMock) -> None:
 
 
 class MaterializationEventContractTests(unittest.TestCase):
+    def test_compiler_metadata_reads_use_one_remote_transaction(self) -> None:
+        catalogue = MagicMock()
+        catalogue.config.alias = "atlas"
+        definitions = SimpleNamespace(
+            scalar_macros=(),
+            table_macros=(),
+            views=(),
+            scalar_functions=(),
+        )
+
+        with patch(
+            "materialization.executor.read_catalogue_compiler_definitions",
+            return_value=definitions,
+        ) as read_definitions:
+            store = _materialization_store(catalogue)
+
+        self.assertIsInstance(store, MaterializationStore)
+        catalogue.remote_transaction.assert_called_once_with()
+        read_definitions.assert_called_once_with(
+            catalogue.trusted_connection,
+            catalogue_alias="atlas",
+        )
+
     def test_persisted_backfill_state_remains_loadable_after_restart(self) -> None:
         model = SimpleNamespace(
             id=uuid4(),
@@ -213,6 +239,19 @@ class MaterializationEventContractTests(unittest.TestCase):
         key_sql = catalogue.trusted_remote_execute.call_args.args[0]
         self.assertIn('FROM "atlas"."main"."crawls"', key_sql)
         self.assertIn('hash("crawl_id") % 14 = 3', key_sql)
+
+    def test_bootstrap_uses_four_keys_per_hash_partition(self) -> None:
+        catalogue = MagicMock()
+        catalogue.config = SimpleNamespace(alias="atlas", schema="main")
+        catalogue.trusted_remote_rows.return_value = [(10,)]
+        store = MaterializationStore(catalogue)
+
+        count = store.bootstrap_partition_count(
+            source_table="crawls",
+            key_columns=("crawl_id",),
+        )
+
+        self.assertEqual(count, 3)
 
     def test_dematerialization_recovers_unrecorded_private_table_identity(self) -> None:
         materialization_id = uuid4()
@@ -609,8 +648,103 @@ class MaterializationEventContractTests(unittest.TestCase):
         self.assertIn("ducklake_table_changes(", sql)
         self.assertNotIn("cdc_dml_changes_query", sql)
 
+    def test_backfill_key_lifecycle_stays_inside_remote_transaction(
+        self,
+    ) -> None:
+        catalogue = MagicMock()
+        catalogue.config.alias = "atlas"
+        catalogue.config.schema = "main"
+        events: list[str] = []
+        catalogue.remote_transaction.return_value.__enter__.side_effect = (
+            lambda: events.append("begin")
+        )
+        catalogue.remote_transaction.return_value.__exit__.side_effect = (
+            lambda *_args: events.append("commit")
+        )
+        store = MaterializationStore(catalogue)
+        table = SimpleNamespace(table_uuid=uuid4())
+        store._checked_target = MagicMock(return_value=table)
+        store._prepare_backfill_keys = MagicMock(
+            side_effect=lambda **_kwargs: events.append("prepare")
+        )
+        store._has_changed_keys = MagicMock(
+            side_effect=lambda: events.append("read") or False
+        )
+        store._drop_changes = MagicMock(
+            side_effect=lambda: events.append("drop")
+        )
+
+        result = store.backfill_keyed_partition(
+            name="m_materialized",
+            expected_uuid=table.table_uuid,
+            sql="SELECT document_id FROM documents",
+            source_table="documents",
+            key_columns=("document_id",),
+            partition=0,
+            partition_count=1,
+        )
+
+        self.assertIs(result, table)
+        self.assertEqual(
+            events,
+            ["begin", "prepare", "read", "commit", "drop"],
+        )
+
 
 class CatalogueEventStreamTests(unittest.IsolatedAsyncioTestCase):
+    async def test_orphaned_materialization_consumers_are_deleted(self) -> None:
+        active = SimpleNamespace(
+            nats_consumer_name="atlas-materialization-active"
+        )
+
+        def consumer(name: str, subject: str):
+            return SimpleNamespace(
+                name=name,
+                config=SimpleNamespace(
+                    durable_name=name,
+                    filter_subject=subject,
+                ),
+            )
+
+        jetstream = SimpleNamespace(
+            consumers_info=AsyncMock(
+                return_value=[
+                    consumer(
+                        active.nats_consumer_name,
+                        "atlas.catalogue.dml.active",
+                    ),
+                    consumer(
+                        "atlas-materialization-orphan",
+                        "atlas.catalogue.dml.orphan",
+                    ),
+                    consumer(
+                        "other-sink",
+                        "atlas.catalogue.dml.other",
+                    ),
+                    consumer(
+                        DDL_RECONCILER_DURABLE,
+                        DDL_SUBJECT,
+                    ),
+                ]
+            ),
+            delete_consumer=AsyncMock(),
+        )
+
+        with patch(
+            "materialization.executor._active_definitions",
+            return_value=[active],
+        ):
+            deleted = await reconcile_materialization_consumers(jetstream)
+
+        self.assertEqual(
+            deleted,
+            ("atlas-materialization-orphan",),
+        )
+        jetstream.delete_consumer.assert_awaited_once_with(
+            EVENT_STREAM,
+            "atlas-materialization-orphan",
+        )
+
     async def test_concurrent_stream_creation_attaches_and_validates(self) -> None:
         config = StreamConfig(
             name=EVENT_STREAM,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from unittest.mock import patch
+from uuid import UUID
 
 import duckdb
 
@@ -126,6 +127,90 @@ class CatalogueCompilerTests(unittest.TestCase):
         self.assertEqual(
             connection.execute(result.executable_sql).fetchall(),
             connection.execute(sql).fetchall(),
+        )
+
+    def test_duckdb_stored_builtin_does_not_block_bounded_macro_input(
+        self,
+    ) -> None:
+        definition = ScalarMacroDefinition(
+            schema_name="macros",
+            macro_name="readable_text",
+            parameters=("requested_document_id", "requested_element_index"),
+            sql=(
+                "(SELECT main.\"trim\"(coalesce(string_agg("
+                "child.fragment, '' ORDER BY child.element_index), '')) "
+                "FROM elements AS child "
+                "WHERE child.document_id = requested_document_id "
+                "AND child.element_index >= requested_element_index)"
+            ),
+        )
+        sql = (
+            "SELECT macros.readable_text(document_id, element_index) "
+            "FROM elements LIMIT 10"
+        )
+
+        result = compile_catalogue_sql(
+            sql,
+            purpose=InteractiveQueryPurpose(
+                scalar_macros=(definition,)
+            ),
+        )
+
+        self.assertTrue(result.supported)
+        self.assertIn("AS MATERIALIZED", result.executable_sql or "")
+        self.assertIn(
+            "bounded_scalar_input",
+            [rewrite.rule for rewrite in result.applied_rewrites],
+        )
+        self.assertNotIn(
+            "unbounded_dom_helper",
+            [diagnostic.code for diagnostic in result.diagnostics],
+        )
+        connection = duckdb.connect()
+        self.addCleanup(connection.close)
+        connection.execute(
+            "CREATE TABLE elements("
+            "document_id INTEGER, element_index INTEGER, fragment VARCHAR"
+            "); "
+            "INSERT INTO elements "
+            "SELECT value // 4, value, ' text ' "
+            "FROM range(20) AS values(value); "
+            "CREATE SCHEMA macros; "
+            "CREATE MACRO macros.readable_text("
+            "requested_document_id, requested_element_index"
+            ") AS ("
+            "SELECT main.\"trim\"(coalesce(string_agg("
+            "child.fragment, '' ORDER BY child.element_index), '')) "
+            "FROM elements AS child "
+            "WHERE child.document_id = requested_document_id "
+            "AND child.element_index >= requested_element_index"
+            ")"
+        )
+        self.assertEqual(
+            connection.execute(result.executable_sql).fetchall(),
+            connection.execute(sql).fetchall(),
+        )
+
+    def test_same_named_non_main_function_is_not_treated_as_builtin(
+        self,
+    ) -> None:
+        result = compile_catalogue_sql(
+            "SELECT macros.effect(key) FROM source LIMIT 3",
+            purpose=InteractiveQueryPurpose(
+                scalar_macros=(
+                    ScalarMacroDefinition(
+                        schema_name="macros",
+                        macro_name="effect",
+                        parameters=("key",),
+                        sql='other_schema."trim"(key)',
+                    ),
+                )
+            ),
+        )
+
+        self.assertNotIn(
+            "bounded_scalar_input",
+            [rewrite.rule for rewrite in result.applied_rewrites],
         )
 
     def test_volatile_scalar_macro_is_not_moved_across_limit(self) -> None:
@@ -422,6 +507,60 @@ class CatalogueCompilerTests(unittest.TestCase):
         self.assertNotIn("macros.normalized", compiled)
         self.assertIn("ROW_NUMBER()", compiled)
         self.assertIn("LIMIT 2", compiled)
+
+    def test_keyed_materialization_accepts_deterministic_regex_functions(
+        self,
+    ) -> None:
+        sql = (
+            "WITH normalized AS ("
+            "  SELECT document_id, "
+            "    regexp_replace(title, '[[:space:]]+', ' ', 'g') AS title "
+            "  FROM documents"
+            ") "
+            "SELECT document_id, title FROM normalized"
+        )
+
+        compiled = _compile(sql)
+
+        self.assertIn("REGEXP_REPLACE", compiled)
+        self.assertIn(_CHANGED_KEYS, compiled)
+
+    def test_keyed_materialization_accepts_seeded_passage_text_expression(
+        self,
+    ) -> None:
+        sql = """
+            SELECT
+                document_id,
+                trim(
+                    regexp_replace(
+                        coalesce(
+                            listagg(
+                                fragment,
+                                ''
+                                ORDER BY
+                                    event_index,
+                                    event_phase,
+                                    depth DESC,
+                                    depth_phase,
+                                    fragment
+                            ),
+                            ''
+                        ),
+                        '\\s+',
+                        ' ',
+                        'g'
+                    )
+                ) AS passage_text
+            FROM document_fragments
+            GROUP BY document_id
+        """
+
+        compiled = _compile(sql, source_table="document_fragments")
+
+        self.assertIn("TRIM", compiled)
+        self.assertIn("REGEXP_REPLACE", compiled)
+        self.assertIn("LISTAGG", compiled)
+        self.assertIn(_CHANGED_KEYS, compiled)
 
     def test_full_materialization_unresolved_macro_is_structured(self) -> None:
         with self.assertRaises(QueryOptimizationUnavailable) as raised:
@@ -3197,6 +3336,29 @@ class CatalogueCompilerTests(unittest.TestCase):
         self.assertEqual(compiled.count("'doc-a'"), 2)
         self.assertEqual(compiled.count("IS NOT DISTINCT FROM NULL"), 2)
 
+    def test_bound_uuid_key_rows_render_as_typed_literals(self) -> None:
+        crawl_id = UUID("78b04ba2-0677-58dc-89f4-ad20726f5fb3")
+        compiled = _compile(
+            "SELECT crawl_id FROM crawls",
+            source_table="crawls",
+            key_columns=("crawl_id",),
+            key_rows=((crawl_id,),),
+        )
+
+        self.assertIn(
+            "CAST('78b04ba2-0677-58dc-89f4-ad20726f5fb3' AS UUID)",
+            compiled,
+        )
+        connection = duckdb.connect()
+        self.addCleanup(connection.close)
+        connection.execute("CREATE TABLE crawls(crawl_id UUID)")
+        connection.execute(
+            "INSERT INTO crawls VALUES "
+            "('78b04ba2-0677-58dc-89f4-ad20726f5fb3'), "
+            "('f49bf4bf-3548-5208-b0fe-8a0579d91614')"
+        )
+        self.assertEqual(connection.execute(compiled).fetchall(), [(crawl_id,)])
+
     def test_join_lineage_is_transitive_across_three_scans(self) -> None:
         sql = (
             "SELECT document.document_id, attribute.value "
@@ -3673,6 +3835,50 @@ class CatalogueCompilerTests(unittest.TestCase):
         )
         compiled = _compile(sql)
         self.assertEqual(compiled.count(_CHANGED_KEYS), 5)
+
+    def test_correlated_scalar_subquery_may_contain_union_all(self) -> None:
+        sql = (
+            "SELECT document.document_id, ("
+            "  SELECT string_agg(fragment, '' ORDER BY position, fragment) "
+            "  FROM ("
+            "    SELECT element_index AS position, text_direct AS fragment "
+            "    FROM elements "
+            "    WHERE elements.document_id = document.document_id "
+            "    UNION ALL "
+            "    SELECT subtree_end_index AS position, text_tail AS fragment "
+            "    FROM elements "
+            "    WHERE elements.document_id = document.document_id"
+            "  ) AS fragments"
+            ") AS text "
+            "FROM documents AS document"
+        )
+        compiled = _compile(sql)
+        connection = duckdb.connect()
+        self.addCleanup(connection.close)
+        connection.execute(
+            "CREATE TABLE documents(document_id INTEGER); "
+            "CREATE TABLE elements("
+            "document_id INTEGER, element_index INTEGER, "
+            "subtree_end_index INTEGER, text_direct VARCHAR, "
+            "text_tail VARCHAR); "
+            "INSERT INTO documents VALUES (1), (2), (3); "
+            "INSERT INTO elements VALUES "
+            "(1, 1, 2, 'a', 'b'), (2, 1, 1, 'c', 'd')"
+        )
+        connection.execute(
+            "CREATE TEMP TABLE _atlas_materialization_changed_keys("
+            "document_id INTEGER); "
+            "INSERT INTO _atlas_materialization_changed_keys VALUES (1), (3)"
+        )
+        expected = [
+            row
+            for row in connection.execute(sql).fetchall()
+            if row[0] in {1, 3}
+        ]
+        self.assertEqual(
+            connection.execute(compiled).fetchall(),
+            expected,
+        )
 
     def test_unsafe_set_operation_branch_uses_fallback(self) -> None:
         cases = (
@@ -5348,6 +5554,45 @@ class CatalogueCompilerTests(unittest.TestCase):
                 with self.assertRaises(QueryOptimizationUnavailable) as raised:
                     _compile(sql)
                 self.assertEqual(raised.exception.code, code)
+
+    def test_materialized_driver_anchor_bounds_dependent_join_scans(self) -> None:
+        sql = (
+            "WITH selected AS MATERIALIZED ("
+            "  SELECT document_id, category FROM documents"
+            ") "
+            "SELECT selected.document_id, element.value "
+            "FROM selected "
+            "LEFT JOIN elements AS element "
+            "ON (((element.category = selected.category)))"
+        )
+
+        compiled = _compile(sql)
+
+        self.assertEqual(compiled.count(_CHANGED_KEYS), 1)
+        connection = duckdb.connect()
+        self.addCleanup(connection.close)
+        connection.execute(
+            "CREATE TABLE documents("
+            "document_id INTEGER, category VARCHAR)"
+        )
+        connection.execute(
+            "CREATE TABLE elements(category VARCHAR, value VARCHAR)"
+        )
+        connection.execute(
+            "INSERT INTO documents VALUES (1, 'a'), (2, 'b'); "
+            "INSERT INTO elements VALUES ('a', 'one'), ('b', 'two'); "
+            "CREATE TEMP TABLE _atlas_materialization_changed_keys("
+            "document_id INTEGER); "
+            "INSERT INTO _atlas_materialization_changed_keys VALUES (1)"
+        )
+        self.assertEqual(connection.execute(compiled).fetchall(), [(1, "one")])
+
+        with self.assertRaises(QueryOptimizationUnavailable) as raised:
+            _compile(sql.replace("AS MATERIALIZED", "AS NOT MATERIALIZED"))
+        self.assertEqual(
+            raised.exception.code,
+            OptimizationCode.UNBOUNDED_RELATION,
+        )
 
     def test_key_alias_and_reserved_relation_raise(self) -> None:
         with self.assertRaises(QueryOptimizationUnavailable) as aliased:

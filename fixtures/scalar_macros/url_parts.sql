@@ -1,3 +1,4 @@
+-- atlas:description=Parses a URL into normalized structural components.
 CREATE OR REPLACE MACRO url_parts(value) AS (
     WITH parts AS (
         SELECT

@@ -13,6 +13,17 @@ test("interactive commands require a leading dot", () => {
 test("headless arguments map to the interactive command language", () => {
   assert.equal(headlessCommandLine(["graphs", "list"]), ".graphs list");
   assert.equal(headlessCommandLine([".help"]), ".help");
+  assert.equal(
+    headlessCommandLine(["select 42 as answer;"]),
+    "select 42 as answer;",
+  );
+});
+
+test("headless commands preserve a multi-word argument", () => {
+  assert.equal(
+    headlessCommandLine(["ai", "How are book prices distributed?"]),
+    '.ai "How are book prices distributed?"',
+  );
 });
 
 test("quoted command values remain one token", () => {

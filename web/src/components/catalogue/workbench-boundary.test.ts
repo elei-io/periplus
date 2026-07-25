@@ -26,14 +26,7 @@ function importers(fragment: string): string[] {
 test("catalogue queries stay behind the Atlas API boundary", () => {
   assert.deepEqual(importers("@duckdb/duckdb-wasm"), [])
   assert.deepEqual(importers("workbench-query-runtime"), [])
-  assert.deepEqual(importers("use-catalogue-metadata"), [
-    "pages/catalogue/workbench-page.tsx",
-  ])
-  assert.deepEqual(importers("use-catalogue-query"), [
-    "pages/catalogue/workbench-page.tsx",
-  ])
-  assert.deepEqual(importers("use-catalogue-status"), [
-    "components/catalogue/workbench-commands.ts",
-    "pages/catalogue/workbench-page.tsx",
-  ])
+  assert.deepEqual(importers("use-catalogue-metadata"), [])
+  assert.deepEqual(importers("use-catalogue-query"), [])
+  assert.deepEqual(importers("use-catalogue-status"), [])
 })

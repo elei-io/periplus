@@ -43,11 +43,6 @@ class CatalogueTableMacroRecord(BaseModel):
     created_from_query_revision_id: UUID | None
     created_at: datetime
     updated_at: datetime
-    compiler_outcome: str | None = None
-    compiler_diagnostics: list[dict[str, object]] = Field(default_factory=list)
-    compiler_dependencies: list[dict[str, object]] = Field(default_factory=list)
-    compiler_version: str | None = None
-    catalogue_definition_revision: str | None = None
 
 
 class CatalogueTableMacroListResponse(BaseModel):

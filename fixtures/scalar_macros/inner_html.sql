@@ -1,3 +1,4 @@
+-- atlas:description=Reconstructs the inner HTML of one structural DOM element from retained DOM evidence.
 CREATE OR REPLACE MACRO inner_html(p_document_id, p_element_index) AS (
     WITH parameters AS (
         SELECT

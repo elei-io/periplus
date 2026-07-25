@@ -1,3 +1,4 @@
+-- atlas:description=Readable text passages derived from retained structural DOM elements.
 -- atlas:refresh=keyed(document_id)
 CREATE VIEW views.passages AS
 WITH candidates AS (

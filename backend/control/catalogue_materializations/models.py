@@ -68,6 +68,7 @@ class CatalogueMaterialization(Base):
     display_name: Mapped[str] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_sql: Mapped[str] = mapped_column(Text)
+    fixture_source_sql: Mapped[str | None] = mapped_column(Text, nullable=True)
     view_reference_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("catalogue_view_references.id")
     )

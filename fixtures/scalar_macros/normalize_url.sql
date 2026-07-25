@@ -1,3 +1,4 @@
+-- atlas:description=Normalizes a URL into Atlas canonical comparison form.
 CREATE OR REPLACE MACRO normalize_url(value) AS (
     WITH
     source AS (
@@ -91,7 +92,13 @@ CREATE OR REPLACE MACRO normalize_url(value) AS (
                     || '='
                     || replace(url_encode(item_value), '%20', '+'),
                 '&'
-                ORDER BY name, item_value, ordinal
+                ORDER BY
+                    name,
+                    item_value,
+                    ordinal,
+                    replace(url_encode(name), '%20', '+')
+                        || '='
+                        || replace(url_encode(item_value), '%20', '+')
             ) FILTER (
                 WHERE name IS NOT NULL
                   AND NOT starts_with(lower(name), 'utm_')

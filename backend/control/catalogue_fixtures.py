@@ -17,6 +17,7 @@ from control.catalogue_queries.models import CatalogueQuery
 from control.catalogue_queries.service import create_query, detail, restore_query, update_query
 from control.catalogue_materializations.models import CatalogueMaterialization
 from control.catalogue_materializations.service import (
+    materialization_store,
     put_for_view as materialize_view,
 )
 from control.catalogue_scalar_macros.models import CatalogueScalarMacroDefinition
@@ -58,6 +59,7 @@ class RelationFixture:
     fixture_path: str
     name: str
     sql: str
+    description: str | None = None
     parameters: tuple[str, ...] = ()
     parameter_defaults: tuple[tuple[str, str], ...] = ()
     partition_column: str | None = None
@@ -81,6 +83,11 @@ _FIXTURE_REFRESH = re.compile(
     r"(?:\((?P<columns>[a-z_][a-z0-9_]*(?:\s*,\s*[a-z_][a-z0-9_]*)*)\))?\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
+_FIXTURE_METADATA = re.compile(
+    r"^\s*--\s*atlas:(?P<name>[a-z][a-z0-9-]*)\s*=\s*(?P<value>.*?)\s*$",
+    re.IGNORECASE,
+)
+_FIXTURE_METADATA_FIELDS = frozenset({"description"})
 
 
 def seed_catalogue_fixtures(
@@ -100,7 +107,7 @@ def seed_catalogue_fixtures(
             _parse_relation_fixture(fixtures_root, path, kind="VIEW", schema=VIEW_SCHEMA),
         )
     materialized_fixtures: list[tuple[str, RelationFixture]] = []
-    for driver_kind in ("url", "document", "crawl"):
+    for driver_kind in ("document", "crawl"):
         for path in _sql_files(fixtures_root / "materialized_views" / driver_kind):
             fixture = _parse_relation_fixture(
                 fixtures_root,
@@ -147,6 +154,7 @@ def seed_system_catalogue_fixtures(
     paths = _sql_files(directory)
     for path in paths:
         source = path.read_text(encoding="utf-8").strip()
+        metadata = _parse_fixture_metadata(path, source)
         try:
             statements = [
                 statement for statement in parse(source, dialect="duckdb") if statement
@@ -213,7 +221,6 @@ def seed_system_catalogue_fixtures(
                 slug=path.stem,
                 parameters=parameters,
                 sql=sql,
-                description=None,
             )
             existing = session.get(CatalogueScalarMacroDefinition, created.id)
             if existing is None:
@@ -223,13 +230,17 @@ def seed_system_catalogue_fixtures(
         elif (
             existing.parameters != parameters
             or _canonical_expression(existing.sql) != _canonical_expression(sql)
+            or existing.description != metadata.get("description")
             or store.get(existing.macro_name) is None
         ):
             macro = store.replace(
-                name=existing.macro_name, parameters=parameters, sql=sql
+                name=existing.macro_name,
+                parameters=parameters,
+                sql=sql,
             )
             existing.parameters = list(macro.parameters)
             existing.sql = sql
+            existing.description = metadata.get("description")
             existing.definition_revision_id = uuid4()
             session.flush()
     active_fixture_paths = {
@@ -295,7 +306,7 @@ def _seed_query(session: Session, fixture: RelationFixture) -> None:
         created = create_query(
             session,
             slug=fixture.name,
-            description=None,
+            description=fixture.description,
             sql=fixture.sql,
             change_note=f"Seeded from {fixture.fixture_path}",
         )
@@ -314,14 +325,17 @@ def _seed_query(session: Session, fixture: RelationFixture) -> None:
     if existing.archived_at is not None:
         restore_query(session, existing)
     current = detail(existing)
-    if _canonical(current.sql) != _canonical(fixture.sql):
+    if (
+        _canonical(current.sql) != _canonical(fixture.sql)
+        or existing.description != fixture.description
+    ):
         update_query(
             session,
             existing,
             expected_revision_id=current.current_revision_id,
             sql=fixture.sql,
             slug=fixture.name,
-            description=None,
+            description=fixture.description,
             change_note=f"Updated from {fixture.fixture_path}",
         )
 
@@ -352,7 +366,7 @@ def _seed_view(
             store,
             slug=fixture.name,
             sql=fixture.sql,
-            description=None,
+            description=fixture.description,
         )
         if created.id is None:
             raise RuntimeError("Seeded view did not receive an Atlas reference.")
@@ -368,14 +382,16 @@ def _seed_view(
             f"{fixture.fixture_path} changed its view name from "
             f"{existing.view_name!r} to {fixture.name!r}; use a new fixture filename."
         )
-    current = get_view_record(session, store, existing.id)
-    if current is None or not current.available:
-        materialization = session.scalar(
-            select(CatalogueMaterialization).where(
-                CatalogueMaterialization.view_reference_id == existing.id,
-                CatalogueMaterialization.archived_at.is_(None),
-            )
+    materialization = session.scalar(
+        select(CatalogueMaterialization).where(
+            CatalogueMaterialization.view_reference_id == existing.id,
+            CatalogueMaterialization.archived_at.is_(None),
         )
+    )
+    if materialization is not None:
+        _require_current_fixture_materialization(materialization, fixture)
+    physical = store.definition_for_uuid(existing.ducklake_view_uuid)
+    if physical is None:
         if materialization is not None:
             # The selected managed lake is replaceable deployment state. If
             # its fixture-owned physical relation is absent, retire the stale
@@ -386,28 +402,46 @@ def _seed_view(
                 "Retired because the selected DuckBasin lake did not contain "
                 "this fixture-owned materialization."
             )
-        physical = next(
-            (view for view in store.list() if view.view_name == fixture.name),
-            None,
-        )
+        physical = store.definition_for_name(fixture.name)
         if physical is None:
-            physical = store.create(name=fixture.name, sql=fixture.sql)
+            physical = store.create(
+                name=fixture.name,
+                sql=fixture.sql,
+                description=fixture.description,
+            )
         elif _canonical(physical.sql) != _canonical(fixture.sql):
             physical = store.replace(
                 current_uuid=physical.view_uuid,
                 sql=fixture.sql,
+                description=fixture.description,
             )
         existing.ducklake_view_uuid = physical.view_uuid
         existing.schema_name = physical.schema_name
         existing.view_name = physical.view_name
         session.flush()
-        current = get_view_record(session, store, existing.id)
-        if current is None or not current.available:
-            raise CatalogueFixtureError(
-                f"Fixture-owned view {VIEW_SCHEMA}.{fixture.name} "
-                "could not be restored in DuckLake."
-            )
-    if _canonical(current.sql) != _canonical(fixture.sql):
+    elif (
+        materialization is None
+        and _canonical(physical.sql) != _canonical(fixture.sql)
+    ):
+        physical = store.replace(
+            current_uuid=physical.view_uuid,
+            sql=fixture.sql,
+            description=fixture.description,
+        )
+        existing.ducklake_view_uuid = physical.view_uuid
+        existing.schema_name = physical.schema_name
+        existing.view_name = physical.view_name
+        session.flush()
+    current = get_view_record(session, store, existing.id)
+    if current is None or not current.available:
+        raise CatalogueFixtureError(
+            f"Fixture-owned view {VIEW_SCHEMA}.{fixture.name} "
+            "could not be restored in DuckLake."
+        )
+    if (
+        _canonical(current.sql) != _canonical(fixture.sql)
+        or current.description != fixture.description
+    ):
         update_view(
             session,
             store,
@@ -415,7 +449,7 @@ def _seed_view(
             expected_uuid=current.ducklake_view_uuid,
             sql=fixture.sql,
             slug=fixture.name,
-            description=None,
+            description=fixture.description,
         )
 
 
@@ -434,7 +468,6 @@ def _seed_materialization(
     if reference is None:
         raise RuntimeError("Seeded materialized view reference was not found.")
     source_table = {
-        "url": "urls",
         "document": "documents",
         "crawl": "crawls",
     }[driver_kind]
@@ -444,7 +477,7 @@ def _seed_materialization(
             CatalogueMaterialization.archived_at.is_(None),
         )
     )
-    store = MaterializationStore(catalogue)
+    store = materialization_store(session, catalogue)
     if existing is None:
         _create_seeded_materialization(
             session, store, reference, fixture, driver_kind=driver_kind
@@ -466,6 +499,28 @@ def _seed_materialization(
         raise CatalogueFixtureError(
             f"{fixture.fixture_path} changed its refresh strategy; reset fixture state."
         )
+    if existing.description != fixture.description:
+        existing.description = fixture.description
+        session.flush()
+    _require_current_fixture_materialization(existing, fixture)
+
+
+def _require_current_fixture_materialization(
+    materialization: CatalogueMaterialization,
+    fixture: RelationFixture,
+) -> None:
+    """Compare fixture-authored SQL only with its persisted authored snapshot."""
+
+    if materialization.fixture_source_sql is None:
+        raise CatalogueFixtureError(
+            f"{fixture.fixture_path} materialization has no authoritative fixture "
+            "definition; reset fixture state."
+        )
+    if _canonical(materialization.fixture_source_sql) != _canonical(fixture.sql):
+        raise CatalogueFixtureError(
+            f"{fixture.fixture_path} changed its materialized SQL definition; "
+            "reset fixture state."
+        )
 
 
 def _create_seeded_materialization(
@@ -484,9 +539,8 @@ def _create_seeded_materialization(
         view_reference_id=reference.id,
         name=fixture.name,
         display_name=None,
-        description=None,
+        description=fixture.description,
         source_table={
-            "url": "urls",
             "document": "documents",
             "crawl": "crawls",
         }[driver_kind],
@@ -501,6 +555,7 @@ def _create_seeded_materialization(
     # DuckLake returns a catalogue-qualified form of a newly created view.
     # The fixture itself remains the authoritative, portable source query.
     model.source_sql = fixture.sql
+    model.fixture_source_sql = fixture.sql
     session.flush()
 
 def _seed_macro(
@@ -530,7 +585,7 @@ def _seed_macro(
             parameters=list(fixture.parameters),
             parameter_defaults=dict(fixture.parameter_defaults),
             sql=fixture.sql,
-            description=None,
+            description=fixture.description,
         )
         existing = session.get(CatalogueTableMacroDefinition, created.id)
         if existing is None:
@@ -548,6 +603,7 @@ def _seed_macro(
         tuple(existing.parameters) != fixture.parameters
         or existing.parameter_defaults != dict(fixture.parameter_defaults)
         or _canonical(existing.sql) != _canonical(fixture.sql)
+        or existing.description != fixture.description
         or store.get(existing.macro_name) is None
     ):
         update_macro(
@@ -559,12 +615,13 @@ def _seed_macro(
             parameter_defaults=dict(fixture.parameter_defaults),
             sql=fixture.sql,
             slug=fixture.name,
-            description=None,
+            description=fixture.description,
         )
 
 
 def _parse_query_fixture(root: Path, path: Path) -> RelationFixture:
     sql = path.read_text(encoding="utf-8").strip()
+    metadata = _parse_fixture_metadata(path, sql)
     try:
         classify_select(sql)
     except CatalogueQueryError as exc:
@@ -573,6 +630,7 @@ def _parse_query_fixture(root: Path, path: Path) -> RelationFixture:
         fixture_path=path.relative_to(root).as_posix(),
         name=path.stem,
         sql=sql,
+        description=metadata.get("description"),
     )
 
 
@@ -585,6 +643,7 @@ def _parse_relation_fixture(
     materialized: bool = False,
 ) -> RelationFixture:
     source = path.read_text(encoding="utf-8").strip()
+    metadata = _parse_fixture_metadata(path, source)
     partition_directives = list(_FIXTURE_DAILY_PARTITION.finditer(source))
     if len(partition_directives) > 1:
         raise CatalogueFixtureError(
@@ -699,12 +758,48 @@ def _parse_relation_fixture(
         fixture_path=path.relative_to(root).as_posix(),
         name=name,
         sql=sql,
+        description=metadata.get("description"),
         parameters=parameters,
         parameter_defaults=parameter_defaults,
         partition_column=partition_column,
         refresh_strategy=refresh_strategy,
         key_columns=key_columns,
     )
+
+
+def _parse_fixture_metadata(path: Path, source: str) -> dict[str, str]:
+    """Parse Atlas metadata from the leading SQL comment block."""
+
+    metadata: dict[str, str] = {}
+    for line in source.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if metadata:
+                continue
+            break
+        if not stripped.startswith("--"):
+            break
+        match = _FIXTURE_METADATA.fullmatch(line)
+        if match is None:
+            continue
+        name = match.group("name").lower()
+        if name not in _FIXTURE_METADATA_FIELDS:
+            continue
+        if name in metadata:
+            raise CatalogueFixtureError(
+                f"{path} may declare atlas:{name} at most once."
+            )
+        value = match.group("value").strip()
+        if not value:
+            raise CatalogueFixtureError(
+                f"{path} atlas:{name} must not be empty."
+            )
+        if len(value) > 2_000:
+            raise CatalogueFixtureError(
+                f"{path} atlas:{name} exceeds 2,000 characters."
+            )
+        metadata[name] = value
+    return metadata
 
 
 def _sql_files(directory: Path) -> list[Path]:

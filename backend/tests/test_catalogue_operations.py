@@ -6,6 +6,10 @@ from unittest.mock import MagicMock, call, patch
 import duckdb
 import psycopg
 
+from repository.catalogue.duckbasin import (
+    DuckBasinAuthenticationError,
+    DuckBasinUnavailableError,
+)
 from repository.catalogue.operations import (
     is_retryable_catalogue_unavailability,
     run_with_catalogue_retry,
@@ -20,6 +24,16 @@ class CatalogueOperationRetryTests(unittest.TestCase):
             )
         )
         self.assertFalse(is_retryable_catalogue_unavailability(ValueError("bad row")))
+        self.assertTrue(
+            is_retryable_catalogue_unavailability(
+                DuckBasinUnavailableError("Quack timed out")
+            )
+        )
+        self.assertFalse(
+            is_retryable_catalogue_unavailability(
+                DuckBasinAuthenticationError("bad service account")
+            )
+        )
 
     def test_transaction_conflicts_retry_with_bounded_backoff(self) -> None:
         attempts = 0
@@ -46,6 +60,38 @@ class CatalogueOperationRetryTests(unittest.TestCase):
 
         self.assertEqual(result, "committed")
         self.assertEqual(sleep.call_args_list, [call(0.1), call(0.2)])
+
+    def test_ducklake_compaction_conflict_retries_even_when_misclassified(
+        self,
+    ) -> None:
+        operation = MagicMock(
+            side_effect=[
+                duckdb.InvalidInputException(
+                    "Invalid Input Error: Failed to commit: Failed to commit "
+                    "DuckLake transaction. Transaction conflict - attempting "
+                    'to delete from table with index "430" - but another '
+                    "transaction has compacted it"
+                ),
+                "committed",
+            ]
+        )
+        with (
+            patch(
+                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
+                0,
+            ),
+            patch(
+                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
+                0,
+            ),
+            patch("repository.catalogue.operations.time.sleep"),
+        ):
+            result = run_with_catalogue_retry(
+                operation, description="materialization partition"
+            )
+
+        self.assertEqual(result, "committed")
+        self.assertEqual(operation.call_count, 2)
 
     def test_transaction_conflict_retry_is_bounded(self) -> None:
         operation = MagicMock(

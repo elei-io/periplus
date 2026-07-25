@@ -83,6 +83,15 @@ class CdpAcquisitionTests(unittest.TestCase):
                 failure_stage="navigation",
                 failure_retryable=False,
                 outcome="failed",
+                attempt_evidence=AcquisitionAttemptEvidence(
+                    attempt=1,
+                    started_at="2026-07-25T00:00:00Z",
+                    completed_at="2026-07-25T00:00:01Z",
+                    requested_url="https://example.com/",
+                    final_url="https://example.com/",
+                    outcome="failed",
+                    failure_code="navigation_failed",
+                ),
             )
 
         async def scenario():
@@ -741,7 +750,6 @@ href="chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_embedder.css">"""
                     repository_pipeline=pipeline,
                 )
             record = pipeline.enqueue_stored.await_args.args[0]
-            urls = pipeline.enqueue_stored.await_args.kwargs["urls"]
             attempts = pipeline.enqueue_stored.await_args.kwargs["crawl_attempts"]
             crawl_steps = pipeline.enqueue_stored.await_args.kwargs["crawl_steps"]
             raw_write = pipeline.store_raw.await_args.kwargs
@@ -749,9 +757,10 @@ href="chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_embedder.css">"""
             self.assertEqual(record.outcome, "success")
             self.assertEqual(raw_write["source_url"], "https://example.com/")
             self.assertEqual(raw_write["crawl_id"], context.crawl_request_id)
-            self.assertEqual(raw_write["captured_at"], record.captured_at)
+            self.assertEqual(raw_write["captured_at"], record.content_captured_at)
             self.assertEqual(raw_write["content_type"], "text/html")
-            self.assertGreaterEqual(len(urls), 1)
+            self.assertEqual(record.requested_url, "https://example.com/")
+            self.assertEqual(record.url, "https://example.com/")
             self.assertEqual(len(attempts), 1)
             self.assertEqual(attempts[0].status_code, 200)
             self.assertIsNone(record.failure_code)
@@ -780,6 +789,16 @@ href="chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_embedder.css">"""
             duration_seconds=0.1,
             artifact=b"%PDF-1.7\n",
             response_media_type="application/pdf",
+            attempt_evidence=AcquisitionAttemptEvidence(
+                attempt=1,
+                started_at="2026-07-25T00:00:00Z",
+                completed_at="2026-07-25T00:00:01Z",
+                requested_url="https://example.com/redirect",
+                final_url="https://example.com/final.pdf",
+                status_code=200,
+                response_media_type="application/pdf",
+                outcome="success",
+            ),
         )
 
         async def scenario():
@@ -799,7 +818,10 @@ href="chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_embedder.css">"""
                 "https://example.com/final.pdf",
             )
             self.assertEqual(artifact_write["crawl_id"], context.crawl_request_id)
-            self.assertEqual(artifact_write["captured_at"], record.captured_at)
+            self.assertEqual(
+                artifact_write["captured_at"],
+                record.content_captured_at,
+            )
             self.assertEqual(
                 artifact_write["content_type"],
                 "application/pdf",

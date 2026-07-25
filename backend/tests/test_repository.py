@@ -28,7 +28,7 @@ from repository import (
     S3ObjectStore,
     detect_artifact_media_type,
 )
-from repository.catalogue import CrawlRecord, UrlRecord
+from repository.catalogue import CrawlRecord, NormalizedUrl
 from repository.objects.config import ensure_s3_bucket_from_env, object_store_from_env
 from repository.objects.store import ObjectWriteHeaders
 from repository.exceptions import RepositoryConfigError
@@ -283,21 +283,32 @@ class ArtifactIngestionTests(unittest.TestCase):
             sha256=hashlib.sha256(payload).hexdigest(),
             size_bytes=len(payload),
         )
-        requested_url = UrlRecord.from_normalized_url(
+        requested_url = NormalizedUrl.from_normalized_url(
             "https://example.com/report.pdf"
         )
+        captured_at = datetime.now(UTC)
         crawl = CrawlRecord(
             crawl_id=uuid4(),
             artifact_id=identity.artifact_id,
             graph_id=uuid4(),
             graph_run_id=uuid4(),
             graph_node_id=uuid4(),
-            crawl_request_id=uuid4(),
-            requested_url_id=requested_url.url_id,
-            final_url_id=requested_url.url_id,
-            captured_at=datetime.now(UTC),
+            requested_url=requested_url.normalized_url,
+            url=requested_url.normalized_url,
+            scheme=requested_url.scheme,
+            host=requested_url.host,
+            port=requested_url.port,
+            registrable_domain=requested_url.registrable_domain,
+            path=requested_url.path,
+            query=requested_url.query,
+            started_at=captured_at,
+            completed_at=captured_at,
+            content_captured_at=captured_at,
             status_code=200,
             response_media_type="application/pdf",
+            policy_schema_version=1,
+            effective_policy_hash=hashlib.sha256(b"{}").hexdigest(),
+            effective_policy={},
             outcome="success",
         )
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -317,7 +328,6 @@ class ArtifactIngestionTests(unittest.TestCase):
 
             prepared = ingestor.prepare_from_raw(
                 crawl=crawl,
-                urls=(requested_url,),
                 crawl_attempts=(),
             )
 

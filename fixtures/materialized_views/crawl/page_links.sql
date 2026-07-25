@@ -1,3 +1,4 @@
+-- atlas:description=Resolved outgoing page links retained for each successful crawl observation.
 -- atlas:partition-by-day=captured_at
 -- atlas:refresh=keyed(crawl_id)
 CREATE VIEW views.page_links AS
@@ -5,21 +6,29 @@ WITH successful_crawls AS MATERIALIZED (
     SELECT
         crawl.crawl_id,
         crawl.document_id,
-        crawl.captured_at,
-        effective.url_id AS source_url_id,
-        effective.normalized_url AS page_url,
-        effective.scheme AS source_scheme,
-        effective.host AS source_host,
-        effective.port AS source_port,
-        effective.registrable_domain AS source_registrable_domain,
-        effective.path AS source_path
+        crawl.content_captured_at AS captured_at,
+        crawl.url,
+        crawl.scheme,
+        crawl.host,
+        crawl.port,
+        crawl.registrable_domain,
+        crawl.path
     FROM crawls AS crawl
-    JOIN urls AS requested ON requested.url_id = crawl.requested_url_id
-    LEFT JOIN urls AS final ON final.url_id = crawl.final_url_id
-    JOIN urls AS effective
-      ON effective.url_id = coalesce(crawl.final_url_id, crawl.requested_url_id)
     WHERE crawl.outcome = 'success'
       AND crawl.document_id IS NOT NULL
+),
+crawl_pages AS MATERIALIZED (
+    SELECT
+        crawl.crawl_id,
+        crawl.document_id,
+        crawl.captured_at,
+        crawl.url AS page_url,
+        crawl.scheme AS source_scheme,
+        crawl.host AS source_host,
+        crawl.port AS source_port,
+        crawl.registrable_domain AS source_registrable_domain,
+        crawl.path AS source_path
+    FROM successful_crawls AS crawl
 ),
 scoped_elements AS MATERIALIZED (
     SELECT
@@ -29,7 +38,8 @@ scoped_elements AS MATERIALIZED (
         element.tag,
         element.attributes
     FROM elements AS element
-    WHERE EXISTS (
+    WHERE element.tag IN ('a', 'base', 'head')
+      AND EXISTS (
         SELECT 1
         FROM successful_crawls AS crawl
         WHERE crawl.document_id = element.document_id
@@ -48,7 +58,7 @@ base_candidates AS (
                 'g'
             )
         ) AS base_url
-    FROM successful_crawls AS crawl
+    FROM crawl_pages AS crawl
     JOIN scoped_elements AS base_element USING (document_id)
     JOIN scoped_elements AS head
       ON head.document_id = base_element.document_id
@@ -67,7 +77,7 @@ base_candidates AS (
 document_bases AS (
     SELECT
         crawl_id,
-        min_by(base_url, element_index) FILTER (
+        first(base_url ORDER BY element_index, base_url) FILTER (
             WHERE macros.normalize_url(base_url) IS NOT NULL
         ) AS base_url
     FROM base_candidates
@@ -79,7 +89,8 @@ anchors AS (
         crawl.document_id,
         crawl.captured_at,
         anchor.element_index,
-        crawl.source_url_id,
+        crawl.page_url AS source_url,
+        crawl.page_url,
         crawl.source_scheme,
         crawl.source_host,
         crawl.source_port,
@@ -100,7 +111,7 @@ anchors AS (
                 'g'
             )
         ) AS resolved_url
-    FROM successful_crawls AS crawl
+    FROM crawl_pages AS crawl
     JOIN scoped_elements AS anchor USING (document_id)
     LEFT JOIN document_bases USING (crawl_id)
     WHERE anchor.tag = 'a'
@@ -131,14 +142,12 @@ SELECT
     document_id,
     captured_at,
     element_index,
-    source_url_id,
-    sha256(target_url) AS target_url_id,
+    source_url,
+    target_url,
     raw_href,
     nullif(fragment, '') AS fragment,
     CASE
-        WHEN target_url = (
-            SELECT normalized_url FROM urls WHERE url_id = source_url_id LIMIT 1
-        ) THEN 'same_url'
+        WHEN target_url = page_url THEN 'same_url'
         WHEN target.scheme = source_scheme
          AND target.host = source_host
          AND target.port = source_port

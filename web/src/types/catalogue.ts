@@ -152,11 +152,6 @@ export type CatalogueViewRecord = {
   updated_at: string | null
   created_from_query_revision_id: string | null
   materialization: CatalogueMaterializationSummary | null
-  compiler_outcome: CompilationOutcome | null
-  compiler_diagnostics: CompilationDiagnostic[]
-  compiler_dependencies: DefinitionDependency[]
-  compiler_version: string | null
-  catalogue_definition_revision: string | null
 }
 
 export type CatalogueViewList = { items: CatalogueViewRecord[] }
@@ -178,11 +173,6 @@ export type CatalogueTableMacroRecord = {
   created_from_query_revision_id: string | null
   created_at: string
   updated_at: string
-  compiler_outcome: CompilationOutcome | null
-  compiler_diagnostics: CompilationDiagnostic[]
-  compiler_dependencies: DefinitionDependency[]
-  compiler_version: string | null
-  catalogue_definition_revision: string | null
 }
 
 export type CatalogueTableMacroList = { items: CatalogueTableMacroRecord[] }
@@ -202,11 +192,6 @@ export type CatalogueScalarMacroRecord = {
   available: boolean
   created_at: string
   updated_at: string
-  compiler_outcome: CompilationOutcome | null
-  compiler_diagnostics: CompilationDiagnostic[]
-  compiler_dependencies: DefinitionDependency[]
-  compiler_version: string | null
-  catalogue_definition_revision: string | null
 }
 
 export type CatalogueScalarMacroList = { items: CatalogueScalarMacroRecord[] }
@@ -220,11 +205,6 @@ export type SavedQueryRevision = {
   sql: string
   sql_hash: string
   change_note: string | null
-  compiler_outcome: CompilationOutcome
-  compiler_diagnostics: CompilationDiagnostic[]
-  compiler_dependencies: DefinitionDependency[]
-  compiler_version: string
-  catalogue_definition_revision: string | null
   created_at: string
 }
 
@@ -236,11 +216,6 @@ export type SavedQuery = {
   current_revision_id: string
   current_revision: number
   sql: string
-  compiler_outcome: CompilationOutcome
-  compiler_diagnostics: CompilationDiagnostic[]
-  compiler_dependencies: DefinitionDependency[]
-  compiler_version: string
-  catalogue_definition_revision: string | null
   archived_at: string | null
   created_at: string
   updated_at: string

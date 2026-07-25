@@ -13,14 +13,18 @@ import pyarrow as pa
 
 from repository.catalogue.config import CatalogueConfig
 from repository.catalogue.duckbasin import (
+    DuckBasinCredentialRejectedError,
     DuckBasinClientMinter,
+    DuckBasinUnavailableError,
     MintedDuckDB,
-    is_quack_authorization_error,
-    is_recoverable_quack_connection_error,
+    classify_quack_connection_error,
 )
 from repository.catalogue.exceptions import CatalogueSchemaError
 from repository.catalogue.schema import (
+    COLUMN_COMMENTS,
     INTERNAL_SCHEMA,
+    TABLE_COMMENTS,
+    TABLE_LAYOUTS,
     expected_columns,
 )
 
@@ -41,6 +45,8 @@ class Catalogue:
         self._minter = minter
         self._duckdb_config = dict(duckdb_config or {})
         self._remint_lock = threading.Lock()
+        self._connection_generation = 1
+        self._remint_count = 0
         self._remote_transaction_active = False
         self._connection_proxy = _ResilientDuckDBConnection(self)
         if minted.catalogue_alias != config.alias:
@@ -63,6 +69,18 @@ class Catalogue:
     def lake_slug(self) -> str:
         return self._minted.lake_slug
 
+    @property
+    def connection_generation(self) -> int:
+        return self._connection_generation
+
+    @property
+    def remint_count(self) -> int:
+        return self._remint_count
+
+    @property
+    def token_status(self) -> tuple[str, int]:
+        return self._minter.token_status()
+
     @contextmanager
     def transaction(self) -> Iterator[Catalogue]:
         """One Basin transaction shared by remote SQL and attached transfers."""
@@ -78,9 +96,19 @@ class Catalogue:
         self._remote_transaction_active = True
         try:
             yield self
-        except BaseException:
+        except BaseException as operation_error:
             try:
                 self.trusted_remote_execute("ROLLBACK")
+            except BaseException as rollback_error:
+                operation_error.add_note(
+                    "The remote transaction rollback also failed: "
+                    f"{type(rollback_error).__name__}: {rollback_error}"
+                )
+                logging.warning(
+                    "remote transaction rollback failed after %s",
+                    type(operation_error).__name__,
+                    exc_info=rollback_error,
+                )
             finally:
                 self._remote_transaction_active = False
             raise
@@ -98,6 +126,22 @@ class Catalogue:
             INTERNAL_SCHEMA,
             "_atlas_materializations",
         )
+        alias = _quote_literal(self.config.alias)
+        schema = _quote_literal(self.config.schema)
+        existing_table_comments = {
+            str(table_name): comment
+            for table_name, comment in self.trusted_remote_rows(
+                "SELECT table_name, comment FROM duckdb_tables() "
+                f"WHERE database_name = {alias} AND schema_name = {schema}"
+            )
+        }
+        existing_column_comments = {
+            (str(table_name), str(column_name)): comment
+            for table_name, column_name, comment in self.trusted_remote_rows(
+                "SELECT table_name, column_name, comment FROM duckdb_columns() "
+                f"WHERE database_name = {alias} AND schema_name = {schema}"
+            )
+        }
         with self.remote_transaction():
             for schema in schemas:
                 self.trusted_remote_execute(
@@ -105,16 +149,49 @@ class Catalogue:
                     f"{_qualified(self.config.alias, schema)}"
                 )
             for table_name, columns in expected_columns().items():
+                relation = _qualified(
+                    self.config.alias,
+                    self.config.schema,
+                    table_name,
+                )
                 definitions = ", ".join(
                     f"{_quote_identifier(name)} {_column_type(column)}"
                     + ("" if column.nullable else " NOT NULL")
                     for name, column in columns.items()
                 )
                 self.trusted_remote_execute(
-                    "CREATE TABLE IF NOT EXISTS "
-                    f"{_qualified(self.config.alias, self.config.schema, table_name)} "
-                    f"({definitions})"
+                    f"CREATE TABLE IF NOT EXISTS {relation} ({definitions})"
                 )
+                if table_name not in existing_table_comments:
+                    layout = TABLE_LAYOUTS[table_name]
+                    if layout.partition_by:
+                        self.trusted_remote_execute(
+                            f"ALTER TABLE {relation} SET PARTITIONED BY "
+                            f"({', '.join(layout.partition_by)})"
+                        )
+                    if layout.sort_by:
+                        self.trusted_remote_execute(
+                            f"ALTER TABLE {relation} SET SORTED BY "
+                            f"({', '.join(layout.sort_by)})"
+                        )
+                if (
+                    existing_table_comments.get(table_name)
+                    != TABLE_COMMENTS[table_name]
+                ):
+                    self.trusted_remote_execute(
+                        f"COMMENT ON TABLE {relation} IS "
+                        f"{_quote_literal(TABLE_COMMENTS[table_name])}"
+                    )
+                for column_name, comment in COLUMN_COMMENTS[table_name].items():
+                    if (
+                        existing_column_comments.get((table_name, column_name))
+                        != comment
+                    ):
+                        self.trusted_remote_execute(
+                            f"COMMENT ON COLUMN {relation}."
+                            f"{_quote_identifier(column_name)} IS "
+                            f"{_quote_literal(comment)}"
+                        )
         self._use_schema_if_available()
         self.validate_schema()
 
@@ -132,17 +209,66 @@ class Catalogue:
                 errors.append(f"{self.config.schema}.{table_name}: {exc}")
                 continue
             actual = {
-                str(row[0]): _normalize_type(str(row[1]))
+                str(row[0]): (
+                    _normalize_type(str(row[1])),
+                    str(row[2]).upper() == "YES",
+                )
                 for row in rows
             }
             wanted = {
-                name: _normalize_type(_column_type(column))
+                name: (
+                    _normalize_type(_column_type(column)),
+                    column.nullable,
+                )
                 for name, column in expected.items()
             }
             if actual != wanted:
                 errors.append(
                     f"{self.config.schema}.{table_name}: expected {wanted}, got {actual}"
                 )
+        table_names = tuple(expected_columns())
+        expected_name_sql = ", ".join(_quote_literal(name) for name in table_names)
+        alias = _quote_literal(self.config.alias)
+        schema = _quote_literal(self.config.schema)
+        try:
+            table_comment_rows = self.trusted_remote_rows(
+                "SELECT table_name, comment FROM duckdb_tables() "
+                f"WHERE database_name = {alias} AND schema_name = {schema} "
+                f"AND table_name IN ({expected_name_sql})"
+            )
+            column_comment_rows = self.trusted_remote_rows(
+                "SELECT table_name, column_name, comment FROM duckdb_columns() "
+                f"WHERE database_name = {alias} AND schema_name = {schema} "
+                f"AND table_name IN ({expected_name_sql})"
+            )
+        except Exception as exc:
+            errors.append(f"catalogue comments: {exc}")
+        else:
+            actual_table_comments = {
+                str(table_name): comment
+                for table_name, comment in table_comment_rows
+            }
+            actual_column_comments = {
+                (str(table_name), str(column_name)): comment
+                for table_name, column_name, comment in column_comment_rows
+            }
+            for table_name in table_names:
+                expected_table_comment = TABLE_COMMENTS[table_name]
+                if actual_table_comments.get(table_name) != expected_table_comment:
+                    errors.append(
+                        f"{self.config.schema}.{table_name}: missing or stale table comment"
+                    )
+                for column_name, expected_comment in COLUMN_COMMENTS[
+                    table_name
+                ].items():
+                    if (
+                        actual_column_comments.get((table_name, column_name))
+                        != expected_comment
+                    ):
+                        errors.append(
+                            f"{self.config.schema}.{table_name}.{column_name}: "
+                            "missing or stale column comment"
+                        )
         if errors:
             raise CatalogueSchemaError("; ".join(errors))
 
@@ -264,15 +390,35 @@ class Catalogue:
         try:
             return failed_minted.connection.execute(sql, parameters)
         except duckdb.Error as exc:
-            if (
-                self._remote_transaction_active
-                or not is_recoverable_quack_connection_error(exc)
-            ):
+            classified = classify_quack_connection_error(exc)
+            if classified is None:
                 raise
-            if is_quack_authorization_error(exc):
+            if self._remote_transaction_active:
+                if isinstance(
+                    classified,
+                    DuckBasinCredentialRejectedError,
+                ):
+                    self._minter.invalidate_connection_credentials(
+                        failed_minted
+                    )
+                raise classified from exc
+            if isinstance(classified, DuckBasinCredentialRejectedError):
                 self._minter.invalidate_connection_credentials(failed_minted)
         self._remint_connection(failed_minted)
-        return self._minted.connection.execute(sql, parameters)
+        try:
+            return self._minted.connection.execute(sql, parameters)
+        except duckdb.Error as exc:
+            classified = classify_quack_connection_error(exc)
+            if classified is not None:
+                if isinstance(
+                    classified,
+                    DuckBasinCredentialRejectedError,
+                ):
+                    self._minter.invalidate_connection_credentials(
+                        self._minted
+                    )
+                raise classified from exc
+            raise
 
     def _remint_connection(self, failed: MintedDuckDB) -> None:
         """Replace a Quack connection with stale routing or credentials."""
@@ -302,6 +448,8 @@ class Catalogue:
                     "failed to close expired DuckBasin connection",
                     exc_info=True,
                 )
+            self._connection_generation += 1
+            self._remint_count += 1
 
 
 class _ResilientDuckDBConnection:

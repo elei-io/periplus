@@ -56,6 +56,30 @@ class ManagedDefinitionStoreTests(unittest.TestCase):
             'DESCRIBE "atlas"."views"."document_counts"',
         )
 
+    def test_view_definition_can_be_read_without_binding_dependencies(self) -> None:
+        catalogue = _catalogue()
+        catalogue.trusted_remote_rows.return_value = [
+            (
+                "views",
+                "document_counts",
+                "CREATE VIEW document_counts AS SELECT missing_macro(n) AS n",
+            )
+        ]
+        store = CatalogueViewStore(catalogue)
+
+        view = store.definition_for_name("document_counts")
+
+        self.assertIsNotNone(view)
+        self.assertEqual(view.columns, ())
+        self.assertEqual(
+            catalogue.trusted_remote_rows.call_count,
+            1,
+        )
+        self.assertNotIn(
+            "DESCRIBE",
+            catalogue.trusted_remote_rows.call_args.args[0],
+        )
+
     def test_view_create_uses_managed_remote_sql(self) -> None:
         catalogue = _catalogue()
         store = CatalogueViewStore(catalogue)
@@ -66,7 +90,14 @@ class ManagedDefinitionStoreTests(unittest.TestCase):
             sql="SELECT 1 AS n",
             columns=("n",),
         )
-        with patch.object(store, "list", side_effect=[[], [created]]):
+        with (
+            patch.object(
+                store,
+                "definition_for_name",
+                side_effect=[None, created],
+            ),
+            patch.object(store, "_describe", return_value=created),
+        ):
             result = store.create(name="document_counts", sql="SELECT 1 AS n")
 
         self.assertIs(result, created)
@@ -117,8 +148,138 @@ class ManagedDefinitionStoreTests(unittest.TestCase):
             "(SELECT value FROM RANGE(0, maximum) AS values(value))"
         )
 
-
 class ManagedFixtureSeedingTests(unittest.TestCase):
+    def test_leading_fixture_description_is_parsed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = root / "queries" / "books.sql"
+            path.parent.mkdir()
+            path.write_text(
+                "-- atlas:description=Summarises retained books.\n"
+                "SELECT 1 AS book_count\n",
+                encoding="utf-8",
+            )
+
+            fixture = catalogue_fixtures._parse_query_fixture(root, path)
+
+        self.assertEqual(fixture.description, "Summarises retained books.")
+
+    def test_duplicate_fixture_description_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "books.sql"
+            source = (
+                "-- atlas:description=First.\n"
+                "-- atlas:description=Second.\n"
+                "SELECT 1\n"
+            )
+            with self.assertRaisesRegex(
+                catalogue_fixtures.CatalogueFixtureError,
+                "at most once",
+            ):
+                catalogue_fixtures._parse_fixture_metadata(path, source)
+
+    def test_materialized_fixture_comparison_uses_authored_sql(self) -> None:
+        fixture = RelationFixture(
+            fixture_path="materialized_views/document/passages.sql",
+            name="passages",
+            sql="SELECT document_id FROM documents",
+            refresh_strategy="keyed",
+            key_columns=("document_id",),
+        )
+        materialization = SimpleNamespace(
+            fixture_source_sql="SELECT document_id\nFROM documents",
+        )
+
+        catalogue_fixtures._require_current_fixture_materialization(
+            materialization,
+            fixture,
+        )
+
+    def test_materialized_fixture_rejects_a_real_authored_change(self) -> None:
+        fixture = RelationFixture(
+            fixture_path="materialized_views/document/passages.sql",
+            name="passages",
+            sql="SELECT document_id, element_count FROM documents",
+            refresh_strategy="keyed",
+            key_columns=("document_id",),
+        )
+        materialization = SimpleNamespace(
+            fixture_source_sql="SELECT document_id FROM documents",
+        )
+
+        with self.assertRaisesRegex(
+            catalogue_fixtures.CatalogueFixtureError,
+            "changed its materialized SQL definition",
+        ):
+            catalogue_fixtures._require_current_fixture_materialization(
+                materialization,
+                fixture,
+            )
+
+    def test_materialized_fixture_never_compares_unknown_introspection_sql(
+        self,
+    ) -> None:
+        fixture = RelationFixture(
+            fixture_path="materialized_views/document/passages.sql",
+            name="passages",
+            sql="SELECT document_id FROM documents",
+            refresh_strategy="keyed",
+            key_columns=("document_id",),
+        )
+        materialization = SimpleNamespace(fixture_source_sql=None)
+
+        with self.assertRaisesRegex(
+            catalogue_fixtures.CatalogueFixtureError,
+            "no authoritative fixture definition",
+        ):
+            catalogue_fixtures._require_current_fixture_materialization(
+                materialization,
+                fixture,
+            )
+
+    def test_seeded_materialization_uses_current_compiler_definitions(
+        self,
+    ) -> None:
+        session = MagicMock()
+        reference = SimpleNamespace(id=uuid4())
+        session.scalar.side_effect = [reference, None]
+        catalogue = _catalogue()
+        store = MagicMock()
+        fixture = RelationFixture(
+            fixture_path="materialized_views/document/passages.sql",
+            name="passages",
+            sql="SELECT macros.text_content(document_id, 0) FROM documents",
+            refresh_strategy="keyed",
+            key_columns=("document_id",),
+        )
+
+        with (
+            patch.object(
+                catalogue_fixtures,
+                "materialization_store",
+                return_value=store,
+            ) as build_store,
+            patch.object(
+                catalogue_fixtures,
+                "_create_seeded_materialization",
+            ) as create_materialization,
+        ):
+            catalogue_fixtures._seed_materialization(
+                session,
+                catalogue,
+                fixture,
+                driver_kind="document",
+            )
+
+        build_store.assert_called_once_with(session, catalogue)
+        create_materialization.assert_called_once_with(
+            session,
+            store,
+            reference,
+            fixture,
+            driver_kind="document",
+        )
+
     def test_full_seed_routes_every_definition_through_managed_stores(self) -> None:
         catalogue = _catalogue()
         session = MagicMock()
@@ -132,7 +293,7 @@ class ManagedFixtureSeedingTests(unittest.TestCase):
             for directory in (
                 "queries",
                 "views",
-                "materialized_views/url",
+                "materialized_views/document",
                 "table_macros",
             ):
                 path = root / directory

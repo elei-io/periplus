@@ -182,6 +182,10 @@ export type CrawlConcurrencyLimits = {
     active: number
     degraded: number
     backlog: number
+    pending: number
+    ack_pending: number
+    redelivered: number
+    waiting_for_redelivery: number
   }>
   tuning: {
     crawl_lanes_per_replica: number

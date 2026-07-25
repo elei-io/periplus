@@ -47,3 +47,54 @@ test("clear results render the terminal clear sequence", () => {
     "\u001b[2J\u001b[H",
   );
 });
+
+test("assistant answers terminate their transcript rail", () => {
+  const output = renderResult(
+    {
+      kind: "assistant",
+      text: "The lake contains retained book data.",
+    },
+    { format: "table" },
+  );
+  assert.match(output, /└ .*The lake contains retained book data\./);
+  assert.ok(output.startsWith("\u001b[2m│"));
+  assert.ok(output.endsWith("\n\n"));
+});
+
+test("assistant suggestions render metadata without their SQL", () => {
+  const output = renderResult(
+    {
+      kind: "assistant",
+      text: "Try one of these.",
+      suggestions: [
+        {
+          index: 2,
+          title: "Price distribution",
+          description: "Summarise prices by percentile.",
+        },
+      ],
+    },
+    { format: "table" },
+  );
+  assert.match(output, /2\..*Price distribution/);
+  assert.match(output, /\.ai show <number> · \.ai run <number>/);
+  assert.doesNotMatch(output, /SELECT/);
+});
+
+test("tables distinguish nulls and serialize nested and large values", () => {
+  assert.equal(
+    renderResult(
+      {
+        kind: "table",
+        columns: ["null", "array", "nested", "large"],
+        rows: [[null, [1, "two"], { ready: true }, 9_007_199_254_740_993n]],
+        summary: "1 row · 12ms",
+      },
+      { format: "table", columns: 120 },
+    ),
+    "null  array      nested          large\n" +
+      "────  ─────────  ──────────────  ────────────────\n" +
+      'NULL  [1,\"two\"]  {\"ready\":true}  9007199254740993\n' +
+      "1 row · 12ms\n",
+  );
+});

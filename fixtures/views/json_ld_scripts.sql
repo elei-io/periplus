@@ -1,3 +1,4 @@
+-- atlas:description=JSON-LD script blocks and their raw text extracted from retained documents.
 CREATE VIEW views.json_ld_scripts AS
 WITH scripts AS (
     SELECT

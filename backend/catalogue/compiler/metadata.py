@@ -15,6 +15,7 @@ from .purpose import (
 
 PartitionTransform = Literal[
     "identity",
+    "bucket",
     "year",
     "month",
     "day",
@@ -43,6 +44,36 @@ class ColumnStatistics:
 class PartitionColumn:
     column_name: str
     transform: PartitionTransform = "identity"
+    bucket_count: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.transform == "bucket":
+            if self.bucket_count is None or self.bucket_count <= 0:
+                raise ValueError("bucket partitions require a positive bucket_count")
+        elif self.bucket_count is not None:
+            raise ValueError("bucket_count is only valid for bucket partitions")
+
+
+@dataclass(frozen=True, slots=True)
+class SortKey:
+    expression: str
+    direction: Literal["ASC", "DESC"] = "ASC"
+    null_order: Literal["NULLS FIRST", "NULLS LAST"] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TableRelationship:
+    """A compiler-trusted logical relation not enforceable by DuckLake."""
+
+    columns: tuple[str, ...]
+    target_schema: str
+    target_table: str
+    target_columns: tuple[str, ...]
+    optional: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.columns or len(self.columns) != len(self.target_columns):
+            raise ValueError("relationship columns must be non-empty and have equal arity")
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,10 +83,14 @@ class ManagedTableMetadata:
     schema_name: str
     table_name: str
     table_uuid: str
+    contract_version: str | None = None
     estimated_rows: int | None = None
     file_count: int | None = None
     file_size_bytes: int | None = None
+    stable_key: tuple[str, ...] = ()
+    sort_keys: tuple[SortKey, ...] = ()
     partition_columns: tuple[PartitionColumn, ...] = ()
+    relationships: tuple[TableRelationship, ...] = ()
     column_statistics: tuple[ColumnStatistics, ...] = ()
 
     @property

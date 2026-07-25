@@ -20,7 +20,7 @@ from api.routers import (
     catalogue_materializations,
     operational_metrics,
     repository_operations,
-    analytics,
+    ai,
 )
 from control.catalogue_materializations.service import (
     unavailable_materialized_views,
@@ -177,7 +177,7 @@ app.include_router(catalogue_views.router)
 app.include_router(catalogue_materializations.router)
 app.include_router(operational_metrics.router)
 app.include_router(repository_operations.router)
-app.include_router(analytics.router)
+app.include_router(ai.router)
 app.include_router(crawl_graphs.router)
 app.include_router(crawl_schedules.router)
 app.include_router(crawl_schedules.resource_router)

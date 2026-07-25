@@ -20,7 +20,6 @@ from repository.catalogue.records import (
     CrawlStepRecord,
     DocumentRecord,
     ElementRecord,
-    UrlRecord,
 )
 from repository.catalogue.schema import CRAWL_ATTEMPTS_TABLE, CRAWL_STEPS_TABLE, INTERNAL_SCHEMA
 from dom import ElementRow, GroupedLinkPayload, links_from_elements
@@ -30,7 +29,6 @@ from dom import ElementRow, GroupedLinkPayload, links_from_elements
 class CatalogueBatchEntry:
     document: DocumentRecord | None
     crawl: CrawlRecord
-    urls: tuple[UrlRecord, ...] = ()
     crawl_attempts: tuple[CrawlAttemptRecord, ...] = ()
     crawl_steps: tuple[CrawlStepRecord, ...] | None = ()
     artifact: ArtifactRecord | None = None
@@ -42,7 +40,6 @@ class CatalogueBatchEntry:
 class ExistingCatalogueIdentities:
     """Immutable catalogue identities confirmed present before commit fencing."""
 
-    urls: frozenset[str] = frozenset()
     documents: frozenset[str] = frozenset()
     artifacts: frozenset[str] = frozenset()
 
@@ -63,7 +60,6 @@ class CatalogueService:
             return []
         new_documents: dict[str, DocumentRecord] = {}
         new_artifacts: dict[str, ArtifactRecord] = {}
-        new_urls: dict[str, UrlRecord] = {}
         replacement_documents: dict[str, DocumentRecord] = {}
         element_paths: dict[str, Path] = {}
         new_crawls: dict[UUID, CrawlRecord] = {}
@@ -93,8 +89,6 @@ class CatalogueService:
             crawls_by_id = self._lookup_batch_crawls(
                 [entry.crawl for entry in entries]
             )
-            batch_urls = [url for entry in entries for url in entry.urls]
-            urls_by_id = self.get_urls([url.url_id for url in batch_urls])
             crawl_steps_by_id = self._lookup_batch_crawl_steps(
                 [entry.crawl.crawl_id for entry in entries]
             )
@@ -109,16 +103,6 @@ class CatalogueService:
                 crawl_attempts = tuple(entry.crawl_attempts)
                 if crawl_attempts:
                     _validate_crawl_attempts(crawl, crawl_attempts)
-                for url in entry.urls:
-                    _validate_url_identity(url)
-                    existing_url = urls_by_id.get(url.url_id)
-                    pending_url = new_urls.get(url.url_id)
-                    if existing_url is not None:
-                        _validate_canonical_url(existing_url, url)
-                    elif pending_url is not None:
-                        _validate_canonical_url(pending_url, url)
-                    else:
-                        new_urls[url.url_id] = url
                 crawl_steps = (
                     None
                     if entry.crawl_steps is None
@@ -272,26 +256,6 @@ class CatalogueService:
                     new_crawl_attempts[crawl.crawl_id] = crawl_attempts
                     crawl_created.append(True)
 
-            available_url_ids = set(urls_by_id) | set(new_urls)
-            for crawl in new_crawls.values():
-                referenced = {crawl.requested_url_id}
-                if crawl.final_url_id is not None:
-                    referenced.add(crawl.final_url_id)
-                referenced.update(
-                    attempt.requested_url_id
-                    for attempt in new_crawl_attempts[crawl.crawl_id]
-                )
-                referenced.update(
-                    attempt.final_url_id
-                    for attempt in new_crawl_attempts[crawl.crawl_id]
-                    if attempt.final_url_id is not None
-                )
-                missing = referenced - available_url_ids
-                if missing:
-                    raise CatalogueValidationError(
-                        "crawl and attempt URL identities must be included in the URL dimension"
-                    )
-
             if replacement_documents:
                 identifiers = list(replacement_documents)
                 values = ", ".join(_sql_literal(value) for value in identifiers)
@@ -300,11 +264,6 @@ class CatalogueService:
                     f"WHERE document_id IN ({values})"
                 )
 
-            if new_urls:
-                self._append(
-                    "urls",
-                    [_url_values(value) for value in new_urls.values()],
-                )
             if new_artifacts:
                 self._append(
                     "artifacts",
@@ -355,7 +314,6 @@ class CatalogueService:
 
             made_changes = bool(
                 new_documents
-                or new_urls
                 or new_artifacts
                 or element_paths
                 or replacement_documents
@@ -402,18 +360,12 @@ class CatalogueService:
     def preflight_existing_identities(
         self,
         *,
-        url_ids: Sequence[str],
         document_ids: Sequence[str],
         artifact_ids: Sequence[str],
     ) -> ExistingCatalogueIdentities:
         """Resolve existing immutable identities in one bounded DuckLake scan."""
 
         requested = {
-            "url": (
-                "urls",
-                "url_id",
-                list(dict.fromkeys(url_ids)),
-            ),
             "document": (
                 "documents",
                 "document_id",
@@ -444,7 +396,6 @@ class CatalogueService:
 
         rows = self.catalogue.trusted_remote_rows(" UNION ALL ".join(branches))
         existing: dict[str, set[str]] = {
-            "url": set(),
             "document": set(),
             "artifact": set(),
         }
@@ -456,22 +407,9 @@ class CatalogueService:
                 )
             existing[identity_kind].add(str(value))
         return ExistingCatalogueIdentities(
-            urls=frozenset(existing["url"]),
             documents=frozenset(existing["document"]),
             artifacts=frozenset(existing["artifact"]),
         )
-
-    def get_urls(self, url_ids: Sequence[str]) -> dict[str, UrlRecord]:
-        rows = self._lookup_rows_by_identity("urls", "url_id", url_ids)
-        result: dict[str, UrlRecord] = {}
-        for row in rows:
-            url = UrlRecord.model_validate(row)
-            if url.url_id in result:
-                raise CatalogueConflictError(
-                    f"catalogue contains duplicate rows for url_id {url.url_id!r}"
-                )
-            result[url.url_id] = url
-        return result
 
     def get_artifacts(
         self,
@@ -535,7 +473,7 @@ class CatalogueService:
         self,
         *,
         normalized_url: str,
-        policy_config_hash: str,
+        effective_policy_hash: str,
         captured_after: datetime | None = None,
         captured_before: datetime | None = None,
         limit: int = 20,
@@ -545,27 +483,27 @@ class CatalogueService:
         if limit <= 0:
             raise CatalogueValidationError("limit must be greater than zero")
         conditions = [
-            "requested_url_id = $requested_url_id",
-            "policy_config_hash = $policy_config_hash",
+            "requested_url = $requested_url",
+            "effective_policy_hash = $effective_policy_hash",
             "outcome = 'success'",
             "document_id IS NOT NULL",
             "(status_code IS NULL OR status_code BETWEEN 200 AND 399)",
         ]
         params: dict[str, object] = {
-            "requested_url_id": UrlRecord.from_normalized_url(normalized_url).url_id,
-            "policy_config_hash": policy_config_hash,
+            "requested_url": normalized_url,
+            "effective_policy_hash": effective_policy_hash,
             "limit": limit,
         }
         if captured_after is not None:
-            conditions.append("captured_at >= $captured_after")
+            conditions.append("content_captured_at >= $captured_after")
             params["captured_after"] = captured_after
         if captured_before is not None:
-            conditions.append("captured_at < $captured_before")
+            conditions.append("content_captured_at < $captured_before")
             params["captured_before"] = captured_before
         rows = self.catalogue.trusted_sql_dicts(
             f"SELECT * FROM {self._table('crawls')} WHERE "
             + " AND ".join(conditions)
-            + " ORDER BY captured_at DESC LIMIT $limit",
+            + " ORDER BY content_captured_at DESC LIMIT $limit",
             params,
         )
         return [_crawl_from_row(row) for row in rows]
@@ -805,14 +743,10 @@ def _artifact_values(artifact: ArtifactRecord) -> dict[str, object]:
     return artifact.model_dump(mode="python")
 
 
-def _url_values(url: UrlRecord) -> dict[str, object]:
-    return url.model_dump(mode="python")
-
-
 def _crawl_values(crawl: CrawlRecord) -> dict[str, object]:
     values = crawl.model_dump(mode="python")
-    values["policy_config_json"] = json.dumps(
-        values["policy_config_json"], separators=(",", ":"), sort_keys=True
+    values["effective_policy"] = json.dumps(
+        values["effective_policy"], separators=(",", ":"), sort_keys=True
     )
     return values
 
@@ -871,32 +805,17 @@ def _validate_crawl_attempts(
         raise CatalogueValidationError("crawl attempt crawl_id must match its crawl")
 
 
-def _validate_url_identity(url: UrlRecord) -> None:
-    expected = UrlRecord.from_normalized_url(url.normalized_url)
-    if url != expected:
-        raise CatalogueValidationError(
-            "URL rows must match the SHA-256 identity and canonical decomposition"
-        )
-
-
-def _validate_canonical_url(existing: UrlRecord, proposed: UrlRecord) -> None:
-    if existing != proposed:
-        raise CatalogueConflictError(
-            f"url_id {existing.url_id!r} already has different canonical metadata"
-        )
-
-
 def _validate_canonical_document(
     existing: DocumentRecord,
     proposed: DocumentRecord,
 ) -> None:
     immutable = (
         "document_id",
-        "html_sha256",
-        "html_object_key",
-        "html_content_type",
-        "html_encoding",
-        "html_size_bytes",
+        "object_key",
+        "content_type",
+        "encoding",
+        "size_bytes",
+        "compressed_size_bytes",
         "compression",
     )
     if any(getattr(existing, name) != getattr(proposed, name) for name in immutable):
@@ -906,16 +825,14 @@ def _validate_canonical_document(
 
 
 def _validate_document_identity(document: DocumentRecord) -> None:
-    expected = f"sha256:{document.html_sha256}"
-    if document.document_id != expected:
+    if not _is_sha256_identity(document.document_id):
         raise CatalogueValidationError(
             "document_id must be the sha256-prefixed canonical HTML hash"
         )
 
 
 def _validate_artifact_identity(artifact: ArtifactRecord) -> None:
-    expected = f"sha256:{artifact.sha256}"
-    if artifact.artifact_id != expected:
+    if not _is_sha256_identity(artifact.artifact_id):
         raise CatalogueValidationError(
             "artifact_id must be the sha256-prefixed canonical byte hash"
         )
@@ -925,7 +842,7 @@ def _validate_canonical_artifact(
     existing: ArtifactRecord,
     proposed: ArtifactRecord,
 ) -> None:
-    immutable = ("artifact_id", "sha256", "object_key", "size_bytes")
+    immutable = ("artifact_id", "object_key", "size_bytes")
     if any(getattr(existing, name) != getattr(proposed, name) for name in immutable):
         raise CatalogueConflictError(
             f"artifact_id {existing.artifact_id!r} already has different canonical metadata"
@@ -952,9 +869,19 @@ def _validate_projection_recipe(
 
 def _crawl_from_row(row: dict[str, Any]) -> CrawlRecord:
     values = dict(row)
-    if isinstance(values.get("policy_config_json"), str):
-        values["policy_config_json"] = json.loads(values["policy_config_json"])
+    if isinstance(values.get("effective_policy"), str):
+        values["effective_policy"] = json.loads(values["effective_policy"])
     return CrawlRecord.model_validate(values)
+
+
+def _is_sha256_identity(value: str) -> bool:
+    prefix = "sha256:"
+    digest = value.removeprefix(prefix)
+    return (
+        value.startswith(prefix)
+        and len(digest) == 64
+        and all(character in "0123456789abcdef" for character in digest)
+    )
 
 
 def _validate_page(*, limit: int | None, offset: int) -> None:

@@ -17,6 +17,12 @@ from .errors import (
     OptimizationDiagnostic,
     QueryOptimizationUnavailable,
 )
+from .function_safety import (
+    DETERMINISTIC_DUCKDB_FUNCTION_NAMES,
+    DETERMINISTIC_ROW_LOCAL_FUNCTION_TYPES,
+    VOLATILE_FUNCTION_NAMES,
+    VOLATILE_FUNCTION_TYPES,
+)
 from .interactive import (
     InteractiveCompilation,
     compile_interactive_query_with_explanation,
@@ -64,57 +70,10 @@ _EXTERNAL_RELATION_FUNCTIONS = frozenset(
     }
 )
 _DETERMINISTIC_FUNCTION_TYPES = (
-    exp.Abs,
-    exp.And,
-    exp.Case,
-    exp.Cast,
-    exp.Ceil,
-    exp.Coalesce,
-    exp.Concat,
-    exp.ConcatWs,
-    exp.Extract,
+    *DETERMINISTIC_ROW_LOCAL_FUNCTION_TYPES,
     exp.Explode,
-    exp.Floor,
-    exp.Greatest,
-    exp.If,
-    exp.Least,
-    exp.Left,
-    exp.Length,
-    exp.Lower,
-    exp.Not,
-    exp.Nullif,
-    exp.Or,
-    exp.Replace,
-    exp.Right,
-    exp.Round,
-    exp.StrPosition,
-    exp.Substring,
-    exp.TimestampTrunc,
-    exp.Trim,
-    exp.TryCast,
+    exp.Exists,
     exp.Unnest,
-    exp.Upper,
-)
-_NONDETERMINISTIC_FUNCTION_TYPES = (
-    exp.CurrentDate,
-    exp.CurrentDatetime,
-    exp.CurrentTime,
-    exp.CurrentTimestamp,
-    exp.CurrentUser,
-    exp.NextValueFor,
-    exp.Rand,
-    exp.SessionUser,
-    exp.Uuid,
-)
-_NONDETERMINISTIC_FUNCTION_NAMES = frozenset(
-    {
-        "currval",
-        "gen_random_uuid",
-        "nextval",
-        "now",
-        "setval",
-        "today",
-    }
 )
 _KEYED_AGGREGATE_TYPES = (
     exp.Avg,
@@ -543,6 +502,8 @@ def _validate_positional_set_key_alignment(
 
 
 def _set_output_names(query: exp.Expression) -> tuple[str, ...] | None:
+    if isinstance(query, exp.Subquery):
+        return _set_output_names(query.this)
     if isinstance(query, exp.Select):
         names = tuple(
             expression.alias_or_name.lower()
@@ -634,7 +595,10 @@ def _compile_keyed_plan(
 
     scopes = analysis.scopes
     if not scopes or any(
-        not isinstance(scope.expression, (exp.Select, exp.Unnest, exp.Lateral))
+        not isinstance(
+            scope.expression,
+            (exp.Select, exp.SetOperation, exp.Unnest, exp.Lateral),
+        )
         for scope in scopes
     ):
         _unavailable(
@@ -650,13 +614,14 @@ def _compile_keyed_plan(
     using_columns: dict[int, set[str]] = {
         id(scope): set() for scope in scopes
     }
-    nullable_physical_tables: set[int] = set()
     physical: list[tuple[Scope, str, exp.Table]] = []
     for scope in scopes:
         if not isinstance(scope.expression, exp.Select):
+            if isinstance(scope.expression, exp.SetOperation):
+                continue
             _validate_expansion_scope(scope)
             continue
-        _validate_scope_shape(scope.expression)
+        _validate_scope_shape(scope)
         _add_scope_join_lineage(
             scope,
             keys=keys,
@@ -666,14 +631,6 @@ def _compile_keyed_plan(
             relational_facts=analysis.facts_for(scope),
         )
         facts = analysis.facts_for(scope)
-        for nullable_alias in (
-            facts.nullable_relations - facts.full_join_nullable_relations
-        ):
-            nullable_source = scope.sources.get(nullable_alias)
-            if nullable_source is not None:
-                nullable_physical_tables.update(
-                    id(table) for table in _physical_tables(nullable_source)
-                )
         _validate_full_join_key_projection(
             scope,
             keys=keys,
@@ -712,7 +669,12 @@ def _compile_keyed_plan(
             documentation_anchor="driving-table",
         )
     source_scope, source_alias, source_relation = matching[0]
-    if id(source_relation) in nullable_physical_tables:
+    if not _has_preserved_driver_path(
+        root_scope=scopes[-1],
+        source_scope=source_scope,
+        source_alias=source_alias,
+        analysis=analysis,
+    ):
         _unavailable(
             OptimizationCode.UNSUPPORTED_QUERY_SHAPE,
             "The driving table cannot be on the nullable side of an outer join.",
@@ -760,6 +722,13 @@ def _compile_keyed_plan(
     scans: list[CatalogueScan] = []
     for ordinal, (scope, alias, table) in enumerate(physical):
         bindings: list[RelationKeyBinding] = []
+        anchored_dependency = _is_materialized_driver_dependency(
+            scope=scope,
+            alias=alias,
+            source_scope=source_scope,
+            source_alias=source_alias,
+            lineage=lineage,
+        )
         for key in keys:
             candidates = sorted(
                 column
@@ -772,6 +741,8 @@ def _compile_keyed_plan(
                 )
             )
             if not candidates:
+                if anchored_dependency:
+                    continue
                 _unavailable(
                     OptimizationCode.UNBOUNDED_RELATION,
                     f"Atlas cannot derive {key!r} for relation "
@@ -785,6 +756,8 @@ def _compile_keyed_plan(
                     relation_column=candidates[0],
                 )
             )
+        if anchored_dependency and not bindings:
+            continue
         scans.append(
             CatalogueScan(
                 ordinal=ordinal,
@@ -827,11 +800,84 @@ def _compile_keyed_plan(
     )
 
 
+def _is_materialized_driver_dependency(
+    *,
+    scope: Scope,
+    alias: str,
+    source_scope: Scope,
+    source_alias: str,
+    lineage: ColumnLineage,
+) -> bool:
+    """Recognize equijoin-dependent scans below an explicit driver barrier."""
+
+    source_parent = source_scope.expression.parent
+    if (
+        scope is source_scope
+        or not source_scope.is_cte
+        or not isinstance(source_parent, exp.CTE)
+        or source_parent.args.get("materialized") is not True
+    ):
+        return False
+    source_columns = tuple(
+        node
+        for node in lineage.nodes
+        if node[0] == id(source_scope) and node[1] == source_alias
+    )
+    relation_columns = tuple(
+        node
+        for node in lineage.nodes
+        if node[0] == id(scope) and node[1] == alias
+    )
+    return any(
+        lineage.connected(source_column, relation_column)
+        for source_column in source_columns
+        for relation_column in relation_columns
+    )
+
+
+def _has_preserved_driver_path(
+    *,
+    root_scope: Scope,
+    source_scope: Scope,
+    source_alias: str,
+    analysis: AnalyzedCatalogueQuery,
+) -> bool:
+    pending = [root_scope]
+    visited: set[int] = set()
+    while pending:
+        scope = pending.pop()
+        if id(scope) in visited:
+            continue
+        visited.add(id(scope))
+        nullable = (
+            analysis.facts_for(scope).nullable_relations
+            - analysis.facts_for(scope).full_join_nullable_relations
+        )
+        if scope is source_scope and source_alias not in nullable:
+            return True
+        pending.extend(
+            selected
+            for alias, (_, selected) in scope.selected_sources.items()
+            if isinstance(selected, Scope) and alias not in nullable
+        )
+    return False
+
+
 def _scope_output_names(
     scope: Scope,
     *,
     keys: tuple[str, ...],
 ) -> frozenset[str]:
+    if isinstance(scope.expression, exp.SetOperation):
+        names = _set_output_names(scope.expression)
+        if names is None or len(set(names)) != len(names):
+            _unavailable(
+                OptimizationCode.UNSUPPORTED_QUERY_SHAPE,
+                "Nested set operations require unique explicit output names.",
+                sql_fragment=scope.expression.sql(dialect="duckdb"),
+                documentation_anchor="set-operations",
+            )
+        return frozenset(names)
     if not isinstance(scope.expression, exp.Select):
         lateral_select = _row_local_lateral_select(scope.expression)
         if lateral_select is not None:
@@ -898,12 +944,18 @@ def _scope_output_names(
     return frozenset(names)
 
 
-def _validate_scope_shape(query: exp.Select) -> None:
+def _validate_scope_shape(scope: Scope) -> None:
+    query = scope.expression
+    assert isinstance(query, exp.Select)
     unsupported = next(
         (
             name
             for name in _UNSUPPORTED_SELECT_ARGS
             if query.args.get(name) is not None
+            and not (
+                name in {"limit", "offset"}
+                and _is_scalar_subquery_scope(scope)
+            )
         ),
         None,
     )
@@ -948,7 +1000,15 @@ def _validate_scope_projections(
     using_columns: set[str],
 ) -> None:
     names: list[str] = []
-    for selection in scope.expression.expressions:
+    for index, selection in enumerate(scope.expression.expressions):
+        if (
+            (
+                len(scope.expression.expressions) == 1
+                and _is_scalar_subquery_scope(scope)
+            )
+            or isinstance(scope.expression.parent, exp.Exists)
+        ):
+            continue
         projected = (
             selection.this if isinstance(selection, exp.Alias) else selection
         )
@@ -973,7 +1033,12 @@ def _validate_scope_projections(
                     input_node,
                 )
             continue
-        output_name = selection.alias_or_name
+        explicit_output_name = (
+            scope.outer_columns[index]
+            if index < len(scope.outer_columns)
+            else None
+        )
+        output_name = explicit_output_name or selection.alias_or_name
         if not output_name:
             _unavailable(
                 OptimizationCode.UNSUPPORTED_PROJECTION,
@@ -987,7 +1052,7 @@ def _validate_scope_projections(
         )
         if not isinstance(expression, exp.Column) and not isinstance(
             selection, exp.Alias
-        ):
+        ) and explicit_output_name is None:
             _unavailable(
                 OptimizationCode.UNSUPPORTED_PROJECTION,
                 "Computed result expressions require an explicit alias.",
@@ -1041,6 +1106,23 @@ def _validate_scope_projections(
             "Result column names must be unique within every scope.",
             documentation_anchor="scope-lineage",
         )
+
+
+def _is_scalar_subquery_scope(scope: Scope) -> bool:
+    subquery = scope.expression.parent
+    return (
+        isinstance(subquery, exp.Subquery)
+        and not isinstance(subquery.parent, (exp.From, exp.Join))
+    )
+
+
+def _inside_correlated_scalar_subquery(scope: Scope) -> bool:
+    owner: Scope | None = scope
+    while owner is not None:
+        if owner.is_correlated_subquery and _is_scalar_subquery_scope(owner):
+            return True
+        owner = owner.parent
+    return False
 
 
 def _star_expression(
@@ -1700,6 +1782,8 @@ def _validate_keyed_grouping(
         group = scope.expression.args.get("group")
         if not aggregates and group is None:
             continue
+        if _inside_correlated_scalar_subquery(scope):
+            continue
         if not aggregates or group is None:
             _unavailable(
                 OptimizationCode.UNSUPPORTED_QUERY_SHAPE,
@@ -2310,8 +2394,8 @@ def _validate_functions(query: exp.Query) -> None:
                 documentation_anchor="row-local-expansion",
             )
         if (
-            isinstance(function, _NONDETERMINISTIC_FUNCTION_TYPES)
-            or function.name.lower() in _NONDETERMINISTIC_FUNCTION_NAMES
+            isinstance(function, VOLATILE_FUNCTION_TYPES)
+            or function.name.lower() in VOLATILE_FUNCTION_NAMES
         ):
             _unavailable(
                 OptimizationCode.NONDETERMINISTIC_FUNCTION,
@@ -2350,7 +2434,14 @@ def _validate_functions(query: exp.Query) -> None:
                 sql_fragment=rendered,
                 documentation_anchor="keyed-aggregation",
             )
-        if not isinstance(function, _DETERMINISTIC_FUNCTION_TYPES):
+        if not (
+            isinstance(function, _DETERMINISTIC_FUNCTION_TYPES)
+            or (
+                isinstance(function, exp.Anonymous)
+                and function.name.lower()
+                in DETERMINISTIC_DUCKDB_FUNCTION_NAMES
+            )
+        ):
             _unavailable(
                 OptimizationCode.UNSUPPORTED_FUNCTION,
                 f"Atlas cannot prove that {rendered} is a deterministic "
@@ -2376,6 +2467,8 @@ def _value_ordered_aggregate_is_stable(function: exp.AggFunc) -> bool:
 
 
 def _conjuncts(expression: exp.Expression) -> tuple[exp.Expression, ...]:
+    if isinstance(expression, exp.Paren):
+        return _conjuncts(expression.this)
     if isinstance(expression, exp.And):
         return (*_conjuncts(expression.this), *_conjuncts(expression.expression))
     return (expression,)

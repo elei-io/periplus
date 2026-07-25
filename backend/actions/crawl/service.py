@@ -32,8 +32,9 @@ from repository.catalogue import (
     CrawlAttemptRecord,
     CrawlRecord,
     CrawlStepRecord,
-    UrlRecord,
+    NormalizedUrl,
 )
+from repository.catalogue.schema import POLICY_SCHEMA_VERSION
 from repository.ingestion.acquisition import AcquisitionPipeline
 from repository.objects.artifact import ArtifactIdentity
 from repository.objects.html import identify_html
@@ -974,31 +975,25 @@ async def crawl_graph_request(
             AcquisitionAttemptEvidence.model_validate(value)
             for value in context.prior_attempts_json
         ) + ((page.attempt_evidence,) if page.attempt_evidence is not None else ())
-        requested_url = UrlRecord.from_normalized_url(normalized)
+        requested_url = NormalizedUrl.from_normalized_url(normalized)
         final_normalized = normalize_url(page.url) if page.url else None
         final_url = (
-            UrlRecord.from_normalized_url(final_normalized)
+            NormalizedUrl.from_normalized_url(final_normalized)
             if final_normalized is not None
             else None
         )
-        urls = tuple(
-            {value.url_id: value for value in (requested_url, final_url) if value is not None}.values()
-        )
+        effective_url = final_url or requested_url
         crawl_attempts = tuple(
             CrawlAttemptRecord(
                 crawl_id=context.crawl_request_id,
                 attempt_number=attempt.attempt,
                 started_at=attempt.started_at,
                 completed_at=attempt.completed_at,
-                requested_url_id=UrlRecord.from_normalized_url(
-                    normalize_url(attempt.requested_url)
-                ).url_id,
-                final_url_id=(
-                    UrlRecord.from_normalized_url(
-                        normalize_url(attempt.final_url)
-                    ).url_id
+                requested_url=normalize_url(attempt.requested_url),
+                url=(
+                    normalize_url(attempt.final_url)
                     if attempt.final_url is not None
-                    else None
+                    else normalize_url(attempt.requested_url)
                 ),
                 status_code=attempt.status_code,
                 response_media_type=attempt.response_media_type,
@@ -1008,19 +1003,14 @@ async def crawl_graph_request(
             )
             for attempt in attempt_evidence
         )
-        attempt_urls = tuple(
-            UrlRecord.from_normalized_url(normalize_url(value))
-            for attempt in attempt_evidence
-            for value in (attempt.requested_url, attempt.final_url)
-            if value is not None
+        if not crawl_attempts:
+            raise RuntimeError("crawl acquisition produced no typed attempt evidence")
+        completed_at = datetime.now(UTC)
+        content_captured_at = (
+            completed_at
+            if identity is not None or artifact_identity is not None
+            else None
         )
-        urls = tuple(
-            {
-                value.url_id: value
-                for value in (*urls, *attempt_urls)
-            }.values()
-        )
-        captured_at = datetime.now(UTC)
         record = CrawlRecord(
             crawl_id=context.crawl_request_id,
             document_id=identity.document_id if identity else None,
@@ -1028,23 +1018,29 @@ async def crawl_graph_request(
             graph_id=context.graph_id,
             graph_run_id=context.graph_run_id,
             graph_node_id=context.graph_node_id,
-            crawl_request_id=context.crawl_request_id,
             source_crawl_id=context.source_crawl_id,
             source_edge_id=context.source_edge_id,
-            requested_url_id=requested_url.url_id,
-            final_url_id=final_url.url_id if final_url is not None else None,
-            captured_at=captured_at,
+            requested_url=normalized,
+            url=effective_url.normalized_url,
+            scheme=effective_url.scheme,
+            host=effective_url.host,
+            port=effective_url.port,
+            registrable_domain=effective_url.registrable_domain,
+            path=effective_url.path,
+            query=effective_url.query,
+            started_at=crawl_attempts[0].started_at,
+            completed_at=completed_at,
+            content_captured_at=content_captured_at,
             status_code=page.status_code,
-            duration_ms=round(page.duration_seconds * 1000),
             response_media_type=page.response_media_type,
-            policy_config_hash=hashlib.sha256(policy_json.encode()).hexdigest(),
-            policy_config_json=policy_json_value,
-            crawl_policy_id=policy.id,
+            policy_schema_version=POLICY_SCHEMA_VERSION,
+            effective_policy_hash=hashlib.sha256(policy_json.encode()).hexdigest(),
+            effective_policy=policy_json_value,
             outcome=page.outcome,
-            failure_code=page.failure_code if not page.success else None,
-            failure_stage=page.failure_stage if not page.success else None,
-            failure_retryable=page.failure_retryable if not page.success else None,
-            failure_detail=page.error if not page.success else None,
+            failure_code=page.failure_code if page.outcome == "failed" else None,
+            failure_stage=page.failure_stage if page.outcome == "failed" else None,
+            failure_retryable=page.failure_retryable if page.outcome == "failed" else None,
+            failure_detail=page.error if page.outcome == "failed" else None,
         )
         crawl_steps = tuple(
             CrawlStepRecord(
@@ -1057,26 +1053,27 @@ async def crawl_graph_request(
         async def persist(pipeline: AcquisitionPipeline) -> CrawlPage:
             source_url = final_normalized or normalized
             if identity is not None:
+                assert content_captured_at is not None
                 await pipeline.store_raw(
                     captured_html=page.html or "",
                     source_url=source_url,
                     crawl_id=context.crawl_request_id,
-                    captured_at=captured_at,
+                    captured_at=content_captured_at,
                     content_type=page.response_media_type or "text/html",
                     identity=identity,
                 )
             if artifact_identity is not None:
+                assert content_captured_at is not None
                 await pipeline.store_artifact(
                     content=io.BytesIO(page.artifact or b""),
                     identity=artifact_identity,
                     source_url=source_url,
                     crawl_id=context.crawl_request_id,
-                    captured_at=captured_at,
+                    captured_at=content_captured_at,
                     content_type=page.response_media_type or "application/octet-stream",
                 )
             await pipeline.enqueue_stored(
                 record,
-                urls=urls,
                 crawl_attempts=crawl_attempts,
                 crawl_steps=crawl_steps,
             )

@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { PauseIcon, PlayIcon, Trash2Icon } from "lucide-react"
+import { PauseIcon, PlayIcon, RotateCcwIcon, Trash2Icon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -137,9 +137,26 @@ export function CatalogueMaterializationDetail({
             </div>
           </div>
           {materialization.last_error ? (
-            <p className="mt-3 rounded-md bg-destructive/10 p-3 text-xs text-destructive">
-              {materialization.last_error}
-            </p>
+            <div className="mt-3 rounded-md bg-destructive/10 p-3 text-xs text-destructive">
+              <p>{materialization.last_error}</p>
+              {materialization.observed_state === "failed" ? (
+                <Button
+                  className="mt-3"
+                  size="sm"
+                  variant="outline"
+                  disabled={update.isPending}
+                  onClick={() =>
+                    update.mutate({
+                      id: materialization.id,
+                      desired_state: "live",
+                    })
+                  }
+                >
+                  <RotateCcwIcon />
+                  Retry from checkpoint
+                </Button>
+              ) : null}
+            </div>
           ) : null}
         </section>
         <div className="flex justify-end border-t pt-4">

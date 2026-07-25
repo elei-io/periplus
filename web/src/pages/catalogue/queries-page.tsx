@@ -208,53 +208,6 @@ function QueryDetailPage({ queryId }: { queryId: string }) {
         </Button>
       </CatalogueHero>
 
-      <CataloguePanel className="p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge
-            variant={
-              revision.compiler_outcome === "unsupported"
-                ? "outline"
-                : "secondary"
-            }
-          >
-            Compiler · {revision.compiler_outcome.replace("_", " ")}
-          </Badge>
-          <span className="text-xs text-muted-foreground">
-            {revision.compiler_version}
-            {revision.catalogue_definition_revision
-              ? ` · catalogue ${revision.catalogue_definition_revision}`
-              : ""}
-          </span>
-        </div>
-        {revision.compiler_diagnostics.length > 0 && (
-          <div className="mt-3 space-y-2">
-            {revision.compiler_diagnostics.map((diagnostic, index) => (
-              <div
-                key={`${diagnostic.code}-${index}`}
-                className="rounded-lg border bg-muted/30 px-3 py-2 text-xs"
-              >
-                <span className="font-medium">{diagnostic.code}</span>
-                <span className="ml-2 text-muted-foreground">
-                  {diagnostic.message}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-        {revision.compiler_dependencies.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {revision.compiler_dependencies.map((dependency) => (
-              <Badge
-                key={`${dependency.kind}:${dependency.qualified_name}`}
-                variant="outline"
-              >
-                {dependency.qualified_name}
-              </Badge>
-            ))}
-          </div>
-        )}
-      </CataloguePanel>
-
       <CataloguePanel className="grid min-h-[34rem] lg:grid-cols-[minmax(0,1fr)_17rem]">
         <div className="min-h-0 overflow-y-auto p-5">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">

@@ -107,6 +107,11 @@ live CDC immediately, and populate historical driving keys through bounded hash 
 virtual source view remains public until every partition commits; the worker then publishes the
 private target while retaining the same consumer for steady-state maintenance. Postgres persists
 only the partition count and next-partition cursor, while the partial result remains in DuckLake.
+DuckLake transaction conflicts, including conflicts with managed compaction, are retried without
+changing that cursor. A failed incarnation may be explicitly retried from its Postgres checkpoint:
+creation rediscovers its private target, backfill continues at the next uncommitted partition, and
+live refresh retains its processed-snapshot fence. Schema-blocked incarnations remain ineligible
+for retry because their durable table contract changed.
 Keyed refreshes derive composite keys from DuckLake's native bounded
 `ducklake_table_changes(...)` history. The catalogue compiler derives physical scan bindings from
 ordinary SQL and stored macro lineage, then injects those keys into every proven dependent scan
@@ -127,39 +132,24 @@ bounded Arrow IPC results. Query status and cancellation requests use the expiri
 Timeout, row, encoded-byte, and local-pool limits are mandatory. Basin owns remote admission and
 compute scaling.
 
-The Atlas analytics agent is an API-owned adapter over that same interactive query boundary. Its
-PydanticAI loop and typed catalogue tools live under `backend/agents/`; neither the model nor the
-browser receives a Quack connection or storage credentials. Each home-page question is an isolated,
-request-scoped investigation with no conversation context or Atlas persistence. The configured idea
-model first surveys relation and macro metadata without executing SQL, classifies the question,
-and produces three to five schema-grounded analytical directions. Independent SQL-model agents
-then investigate those directions concurrently. Each can discover public
-catalogue relations and macros and execute validated read-only SQL. After all directions settle, the
-SQL handoff model compiles each direction's objective, answer, and successful query history into
-one standalone workbench query. Atlas executes that exact query through the bounded interactive
-boundary before marking it validated; handoff failure does not discard the direction's finding.
-The idea model then synthesizes the direction answers and bounded evidence digests into the combined
-response. None
-of the agents can read graph execution state, crawl or schedule control state, inspect live pages,
-search the public web, propose acquisition, or mutate Atlas.
-Planner directions must be completely executable within the retained catalogue. Unresolved
-freshness or coverage uncertainty is reported as a catalogue limitation and is never delegated to
-external, live-source, or downstream validation.
+Atlas AI is an API-owned adapter over that same interactive query boundary. Its single PydanticAI
+loop and typed catalogue tools live under `backend/agents/`; neither the model nor a console
+receives a Quack connection or storage credentials. Each request contains one prompt and an
+optional bounded list of recent console-session messages. The API does not load or persist chat
+history. The agent can inspect public relations and macros and execute validated, bounded,
+read-only SQL. Relation inspection includes the transactional DuckLake comments attached to tables,
+views, and columns. A non-executing lint tool exposes the authoritative interactive compiler result,
+and every executed agent query returns that same compilation decision and its diagnostics alongside
+the bounded rows. A separate suggestion tool registers up to three read-only SQL handoffs only when
+the compiler reports no errors or warnings. The agent emits tool progress and finishes with a
+concise message plus the accepted suggestions. The console renders only their titles and
+descriptions, retains them in process memory, reveals one with `.ai show N`, and executes its
+authored SQL only after an explicit `.ai run N`.
 
-The planner's model-request limit is derived from its metadata tool-call limit because each
-sequential metadata call requires another model round before the typed plan can be returned. The
-derived limit always reserves the rounds needed to produce and retry that plan. SQL investigators
-retain independent request and tool-call limits.
-
-Atlas streams its own stable analytics events containing every model-invoked analytical SQL query
-that completed successfully, its direction, bounded rows, and completeness metadata; each
-direction's answer; and the final idea-model synthesis. SQL result rows remain separated by
-direction in the UI. Each completed direction presents its finding and validated handoff query as
-primary content, with the investigator's individual SQL and results retained as collapsible
-evidence.
-Questions, answers, and query results remain only in request and browser memory and disappear on
-replacement, navigation, or reload. The expiring NATS query-status record remains part of the shared
-interactive-query boundary; it contains operational status rather than question or result history.
+The agent cannot read graph execution state, crawl or schedule control state, inspect live pages,
+search the public web, propose acquisition, or mutate Atlas. The expiring NATS query-status record
+remains part of the shared interactive-query boundary; it contains operational status rather than
+prompt, response, or result history.
 The tool implementations remain independent of HTTP and agent transport so another adapter can reuse
 catalogue validation without gaining a second catalogue path.
 
@@ -177,6 +167,19 @@ OAuth credentials before expiry, gives every DuckDB client a session ID, and att
 corresponding horizontally routed Quack endpoint.
 
 ## Repository boundary
+
+### Deployment-to-lake binding
+
+One Atlas deployment is bound, for its process lifetime, to exactly one
+DuckLake selected by `DUCKBASIN_LAKE`. The API, workers, and catalogue relay
+must all use that same value. Changing lakes means recreating the deployment;
+Atlas does not support runtime lake switching, dual reads or writes, aliases, or
+migration bridges.
+
+Test, staging, and production deployments should use separate control state and
+Atlas JetStream state as well as separate lakes. The API validates the selected
+lake against Atlas's canonical catalogue schema before becoming ready, so a
+missing, stale, or otherwise incompatible schema fails deployment startup.
 
 Raw HTML is immutable and content addressed. Object keys are repository-relative. Postgres stores
 current workflow state, never crawl evidence; NATS is a delivery fabric, never workflow authority or

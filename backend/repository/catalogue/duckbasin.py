@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+import random
 import secrets
 import threading
 import time
@@ -26,7 +29,28 @@ class DuckBasinError(RuntimeError):
 
 
 class DuckBasinAuthenticationError(DuckBasinError):
-    """The service account could not obtain a usable access token."""
+    """DuckBasin rejected the configured service-account credentials."""
+
+
+class DuckBasinProtocolError(DuckBasinError):
+    """DuckBasin returned a successful but invalid control-plane response."""
+
+
+class DuckBasinUnavailableError(DuckBasinError):
+    """DuckBasin or Quack is transiently unavailable."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+class DuckBasinCredentialRejectedError(DuckBasinUnavailableError):
+    """Quack rejected a provider-issued credential that may be refreshed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,18 +99,29 @@ class ServiceAccountTokenProvider:
         *,
         client: httpx.Client | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        random_value: Callable[[], float] = random.random,
+        retry_initial_seconds: float = 0.5,
+        retry_max_seconds: float = 30.0,
     ) -> None:
+        if retry_initial_seconds <= 0 or retry_max_seconds < retry_initial_seconds:
+            raise ValueError("token retry bounds are invalid")
         self._config = config
         self._client = client or httpx.Client(
             timeout=config.request_timeout_seconds
         )
         self._owns_client = client is None
         self._monotonic = monotonic
+        self._random_value = random_value
+        self._retry_initial_seconds = retry_initial_seconds
+        self._retry_max_seconds = retry_max_seconds
         self._condition = threading.Condition()
         self._token: DuckBasinToken | None = None
         self._expires_monotonic = 0.0
         self._refreshing = False
         self._generation = 0
+        self._failure: DuckBasinError | None = None
+        self._retry_monotonic = 0.0
+        self._consecutive_failures = 0
 
     def get(self) -> DuckBasinToken:
         while True:
@@ -94,13 +129,40 @@ class ServiceAccountTokenProvider:
                 now = self._monotonic()
                 if self._token is not None and now < self._expires_monotonic:
                     return self._token
+                if (
+                    self._failure is not None
+                    and now < self._retry_monotonic
+                ):
+                    raise _copy_duckbasin_error(self._failure)
                 if not self._refreshing:
                     self._refreshing = True
                     break
                 self._condition.wait()
 
         try:
-            token, lifetime = self._request_token()
+            try:
+                token, lifetime = self._request_token()
+            except DuckBasinError as exc:
+                now = self._monotonic()
+                with self._condition:
+                    self._consecutive_failures += 1
+                    exponential = min(
+                        self._retry_max_seconds,
+                        self._retry_initial_seconds
+                        * (2 ** min(10, self._consecutive_failures - 1)),
+                    )
+                    jittered = exponential * (
+                        0.8 + 0.4 * self._random_value()
+                    )
+                    retry_after = (
+                        exc.retry_after_seconds
+                        if isinstance(exc, DuckBasinUnavailableError)
+                        else None
+                    )
+                    delay = max(jittered, retry_after or 0.0)
+                    self._failure = exc
+                    self._retry_monotonic = now + delay
+                raise
             now = self._monotonic()
             refresh_margin = min(
                 self._config.token_refresh_seconds,
@@ -114,6 +176,9 @@ class ServiceAccountTokenProvider:
                 )
                 self._token = lease
                 self._expires_monotonic = now + lifetime - refresh_margin
+                self._failure = None
+                self._retry_monotonic = 0.0
+                self._consecutive_failures = 0
                 return lease
         finally:
             with self._condition:
@@ -125,6 +190,8 @@ class ServiceAccountTokenProvider:
             if self._token is token:
                 self._token = None
                 self._expires_monotonic = 0
+                self._failure = None
+                self._retry_monotonic = 0.0
 
     def invalidate_generation(self, generation: int) -> None:
         """Discard a credential generation rejected by Quack."""
@@ -136,6 +203,27 @@ class ServiceAccountTokenProvider:
             ):
                 self._token = None
                 self._expires_monotonic = 0
+                self._failure = None
+                self._retry_monotonic = 0.0
+
+    def status(self) -> tuple[str, int]:
+        """Return cached token state without triggering a token refresh."""
+
+        with self._condition:
+            generation = self._generation
+            now = self._monotonic()
+            if self._refreshing:
+                return "refreshing", generation
+            if self._failure is not None:
+                return (
+                    "backoff" if now < self._retry_monotonic else "failed",
+                    generation,
+                )
+            if self._token is None:
+                return "empty", generation
+            if now >= self._expires_monotonic:
+                return "expired", generation
+            return "valid", self._token.generation
 
     def close(self) -> None:
         if self._owns_client:
@@ -151,7 +239,27 @@ class ServiceAccountTokenProvider:
                 },
                 auth=(self._config.client_id, self._config.client_secret),
             )
-            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise DuckBasinUnavailableError(
+                "DuckBasin token service is unavailable"
+            ) from exc
+        if response.status_code in {401, 403}:
+            raise DuckBasinAuthenticationError(
+                "DuckBasin rejected the service-account credentials "
+                f"(HTTP {response.status_code})"
+            )
+        if response.status_code == 429 or response.status_code >= 500:
+            raise DuckBasinUnavailableError(
+                "DuckBasin token service is unavailable "
+                f"(HTTP {response.status_code})",
+                retry_after_seconds=_retry_after_seconds(response),
+            )
+        if response.is_error:
+            raise DuckBasinProtocolError(
+                "DuckBasin token service rejected the request "
+                f"(HTTP {response.status_code})"
+            )
+        try:
             payload = response.json()
             token = payload["access_token"]
             lifetime = float(payload["expires_in"])
@@ -160,9 +268,9 @@ class ServiceAccountTokenProvider:
             if lifetime <= 0:
                 raise ValueError("expires_in is not positive")
             return token, lifetime
-        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
-            raise DuckBasinAuthenticationError(
-                "DuckBasin service-account authentication failed"
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DuckBasinProtocolError(
+                "DuckBasin token service returned an invalid response"
             ) from exc
 
 
@@ -275,51 +383,65 @@ class DuckBasinClientMinter:
         duckdb_config: Mapping[str, str] | None = None,
     ) -> MintedDuckDB:
         target = self.target()
-        token = self.tokens.get()
-        session_id = self._session_id_factory()
-        _validate_session_id(session_id)
-        horizontal = target.horizontal(session_id)
-        connection = self._connect(
-            database,
-            config=dict(duckdb_config or {"threads": "1"}),
-        )
-        try:
-            connection.load_extension("quack")
-            connection.execute(
-                "CREATE TEMPORARY SECRET "
-                f"{_quote_identifier(_SECRET_NAME)} ("
-                "TYPE quack, "
-                f"TOKEN {_quote_literal(token.value)}, "
-                f"SCOPE {_quote_literal(horizontal.quack_scope)}"
-                ")"
+        for attempt in range(2):
+            token = self.tokens.get()
+            session_id = self._session_id_factory()
+            _validate_session_id(session_id)
+            horizontal = target.horizontal(session_id)
+            connection = self._connect(
+                database,
+                config=dict(duckdb_config or {"threads": "1"}),
             )
-            options = "TYPE quack"
-            if horizontal.disable_ssl:
-                options += ", DISABLE_SSL true"
-            connection.execute(
-                f"ATTACH {_quote_literal(horizontal.quack_uri)} "
-                f"AS {_quote_identifier(horizontal.catalogue_alias)} "
-                f"({options})"
+            try:
+                connection.load_extension("quack")
+                connection.execute(
+                    "CREATE TEMPORARY SECRET "
+                    f"{_quote_identifier(_SECRET_NAME)} ("
+                    "TYPE quack, "
+                    f"TOKEN {_quote_literal(token.value)}, "
+                    f"SCOPE {_quote_literal(horizontal.quack_scope)}"
+                    ")"
+                )
+                options = "TYPE quack"
+                if horizontal.disable_ssl:
+                    options += ", DISABLE_SSL true"
+                connection.execute(
+                    f"ATTACH {_quote_literal(horizontal.quack_uri)} "
+                    f"AS {_quote_identifier(horizontal.catalogue_alias)} "
+                    f"({options})"
+                )
+                connection.execute(
+                    f"USE {_quote_identifier(horizontal.catalogue_alias)}"
+                )
+            except BaseException as exc:
+                connection.close()
+                classified = classify_quack_connection_error(exc)
+                if isinstance(classified, DuckBasinCredentialRejectedError):
+                    self.tokens.invalidate(token)
+                    if attempt == 0:
+                        continue
+                if classified is not None:
+                    raise classified from exc
+                raise
+            return MintedDuckDB(
+                connection=connection,
+                session_id=session_id,
+                lake_slug=horizontal.lake_slug,
+                catalogue_alias=horizontal.catalogue_alias,
+                quack_uri=horizontal.quack_uri,
+                token_generation=token.generation,
             )
-            connection.execute(
-                f"USE {_quote_identifier(horizontal.catalogue_alias)}"
-            )
-        except BaseException:
-            connection.close()
-            raise
-        return MintedDuckDB(
-            connection=connection,
-            session_id=session_id,
-            lake_slug=horizontal.lake_slug,
-            catalogue_alias=horizontal.catalogue_alias,
-            quack_uri=horizontal.quack_uri,
-            token_generation=token.generation,
-        )
+        raise AssertionError("unreachable")
 
     def connection_credentials_stale(self, minted: MintedDuckDB) -> bool:
         """Return whether a connection predates the provider's current token."""
 
         return self.tokens.get().generation != minted.token_generation
+
+    def token_status(self) -> tuple[str, int]:
+        """Return token telemetry without refreshing credentials."""
+
+        return self.tokens.status()
 
     def invalidate_connection_credentials(self, minted: MintedDuckDB) -> None:
         """Invalidate the token generation rejected by a remote connection."""
@@ -394,23 +516,47 @@ class DuckBasinClientMinter:
 
     def _authorized_get(self, path: str) -> Any:
         token = self.tokens.get()
-        response = self._client.get(
-            f"{self.config.base_url}{path}",
-            headers={"Authorization": f"Bearer {token.value}"},
-        )
+        response = self._get(path, token)
         if response.status_code == 401:
             self.tokens.invalidate(token)
             token = self.tokens.get()
-            response = self._client.get(
+            response = self._get(path, token)
+        if response.status_code in {401, 403}:
+            raise DuckBasinAuthenticationError(
+                "DuckBasin rejected the service-account credentials "
+                f"(HTTP {response.status_code})"
+            )
+        if response.status_code == 429 or response.status_code >= 500:
+            raise DuckBasinUnavailableError(
+                f"DuckBasin API is unavailable for {path} "
+                f"(HTTP {response.status_code})",
+                retry_after_seconds=_retry_after_seconds(response),
+            )
+        if response.is_error:
+            raise DuckBasinError(
+                f"DuckBasin API rejected {path} "
+                f"(HTTP {response.status_code})"
+            )
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise DuckBasinProtocolError(
+                f"DuckBasin API returned invalid JSON for {path}"
+            ) from exc
+
+    def _get(
+        self,
+        path: str,
+        token: DuckBasinToken,
+    ) -> httpx.Response:
+        try:
+            return self._client.get(
                 f"{self.config.base_url}{path}",
                 headers={"Authorization": f"Bearer {token.value}"},
             )
-        try:
-            response.raise_for_status()
-            return response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise DuckBasinError(
-                f"DuckBasin API request failed for {path}"
+        except httpx.HTTPError as exc:
+            raise DuckBasinUnavailableError(
+                f"DuckBasin API is unavailable for {path}"
             ) from exc
 
 
@@ -441,13 +587,77 @@ def _quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-def is_quack_authorization_error(exc: BaseException) -> bool:
-    return "authorization failed" in str(exc).lower()
+def classify_quack_connection_error(
+    exc: BaseException,
+) -> DuckBasinUnavailableError | None:
+    """Translate Quack transport/session failures at the repository boundary."""
 
-
-def is_recoverable_quack_connection_error(exc: BaseException) -> bool:
     message = str(exc).lower()
-    return (
-        "invalid connection id" in message
-        or "authorization failed" in message
+    if "authentication failed" in message or "authorization failed" in message:
+        return DuckBasinCredentialRejectedError(
+            "Quack rejected the DuckBasin credential"
+        )
+    transient_fragments = (
+        "invalid connection",
+        "timeout",
+        "connection reset",
+        "connection refused",
+        "connection closed",
+        "connection error",
+        "failed to connect",
+        "failed to send message",
+        "error sending request",
+        "status 429",
+        "status code 429",
+        "http 429",
+        "status 500",
+        "status code 500",
+        "http 500",
+        "status 502",
+        "status code 502",
+        "http 502",
+        "status 503",
+        "status code 503",
+        "http 503",
+        "status 504",
+        "status code 504",
+        "http 504",
     )
+    if any(fragment in message for fragment in transient_fragments):
+        return DuckBasinUnavailableError(
+            "Quack connection is unavailable"
+        )
+    return None
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    value = response.headers.get("Retry-After")
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            date_header = response.headers.get("Date")
+            current = (
+                parsedate_to_datetime(date_header)
+                if date_header is not None
+                else datetime.now(UTC)
+            )
+        except (TypeError, ValueError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=UTC)
+        return max(0.0, (retry_at - current).total_seconds())
+
+
+def _copy_duckbasin_error(error: DuckBasinError) -> DuckBasinError:
+    if isinstance(error, DuckBasinUnavailableError):
+        return type(error)(
+            str(error),
+            retry_after_seconds=error.retry_after_seconds,
+        )
+    return type(error)(str(error))

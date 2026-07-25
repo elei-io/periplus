@@ -30,7 +30,6 @@ import {
 import type { CatalogueViewRecord } from "@/types/catalogue"
 
 const sourceTables = [
-  "urls",
   "documents",
   "crawls",
   "elements",

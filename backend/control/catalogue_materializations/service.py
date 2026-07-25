@@ -30,10 +30,11 @@ from .schemas import (
 def materialization_store(session: Session, catalogue) -> MaterializationStore:
     """Build a store from the same authoritative macro definitions as execution."""
 
-    definitions = read_catalogue_compiler_definitions(
-        catalogue.trusted_connection,
-        catalogue_alias=catalogue.config.alias,
-    )
+    with catalogue.remote_transaction():
+        definitions = read_catalogue_compiler_definitions(
+            catalogue.trusted_connection,
+            catalogue_alias=catalogue.config.alias,
+        )
     return MaterializationStore(
         catalogue,
         scalar_macros=definitions.scalar_macros,
@@ -243,14 +244,20 @@ def update_state(
             "A materialization cannot be paused while its initial backfill is running."
         )
     if desired_state is not None:
-        if desired_state == "live" and model.observed_state in {
-            "blocked_schema",
-            "failed",
-        }:
+        if desired_state == "live" and model.observed_state == "blocked_schema":
             raise MaterializationConflictError(
-                "This incarnation cannot resume. Dematerialize it and create a new one."
+                "This incarnation has an incompatible schema and cannot resume. "
+                "Dematerialize it and create a new one."
             )
         model.desired_state = desired_state
+        if desired_state == "live" and model.observed_state == "failed":
+            if model.ducklake_table_uuid is None:
+                model.observed_state = "creating"
+            elif model.bootstrap_partition_count is not None:
+                model.observed_state = "backfilling"
+            else:
+                model.observed_state = "live"
+            model.last_error = None
     if refresh_delay_seconds is not None:
         model.refresh_delay_seconds = refresh_delay_seconds
     session.flush()

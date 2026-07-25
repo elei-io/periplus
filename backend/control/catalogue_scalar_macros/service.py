@@ -13,10 +13,7 @@ from repository.catalogue.scalar_macros import (
     CatalogueScalarMacroConflictError,
     CatalogueScalarMacroStore,
 )
-from repository.catalogue.definition_compiler import (
-    compile_definition_authoring,
-    store_compilation,
-)
+from repository.catalogue.definition_compiler import compile_definition_authoring
 
 from .models import CatalogueScalarMacroDefinition
 from .schemas import CatalogueScalarMacroRecord
@@ -62,7 +59,7 @@ def create_definition(
     sql: str,
     description: str | None,
 ) -> CatalogueScalarMacroRecord:
-    compilation = compile_definition_authoring(
+    compile_definition_authoring(
         store.catalogue,
         sql,
         kind="scalar_macro",
@@ -80,7 +77,11 @@ def create_definition(
         raise CatalogueScalarMacroConflictError(
             f"Scalar macro {SCALAR_MACRO_SCHEMA}.{slug} is already managed by Atlas."
         )
-    macro = store.create(name=slug, parameters=parameters, sql=sql)
+    macro = store.create(
+        name=slug,
+        parameters=parameters,
+        sql=sql,
+    )
     definition = CatalogueScalarMacroDefinition(
         schema_name=SCALAR_MACRO_SCHEMA,
         macro_name=slug,
@@ -89,7 +90,6 @@ def create_definition(
         parameters=list(macro.parameters),
         sql=sql.strip(),
     )
-    store_compilation(definition, compilation)
     session.add(definition)
     try:
         session.flush()
@@ -124,7 +124,7 @@ def update_definition(
         raise CatalogueScalarMacroConflictError(
             "The scalar macro changed; refresh before editing."
         )
-    compilation = compile_definition_authoring(
+    compile_definition_authoring(
         store.catalogue,
         sql,
         kind="scalar_macro",
@@ -132,13 +132,16 @@ def update_definition(
         object_name=locked.macro_name,
         parameters=tuple(parameters),
     )
-    macro = store.replace(name=locked.macro_name, parameters=parameters, sql=sql)
+    macro = store.replace(
+        name=locked.macro_name,
+        parameters=parameters,
+        sql=sql,
+    )
     locked.parameters = list(macro.parameters)
     locked.sql = sql.strip()
     locked.slug = slug
     locked.description = description
     locked.definition_revision_id = uuid4()
-    store_compilation(locked, compilation)
     try:
         session.flush()
     except IntegrityError as exc:
@@ -190,9 +193,4 @@ def _record(
         available=available,
         created_at=definition.created_at,
         updated_at=definition.updated_at,
-        compiler_outcome=definition.compiler_outcome,
-        compiler_diagnostics=definition.compiler_diagnostics or [],
-        compiler_dependencies=definition.compiler_dependencies or [],
-        compiler_version=definition.compiler_version,
-        catalogue_definition_revision=definition.catalogue_definition_revision,
     )

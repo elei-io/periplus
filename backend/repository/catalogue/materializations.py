@@ -26,7 +26,7 @@ MATERIALIZED_SCHEMA = "_atlas_materializations"
 _SAFE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _CHANGED_KEYS_TABLE = "_atlas_materialization_changed_keys"
 _PHYSICAL_NAME_PREFIX = "m_"
-_BOOTSTRAP_KEYS_PER_PARTITION = 1
+_BOOTSTRAP_KEYS_PER_PARTITION = 4
 
 
 class MaterializationError(ValueError):
@@ -273,30 +273,30 @@ class MaterializationStore:
         partition_count: int,
     ) -> MaterializationTable:
         current = self._checked_target(name, expected_uuid)
-        self._prepare_backfill_keys(
-            source_table=source_table,
-            key_columns=key_columns,
-            partition=partition,
-            partition_count=partition_count,
-        )
         try:
-            if not self._has_changed_keys():
-                return current
-            query = self._scope_incremental_query(
-                sql,
-                source_table=source_table,
-                refresh_strategy="keyed",
-                key_columns=key_columns,
-                bind_key_rows=True,
-            )
-            target = _qualified(self.catalogue, name)
-            target_match = _key_match(
-                "materialized_target", "changed", key_columns
-            )
-            source_match = _key_match(
-                "materialized_source", "changed", key_columns
-            )
             with self.catalogue.remote_transaction():
+                self._prepare_backfill_keys(
+                    source_table=source_table,
+                    key_columns=key_columns,
+                    partition=partition,
+                    partition_count=partition_count,
+                )
+                if not self._has_changed_keys():
+                    return current
+                query = self._scope_incremental_query(
+                    sql,
+                    source_table=source_table,
+                    refresh_strategy="keyed",
+                    key_columns=key_columns,
+                    bind_key_rows=True,
+                )
+                target = _qualified(self.catalogue, name)
+                target_match = _key_match(
+                    "materialized_target", "changed", key_columns
+                )
+                source_match = _key_match(
+                    "materialized_source", "changed", key_columns
+                )
                 self.catalogue.trusted_remote_execute(
                     f"DELETE FROM {target} AS materialized_target "
                     "WHERE EXISTS (SELECT 1 FROM "
@@ -327,44 +327,44 @@ class MaterializationStore:
         partition_count: int,
     ) -> MaterializationTable:
         current = self._checked_target(name, expected_uuid)
-        self._prepare_backfill_keys(
-            source_table=source_table,
-            key_columns=key_columns,
-            partition=partition,
-            partition_count=partition_count,
-        )
         try:
-            if not self._has_changed_keys():
-                return current
-            query = self._scope_incremental_query(
-                sql,
-                source_table=source_table,
-                refresh_strategy="append",
-                key_columns=key_columns,
-                bind_key_rows=True,
-            )
-            target = _qualified(self.catalogue, name)
-            source_match = _key_match(
-                "materialized_source", "changed", key_columns
-            )
-            target_match = _key_match(
-                "materialized_target", "candidate", key_columns
-            )
-            candidates = (
-                f"SELECT materialized_source.* FROM ({query}) "
-                "AS materialized_source "
-                "WHERE EXISTS (SELECT 1 FROM "
-                "_atlas_materialization_changed_keys AS changed "
-                f"WHERE {source_match})"
-            )
-            if self._has_duplicate_keys(
-                relation=f"({candidates})",
-                key_columns=key_columns,
-            ):
-                raise MaterializationAppendOnlyViolation(
-                    "Append key columns must uniquely identify every result row."
-                )
             with self.catalogue.remote_transaction():
+                self._prepare_backfill_keys(
+                    source_table=source_table,
+                    key_columns=key_columns,
+                    partition=partition,
+                    partition_count=partition_count,
+                )
+                if not self._has_changed_keys():
+                    return current
+                query = self._scope_incremental_query(
+                    sql,
+                    source_table=source_table,
+                    refresh_strategy="append",
+                    key_columns=key_columns,
+                    bind_key_rows=True,
+                )
+                target = _qualified(self.catalogue, name)
+                source_match = _key_match(
+                    "materialized_source", "changed", key_columns
+                )
+                target_match = _key_match(
+                    "materialized_target", "candidate", key_columns
+                )
+                candidates = (
+                    f"SELECT materialized_source.* FROM ({query}) "
+                    "AS materialized_source "
+                    "WHERE EXISTS (SELECT 1 FROM "
+                    "_atlas_materialization_changed_keys AS changed "
+                    f"WHERE {source_match})"
+                )
+                if self._has_duplicate_keys(
+                    relation=f"({candidates})",
+                    key_columns=key_columns,
+                ):
+                    raise MaterializationAppendOnlyViolation(
+                        "Append key columns must uniquely identify every result row."
+                    )
                 self.catalogue.trusted_remote_execute(
                     f"INSERT INTO {target} "
                     f"SELECT candidate.* FROM ({candidates}) AS candidate "
@@ -414,25 +414,29 @@ class MaterializationStore:
         current = self._checked_target(name, expected_uuid)
         self._use_main()
         try:
-            self._prepare_changes(
-                source_table_id=source_table_id,
-                from_snapshot=from_snapshot,
-                to_snapshot=to_snapshot,
-                key_columns=key_columns,
-            )
-            if not self._has_changed_keys():
-                return current
-            query = self._scope_incremental_query(
-                sql,
-                source_table=source_table,
-                refresh_strategy="keyed",
-                key_columns=key_columns,
-                bind_key_rows=True,
-            )
-            target = _qualified(self.catalogue, name)
-            target_match = _key_match("materialized_target", "changed", key_columns)
-            source_match = _key_match("materialized_source", "changed", key_columns)
             with self.catalogue.remote_transaction():
+                self._prepare_changes(
+                    source_table_id=source_table_id,
+                    from_snapshot=from_snapshot,
+                    to_snapshot=to_snapshot,
+                    key_columns=key_columns,
+                )
+                if not self._has_changed_keys():
+                    return current
+                query = self._scope_incremental_query(
+                    sql,
+                    source_table=source_table,
+                    refresh_strategy="keyed",
+                    key_columns=key_columns,
+                    bind_key_rows=True,
+                )
+                target = _qualified(self.catalogue, name)
+                target_match = _key_match(
+                    "materialized_target", "changed", key_columns
+                )
+                source_match = _key_match(
+                    "materialized_source", "changed", key_columns
+                )
                 self.catalogue.trusted_remote_execute(
                     f"DELETE FROM {target} AS materialized_target "
                     "WHERE EXISTS (SELECT 1 FROM _atlas_materialization_changed_keys "
@@ -471,60 +475,65 @@ class MaterializationStore:
         current = self._checked_target(name, expected_uuid)
         self._use_main()
         try:
-            self._prepare_changes(
-                source_table_id=source_table_id,
-                from_snapshot=from_snapshot,
-                to_snapshot=to_snapshot,
-                key_columns=key_columns,
-            )
-            mutations = self.catalogue.trusted_remote_rows(
-                "SELECT change_type FROM _atlas_materialization_changes "
-                "WHERE change_type <> 'insert' LIMIT 1"
-            )
-            if mutations:
-                raise MaterializationAppendOnlyViolation(
-                    "The driving table emitted a non-insert change. "
-                    "Dematerialize and choose keyed or full refresh."
+            with self.catalogue.remote_transaction():
+                self._prepare_changes(
+                    source_table_id=source_table_id,
+                    from_snapshot=from_snapshot,
+                    to_snapshot=to_snapshot,
+                    key_columns=key_columns,
                 )
-            if not self._has_changed_keys():
-                return current
-            query = self._scope_incremental_query(
-                sql,
-                source_table=source_table,
-                refresh_strategy="append",
-                key_columns=key_columns,
-                bind_key_rows=True,
-            )
-            target = _qualified(self.catalogue, name)
-            source_match = _key_match("materialized_source", "changed", key_columns)
-            target_match = _key_match("materialized_target", "candidate", key_columns)
-            candidates = (
-                f"SELECT materialized_source.* FROM ({query}) AS materialized_source "
-                "WHERE EXISTS (SELECT 1 FROM _atlas_materialization_changed_keys "
-                f"AS changed WHERE {source_match})"
-            )
-            if self._has_duplicate_keys(
-                relation=f"({candidates})",
-                key_columns=key_columns,
-            ):
-                raise MaterializationAppendOnlyViolation(
-                    "Append key columns must uniquely identify every result row."
+                mutations = self.catalogue.trusted_remote_rows(
+                    "SELECT change_type FROM _atlas_materialization_changes "
+                    "WHERE change_type <> 'insert' LIMIT 1"
                 )
-            try:
-                with self.catalogue.remote_transaction():
-                    self.catalogue.trusted_remote_execute(
-                        f"INSERT INTO {target} "
-                        f"SELECT candidate.* FROM ({candidates}) AS candidate "
-                        f"WHERE NOT EXISTS (SELECT 1 FROM {target} "
-                        f"AS materialized_target WHERE {target_match})"
+                if mutations:
+                    raise MaterializationAppendOnlyViolation(
+                        "The driving table emitted a non-insert change. "
+                        "Dematerialize and choose keyed or full refresh."
                     )
-            except MaterializationAppendOnlyViolation:
-                raise
-            except Exception as exc:
-                raise MaterializationSchemaChangeError(
-                    "The materialized query no longer matches its durable table "
-                    "schema. Dematerialize and create it again."
-                ) from exc
+                if not self._has_changed_keys():
+                    return current
+                query = self._scope_incremental_query(
+                    sql,
+                    source_table=source_table,
+                    refresh_strategy="append",
+                    key_columns=key_columns,
+                    bind_key_rows=True,
+                )
+                target = _qualified(self.catalogue, name)
+                source_match = _key_match(
+                    "materialized_source", "changed", key_columns
+                )
+                target_match = _key_match(
+                    "materialized_target", "candidate", key_columns
+                )
+                candidates = (
+                    f"SELECT materialized_source.* FROM ({query}) "
+                    "AS materialized_source "
+                    "WHERE EXISTS (SELECT 1 FROM "
+                    "_atlas_materialization_changed_keys AS changed "
+                    f"WHERE {source_match})"
+                )
+                if self._has_duplicate_keys(
+                    relation=f"({candidates})",
+                    key_columns=key_columns,
+                ):
+                    raise MaterializationAppendOnlyViolation(
+                        "Append key columns must uniquely identify every result row."
+                    )
+                self.catalogue.trusted_remote_execute(
+                    f"INSERT INTO {target} "
+                    f"SELECT candidate.* FROM ({candidates}) AS candidate "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM {target} "
+                    f"AS materialized_target WHERE {target_match})"
+                )
+        except MaterializationAppendOnlyViolation:
+            raise
+        except Exception as exc:
+            raise MaterializationSchemaChangeError(
+                "The materialized query no longer matches its durable table "
+                "schema. Dematerialize and create it again."
+            ) from exc
         finally:
             self._drop_changes()
         return self.inspect(name)

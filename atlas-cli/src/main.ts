@@ -1,16 +1,21 @@
 #!/usr/bin/env node
 
-import { createInterface } from "node:readline/promises";
 import {
   AtlasConsole,
+  type AtomicCommandResult,
+  type CommandResult,
   ConsoleError,
+  GhostTextEditor,
   headlessCommandLine,
   HttpAtlasApi,
 } from "@atlas/console-core";
 import { parseArguments } from "./arguments.js";
 import { openBrowser, resourceUrl } from "./browser.js";
 import { resolveApiUrl, resolveWebUrl } from "./config.js";
-import { renderResult } from "./output.js";
+import { renderResult, startProgress } from "./output.js";
+import { renderFooter } from "./footer.js";
+import { NodeTerminal } from "./terminal.js";
+import { renderWelcome } from "./welcome.js";
 
 async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2));
@@ -21,15 +26,7 @@ async function main(): Promise<void> {
   if (options.command.length) {
     const result = await console.execute(headlessCommandLine(options.command));
     if (result) {
-      if (result.kind === "navigate") {
-        await openBrowser(resourceUrl(webUrl, result.path));
-      }
-      process.stdout.write(
-        renderResult(result, {
-          format: options.format,
-          columns: process.stdout.columns,
-        }),
-      );
+      await emitResult(result, webUrl, options.format);
     }
     return;
   }
@@ -40,40 +37,124 @@ async function main(): Promise<void> {
     );
   }
 
-  const terminal = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: true,
+  const terminal = new NodeTerminal();
+  await console.status.connect(AbortSignal.timeout(3_000));
+  terminal.clearScreen();
+  process.stdout.write(renderWelcome(console.status.snapshot()));
+  const editor = new GhostTextEditor(
+    terminal,
+    (input, cursor) => console.complete(input, cursor),
+    75,
+    console.history,
+    (input) => console.status.updateInput(input),
+  );
+  terminal.enablePinnedFooter(
+    (columns) => renderFooter(console.status.snapshot(), columns),
+  );
+  const statusSubscription = console.status.subscribe(() => {
+    terminal.refreshFooter();
   });
-  process.stdout.write("Atlas console. Enter .help for commands.\n");
+  const interrupt = terminal.onData((data) => {
+    if (data === "\u0003" && console.interrupt()) {
+      terminal.writeRaw("^C\r\n");
+    }
+  });
   try {
     while (true) {
-      const line = await terminal.question("atlas> ").catch(() => ".exit");
+      const line = await editor.readLine("atlas> ");
       if (line.trim() === ".exit") break;
+      const progress = line.trim() && !line.trimStart().startsWith(".")
+        ? startProgress("Running query…")
+        : undefined;
+      let progressStopped = false;
+      const stopProgress = () => {
+        if (progressStopped) return;
+        progress?.stop();
+        progressStopped = true;
+      };
       try {
         const result = await console.execute(line);
+        stopProgress();
         if (result) {
-          if (result.kind === "navigate") {
-            await openBrowser(resourceUrl(webUrl, result.path));
-          }
-          process.stdout.write(
-            renderResult(result, {
-              format: "table",
-              columns: process.stdout.columns,
-            }),
-          );
+          await emitResult(result, webUrl, "table");
         }
       } catch (reason) {
-        process.stderr.write(`Error: ${errorMessage(reason)}\n`);
+        stopProgress();
+        if (isAbort(reason)) {
+          process.stderr.write("Query cancellation requested.\n");
+        } else {
+          process.stderr.write(`Error: ${errorMessage(reason)}\n`);
+        }
+      } finally {
+        stopProgress();
       }
     }
   } finally {
+    interrupt.dispose();
+    statusSubscription.dispose();
+    console.status.dispose();
     terminal.close();
   }
 }
 
+async function emitResult(
+  result: CommandResult,
+  webUrl: string,
+  format: "table" | "json",
+): Promise<void> {
+  let activity: { stop(): void } | undefined;
+  const emit = async (event: AtomicCommandResult) => {
+    if (
+      format === "table" &&
+      event.kind === "progress" &&
+      event.state === "active"
+    ) {
+      activity?.stop();
+      if (event.groupStart) {
+        process.stdout.write("\n\u001b[1;35m◆ Atlas\u001b[0m\n");
+      }
+      activity = startProgress(event.label, 0, "\u001b[2m│\u001b[0m ");
+      return;
+    }
+    activity?.stop();
+    activity = undefined;
+    await emitAtomicResult(event, webUrl, format);
+  };
+  if (result.kind === "stream") {
+    try {
+      for await (const event of result.events) {
+        await emit(event);
+      }
+    } finally {
+      activity?.stop();
+    }
+    return;
+  }
+  await emit(result);
+}
+
+async function emitAtomicResult(
+  result: AtomicCommandResult,
+  webUrl: string,
+  format: "table" | "json",
+): Promise<void> {
+  if (result.kind === "navigate") {
+    await openBrowser(resourceUrl(webUrl, result.path));
+  }
+  process.stdout.write(
+    renderResult(result, {
+      format,
+      columns: process.stdout.columns,
+    }),
+  );
+}
+
 function errorMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
+}
+
+function isAbort(reason: unknown): boolean {
+  return reason instanceof Error && reason.name === "AbortError";
 }
 
 main().catch((reason: unknown) => {

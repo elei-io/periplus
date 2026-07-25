@@ -23,7 +23,7 @@ from repository.catalogue import (
     CrawlStepRecord,
     DocumentRecord,
     ExistingCatalogueIdentities,
-    UrlRecord,
+    ServiceAccountTokenProvider,
     catalogue_from_env,
 )
 from dom import (
@@ -32,7 +32,6 @@ from dom import (
     PARSER_OPTIONS_HASH,
     PARSER_VERSION,
     GroupedLinkPayload,
-    links_from_html,
     write_dom_parquet,
 )
 from repository.objects.config import object_store_from_env, staging_root_from_env
@@ -113,7 +112,6 @@ class RepositoryIngestor:
         self,
         *,
         crawl: CrawlRecord,
-        urls: tuple[UrlRecord, ...],
         crawl_attempts: tuple[CrawlAttemptRecord, ...],
         crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
         known_documents: Mapping[str, DocumentRecord] | None = None,
@@ -121,6 +119,8 @@ class RepositoryIngestor:
         """Prepare a queued ingestion using only its durable raw object reference."""
 
         if crawl.artifact_id is not None:
+            if crawl.content_captured_at is None:
+                raise ValueError("an artifact crawl requires content_captured_at")
             prefix = "sha256:"
             if not crawl.artifact_id.startswith(prefix):
                 raise ValueError("crawl.artifact_id must be a SHA-256 content identity")
@@ -137,7 +137,6 @@ class RepositoryIngestor:
             detection = detect_artifact_media_type(content)
             artifact = ArtifactRecord(
                 artifact_id=crawl.artifact_id,
-                sha256=sha256,
                 object_key=object_key,
                 size_bytes=identity.size_bytes,
                 response_media_type=crawl.response_media_type,
@@ -145,13 +144,12 @@ class RepositoryIngestor:
                 detector_name=detection.detector_name,
                 detector_version=detection.detector_version,
                 detection_confidence=detection.confidence,
-                created_at=crawl.captured_at,
+                first_seen_at=crawl.content_captured_at,
             )
             return PreparedIngestion(
                 document=None,
                 artifact=artifact,
                 crawl=crawl,
-                urls=urls,
                 crawl_attempts=crawl_attempts,
                 crawl_steps=crawl_steps,
             )
@@ -160,7 +158,6 @@ class RepositoryIngestor:
             return PreparedIngestion(
                 document=None,
                 crawl=crawl,
-                urls=urls,
                 crawl_attempts=crawl_attempts,
                 crawl_steps=crawl_steps,
             )
@@ -169,6 +166,8 @@ class RepositoryIngestor:
         if not crawl.document_id.startswith(prefix):
             raise ValueError("crawl.document_id must be a SHA-256 content identity")
         sha256 = crawl.document_id.removeprefix(prefix)
+        if crawl.content_captured_at is None:
+            raise ValueError("a document crawl requires content_captured_at")
         object_key = html_object_key(sha256)
         if not self.html_repository.store.exists(object_key):
             raise FileNotFoundError(f"raw HTML object is missing: {object_key}")
@@ -178,23 +177,17 @@ class RepositoryIngestor:
             else known_documents.get(crawl.document_id)
         )
         captured_html = self.html_repository.read(object_key)
-        urls = self._urls_with_links(
-            captured_html=captured_html,
-            crawl=crawl,
-            urls=urls,
-        )
         if existing is not None and self._projection_is_current(existing):
             self.html_repository.verify(
                 object_key,
                 expected=HtmlIdentity(
-                    sha256=existing.html_sha256,
-                    size_bytes=existing.html_size_bytes,
+                    sha256=_sha256_from_identity(existing.document_id),
+                    size_bytes=existing.size_bytes,
                 ),
             )
             return PreparedIngestion(
                 document=existing,
                 crawl=crawl,
-                urls=urls,
                 crawl_attempts=crawl_attempts,
                 crawl_steps=crawl_steps,
             )
@@ -215,24 +208,23 @@ class RepositoryIngestor:
         if existing is None:
             document = DocumentRecord(
                 document_id=crawl.document_id,
-                html_sha256=sha256,
-                html_object_key=object_key,
-                html_content_type="text/html",
-                html_encoding="utf-8",
-                html_size_bytes=identity.size_bytes,
-                html_compressed_size_bytes=compressed_size,
+                object_key=object_key,
+                content_type="text/html",
+                encoding="utf-8",
+                size_bytes=identity.size_bytes,
+                compressed_size_bytes=compressed_size,
                 compression="zstd",
                 dom_schema_version=DOM_SCHEMA_VERSION,
                 parser_name=PARSER_NAME,
                 parser_version=PARSER_VERSION,
                 parser_options_hash=PARSER_OPTIONS_HASH,
                 element_count=projection.element_count,
-                created_at=crawl.captured_at,
+                first_seen_at=crawl.content_captured_at,
             )
         else:
             document = existing.model_copy(
                 update={
-                    "html_compressed_size_bytes": compressed_size,
+                    "compressed_size_bytes": compressed_size,
                     "dom_schema_version": DOM_SCHEMA_VERSION,
                     "parser_name": PARSER_NAME,
                     "parser_version": PARSER_VERSION,
@@ -243,7 +235,6 @@ class RepositoryIngestor:
         return PreparedIngestion(
             document=document,
             crawl=crawl,
-            urls=urls,
             crawl_attempts=crawl_attempts,
             crawl_steps=crawl_steps,
             elements_path=projection.path,
@@ -251,28 +242,6 @@ class RepositoryIngestor:
             staged_bytes=projection.size_bytes,
             replace_projection=existing is not None,
         )
-
-    @staticmethod
-    def _urls_with_links(
-        *,
-        captured_html: str,
-        crawl: CrawlRecord,
-        urls: tuple[UrlRecord, ...],
-    ) -> tuple[UrlRecord, ...]:
-        by_id = {url.url_id: url for url in urls}
-        page_url_id = crawl.final_url_id or crawl.requested_url_id
-        page_url = by_id.get(page_url_id)
-        if page_url is None:
-            raise ValueError("crawl effective URL must be present in its URL dimension rows")
-        links = links_from_html(
-            captured_html,
-            page_url=page_url.normalized_url,
-        )
-        for group in links.values():
-            for link in group:
-                target_url = UrlRecord.from_normalized_url(str(link["target_url"]))
-                by_id.setdefault(target_url.url_id, target_url)
-        return tuple(by_id.values())
 
     def commit_prepared_batch(
         self,
@@ -290,7 +259,6 @@ class RepositoryIngestor:
                         document=value.document,
                         artifact=value.artifact,
                         crawl=value.crawl,
-                        urls=value.urls,
                         crawl_attempts=value.crawl_attempts,
                         crawl_steps=value.crawl_steps,
                         elements_path=value.elements_path,
@@ -312,11 +280,6 @@ class RepositoryIngestor:
         """Resolve identities that cannot require an append in this commit."""
 
         return self.catalogue_service.preflight_existing_identities(
-            url_ids=[
-                url.url_id
-                for value in prepared
-                for url in value.urls
-            ],
             document_ids=[
                 value.document.document_id
                 for value in prepared
@@ -355,7 +318,7 @@ class RepositoryIngestor:
             self.artifact_repository.verify(
                 artifact.object_key,
                 expected=ArtifactIdentity(
-                    sha256=artifact.sha256,
+                    sha256=_sha256_from_identity(artifact.artifact_id),
                     size_bytes=artifact.size_bytes,
                 ),
             )
@@ -420,7 +383,7 @@ class RepositoryIngestor:
         self,
         *,
         normalized_url: str,
-        policy_config_hash: str,
+        effective_policy_hash: str,
         captured_after: datetime | None = None,
         captured_before: datetime | None = None,
         include_html: bool = True,
@@ -431,7 +394,7 @@ class RepositoryIngestor:
 
         for crawl in self.catalogue_service.find_cached_crawls(
             normalized_url=normalized_url,
-            policy_config_hash=policy_config_hash,
+            effective_policy_hash=effective_policy_hash,
             captured_after=captured_after,
             captured_before=captured_before,
         ):
@@ -490,7 +453,7 @@ class RepositoryIngestor:
                 self.artifact_repository.verify(
                     artifact.object_key,
                     expected=ArtifactIdentity(
-                        sha256=artifact.sha256,
+                        sha256=_sha256_from_identity(artifact.artifact_id),
                         size_bytes=artifact.size_bytes,
                     ),
                 )
@@ -506,15 +469,6 @@ class RepositoryIngestor:
                 projection_rebuilt=False,
                 repository_snapshot=repository_snapshot,
             )
-        url_ids = tuple(
-            value
-            for value in (crawl.requested_url_id, crawl.final_url_id)
-            if value is not None
-        )
-        stored_urls = self.catalogue_service.get_urls(url_ids)
-        effective_url = stored_urls.get(crawl.final_url_id or crawl.requested_url_id)
-        if effective_url is None:
-            raise CatalogueValidationError("crawl effective URL is missing")
         document = self.catalogue_service.get_document(crawl.document_id)
         if document is None:
             if require_complete:
@@ -522,11 +476,11 @@ class RepositoryIngestor:
                     f"crawl {crawl.crawl_id} references missing document {crawl.document_id}"
                 )
             return None
-        if not self.html_repository.store.exists(document.html_object_key):
+        if not self.html_repository.store.exists(document.object_key):
             if require_complete:
                 raise RuntimeError(
                     f"crawl {crawl.crawl_id} references missing raw HTML "
-                    f"{document.html_object_key}"
+                    f"{document.object_key}"
                 )
             return None
 
@@ -534,16 +488,16 @@ class RepositoryIngestor:
         if projection_rebuilt and not repair_projection:
             raise ProjectionRebuildRequired(crawl)
         html = (
-            self.html_repository.read(document.html_object_key)
+            self.html_repository.read(document.object_key)
             if include_html or projection_rebuilt
             else None
         )
         if html is None:
             self.html_repository.verify(
-                document.html_object_key,
+                document.object_key,
                 expected=HtmlIdentity(
-                    sha256=document.html_sha256,
-                    size_bytes=document.html_size_bytes,
+                    sha256=_sha256_from_identity(document.document_id),
+                    size_bytes=document.size_bytes,
                 ),
             )
         repository_snapshot = self.catalogue.latest_snapshot()
@@ -573,7 +527,6 @@ class RepositoryIngestor:
                     PreparedIngestion(
                         document=document,
                         crawl=crawl,
-                        urls=tuple(stored_urls.values()),
                         crawl_attempts=(),
                         crawl_steps=None,
                         elements_path=projection.path,
@@ -592,7 +545,7 @@ class RepositoryIngestor:
             links=(
                 self.catalogue_service.get_projected_links(
                     document.document_id,
-                    page_url=effective_url.normalized_url,
+                    page_url=crawl.url,
                 )
                 if include_links
                 else None
@@ -633,12 +586,15 @@ class RepositoryIngestor:
         self.close()
 
 
-def repository_ingestor_from_env() -> RepositoryIngestor:
+def repository_ingestor_from_env(
+    *,
+    tokens: ServiceAccountTokenProvider | None = None,
+) -> RepositoryIngestor:
     store = object_store_from_env()
     return RepositoryIngestor(
         html_repository=RawHtmlRepository(store),
         artifact_repository=RawArtifactRepository(store),
-        catalogue=catalogue_from_env(),
+        catalogue=catalogue_from_env(tokens=tokens),
         staging_root=staging_root_from_env(),
         limits=RepositoryLimits.from_env(),
     )
@@ -684,7 +640,6 @@ class RepositoryCacheHit:
 class PreparedIngestion:
     document: DocumentRecord | None
     crawl: CrawlRecord
-    urls: tuple[UrlRecord, ...]
     crawl_attempts: tuple[CrawlAttemptRecord, ...]
     crawl_steps: tuple[CrawlStepRecord, ...] | None = ()
     artifact: ArtifactRecord | None = None
@@ -696,3 +651,10 @@ class PreparedIngestion:
 
 def _positive_env_int(name: str, default: int) -> int:
     return get_int(name)
+
+
+def _sha256_from_identity(value: str) -> str:
+    prefix = "sha256:"
+    if not value.startswith(prefix):
+        raise ValueError(f"{value!r} is not a SHA-256 content identity")
+    return value.removeprefix(prefix)

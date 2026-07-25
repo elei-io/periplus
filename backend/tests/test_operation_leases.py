@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import unittest
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-import unittest
+from unittest.mock import patch
 
 from nats.js.errors import (
     KeyDeletedError,
@@ -56,6 +58,25 @@ class FakeBucket:
         if self.values[key][0] != last:
             raise KeyWrongLastSequenceError
         del self.values[key]
+
+
+class SlowLeaseSetBucket(FakeBucket):
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_renewed = asyncio.Event()
+
+    async def create(self, key: str, value: bytes) -> int:
+        lease = OperationLease.model_validate_json(value)
+        if lease.operation_id == "second":
+            await asyncio.wait_for(self.first_renewed.wait(), timeout=0.1)
+        return await super().create(key, value)
+
+    async def update(self, key: str, value: bytes, *, last: int) -> int:
+        lease = OperationLease.model_validate_json(value)
+        revision = await super().update(key, value, last=last)
+        if lease.operation_id == "first":
+            self.first_renewed.set()
+        return revision
 
 
 class OperationLeaseTests(unittest.IsolatedAsyncioTestCase):
@@ -133,6 +154,24 @@ class OperationLeaseTests(unittest.IsolatedAsyncioTestCase):
                 (await bucket.get(key)).value
             )
             self.assertNotEqual(current.owner, "dead-worker")
+
+        self.assertFalse(bucket.values)
+
+    async def test_acquired_prefix_is_renewed_during_large_lease_acquisition(
+        self,
+    ) -> None:
+        bucket = SlowLeaseSetBucket()
+
+        with patch(
+            "runtime.operation_leases.CATALOGUE_OPERATION_HEARTBEAT_SECONDS",
+            0.001,
+        ):
+            async with operation_leases(
+                bucket,
+                ("first", "second"),
+                phase="ingestion-commit",
+            ):
+                self.assertTrue(bucket.first_renewed.is_set())
 
         self.assertFalse(bucket.values)
 

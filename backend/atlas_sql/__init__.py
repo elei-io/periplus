@@ -15,6 +15,8 @@ from catalogue.compiler import (
     KeyedMaterializationPurpose,
     ManagedTableMetadata,
     PartitionColumn,
+    SortKey,
+    TableRelationship,
     ScalarMacroDefinition,
     ScalarFunctionDefinition,
     TableMacroDefinition,
@@ -26,7 +28,7 @@ from catalogue.compiler import (
     lint_select,
 )
 
-from .compiler import AtlasCompiler, AtlasCompilerUnavailable
+from .compiler import COMPILER_VERSION, AtlasCompiler, AtlasCompilerUnavailable
 from .models import (
     AnalysisComparison,
     AnalysisMetrics,
@@ -68,6 +70,7 @@ __all__ = [
     "CompilationOutcome",
     "CompilationPurposeName",
     "CompilationResult",
+    "COMPILER_VERSION",
     "DefinitionDependency",
     "ColumnStatistics",
     "FullMaterializationPurpose",
@@ -76,6 +79,8 @@ __all__ = [
     "KeyedMaterializationPurpose",
     "ManagedTableMetadata",
     "PartitionColumn",
+    "SortKey",
+    "TableRelationship",
     "ScalarMacroDefinition",
     "ScalarFunctionDefinition",
     "ScanEstimate",

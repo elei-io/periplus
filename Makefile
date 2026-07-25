@@ -1,4 +1,4 @@
-.PHONY: sync check console-check sdk-check setup catalogue-check catalogue-benchmark verify-remote-runtime worker-independence-smoke worker-horizontal-smoke reliability-check docs-diagrams api acquisition-worker ingestion-worker catalogue-relay-worker materialization-worker housekeeping-worker cli db-revision compose-up compose-down
+.PHONY: sync check console-check sdk-check setup catalogue-check catalogue-benchmark catalogue-load-synthetic verify-remote-runtime worker-independence-smoke worker-horizontal-smoke reliability-check docs-diagrams api acquisition-worker ingestion-worker catalogue-relay-worker materialization-worker housekeeping-worker cli db-revision compose-up compose-down
 
 sync:
 	cd backend && uv sync
@@ -25,6 +25,9 @@ catalogue-check:
 
 catalogue-benchmark:
 	cd backend && uv run python -m repository.catalogue benchmark
+
+catalogue-load-synthetic:
+	cd backend && uv run python scripts/load_synthetic_catalogue.py
 
 verify-remote-runtime:
 	cd backend && uv run python scripts/verify_remote_runtime.py

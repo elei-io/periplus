@@ -41,7 +41,7 @@ diagnostic codes, and a SQL fingerprint—but never authored SQL.
 | SQL feature | Intended status | Implementation coverage | Notes |
 |---|---|---|---|
 | One direct driving-table scan | Implemented | Implemented | Qualified names and aliases are covered. |
-| Scalar and composite stable keys | Implemented | Implemented | Comparisons are null-safe; bounded execution rows render as direct scan predicates. |
+| Scalar and composite stable keys | Implemented | Implemented | Comparisons are null-safe; bounded execution rows, including native UUID keys, render as typed direct scan predicates. |
 | Unchanged key projection | Implemented | Implemented | Direct renames preserve lineage; transformed or dropped keys fail closed. |
 | Plain column projections | Implemented | Implemented | Direct columns and aliases retain exact lineage. |
 | Unmodified safe wildcard projections | Implemented | Implemented | A single-relation `*` or explicitly qualified `relation.*` carries declared stable-key lineage through nested scopes. |
@@ -53,6 +53,7 @@ diagnostic codes, and a SQL fingerprint—but never authored SQL.
 | Unknown functions and unresolved macros | Deferred | Implemented rejection | Fail closed with `unsupported_function`. |
 | Nondeterministic or clock-dependent functions | Incompatible | Implemented rejection | Random values, UUID generation, current time/session values, and sequence access fail with `nondeterministic_function`. |
 | Inner equijoins and `USING` | Implemented | Implemented | Qualified `ON` equalities, renamed composite keys, and `USING` are covered. |
+| Materialized driver-anchored dependent joins | Implemented | Implemented | An explicit `MATERIALIZED` driving CTE may feed downstream inner or preserved-side outer equijoins through non-key columns. The driving scan receives the changed-key predicate; dependent scans must retain proven column lineage to that barrier. |
 | Inner joins without key lineage | Deferred | Implemented rejection | Raise `unbounded_relation`; the view remains queryable but is not materialization-eligible. |
 | Key-bounded left and right joins | Implemented | Implemented | The driving table remains on the preserved side; predicates are injected inside every bounded scan. |
 | Driving table on nullable join side | Incompatible | Implemented rejection | A changed driving row cannot bound preserved-side unmatched output. |
@@ -125,7 +126,7 @@ does not imply that the same query shape is incrementally materializable.
 | Function determinism and side-effect classification | Implemented | Implemented | Interactive rewrites combine the closed SQL taxonomy with DuckLake `has_side_effects` and stability metadata. Unknown functions, volatility, clock/session state, sequences, and explicit errors fail the relevant rewrite proof without invalidating SQL. |
 | Bound-parameter awareness | Implemented | Implemented | Named values are supplied as immutable planning inputs, remain separate from authored/executable SQL, and enable partition-selectivity estimates only when a matching placeholder is proven. |
 | Catalogue definition snapshot | Implemented | Implemented | Macros, views, and scalar-function safety metadata are read only from DuckLake, fingerprinted, cached for 60 seconds, and invalidated by catalogue DDL events. |
-| Catalogue physical metadata snapshot | Implemented | Partial | The compiler owns one immutable revision containing definitions, stable table identities, partition transforms, and available statistics, and rejects mixed definition inputs. Production reads fence definitions, function safety, table UUIDs, row estimates, and file sizes between identical DuckLake snapshot IDs and retry concurrent DDL. Partition transforms and column statistics still await the lake-scoped Quack primitive recorded in `UPSTREAM.md`. |
+| Catalogue physical metadata snapshot | Implemented | Partial | The compiler owns one immutable revision containing definitions, stable table identities, partition transforms, and available statistics, and rejects mixed definition inputs. Managed callers pin definition, function-safety, table-UUID, row-estimate, and file-size reads inside one short remote transaction and verify identical DuckLake snapshot IDs. Materialization snapshot contention retries from its persisted cursor instead of failing the incarnation. Partition transforms and column statistics still await the lake-scoped Quack primitive recorded in `UPSTREAM.md`. |
 
 ### Automatic rewrites
 

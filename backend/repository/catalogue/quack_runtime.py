@@ -21,9 +21,9 @@ from config import get_float, get_int, get_str
 from observability import catalogue_query_metrics
 from repository.catalogue.duckbasin import (
     DuckBasinClientMinter,
+    DuckBasinCredentialRejectedError,
     MintedDuckDB,
-    is_quack_authorization_error,
-    is_recoverable_quack_connection_error,
+    classify_quack_connection_error,
 )
 from repository.catalogue.query import (
     ClassifiedCatalogueStatement,
@@ -46,6 +46,7 @@ class CatalogueQueryExecutionError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class QuackRuntimeConfig:
+    lake_slug: str
     catalogue_alias: str
     catalogue_schema: str
     catalogue_schema_version: str
@@ -58,6 +59,7 @@ class QuackRuntimeConfig:
     @classmethod
     def from_env(cls) -> QuackRuntimeConfig:
         return cls(
+            lake_slug="",
             catalogue_alias="",
             catalogue_schema=get_str("ATLAS_CATALOGUE_SCHEMA"),
             catalogue_schema_version=CATALOGUE_SCHEMA_VERSION,
@@ -136,12 +138,26 @@ class _QuackSlot:
         try:
             return operation(minted.connection)
         except duckdb.Error as exc:
-            if not is_recoverable_quack_connection_error(exc):
+            classified = classify_quack_connection_error(exc)
+            if classified is None:
                 raise
-            if is_quack_authorization_error(exc):
+            if isinstance(classified, DuckBasinCredentialRejectedError):
                 self.minter.invalidate_connection_credentials(minted)
         self._replace(minted)
-        return operation(self._require_minted().connection)
+        try:
+            return operation(self._require_minted().connection)
+        except duckdb.Error as exc:
+            classified = classify_quack_connection_error(exc)
+            if classified is not None:
+                if isinstance(
+                    classified,
+                    DuckBasinCredentialRejectedError,
+                ):
+                    self.minter.invalidate_connection_credentials(
+                        self._require_minted()
+                    )
+                raise classified from exc
+            raise
 
     def _ensure_fresh(self) -> None:
         minted = self._require_minted()
@@ -388,6 +404,7 @@ class QuackQueryRuntime:
             target = await asyncio.to_thread(self._minter.target)
             self.config = replace(
                 self.config,
+                lake_slug=target.lake_slug,
                 catalogue_alias=target.catalogue_alias,
             )
             for index in range(self.config.maximum_concurrency):

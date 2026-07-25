@@ -21,6 +21,7 @@ DML_SUBJECT_PREFIX = "atlas.catalogue.dml"
 DML_ALL_SUBJECT = f"{DML_SUBJECT_PREFIX}.*"
 DDL_SUBJECT = "atlas.catalogue.ddl"
 EVENT_SUBJECTS = (DML_ALL_SUBJECT, DDL_SUBJECT)
+MATERIALIZATION_DURABLE_PREFIX = "atlas-materialization-"
 DDL_RECONCILER_DURABLE = "atlas-materialization-ddl-reconciler"
 
 
@@ -66,7 +67,7 @@ def dml_subject(table_uuid: UUID) -> str:
 
 
 def materialization_durable(materialization_id: UUID) -> str:
-    return f"atlas-materialization-{materialization_id.hex}"
+    return f"{MATERIALIZATION_DURABLE_PREFIX}{materialization_id.hex}"
 
 
 def basin_ddl_subject(lake: str) -> str:

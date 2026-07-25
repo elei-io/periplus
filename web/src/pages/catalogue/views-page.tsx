@@ -21,7 +21,6 @@ import {
   CatalogueHero,
   CataloguePanel,
 } from "@/components/catalogue/catalogue-workspace"
-import { CompilerAdvisory } from "@/components/catalogue/compiler-advisory"
 import { formatSql } from "@/components/catalogue/sql-format"
 import { SqlEditor } from "@/components/catalogue/sql-editor"
 import { Badge } from "@/components/ui/badge"
@@ -392,13 +391,6 @@ function ViewDetail({ view }: { view: CatalogueViewRecord }) {
 
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           <div className="grid gap-4">
-            <CompilerAdvisory
-              outcome={view.compiler_outcome}
-              diagnostics={view.compiler_diagnostics}
-              dependencies={view.compiler_dependencies}
-              compilerVersion={view.compiler_version}
-              catalogueRevision={view.catalogue_definition_revision}
-            />
             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
               <div className="grid gap-1.5">
                 <Label>Slug</Label>

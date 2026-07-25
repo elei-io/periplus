@@ -2,7 +2,15 @@
 
 from repository.catalogue.client import Catalogue
 from repository.catalogue.config import CatalogueConfig, catalogue_config_from_env
-from repository.catalogue.duckbasin import DuckBasinClientMinter
+from repository.catalogue.duckbasin import (
+    DuckBasinAuthenticationError,
+    DuckBasinClientMinter,
+    DuckBasinCredentialRejectedError,
+    DuckBasinError,
+    DuckBasinProtocolError,
+    DuckBasinUnavailableError,
+    ServiceAccountTokenProvider,
+)
 from repository.catalogue.exceptions import (
     CatalogueConfigError,
     CatalogueConflictError,
@@ -18,7 +26,7 @@ from repository.catalogue.records import (
     CrawlStepRecord,
     DocumentRecord,
     ElementRecord,
-    UrlRecord,
+    NormalizedUrl,
 )
 from repository.catalogue.service import (
     CatalogueBatchEntry,
@@ -31,6 +39,7 @@ def catalogue_from_env(
     *,
     threads: int | None = None,
     memory_limit: str | None = None,
+    tokens: ServiceAccountTokenProvider | None = None,
 ):
     """Mint one session-affine connection to Atlas's managed DuckLake."""
 
@@ -41,7 +50,7 @@ def catalogue_from_env(
         duckdb_config["threads"] = str(threads)
     if memory_limit is not None:
         duckdb_config["memory_limit"] = memory_limit
-    minter = DuckBasinClientMinter()
+    minter = DuckBasinClientMinter(tokens=tokens)
     minted = None
     try:
         minted = minter.mint(duckdb_config=duckdb_config or None)
@@ -67,6 +76,11 @@ __all__ = [
     "CatalogueConfigError",
     "CatalogueConflictError",
     "CatalogueError",
+    "DuckBasinAuthenticationError",
+    "DuckBasinCredentialRejectedError",
+    "DuckBasinError",
+    "DuckBasinProtocolError",
+    "DuckBasinUnavailableError",
     "CatalogueService",
     "CatalogueSchemaError",
     "CatalogueValidationError",
@@ -77,7 +91,8 @@ __all__ = [
     "DocumentRecord",
     "ElementRecord",
     "ExistingCatalogueIdentities",
-    "UrlRecord",
+    "ServiceAccountTokenProvider",
+    "NormalizedUrl",
     "catalogue_config_from_env",
     "catalogue_from_env",
 ]

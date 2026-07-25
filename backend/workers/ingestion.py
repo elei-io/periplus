@@ -8,7 +8,10 @@ import os
 
 from config import get_float
 from config.performance import INGESTION_QUACK_CLIENTS
+from repository.catalogue import ServiceAccountTokenProvider
+from repository.catalogue.duckbasin import DuckBasinConfig
 from repository.ingestion.health import HealthMonitor
+from repository.ingestion.recovery import IngestionDependencyCircuit
 from repository.ingestion.worker import run as run_ingestion
 from runtime.catalogue_workers import (
     CatalogueLaneReporter,
@@ -30,35 +33,44 @@ async def run() -> None:
         CatalogueLaneReporter(lane_index=lane)
         for lane in range(INGESTION_QUACK_CLIENTS)
     )
-    await run_worker_process(
-        role="ingestion",
-        monitor=monitor,
-        tasks={
-            f"ingestion-writer-{lane}": run_ingestion(
-                stop=stop,
-                monitor=HealthMonitor(),
-                lane=lanes[lane],
-                lane_index=lane,
-            )
-            for lane in range(INGESTION_QUACK_CLIENTS)
-        }
-        | {
-            "ingestion-presence": run_catalogue_process_presence(
-                worker_id=f"ingestion:{os.uname().nodename}:{os.getpid()}",
-                capability="ingestion",
-                started_at=datetime.now(UTC),
-                lane_reporters=lanes,
-                process_health=lambda: monitor.status(
-                    exclude_subsystems=frozenset({"catalogue_worker_presence"})
+    tokens = ServiceAccountTokenProvider(DuckBasinConfig.from_env())
+    circuit = IngestionDependencyCircuit(INGESTION_QUACK_CLIENTS)
+    try:
+        await run_worker_process(
+            role="ingestion",
+            monitor=monitor,
+            tasks={
+                f"ingestion-writer-{lane}": run_ingestion(
+                    stop=stop,
+                    monitor=HealthMonitor(),
+                    lane=lanes[lane],
+                    lane_index=lane,
+                    circuit=circuit,
+                    tokens=tokens,
+                )
+                for lane in range(INGESTION_QUACK_CLIENTS)
+            }
+            | {
+                "ingestion-presence": run_catalogue_process_presence(
+                    worker_id=f"ingestion:{os.uname().nodename}:{os.getpid()}",
+                    capability="ingestion",
+                    started_at=datetime.now(UTC),
+                    lane_reporters=lanes,
+                    process_health=lambda: monitor.status(
+                        exclude_subsystems=frozenset(
+                            {"catalogue_worker_presence"}
+                        )
+                    ),
+                    stop=stop,
+                    monitor=monitor,
                 ),
-                stop=stop,
-                monitor=monitor,
-            ),
-            "ingestion-lane-health": monitor_catalogue_lanes(
-                lane_reporters=lanes,
-                stop=stop,
-                monitor=monitor,
-            ),
-        },
-        stop=stop,
-    )
+                "ingestion-lane-health": monitor_catalogue_lanes(
+                    lane_reporters=lanes,
+                    stop=stop,
+                    monitor=monitor,
+                ),
+            },
+            stop=stop,
+        )
+    finally:
+        await asyncio.to_thread(tokens.close)

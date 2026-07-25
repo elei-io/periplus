@@ -340,6 +340,8 @@ The first purpose is keyed materialization. It currently proves:
 
 - direct driving-table scans;
 - inner equijoins and `JOIN ... USING` whose stable keys reach every scan;
+- equijoin-dependent scans beneath an explicit `MATERIALIZED` driving CTE,
+  including joins through non-key identifiers;
 - key-bounded left and right joins whose driving table remains on the
   preserved side;
 - key-bounded full joins with complete merged or explicitly coalesced
@@ -596,12 +598,17 @@ consistency, cardinality, and side effects.
 ## Join lineage
 
 For inner joins, the compiler builds column-equivalence classes from `USING` columns and qualified
-column equalities in `ON`. It rewrites only when every physical scan has a proven binding for every
-driving key. Otherwise it raises `unbounded_relation` and materialization is ineligible. During
-bounded execution, the materialization purpose supplies the selected
-key rows and the compiler renders them as direct literal predicates in every proven scan; this is
-required for current DuckLake partition pruning. Validation can compile against the changed-key
-relation contract without reading data.
+column equalities in `ON`. Ordinarily it rewrites only when every physical scan has a proven binding
+for every driving key. A dependent scan may instead join through a non-key identifier when the
+driving scan is isolated in an explicit `MATERIALIZED` CTE and column lineage proves that the
+dependent scan is below that barrier. `NOT MATERIALIZED`, implicit CTE policy, independent scans,
+and nullable-side driver paths do not receive this exception. Otherwise the compiler raises
+`unbounded_relation` and materialization is ineligible.
+
+During bounded execution, the materialization purpose supplies the selected key rows and the
+compiler renders them as typed direct literal predicates—including native UUID literals—in every
+directly bound scan. This is required for current DuckLake partition pruning. Validation can
+compile against the changed-key relation contract without reading data.
 
 ## Test-driven extension
 

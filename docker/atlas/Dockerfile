@@ -12,6 +12,8 @@ RUN apt-get update \
 
 WORKDIR /app/backend
 
+COPY sdk/pyproject.toml sdk/README.md /app/sdk/
+COPY sdk/src/ /app/sdk/src/
 COPY backend/pyproject.toml backend/uv.lock ./
 
 RUN UV_PROJECT_ENVIRONMENT=/opt/atlas-venv uv sync --frozen --no-install-project --no-dev

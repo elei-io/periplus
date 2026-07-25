@@ -149,6 +149,8 @@ def _selectivity(
         if isinstance(operator, (exp.EQ, exp.NullSafeEQ)):
             if statistics is not None and statistics.distinct_count:
                 selectivity *= min(1.0, 1 / statistics.distinct_count)
+            elif partition.transform == "bucket" and partition.bucket_count:
+                selectivity *= 1 / partition.bucket_count
             elif table.file_count:
                 selectivity *= min(1.0, 1 / table.file_count)
         elif isinstance(operator, (exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Between)):
@@ -217,6 +219,8 @@ def _known_value(
 
 
 def _conjuncts(expression: exp.Expression) -> tuple[exp.Expression, ...]:
+    if isinstance(expression, exp.Paren):
+        return _conjuncts(expression.this)
     if isinstance(expression, exp.And):
         return (*_conjuncts(expression.this), *_conjuncts(expression.expression))
     return (expression,)

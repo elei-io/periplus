@@ -48,6 +48,7 @@ from runtime.graph_runs import (
     EdgeEvaluationBusy,
     EdgeEvaluationDeferred,
     EdgeEvaluationFailed,
+    EdgeEvaluationRetryable,
     evaluate_edge,
     handle_navigation_readiness,
 )
@@ -485,6 +486,9 @@ async def _process_edge(
                 identity,
                 exc_info=True,
             )
+        await message.nak(delay=1)
+        return
+    except EdgeEvaluationRetryable:
         await message.nak(delay=1)
         return
     except EdgeEvaluationFailed:

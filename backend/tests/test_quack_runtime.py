@@ -47,6 +47,7 @@ def _config(
     catalogue_alias: str = "atlas",
 ) -> QuackRuntimeConfig:
     return QuackRuntimeConfig(
+        lake_slug="atlas_test",
         catalogue_alias=catalogue_alias,
         catalogue_schema="main",
         catalogue_schema_version="test",
@@ -263,7 +264,7 @@ class QuackSlotCredentialTests(unittest.IsolatedAsyncioTestCase):
             )
             slot = _QuackSlot(0, config, minter)  # type: ignore[arg-type]
             await slot.open()
-            minter.connections[0].failure_once = "Authorization failed"
+            minter.connections[0].failure_once = "Authentication failed"
 
             await slot.run(lambda connection: connection.execute("SELECT 1"))
             await slot.close()

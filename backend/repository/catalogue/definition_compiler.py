@@ -17,10 +17,11 @@ def compile_definition_authoring(
     object_name: str,
     parameters: tuple[str, ...] = (),
 ) -> CompilationResult:
-    definitions = read_catalogue_compiler_definitions(
-        catalogue.trusted_connection,
-        catalogue_alias=catalogue.config.alias,
-    )
+    with catalogue.remote_transaction():
+        definitions = read_catalogue_compiler_definitions(
+            catalogue.trusted_connection,
+            catalogue_alias=catalogue.config.alias,
+        )
     return AtlasCompiler.embedded(
         catalogue_revision=definitions.revision,
     ).compile(
@@ -32,26 +33,4 @@ def compile_definition_authoring(
             parameters=parameters,
         ),
         coverage_source="definition_authoring",
-    )
-
-
-def store_compilation(target: object, compilation: CompilationResult) -> None:
-    """Copy the advisory result into one Postgres definition record."""
-
-    setattr(target, "compiler_outcome", compilation.outcome.value)
-    setattr(
-        target,
-        "compiler_diagnostics",
-        [item.model_dump(mode="json") for item in compilation.diagnostics],
-    )
-    setattr(
-        target,
-        "compiler_dependencies",
-        [item.model_dump(mode="json") for item in compilation.dependencies],
-    )
-    setattr(target, "compiler_version", compilation.compiler_version)
-    setattr(
-        target,
-        "catalogue_definition_revision",
-        compilation.catalogue_revision,
     )

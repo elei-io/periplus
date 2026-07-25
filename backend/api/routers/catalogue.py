@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from atlas_sql import (
     AnalysisResult,
     AtlasCompiler,
+    COMPILER_VERSION,
     CompilationResult,
     InteractiveQueryPurpose,
 )
@@ -71,10 +72,12 @@ class CatalogueQueryRuntimeResponse(BaseModel):
 
 
 class CatalogueStatusResponse(BaseModel):
+    lake_slug: str
     active_file_count: int
     active_storage_bytes: int
     ducklake_version: str | None
     catalogue_schema_version: str
+    compiler_version: str
 
 
 class CatalogueMetadataColumnResponse(BaseModel):
@@ -238,6 +241,7 @@ async def catalogue_status(request: Request) -> CatalogueStatusResponse:
             """,
         )
         return CatalogueStatusResponse(
+            lake_slug=config.lake_slug,
             active_file_count=int(rows[0][0] if rows else 0),
             active_storage_bytes=int(rows[0][1] if rows else 0),
             ducklake_version=(
@@ -246,6 +250,7 @@ async def catalogue_status(request: Request) -> CatalogueStatusResponse:
                 else None
             ),
             catalogue_schema_version=config.catalogue_schema_version,
+            compiler_version=COMPILER_VERSION,
         )
 
     try:

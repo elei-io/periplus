@@ -12,13 +12,22 @@ directories go through the same catalogue services used by the UI:
 
 - `table_macros/` — one `CREATE MACRO macros.<filename>(...) AS TABLE (...)` statement;
 - `views/` — one virtual `CREATE VIEW views.<filename> AS ...` statement;
-- `materialized_views/url/` — one self-contained `CREATE VIEW` statement, activated as an
-  ordinary materialization driven by `urls`;
 - `materialized_views/document/` — one self-contained `CREATE VIEW` statement, activated as an
   ordinary materialization driven by `documents`;
 - `materialized_views/crawl/` — one self-contained `CREATE VIEW` statement, activated as an
   ordinary materialization driven by `crawls`;
 - `queries/` — one read-only query, named from the filename.
+
+Every SQL fixture may declare one description in its leading comment block:
+
+```sql
+-- atlas:description=Discovers repeated record structures and proposes extraction SQL.
+```
+
+The value is limited to 2,000 characters and is stored as the managed definition's description in
+Postgres. Agent macro inspection joins that authoritative metadata with DuckDB's executable macro
+inventory. View descriptions are also installed as DuckDB catalogue comments. Changing only a
+fixture description reconciles the managed definition without requiring a SQL change.
 
 Materialized-view fixtures use the same control-plane definition and materialization machinery as
 user-created views. Setup creates their managed definition; the materialization worker creates and

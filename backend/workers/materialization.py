@@ -8,7 +8,10 @@ import os
 from types import SimpleNamespace
 
 from config import get_float
-from config.performance import MATERIALIZATION_QUACK_CLIENTS
+from config.performance import (
+    MATERIALIZATION_BOOTSTRAP_CONCURRENCY,
+    MATERIALIZATION_QUACK_CLIENTS,
+)
 from materialization.executor import (
     _active_definitions,
     run as run_executor,
@@ -26,7 +29,9 @@ async def run() -> None:
     stop = asyncio.Event()
     definitions: tuple[SimpleNamespace, ...] = ()
     definitions_ready = asyncio.Event()
-    bootstrap_semaphore = asyncio.Semaphore(1)
+    bootstrap_semaphore = asyncio.Semaphore(
+        MATERIALIZATION_BOOTSTRAP_CONCURRENCY
+    )
 
     def definitions_for_lane(
         lane_index: int, lane_count: int

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import duckdb
 
 from repository.catalogue.client import Catalogue
 from repository.catalogue.config import CatalogueConfig, catalogue_config_from_env
+from repository.catalogue.duckbasin import DuckBasinCredentialRejectedError
 
 
 class _Cursor:
@@ -66,6 +68,9 @@ class _Minter:
         self.invalidated_generations.append(minted.token_generation)
         if minted.token_generation == self.current_token_generation:
             self.current_token_generation += 1
+
+    def token_status(self) -> tuple[str, int]:
+        return "valid", self.current_token_generation
 
     def close(self) -> None:
         self.closed = True
@@ -141,6 +146,31 @@ class ManagedCatalogueClientTests(unittest.TestCase):
             [["BEGIN TRANSACTION"], ["ROLLBACK"]],
         )
 
+    def test_remote_transaction_preserves_work_error_when_rollback_fails(
+        self,
+    ) -> None:
+        catalogue, _connection, _minter = _catalogue()
+        operation_error = RuntimeError("work failed")
+
+        def execute(sql: str) -> None:
+            if sql == "ROLLBACK":
+                raise duckdb.InvalidInputException("no transaction is active")
+
+        with (
+            patch.object(catalogue, "trusted_remote_execute", side_effect=execute),
+            self.assertLogs(level="WARNING"),
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            with catalogue.remote_transaction():
+                raise operation_error
+
+        self.assertIs(raised.exception, operation_error)
+        self.assertIn(
+            "rollback also failed",
+            "\n".join(getattr(operation_error, "__notes__", ())),
+        )
+        self.assertFalse(catalogue._remote_transaction_active)
+
     def test_remote_rows_rejects_parameters_before_execution(self) -> None:
         catalogue, connection, _minter = _catalogue()
 
@@ -182,6 +212,9 @@ class ManagedCatalogueClientTests(unittest.TestCase):
         self.assertTrue(connection.closed)
         self.assertEqual(len(minter.minted), 1)
         self.assertEqual(catalogue.session_id, "0000000000000001")
+        self.assertEqual(catalogue.connection_generation, 2)
+        self.assertEqual(catalogue.remint_count, 1)
+        self.assertEqual(catalogue.token_status, ("valid", 1))
         replacement = minter.minted[0].connection
         self.assertIn(
             (
@@ -243,7 +276,7 @@ class ManagedCatalogueClientTests(unittest.TestCase):
 
     def test_authorization_failure_invalidates_token_and_retries_once(self) -> None:
         catalogue, connection, minter = _catalogue()
-        connection.failure_once = "Authorization failed"
+        connection.failure_once = "Authentication failed"
 
         catalogue.trusted_remote_rows("SELECT 1")
 
@@ -255,14 +288,22 @@ class ManagedCatalogueClientTests(unittest.TestCase):
     def test_authorization_failure_never_switches_an_active_transaction(self) -> None:
         catalogue, connection, minter = _catalogue()
 
-        with self.assertRaisesRegex(duckdb.InvalidInputException, "Authorization"):
+        with self.assertRaisesRegex(
+            DuckBasinCredentialRejectedError,
+            "credential",
+        ):
             with catalogue.remote_transaction():
-                connection.failure_once = "Authorization failed"
+                connection.failure_once = "Authentication failed"
                 catalogue.trusted_remote_execute("INSERT INTO main.events VALUES (1)")
 
-        self.assertEqual(minter.invalidated_generations, [])
+        self.assertEqual(minter.invalidated_generations, [1])
         self.assertEqual(minter.minted, [])
         self.assertFalse(connection.closed)
+
+        catalogue.trusted_remote_rows("SELECT 1")
+
+        self.assertTrue(connection.closed)
+        self.assertEqual(len(minter.minted), 1)
 
     def test_last_committed_snapshot_is_session_local(self) -> None:
         catalogue, connection, _minter = _catalogue()

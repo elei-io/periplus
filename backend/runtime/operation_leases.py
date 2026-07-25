@@ -27,6 +27,7 @@ from nats.js.errors import (
 from pydantic import BaseModel, ConfigDict
 
 OPERATION_LEASE_BUCKET = "atlas_catalog_operations"
+_LEASE_RENEWAL_CONCURRENCY = 32
 
 
 class OperationLeaseUnavailable(RuntimeError):
@@ -208,54 +209,32 @@ async def operation_leases(
     owner = uuid4().hex
     acquired: list[str] = []
     deadline = asyncio.get_running_loop().time() + timeout
-    while True:
-        for operation_id in identities:
-            if operation_id in acquired:
-                continue
-            try:
-                granted = await _try_acquire(
-                    bucket, phase=phase, operation_id=operation_id, owner=owner
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                granted = False
-            if granted:
-                acquired.append(operation_id)
-                continue
-            break
-        else:
-            break
-        for operation_id in reversed(acquired):
-            try:
-                await _release(
-                    bucket, phase=phase, operation_id=operation_id, owner=owner
-                )
-            except Exception:
-                # The same owner can renew a partially released set after the
-                # broker recovers; TTL remains the final cleanup boundary.
-                pass
-        acquired.clear()
-        if asyncio.get_running_loop().time() >= deadline:
-            raise OperationLeaseUnavailable(
-                f"catalogue {phase} operation is already active"
-            )
-        await asyncio.sleep(min(0.1, max(0.01, deadline - asyncio.get_running_loop().time())))
-
     lost = asyncio.Event()
 
     async def heartbeat() -> None:
         try:
             while True:
                 await asyncio.sleep(heartbeat_seconds)
-                for operation_id in identities:
-                    if not await _try_acquire(
-                        bucket,
-                        phase=phase,
-                        operation_id=operation_id,
-                        owner=owner,
-                        create_first=False,
-                    ):
+                # Acquisition can itself be long when one commit introduces
+                # thousands of shared URL identities. Renew the stable prefix
+                # already owned instead of waiting for the full set.
+                owned = tuple(acquired)
+                for offset in range(0, len(owned), _LEASE_RENEWAL_CONCURRENCY):
+                    renewed = await asyncio.gather(
+                        *(
+                            _try_acquire(
+                                bucket,
+                                phase=phase,
+                                operation_id=operation_id,
+                                owner=owner,
+                                create_first=False,
+                            )
+                            for operation_id in owned[
+                                offset : offset + _LEASE_RENEWAL_CONCURRENCY
+                            ]
+                        )
+                    )
+                    if not all(renewed):
                         lost.set()
                         return
         except asyncio.CancelledError:
@@ -265,11 +244,8 @@ async def operation_leases(
             lost.set()
 
     heartbeat_task = asyncio.create_task(heartbeat())
-    try:
-        yield OperationLeaseGuard(lost)
-        if lost.is_set():
-            raise OperationLeaseLost(f"catalogue {phase} operation lease was lost")
-    finally:
+
+    async def release_acquired() -> None:
         heartbeat_task.cancel()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
         for operation_id in reversed(acquired):
@@ -280,3 +256,48 @@ async def operation_leases(
             except Exception:
                 # The server TTL is the final cleanup boundary after an outage.
                 pass
+        acquired.clear()
+
+    try:
+        while True:
+            for operation_id in identities:
+                if operation_id in acquired:
+                    continue
+                if lost.is_set():
+                    break
+                try:
+                    granted = await _try_acquire(
+                        bucket, phase=phase, operation_id=operation_id, owner=owner
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    granted = False
+                if granted:
+                    acquired.append(operation_id)
+                    continue
+                break
+            else:
+                break
+            await release_acquired()
+            if asyncio.get_running_loop().time() >= deadline:
+                raise OperationLeaseUnavailable(
+                    f"catalogue {phase} operation is already active"
+                )
+            await asyncio.sleep(
+                min(
+                    0.1,
+                    max(
+                        0.01,
+                        deadline - asyncio.get_running_loop().time(),
+                    ),
+                )
+            )
+            lost = asyncio.Event()
+            heartbeat_task = asyncio.create_task(heartbeat())
+
+        yield OperationLeaseGuard(lost)
+        if lost.is_set():
+            raise OperationLeaseLost(f"catalogue {phase} operation lease was lost")
+    finally:
+        await release_acquired()

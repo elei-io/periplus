@@ -139,7 +139,6 @@ class CatalogueTableMacroStore:
             )
         return macro
 
-
 def _validate(
     name: str,
     parameters: list[str],

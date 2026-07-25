@@ -1,18 +1,32 @@
 import { ConsoleError } from "../errors.js";
+import { argument, defineCommand } from "../command.js";
 import type { CommandDefinition } from "../types.js";
 import type { CommandRegistry } from "../registry.js";
 
 export function helpCommand(
   registry: () => CommandRegistry,
 ): CommandDefinition {
-  return {
+  return defineCommand({
     path: ["help"],
     summary: "Show available Atlas commands",
-    usage: ".help [resource]",
+    arguments: [
+      argument.string("resource", {
+        required: false,
+        description: "Command resource to inspect",
+        complete: ({ context: _context, cursor, prefix, replaceStart }) =>
+          [...new Set(registry().all().map((item) => item.path[0]!))]
+            .filter((resource) => resource.startsWith(prefix))
+            .map((resource) => ({
+              insertText: resource,
+              replaceStart,
+              replaceEnd: cursor,
+              kind: "resource",
+            })),
+      }),
+    ],
     examples: [".help", ".help graphs"],
-    execute({ args }) {
-      if (args.length > 1) throw new ConsoleError("Usage: .help [resource]");
-      const resource = args[0]?.toLocaleLowerCase();
+    execute({ positionals }) {
+      const resource = positionals.resource?.toLocaleLowerCase();
       const definitions = registry()
         .all()
         .filter(
@@ -31,5 +45,5 @@ export function helpCommand(
         ]),
       };
     },
-  };
+  });
 }

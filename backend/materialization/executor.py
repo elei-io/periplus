@@ -27,7 +27,12 @@ from repository.catalogue.materializations import (
     MaterializationStore,
     physical_materialization_name,
 )
+from repository.catalogue.operations import (
+    is_retryable_catalogue_transaction_conflict,
+    run_with_catalogue_retry,
+)
 from repository.catalogue.compiler_definitions import (
+    CatalogueCompilerSnapshotChanged,
     read_catalogue_compiler_definitions,
 )
 from repository.catalogue.views import CatalogueViewStore
@@ -35,7 +40,9 @@ from repository.ingestion.health import HealthMonitor
 from runtime.catalogue_events import (
     DDL_RECONCILER_DURABLE,
     DDL_SUBJECT,
+    DML_SUBJECT_PREFIX,
     EVENT_STREAM,
+    MATERIALIZATION_DURABLE_PREFIX,
     CatalogueDDLEvent,
     CatalogueDMLTick,
     dml_subject,
@@ -44,6 +51,7 @@ from runtime.catalogue_events import (
 from runtime.catalogue_workers import CatalogueLaneReporter
 from runtime.nats_client import connect_nats
 from runtime.operation_leases import (
+    OperationLeaseLost,
     OperationLeaseUnavailable,
     ensure_operation_lease_storage,
     operation_leases,
@@ -58,10 +66,14 @@ class MaterializationControlChanged(RuntimeError):
 def _materialization_store(catalogue) -> MaterializationStore:
     """Build a store with one authoritative macro-definition snapshot."""
 
-    definitions = read_catalogue_compiler_definitions(
-        catalogue.trusted_connection,
-        catalogue_alias=catalogue.config.alias,
-    )
+    # Pin the definition and physical-metadata reads to one remote snapshot.
+    # Concurrent materialization DML advances the lake snapshot frequently;
+    # it must not look like concurrent catalogue DDL to this reader.
+    with catalogue.remote_transaction():
+        definitions = read_catalogue_compiler_definitions(
+            catalogue.trusted_connection,
+            catalogue_alias=catalogue.config.alias,
+        )
     return MaterializationStore(
         catalogue,
         scalar_macros=definitions.scalar_macros,
@@ -91,6 +103,8 @@ async def run(
     jetstream = client.jetstream()
     await ensure_catalogue_event_stream(jetstream)
     leases = await ensure_operation_lease_storage(jetstream)
+    if lane_index == 0:
+        await reconcile_materialization_consumers(jetstream)
     ddl_subscription = (
         await jetstream.pull_subscribe(
             DDL_SUBJECT,
@@ -273,11 +287,33 @@ async def run(
                         )
                 except OperationLeaseUnavailable:
                     continue
+                except OperationLeaseLost:
+                    logging.warning(
+                        "materialization %s operation lease lost; "
+                        "retrying from its Postgres checkpoint",
+                        definition.id,
+                    )
+                    continue
                 except MaterializationControlChanged:
+                    continue
+                except CatalogueCompilerSnapshotChanged:
+                    logging.warning(
+                        "materialization %s compiler metadata changed; "
+                        "retrying without failing the incarnation",
+                        definition.id,
+                    )
                     continue
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    if is_retryable_catalogue_transaction_conflict(exc):
+                        logging.warning(
+                            "materialization %s transaction conflicted after "
+                            "bounded retries; continuing from its Postgres checkpoint",
+                            definition.id,
+                            exc_info=True,
+                        )
+                        continue
                     logging.exception(
                         "materialization %s failed", definition.id
                     )
@@ -430,6 +466,41 @@ async def _subscription(jetstream, definition):
     )
 
 
+async def reconcile_materialization_consumers(jetstream) -> tuple[str, ...]:
+    """Delete durable consumers whose Postgres incarnation is no longer active."""
+
+    definitions = await asyncio.to_thread(
+        _active_definitions, lane_index=0, lane_count=1
+    )
+    active = {definition.nats_consumer_name for definition in definitions}
+    try:
+        consumers = await jetstream.consumers_info(EVENT_STREAM)
+    except NotFoundError:
+        return ()
+    deleted: list[str] = []
+    for info in consumers:
+        durable = info.name or info.config.durable_name
+        subject = info.config.filter_subject or ""
+        if (
+            not durable.startswith(MATERIALIZATION_DURABLE_PREFIX)
+            or not subject.startswith(f"{DML_SUBJECT_PREFIX}.")
+            or durable in active
+        ):
+            continue
+        try:
+            await jetstream.delete_consumer(EVENT_STREAM, durable)
+        except NotFoundError:
+            continue
+        deleted.append(durable)
+    if deleted:
+        logging.info(
+            "deleted %d orphaned materialization consumers: %s",
+            len(deleted),
+            ", ".join(deleted),
+        )
+    return tuple(deleted)
+
+
 async def _bootstrap_one(
     catalogue, leases, materialization_id: UUID
 ) -> bool:
@@ -440,7 +511,9 @@ async def _bootstrap_one(
         acquire_timeout=0,
     ):
         await asyncio.to_thread(
-            _bootstrap_materialization, catalogue, materialization_id
+            run_with_catalogue_retry,
+            lambda: _bootstrap_materialization(catalogue, materialization_id),
+            description=f"materialization {materialization_id} bootstrap",
         )
     return True
 
@@ -744,7 +817,7 @@ async def _refresh_messages(
             phase="materialization",
             acquire_timeout=0,
         ):
-            return await _tracked_operation(
+            worked = await _tracked_operation(
                 active_operation_count,
                 _apply_ticks(
                     catalogue,
@@ -753,11 +826,26 @@ async def _refresh_messages(
                     messages,
                 ),
             )
-    except OperationLeaseUnavailable:
+        for message in messages:
+            await message.ack()
+        return worked
+    except (OperationLeaseUnavailable, OperationLeaseLost):
         for message in messages:
             await message.nak(delay=1)
         return False
     except MaterializationControlChanged:
+        for message in messages:
+            await message.nak(delay=1)
+        return False
+    except Exception as exc:
+        if not is_retryable_catalogue_transaction_conflict(exc):
+            raise
+        logging.warning(
+            "materialization %s refresh transaction conflicted after bounded "
+            "retries; returning ticks for redelivery",
+            definition.id,
+            exc_info=True,
+        )
         for message in messages:
             await message.nak(delay=1)
         return False
@@ -789,8 +877,6 @@ async def _apply_ticks(
         or tick.snapshot_id > definition.processed_snapshot
     ]
     if not fresh:
-        for message in messages:
-            await message.ack()
         return True
     # DuckLake schema versions are catalogue-wide, so unrelated DDL can
     # advance tick.schema_version without changing this materialization's
@@ -798,14 +884,15 @@ async def _apply_ticks(
     # global DDL relay and the materialization DDL reconciler, which matches
     # stable table IDs before marking an incarnation blocked.
     await asyncio.to_thread(
-        _refresh_materialization,
-        catalogue,
-        definition.id,
-        min(tick.snapshot_id for tick in fresh),
-        max(tick.snapshot_id for tick in fresh),
+        run_with_catalogue_retry,
+        lambda: _refresh_materialization(
+            catalogue,
+            definition.id,
+            min(tick.snapshot_id for tick in fresh),
+            max(tick.snapshot_id for tick in fresh),
+        ),
+        description=f"materialization {definition.id} refresh",
     )
-    for message in messages:
-        await message.ack()
     return True
 
 

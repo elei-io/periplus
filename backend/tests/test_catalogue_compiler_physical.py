@@ -44,6 +44,48 @@ class CatalogueCompilerPhysicalTests(unittest.TestCase):
         self.assertEqual(estimate.estimated_rows_avoided, 0)
         self.assertEqual(estimate.estimated_bytes_avoided, 0)
 
+    def test_estimates_bucket_pruning_without_column_statistics(self) -> None:
+        metadata = CatalogueMetadataSnapshot(
+            revision="lake-1",
+            tables=(
+                ManagedTableMetadata(
+                    schema_name="main",
+                    table_name="elements",
+                    table_uuid="table-elements",
+                    estimated_rows=6_400,
+                    file_count=64,
+                    file_size_bytes=640_000,
+                    partition_columns=(
+                        PartitionColumn(
+                            "document_id",
+                            transform="bucket",
+                            bucket_count=64,
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        estimate = estimate_compilation(
+            "SELECT * FROM elements",
+            """
+            SELECT *
+            FROM elements
+            WHERE document_id = UUID '00000000-0000-0000-0000-000000000007'
+            """,
+            metadata=metadata,
+        )
+
+        self.assertEqual(
+            estimate.executable_scans[0].partition_predicates,
+            (
+                "document_id = "
+                "CAST('00000000-0000-0000-0000-000000000007' AS UUID)",
+            ),
+        )
+        self.assertEqual(estimate.estimated_rows_avoided, 6_300)
+        self.assertEqual(estimate.estimated_bytes_avoided, 630_000)
+
     def test_matches_partition_transform_and_rejects_wrong_transform(self) -> None:
         metadata = _metadata(
             partition_column=PartitionColumn("document_id", transform="year")
@@ -64,6 +106,31 @@ class CatalogueCompilerPhysicalTests(unittest.TestCase):
 
         self.assertTrue(matching.executable_scans[0].partition_predicates)
         self.assertFalse(mismatched.executable_scans[0].partition_predicates)
+
+    def test_recognizes_parenthesized_partition_range(self) -> None:
+        metadata = _metadata(
+            partition_column=PartitionColumn("captured_at", transform="day")
+        )
+
+        estimate = estimate_compilation(
+            "SELECT * FROM documents",
+            """
+            SELECT *
+            FROM documents
+            WHERE (
+                captured_at >= TIMESTAMPTZ '2026-07-01 00:00:00+00'
+                AND captured_at < TIMESTAMPTZ '2026-08-01 00:00:00+00'
+            )
+            """,
+            metadata=metadata,
+        )
+
+        self.assertEqual(
+            len(estimate.executable_scans[0].partition_predicates),
+            2,
+        )
+        self.assertEqual(estimate.estimated_rows_avoided, 9_375)
+        self.assertEqual(estimate.estimated_bytes_avoided, 937_500)
 
     def test_compilation_uses_one_definition_and_physical_snapshot(self) -> None:
         metadata = _metadata(

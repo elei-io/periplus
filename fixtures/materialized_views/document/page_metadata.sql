@@ -1,3 +1,4 @@
+-- atlas:description=Document-level language, title, description, canonical URL, and social metadata derived from retained HTML.
 -- atlas:refresh=keyed(document_id)
 CREATE VIEW views.page_metadata AS
 WITH raw_candidates AS (
@@ -13,7 +14,10 @@ WITH raw_candidates AS (
         END AS language,
         CASE
             WHEN tag = 'title'
-            THEN macros.text_content(document_id, element_index)
+            THEN macros.text_content(
+                element.document_id,
+                element.element_index
+            )
         END AS title,
         CASE
             WHEN tag = 'meta'
@@ -97,8 +101,7 @@ WITH raw_candidates AS (
                  ) = 'og:image'
             THEN macros.get_attribute(attributes, 'content')
         END AS open_graph_image
-    FROM documents AS document
-    JOIN elements AS element USING (document_id)
+    FROM elements AS element
     WHERE tag IN ('html', 'title', 'meta', 'link', 'base')
 ),
 candidates AS (
@@ -165,21 +168,29 @@ candidates AS (
 metadata AS (
     SELECT
         document_id,
-        arg_min(language, element_index) FILTER (WHERE language IS NOT NULL) AS language,
-        arg_min(title, element_index) FILTER (WHERE title IS NOT NULL) AS title,
-        arg_min(description, element_index) FILTER (WHERE description IS NOT NULL) AS description,
-        arg_min(canonical_href, element_index) FILTER (
+        first(language ORDER BY element_index, language)
+            FILTER (WHERE language IS NOT NULL) AS language,
+        first(title ORDER BY element_index, title)
+            FILTER (WHERE title IS NOT NULL) AS title,
+        first(description ORDER BY element_index, description)
+            FILTER (WHERE description IS NOT NULL) AS description,
+        first(canonical_href ORDER BY element_index, canonical_href) FILTER (
             WHERE canonical_href IS NOT NULL
         ) AS canonical_href,
-        arg_min(base_href, element_index) FILTER (WHERE base_href IS NOT NULL) AS base_href,
-        arg_min(robots, element_index) FILTER (WHERE robots IS NOT NULL) AS robots,
-        arg_min(open_graph_title, element_index) FILTER (
+        first(base_href ORDER BY element_index, base_href)
+            FILTER (WHERE base_href IS NOT NULL) AS base_href,
+        first(robots ORDER BY element_index, robots)
+            FILTER (WHERE robots IS NOT NULL) AS robots,
+        first(open_graph_title ORDER BY element_index, open_graph_title) FILTER (
             WHERE open_graph_title IS NOT NULL
         ) AS open_graph_title,
-        arg_min(open_graph_description, element_index) FILTER (
+        first(
+            open_graph_description
+            ORDER BY element_index, open_graph_description
+        ) FILTER (
             WHERE open_graph_description IS NOT NULL
         ) AS open_graph_description,
-        arg_min(open_graph_image, element_index) FILTER (
+        first(open_graph_image ORDER BY element_index, open_graph_image) FILTER (
             WHERE open_graph_image IS NOT NULL
         ) AS open_graph_image
     FROM candidates
