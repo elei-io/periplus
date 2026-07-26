@@ -7,7 +7,7 @@ websites you have observed.
 
 Atlas acquires web documents, preserves their source evidence, and turns their content and
 relationships into queryable structures. Its compiler uses page and link indexes to narrow large
-queries before reading detailed HTML, JSON, XML, PDF, or other document content.
+queries before reading detailed HTML and embedded structured data.
 
 Atlas owns the path from the web to reliable primitives. Users decide what those primitives mean:
 a product, company, topic, claim, person, or any other domain concept.
