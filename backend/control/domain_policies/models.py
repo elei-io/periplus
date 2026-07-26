@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, CheckConstraint, DateTime, Index, Integer, Text
@@ -8,10 +8,7 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
+from db.types import utc_now
 
 
 class DomainPolicy(Base):

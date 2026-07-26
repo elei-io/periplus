@@ -65,28 +65,31 @@ async def wait_for_advance(
 
 def create_probe(catalogue, table_name: str) -> None:
     catalogue.trusted_remote_execute(
-        f'CREATE TABLE main."{table_name}" (id BIGINT, value VARCHAR)'
+        f'CREATE TABLE ingest."{table_name}" (id BIGINT, value VARCHAR)'
     )
     with catalogue.transaction():
         catalogue.trusted_remote_execute(
-            f'INSERT INTO main."{table_name}" '
+            f'INSERT INTO ingest."{table_name}" '
             "VALUES (1, 'basin-cdc-probe')"
         )
 
 
 def drop_probe(catalogue, table_name: str) -> None:
-    catalogue.trusted_remote_execute(f'DROP TABLE IF EXISTS main."{table_name}"')
+    catalogue.trusted_remote_execute(
+        f'DROP TABLE IF EXISTS ingest."{table_name}"'
+    )
 
 
 async def verify(wait_seconds: float) -> dict[str, object]:
-    from catalogue_relay.executor import BasinDDLEvent, BasinDMLTick
+    from cdc.relay import BasinDDLEvent, BasinDMLTick
     from repository.catalogue import catalogue_from_env
-    from runtime.catalogue_events import basin_ddl_subject, basin_dml_subject
+    from cdc.events import basin_ddl_subject, basin_dml_subject
     from runtime.catalogue_workers import ensure_catalogue_worker_storage
-    from runtime.nats_client import connect_basin_nats, connect_nats
+    from cdc.connections import connect_basin_cdc
+    from runtime.nats_client import connect_nats
 
     atlas = await connect_nats()
-    basin = await connect_basin_nats()
+    basin = await connect_basin_cdc()
     catalogue = None
     table_name = "_atlas_cdc_probe_" + uuid.uuid4().hex[:12]
     key = "verification-" + uuid.uuid4().hex

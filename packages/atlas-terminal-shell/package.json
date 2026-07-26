@@ -1,0 +1,17 @@
+{
+  "name": "atlas-terminal-shell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "atlas": "dist/main.js"
+  },
+  "dependencies": {
+    "atlas-console-core": "*"
+  },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && chmod +x dist/main.js",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build --silent && test -x dist/main.js && node --test dist/*.test.js"
+  }
+}

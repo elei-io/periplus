@@ -26,7 +26,6 @@ from runtime.graph_queue import (
     get_graph_run,
     list_graph_runs,
 )
-from runtime.edge_sql import FrozenEdgeSql
 from runtime.graph_runs import create_graph_run, resolve_policy_snapshots
 
 
@@ -71,7 +70,6 @@ async def _process_due_schedule(
     jetstream,
     now: datetime,
     catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]],
-    edge_compiler: Callable[[str], Awaitable[FrozenEdgeSql]] | None = None,
 ) -> None:
     run_id = scheduled_run_id(schedule_id, expected_occurrence)
     existing = await get_graph_run(runs, run_id)
@@ -164,7 +162,6 @@ async def _process_due_schedule(
                 urls=urls,
                 policy_resolver=policies.__getitem__,
                 catalogue_snapshot_resolver=catalogue_snapshot_resolver,
-                edge_compiler=edge_compiler,
                 trigger_kind="schedule",
                 run_id=run_id,
                 trigger_schedule_id=schedule.id,
@@ -236,7 +233,6 @@ async def run_schedule_tick(
     progress,
     jetstream,
     catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]],
-    edge_compiler: Callable[[str], Awaitable[FrozenEdgeSql]] | None = None,
     now: datetime | None = None,
 ) -> int:
     now = now or datetime.now(UTC)
@@ -260,7 +256,6 @@ async def run_schedule_tick(
                 jetstream=jetstream,
                 now=now,
                 catalogue_snapshot_resolver=catalogue_snapshot_resolver,
-                edge_compiler=edge_compiler,
             )
         except Exception:
             logging.exception(
@@ -279,7 +274,6 @@ async def run_scheduler(
     progress,
     jetstream,
     catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]],
-    edge_compiler: Callable[[str], Awaitable[FrozenEdgeSql]] | None = None,
 ) -> None:
     interval = get_float("ATLAS_SCHEDULE_POLL_SECONDS")
     while not stop.is_set():
@@ -290,7 +284,6 @@ async def run_scheduler(
                 progress=progress,
                 jetstream=jetstream,
                 catalogue_snapshot_resolver=catalogue_snapshot_resolver,
-                edge_compiler=edge_compiler,
             )
         except Exception:
             logging.exception("crawl scheduler tick failed")

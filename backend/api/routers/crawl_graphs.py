@@ -7,9 +7,6 @@ from sqlalchemy.orm import Session
 from control.crawl_graphs.schemas import (
     CrawlGraphCreate,
     CrawlGraphDetail,
-    CrawlGraphEdgeCreate,
-    CrawlGraphEdgeRecord,
-    CrawlGraphEdgeUpdate,
     CrawlGraphListResponse,
     CrawlGraphNodeCreate,
     CrawlGraphNodeRecord,
@@ -21,16 +18,13 @@ from control.crawl_graphs.service import (
     CrawlGraphConflictError,
     CrawlGraphNotFoundError,
     CrawlGraphValidationError,
-    create_edge,
     create_graph,
     create_node,
-    delete_edge,
     delete_graph,
     delete_node,
     detail,
     get_graph,
     list_graphs,
-    update_edge,
     update_graph,
     update_node,
     update_node_position,
@@ -85,7 +79,6 @@ def delete(graph_id: UUID, session: Annotated[Session, Depends(get_session)]) ->
     except (CrawlGraphConflictError, CrawlGraphNotFoundError) as exc:
         raise _translate(exc) from exc
 
-
 @router.post("/{graph_id}/nodes", response_model=CrawlGraphNodeRecord, status_code=201)
 def create_node_(graph_id: UUID, payload: CrawlGraphNodeCreate, session: Annotated[Session, Depends(get_session)]) -> CrawlGraphNodeRecord:
     try:
@@ -114,29 +107,5 @@ def update_node_position_(graph_id: UUID, node_id: UUID, payload: CrawlGraphNode
 def delete_node_(graph_id: UUID, node_id: UUID, session: Annotated[Session, Depends(get_session)]) -> None:
     try:
         delete_node(session, graph_id, node_id)
-    except (CrawlGraphConflictError, CrawlGraphNotFoundError) as exc:
-        raise _translate(exc) from exc
-
-
-@router.post("/{graph_id}/edges", response_model=CrawlGraphEdgeRecord, status_code=201)
-def create_edge_(graph_id: UUID, payload: CrawlGraphEdgeCreate, session: Annotated[Session, Depends(get_session)]) -> CrawlGraphEdgeRecord:
-    try:
-        return create_edge(session, graph_id, payload)
-    except (CrawlGraphNotFoundError, CrawlGraphConflictError, CrawlGraphValidationError) as exc:
-        raise _translate(exc) from exc
-
-
-@router.put("/{graph_id}/edges/{edge_id}", response_model=CrawlGraphEdgeRecord)
-def update_edge_(graph_id: UUID, edge_id: UUID, payload: CrawlGraphEdgeUpdate, session: Annotated[Session, Depends(get_session)]) -> CrawlGraphEdgeRecord:
-    try:
-        return update_edge(session, graph_id, edge_id, payload)
-    except (CrawlGraphNotFoundError, CrawlGraphConflictError, CrawlGraphValidationError) as exc:
-        raise _translate(exc) from exc
-
-
-@router.delete("/{graph_id}/edges/{edge_id}", status_code=204)
-def delete_edge_(graph_id: UUID, edge_id: UUID, session: Annotated[Session, Depends(get_session)]) -> None:
-    try:
-        delete_edge(session, graph_id, edge_id)
     except (CrawlGraphConflictError, CrawlGraphNotFoundError) as exc:
         raise _translate(exc) from exc

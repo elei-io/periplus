@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -11,22 +11,15 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    JSON,
     Text,
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
-json_type = JSON().with_variant(JSONB(), "postgresql")
+from db.types import json_type, utc_now
 
 
 class CrawlSchedule(Base):

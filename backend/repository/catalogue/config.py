@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from config import get_str
 from repository.catalogue.exceptions import CatalogueConfigError
 
 
@@ -14,21 +13,16 @@ _SAFE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 @dataclass(frozen=True, slots=True)
 class CatalogueConfig:
-    """Only the logical namespace remains Atlas configuration."""
+    """The selected DuckBasin catalogue alias."""
 
     alias: str
-    schema: str = "main"
 
     def __post_init__(self) -> None:
         _validate_name("alias", self.alias)
-        _validate_name("schema", self.schema)
 
 
 def catalogue_config_from_env(*, alias: str) -> CatalogueConfig:
-    return CatalogueConfig(
-        alias=alias,
-        schema=get_str("ATLAS_CATALOGUE_SCHEMA"),
-    )
+    return CatalogueConfig(alias=alias)
 
 
 def _validate_name(label: str, value: str) -> None:

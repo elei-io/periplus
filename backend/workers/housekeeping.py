@@ -10,9 +10,8 @@ from uuid import UUID
 from config import get_float, get_int
 from config.performance import NAVIGATION_CLEANUP_BATCH_SIZE
 from repository.ingestion.health import HealthMonitor
-from repository.objects.config import object_store_from_env, staging_root_from_env
+from repository.objects.config import object_store_from_env
 from repository.objects.store import ObjectMetadata, ObjectStore
-from repository.service import cleanup_staging_files
 from runtime.graph_queue import ensure_graph_storage, get_graph_run
 from runtime.nats_client import connect_nats
 from workers.lifecycle import run_worker_process
@@ -120,26 +119,10 @@ async def _run(stop: asyncio.Event, monitor: HealthMonitor) -> None:
     runs, _requests, _workers = await ensure_graph_storage(jetstream)
     object_store = object_store_from_env()
     monitor.dependencies_ready()
-    monitor.subsystem_ready("staging_retention")
     monitor.subsystem_ready("navigation_retention")
     monitor.subsystem_ready("graph_runtime_retention")
     try:
         while not stop.is_set():
-            try:
-                await asyncio.to_thread(
-                    cleanup_staging_files,
-                    staging_root_from_env(),
-                    older_than_seconds=get_float(
-                        "ATLAS_INGEST_STAGING_GRACE_SECONDS"
-                    ),
-                )
-                monitor.subsystem_ready("staging_retention")
-            except Exception as exc:
-                logging.exception("Atlas staging cleanup failed")
-                monitor.subsystem_unavailable(
-                    "staging_retention",
-                    str(exc) or type(exc).__name__,
-                )
             await _cleanup_navigation(
                 runs=runs,
                 store=object_store,

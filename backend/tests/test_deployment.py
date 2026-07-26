@@ -6,17 +6,15 @@ import deployment
 
 class DeploymentTests(TestCase):
     @patch("deployment.bootstrap_catalogue")
-    @patch("deployment.seed_catalogue_fixture_definitions")
     @patch("deployment.seed_system_control_plane")
     @patch("deployment.migrate_control_database")
     def test_setup_order(
-        self, migrate, seed_control, seed_fixtures, bootstrap
+        self, migrate, seed_control, bootstrap
     ) -> None:
         manager = MagicMock()
         manager.attach_mock(migrate, "migrate")
         manager.attach_mock(bootstrap, "bootstrap")
         manager.attach_mock(seed_control, "seed_control")
-        manager.attach_mock(seed_fixtures, "seed_fixtures")
 
         deployment.main([])
 
@@ -26,7 +24,6 @@ class DeploymentTests(TestCase):
                 call.migrate(),
                 call.seed_control(),
                 call.bootstrap(),
-                call.seed_fixtures(),
             ],
         )
 

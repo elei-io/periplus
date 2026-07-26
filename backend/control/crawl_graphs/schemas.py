@@ -40,18 +40,16 @@ class CrawlGraphNodePositionUpdate(BaseModel):
     y: float = Field(ge=-1_000_000, le=1_000_000)
 
 
-class CrawlGraphEdgeCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class CrawlGraphEdgeRecord(BaseModel):
     source_node_id: UUID
     target_node_id: UUID
-    name: str = Field(min_length=1, max_length=200)
-    description: str | None = Field(default=None, max_length=2_000)
-    sql: str = Field(min_length=1, max_length=100_000)
-    dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph
-
-
-class CrawlGraphEdgeUpdate(CrawlGraphEdgeCreate):
-    pass
+    name: str
+    description: str | None
+    sql: str
+    dedupe_mode: EdgeDedupeMode
+    id: UUID
+    graph_id: UUID
+    created_at: datetime
 
 
 class CrawlGraphNodeRecord(CrawlGraphNodeCreate):
@@ -59,12 +57,6 @@ class CrawlGraphNodeRecord(CrawlGraphNodeCreate):
     graph_id: UUID
     position_x: float | None = None
     position_y: float | None = None
-    created_at: datetime
-
-
-class CrawlGraphEdgeRecord(CrawlGraphEdgeCreate):
-    id: UUID
-    graph_id: UUID
     created_at: datetime
 
 

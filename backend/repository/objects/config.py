@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import boto3
@@ -97,19 +96,6 @@ def _s3_client_from_env(*, maximum_concurrency: int = 1) -> tuple[object, str]:
         config_options["s3"] = {"addressing_style": url_style}
     client_options["config"] = Config(**config_options)
     return boto3.client("s3", **client_options), bucket
-
-
-def staging_root_from_env() -> Path:
-    configured = _optional("ATLAS_REPOSITORY_STAGING_ROOT")
-    if configured is not None:
-        root = Path(configured).expanduser()
-    elif get_str("ATLAS_REPOSITORY_STORAGE").lower() == "disk":
-        repository_root = get_path("ATLAS_REPOSITORY_ROOT")
-        root = repository_root / "staging"
-    else:
-        root = Path(tempfile.gettempdir()) / "atlas-repository-staging"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
 
 
 def _required(name: str) -> str:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+import hashlib
 from typing import Callable
 from uuid import UUID, uuid4
 
@@ -15,6 +16,10 @@ from sqlalchemy.orm import Session
 from config.performance import CRAWL_RUN_ACQUISITION_PENDING_LIMIT
 from control.crawl_graphs.schemas import EdgeDedupeMode
 from db.session import SessionLocal
+from repository.catalogue import CrawlRecord
+from repository.catalogue.records import canonical_json
+from repository.ingestion.queue import crawl_ingestion_job
+from runtime.catalogue_queue import INGEST_SUBJECT
 from runtime.graph_models import (
     CrawlRequestRecord,
     EdgeEvaluationRecord,
@@ -237,6 +242,7 @@ class GraphRuntimeStore:
             )
             record.pending_request_count = 0
             record.acquisition_pending_count = 0
+            _enqueue_terminal_crawl(session, record)
             return _graph_run(record)
 
     def fail_run(
@@ -287,6 +293,7 @@ class GraphRuntimeStore:
             )
             record.pending_request_count = 0
             record.acquisition_pending_count = 0
+            _enqueue_terminal_crawl(session, record)
             return _graph_run(record)
 
     def settle_run_if_idle(
@@ -317,6 +324,7 @@ class GraphRuntimeStore:
                 )
                 record.completed_at = now
                 record.last_progress_at = now
+                _enqueue_terminal_crawl(session, record)
             return _graph_run(record)
 
     def update_request(self, request_id: UUID, mutate) -> CrawlRequest:
@@ -429,7 +437,7 @@ class GraphRuntimeStore:
         effective_policy_snapshot: dict,
         dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph,
         source_crawl_id: UUID | None = None,
-        source_document_id: str | None = None,
+        source_content_sha256: str | None = None,
         source_edge_id: UUID | None = None,
         parent_request_id: UUID | None = None,
         priority: int = 0,
@@ -447,7 +455,7 @@ class GraphRuntimeStore:
             dedupe_mode=dedupe_mode,
             source_edge_id=source_edge_id,
             source_crawl_id=source_crawl_id,
-            source_document_id=source_document_id,
+            source_content_sha256=source_content_sha256,
         )
         graph_identity = request_identity(run_id, url)
         request_id = deterministic_request_id(identity)
@@ -580,7 +588,7 @@ class GraphRuntimeStore:
         request_id: UUID,
         generation: int,
         claim_token: UUID,
-        document_id: str | None,
+        content_sha256: str | None,
         acquisition_attempts: tuple[dict, ...],
         readiness: NavigationReadinessWork,
         now: datetime | None = None,
@@ -621,7 +629,7 @@ class GraphRuntimeStore:
                 raise ValueError(
                     "navigation readiness generation does not match acquisition"
                 )
-            request.document_id = document_id
+            request.content_sha256 = content_sha256
             request.acquisition_attempts = list(acquisition_attempts)
             request.status = "awaiting_navigation"
             request.claim_token = None
@@ -801,6 +809,7 @@ class GraphRuntimeStore:
                         else "completed"
                     )
                     run.completed_at = now
+                    _enqueue_terminal_crawl(session, run)
                 return "completed"
             request.status = "evaluating_edges"
             request.updated_at = now
@@ -988,7 +997,10 @@ class GraphRuntimeStore:
                         == GraphOutboxRecord.graph_run_id,
                     )
                     .where(
-                        GraphRunRecord.status.in_(("queued", "running")),
+                        or_(
+                            GraphRunRecord.status.in_(("queued", "running")),
+                            GraphOutboxRecord.subject == INGEST_SUBJECT,
+                        ),
                         GraphOutboxRecord.published_at.is_(None),
                         or_(
                             GraphOutboxRecord.not_before.is_(None),
@@ -1456,7 +1468,7 @@ def _crawl_request(record: CrawlRequestRecord) -> CrawlRequest:
         graph_run_id=record.graph_run_id,
         node_id=record.node_id,
         url=record.url,
-        document_id=record.document_id,
+        content_sha256=record.content_sha256,
         effective_policy_snapshot_json=record.effective_policy_snapshot,
         source_crawl_id=record.source_crawl_id,
         source_edge_id=record.source_edge_id,
@@ -1505,7 +1517,7 @@ def _apply_graph_run(record: GraphRunRecord, run: GraphRun) -> None:
 def _apply_crawl_request(
     record: CrawlRequestRecord, request: CrawlRequest
 ) -> None:
-    record.document_id = request.document_id
+    record.content_sha256 = request.content_sha256
     record.status = request.status
     record.generation = request.generation
     record.priority = request.priority
@@ -1517,6 +1529,49 @@ def _apply_crawl_request(
     record.failure_stage = request.failure_stage
     record.processing_failure_count = request.processing_failure_count
     record.acquisition_attempts = list(request.acquisition_attempts_json)
+
+
+def _enqueue_terminal_crawl(
+    session: Session, record: GraphRunRecord
+) -> None:
+    if record.status not in {
+        "completed",
+        "completed_with_errors",
+        "failed",
+        "cancelled",
+    }:
+        raise ValueError("only terminal graph runs can emit crawl evidence")
+    if record.completed_at is None:
+        raise ValueError("terminal graph run is missing completed_at")
+
+    graph_config = record.snapshot
+    encoded_config = canonical_json(graph_config)
+    crawl = CrawlRecord(
+        crawl_id=record.id,
+        graph_id=record.graph_id,
+        graph_config_hash=hashlib.sha256(encoded_config.encode()).hexdigest(),
+        graph_config=graph_config,
+        root_url_count=min(
+            record.root_admission_cursor, len(record.trigger_urls)
+        ),
+        started_at=record.started_at or record.created_at,
+        finished_at=record.completed_at,
+        stop_reason=(
+            "crawl_limit_reached"
+            if record.crawl_limit_reached
+            else record.status
+        ),
+    )
+    job = crawl_ingestion_job(crawl)
+    session.add(
+        GraphOutboxRecord(
+            graph_run_id=record.id,
+            message_id=job.request_id,
+            subject=INGEST_SUBJECT,
+            payload=job.model_dump(mode="json"),
+            created_at=record.completed_at,
+        )
+    )
 
 
 def _edge_evaluation(record: EdgeEvaluationRecord) -> EdgeEvaluation:

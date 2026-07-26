@@ -1,26 +1,17 @@
 """Postgres-backed crawl-graph definitions and frozen execution snapshots."""
 
-from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from atlas_sql import AtlasCompiler, GraphEdgePurpose
 
-from .fixtures import (
-    SYSTEM_CRAWL_GRAPH_SLUGS,
-    SeedCrawlGraph,
-    load_seeded_crawl_graphs,
-)
 from .models import CrawlGraph, CrawlGraphEdge, CrawlGraphNode
 from .schemas import (
     CrawlGraphCreate,
     CrawlGraphDetail,
-    CrawlGraphEdgeCreate,
     CrawlGraphEdgeRecord,
-    CrawlGraphEdgeUpdate,
     CrawlGraphNodeCreate,
     CrawlGraphNodeRecord,
     CrawlGraphNodePositionUpdate,
@@ -59,7 +50,7 @@ def _record(graph: CrawlGraph) -> CrawlGraphRecord:
         slug=graph.slug,
         description=graph.description,
         root_node_id=graph.root_node_id,
-        system_owned=graph.slug in SYSTEM_CRAWL_GRAPH_SLUGS,
+        system_owned=False,
         created_at=graph.created_at,
     )
 
@@ -81,96 +72,10 @@ def detail(graph: CrawlGraph) -> CrawlGraphDetail:
 
 
 def create_graph(session: Session, request: CrawlGraphCreate) -> CrawlGraphDetail:
-    if request.slug in SYSTEM_CRAWL_GRAPH_SLUGS:
-        raise CrawlGraphConflictError(
-            f"The {request.slug} slug is reserved for a system crawl graph."
-        )
     graph = CrawlGraph(slug=request.slug, description=request.description)
     session.add(graph)
     _flush_conflict(session, "A crawl graph with this slug already exists.")
     return detail(graph)
-
-
-def ensure_seeded_crawl_graphs(
-    session: Session, fixtures_root: Path
-) -> list[CrawlGraphDetail]:
-    """Create the immutable generic graph library and verify existing definitions."""
-
-    results: list[CrawlGraphDetail] = []
-    for seed in load_seeded_crawl_graphs(fixtures_root):
-        for edge in seed.edges:
-            validate_edge_sql(edge.sql)
-        graph = session.scalar(
-            select(CrawlGraph)
-            .where(CrawlGraph.slug == seed.slug)
-            .options(selectinload(CrawlGraph.nodes), selectinload(CrawlGraph.edges))
-        )
-        if graph is None:
-            graph = CrawlGraph(slug=seed.slug, description=seed.description)
-            session.add(graph)
-            session.flush()
-            nodes = {
-                node.name: CrawlGraphNode(
-                    graph=graph,
-                    name=node.name,
-                    description=node.description,
-                    position_x=index * 280.0,
-                    position_y=0.0,
-                )
-                for index, node in enumerate(seed.nodes)
-            }
-            session.add_all(nodes.values())
-            session.flush()
-            graph.root_node_id = nodes[seed.root].id
-            session.add_all(
-                CrawlGraphEdge(
-                    graph=graph,
-                    source_node_id=nodes[edge.source].id,
-                    target_node_id=nodes[edge.target].id,
-                    name=edge.name,
-                    description=edge.description,
-                    sql=edge.sql,
-                    dedupe_mode=edge.dedupe_mode,
-                )
-                for edge in seed.edges
-            )
-            session.flush()
-        _validate_seeded_graph(graph, seed)
-        results.append(detail(graph))
-    return results
-
-
-def _validate_seeded_graph(graph: CrawlGraph, seed: SeedCrawlGraph) -> None:
-    nodes = {node.name: node for node in graph.nodes}
-    expected_nodes = {node.name for node in seed.nodes}
-    expected_node_descriptions = {
-        node.name: node.description for node in seed.nodes
-    }
-    edges = {edge.name: edge for edge in graph.edges}
-    expected_edges = {edge.name: edge for edge in seed.edges}
-    root = nodes.get(seed.root)
-    if (
-        graph.description != seed.description
-        or set(nodes) != expected_nodes
-        or root is None
-        or graph.root_node_id != root.id
-        or any(
-            nodes[name].description != description
-            for name, description in expected_node_descriptions.items()
-        )
-        or set(edges) != set(expected_edges)
-        or any(
-            edges[name].source_node_id != nodes[expected.source].id
-            or edges[name].target_node_id != nodes[expected.target].id
-            or edges[name].description != expected.description
-            or edges[name].sql != expected.sql
-            or edges[name].dedupe_mode != EdgeDedupeMode.graph
-            for name, expected in expected_edges.items()
-        )
-    ):
-        raise CrawlGraphConflictError(
-            f"The system crawl graph {seed.slug!r} has an invalid definition."
-        )
 
 
 def list_graphs(session: Session) -> list[CrawlGraphRecord]:
@@ -268,45 +173,6 @@ def delete_node(session: Session, graph_id: UUID, node_id: UUID) -> None:
     session.flush()
 
 
-def create_edge(session: Session, graph_id: UUID, request: CrawlGraphEdgeCreate) -> CrawlGraphEdgeRecord:
-    _require_user_owned(get_graph(session, graph_id, lock=True))
-    _require_endpoints(session, graph_id, request.source_node_id, request.target_node_id)
-    validate_edge_sql(request.sql)
-    edge = CrawlGraphEdge(
-        graph_id=graph_id,
-        source_node_id=request.source_node_id,
-        target_node_id=request.target_node_id,
-        name=_clean(request.name),
-        description=request.description,
-        sql=request.sql.strip(),
-        dedupe_mode=request.dedupe_mode,
-    )
-    session.add(edge)
-    _flush_conflict(session, "An edge with this name already exists in the graph.")
-    return _edge_record(edge)
-
-
-def update_edge(session: Session, graph_id: UUID, edge_id: UUID, request: CrawlGraphEdgeUpdate) -> CrawlGraphEdgeRecord:
-    _require_user_owned(get_graph(session, graph_id, lock=True))
-    edge = _get_edge(session, graph_id, edge_id, lock=True)
-    _require_endpoints(session, graph_id, request.source_node_id, request.target_node_id)
-    validate_edge_sql(request.sql)
-    edge.source_node_id = request.source_node_id
-    edge.target_node_id = request.target_node_id
-    edge.name = _clean(request.name)
-    edge.description = request.description
-    edge.sql = request.sql.strip()
-    edge.dedupe_mode = request.dedupe_mode
-    _flush_conflict(session, "An edge with this name already exists in the graph.")
-    return _edge_record(edge)
-
-
-def delete_edge(session: Session, graph_id: UUID, edge_id: UUID) -> None:
-    _require_user_owned(get_graph(session, graph_id, lock=True))
-    session.delete(_get_edge(session, graph_id, edge_id, lock=True))
-    session.flush()
-
-
 def freeze_graph(session: Session, graph_id: UUID) -> FrozenGraphSnapshot:
     graph = get_graph(session, graph_id, lock=True)
     if graph.root_node_id is None:
@@ -333,25 +199,6 @@ def freeze_graph(session: Session, graph_id: UUID) -> FrozenGraphSnapshot:
     )
 
 
-def validate_edge_sql(sql: str) -> None:
-    result = AtlasCompiler.embedded().compile(
-        sql,
-        purpose=GraphEdgePurpose(),
-        coverage_source="crawl_graph_definition",
-    )
-    if result.valid:
-        return
-    message = next(
-        (
-            diagnostic.message
-            for diagnostic in result.diagnostics
-            if diagnostic.severity == "error"
-        ),
-        "Edge SQL is invalid.",
-    )
-    raise CrawlGraphValidationError(message)
-
-
 def _get_node(session: Session, graph_id: UUID, node_id: UUID, *, lock: bool = False) -> CrawlGraphNode:
     statement = select(CrawlGraphNode).where(CrawlGraphNode.id == node_id, CrawlGraphNode.graph_id == graph_id)
     if lock:
@@ -362,27 +209,8 @@ def _get_node(session: Session, graph_id: UUID, node_id: UUID, *, lock: bool = F
     return node
 
 
-def _get_edge(session: Session, graph_id: UUID, edge_id: UUID, *, lock: bool = False) -> CrawlGraphEdge:
-    statement = select(CrawlGraphEdge).where(CrawlGraphEdge.id == edge_id, CrawlGraphEdge.graph_id == graph_id)
-    if lock:
-        statement = statement.with_for_update()
-    edge = session.scalar(statement)
-    if edge is None:
-        raise CrawlGraphNotFoundError(f"Crawl graph edge {edge_id} was not found.")
-    return edge
-
-
-def _require_endpoints(session: Session, graph_id: UUID, source_id: UUID, target_id: UUID) -> None:
-    found = set(session.scalars(select(CrawlGraphNode.id).where(CrawlGraphNode.graph_id == graph_id, CrawlGraphNode.id.in_({source_id, target_id}))))
-    if found != {source_id, target_id}:
-        raise CrawlGraphValidationError("Edge source and target nodes must belong to this graph.")
-
-
 def _require_user_owned(graph: CrawlGraph) -> None:
-    if graph.slug in SYSTEM_CRAWL_GRAPH_SLUGS:
-        raise CrawlGraphConflictError(
-            f"The system crawl graph {graph.slug!r} cannot be edited or deleted."
-        )
+    del graph
 
 
 def _flush_conflict(session: Session, message: str) -> None:

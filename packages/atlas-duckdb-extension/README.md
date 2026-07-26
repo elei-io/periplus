@@ -5,11 +5,11 @@ compilation into DuckDB. It is based on DuckDB's experimental
 [`extension-template-c`](https://github.com/duckdb/extension-template-c) and
 uses the stable DuckDB C extension API by default.
 
-The extension is deliberately only a loadable smoke test today. The Python
-compiler under `backend/catalogue/compiler/` remains the semantic authority
-until DuckDB 2.0 exposes and stabilizes the plan hooks Atlas needs. Compiler
-features should move here only with differential tests against that existing
-contract.
+The extension is deliberately only a loadable smoke test today. It is not
+part of setup, runtime, readiness, or the active test suite. The former Python
+compiler is inert reference material under `archive/python_compiler/`; the
+future C compiler must target the established `ingest.*` and `material.*`
+contracts directly.
 
 ## Requirements
 
@@ -24,8 +24,9 @@ From the Atlas repository root:
 
 ```sh
 git submodule update --init --recursive
-make duckdb-extension-configure
-make duckdb-extension-check
+make configure
+make debug
+make test_debug
 ```
 
 The equivalent package-local workflow is:
@@ -43,7 +44,7 @@ The loadable debug artifact is written to:
 build/debug/atlas.duckdb_extension
 ```
 
-Release builds use `make duckdb-extension-release`.
+Release builds use the package-local `make release`.
 
 ## DuckDB compatibility probes
 

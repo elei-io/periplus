@@ -48,23 +48,11 @@ ScheduleStatus = Literal[
 ]
 
 
-class CrawlScheduleInput(BaseModel):
+class ScheduleWindow(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=200)
-    enabled: bool = True
-    timing: ScheduleTiming
     starts_at: datetime | None = None
     ends_at: datetime | None = None
-    maximum_run_count: int | None = Field(default=None, ge=1)
-    max_crawls: int = Field(
-        default=DEFAULT_GRAPH_RUN_MAX_CRAWLS,
-        ge=1,
-        le=MAX_GRAPH_RUN_CRAWLS,
-    )
-    root_urls: list[str] = Field(min_length=1, max_length=10_000)
-    overlap_policy: OverlapPolicy = "skip"
-    misfire_policy: MisfirePolicy = "skip"
 
     @field_validator("starts_at", "ends_at")
     @classmethod
@@ -74,7 +62,7 @@ class CrawlScheduleInput(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_window(self) -> CrawlScheduleInput:
+    def validate_window(self) -> ScheduleWindow:
         if (
             self.starts_at is not None
             and self.ends_at is not None
@@ -82,6 +70,21 @@ class CrawlScheduleInput(BaseModel):
         ):
             raise ValueError("Schedule end must be after its start.")
         return self
+
+
+class CrawlScheduleInput(ScheduleWindow):
+    name: str = Field(min_length=1, max_length=200)
+    enabled: bool = True
+    timing: ScheduleTiming
+    maximum_run_count: int | None = Field(default=None, ge=1)
+    max_crawls: int = Field(
+        default=DEFAULT_GRAPH_RUN_MAX_CRAWLS,
+        ge=1,
+        le=MAX_GRAPH_RUN_CRAWLS,
+    )
+    root_urls: list[str] = Field(min_length=1, max_length=10_000)
+    overlap_policy: OverlapPolicy = "skip"
+    misfire_policy: MisfirePolicy = "skip"
 
 
 class CrawlScheduleCreate(CrawlScheduleInput):
@@ -119,29 +122,9 @@ class CrawlScheduleResourceList(BaseModel):
     total: int
 
 
-class SchedulePreviewRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class SchedulePreviewRequest(ScheduleWindow):
     timing: ScheduleTiming
-    starts_at: datetime | None = None
-    ends_at: datetime | None = None
     count: int = Field(default=5, ge=1, le=20)
-
-    @field_validator("starts_at", "ends_at")
-    @classmethod
-    def require_timezone(cls, value: datetime | None) -> datetime | None:
-        if value is not None and value.tzinfo is None:
-            raise ValueError("Schedule datetimes must include a timezone.")
-        return value
-
-    @model_validator(mode="after")
-    def validate_window(self) -> SchedulePreviewRequest:
-        if (
-            self.starts_at is not None
-            and self.ends_at is not None
-            and self.ends_at <= self.starts_at
-        ):
-            raise ValueError("Schedule end must be after its start.")
-        return self
 
 
 class SchedulePreviewResponse(BaseModel):

@@ -32,10 +32,6 @@ class HtmlIdentity:
     size_bytes: int
 
     @property
-    def document_id(self) -> str:
-        return f"sha256:{self.sha256}"
-
-    @property
     def object_key(self) -> str:
         return html_object_key(self.sha256)
 
@@ -71,8 +67,8 @@ class RawHtmlRepository:
         captured_html: str,
         *,
         source_url: str,
-        crawl_id: UUID,
-        captured_at: datetime,
+        visit_id: UUID,
+        observed_at: datetime,
         content_type: str,
         identity: HtmlIdentity | None = None,
         chunk_chars: int = 1_048_576,
@@ -106,8 +102,8 @@ class RawHtmlRepository:
                     content_encoding="zstd",
                     metadata={
                         "url": source_url,
-                        "crawl-id": str(crawl_id),
-                        "captured-at": captured_at.isoformat(),
+                        "visit-id": str(visit_id),
+                        "observed-at": observed_at.isoformat(),
                     },
                 ),
             )

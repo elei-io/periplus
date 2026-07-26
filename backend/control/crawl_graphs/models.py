@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, Enum, Float, ForeignKey, ForeignKeyConstraint, Text, UniqueConstraint
@@ -8,11 +8,8 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db import Base
+from db.types import utc_now
 from .schemas import EdgeDedupeMode
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
 
 
 class CrawlGraph(Base):

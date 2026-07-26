@@ -15,7 +15,7 @@ from config import get_str
 WorkerRole = Literal[
     "acquisition",
     "ingestion",
-    "catalogue-relay",
+    "cdc",
     "materialization",
     "housekeeping",
 ]
@@ -23,7 +23,7 @@ WorkerRole = Literal[
 WORKER_MODULES: dict[WorkerRole, str] = {
     "acquisition": "workers.acquisition",
     "ingestion": "workers.ingestion",
-    "catalogue-relay": "workers.catalogue_relay",
+    "cdc": "cdc.worker",
     "materialization": "workers.materialization",
     "housekeeping": "workers.housekeeping",
 }

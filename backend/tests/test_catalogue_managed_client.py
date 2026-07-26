@@ -243,7 +243,7 @@ class ManagedCatalogueClientTests(unittest.TestCase):
         connection.failure_once = "Invalid connection id"
 
         catalogue.trusted_connection.execute(
-            "SELECT * FROM atlas.main.documents WHERE document_id = $id",
+            "SELECT * FROM ingest.documents WHERE document_id = $id",
             {"id": "document"},
         )
 
@@ -251,7 +251,7 @@ class ManagedCatalogueClientTests(unittest.TestCase):
         self.assertEqual(len(minter.minted), 1)
         self.assertIn(
             (
-                "SELECT * FROM atlas.main.documents WHERE document_id = $id",
+                "SELECT * FROM ingest.documents WHERE document_id = $id",
                 {"id": "document"},
             ),
             minter.minted[0].connection.calls,

@@ -65,10 +65,9 @@ class CatalogueControl:
             catalogue.close()
             raise
         logging.info(
-            "Atlas DuckLake binding ready: component=api lake=%s schema=%s "
+            "Atlas DuckLake binding ready: component=api lake=%s schemas=ingest,material "
             "schema_version=%s",
             catalogue.lake_slug,
-            catalogue.config.schema,
             CATALOGUE_SCHEMA_VERSION,
         )
         self._catalogue = catalogue

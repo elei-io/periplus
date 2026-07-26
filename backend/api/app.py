@@ -5,31 +5,17 @@ from fastapi import FastAPI
 
 from api.catalogue_control import CatalogueControl
 from api.graph_runtime import ApiGraphRuntime
-from api.graph_submission import frozen_edge_compiler
 from api.routers import (
-    catalogue,
-    catalogue_queries,
-    catalogue_scalar_macros,
-    catalogue_table_macros,
-    catalogue_views,
     crawl_graphs,
     crawl_schedules,
     crawl_policies,
     domain_policies,
     graph_runs,
-    catalogue_materializations,
     operational_metrics,
     repository_operations,
-    ai,
-)
-from repository.catalogue.quack_runtime import QuackQueryRuntime
-from repository.catalogue.compiler_definitions import (
-    CatalogueCompilerDefinitionCache,
-    read_catalogue_compiler_definitions,
+    sql_console,
 )
 from runtime.catalogue_workers import ensure_catalogue_worker_storage
-from runtime.catalogue_events import DDL_SUBJECT
-from runtime.catalogue_queries import ensure_catalogue_query_storage
 from runtime.crawl_scheduler import run_scheduler
 from runtime.graph_queue import (
     ensure_graph_storage,
@@ -41,13 +27,11 @@ from runtime.nats_client import connect_nats
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     nats_client = await connect_nats()
-    quack_runtime = None
     catalogue_control = None
     scheduler_stop = None
     scheduler_task = None
     outbox_stop = None
     outbox_task = None
-    ddl_subscription = None
     try:
         jetstream = nats_client.jetstream()
         runs, requests, workers = await ensure_graph_storage(jetstream)
@@ -66,35 +50,9 @@ async def lifespan(app: FastAPI):
             run_outbox_relay(runs, jetstream, stop=outbox_stop),
             name="graph-outbox",
         )
-        query_bucket = await ensure_catalogue_query_storage(jetstream)
         catalogue_control = CatalogueControl()
         await catalogue_control.start()
         app.state.catalogue_control = catalogue_control
-        quack_runtime = QuackQueryRuntime(query_bucket)
-        await quack_runtime.start()
-        app.state.quack_runtime = quack_runtime
-        compiler_definitions = CatalogueCompilerDefinitionCache(
-            lambda: quack_runtime.run_internal(
-                lambda connection: read_catalogue_compiler_definitions(
-                    connection,
-                    catalogue_alias=quack_runtime.config.catalogue_alias,
-                )
-            ),
-            ttl_seconds=60,
-        )
-        app.state.compiler_definitions = compiler_definitions
-
-        async def invalidate_compiler_definitions(_message) -> None:
-            compiler_definitions.invalidate()
-
-        async def compile_scheduled_edge(sql: str):
-            definitions = await compiler_definitions.get()
-            return await frozen_edge_compiler(definitions)(sql)
-
-        ddl_subscription = await nats_client.subscribe(
-            DDL_SUBJECT,
-            cb=invalidate_compiler_definitions,
-        )
         scheduler_stop = asyncio.Event()
         scheduler_task = asyncio.create_task(
             run_scheduler(
@@ -104,7 +62,6 @@ async def lifespan(app: FastAPI):
                 progress=runs,
                 jetstream=jetstream,
                 catalogue_snapshot_resolver=catalogue_control.latest_snapshot,
-                edge_compiler=compile_scheduled_edge,
             ),
             name="crawl-scheduler",
         )
@@ -122,23 +79,13 @@ async def lifespan(app: FastAPI):
             await asyncio.gather(outbox_task, return_exceptions=True)
         if catalogue_control is not None:
             await catalogue_control.close()
-        if ddl_subscription is not None:
-            await ddl_subscription.unsubscribe()
-        if quack_runtime is not None:
-            await quack_runtime.close()
         await nats_client.drain()
 
 
 app = FastAPI(title="Atlas API", lifespan=lifespan)
-app.include_router(catalogue.router)
-app.include_router(catalogue_queries.router)
-app.include_router(catalogue_scalar_macros.router)
-app.include_router(catalogue_table_macros.router)
-app.include_router(catalogue_views.router)
-app.include_router(catalogue_materializations.router)
 app.include_router(operational_metrics.router)
 app.include_router(repository_operations.router)
-app.include_router(ai.router)
+app.include_router(sql_console.router)
 app.include_router(crawl_graphs.router)
 app.include_router(crawl_schedules.router)
 app.include_router(crawl_schedules.resource_router)

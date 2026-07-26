@@ -17,12 +17,11 @@ from nats.js.errors import (
     BucketNotFoundError,
     KeyDeletedError,
     KeyNotFoundError,
-    NoKeysError,
-    NotFoundError,
 )
 from pydantic import BaseModel, ConfigDict, Field
 
 from .nats_client import connect_nats
+from .nats_topology import list_kv_keys
 
 
 CATALOGUE_WORKERS_BUCKET = "atlas_catalogue_workers"
@@ -145,7 +144,7 @@ async def ensure_catalogue_worker_storage(jetstream):
 
 
 async def list_catalogue_worker_states(bucket) -> list[CatalogueWorkerState]:
-    keys = await _list_keys(bucket)
+    keys = await list_kv_keys(bucket)
     states: list[CatalogueWorkerState] = []
     for key in keys:
         try:
@@ -154,32 +153,6 @@ async def list_catalogue_worker_states(bucket) -> list[CatalogueWorkerState]:
             continue
         states.append(CatalogueWorkerState.model_validate_json(entry.value))
     return states
-
-
-async def _list_keys(bucket) -> list[str]:
-    if not hasattr(bucket, "watchall"):
-        try:
-            return await bucket.keys()
-        except NoKeysError:
-            return []
-    watcher = await bucket.watchall(ignore_deletes=True, meta_only=True)
-    consumer_name: str | None = None
-    try:
-        info = await watcher._sub.consumer_info()
-        consumer_name = info.name
-        keys: list[str] = []
-        async for entry in watcher:
-            if entry is None:
-                break
-            keys.append(entry.key)
-        return keys
-    finally:
-        await watcher.stop()
-        if consumer_name is not None:
-            try:
-                await bucket._js.delete_consumer(bucket._stream, consumer_name)
-            except NotFoundError:
-                pass
 
 
 async def publish_catalogue_worker_state(bucket, state: CatalogueWorkerState) -> None:

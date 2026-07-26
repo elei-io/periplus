@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
-from control.urls import normalize_url
+from control.urls import host_matches, normalize_url
 
 from .models import CrawlPolicy
 from .schemas import ContentPolicy, CrawlPolicyCreateRequest, CrawlPolicyRecord, CrawlPolicySnapshot
@@ -27,20 +27,11 @@ def match_for_policy(policy: CrawlPolicy) -> str:
     return f"{policy.scheme}://{policy.host}{policy.path_prefix}{suffix}"
 
 
-def _host_matches(host: str, pattern: str) -> bool:
-    if pattern == "*":
-        return True
-    if pattern.startswith("*."):
-        suffix = pattern[1:]
-        return host.endswith(suffix) and host != suffix[1:]
-    return host == pattern
-
-
 def _matches(url: str, policy: CrawlPolicy) -> bool:
     parsed = urlparse(normalize_url(url))
     if not policy.enabled or policy.scheme not in {"*", parsed.scheme}:
         return False
-    if not _host_matches(parsed.netloc.lower(), policy.host):
+    if not host_matches(parsed.hostname or "", policy.host):
         return False
     path = parsed.path or "/"
     return path == policy.path_prefix if policy.path_mode == "exact" else path.startswith(policy.path_prefix)

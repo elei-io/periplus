@@ -22,7 +22,8 @@ from repository.catalogue.duckbasin import (
 from repository.catalogue.exceptions import CatalogueSchemaError
 from repository.catalogue.schema import (
     COLUMN_COMMENTS,
-    INTERNAL_SCHEMA,
+    INGEST_SCHEMA,
+    MATERIAL_SCHEMA,
     TABLE_COMMENTS,
     TABLE_LAYOUTS,
     expected_columns,
@@ -119,27 +120,24 @@ class Catalogue:
                 self._remote_transaction_active = False
 
     def bootstrap(self) -> None:
-        schemas = (
-            self.config.schema,
-            "views",
-            "macros",
-            INTERNAL_SCHEMA,
-            "_atlas_materializations",
-        )
+        schemas = (INGEST_SCHEMA, MATERIAL_SCHEMA)
         alias = _quote_literal(self.config.alias)
-        schema = _quote_literal(self.config.schema)
         existing_table_comments = {
-            str(table_name): comment
-            for table_name, comment in self.trusted_remote_rows(
-                "SELECT table_name, comment FROM duckdb_tables() "
-                f"WHERE database_name = {alias} AND schema_name = {schema}"
+            (str(schema_name), str(table_name)): comment
+            for schema_name, table_name, comment in self.trusted_remote_rows(
+                "SELECT schema_name, table_name, comment FROM duckdb_tables() "
+                f"WHERE database_name = {alias} "
+                f"AND schema_name IN ('{INGEST_SCHEMA}', '{MATERIAL_SCHEMA}')"
             )
         }
         existing_column_comments = {
-            (str(table_name), str(column_name)): comment
-            for table_name, column_name, comment in self.trusted_remote_rows(
-                "SELECT table_name, column_name, comment FROM duckdb_columns() "
-                f"WHERE database_name = {alias} AND schema_name = {schema}"
+            (str(schema_name), str(table_name), str(column_name)): comment
+            for schema_name, table_name, column_name, comment
+            in self.trusted_remote_rows(
+                "SELECT schema_name, table_name, column_name, comment "
+                "FROM duckdb_columns() "
+                f"WHERE database_name = {alias} "
+                f"AND schema_name IN ('{INGEST_SCHEMA}', '{MATERIAL_SCHEMA}')"
             )
         }
         with self.remote_transaction():
@@ -148,11 +146,11 @@ class Catalogue:
                     "CREATE SCHEMA IF NOT EXISTS "
                     f"{_qualified(self.config.alias, schema)}"
                 )
-            for table_name, columns in expected_columns().items():
+            for relation_name, columns in expected_columns().items():
                 relation = _qualified(
                     self.config.alias,
-                    self.config.schema,
-                    table_name,
+                    relation_name.schema,
+                    relation_name.table,
                 )
                 definitions = ", ".join(
                     f"{_quote_identifier(name)} {_column_type(column)}"
@@ -162,8 +160,9 @@ class Catalogue:
                 self.trusted_remote_execute(
                     f"CREATE TABLE IF NOT EXISTS {relation} ({definitions})"
                 )
-                if table_name not in existing_table_comments:
-                    layout = TABLE_LAYOUTS[table_name]
+                identity = (relation_name.schema, relation_name.table)
+                if identity not in existing_table_comments:
+                    layout = TABLE_LAYOUTS[relation_name]
                     if layout.partition_by:
                         self.trusted_remote_execute(
                             f"ALTER TABLE {relation} SET PARTITIONED BY "
@@ -175,16 +174,22 @@ class Catalogue:
                             f"({', '.join(layout.sort_by)})"
                         )
                 if (
-                    existing_table_comments.get(table_name)
-                    != TABLE_COMMENTS[table_name]
+                    existing_table_comments.get(identity)
+                    != TABLE_COMMENTS[relation_name]
                 ):
                     self.trusted_remote_execute(
                         f"COMMENT ON TABLE {relation} IS "
-                        f"{_quote_literal(TABLE_COMMENTS[table_name])}"
+                        f"{_quote_literal(TABLE_COMMENTS[relation_name])}"
                     )
-                for column_name, comment in COLUMN_COMMENTS[table_name].items():
+                for column_name, comment in COLUMN_COMMENTS[relation_name].items():
                     if (
-                        existing_column_comments.get((table_name, column_name))
+                        existing_column_comments.get(
+                            (
+                                relation_name.schema,
+                                relation_name.table,
+                                column_name,
+                            )
+                        )
                         != comment
                     ):
                         self.trusted_remote_execute(
@@ -197,16 +202,16 @@ class Catalogue:
 
     def validate_schema(self) -> None:
         errors: list[str] = []
-        for table_name, expected in expected_columns().items():
+        for relation_name, expected in expected_columns().items():
             relation = _qualified(
                 self.config.alias,
-                self.config.schema,
-                table_name,
+                relation_name.schema,
+                relation_name.table,
             )
             try:
                 rows = self.trusted_remote_rows(f"DESCRIBE {relation}")
             except Exception as exc:
-                errors.append(f"{self.config.schema}.{table_name}: {exc}")
+                errors.append(f"{relation_name.qualified}: {exc}")
                 continue
             actual = {
                 str(row[0]): (
@@ -224,49 +229,55 @@ class Catalogue:
             }
             if actual != wanted:
                 errors.append(
-                    f"{self.config.schema}.{table_name}: expected {wanted}, got {actual}"
+                    f"{relation_name.qualified}: expected {wanted}, got {actual}"
                 )
-        table_names = tuple(expected_columns())
-        expected_name_sql = ", ".join(_quote_literal(name) for name in table_names)
         alias = _quote_literal(self.config.alias)
-        schema = _quote_literal(self.config.schema)
         try:
             table_comment_rows = self.trusted_remote_rows(
-                "SELECT table_name, comment FROM duckdb_tables() "
-                f"WHERE database_name = {alias} AND schema_name = {schema} "
-                f"AND table_name IN ({expected_name_sql})"
+                "SELECT schema_name, table_name, comment FROM duckdb_tables() "
+                f"WHERE database_name = {alias} "
+                f"AND schema_name IN ('{INGEST_SCHEMA}', '{MATERIAL_SCHEMA}')"
             )
             column_comment_rows = self.trusted_remote_rows(
-                "SELECT table_name, column_name, comment FROM duckdb_columns() "
-                f"WHERE database_name = {alias} AND schema_name = {schema} "
-                f"AND table_name IN ({expected_name_sql})"
+                "SELECT schema_name, table_name, column_name, comment "
+                "FROM duckdb_columns() "
+                f"WHERE database_name = {alias} "
+                f"AND schema_name IN ('{INGEST_SCHEMA}', '{MATERIAL_SCHEMA}')"
             )
         except Exception as exc:
             errors.append(f"catalogue comments: {exc}")
         else:
             actual_table_comments = {
-                str(table_name): comment
-                for table_name, comment in table_comment_rows
+                (str(schema_name), str(table_name)): comment
+                for schema_name, table_name, comment in table_comment_rows
             }
             actual_column_comments = {
-                (str(table_name), str(column_name)): comment
-                for table_name, column_name, comment in column_comment_rows
+                (str(schema_name), str(table_name), str(column_name)): comment
+                for schema_name, table_name, column_name, comment
+                in column_comment_rows
             }
-            for table_name in table_names:
-                expected_table_comment = TABLE_COMMENTS[table_name]
-                if actual_table_comments.get(table_name) != expected_table_comment:
+            for relation_name in expected_columns():
+                identity = (relation_name.schema, relation_name.table)
+                expected_table_comment = TABLE_COMMENTS[relation_name]
+                if actual_table_comments.get(identity) != expected_table_comment:
                     errors.append(
-                        f"{self.config.schema}.{table_name}: missing or stale table comment"
+                        f"{relation_name.qualified}: missing or stale table comment"
                     )
                 for column_name, expected_comment in COLUMN_COMMENTS[
-                    table_name
+                    relation_name
                 ].items():
                     if (
-                        actual_column_comments.get((table_name, column_name))
+                        actual_column_comments.get(
+                            (
+                                relation_name.schema,
+                                relation_name.table,
+                                column_name,
+                            )
+                        )
                         != expected_comment
                     ):
                         errors.append(
-                            f"{self.config.schema}.{table_name}.{column_name}: "
+                            f"{relation_name.qualified}.{column_name}: "
                             "missing or stale column comment"
                         )
         if errors:
@@ -305,6 +316,20 @@ class Catalogue:
         )
         return cursor.fetchall()
 
+    def trusted_remote_result(
+        self,
+        sql: str,
+    ) -> tuple[tuple[str, ...], tuple[str, ...], list[tuple]]:
+        """Execute trusted remote SQL and retain its result-column metadata."""
+
+        cursor = self._execute_remote(
+            "FROM quack_query_by_name(current_catalog(), ?)",
+            sql,
+        )
+        columns = tuple(str(item[0]) for item in cursor.description)
+        types = tuple(str(item[1]) for item in cursor.description)
+        return columns, types, cursor.fetchall()
+
     def trusted_remote_execute(self, sql: str) -> list[tuple]:
         """Execute trusted Atlas SQL in the session-affine Basin process."""
 
@@ -332,7 +357,7 @@ class Catalogue:
         table_name: str,
         rows: list[dict[str, object]],
         *,
-        schema_name: str | None = None,
+        schema_name: str,
     ) -> None:
         if not rows:
             return
@@ -340,8 +365,7 @@ class Catalogue:
         self.trusted_connection.register(registration, pa.Table.from_pylist(rows))
         try:
             relation = _qualified(
-                self.config.alias,
-                schema_name or self.config.schema,
+                schema_name,
                 table_name,
             )
             self.trusted_connection.execute(
@@ -364,7 +388,7 @@ class Catalogue:
         self.close()
 
     def _use_schema_if_available(self) -> None:
-        namespace = _qualified(self.config.alias, self.config.schema)
+        namespace = _qualified(self.config.alias, INGEST_SCHEMA)
         try:
             self.trusted_connection.execute(f"USE {namespace}")
         except Exception:

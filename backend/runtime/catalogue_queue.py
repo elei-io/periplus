@@ -2,7 +2,7 @@
 
 from config import get_float, get_int
 from nats.js.api import DiscardPolicy, RetentionPolicy, StorageType, StreamConfig
-from nats.js.errors import NotFoundError
+from runtime.nats_topology import ensure_stream_contract
 
 
 WORK_STREAM = "ATLAS_CATALOGUE_WORK"
@@ -26,7 +26,7 @@ async def ensure_catalogue_work_stream(jetstream) -> None:
         max_bytes=get_int("ATLAS_CATALOGUE_WORK_MAX_BYTES"),
         discard=DiscardPolicy.NEW,
     )
-    await _ensure_stream(jetstream, config)
+    await ensure_stream_contract(jetstream, config)
 
 
 async def ensure_dead_letter_stream(jetstream) -> None:
@@ -39,32 +39,4 @@ async def ensure_dead_letter_stream(jetstream) -> None:
         max_age=get_float("ATLAS_DEAD_LETTER_TTL_SECONDS"),
         max_bytes=get_int("ATLAS_DEAD_LETTER_MAX_BYTES"),
     )
-    await _ensure_stream(jetstream, config)
-
-
-async def _ensure_stream(jetstream, expected: StreamConfig) -> None:
-    try:
-        info = await jetstream.stream_info(expected.name)
-    except NotFoundError:
-        await jetstream.add_stream(config=expected)
-        return
-    actual = info.config
-    mismatches: list[str] = []
-    if set(actual.subjects) != set(expected.subjects):
-        mismatches.append(f"subjects={list(expected.subjects)}")
-    if actual.retention != expected.retention:
-        mismatches.append(f"retention={expected.retention.value}")
-    if actual.storage != StorageType.FILE:
-        mismatches.append("file storage")
-    if actual.num_replicas != expected.num_replicas:
-        mismatches.append(f"replicas={expected.num_replicas}")
-    if actual.max_age != expected.max_age:
-        mismatches.append(f"max_age={expected.max_age:g}s")
-    if actual.max_bytes != expected.max_bytes:
-        mismatches.append(f"max_bytes={expected.max_bytes}")
-    if actual.discard != expected.discard:
-        mismatches.append(f"discard={expected.discard.value}")
-    if mismatches:
-        raise RuntimeError(
-            f"JetStream {expected.name} must use " + ", ".join(mismatches)
-        )
+    await ensure_stream_contract(jetstream, config)

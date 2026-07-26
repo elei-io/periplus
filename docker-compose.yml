@@ -45,15 +45,6 @@ x-atlas-repository-environment: &atlas-repository-environment
 x-atlas-graph-environment: &atlas-graph-environment
   ATLAS_GRAPH_MAX_RUN_SECONDS: ${ATLAS_GRAPH_MAX_RUN_SECONDS:-604800}
 
-x-atlas-quack-environment: &atlas-quack-environment
-  ATLAS_QUACK_MAX_CONCURRENCY: ${ATLAS_QUACK_MAX_CONCURRENCY:-4}
-  ATLAS_QUACK_POOL_WAIT_SECONDS: ${ATLAS_QUACK_POOL_WAIT_SECONDS:-5}
-  ATLAS_QUACK_QUERY_TIMEOUT_SECONDS: ${ATLAS_QUACK_QUERY_TIMEOUT_SECONDS:-30}
-  ATLAS_QUACK_QUERY_MAX_ROWS: ${ATLAS_QUACK_QUERY_MAX_ROWS:-100000}
-  ATLAS_QUACK_QUERY_MAX_BYTES: ${ATLAS_QUACK_QUERY_MAX_BYTES:-67108864}
-  ATLAS_QUACK_QUERY_STATE_TTL_SECONDS: ${ATLAS_QUACK_QUERY_STATE_TTL_SECONDS:-3600}
-  ATLAS_QUACK_QUERY_STATE_MAX_BYTES: ${ATLAS_QUACK_QUERY_STATE_MAX_BYTES:-67108864}
-
 services:
   atlas-test-postgres:
     image: postgres:17-alpine
@@ -72,23 +63,6 @@ services:
       retries: 30
     restart: unless-stopped
 
-  atlas-load-postgres:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_DB: atlas_load
-      POSTGRES_USER: atlas
-      POSTGRES_PASSWORD: atlas_local
-    ports:
-      - "127.0.0.1:55433:5432"
-    volumes:
-      - atlas-load-postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U atlas -d atlas_load"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-    restart: unless-stopped
-
   atlas-test-nats:
     image: nats:2.11-alpine
     command: ["--jetstream", "--store_dir=/data", "--http_port=8222"]
@@ -97,21 +71,6 @@ services:
       - "127.0.0.1:5822:8222"
     volumes:
       - atlas-test-nats-data:/data
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/healthz"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-    restart: unless-stopped
-
-  atlas-load-nats:
-    image: nats:2.11-alpine
-    command: ["--jetstream", "--store_dir=/data", "--http_port=8222"]
-    ports:
-      - "127.0.0.1:5423:4222"
-      - "127.0.0.1:5823:8222"
-    volumes:
-      - atlas-load-nats-data:/data
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/healthz"]
       interval: 2s
@@ -155,13 +114,7 @@ services:
           *duckbasin-environment,
           *atlas-repository-environment,
           *atlas-graph-environment,
-          *atlas-quack-environment,
         ]
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ATLAS_AI_MODEL: ${ATLAS_AI_MODEL:-openai:gpt-5.6-luna}
-      ATLAS_AI_MODEL_TIMEOUT_SECONDS: ${ATLAS_AI_MODEL_TIMEOUT_SECONDS:-180}
-      ATLAS_AI_REQUEST_LIMIT: ${ATLAS_AI_REQUEST_LIMIT:-32}
-      ATLAS_AI_TOOL_CALL_LIMIT: ${ATLAS_AI_TOOL_CALL_LIMIT:-24}
     depends_on:
       atlas-setup:
         condition: service_completed_successfully
@@ -173,7 +126,7 @@ services:
     <<: *atlas-backend
     command: atlas-worker acquisition
     deploy:
-      replicas: 2
+      replicas: 1
     expose:
       - "9090"
       - "9099"
@@ -260,19 +213,20 @@ services:
           *atlas-control-environment,
           *atlas-nats-environment,
           *duckbasin-environment,
+          *atlas-repository-environment,
         ]
     depends_on:
       atlas-setup:
         condition: service_completed_successfully
-      atlas-catalogue-relay:
+      atlas-cdc:
         condition: service_healthy
       atlas-test-nats:
         condition: service_healthy
     restart: unless-stopped
 
-  atlas-catalogue-relay:
+  atlas-cdc:
     <<: *atlas-backend
-    command: atlas-worker catalogue-relay
+    command: atlas-worker cdc
     expose:
       - "9097"
       - "9098"
@@ -340,11 +294,7 @@ services:
     # Run the image-time package so schema changes require an explicit rebuild.
     command: python -m deployment
     environment:
-      <<:
-        [
-          *atlas-control-environment,
-          *duckbasin-environment,
-        ]
+      <<: [*atlas-control-environment, *duckbasin-environment]
     depends_on:
       atlas-test-postgres:
         condition: service_healthy
@@ -352,6 +302,4 @@ services:
 
 volumes:
   atlas-test-postgres-data:
-  atlas-load-postgres-data:
   atlas-test-nats-data:
-  atlas-load-nats-data:

@@ -1,46 +1,39 @@
-"""Raw-object and ingestion-queue boundary for acquisition-only workers."""
+"""Immutable-object and ingestion-queue boundary for acquisition workers."""
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime
+from typing import BinaryIO
 import time
 from types import TracebackType
 from uuid import UUID
 
 from observability import repository_metrics
-from repository.catalogue import (
-    CrawlAttemptRecord,
-    CrawlRecord,
-    CrawlStepRecord,
-    DocumentRecord,
-)
+from repository.catalogue import VisitEvidence
 from repository.ingestion.queue import (
     IngestionQueueClient,
-    crawl_ingestion_request_id,
     get_ingestion_state,
+    visit_ingestion_request_id,
 )
 from repository.objects.config import object_store_from_env
-from repository.objects.html import HtmlIdentity, RawHtmlRepository
-from repository.objects.artifact import ArtifactIdentity, RawArtifactRepository
+from repository.objects.document import (
+    ExactDocumentIdentity,
+    ExactDocumentRepository,
+    StoredDocument,
+)
+from repository.objects.html import HtmlIdentity, RawHtmlRepository, StoredHtml
 
 
 @dataclass(frozen=True, slots=True)
 class AcquisitionResume:
-    """The frozen ingestion envelope needed to settle acquisition redelivery."""
-
-    crawl: CrawlRecord
-    document: DocumentRecord | None = None
-    artifact: None = None
-    html: None = None
-    links: None = None
-    projection_rebuilt: bool = False
+    evidence: VisitEvidence
     repository_snapshot: int | None = None
 
 
 class AcquisitionPipeline:
-    """Store immutable captured content and publish ingestion without opening DuckLake."""
+    """Store immutable bytes and publish visit evidence without opening DuckLake."""
 
     def __init__(
         self,
@@ -50,7 +43,7 @@ class AcquisitionPipeline:
     ) -> None:
         store = object_store_from_env(maximum_concurrency=maximum_concurrency)
         self.html_repository = RawHtmlRepository(store)
-        self.artifact_repository = RawArtifactRepository(store)
+        self.document_repository = ExactDocumentRepository(store)
         self.queue = queue or IngestionQueueClient()
         self._running = False
 
@@ -67,16 +60,16 @@ class AcquisitionPipeline:
     ) -> None:
         await self.close()
 
-    async def store_raw(
+    async def store_html(
         self,
         *,
         captured_html: str,
         source_url: str,
-        crawl_id: UUID,
-        captured_at: datetime,
+        visit_id: UUID,
+        observed_at: datetime,
         content_type: str,
         identity: HtmlIdentity | None = None,
-    ) -> None:
+    ) -> StoredHtml:
         self._require_running()
         started_at = time.perf_counter()
         try:
@@ -84,8 +77,8 @@ class AcquisitionPipeline:
                 self.html_repository.put,
                 captured_html,
                 source_url=source_url,
-                crawl_id=crawl_id,
-                captured_at=captured_at,
+                visit_id=visit_id,
+                observed_at=observed_at,
                 content_type=content_type,
                 identity=identity,
             )
@@ -102,43 +95,28 @@ class AcquisitionPipeline:
             html_bytes=stored.size_bytes,
             compressed_bytes=stored.compressed_size_bytes,
         )
+        return stored
 
-    async def enqueue_stored(
-        self,
-        crawl: CrawlRecord,
-        *,
-        crawl_attempts: tuple[CrawlAttemptRecord, ...],
-        request_id: str | None = None,
-        crawl_steps: tuple[CrawlStepRecord, ...] = (),
-    ) -> None:
-        self._require_running()
-        await self.queue.enqueue(
-            crawl,
-            crawl_attempts=crawl_attempts,
-            request_id=request_id,
-            crawl_steps=crawl_steps,
-        )
-
-    async def store_artifact(
+    async def store_document(
         self,
         *,
-        content,
-        identity: ArtifactIdentity,
+        content: BinaryIO,
+        identity: ExactDocumentIdentity,
         source_url: str,
-        crawl_id: UUID,
-        captured_at: datetime,
+        visit_id: UUID,
+        observed_at: datetime,
         content_type: str,
-    ) -> None:
+    ) -> StoredDocument:
         self._require_running()
         started_at = time.perf_counter()
         try:
             stored = await asyncio.to_thread(
-                self.artifact_repository.put,
+                self.document_repository.put,
                 content,
                 identity=identity,
                 source_url=source_url,
-                crawl_id=crawl_id,
-                captured_at=captured_at,
+                visit_id=visit_id,
+                observed_at=observed_at,
                 content_type=content_type,
             )
         except BaseException:
@@ -153,27 +131,37 @@ class AcquisitionPipeline:
             duration_seconds=time.perf_counter() - started_at,
             html_bytes=stored.size_bytes,
         )
+        return stored
 
-    async def resolve_crawl(self, crawl_id: UUID, **_kwargs) -> AcquisitionResume | None:
-        """Resolve only exact operation redelivery from NATS, never analytical cache."""
+    async def enqueue_visit(self, evidence: VisitEvidence) -> None:
+        self._require_running()
+        await self.queue.enqueue_visit(evidence)
 
+    async def resolve_visit(
+        self,
+        visit_id: UUID,
+    ) -> AcquisitionResume | None:
         self._require_running()
         state = await get_ingestion_state(
             self.queue.results,
-            crawl_ingestion_request_id(crawl_id),
+            visit_ingestion_request_id(visit_id),
         )
         if state is None:
             return None
-        if state.crawl.crawl_id != crawl_id:
-            raise RuntimeError(f"ingestion state has the wrong crawl identity for {crawl_id}")
-        snapshot = state.result.repository_snapshot if state.result is not None else None
-        return AcquisitionResume(crawl=state.crawl, repository_snapshot=snapshot)
-
-    async def resolve_cached_page(self, **_kwargs) -> None:
-        """Cross-request DuckLake cache reads do not belong in acquisition pods."""
-
-        self._require_running()
-        return None
+        if state.job.kind != "visit" or state.job.identity != visit_id:
+            raise RuntimeError(
+                f"ingestion state has the wrong visit identity for {visit_id}"
+            )
+        assert state.job.visit is not None
+        snapshot = (
+            state.result.repository_snapshot
+            if state.result is not None
+            else None
+        )
+        return AcquisitionResume(
+            evidence=state.job.visit,
+            repository_snapshot=snapshot,
+        )
 
     async def close(self) -> None:
         if not self._running:

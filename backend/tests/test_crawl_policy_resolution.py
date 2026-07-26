@@ -86,6 +86,9 @@ class CrawlPolicyResolutionTests(TestCase):
         )
         self.assertFalse(_matches("https://wikipedia.org/", wikipedia))
         self.assertFalse(_matches("https://notwikipedia.org/", wikipedia))
+        self.assertTrue(
+            _matches("https://en.wikipedia.org:8443/wiki/Atlas", wikipedia)
+        )
 
     def test_exact_host_outranks_subdomain_wildcard(self) -> None:
         default = policy(slug=DEFAULT_POLICY_SLUG)

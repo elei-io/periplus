@@ -7,21 +7,12 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from control.urls import normalize_url
+from control.urls import host_matches, normalize_url
 
 from .models import DomainPolicy
 from .schemas import DomainPolicyCreateRequest, DomainPolicyRecord, DomainPolicySnapshot
 
 DEFAULT_DOMAIN_POLICY_SLUG = "default-domain"
-
-
-def _matches(host: str, pattern: str) -> bool:
-    if pattern == "*":
-        return True
-    if pattern.startswith("*."):
-        suffix = pattern[1:]
-        return host.endswith(suffix) and host != suffix[1:]
-    return host == pattern
 
 
 def _specificity(pattern: str) -> tuple[int, int]:
@@ -42,7 +33,7 @@ def find_domain_policies_for_urls(
         matches = [
             policy
             for policy in policies
-            if _matches(host, policy.host_match)
+            if host_matches(host, policy.host_match)
         ]
         if not matches:
             raise RuntimeError(

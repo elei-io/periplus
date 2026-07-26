@@ -21,8 +21,6 @@ from xml.etree.ElementTree import Element
 
 import html5lib
 
-from dom.schema import DOM_SCHEMA_VERSION
-
 PARSER_NAME = "html5lib"
 PARSER_VERSION = version("html5lib")
 _PARSER_OPTIONS = {
@@ -38,14 +36,15 @@ PARSER_OPTIONS_HASH = hashlib.sha256(
 class ElementRow:
     """One page-local row in the Atlas DOM schema.
 
-    ``document_id`` is deliberately absent. Repository ingestion injects it after canonical HTML
-    has been hashed and stored.
+    ``content_sha256`` is deliberately absent. The materialization workload
+    supplies it after reading immutable HTML bytes.
     """
 
     element_index: int
     parent_index: int | None
     subtree_end_index: int
     depth: int
+    child_index: int
     tag: str
     namespace_uri: str | None
     attributes: dict[str, str]
@@ -89,11 +88,11 @@ def iter_tree_elements(root: Element) -> Iterator[ElementRow]:
         )
 
     next_index = 0
-    walk_stack: list[tuple[Element, int | None, int, str]] = [
-        (root, None, 0, "")
+    walk_stack: list[tuple[Element, int | None, int, int, str]] = [
+        (root, None, 0, 0, "")
     ]
     while walk_stack:
-        element, parent_index, depth, text_tail = walk_stack.pop()
+        element, parent_index, depth, child_index, text_tail = walk_stack.pop()
         element_index = next_index
         next_index += 1
         namespace_uri, tag = _split_expanded_name(element.tag)
@@ -108,8 +107,9 @@ def iter_tree_elements(root: Element) -> Iterator[ElementRow]:
         yield ElementRow(
             element_index=element_index,
             parent_index=parent_index,
-            subtree_end_index=element_index + subtree_sizes[id(element)] - 1,
+            subtree_end_index=element_index + subtree_sizes[id(element)],
             depth=depth,
+            child_index=child_index,
             tag=tag,
             namespace_uri=namespace_uri,
             attributes=attributes,
@@ -117,9 +117,9 @@ def iter_tree_elements(root: Element) -> Iterator[ElementRow]:
             text_tail=text_tail,
         )
         walk_stack.extend(
-            (child, element_index, depth + 1, child_tail or "")
-            for child, child_tail in reversed(
-                list(zip(children, child_tails, strict=True))
+            (child, element_index, depth + 1, index, child_tail or "")
+            for index, (child, child_tail) in reversed(
+                list(enumerate(zip(children, child_tails, strict=True)))
             )
         )
 

@@ -15,7 +15,7 @@ class WorkerCliTests(unittest.TestCase):
             {
                 "acquisition": "workers.acquisition",
                 "ingestion": "workers.ingestion",
-                "catalogue-relay": "workers.catalogue_relay",
+                "cdc": "cdc.worker",
                 "materialization": "workers.materialization",
                 "housekeeping": "workers.housekeeping",
             },

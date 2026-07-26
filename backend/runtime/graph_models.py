@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -14,22 +14,33 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    JSON,
     Text,
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base
+from db.types import json_type, utc_now
 
 
-def utc_now() -> datetime:
-    return datetime.now(UTC)
+class ClaimedWorkColumns:
+    """Columns shared by claimable graph-runtime work records."""
 
-
-json_type = JSON().with_variant(JSONB(), "postgresql")
+    claim_token: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True
+    )
+    claim_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class GraphRunRecord(Base):
@@ -123,7 +134,7 @@ class GraphRunRecord(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class CrawlRequestRecord(Base):
+class CrawlRequestRecord(ClaimedWorkColumns, Base):
     __tablename__ = "crawl_requests"
     __table_args__ = (
         CheckConstraint(
@@ -167,7 +178,7 @@ class CrawlRequestRecord(Base):
     identity: Mapped[str] = mapped_column(Text)
     node_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), index=True)
     url: Mapped[str] = mapped_column(Text)
-    document_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
     effective_policy_snapshot: Mapped[dict[str, Any]] = mapped_column(json_type)
     source_crawl_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), nullable=True
@@ -186,19 +197,6 @@ class CrawlRequestRecord(Base):
     not_before: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
-    claim_token: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True), nullable=True
-    )
-    claim_expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now
-    )
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
     failure_stage: Mapped[str | None] = mapped_column(Text, nullable=True)
     processing_failure_count: Mapped[int] = mapped_column(Integer, default=0)
     acquisition_attempts: Mapped[list[dict[str, Any]]] = mapped_column(
@@ -225,7 +223,7 @@ class GraphAdmissionRecord(Base):
     )
 
 
-class EdgeEvaluationRecord(Base):
+class EdgeEvaluationRecord(ClaimedWorkColumns, Base):
     __tablename__ = "edge_evaluations"
     __table_args__ = (
         CheckConstraint(
@@ -258,23 +256,10 @@ class EdgeEvaluationRecord(Base):
     edge_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), index=True)
     generation: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(Text, default="pending")
-    claim_token: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True), nullable=True
-    )
-    claim_expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now
-    )
     output_count: Mapped[int] = mapped_column(Integer, default=0)
     selection: Mapped[dict[str, Any] | None] = mapped_column(
         json_type, nullable=True
     )
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class GraphOutboxRecord(Base):

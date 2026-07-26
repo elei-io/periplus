@@ -17,7 +17,7 @@ from repository.ingestion.health import HealthMonitor, start_health_server
 WorkerRole = Literal[
     "acquisition",
     "ingestion",
-    "catalogue_relay",
+    "cdc",
     "materialization",
     "housekeeping",
 ]
@@ -35,7 +35,7 @@ class WorkerEndpointConfig:
 
     @classmethod
     def from_env(cls, role: WorkerRole) -> WorkerEndpointConfig:
-        prefix = f"ATLAS_{role.upper()}_WORKER"
+        prefix = f"ATLAS_{role.upper().replace('-', '_')}_WORKER"
         metrics_enabled = get_bool("ATLAS_METRICS_ENABLED")
         return cls(
             health_address=get_str(f"{prefix}_HEALTH_HOST"),

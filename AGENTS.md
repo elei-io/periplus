@@ -17,7 +17,7 @@ changing worker ownership, queue routing, managed DuckDB use, or deployment scal
 - Postgres owns editable control state and current graph execution: crawl graphs, runs, requests,
   edge evaluations, admission deduplication, progress counters, schedules, policies, matches,
   schemas, catalogue definitions, and the transactional graph outbox.
-- NATS JetStream/KV owns graph work delivery, worker presence, catalogue events, operation leases,
+- NATS JetStream/KV owns graph work delivery, worker presence, CDC events, operation leases,
   and per-domain crawl pacing/concurrency. It is not authoritative graph state.
 - Crawl history belongs only in DuckLake; never reintroduce it into control-plane Postgres.
 - Raw HTML is immutable, content-addressed, and stored through `backend/repository/`.
@@ -32,7 +32,7 @@ changing worker ownership, queue routing, managed DuckDB use, or deployment scal
   service owns transport choice, browser-farm capacity, profiles, and acquisition strategy.
 - Ingestion workers own base crawl/DOM/system-projection writes. They are independently observable
   `critical` catalogue work, never settle graph traversal, and never wait for user materialization.
-- The catalogue ingress consumes Basin-owned global DML/DDL JetStream streams, publishes per-table
+- The CDC ingress consumes Basin-owned global DML/DDL JetStream streams, publishes per-table
   DML ticks and global DDL changes into Atlas JetStream, and ACKs Basin only after Atlas PubAcks.
   Each materialization owns one filtered durable NATS consumer, coalesces ticks, and commits one
   whole-table refresh while retaining a stable target identity. There is no scope queue, coverage
@@ -61,22 +61,23 @@ changing worker ownership, queue routing, managed DuckDB use, or deployment scal
 
 ## Code map
 
-- `backend/actions/` — page acquisition and retained-evidence analysis; do not add navigation
-  primitives or traversal loops here.
+- `backend/acquisition/` — standard-CDP page capture, readiness, response classification, and
+  acquisition evidence; do not add traversal loops here.
 - `backend/control/` — editable Postgres-backed crawl graphs, policies, matches, schemas, and
   catalogue definitions.
 - `backend/runtime/` — Postgres-backed graph execution and transactional outbox; NATS work delivery,
   workers, operation leases, and per-domain pacing.
-- `backend/workers/` — CDP acquisition, ingestion, materialization, catalogue ingress, and housekeeping
+- `backend/workers/` — CDP acquisition, ingestion, materialization, and housekeeping
   process entrypoints.
 - `backend/repository/objects/` — immutable content-addressed raw HTML.
 - `backend/repository/ingestion/` — repository queue, pipeline, writer, health, and recovery.
 - `backend/repository/catalogue/` — DuckBasin connection minter and logical DuckLake boundary.
+- `backend/cdc/` — Basin CDC connections, contracts, ingress, metrics, and worker process.
 - `backend/repository/service.py` — application-facing durable repository boundary.
 - `backend/dom/` — versioned structural DOM projection.
 - `backend/api/` and `backend/cli/` — thin adapters.
 - `backend/db/` — SQLAlchemy setup and Alembic migrations.
-- `web/` — React frontend.
+- `packages/atlas-web-shell/` — React frontend.
 
 Keep editable graph and policy definitions under `control/`, current graph execution under
 `runtime/`, acquisition behavior in the shared crawl path, navigation in the acquisition worker,
@@ -103,7 +104,7 @@ Run `make check` after Python changes. Add targeted tests for changed behavior. 
 exercise one low-depth URL with low concurrency. For frontend changes, run:
 
 ```sh
-cd web
+cd packages/atlas-web-shell
 npm run typecheck
 npm run build
 ```
@@ -130,5 +131,5 @@ upstream fix over an Atlas-only compatibility layer.
 - Manage schema changes with Alembic; do not add compatibility models for removed storage paths.
 
 For the frontend, use shadcn components, React Query for server state, shared API types under
-`web/src/types/`, and named exports except for `App.tsx`. Every mutation must surface
+`packages/atlas-web-shell/src/types/`, and named exports except for `App.tsx`. Every mutation must surface
 `extractApiError` through `toast.error()`.

@@ -4,7 +4,8 @@ import os
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from runtime.nats_client import connect_basin_nats, connect_nats
+from cdc.connections import connect_basin_cdc
+from runtime.nats_client import connect_nats
 
 
 class NatsClientTests(unittest.IsolatedAsyncioTestCase):
@@ -68,7 +69,7 @@ class NatsClientTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch("runtime.nats_client.nats.connect", connect),
         ):
-            returned = await connect_basin_nats()
+            returned = await connect_basin_cdc()
 
         self.assertIs(returned, client)
         connect.assert_awaited_once_with(

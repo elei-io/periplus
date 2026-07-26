@@ -19,7 +19,7 @@ _EVENT_NAMESPACE = UUID("f0d15d8a-a735-48b7-a576-a08f85ecac74")
 
 LINKS_SCHEMA = pa.schema(
     [
-        ("document_id", pa.string()),
+        ("content_sha256", pa.string()),
         ("source_url", pa.string()),
         ("source_scheme", pa.string()),
         ("source_host", pa.string()),
@@ -43,7 +43,7 @@ EDGE_SELECTION_SCHEMA = pa.schema([("url", pa.string())])
 
 
 def build_navigation_package(
-    html: str, *, document_id: str, page_url: str
+    html: str, *, content_sha256: str, page_url: str
 ) -> tuple[bytes, int]:
     grouped = links_from_html(html, page_url=page_url)
     rows = []
@@ -51,7 +51,7 @@ def build_navigation_package(
         for link in links:
             rows.append(
                 {
-                    "document_id": document_id,
+                    "content_sha256": content_sha256,
                     "source_url": str(link["source_url"]),
                     "source_scheme": str(link["source_scheme"]),
                     "source_host": str(link["source_host"]),
@@ -86,13 +86,13 @@ def build_navigation_package(
 
 
 def navigation_object_name(
-    graph_run_id: UUID, document_id: str, page_url: str
+    graph_run_id: UUID, content_sha256: str, page_url: str
 ) -> str:
-    document_hash = document_id.removeprefix("sha256:")
+    content_hash = content_sha256.removeprefix("sha256:")
     recipe_hash = sha256(f"{NAVIGATION_RECIPE}\0{page_url}".encode()).hexdigest()
     return (
         f"runtime/navigation/{graph_run_id.hex}/documents/"
-        f"{document_hash}/{recipe_hash}.arrow"
+        f"{content_hash}/{recipe_hash}.arrow"
     )
 
 

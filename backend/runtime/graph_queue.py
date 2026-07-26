@@ -23,6 +23,7 @@ from control.crawl_graphs.schemas import (
 from control.crawl_policies.schemas import CrawlPolicySnapshot
 from control.urls import normalize_url
 from runtime.navigation_contract import EdgeSelectionPackage, NavigationPackage
+from runtime.nats_topology import list_kv_keys
 
 GRAPH_STREAM = "ATLAS_GRAPH_WORK"
 CRAWL_SUBJECT = "atlas.graph.crawl"
@@ -109,7 +110,7 @@ class CrawlRequest(BaseModel):
     graph_run_id: UUID
     node_id: UUID
     url: str
-    document_id: str | None = None
+    content_sha256: str | None = None
     effective_policy_snapshot_json: dict
     source_crawl_id: UUID | None = None
     source_edge_id: UUID | None = None
@@ -197,7 +198,7 @@ def request_identity(
     dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph,
     source_edge_id: UUID | None = None,
     source_crawl_id: UUID | None = None,
-    source_document_id: str | None = None,
+    source_content_sha256: str | None = None,
 ) -> str:
     normalized = normalize_request_url(url)
     if dedupe_mode == EdgeDedupeMode.graph:
@@ -207,9 +208,9 @@ def request_identity(
             raise ValueError("Crawl deduplication requires a source edge and crawl.")
         value = f"{graph_run_id}:crawl:{source_edge_id}:{source_crawl_id}:{normalized}"
     else:
-        if source_edge_id is None or source_document_id is None:
-            raise ValueError("Document deduplication requires a source edge and document.")
-        value = f"{graph_run_id}:document:{source_edge_id}:{source_document_id}:{normalized}"
+        if source_edge_id is None or source_content_sha256 is None:
+            raise ValueError("Document deduplication requires a source edge and content hash.")
+        value = f"{graph_run_id}:document:{source_edge_id}:{source_content_sha256}:{normalized}"
     return hashlib.sha256(value.encode()).hexdigest()
 
 
@@ -428,7 +429,7 @@ async def list_graph_runs(bucket) -> list[GraphRun]:
 
 
 async def list_worker_states(bucket) -> list[WorkerState]:
-    keys = await _list_keys(bucket)
+    keys = await list_kv_keys(bucket)
     return [
         value
         for key in keys
@@ -442,33 +443,6 @@ async def list_crawl_requests(bucket, *, graph_run_id: UUID | None = None) -> li
 
 async def list_edge_evaluations(bucket, *, graph_run_id: UUID | None = None) -> list[EdgeEvaluation]:
     return await bucket.list_edge_evaluations(graph_run_id=graph_run_id)
-
-
-async def _list_keys(bucket) -> list[str]:
-    """List current KV keys without retaining an inactive watcher consumer."""
-
-    # Lightweight in-memory stores used by domain tests expose only the public
-    # keys contract; real NATS KV buckets take the explicit-cleanup path below.
-    if not hasattr(bucket, "watchall"):
-        return await bucket.keys()
-    watcher = await bucket.watchall(ignore_deletes=True, meta_only=True)
-    consumer_name: str | None = None
-    try:
-        info = await watcher._sub.consumer_info()
-        consumer_name = info.name
-        keys: list[str] = []
-        async for entry in watcher:
-            if entry is None:
-                break
-            keys.append(entry.key)
-        return keys
-    finally:
-        await watcher.stop()
-        if consumer_name is not None:
-            try:
-                await bucket._js.delete_consumer(bucket._stream, consumer_name)
-            except NotFoundError:
-                pass
 
 
 def _is_request_key(key: str) -> bool:

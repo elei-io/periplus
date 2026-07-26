@@ -50,7 +50,6 @@ from .graph_queue import (
     update_edge_evaluation,
     update_graph_run,
 )
-from .edge_sql import FrozenEdgeSql, freeze_edge_sql
 
 _REQUEST_NAMESPACE = UUID("869ee36c-76ad-46f0-a1b7-9b28f4b71386")
 _TERMINAL_RUNS = {"completed", "completed_with_errors", "failed", "cancelled"}
@@ -181,7 +180,7 @@ async def admit_request(
     policy_resolver: Callable[[str], dict],
     dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph,
     source_crawl_id: UUID | None = None,
-    source_document_id: str | None = None,
+    source_content_sha256: str | None = None,
     source_edge_id: UUID | None = None,
     parent_request_id: UUID | None = None,
     now: datetime | None = None,
@@ -219,7 +218,7 @@ async def admit_request(
             effective_policy_snapshot=policy_resolver(normalized),
             dedupe_mode=dedupe_mode,
             source_crawl_id=source_crawl_id,
-            source_document_id=source_document_id,
+            source_content_sha256=source_content_sha256,
             source_edge_id=source_edge_id,
             parent_request_id=parent_request_id,
             now=now,
@@ -316,7 +315,6 @@ async def create_graph_run(
     urls: list[str],
     policy_resolver: Callable[[str], dict],
     catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]] | None = None,
-    edge_compiler: Callable[[str], Awaitable[FrozenEdgeSql]] | None = None,
     trigger_kind: str = "manual",
     run_id: UUID | None = None,
     trigger_schedule_id: UUID | None = None,
@@ -326,23 +324,10 @@ async def create_graph_run(
 ) -> GraphRun:
     existing = await get_graph_run(runs, run_id) if run_id is not None else None
     if existing is None:
-        compiled_edges = []
-        for edge in snapshot.edges:
-            compilation = (
-                await edge_compiler(edge.sql)
-                if edge_compiler is not None
-                else freeze_edge_sql(edge.sql)
+        if snapshot.edges:
+            raise ValueError(
+                "SQL graph edges are unavailable until the C compiler is delivered."
             )
-            compiled_edges.append(
-                edge.model_copy(
-                    update={
-                        "executable_sql": compilation.executable_sql,
-                        "uses_catalogue": compilation.uses_catalogue,
-                        "catalogue_revision": compilation.catalogue_revision,
-                    }
-                )
-            )
-        snapshot = snapshot.model_copy(update={"edges": compiled_edges})
     else:
         snapshot = existing.snapshot
     catalogue_snapshot_id = (
@@ -690,7 +675,7 @@ async def evaluate_edge(
                         {
                             "crawl_id": work.crawl_id,
                             "_page_url": request.url,
-                            "_document_id": request.document_id,
+                            "_content_sha256": request.content_sha256,
                         },
                     )
                 )
@@ -727,7 +712,7 @@ async def evaluate_edge(
                     policy_resolver=policy_resolver,
                     dedupe_mode=edge.dedupe_mode,
                     source_crawl_id=work.crawl_id,
-                    source_document_id=request.document_id,
+                    source_content_sha256=request.content_sha256,
                     source_edge_id=edge.id,
                     parent_request_id=request.id,
                 )

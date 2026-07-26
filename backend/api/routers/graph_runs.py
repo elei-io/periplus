@@ -13,8 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from api.graph_submission import frozen_edge_compiler, submit_graph_run
-from api.routers.catalogue import get_compiler_definitions
+from api.graph_submission import submit_graph_run
 from api.graph_runtime import ApiGraphRuntime, get_graph_runtime
 from api.catalogue_control import CatalogueControl, get_catalogue_control
 from config.performance import (
@@ -25,7 +24,6 @@ from config.performance import (
     duckdb_memory_limit,
     duckdb_threads,
 )
-from control.catalogue_materializations.models import CatalogueMaterialization
 from control.crawl_graphs.models import CrawlGraph
 from control.crawl_graphs.schemas import (
     DEFAULT_GRAPH_RUN_MAX_CRAWLS,
@@ -37,10 +35,7 @@ from control.crawl_graphs.service import (
 )
 from db.session import get_session
 from repository.ingestion.queue import DURABLE as INGESTION_DURABLE
-from repository.catalogue.compiler_definitions import (
-    CatalogueCompilerDefinitions,
-)
-from runtime.catalogue_events import DML_SUBJECT_PREFIX, EVENT_STREAM
+from cdc.events import DML_SUBJECT_PREFIX, EVENT_STREAM
 from runtime.catalogue_queue import WORK_STREAM
 from runtime.graph_queue import (
     GraphRun,
@@ -235,7 +230,6 @@ async def _run_stage_counts(progress, run: GraphRun) -> tuple[int, int, int]:
 @router.get("/capacity", response_model=CrawlConcurrencyLimits)
 async def capacity(
     runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
-    session: Annotated[Session, Depends(get_session)],
 ) -> CrawlConcurrencyLimits:
     workers = sorted(
         await list_worker_states(runtime.workers),
@@ -263,13 +257,12 @@ async def capacity(
         )
     except NotFoundError:
         materialization_consumers = []
-    active_materialization_consumers = set(
-        session.scalars(
-            select(CatalogueMaterialization.nats_consumer_name).where(
-                CatalogueMaterialization.archived_at.is_(None)
-            )
-        )
-    )
+    active_materialization_consumers = {
+        "atlas-material-html_elements-v1",
+        "atlas-material-jsonld_values-v1",
+        "atlas-material-pages-v1",
+        "atlas-material-links-v1",
+    }
     relevant_materialization_consumers = [
         info
         for info in materialization_consumers
@@ -368,10 +361,6 @@ async def trigger(
     session: Annotated[Session, Depends(get_session)],
     control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
     runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
-    definitions: Annotated[
-        CatalogueCompilerDefinitions,
-        Depends(get_compiler_definitions),
-    ],
 ) -> GraphRunSubmission:
     try:
         run = await submit_graph_run(
@@ -380,7 +369,6 @@ async def trigger(
             graph_id=graph_id,
             urls=payload.urls,
             catalogue_snapshot_resolver=control.latest_snapshot,
-            edge_compiler=frozen_edge_compiler(definitions),
             max_crawls=payload.max_crawls,
             max_run_seconds=payload.max_run_seconds,
         )

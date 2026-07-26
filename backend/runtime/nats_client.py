@@ -1,4 +1,4 @@
-"""Authenticated connections to Atlas-owned and Basin-owned NATS namespaces."""
+"""Authenticated connections to configured NATS namespaces."""
 
 from __future__ import annotations
 
@@ -12,24 +12,14 @@ from config import get_optional, get_str
 async def connect_nats(*, connect_timeout: int = 2):
     """Connect to the Atlas namespace used by application runtimes."""
 
-    return await _connect(
+    return await connect_configured_nats(
         url_name="ATLAS_NATS_URL",
         seed_name="ATLAS_NATS_SEED",
         connect_timeout=connect_timeout,
     )
 
 
-async def connect_basin_nats(*, connect_timeout: int = 2):
-    """Connect to the Basin namespace used only for managed lake CDC."""
-
-    return await _connect(
-        url_name="DUCKBASIN_NATS_URL",
-        seed_name="DUCKBASIN_NATS_SEED",
-        connect_timeout=connect_timeout,
-    )
-
-
-async def _connect(
+async def connect_configured_nats(
     *,
     url_name: str,
     seed_name: str,

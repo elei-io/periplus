@@ -7,6 +7,7 @@ import json
 import logging
 
 from runtime.graph_queue import GRAPH_STREAM
+from runtime.catalogue_queue import INGEST_SUBJECT, WORK_STREAM
 from runtime.graph_store import AsyncGraphRuntimeStore, OutboxDelivery
 
 
@@ -57,11 +58,14 @@ async def run_outbox_relay(
 
 
 async def _publish(jetstream, delivery: OutboxDelivery) -> None:
+    stream = (
+        WORK_STREAM if delivery.subject == INGEST_SUBJECT else GRAPH_STREAM
+    )
     await jetstream.publish(
         delivery.subject,
         json.dumps(
             delivery.payload, separators=(",", ":"), sort_keys=True
         ).encode(),
-        stream=GRAPH_STREAM,
+        stream=stream,
         headers={"Nats-Msg-Id": delivery.message_id},
     )

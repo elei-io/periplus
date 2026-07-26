@@ -71,6 +71,43 @@ class FakeConnection:
         self.closed = True
 
 
+class FakeTokens:
+    def __init__(self) -> None:
+        self.generation = 0
+        self.invalidated: list[int] = []
+
+    def get(self) -> DuckBasinToken:
+        self.generation += 1
+        return DuckBasinToken(
+            f"token-{self.generation}",
+            self.generation,
+        )
+
+    def invalidate(self, token: DuckBasinToken) -> None:
+        self.invalidated.append(token.generation)
+
+
+def _minter_with_connections(
+    tokens: FakeTokens, connections: list[FakeConnection]
+) -> DuckBasinClientMinter:
+    session_ids = iter(("0123456789abcdef", "fedcba9876543210"))
+    minter = DuckBasinClientMinter(
+        _config(),
+        tokens=tokens,  # type: ignore[arg-type]
+        connect=lambda *_args, **_kwargs: connections.pop(0),
+        session_id_factory=lambda: next(session_ids),
+    )
+    minter._target = DuckBasinTarget(  # noqa: SLF001 - boundary unit test
+        lake_id=UUID(LAKE_ID),
+        lake_slug="atlas",
+        catalogue_alias="atlas",
+        quack_uri=f"quack:{LAKE_HEX}.basin-quack.example:443",
+        quack_scope=f"quack:{LAKE_HEX}.basin-quack.example",
+        disable_ssl=False,
+    )
+    return minter
+
+
 class ServiceAccountTokenProviderTests(unittest.TestCase):
     def test_caches_then_refreshes_before_expiry(self) -> None:
         now = [100.0]
@@ -240,40 +277,13 @@ class ServiceAccountTokenProviderTests(unittest.TestCase):
 
 class DuckBasinClientMinterTests(unittest.TestCase):
     def test_attach_authentication_failure_invalidates_and_retries(self) -> None:
-        class Tokens:
-            def __init__(self) -> None:
-                self.generation = 0
-                self.invalidated: list[int] = []
-
-            def get(self) -> DuckBasinToken:
-                self.generation += 1
-                return DuckBasinToken(
-                    f"token-{self.generation}",
-                    self.generation,
-                )
-
-            def invalidate(self, token: DuckBasinToken) -> None:
-                self.invalidated.append(token.generation)
-
-        tokens = Tokens()
-        connections = [
-            FakeConnection(failure_once="Authentication failed"),
-            FakeConnection(),
-        ]
-        session_ids = iter(("0123456789abcdef", "fedcba9876543210"))
-        minter = DuckBasinClientMinter(
-            _config(),
-            tokens=tokens,  # type: ignore[arg-type]
-            connect=lambda *_args, **_kwargs: connections.pop(0),
-            session_id_factory=lambda: next(session_ids),
-        )
-        minter._target = DuckBasinTarget(  # noqa: SLF001 - boundary unit test
-            lake_id=UUID(LAKE_ID),
-            lake_slug="atlas",
-            catalogue_alias="atlas",
-            quack_uri=f"quack:{LAKE_HEX}.basin-quack.example:443",
-            quack_scope=f"quack:{LAKE_HEX}.basin-quack.example",
-            disable_ssl=False,
+        tokens = FakeTokens()
+        minter = _minter_with_connections(
+            tokens,
+            [
+                FakeConnection(failure_once="Authentication failed"),
+                FakeConnection(),
+            ],
         )
 
         minted = minter.mint()
@@ -284,40 +294,13 @@ class DuckBasinClientMinterTests(unittest.TestCase):
     def test_repeated_attach_authentication_failure_invalidates_each_token(
         self,
     ) -> None:
-        class Tokens:
-            def __init__(self) -> None:
-                self.generation = 0
-                self.invalidated: list[int] = []
-
-            def get(self) -> DuckBasinToken:
-                self.generation += 1
-                return DuckBasinToken(
-                    f"token-{self.generation}",
-                    self.generation,
-                )
-
-            def invalidate(self, token: DuckBasinToken) -> None:
-                self.invalidated.append(token.generation)
-
-        tokens = Tokens()
-        connections = [
-            FakeConnection(failure_once="Authentication failed"),
-            FakeConnection(failure_once="Authentication failed"),
-        ]
-        session_ids = iter(("0123456789abcdef", "fedcba9876543210"))
-        minter = DuckBasinClientMinter(
-            _config(),
-            tokens=tokens,  # type: ignore[arg-type]
-            connect=lambda *_args, **_kwargs: connections.pop(0),
-            session_id_factory=lambda: next(session_ids),
-        )
-        minter._target = DuckBasinTarget(  # noqa: SLF001 - boundary unit test
-            lake_id=UUID(LAKE_ID),
-            lake_slug="atlas",
-            catalogue_alias="atlas",
-            quack_uri=f"quack:{LAKE_HEX}.basin-quack.example:443",
-            quack_scope=f"quack:{LAKE_HEX}.basin-quack.example",
-            disable_ssl=False,
+        tokens = FakeTokens()
+        minter = _minter_with_connections(
+            tokens,
+            [
+                FakeConnection(failure_once="Authentication failed"),
+                FakeConnection(failure_once="Authentication failed"),
+            ],
         )
 
         with self.assertRaises(DuckBasinCredentialRejectedError):

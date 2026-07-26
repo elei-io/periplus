@@ -1,22 +1,24 @@
-"""Versioned DuckLake repository schema contract.
-
-The human-readable canonical contract lives in ``LAKE_SCHEMA.md`` at the
-repository root. Keep every table, column, comment, partition, and sort
-definition synchronized with that document.
-"""
+"""Authoritative physical contract for Atlas-owned DuckLake relations."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from dom.schema import ELEMENT_COLUMNS
-from schema_types import ColumnDef
+from schema_types import ColumnDef, MapType
 
-CATALOGUE_SCHEMA_VERSION = "1.0.0"
-POLICY_SCHEMA_VERSION = 1
-INTERNAL_SCHEMA = "_atlas"
-CRAWL_STEPS_TABLE = "crawl_steps"
-CRAWL_ATTEMPTS_TABLE = "crawl_attempts"
+CATALOGUE_SCHEMA_VERSION = "2.0.0"
+INGEST_SCHEMA = "ingest"
+MATERIAL_SCHEMA = "material"
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class RelationName:
+    schema: str
+    table: str
+
+    @property
+    def qualified(self) -> str:
+        return f"{self.schema}.{self.table}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,310 +27,280 @@ class TableLayout:
     sort_by: tuple[str, ...] = ()
 
 
-ARTIFACT_COLUMNS: dict[str, ColumnDef] = {
-    "artifact_id": ColumnDef("VARCHAR", nullable=False),
-    "object_key": ColumnDef("VARCHAR", nullable=False),
-    "size_bytes": ColumnDef("BIGINT", nullable=False),
-    "response_media_type": ColumnDef("VARCHAR", nullable=False),
-    "detected_media_type": ColumnDef("VARCHAR", nullable=False),
-    "detector_name": ColumnDef("VARCHAR", nullable=False),
-    "detector_version": ColumnDef("VARCHAR", nullable=False),
-    "detection_confidence": ColumnDef("DOUBLE", nullable=False),
-    "first_seen_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+CRAWLS = RelationName(INGEST_SCHEMA, "crawls")
+VISITS = RelationName(INGEST_SCHEMA, "visits")
+ATTEMPTS = RelationName(INGEST_SCHEMA, "attempts")
+STEPS = RelationName(INGEST_SCHEMA, "steps")
+DOCUMENTS = RelationName(INGEST_SCHEMA, "documents")
+HTML_ELEMENTS = RelationName(MATERIAL_SCHEMA, "html_elements")
+JSONLD_VALUES = RelationName(MATERIAL_SCHEMA, "jsonld_values")
+PAGES = RelationName(MATERIAL_SCHEMA, "pages")
+LINKS = RelationName(MATERIAL_SCHEMA, "links")
+
+
+TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
+    CRAWLS: {
+        "crawl_id": ColumnDef("UUID", nullable=False),
+        "graph_id": ColumnDef("UUID", nullable=False),
+        "graph_config_hash": ColumnDef("VARCHAR", nullable=False),
+        "graph_config": ColumnDef("VARIANT", nullable=False),
+        "root_url_count": ColumnDef("BIGINT", nullable=False),
+        "started_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+        "finished_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+        "stop_reason": ColumnDef("VARCHAR", nullable=False),
+    },
+    VISITS: {
+        "visit_id": ColumnDef("UUID", nullable=False),
+        "crawl_id": ColumnDef("UUID", nullable=False),
+        "requested_url": ColumnDef("VARCHAR", nullable=False),
+        "effective_url": ColumnDef("VARCHAR"),
+        "admitted_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+        "started_at": ColumnDef("TIMESTAMPTZ"),
+        "observed_at": ColumnDef("TIMESTAMPTZ"),
+        "finished_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+        "outcome": ColumnDef("VARCHAR", nullable=False),
+        "status_code": ColumnDef("INTEGER"),
+        "document_id": ColumnDef("UUID"),
+    },
+    ATTEMPTS: {
+        "attempt_id": ColumnDef("UUID", nullable=False),
+        "visit_id": ColumnDef("UUID", nullable=False),
+        "attempt_index": ColumnDef("INTEGER", nullable=False),
+        "started_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+        "finished_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+        "effective_url": ColumnDef("VARCHAR"),
+        "status_code": ColumnDef("INTEGER"),
+        "outcome": ColumnDef("VARCHAR", nullable=False),
+        "failure_stage": ColumnDef("VARCHAR"),
+        "failure_code": ColumnDef("VARCHAR"),
+        "failure_message": ColumnDef("VARCHAR"),
+    },
+    STEPS: {
+        "attempt_id": ColumnDef("UUID", nullable=False),
+        "step_index": ColumnDef("INTEGER", nullable=False),
+        "action": ColumnDef("VARCHAR", nullable=False),
+        "parameters": ColumnDef("VARIANT", nullable=False),
+        "started_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+        "duration_ms": ColumnDef("BIGINT", nullable=False),
+        "outcome": ColumnDef("VARCHAR", nullable=False),
+        "stopping_reason": ColumnDef("VARCHAR"),
+        "error_code": ColumnDef("VARCHAR"),
+        "error_message": ColumnDef("VARCHAR"),
+    },
+    DOCUMENTS: {
+        "document_id": ColumnDef("UUID", nullable=False),
+        "visit_id": ColumnDef("UUID", nullable=False),
+        "attempt_id": ColumnDef("UUID", nullable=False),
+        "observed_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+        "representation": ColumnDef("VARCHAR", nullable=False),
+        "declared_media_type": ColumnDef("VARCHAR"),
+        "detected_media_type": ColumnDef("VARCHAR", nullable=False),
+        "charset": ColumnDef("VARCHAR"),
+        "content_sha256": ColumnDef("VARCHAR", nullable=False),
+        "content_bytes": ColumnDef("BIGINT", nullable=False),
+        "object_key": ColumnDef("VARCHAR", nullable=False),
+        "storage_encoding": ColumnDef("VARCHAR", nullable=False),
+        "stored_bytes": ColumnDef("BIGINT", nullable=False),
+    },
+    HTML_ELEMENTS: {
+        "content_sha256": ColumnDef("VARCHAR", nullable=False),
+        "element_index": ColumnDef("INTEGER", nullable=False),
+        "parent_index": ColumnDef("INTEGER"),
+        "subtree_end_index": ColumnDef("INTEGER", nullable=False),
+        "depth": ColumnDef("INTEGER", nullable=False),
+        "child_index": ColumnDef("INTEGER", nullable=False),
+        "tag": ColumnDef("VARCHAR", nullable=False),
+        "namespace": ColumnDef("VARCHAR", nullable=False),
+        "attributes": ColumnDef(MapType("VARCHAR", "VARCHAR"), nullable=False),
+        "text_direct": ColumnDef("VARCHAR", nullable=False),
+        "text_tail": ColumnDef("VARCHAR", nullable=False),
+    },
+    JSONLD_VALUES: {
+        "content_sha256": ColumnDef("VARCHAR", nullable=False),
+        "element_index": ColumnDef("INTEGER", nullable=False),
+        "type_terms": ColumnDef("VARCHAR[]", nullable=False),
+        "value": ColumnDef("VARIANT", nullable=False),
+    },
+    PAGES: {
+        "page_id": ColumnDef("UUID", nullable=False),
+        "normalized_url": ColumnDef("VARCHAR", nullable=False),
+        "scheme": ColumnDef("VARCHAR", nullable=False),
+        "hostname": ColumnDef("VARCHAR", nullable=False),
+        "port": ColumnDef("INTEGER"),
+        "path": ColumnDef("VARCHAR", nullable=False),
+        "query": ColumnDef("VARCHAR"),
+        "registrable_domain": ColumnDef("VARCHAR"),
+    },
+    LINKS: {
+        "source_url": ColumnDef("VARCHAR", nullable=False),
+        "target_url": ColumnDef("VARCHAR", nullable=False),
+        "relation_scope": ColumnDef("VARCHAR", nullable=False),
+        "first_seen_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+        "last_seen_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+    },
 }
 
-DOCUMENT_COLUMNS: dict[str, ColumnDef] = {
-    "document_id": ColumnDef("VARCHAR", nullable=False),
-    "object_key": ColumnDef("VARCHAR", nullable=False),
-    "content_type": ColumnDef("VARCHAR", nullable=False),
-    "encoding": ColumnDef("VARCHAR", nullable=False),
-    "size_bytes": ColumnDef("BIGINT", nullable=False),
-    "compressed_size_bytes": ColumnDef("BIGINT", nullable=False),
-    "compression": ColumnDef("VARCHAR", nullable=False),
-    "dom_schema_version": ColumnDef("INTEGER", nullable=False),
-    "parser_name": ColumnDef("VARCHAR", nullable=False),
-    "parser_version": ColumnDef("VARCHAR", nullable=False),
-    "parser_options_hash": ColumnDef("VARCHAR", nullable=False),
-    "element_count": ColumnDef("BIGINT", nullable=False),
-    "first_seen_at": ColumnDef("TIMESTAMPTZ", nullable=False),
-}
 
-CRAWL_COLUMNS: dict[str, ColumnDef] = {
-    "crawl_id": ColumnDef("UUID", nullable=False),
-    "document_id": ColumnDef("VARCHAR"),
-    "artifact_id": ColumnDef("VARCHAR"),
-    "graph_id": ColumnDef("UUID", nullable=False),
-    "graph_run_id": ColumnDef("UUID", nullable=False),
-    "graph_node_id": ColumnDef("UUID", nullable=False),
-    "source_crawl_id": ColumnDef("UUID"),
-    "source_edge_id": ColumnDef("UUID"),
-    "requested_url": ColumnDef("VARCHAR", nullable=False),
-    "url": ColumnDef("VARCHAR", nullable=False),
-    "scheme": ColumnDef("VARCHAR", nullable=False),
-    "host": ColumnDef("VARCHAR", nullable=False),
-    "port": ColumnDef("INTEGER", nullable=False),
-    "registrable_domain": ColumnDef("VARCHAR", nullable=False),
-    "path": ColumnDef("VARCHAR", nullable=False),
-    "query": ColumnDef("VARCHAR", nullable=False),
-    "started_at": ColumnDef("TIMESTAMPTZ", nullable=False),
-    "completed_at": ColumnDef("TIMESTAMPTZ", nullable=False),
-    "content_captured_at": ColumnDef("TIMESTAMPTZ"),
-    "status_code": ColumnDef("INTEGER"),
-    "response_media_type": ColumnDef("VARCHAR"),
-    "policy_schema_version": ColumnDef("INTEGER", nullable=False),
-    "effective_policy_hash": ColumnDef("VARCHAR", nullable=False),
-    "effective_policy": ColumnDef("JSON", nullable=False),
-    "outcome": ColumnDef("VARCHAR", nullable=False),
-    "failure_code": ColumnDef("VARCHAR"),
-    "failure_stage": ColumnDef("VARCHAR"),
-    "failure_retryable": ColumnDef("BOOLEAN"),
-    "failure_detail": ColumnDef("VARCHAR"),
-}
-
-CRAWL_ATTEMPT_COLUMNS: dict[str, ColumnDef] = {
-    "crawl_id": ColumnDef("UUID", nullable=False),
-    "attempt_number": ColumnDef("INTEGER", nullable=False),
-    "started_at": ColumnDef("TIMESTAMPTZ", nullable=False),
-    "completed_at": ColumnDef("TIMESTAMPTZ", nullable=False),
-    "requested_url": ColumnDef("VARCHAR", nullable=False),
-    "url": ColumnDef("VARCHAR", nullable=False),
-    "status_code": ColumnDef("INTEGER"),
-    "response_media_type": ColumnDef("VARCHAR"),
-    "outcome": ColumnDef("VARCHAR", nullable=False),
-    "failure_code": ColumnDef("VARCHAR"),
-    "retry_after_seconds": ColumnDef("DOUBLE"),
-}
-
-CRAWL_STEP_COLUMNS: dict[str, ColumnDef] = {
-    "crawl_id": ColumnDef("UUID", nullable=False),
-    "attempt_number": ColumnDef("INTEGER", nullable=False),
-    "step_ordinal": ColumnDef("INTEGER", nullable=False),
-    "method": ColumnDef("VARCHAR", nullable=False),
-    "method_version": ColumnDef("INTEGER", nullable=False),
-    "config_hash": ColumnDef("VARCHAR", nullable=False),
-    "config_json": ColumnDef("JSON", nullable=False),
-    "started_at": ColumnDef("TIMESTAMPTZ", nullable=False),
-    "duration_ms": ColumnDef("BIGINT", nullable=False),
-    "iterations": ColumnDef("INTEGER", nullable=False),
-    "stop_reason": ColumnDef("VARCHAR", nullable=False),
-    "before_element_count": ColumnDef("BIGINT", nullable=False),
-    "after_element_count": ColumnDef("BIGINT", nullable=False),
-    "before_text_chars": ColumnDef("BIGINT", nullable=False),
-    "after_text_chars": ColumnDef("BIGINT", nullable=False),
-    "before_link_count": ColumnDef("BIGINT", nullable=False),
-    "after_link_count": ColumnDef("BIGINT", nullable=False),
-    "before_scroll_height": ColumnDef("BIGINT", nullable=False),
-    "after_scroll_height": ColumnDef("BIGINT", nullable=False),
-}
-
-TABLE_LAYOUTS: dict[str, TableLayout] = {
-    "crawls": TableLayout(
-        partition_by=("day(completed_at)",),
-        sort_by=(
-            "registrable_domain ASC",
-            "host ASC",
-            "path ASC",
-            "completed_at ASC",
-            "crawl_id ASC",
-        ),
+TABLE_LAYOUTS: dict[RelationName, TableLayout] = {
+    CRAWLS: TableLayout(
+        partition_by=("day(finished_at)",),
+        sort_by=("graph_id ASC", "finished_at ASC", "crawl_id ASC"),
     ),
-    CRAWL_ATTEMPTS_TABLE: TableLayout(
+    VISITS: TableLayout(
+        partition_by=("day(finished_at)",),
+        sort_by=("crawl_id ASC", "admitted_at ASC", "visit_id ASC"),
+    ),
+    ATTEMPTS: TableLayout(
         partition_by=("day(started_at)",),
-        sort_by=("crawl_id ASC", "attempt_number ASC"),
+        sort_by=("visit_id ASC", "attempt_index ASC"),
     ),
-    CRAWL_STEPS_TABLE: TableLayout(
+    STEPS: TableLayout(
         partition_by=("day(started_at)",),
-        sort_by=("crawl_id ASC", "attempt_number ASC", "step_ordinal ASC"),
+        sort_by=("attempt_id ASC", "step_index ASC"),
     ),
-    "documents": TableLayout(
-        partition_by=("bucket(64, document_id)",),
-        sort_by=("document_id ASC",),
+    DOCUMENTS: TableLayout(
+        partition_by=("bucket(64, content_sha256)",),
+        sort_by=("content_sha256 ASC", "observed_at ASC", "document_id ASC"),
     ),
-    "elements": TableLayout(
-        partition_by=("bucket(64, document_id)",),
-        sort_by=("document_id ASC", "element_index ASC"),
+    HTML_ELEMENTS: TableLayout(
+        partition_by=("bucket(64, content_sha256)",),
+        sort_by=("content_sha256 ASC", "element_index ASC"),
     ),
-    "artifacts": TableLayout(sort_by=("artifact_id ASC",)),
-}
-
-TABLE_STABLE_KEYS: dict[str, tuple[str, ...]] = {
-    "crawls": ("crawl_id",),
-    CRAWL_ATTEMPTS_TABLE: ("crawl_id", "attempt_number"),
-    CRAWL_STEPS_TABLE: ("crawl_id", "attempt_number", "step_ordinal"),
-    "documents": ("document_id",),
-    "elements": ("document_id", "element_index"),
-    "artifacts": ("artifact_id",),
-}
-
-# (local columns, target table, target columns, optional)
-TABLE_RELATIONSHIPS: dict[
-    str,
-    tuple[tuple[tuple[str, ...], str, tuple[str, ...], bool], ...],
-] = {
-    "crawls": (
-        (("document_id",), "documents", ("document_id",), True),
-        (("artifact_id",), "artifacts", ("artifact_id",), True),
+    JSONLD_VALUES: TableLayout(
+        partition_by=("bucket(64, content_sha256)",),
+        sort_by=("content_sha256 ASC", "element_index ASC"),
     ),
-    CRAWL_ATTEMPTS_TABLE: (
-        (("crawl_id",), "crawls", ("crawl_id",), False),
+    PAGES: TableLayout(
+        partition_by=("bucket(64, normalized_url)",),
+        sort_by=("normalized_url ASC",),
     ),
-    CRAWL_STEPS_TABLE: (
-        (
-            ("crawl_id", "attempt_number"),
-            CRAWL_ATTEMPTS_TABLE,
-            ("crawl_id", "attempt_number"),
-            False,
-        ),
-    ),
-    "elements": (
-        (("document_id",), "documents", ("document_id",), False),
+    LINKS: TableLayout(
+        partition_by=("bucket(64, source_url)",),
+        sort_by=("source_url ASC", "target_url ASC"),
     ),
 }
 
-TABLE_COMMENTS: dict[str, str] = {
-    "crawls": (
-        "Immutable logical page-acquisition results with self-describing effective "
-        "URL, frozen policy, terminal outcome, and graph provenance."
-    ),
-    CRAWL_ATTEMPTS_TABLE: (
-        "Ordered network and navigation attempt evidence for logical crawls, "
-        "including retry failures that preceded terminal success or failure."
-    ),
-    CRAWL_STEPS_TABLE: (
-        "Ordered per-attempt evidence for dynamic waiting, fixed waiting, scrolling, "
-        "and expansion content-completion methods."
-    ),
-    "documents": (
-        "Immutable content-addressed retained HTML documents and their active "
-        "structural DOM projection recipe."
-    ),
-    "elements": (
-        "Versioned structural DOM projection stored in depth-first document order "
-        "and bucketed by document identity."
-    ),
-    "artifacts": (
-        "Immutable content-addressed retained non-HTML response artifacts with "
-        "media-type detection evidence."
-    ),
-}
 
-COLUMN_COMMENTS: dict[str, dict[str, str]] = {
-    "crawls": {
-        "crawl_id": "Stable logical crawl identity and the parent identity used by attempt and completion-step evidence.",
-        "document_id": "Content-addressed retained HTML document identity; null when the crawl retained no HTML document.",
-        "artifact_id": "Content-addressed retained non-HTML artifact identity; null when the crawl retained no artifact.",
-        "graph_id": "Identity of the crawl graph whose frozen run admitted this crawl.",
-        "graph_run_id": "Identity of the frozen graph run that admitted this crawl.",
-        "graph_node_id": "Identity of the graph node that acquired this URL.",
-        "source_crawl_id": "Prior crawl whose outgoing edge discovered this crawl, or null for a root crawl.",
-        "source_edge_id": "Graph edge that admitted this crawl, or null for a root crawl.",
-        "requested_url": "Normalized absolute HTTP or HTTPS URL Atlas was asked to acquire.",
-        "url": "Normalized effective URL after navigation; equals requested_url when no different final URL was observed.",
-        "scheme": "Lowercase scheme of the effective URL.",
-        "host": "Lowercase host of the effective URL.",
-        "port": "Effective URL port, including the default port derived from the scheme.",
-        "registrable_domain": "Registrable domain of the effective URL, or the host itself for an IP address or suffixless host.",
-        "path": "Normalized effective URL path, always beginning with a slash.",
-        "query": "Effective URL query without a leading question mark; empty when absent.",
-        "started_at": "Start time of the first acquisition attempt belonging to this logical crawl.",
-        "completed_at": "Terminal time of the logical crawl after success, skip, or failure.",
-        "content_captured_at": "Time retained response bytes were finalized; null when no document or artifact was captured.",
-        "status_code": "Terminal HTTP response status when one was obtained.",
-        "response_media_type": "Terminal accepted or observed response media type when one was obtained.",
-        "policy_schema_version": "Version of the durable effective_policy JSON contract.",
-        "effective_policy_hash": "Lowercase SHA-256 digest of the canonical effective_policy JSON representation.",
-        "effective_policy": "Complete frozen effective crawl and domain policy used by this crawl.",
-        "outcome": "Logical crawl outcome: success, skipped, or failed.",
-        "failure_code": "Stable typed terminal failure code; null unless outcome is failed.",
-        "failure_stage": "Stable acquisition stage where the terminal failure occurred; null unless outcome is failed.",
-        "failure_retryable": "Whether the terminal cause was classified as retryable when recorded; null unless outcome is failed.",
-        "failure_detail": "Bounded instance-specific terminal diagnostic; null unless outcome is failed.",
-    },
-    CRAWL_ATTEMPTS_TABLE: {
-        "crawl_id": "Logical crawl identity that owns this attempt.",
-        "attempt_number": "One-based attempt ordinal within the logical crawl.",
-        "started_at": "Time this attempt began.",
-        "completed_at": "Time this attempt completed.",
-        "requested_url": "Normalized absolute HTTP or HTTPS URL used to begin this attempt.",
-        "url": "Normalized effective URL observed by this attempt, or requested_url when no different final URL was observed.",
-        "status_code": "HTTP response status obtained by this attempt, if any.",
-        "response_media_type": "Response media type observed by this attempt, if any.",
-        "outcome": "Attempt outcome: success, retry, skipped, or failed.",
-        "failure_code": "Stable typed attempt failure code, or null when the attempt did not fail.",
-        "retry_after_seconds": "Server-requested retry delay in seconds, or null when absent.",
-    },
-    CRAWL_STEPS_TABLE: {
-        "crawl_id": "Logical crawl identity that owns this completion step.",
-        "attempt_number": "One-based parent attempt ordinal.",
-        "step_ordinal": "One-based completion-step ordinal within the attempt.",
-        "method": "Completion method: wait_dynamic, wait_fixed, scroll, or expand.",
-        "method_version": "Version of the completion-method evidence contract.",
-        "config_hash": "Lowercase SHA-256 digest of the canonical config_json representation.",
-        "config_json": "Frozen effective configuration used for this completion step.",
-        "started_at": "Time this completion step began.",
-        "duration_ms": "Elapsed completion-step duration in milliseconds.",
-        "iterations": "Number of bounded method iterations performed.",
-        "stop_reason": "Stable reason the completion method stopped.",
-        "before_element_count": "DOM element count observed before the completion step.",
-        "after_element_count": "DOM element count observed after the completion step.",
-        "before_text_chars": "DOM text character count observed before the completion step.",
-        "after_text_chars": "DOM text character count observed after the completion step.",
-        "before_link_count": "HTTP or HTTPS anchor count observed before the completion step.",
-        "after_link_count": "HTTP or HTTPS anchor count observed after the completion step.",
-        "before_scroll_height": "Document scroll height observed before the completion step.",
-        "after_scroll_height": "Document scroll height observed after the completion step.",
-    },
-    "documents": {
-        "document_id": "Algorithm-qualified content identity in sha256:<lowercase hexadecimal digest> form.",
-        "object_key": "Repository-relative key of the immutable compressed HTML object.",
-        "content_type": "Stored HTML or XHTML media type.",
-        "encoding": "Character encoding used for the canonical retained HTML text.",
-        "size_bytes": "Uncompressed canonical HTML size in bytes.",
-        "compressed_size_bytes": "Compressed immutable object size in bytes.",
-        "compression": "Compression format used by the immutable repository object.",
-        "dom_schema_version": "Version of the elements table structural projection contract.",
-        "parser_name": "Parser implementation used for the active structural projection.",
-        "parser_version": "Parser implementation version used for the active structural projection.",
-        "parser_options_hash": "Lowercase SHA-256 digest of the canonical parser options.",
-        "element_count": "Expected number of elements rows in the active structural projection.",
-        "first_seen_at": "Time this content identity was first committed to DuckLake.",
-    },
-    "elements": {
-        "document_id": "Content-addressed parent document identity.",
-        "element_index": "Zero-based depth-first element ordinal within the document.",
-        "parent_index": "Element index of the parent element, or null for the document element.",
-        "subtree_end_index": "Inclusive final element index in this element subtree.",
-        "depth": "Zero-based element depth, with the document element at depth zero.",
-        "tag": "Normalized element tag name.",
-        "namespace_uri": "Element namespace URI, or null when absent.",
-        "attributes": "Map of parsed element attribute names to values.",
-        "text_direct": "Character data directly inside the element before its first child.",
-        "text_tail": "Character data immediately following the element in its parent.",
-    },
-    "artifacts": {
-        "artifact_id": "Algorithm-qualified content identity in sha256:<lowercase hexadecimal digest> form.",
-        "object_key": "Repository-relative key of the immutable artifact object.",
-        "size_bytes": "Immutable artifact size in bytes.",
-        "response_media_type": "Response media type declared by the acquisition response.",
-        "detected_media_type": "Media type detected from the retained artifact bytes.",
-        "detector_name": "Media-type detector implementation.",
-        "detector_version": "Media-type detector implementation version.",
-        "detection_confidence": "Detector confidence from zero through one.",
-        "first_seen_at": "Time this content identity was first committed to DuckLake.",
-    },
+TABLE_STABLE_KEYS: dict[RelationName, tuple[str, ...]] = {
+    CRAWLS: ("crawl_id",),
+    VISITS: ("visit_id",),
+    ATTEMPTS: ("attempt_id",),
+    STEPS: ("attempt_id", "step_index"),
+    DOCUMENTS: ("document_id",),
+    HTML_ELEMENTS: ("content_sha256", "element_index"),
+    JSONLD_VALUES: ("content_sha256", "element_index"),
+    PAGES: ("normalized_url",),
+    LINKS: ("source_url", "target_url"),
 }
 
 
-def expected_columns() -> dict[str, dict[str, ColumnDef]]:
+TABLE_COMMENTS: dict[RelationName, str] = {
+    CRAWLS: "Terminal immutable crawl-graph executions.",
+    VISITS: "Terminal destination observations produced by crawls.",
+    ATTEMPTS: "Ordered acquisition attempts belonging to visits.",
+    STEPS: "Ordered content-completion executions belonging to attempts.",
+    DOCUMENTS: "Visit-owned references to immutable document bytes.",
+    HTML_ELEMENTS: "Rebuildable structural projections of immutable HTML content.",
+    JSONLD_VALUES: "Rebuildable parsed JSON-LD payloads embedded in HTML content.",
+    PAGES: "Rebuildable identities for normalized URLs observed through visits.",
+    LINKS: "Rebuildable normalized source-target pairs positively observed in HTML.",
+}
+
+
+def _column_comment(relation: RelationName, column: str) -> str:
     return {
-        "artifacts": ARTIFACT_COLUMNS,
-        "documents": DOCUMENT_COLUMNS,
-        "crawls": CRAWL_COLUMNS,
-        CRAWL_ATTEMPTS_TABLE: CRAWL_ATTEMPT_COLUMNS,
-        CRAWL_STEPS_TABLE: CRAWL_STEP_COLUMNS,
-        "elements": ELEMENT_COLUMNS,
+        (CRAWLS, "crawl_id"): "Unique identity of the terminal crawl execution.",
+        (CRAWLS, "graph_id"): "Stable logical identity of the crawl graph.",
+        (CRAWLS, "graph_config_hash"): "SHA-256 of the canonical frozen graph configuration.",
+        (CRAWLS, "graph_config"): "Complete frozen graph configuration.",
+        (CRAWLS, "root_url_count"): "Number of root URLs admitted to the initial frontier.",
+        (CRAWLS, "started_at"): "Time crawl execution began.",
+        (CRAWLS, "finished_at"): "Time crawl execution reached its terminal state.",
+        (CRAWLS, "stop_reason"): "Stable reason the crawl stopped.",
+        (VISITS, "visit_id"): "Unique identity of this destination observation.",
+        (VISITS, "crawl_id"): "Crawl execution that produced this visit.",
+        (VISITS, "requested_url"): "Exact URL Atlas attempted to visit.",
+        (VISITS, "effective_url"): "Final URL after navigation or redirects, if resolved.",
+        (VISITS, "admitted_at"): "Time the destination entered the crawl.",
+        (VISITS, "started_at"): "Time acquisition began, if it began.",
+        (VISITS, "observed_at"): "Time returned document bytes were captured, if any.",
+        (VISITS, "finished_at"): "Time the visit reached its terminal outcome.",
+        (VISITS, "outcome"): "Stable terminal logical outcome.",
+        (VISITS, "status_code"): "Final HTTP status when available.",
+        (VISITS, "document_id"): "Document observation produced by this visit, if any.",
+        (ATTEMPTS, "attempt_id"): "Unique deterministic identity of this acquisition attempt.",
+        (ATTEMPTS, "visit_id"): "Visit that owns this attempt.",
+        (ATTEMPTS, "attempt_index"): "Zero-based execution order within the visit.",
+        (ATTEMPTS, "started_at"): "Time acquisition work began.",
+        (ATTEMPTS, "finished_at"): "Time the attempt reached its terminal outcome.",
+        (ATTEMPTS, "effective_url"): "Final URL reached by this attempt, if resolved.",
+        (ATTEMPTS, "status_code"): "HTTP status observed by this attempt, if available.",
+        (ATTEMPTS, "outcome"): "Stable terminal attempt outcome.",
+        (ATTEMPTS, "failure_stage"): "Stable stage that failed, if any.",
+        (ATTEMPTS, "failure_code"): "Stable machine-readable failure reason, if any.",
+        (ATTEMPTS, "failure_message"): "Bounded diagnostic detail, if needed.",
+        (STEPS, "attempt_id"): "Attempt that owns this content-completion execution.",
+        (STEPS, "step_index"): "Zero-based execution order within the attempt.",
+        (STEPS, "action"): "Controlled content-completion action name.",
+        (STEPS, "parameters"): "Complete frozen parameters for this execution.",
+        (STEPS, "started_at"): "Time step execution began.",
+        (STEPS, "duration_ms"): "Total execution duration in milliseconds.",
+        (STEPS, "outcome"): "Stable execution outcome.",
+        (STEPS, "stopping_reason"): "Stable reason execution stopped, if applicable.",
+        (STEPS, "error_code"): "Stable machine-readable failure reason, if any.",
+        (STEPS, "error_message"): "Bounded diagnostic detail, if needed.",
+        (DOCUMENTS, "document_id"): "Unique identity of this document observation.",
+        (DOCUMENTS, "visit_id"): "Visit that produced this document.",
+        (DOCUMENTS, "attempt_id"): "Successful attempt that produced this document.",
+        (DOCUMENTS, "observed_at"): "Time the document representation was captured.",
+        (DOCUMENTS, "representation"): "Meaning of the retained document bytes.",
+        (DOCUMENTS, "declared_media_type"): "Media type claimed by the source, if available.",
+        (DOCUMENTS, "detected_media_type"): "Media type detected by Atlas.",
+        (DOCUMENTS, "charset"): "Character encoding when meaningful.",
+        (DOCUMENTS, "content_sha256"): "Lowercase SHA-256 of uncompressed logical bytes.",
+        (DOCUMENTS, "content_bytes"): "Size of uncompressed logical bytes.",
+        (DOCUMENTS, "object_key"): "Repository-relative pointer to immutable stored bytes.",
+        (DOCUMENTS, "storage_encoding"): "Encoding used for stored bytes.",
+        (DOCUMENTS, "stored_bytes"): "Size of the stored object.",
+        (HTML_ELEMENTS, "content_sha256"): "Identity of projected immutable HTML bytes.",
+        (HTML_ELEMENTS, "element_index"): "Zero-based depth-first document position.",
+        (HTML_ELEMENTS, "parent_index"): "Parent element index, null for the root.",
+        (HTML_ELEMENTS, "subtree_end_index"): "Exclusive end of this element subtree.",
+        (HTML_ELEMENTS, "depth"): "Element depth from the root.",
+        (HTML_ELEMENTS, "child_index"): "Zero-based position among element siblings.",
+        (HTML_ELEMENTS, "tag"): "Normalized local tag name.",
+        (HTML_ELEMENTS, "namespace"): "Normalized element namespace.",
+        (HTML_ELEMENTS, "attributes"): "Attribute names and string values.",
+        (HTML_ELEMENTS, "text_direct"): "Text directly inside this element before child elements.",
+        (HTML_ELEMENTS, "text_tail"): "Text following this element within its parent.",
+        (JSONLD_VALUES, "content_sha256"): "Identity of the containing immutable HTML bytes.",
+        (JSONLD_VALUES, "element_index"): "Source script element in material.html_elements.",
+        (JSONLD_VALUES, "type_terms"): "Distinct raw @type strings found in the payload.",
+        (JSONLD_VALUES, "value"): "Complete parsed JSON-LD payload.",
+        (PAGES, "page_id"): "Versioned deterministic identity derived from normalized_url.",
+        (PAGES, "normalized_url"): "Unique normalized URL represented by this page.",
+        (PAGES, "scheme"): "Normalized URL scheme.",
+        (PAGES, "hostname"): "Normalized hostname.",
+        (PAGES, "port"): "Explicit non-default port, otherwise null.",
+        (PAGES, "path"): "Normalized URL path.",
+        (PAGES, "query"): "Preserved query string, null when absent.",
+        (PAGES, "registrable_domain"): "Public-suffix-aware domain when derivable.",
+        (LINKS, "source_url"): "Normalized fragment-free URL where the link was observed.",
+        (LINKS, "target_url"): "Normalized fragment-free URL resolved from the observed href.",
+        (LINKS, "relation_scope"): "Most-specific deterministic source-target relationship.",
+        (LINKS, "first_seen_at"): "Earliest positive observation of this pair.",
+        (LINKS, "last_seen_at"): "Latest positive observation of this pair.",
+    }[(relation, column)]
+
+
+COLUMN_COMMENTS: dict[RelationName, dict[str, str]] = {
+    relation: {
+        column: _column_comment(relation, column)
+        for column in columns
     }
+    for relation, columns in TABLE_COLUMNS.items()
+}
 
 
-def expected_internal_columns() -> dict[str, dict[str, ColumnDef]]:
-    return {}
+def expected_columns() -> dict[RelationName, dict[str, ColumnDef]]:
+    return TABLE_COLUMNS

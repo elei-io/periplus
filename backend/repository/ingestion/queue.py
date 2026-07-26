@@ -1,21 +1,18 @@
-"""JetStream work queue and durable result contracts for repository ingestion."""
+"""JetStream work and durable result contracts for immutable ingestion evidence."""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
 from config import get_float, get_int
-from config.performance import INGESTION_ACK_WAIT_SECONDS, INGESTION_CONSUMER_MAX_ACK_PENDING
-from nats.js.api import (
-    AckPolicy,
-    ConsumerConfig,
-    KeyValueConfig,
-    StorageType,
+from config.performance import (
+    INGESTION_ACK_WAIT_SECONDS,
+    INGESTION_CONSUMER_MAX_ACK_PENDING,
 )
+from nats.js.api import AckPolicy, ConsumerConfig, KeyValueConfig, StorageType
 from nats.js.errors import (
     BadRequestError,
     BucketNotFoundError,
@@ -28,10 +25,9 @@ from pydantic import BaseModel, ConfigDict, model_validator
 import zstandard
 
 from repository.catalogue import (
-    CatalogueWriteResult,
-    CrawlAttemptRecord,
     CrawlRecord,
-    CrawlStepRecord,
+    IngestionWriteResult,
+    VisitEvidence,
 )
 from runtime.catalogue_queue import (
     DEAD_LETTER_STREAM,
@@ -41,25 +37,46 @@ from runtime.catalogue_queue import (
     ensure_catalogue_work_stream,
     ensure_dead_letter_stream as ensure_catalogue_dead_letter_stream,
 )
+from runtime.nats_topology import validate_kv_contract
 from runtime.nats_client import connect_nats
 
-DURABLE = "atlas-repository-writer"
-RESULTS_BUCKET = "atlas_repository_results"
+DURABLE = "atlas-ingestion"
+RESULTS_BUCKET = "atlas_ingestion_results"
 
 
 class IngestionJob(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    kind: Literal["crawl", "visit"]
     request_id: str
     enqueued_at: datetime
-    crawl: CrawlRecord
-    crawl_attempts: tuple[CrawlAttemptRecord, ...]
-    crawl_steps: tuple[CrawlStepRecord, ...] | None = ()
+    crawl: CrawlRecord | None = None
+    visit: VisitEvidence | None = None
+
+    @model_validator(mode="after")
+    def validate_job(self) -> IngestionJob:
+        if self.kind == "crawl":
+            if self.crawl is None or self.visit is not None:
+                raise ValueError("crawl ingestion requires only crawl evidence")
+            expected = crawl_ingestion_request_id(self.crawl.crawl_id)
+        else:
+            if self.visit is None or self.crawl is not None:
+                raise ValueError("visit ingestion requires only visit evidence")
+            expected = visit_ingestion_request_id(self.visit.visit.visit_id)
+        if self.request_id != expected:
+            raise ValueError("ingestion request_id does not match its evidence")
+        return self
+
+    @property
+    def identity(self) -> UUID:
+        if self.kind == "crawl":
+            assert self.crawl is not None
+            return self.crawl.crawl_id
+        assert self.visit is not None
+        return self.visit.visit.visit_id
 
 
 class DeadLetterEntry(BaseModel):
-    """Durable operator-facing record of a terminal ingestion failure."""
-
     model_config = ConfigDict(frozen=True)
 
     job: IngestionJob
@@ -68,29 +85,14 @@ class DeadLetterEntry(BaseModel):
     processing_failure_count: int
 
 
-def encode_dead_letter(entry: DeadLetterEntry) -> bytes:
-    return zstandard.ZstdCompressor(level=3).compress(entry.model_dump_json().encode())
-
-
-def decode_dead_letter(payload: bytes) -> DeadLetterEntry:
-    value = zstandard.ZstdDecompressor().decompress(payload)
-    return DeadLetterEntry.model_validate_json(value)
-
-
 class IngestionState(BaseModel):
-    """Durable latest state for one retry-stable ingestion operation."""
-
     model_config = ConfigDict(frozen=True)
 
-    request_id: str
+    job: IngestionJob
     status: Literal["pending", "succeeded", "failed"]
-    crawl: CrawlRecord
-    crawl_attempts: tuple[CrawlAttemptRecord, ...]
-    crawl_steps: tuple[CrawlStepRecord, ...] | None = ()
-    enqueued_at: datetime
     updated_at: datetime
     published_at: datetime | None = None
-    result: CatalogueWriteResult | None = None
+    result: IngestionWriteResult | None = None
     error: str | None = None
     processing_failure_count: int = 0
 
@@ -100,31 +102,58 @@ class IngestionState(BaseModel):
             self.result is not None or self.error is not None
         ):
             raise ValueError("pending ingestion cannot contain a terminal result")
-        if self.status == "succeeded" and (self.result is None or self.error is not None):
+        if self.status == "succeeded" and (
+            self.result is None or self.error is not None
+        ):
             raise ValueError("succeeded ingestion requires only a result")
         if self.status == "failed" and (
             self.error is None or self.result is not None
         ):
             raise ValueError("failed ingestion requires only an error")
+        if self.result is not None and (
+            self.result.kind != self.job.kind
+            or self.result.identity != self.job.identity
+        ):
+            raise ValueError("ingestion result does not match its job")
         return self
 
 
 def crawl_ingestion_request_id(crawl_id: UUID) -> str:
-    """Return the stable operation key for a crawl's initial repository commit."""
-
     return f"crawl-{crawl_id.hex}"
 
 
-def projection_ingestion_request_id(document_id: str) -> str:
-    """Return a stable operation key for the active DOM projection recipe."""
+def visit_ingestion_request_id(visit_id: UUID) -> str:
+    return f"visit-{visit_id.hex}"
 
-    from dom import DOM_SCHEMA_VERSION, PARSER_NAME, PARSER_OPTIONS_HASH, PARSER_VERSION
 
-    value = (
-        f"{document_id}\0{DOM_SCHEMA_VERSION}\0{PARSER_NAME}\0"
-        f"{PARSER_VERSION}\0{PARSER_OPTIONS_HASH}"
+def crawl_ingestion_job(record: CrawlRecord) -> IngestionJob:
+    return IngestionJob(
+        kind="crawl",
+        request_id=crawl_ingestion_request_id(record.crawl_id),
+        enqueued_at=datetime.now(UTC),
+        crawl=record,
     )
-    return "projection-" + hashlib.sha256(value.encode()).hexdigest()
+
+
+def visit_ingestion_job(evidence: VisitEvidence) -> IngestionJob:
+    return IngestionJob(
+        kind="visit",
+        request_id=visit_ingestion_request_id(evidence.visit.visit_id),
+        enqueued_at=datetime.now(UTC),
+        visit=evidence,
+    )
+
+
+def encode_dead_letter(entry: DeadLetterEntry) -> bytes:
+    return zstandard.ZstdCompressor(level=3).compress(
+        entry.model_dump_json().encode()
+    )
+
+
+def decode_dead_letter(payload: bytes) -> DeadLetterEntry:
+    return DeadLetterEntry.model_validate_json(
+        zstandard.ZstdDecompressor().decompress(payload)
+    )
 
 
 def _validate_envelope(payload: bytes, *, label: str) -> None:
@@ -138,13 +167,10 @@ async def ensure_repository_stream(jetstream) -> None:
 
 
 async def ensure_dead_letter_stream(jetstream) -> None:
-    """Attach or create the durable operator-managed ingestion failure stream."""
     await ensure_catalogue_dead_letter_stream(jetstream)
 
 
 async def ensure_ingestion_results(jetstream):
-    """Attach or create the bounded file-backed ingestion result KV bucket."""
-
     try:
         bucket = await jetstream.key_value(RESULTS_BUCKET)
         await _validate_ingestion_results(bucket)
@@ -152,7 +178,7 @@ async def ensure_ingestion_results(jetstream):
     except BucketNotFoundError:
         config = KeyValueConfig(
             bucket=RESULTS_BUCKET,
-            description="Durable latest state for Atlas repository ingestion",
+            description="Durable latest state for Atlas ingestion",
             history=1,
             ttl=get_float("ATLAS_INGEST_RESULT_TTL_SECONDS"),
             max_bytes=get_int("ATLAS_INGEST_RESULT_MAX_BYTES"),
@@ -162,33 +188,19 @@ async def ensure_ingestion_results(jetstream):
         try:
             bucket = await jetstream.create_key_value(config=config)
         except BadRequestError:
-            # Another API/worker may have created the deployment-global bucket.
             bucket = await jetstream.key_value(RESULTS_BUCKET)
         await _validate_ingestion_results(bucket)
         return bucket
 
 
 async def _validate_ingestion_results(bucket) -> None:
-    status = await bucket.status()
-    config = status.stream_info.config
-    expected_ttl = get_float("ATLAS_INGEST_RESULT_TTL_SECONDS")
-    expected_max_bytes = get_int("ATLAS_INGEST_RESULT_MAX_BYTES")
-    expected_replicas = get_int("ATLAS_INGEST_RESULT_REPLICAS")
-    mismatches: list[str] = []
-    if config.storage != StorageType.FILE:
-        mismatches.append("file storage")
-    if config.max_msgs_per_subject != 1:
-        mismatches.append("history=1")
-    if config.max_age != expected_ttl:
-        mismatches.append(f"ttl={expected_ttl:g}s")
-    if config.max_bytes != expected_max_bytes:
-        mismatches.append(f"max_bytes={expected_max_bytes}")
-    if config.num_replicas != expected_replicas:
-        mismatches.append(f"replicas={expected_replicas}")
-    if mismatches:
-        raise RuntimeError(
-            f"JetStream KV {RESULTS_BUCKET} must use " + ", ".join(mismatches)
-        )
+    await validate_kv_contract(
+        bucket,
+        name=RESULTS_BUCKET,
+        ttl=get_float("ATLAS_INGEST_RESULT_TTL_SECONDS"),
+        max_bytes=get_int("ATLAS_INGEST_RESULT_MAX_BYTES"),
+        replicas=get_int("ATLAS_INGEST_RESULT_REPLICAS"),
+    )
 
 
 def repository_consumer_config() -> ConsumerConfig:
@@ -198,16 +210,11 @@ def repository_consumer_config() -> ConsumerConfig:
         ack_wait=ack_wait_seconds(),
         filter_subject=SUBJECT,
         max_ack_pending=INGESTION_CONSUMER_MAX_ACK_PENDING,
-        # The application terminates a message only after a terminal result is durable.
-        # Unlimited server delivery prevents a KV outage at the attempt boundary from
-        # silently stranding a message without either work or a durable failure state.
         max_deliver=-1,
     )
 
 
 async def ensure_repository_consumer(jetstream) -> None:
-    """Create or reconcile the writer consumer, then verify its safety contract."""
-
     expected = repository_consumer_config()
     try:
         info = await jetstream.consumer_info(STREAM, DURABLE)
@@ -215,7 +222,6 @@ async def ensure_repository_consumer(jetstream) -> None:
         try:
             info = await jetstream.add_consumer(STREAM, config=expected)
         except BadRequestError:
-            # Concurrent ingestion lanes may race only on first deployment.
             info = await jetstream.consumer_info(STREAM, DURABLE)
     config = info.config
     immutable_mismatches: list[str] = []
@@ -236,15 +242,9 @@ async def ensure_repository_consumer(jetstream) -> None:
         try:
             info = await jetstream.add_consumer(STREAM, config=expected)
         except BadRequestError:
-            # Every ingestion lane reconciles the same startup contract.
             info = await jetstream.consumer_info(STREAM, DURABLE)
         config = info.config
-
     mismatches: list[str] = []
-    if config.ack_policy != AckPolicy.EXPLICIT:
-        mismatches.append("explicit acknowledgements")
-    if config.filter_subject != SUBJECT:
-        mismatches.append(f"filter_subject={SUBJECT}")
     if config.ack_wait != expected.ack_wait:
         mismatches.append(f"ack_wait={expected.ack_wait:g}s")
     if config.max_ack_pending != expected.max_ack_pending:
@@ -276,34 +276,28 @@ async def get_ingestion_state(results, request_id: str) -> IngestionState | None
 async def ensure_pending_ingestion(
     results,
     *,
-    request_id: str,
-    crawl: CrawlRecord,
-    crawl_attempts: tuple[CrawlAttemptRecord, ...],
-    crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
+    job: IngestionJob,
 ) -> IngestionState:
-    """Create pending state once, retaining the first frozen crawl envelope."""
-
     now = datetime.now(UTC)
     pending = IngestionState(
-        request_id=request_id,
+        job=job,
         status="pending",
-        crawl=crawl,
-        crawl_attempts=crawl_attempts,
-        crawl_steps=crawl_steps,
-        enqueued_at=now,
         updated_at=now,
     )
+    payload = pending.model_dump_json().encode()
+    _validate_envelope(payload, label="ingestion pending-state envelope")
     try:
-        payload = pending.model_dump_json().encode()
-        _validate_envelope(payload, label="repository pending-state envelope")
-        await results.create(request_id, payload)
+        await results.create(job.request_id, payload)
         return pending
     except KeyWrongLastSequenceError:
-        existing = await get_ingestion_state(results, request_id)
+        existing = await get_ingestion_state(results, job.request_id)
         if existing is None:
-            # A delete/expiry raced the create. Retrying once creates a new generation.
-            await results.create(request_id, payload)
+            await results.create(job.request_id, payload)
             return pending
+        if existing.job.model_copy(update={"enqueued_at": job.enqueued_at}) != job:
+            raise RuntimeError(
+                f"ingestion {job.request_id} already has different evidence"
+            )
         return existing
 
 
@@ -311,17 +305,9 @@ async def store_ingestion_response(
     results,
     *,
     job: IngestionJob,
-    result: CatalogueWriteResult | None = None,
+    result: IngestionWriteResult | None = None,
     error: str | None = None,
 ) -> IngestionState:
-    """Revision-fence a terminal transition before acknowledging the work message.
-
-    A durable success is absorbing. A success discovered after a recorded failure may
-    repair that failure, but a failure may only replace pending state. This lets a
-    delivery that committed DuckLake recover the operation without allowing a stale
-    duplicate failure to erase durable truth.
-    """
-
     if (result is None) == (error is None):
         raise ValueError("exactly one of result or error is required")
     while True:
@@ -331,7 +317,6 @@ async def store_ingestion_response(
             return current
         if current.status == "failed" and result is None:
             return current
-
         state = current.model_copy(
             update={
                 "status": "succeeded" if result is not None else "failed",
@@ -341,23 +326,15 @@ async def store_ingestion_response(
             }
         )
         payload = state.model_dump_json().encode()
-        _validate_envelope(payload, label="repository terminal-state envelope")
+        _validate_envelope(payload, label="ingestion terminal-state envelope")
         try:
-            await results.update(
-                job.request_id,
-                payload,
-                last=entry.revision,
-            )
+            await results.update(job.request_id, payload, last=entry.revision)
             return state
         except KeyWrongLastSequenceError:
-            # Another delivery completed the operation from the same observed
-            # revision. Re-evaluate the transition against the new durable state.
             continue
 
 
 async def record_ingestion_processing_failure(results, request_id: str) -> int:
-    """Count one admitted processing failure without counting redelivery."""
-
     while True:
         entry = await results.get(request_id)
         current = IngestionState.model_validate_json(entry.value)
@@ -381,8 +358,6 @@ async def record_ingestion_processing_failure(results, request_id: str) -> int:
 
 
 async def mark_ingestion_published(results, request_id: str) -> IngestionState:
-    """CAS a PubAck marker without overwriting a concurrently terminal result."""
-
     while True:
         entry = await results.get(request_id)
         state = IngestionState.model_validate_json(entry.value)
@@ -391,17 +366,11 @@ async def mark_ingestion_published(results, request_id: str) -> IngestionState:
         now = datetime.now(UTC)
         published = state.model_copy(update={"published_at": now, "updated_at": now})
         payload = published.model_dump_json().encode()
-        _validate_envelope(payload, label="repository published-state envelope")
+        _validate_envelope(payload, label="ingestion published-state envelope")
         try:
-            await results.update(
-                request_id,
-                payload,
-                last=entry.revision,
-            )
+            await results.update(request_id, payload, last=entry.revision)
             return published
         except KeyWrongLastSequenceError:
-            # The worker may have made the operation terminal between our read
-            # and update. Re-read rather than replacing terminal truth.
             continue
 
 
@@ -412,8 +381,6 @@ async def publish_dead_letter(
     error: str,
     processing_failure_count: int,
 ) -> None:
-    """Persist a terminal failure before its work-queue message is removed."""
-
     entry = DeadLetterEntry(
         job=job,
         error=error,
@@ -421,7 +388,7 @@ async def publish_dead_letter(
         processing_failure_count=processing_failure_count,
     )
     payload = encode_dead_letter(entry)
-    _validate_envelope(payload, label="repository dead-letter envelope")
+    _validate_envelope(payload, label="ingestion dead-letter envelope")
     await jetstream.publish(
         DEAD_LETTER_SUBJECT,
         payload,
@@ -436,8 +403,6 @@ async def publish_dead_letter(
 
 
 async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEntry:
-    """Reset terminal KV state, republish the frozen job, then remove its DLQ entry."""
-
     raw = await jetstream.get_msg(DEAD_LETTER_STREAM, seq=sequence)
     if raw.subject != DEAD_LETTER_SUBJECT:
         raise RuntimeError("the sequence is not an ingestion dead letter")
@@ -448,10 +413,7 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
         except (KeyNotFoundError, KeyDeletedError):
             recovered = await ensure_pending_ingestion(
                 results,
-                request_id=dead_letter.job.request_id,
-                crawl=dead_letter.job.crawl,
-                crawl_attempts=dead_letter.job.crawl_attempts,
-                crawl_steps=dead_letter.job.crawl_steps,
+                job=dead_letter.job,
             )
             if recovered.status == "succeeded":
                 raise RuntimeError("the ingestion has already succeeded")
@@ -463,10 +425,11 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
         if state.status == "succeeded":
             raise RuntimeError("the ingestion has already succeeded")
         now = datetime.now(UTC)
+        job = state.job.model_copy(update={"enqueued_at": now})
         pending = state.model_copy(
             update={
+                "job": job,
                 "status": "pending",
-                "enqueued_at": now,
                 "updated_at": now,
                 "published_at": None,
                 "result": None,
@@ -476,7 +439,7 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
         )
         try:
             await results.update(
-                state.request_id,
+                state.job.request_id,
                 pending.model_dump_json().encode(),
                 last=entry.revision,
             )
@@ -484,39 +447,32 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
         except KeyWrongLastSequenceError:
             continue
 
-    job = dead_letter.job.model_copy(update={"enqueued_at": pending.enqueued_at})
-    payload = job.model_dump_json().encode()
-    _validate_envelope(payload, label="repository requeue envelope")
+    payload = pending.job.model_dump_json().encode()
+    _validate_envelope(payload, label="ingestion requeue envelope")
     await jetstream.publish(
         SUBJECT,
         payload,
         stream=STREAM,
-        headers={"Nats-Msg-Id": f"{job.request_id}:requeue:{sequence}"},
+        headers={
+            "Nats-Msg-Id": (
+                f"{pending.job.request_id}:requeue:{sequence}"
+            )
+        },
     )
-    await mark_ingestion_published(results, job.request_id)
+    await mark_ingestion_published(results, pending.job.request_id)
     deleted = await jetstream.delete_msg(DEAD_LETTER_STREAM, sequence)
     if not deleted:
         raise RuntimeError(f"dead-letter sequence {sequence} could not be removed")
     return dead_letter
 
 
-def result_from_ingestion_state(state: IngestionState) -> CatalogueWriteResult:
-    if state.status == "failed":
-        raise RuntimeError(state.error or "repository ingestion failed")
-    if state.status != "succeeded" or state.result is None:
-        raise RuntimeError("repository ingestion has not completed")
-    if not isinstance(state.result, CatalogueWriteResult):
-        raise RuntimeError("repository ingestion returned a non-crawl result")
-    return state.result
-
-
-def _terminal_result(
+def result_from_ingestion_state(
     state: IngestionState,
-) -> CatalogueWriteResult:
+) -> IngestionWriteResult:
     if state.status == "failed":
-        raise RuntimeError(state.error or "repository ingestion failed")
+        raise RuntimeError(state.error or "ingestion failed")
     if state.status != "succeeded" or state.result is None:
-        raise RuntimeError("repository ingestion has not completed")
+        raise RuntimeError("ingestion has not completed")
     return state.result
 
 
@@ -532,69 +488,36 @@ class IngestionQueueClient:
         await ensure_repository_stream(self.jetstream)
         self.results = await ensure_ingestion_results(self.jetstream)
 
-    async def submit(
-        self,
-        crawl: CrawlRecord,
-        *,
-        crawl_attempts: tuple[CrawlAttemptRecord, ...],
-        request_id: str | None = None,
-        crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
-    ) -> CatalogueWriteResult:
-        """Publish or resume one operation and wait on its durable state."""
+    async def enqueue_visit(self, evidence: VisitEvidence) -> None:
+        await self.enqueue(visit_ingestion_job(evidence))
 
-        request_id = request_id or crawl_ingestion_request_id(crawl.crawl_id)
-        state = await self._pending_state(
-            request_id=request_id,
-            crawl=crawl,
-            crawl_attempts=crawl_attempts,
-            crawl_steps=crawl_steps,
-        )
-        if state.status != "pending":
-            return result_from_ingestion_state(state)
-        result = await self._publish_and_wait(state)
-        return result
+    async def enqueue_crawl(self, record: CrawlRecord) -> None:
+        await self.enqueue(crawl_ingestion_job(record))
 
-    async def enqueue(
-        self,
-        crawl: CrawlRecord,
-        *,
-        crawl_attempts: tuple[CrawlAttemptRecord, ...],
-        request_id: str | None = None,
-        crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
-    ) -> None:
-        """Durably publish one operation without occupying acquisition capacity."""
-
-        request_id = request_id or crawl_ingestion_request_id(crawl.crawl_id)
-        state = await self._pending_state(
-            request_id=request_id,
-            crawl=crawl,
-            crawl_attempts=crawl_attempts,
-            crawl_steps=crawl_steps,
-        )
+    async def enqueue(self, job: IngestionJob) -> None:
+        state = await self._pending_state(job)
         if state.status != "pending" or state.published_at is not None:
             return
-        job = IngestionJob(
-            request_id=state.request_id,
-            enqueued_at=state.enqueued_at,
-            crawl=state.crawl,
-            crawl_attempts=state.crawl_attempts,
-            crawl_steps=state.crawl_steps,
-        )
-        payload = job.model_dump_json().encode()
-        _validate_envelope(payload, label="repository ingestion job")
-        await self.jetstream.publish(
-            SUBJECT,
-            payload,
-            stream=STREAM,
-            headers={"Nats-Msg-Id": state.request_id},
-        )
-        await mark_ingestion_published(self.results, state.request_id)
+        await self._publish(state.job)
+        await mark_ingestion_published(self.results, state.job.request_id)
 
-    async def resume(self, crawl_id: UUID) -> CatalogueWriteResult | None:
-        """Wait for a previously published initial crawl ingestion, if present."""
+    async def submit(self, job: IngestionJob) -> IngestionWriteResult:
+        state = await self._pending_state(job)
+        if state.status != "pending":
+            return result_from_ingestion_state(state)
+        return await self._publish_and_wait(state)
 
+    async def resume(
+        self,
+        kind: Literal["crawl", "visit"],
+        identity: UUID,
+    ) -> IngestionWriteResult | None:
         self._require_connected()
-        request_id = crawl_ingestion_request_id(crawl_id)
+        request_id = (
+            crawl_ingestion_request_id(identity)
+            if kind == "crawl"
+            else visit_ingestion_request_id(identity)
+        )
         state = await get_ingestion_state(self.results, request_id)
         if state is None:
             return None
@@ -602,64 +525,46 @@ class IngestionQueueClient:
             return result_from_ingestion_state(state)
         return await self._publish_and_wait(state)
 
-    async def _pending_state(
-        self,
-        *,
-        request_id: str,
-        crawl: CrawlRecord,
-        crawl_attempts: tuple[CrawlAttemptRecord, ...],
-        crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
-    ) -> IngestionState:
+    async def _pending_state(self, job: IngestionJob) -> IngestionState:
         self._require_connected()
-        return await ensure_pending_ingestion(
-            self.results,
-            request_id=request_id,
-            crawl=crawl,
-            crawl_attempts=crawl_attempts,
-            crawl_steps=crawl_steps,
-        )
+        return await ensure_pending_ingestion(self.results, job=job)
 
     async def _publish_and_wait(
-        self, state: IngestionState
-    ) -> CatalogueWriteResult:
+        self,
+        state: IngestionState,
+    ) -> IngestionWriteResult:
         self._require_connected()
-        job = IngestionJob(
-            request_id=state.request_id,
-            enqueued_at=state.enqueued_at,
-            crawl=state.crawl,
-            crawl_attempts=state.crawl_attempts,
-            crawl_steps=state.crawl_steps,
-        )
         poll_seconds = get_float("ATLAS_INGEST_RESULT_POLL_SECONDS")
         while True:
-            durable = await get_ingestion_state(self.results, state.request_id)
+            durable = await get_ingestion_state(
+                self.results,
+                state.job.request_id,
+            )
             if durable is not None and durable.status != "pending":
-                return _terminal_result(durable)
-
+                return result_from_ingestion_state(durable)
             if durable is None or durable.published_at is None:
-                # PubAck proves the work stream accepted the operation. The stable
-                # message ID suppresses the only ambiguous duplicate: a producer
-                # crash after PubAck but before the CAS marker below.
-                payload = job.model_dump_json().encode()
-                _validate_envelope(payload, label="repository ingestion job")
-                await self.jetstream.publish(
-                    SUBJECT,
-                    payload,
-                    stream=STREAM,
-                    headers={"Nats-Msg-Id": state.request_id},
-                )
+                await self._publish(state.job)
                 durable = await mark_ingestion_published(
                     self.results,
-                    state.request_id,
+                    state.job.request_id,
                 )
                 if durable.status != "pending":
-                    return _terminal_result(durable)
-
+                    return result_from_ingestion_state(durable)
             await asyncio.sleep(poll_seconds)
+
+    async def _publish(self, job: IngestionJob) -> None:
+        payload = job.model_dump_json().encode()
+        _validate_envelope(payload, label="ingestion job")
+        await self.jetstream.publish(
+            SUBJECT,
+            payload,
+            stream=STREAM,
+            headers={"Nats-Msg-Id": job.request_id},
+        )
 
     def _require_connected(self) -> None:
         if self.client is None or self.jetstream is None or self.results is None:
-            raise RuntimeError("repository ingestion queue is not connected")
+            raise RuntimeError("ingestion queue is not connected")
 
     async def close(self) -> None:
         if self.client is not None:

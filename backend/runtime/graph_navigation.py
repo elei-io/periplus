@@ -19,13 +19,10 @@ from nats.errors import TimeoutError as NatsTimeoutError
 
 from config import get_float, get_int, get_str
 from config.performance import CRAWL_ACQUISITION_LANES, GRAPH_ACK_WAIT_SECONDS
-from repository.catalogue import catalogue_from_env
-from repository.catalogue.query import prepare_catalogue_query
 from repository.ingestion.health import HealthMonitor
 from repository.exceptions import RepositoryObjectNotFound
 from repository.objects.config import object_store_from_env
 from repository.objects.html import RawHtmlRepository, html_object_key
-from runtime.catalogue_lane import catalogue_operation_lane
 from runtime.graph_queue import (
     EDGE_CONSUMER,
     EDGE_SUBJECT,
@@ -153,9 +150,9 @@ class EdgeUrlExecutor:
             return list(selected)
         bound = dict(parameters)
         page_url = str(bound.pop("_page_url"))
-        document_id = str(bound.pop("_document_id"))
+        content_sha256 = str(bound.pop("_content_sha256"))
         navigation_payload = self._load_or_regenerate(
-            document_id=document_id,
+            content_sha256=content_sha256,
             page_url=page_url,
         )
         crawl_id = bound.get("crawl_id")
@@ -186,32 +183,9 @@ class EdgeUrlExecutor:
                     with self._lock:
                         self._connection = None
         else:
-            with catalogue_from_env() as catalogue:
-                with self._lock:
-                    self._connection = catalogue.trusted_connection
-                try:
-                    statement = self._prepare_statement(sql)
-                    catalogue.trusted_connection.execute(
-                        "SET memory_limit = ?",
-                        [get_str("ATLAS_EDGE_QUERY_MEMORY_LIMIT")],
-                    )
-                    catalogue.trusted_connection.register("atlas_navigation_links", table)
-                    prepared = prepare_catalogue_query(
-                        catalogue, statement.sql(dialect="duckdb"), bound
-                    )
-                    prepared_statement = parse_one(
-                        prepared.sql, dialect="duckdb"
-                    )
-                    self._pin_catalogue_sources(catalogue, prepared_statement)
-                    catalogue.trusted_connection.execute(f"USE {prepared.namespace}")
-                    reader = catalogue.trusted_connection.execute(
-                        prepared_statement.sql(dialect="duckdb"),
-                        prepared.bindings,
-                    ).to_arrow_reader(batch_size=65_536)
-                    urls = self._collect_urls(reader)
-                finally:
-                    with self._lock:
-                        self._connection = None
+            raise RuntimeError(
+                "catalogue-backed graph edges require the future C compiler"
+            )
         self._remember(tuple(urls))
         return urls
 
@@ -255,7 +229,9 @@ class EdgeUrlExecutor:
             original = source.copy()
             original.set("alias", None)
             if not original.db:
-                original.set("db", exp.to_identifier(catalogue.config.schema))
+                raise RuntimeError(
+                    "catalogue-backed edge SQL must schema-qualify every table"
+                )
             if not original.catalog:
                 original.set(
                     "catalog", exp.to_identifier(catalogue.config.alias)
@@ -292,17 +268,17 @@ class EdgeUrlExecutor:
             )
         return urls
 
-    def _load_or_regenerate(self, *, document_id: str, page_url: str) -> bytes:
+    def _load_or_regenerate(self, *, content_sha256: str, page_url: str) -> bytes:
         try:
             return load_navigation_package(self._object_store, self._package)
         except RepositoryObjectNotFound:
-            document_hash = document_id.removeprefix("sha256:")
+            content_hash = content_sha256.removeprefix("sha256:")
             html = RawHtmlRepository(self._object_store).read(
-                html_object_key(document_hash)
+                html_object_key(content_hash)
             )
             payload, row_count = build_navigation_package(
                 html,
-                document_id=document_id,
+                content_sha256=content_sha256,
                 page_url=page_url,
             )
             rebuilt = put_navigation_package(
@@ -524,7 +500,7 @@ async def run(monitor: HealthMonitor | None = None) -> None:
     )
     if monitor is not None:
         monitor.subsystem_ready("navigation")
-    catalogue_operation_lock = catalogue_operation_lane()
+    catalogue_operation_lock = asyncio.Lock()
     result_cache = EdgeResultCache(
         maximum_bytes=get_int("ATLAS_EDGE_MAX_OUTPUT_BYTES") * 2
     )

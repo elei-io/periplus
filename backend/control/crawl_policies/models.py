@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -9,10 +9,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
+from db.types import utc_now
 
 
 class CrawlPolicy(Base):

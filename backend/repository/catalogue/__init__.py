@@ -19,20 +19,18 @@ from repository.catalogue.exceptions import (
     CatalogueValidationError,
 )
 from repository.catalogue.records import (
-    ArtifactRecord,
-    CatalogueWriteResult,
-    CrawlAttemptRecord,
+    AttemptRecord,
     CrawlRecord,
-    CrawlStepRecord,
     DocumentRecord,
-    ElementRecord,
-    NormalizedUrl,
+    IngestionWriteResult,
+    StepRecord,
+    VisitEvidence,
+    VisitRecord,
+    attempt_id_for,
+    document_id_for,
+    page_id_for,
 )
-from repository.catalogue.service import (
-    CatalogueBatchEntry,
-    CatalogueService,
-    ExistingCatalogueIdentities,
-)
+from repository.catalogue.service import CatalogueService
 
 
 def catalogue_from_env(
@@ -70,8 +68,7 @@ def catalogue_from_env(
 
 __all__ = [
     "Catalogue",
-    "ArtifactRecord",
-    "CatalogueBatchEntry",
+    "AttemptRecord",
     "CatalogueConfig",
     "CatalogueConfigError",
     "CatalogueConflictError",
@@ -84,15 +81,16 @@ __all__ = [
     "CatalogueService",
     "CatalogueSchemaError",
     "CatalogueValidationError",
-    "CatalogueWriteResult",
-    "CrawlAttemptRecord",
     "CrawlRecord",
-    "CrawlStepRecord",
     "DocumentRecord",
-    "ElementRecord",
-    "ExistingCatalogueIdentities",
+    "IngestionWriteResult",
+    "StepRecord",
+    "VisitEvidence",
+    "VisitRecord",
     "ServiceAccountTokenProvider",
-    "NormalizedUrl",
+    "attempt_id_for",
+    "document_id_for",
+    "page_id_for",
     "catalogue_config_from_env",
     "catalogue_from_env",
 ]

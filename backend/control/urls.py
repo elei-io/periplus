@@ -1,6 +1,22 @@
 from urllib.parse import urldefrag, urlsplit, urlunsplit
 
 
+def host_matches(host: str, pattern: str) -> bool:
+    """Match one normalized hostname against an exact or wildcard pattern."""
+
+    normalized_host = host.lower()
+    normalized_pattern = pattern.lower()
+    if normalized_pattern == "*":
+        return True
+    if normalized_pattern.startswith("*."):
+        suffix = normalized_pattern[1:]
+        return (
+            normalized_host.endswith(suffix)
+            and normalized_host != suffix[1:]
+        )
+    return normalized_host == normalized_pattern
+
+
 def normalize_url(value: str) -> str:
     url, _ = urldefrag(value.strip())
     parsed = urlsplit(url)

@@ -12,8 +12,6 @@ RUN apt-get update \
 
 WORKDIR /app/backend
 
-COPY sdk/pyproject.toml sdk/README.md /app/sdk/
-COPY sdk/src/ /app/sdk/src/
 COPY backend/pyproject.toml backend/uv.lock ./
 
 RUN UV_PROJECT_ENVIRONMENT=/opt/atlas-venv uv sync --frozen --no-install-project --no-dev
@@ -26,7 +24,6 @@ ENV PATH="/opt/atlas-venv/bin:${PATH}"
 
 FROM dependencies AS base
 COPY backend/ ./
-COPY fixtures/ /app/fixtures/
 
 # Install Atlas itself as a regular package. The resulting image must not depend on
 # a source bind mount, editable-package path, or the build context at runtime.

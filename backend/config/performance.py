@@ -21,9 +21,6 @@ CRAWL_RUN_ACQUISITION_PENDING_LIMIT = CRAWL_DISPATCH_WINDOW
 CRAWL_DOMAIN_PERMIT_RETRY_SECONDS = 0.25
 INGESTION_QUACK_CLIENTS = 4
 MATERIALIZATION_QUACK_CLIENTS = 8
-# Bootstrap may use several independent materialization lanes, while retaining
-# headroom for live refreshes and other managed-lake work.
-MATERIALIZATION_BOOTSTRAP_CONCURRENCY = 3
 # Navigation retention is recovery cleanup, not a bulk-delete job. One bounded
 # batch per housekeeping sweep keeps object-store pressure predictable.
 NAVIGATION_CLEANUP_BATCH_SIZE = 500

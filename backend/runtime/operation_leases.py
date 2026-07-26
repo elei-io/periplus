@@ -25,6 +25,7 @@ from nats.js.errors import (
     KeyWrongLastSequenceError,
 )
 from pydantic import BaseModel, ConfigDict
+from runtime.nats_topology import validate_kv_contract
 
 OPERATION_LEASE_BUCKET = "atlas_catalog_operations"
 _LEASE_RENEWAL_CONCURRENCY = 32
@@ -94,26 +95,13 @@ async def ensure_operation_lease_storage(jetstream):
 
 
 async def _validate_bucket(bucket) -> None:
-    status = await bucket.status()
-    config = status.stream_info.config
-    expected_ttl = CATALOGUE_OPERATION_LEASE_SECONDS
-    expected_max_bytes = get_int("ATLAS_OPERATION_LEASE_MAX_BYTES")
-    expected_replicas = CATALOGUE_OPERATION_LEASE_REPLICAS
-    mismatches: list[str] = []
-    if config.storage != StorageType.FILE:
-        mismatches.append("file storage")
-    if config.max_msgs_per_subject != 1:
-        mismatches.append("history=1")
-    if config.max_age != expected_ttl:
-        mismatches.append(f"ttl={expected_ttl:g}s")
-    if config.max_bytes != expected_max_bytes:
-        mismatches.append(f"max_bytes={expected_max_bytes}")
-    if config.num_replicas != expected_replicas:
-        mismatches.append(f"replicas={expected_replicas}")
-    if mismatches:
-        raise RuntimeError(
-            f"JetStream KV {OPERATION_LEASE_BUCKET} must use " + ", ".join(mismatches)
-        )
+    await validate_kv_contract(
+        bucket,
+        name=OPERATION_LEASE_BUCKET,
+        ttl=CATALOGUE_OPERATION_LEASE_SECONDS,
+        max_bytes=get_int("ATLAS_OPERATION_LEASE_MAX_BYTES"),
+        replicas=CATALOGUE_OPERATION_LEASE_REPLICAS,
+    )
 
 
 async def _try_acquire(

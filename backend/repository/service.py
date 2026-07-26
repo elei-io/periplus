@@ -1,574 +1,179 @@
-"""Repository ingestion across raw storage, DOM projection, and DuckLake."""
+"""Evidence-only ingestion across immutable objects and DuckLake."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from types import TracebackType
-from uuid import UUID, uuid4
-from config import get_int
 
 from repository.catalogue import (
-    ArtifactRecord,
     Catalogue,
-    CatalogueBatchEntry,
-    CatalogueConflictError,
     CatalogueService,
-    CatalogueValidationError,
-    CatalogueWriteResult,
-    CrawlAttemptRecord,
     CrawlRecord,
-    CrawlStepRecord,
     DocumentRecord,
-    ExistingCatalogueIdentities,
+    IngestionWriteResult,
     ServiceAccountTokenProvider,
+    VisitEvidence,
     catalogue_from_env,
 )
-from dom import (
-    DOM_SCHEMA_VERSION,
-    PARSER_NAME,
-    PARSER_OPTIONS_HASH,
-    PARSER_VERSION,
-    GroupedLinkPayload,
-    write_dom_parquet,
+from repository.ingestion.queue import IngestionJob
+from repository.objects.document import (
+    ExactDocumentIdentity,
+    ExactDocumentRepository,
 )
-from repository.objects.config import object_store_from_env, staging_root_from_env
-from repository.objects.html import HtmlIdentity, RawHtmlRepository, StoredHtml, html_object_key
-from repository.objects.artifact import (
-    ArtifactIdentity,
-    RawArtifactRepository,
-    artifact_object_key,
-    detect_artifact_media_type,
-)
-
-
-class ProjectionRebuildRequired(RuntimeError):
-    """Signal that the dedicated ingestor must rebuild a cached projection."""
-
-    def __init__(self, crawl: CrawlRecord) -> None:
-        super().__init__(f"document {crawl.document_id} needs DOM reprojection")
-        self.crawl = crawl
+from repository.objects.config import object_store_from_env
+from repository.objects.html import HtmlIdentity, RawHtmlRepository
 
 
 @dataclass(frozen=True, slots=True)
 class RepositoryLimits:
-    max_html_bytes: int = 64 * 1024 * 1024
-    max_artifact_bytes: int = 256 * 1024 * 1024
-    max_document_elements: int = 1_000_000
-    max_document_staged_bytes: int = 256 * 1024 * 1024
+    max_document_bytes: int = 256 * 1024 * 1024
 
-    @classmethod
-    def from_env(cls) -> RepositoryLimits:
-        return cls(
-            max_html_bytes=_positive_env_int(
-                "ATLAS_REPOSITORY_MAX_HTML_BYTES", 64 * 1024 * 1024
-            ),
-            max_artifact_bytes=_positive_env_int(
-                "ATLAS_REPOSITORY_MAX_ARTIFACT_BYTES", 256 * 1024 * 1024
-            ),
-            max_document_elements=_positive_env_int(
-                "ATLAS_REPOSITORY_MAX_DOCUMENT_ELEMENTS", 1_000_000
-            ),
-            max_document_staged_bytes=_positive_env_int(
-                "ATLAS_REPOSITORY_MAX_DOCUMENT_STAGED_BYTES", 256 * 1024 * 1024
-            ),
-        )
+
+@dataclass(frozen=True, slots=True)
+class PreparedIngestion:
+    job: IngestionJob
+    element_count: int = 0
+    staged_bytes: int = 0
 
 
 class RepositoryIngestor:
-    """Commit one captured page to Atlas's durable repository."""
+    """Verify immutable bytes and commit observed evidence without interpretation."""
 
     def __init__(
         self,
         *,
         html_repository: RawHtmlRepository,
-        artifact_repository: RawArtifactRepository | None = None,
+        document_repository: ExactDocumentRepository,
         catalogue: Catalogue,
-        staging_root: Path | None = None,
         limits: RepositoryLimits | None = None,
     ) -> None:
         self.html_repository = html_repository
-        self.artifact_repository = artifact_repository or RawArtifactRepository(
-            html_repository.store
-        )
+        self.document_repository = document_repository
         self.catalogue = catalogue
         self.catalogue_service = CatalogueService(catalogue)
-        self.staging_root = staging_root or staging_root_from_env()
-        self.limits = limits or RepositoryLimits.from_env()
+        self.limits = limits or RepositoryLimits()
 
     def validate(self) -> None:
-        """Attach to an initialized repository and validate its schema contract."""
-
         self.catalogue.validate_schema()
 
     def probe(self) -> None:
-        """Verify the attached DuckLake catalogue with one cheap metadata read."""
-
         self.catalogue.latest_snapshot()
 
-    def prepare_from_raw(
-        self,
-        *,
-        crawl: CrawlRecord,
-        crawl_attempts: tuple[CrawlAttemptRecord, ...],
-        crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
-        known_documents: Mapping[str, DocumentRecord] | None = None,
-    ) -> PreparedIngestion:
-        """Prepare a queued ingestion using only its durable raw object reference."""
-
-        if crawl.artifact_id is not None:
-            if crawl.content_captured_at is None:
-                raise ValueError("an artifact crawl requires content_captured_at")
-            prefix = "sha256:"
-            if not crawl.artifact_id.startswith(prefix):
-                raise ValueError("crawl.artifact_id must be a SHA-256 content identity")
-            sha256 = crawl.artifact_id.removeprefix(prefix)
-            object_key = artifact_object_key(sha256)
-            identity = self.artifact_repository.verify(object_key)
-            if identity.size_bytes > self.limits.max_artifact_bytes:
-                raise ValueError(
-                    f"artifact exceeded its {self.limits.max_artifact_bytes} byte repository budget"
-                )
-            if identity.sha256 != sha256:
-                raise ValueError("raw artifact does not match crawl.artifact_id")
-            content = self.artifact_repository.read_bytes(object_key)
-            detection = detect_artifact_media_type(content)
-            artifact = ArtifactRecord(
-                artifact_id=crawl.artifact_id,
-                object_key=object_key,
-                size_bytes=identity.size_bytes,
-                response_media_type=crawl.response_media_type,
-                detected_media_type=detection.media_type,
-                detector_name=detection.detector_name,
-                detector_version=detection.detector_version,
-                detection_confidence=detection.confidence,
-                first_seen_at=crawl.content_captured_at,
-            )
-            return PreparedIngestion(
-                document=None,
-                artifact=artifact,
-                crawl=crawl,
-                crawl_attempts=crawl_attempts,
-                crawl_steps=crawl_steps,
-            )
-
-        if crawl.document_id is None:
-            return PreparedIngestion(
-                document=None,
-                crawl=crawl,
-                crawl_attempts=crawl_attempts,
-                crawl_steps=crawl_steps,
-            )
-
-        prefix = "sha256:"
-        if not crawl.document_id.startswith(prefix):
-            raise ValueError("crawl.document_id must be a SHA-256 content identity")
-        sha256 = crawl.document_id.removeprefix(prefix)
-        if crawl.content_captured_at is None:
-            raise ValueError("a document crawl requires content_captured_at")
-        object_key = html_object_key(sha256)
-        if not self.html_repository.store.exists(object_key):
-            raise FileNotFoundError(f"raw HTML object is missing: {object_key}")
-        existing = (
-            self.catalogue_service.get_document(crawl.document_id)
-            if known_documents is None
-            else known_documents.get(crawl.document_id)
-        )
-        captured_html = self.html_repository.read(object_key)
-        if existing is not None and self._projection_is_current(existing):
-            self.html_repository.verify(
-                object_key,
-                expected=HtmlIdentity(
-                    sha256=_sha256_from_identity(existing.document_id),
-                    size_bytes=existing.size_bytes,
-                ),
-            )
-            return PreparedIngestion(
-                document=existing,
-                crawl=crawl,
-                crawl_attempts=crawl_attempts,
-                crawl_steps=crawl_steps,
-            )
-
-        identity = self.html_repository.identify(captured_html)
-        self._validate_html_size(identity)
-        if identity.sha256 != sha256:
-            raise ValueError("raw HTML does not match crawl.document_id")
-        compressed_size = self.html_repository.store.size(object_key)
-        parquet_path = self.staging_root / f"{crawl.crawl_id}-{uuid4().hex}.dom.parquet"
-        projection = write_dom_parquet(
-            captured_html,
-            document_id=crawl.document_id,
-            path=parquet_path,
-            max_rows=self.limits.max_document_elements,
-            max_bytes=self.limits.max_document_staged_bytes,
-        )
-        if existing is None:
-            document = DocumentRecord(
-                document_id=crawl.document_id,
-                object_key=object_key,
-                content_type="text/html",
-                encoding="utf-8",
-                size_bytes=identity.size_bytes,
-                compressed_size_bytes=compressed_size,
-                compression="zstd",
-                dom_schema_version=DOM_SCHEMA_VERSION,
-                parser_name=PARSER_NAME,
-                parser_version=PARSER_VERSION,
-                parser_options_hash=PARSER_OPTIONS_HASH,
-                element_count=projection.element_count,
-                first_seen_at=crawl.content_captured_at,
-            )
-        else:
-            document = existing.model_copy(
-                update={
-                    "compressed_size_bytes": compressed_size,
-                    "dom_schema_version": DOM_SCHEMA_VERSION,
-                    "parser_name": PARSER_NAME,
-                    "parser_version": PARSER_VERSION,
-                    "parser_options_hash": PARSER_OPTIONS_HASH,
-                    "element_count": projection.element_count,
-                }
-            )
-        return PreparedIngestion(
-            document=document,
-            crawl=crawl,
-            crawl_attempts=crawl_attempts,
-            crawl_steps=crawl_steps,
-            elements_path=projection.path,
-            element_count=projection.element_count,
-            staged_bytes=projection.size_bytes,
-            replace_projection=existing is not None,
-        )
+    def prepare(self, job: IngestionJob) -> PreparedIngestion:
+        if job.kind == "visit":
+            assert job.visit is not None
+            if job.visit.document is not None:
+                self._verify_document(job.visit.document)
+        return PreparedIngestion(job=job)
 
     def commit_prepared_batch(
         self,
         prepared: list[PreparedIngestion],
         *,
         cleanup_on_error: bool = True,
-    ) -> list[CatalogueWriteResult]:
-        """Commit one microbatch, optionally retaining failed staging for isolation."""
-
-        committed = False
-        try:
-            results = self.catalogue_service.record_crawl_batch(
-                [
-                    CatalogueBatchEntry(
-                        document=value.document,
-                        artifact=value.artifact,
-                        crawl=value.crawl,
-                        crawl_attempts=value.crawl_attempts,
-                        crawl_steps=value.crawl_steps,
-                        elements_path=value.elements_path,
-                        replace_projection=value.replace_projection,
-                    )
+    ) -> list[IngestionWriteResult]:
+        del cleanup_on_error
+        results: dict[str, IngestionWriteResult] = {}
+        crawls = [
+            value.job.crawl
+            for value in prepared
+            if value.job.kind == "crawl" and value.job.crawl is not None
+        ]
+        visits = [
+            value.job.visit
+            for value in prepared
+            if value.job.kind == "visit" and value.job.visit is not None
+        ]
+        if crawls:
+            for job, result in zip(
+                (
+                    value.job
                     for value in prepared
-                ]
-            )
-            committed = True
-            return results
-        finally:
-            if committed or cleanup_on_error:
-                self.discard_prepared(prepared)
-
-    def preflight_existing_identities(
-        self,
-        prepared: list[PreparedIngestion],
-    ) -> ExistingCatalogueIdentities:
-        """Resolve identities that cannot require an append in this commit."""
-
-        return self.catalogue_service.preflight_existing_identities(
-            document_ids=[
-                value.document.document_id
-                for value in prepared
-                if value.document is not None
-            ],
-            artifact_ids=[
-                value.artifact.artifact_id
-                for value in prepared
-                if value.artifact is not None
-            ],
-        )
-
-    def reconcile_crawl_commit(
-        self,
-        *,
-        crawl: CrawlRecord,
-    ) -> CatalogueWriteResult | None:
-        """Return a success result only when the complete crawl job is durable."""
-
-        existing_crawl = self.catalogue_service.get_crawl(crawl.crawl_id)
-        if existing_crawl is None:
-            return None
-        if existing_crawl != crawl:
-            raise CatalogueConflictError(
-                f"crawl_id {str(crawl.crawl_id)!r} has different durable provenance"
-            )
-
-        if crawl.document_id is not None:
-            document = self.catalogue_service.get_document(crawl.document_id)
-            if document is None or not self._projection_is_current(document):
-                return None
-        if crawl.artifact_id is not None:
-            artifact = self.catalogue_service.get_artifact(crawl.artifact_id)
-            if artifact is None:
-                return None
-            self.artifact_repository.verify(
-                artifact.object_key,
-                expected=ArtifactIdentity(
-                    sha256=_sha256_from_identity(artifact.artifact_id),
-                    size_bytes=artifact.size_bytes,
+                    if value.job.kind == "crawl"
                 ),
-            )
+                self.catalogue_service.record_crawls(crawls),
+                strict=True,
+            ):
+                results[job.request_id] = result
+        if visits:
+            for job, result in zip(
+                (
+                    value.job
+                    for value in prepared
+                    if value.job.kind == "visit"
+                ),
+                self.catalogue_service.record_visits(visits),
+                strict=True,
+            ):
+                results[job.request_id] = result
+        return [results[value.job.request_id] for value in prepared]
 
+    def reconcile_commit(
+        self,
+        job: IngestionJob,
+    ) -> IngestionWriteResult | None:
+        if job.kind == "crawl":
+            assert job.crawl is not None
+            durable = self.catalogue_service.get_crawl(job.crawl.crawl_id)
+            expected = job.crawl
+        else:
+            assert job.visit is not None
+            durable = self.catalogue_service.get_visit_evidence(
+                [job.visit.visit.visit_id]
+            ).get(job.visit.visit.visit_id)
+            expected = job.visit
+        if durable is None:
+            return None
+        if durable != expected:
+            from repository.catalogue import CatalogueConflictError
+
+            raise CatalogueConflictError(
+                f"ingestion {job.request_id} has different durable evidence"
+            )
         snapshot = self.catalogue.latest_snapshot()
         if snapshot is None:
-            raise CatalogueValidationError("DuckLake did not publish a repository snapshot")
-        return CatalogueWriteResult(
-            document_id=crawl.document_id,
-            artifact_id=crawl.artifact_id,
-            crawl_id=crawl.crawl_id,
-            document_created=False,
-            artifact_created=False,
-            crawl_created=False,
+            raise RuntimeError("DuckLake has no repository snapshot")
+        return IngestionWriteResult(
+            kind=job.kind,
+            identity=job.identity,
+            created=False,
             repository_snapshot=snapshot,
         )
 
     @staticmethod
     def discard_prepared(prepared: list[PreparedIngestion]) -> None:
-        """Remove page-local staging after commit or terminal rejection."""
+        del prepared
 
-        for value in prepared:
-            if value.elements_path is not None:
-                value.elements_path.unlink(missing_ok=True)
-
-    def store_raw(
-        self,
-        captured_html: str,
-        *,
-        source_url: str,
-        crawl_id: UUID,
-        captured_at: datetime,
-        content_type: str,
-        identity: HtmlIdentity | None = None,
-    ) -> StoredHtml:
-        identity = identity or self.html_repository.identify(captured_html)
-        self._validate_html_size(identity)
-        return self.html_repository.put(
-            captured_html,
-            source_url=source_url,
-            crawl_id=crawl_id,
-            captured_at=captured_at,
-            content_type=content_type,
-            identity=identity,
-        )
-
-    def _validate_html_size(self, identity: HtmlIdentity) -> None:
-        if identity.size_bytes > self.limits.max_html_bytes:
+    def _verify_document(self, document: DocumentRecord) -> None:
+        if document.content_bytes > self.limits.max_document_bytes:
             raise ValueError(
-                f"HTML exceeded its {self.limits.max_html_bytes} byte repository budget"
+                "document exceeds the configured ingestion byte budget"
             )
-
-    def cleanup_staging(self, *, older_than_seconds: float) -> int:
-        """Remove abandoned local projection files after a safety grace period."""
-
-        return cleanup_staging_files(
-            self.staging_root,
-            older_than_seconds=older_than_seconds,
-        )
-
-    def resolve_cached_page(
-        self,
-        *,
-        normalized_url: str,
-        effective_policy_hash: str,
-        captured_after: datetime | None = None,
-        captured_before: datetime | None = None,
-        include_html: bool = True,
-        include_links: bool = True,
-        repair_projection: bool = True,
-    ) -> RepositoryCacheHit | None:
-        """Resolve reusable structural data, repairing it from raw HTML when needed."""
-
-        for crawl in self.catalogue_service.find_cached_crawls(
-            normalized_url=normalized_url,
-            effective_policy_hash=effective_policy_hash,
-            captured_after=captured_after,
-            captured_before=captured_before,
-        ):
-            hit = self._resolve_crawl_record(
-                crawl,
-                include_html=include_html,
-                include_links=include_links,
-                repair_projection=repair_projection,
-                require_complete=False,
-            )
-            if hit is not None:
-                return hit
-        return None
-
-    def resolve_crawl(
-        self,
-        crawl_id: UUID,
-        *,
-        include_html: bool = True,
-        include_links: bool = True,
-        repair_projection: bool = True,
-    ) -> RepositoryCacheHit | None:
-        """Resolve one committed logical acquisition by its retry-stable identity."""
-
-        crawl = self.catalogue_service.get_crawl(crawl_id)
-        if crawl is None:
-            return None
-        return self._resolve_crawl_record(
-            crawl,
-            include_html=include_html,
-            include_links=include_links,
-            repair_projection=repair_projection,
-            require_complete=True,
-        )
-
-    def _resolve_crawl_record(
-        self,
-        crawl: CrawlRecord,
-        *,
-        include_html: bool,
-        include_links: bool,
-        repair_projection: bool,
-        require_complete: bool,
-    ) -> RepositoryCacheHit | None:
-        if crawl.document_id is None:
-            artifact = None
-            if crawl.artifact_id is not None:
-                artifact = self.catalogue_service.get_artifact(crawl.artifact_id)
-                if artifact is None:
-                    if require_complete:
-                        raise RuntimeError(
-                            f"crawl {crawl.crawl_id} references missing artifact "
-                            f"{crawl.artifact_id}"
-                        )
-                    return None
-                self.artifact_repository.verify(
-                    artifact.object_key,
-                    expected=ArtifactIdentity(
-                        sha256=_sha256_from_identity(artifact.artifact_id),
-                        size_bytes=artifact.size_bytes,
-                    ),
-                )
-            repository_snapshot = self.catalogue.latest_snapshot()
-            if repository_snapshot is None:
-                raise RuntimeError("DuckLake repository has no snapshot")
-            return RepositoryCacheHit(
-                crawl=crawl,
-                artifact=artifact,
-                document=None,
-                html=None,
-                links=None,
-                projection_rebuilt=False,
-                repository_snapshot=repository_snapshot,
-            )
-        document = self.catalogue_service.get_document(crawl.document_id)
-        if document is None:
-            if require_complete:
-                raise RuntimeError(
-                    f"crawl {crawl.crawl_id} references missing document {crawl.document_id}"
-                )
-            return None
-        if not self.html_repository.store.exists(document.object_key):
-            if require_complete:
-                raise RuntimeError(
-                    f"crawl {crawl.crawl_id} references missing raw HTML "
-                    f"{document.object_key}"
-                )
-            return None
-
-        projection_rebuilt = not self._projection_is_current(document)
-        if projection_rebuilt and not repair_projection:
-            raise ProjectionRebuildRequired(crawl)
-        html = (
-            self.html_repository.read(document.object_key)
-            if include_html or projection_rebuilt
-            else None
-        )
-        if html is None:
-            self.html_repository.verify(
+        if document.storage_encoding == "zstd":
+            identity = self.html_repository.verify(
                 document.object_key,
                 expected=HtmlIdentity(
-                    sha256=_sha256_from_identity(document.document_id),
-                    size_bytes=document.size_bytes,
+                    sha256=document.content_sha256,
+                    size_bytes=document.content_bytes,
                 ),
             )
-        repository_snapshot = self.catalogue.latest_snapshot()
-        if projection_rebuilt:
-            assert html is not None
-            parquet_path = self.staging_root / (
-                f"rebuild-{document.document_id[7:]}-{uuid4().hex}.parquet"
+        elif document.storage_encoding == "identity":
+            identity = self.document_repository.verify(
+                document.object_key,
+                expected=ExactDocumentIdentity(
+                    sha256=document.content_sha256,
+                    size_bytes=document.content_bytes,
+                ),
             )
-            projection = write_dom_parquet(
-                html,
-                document_id=document.document_id,
-                path=parquet_path,
-                max_rows=self.limits.max_document_elements,
-                max_bytes=self.limits.max_document_staged_bytes,
+        else:
+            raise ValueError(
+                f"unsupported document storage encoding {document.storage_encoding!r}"
             )
-            document = document.model_copy(
-                update={
-                    "dom_schema_version": DOM_SCHEMA_VERSION,
-                    "parser_name": PARSER_NAME,
-                    "parser_version": PARSER_VERSION,
-                    "parser_options_hash": PARSER_OPTIONS_HASH,
-                    "element_count": projection.element_count,
-                }
-            )
-            repository_snapshot = self.commit_prepared_batch(
-                [
-                    PreparedIngestion(
-                        document=document,
-                        crawl=crawl,
-                        crawl_attempts=(),
-                        crawl_steps=None,
-                        elements_path=projection.path,
-                        element_count=projection.element_count,
-                        staged_bytes=projection.size_bytes,
-                        replace_projection=True,
-                    )
-                ]
-            )[0].repository_snapshot
-        if repository_snapshot is None:
-            raise RuntimeError("DuckLake repository has no snapshot")
-        return RepositoryCacheHit(
-            crawl=crawl,
-            document=document,
-            html=html,
-            links=(
-                self.catalogue_service.get_projected_links(
-                    document.document_id,
-                    page_url=crawl.url,
-                )
-                if include_links
-                else None
-            ),
-            projection_rebuilt=projection_rebuilt,
-            repository_snapshot=repository_snapshot,
-        )
-
-    def _projection_is_current(self, document: DocumentRecord) -> bool:
-        """Trust the recipe written atomically with the document's element rows.
-
-        Repository ingestion inserts or replaces the document metadata and its DOM rows in
-        one DuckLake transaction. Counting a document's elements on every read turns that
-        commit invariant into a corpus scan and does not provide useful concurrent safety.
-        Explicit repository validation may still compare ``element_count`` with physical rows.
-        """
-
-        return (
-            document.dom_schema_version == DOM_SCHEMA_VERSION
-            and document.parser_name == PARSER_NAME
-            and document.parser_version == PARSER_VERSION
-            and document.parser_options_hash == PARSER_OPTIONS_HASH
-        )
+        if identity.size_bytes != document.content_bytes:
+            raise ValueError("document content size does not match immutable bytes")
+        stored_bytes = self.html_repository.store.size(document.object_key)
+        if stored_bytes != document.stored_bytes:
+            raise ValueError("document stored size does not match immutable object")
 
     def close(self) -> None:
         self.catalogue.close()
@@ -593,68 +198,6 @@ def repository_ingestor_from_env(
     store = object_store_from_env()
     return RepositoryIngestor(
         html_repository=RawHtmlRepository(store),
-        artifact_repository=RawArtifactRepository(store),
+        document_repository=ExactDocumentRepository(store),
         catalogue=catalogue_from_env(tokens=tokens),
-        staging_root=staging_root_from_env(),
-        limits=RepositoryLimits.from_env(),
     )
-
-
-def cleanup_staging_files(
-    staging_root: Path,
-    *,
-    older_than_seconds: float,
-) -> int:
-    """Remove abandoned local projection files without opening the catalogue."""
-
-    if older_than_seconds <= 0:
-        raise ValueError("older_than_seconds must be greater than zero")
-    cutoff = datetime.now(UTC) - timedelta(seconds=older_than_seconds)
-    deleted = 0
-    paths = list(staging_root.glob("*.parquet"))
-    paths.extend(staging_root.rglob("*.arrow"))
-    for path in paths:
-        try:
-            modified_at = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
-            if modified_at >= cutoff:
-                continue
-            path.unlink()
-            deleted += 1
-        except FileNotFoundError:
-            continue
-    return deleted
-
-
-@dataclass(frozen=True, slots=True)
-class RepositoryCacheHit:
-    crawl: CrawlRecord
-    document: DocumentRecord | None
-    html: str | None
-    links: GroupedLinkPayload | None
-    projection_rebuilt: bool
-    repository_snapshot: int
-    artifact: ArtifactRecord | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class PreparedIngestion:
-    document: DocumentRecord | None
-    crawl: CrawlRecord
-    crawl_attempts: tuple[CrawlAttemptRecord, ...]
-    crawl_steps: tuple[CrawlStepRecord, ...] | None = ()
-    artifact: ArtifactRecord | None = None
-    elements_path: Path | None = None
-    element_count: int = 0
-    staged_bytes: int = 0
-    replace_projection: bool = False
-
-
-def _positive_env_int(name: str, default: int) -> int:
-    return get_int(name)
-
-
-def _sha256_from_identity(value: str) -> str:
-    prefix = "sha256:"
-    if not value.startswith(prefix):
-        raise ValueError(f"{value!r} is not a SHA-256 content identity")
-    return value.removeprefix(prefix)
