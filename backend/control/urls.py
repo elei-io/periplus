@@ -1,4 +1,4 @@
-from urllib.parse import parse_qsl, urlencode, urldefrag, urlsplit, urlunsplit
+from urllib.parse import urldefrag, urlsplit, urlunsplit
 
 
 def normalize_url(value: str) -> str:
@@ -18,13 +18,8 @@ def normalize_url(value: str) -> str:
         if port is None or (scheme, port) in {("http", 80), ("https", 443)}
         else f"{host}:{port}"
     )
-    query = urlencode(
-        sorted(
-            (name, item)
-            for name, item in parse_qsl(parsed.query, keep_blank_values=True)
-            if not name.lower().startswith("utm_")
-            and name.lower() not in {"fbclid", "gclid", "dclid", "msclkid"}
-        ),
-        doseq=True,
+    # Query strings are opaque. Reordering, decoding, re-encoding, or removing
+    # apparent tracking parameters can invalidate signed navigation URLs.
+    return urlunsplit(
+        (scheme, netloc, parsed.path or "/", parsed.query, "")
     )
-    return urlunsplit((scheme, netloc, parsed.path or "/", query, ""))

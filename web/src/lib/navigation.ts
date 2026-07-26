@@ -1,6 +1,5 @@
 import {
   ChartNoAxesCombinedIcon,
-  BoxesIcon,
   BracesIcon,
   GitForkIcon,
   FileCode2Icon,
@@ -98,43 +97,11 @@ export const navigationGroups: NavigationGroup[] = [
       },
     ],
   },
-  {
-    name: "Docs",
-    slug: "docs",
-    items: [
-      {
-        name: "SQL queries",
-        href: "/docs/sql-queries",
-        icon: BracesIcon,
-        title: "SQL Queries",
-        description: "Explore Atlas evidence with catalogue SQL.",
-      },
-      {
-        name: "Crawl Graphs",
-        href: "/docs/crawl-graphs",
-        icon: GitForkIcon,
-        title: "Crawl Graphs",
-        description: "Turn page evidence into the next useful crawl.",
-      },
-      {
-        name: "Resources & Scaling",
-        href: "/docs/resources-scaling",
-        icon: BoxesIcon,
-        title: "Resources & Scaling",
-        description: "Find the limiting resource before adding capacity.",
-      },
-    ],
-  },
 ]
 
 export const defaultNavigationItem = navigationGroups[0].items[0]
 
 export function findNavigationItem(pathname: string) {
-  if (pathname === "/docs") {
-    return navigationGroups
-      .flatMap((group) => group.items)
-      .find((item) => item.href === "/docs/sql-queries")
-  }
   if (pathname.startsWith("/crawls/graphs/")) {
     return navigationGroups
       .flatMap((group) => group.items)

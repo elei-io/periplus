@@ -1,5 +1,7 @@
 import asyncio
+import base64
 from contextlib import asynccontextmanager
+from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -81,24 +83,28 @@ class CdpAcquisitionTests(unittest.TestCase):
                 failure_stage="navigation",
                 failure_retryable=False,
                 outcome="failed",
+                attempt_evidence=AcquisitionAttemptEvidence(
+                    attempt=1,
+                    started_at="2026-07-25T00:00:00Z",
+                    completed_at="2026-07-25T00:00:01Z",
+                    requested_url="https://example.com/",
+                    final_url="https://example.com/",
+                    outcome="failed",
+                    failure_code="navigation_failed",
+                ),
             )
 
         async def scenario():
             pipeline = AsyncMock()
-            with (
-                patch("actions.crawl.service._acquire", side_effect=acquire),
-                patch("actions.crawl.service.resource_permits") as permits,
-            ):
+            with patch("actions.crawl.service._acquire", side_effect=acquire):
                 await crawl_graph_request(
                     session=None,
                     url="https://example.com/",
                     context=context,
                     playwright=MagicMock(),
                     repository_pipeline=pipeline,
-                    resource_grants=object(),
                     domain_permit=domain_permit(),
                 )
-            permits.assert_not_called()
             self.assertEqual(events, ["permit-enter", "acquire", "permit-exit"])
             pipeline.enqueue_stored.assert_awaited_once()
 
@@ -153,6 +159,230 @@ class CdpAcquisitionTests(unittest.TestCase):
             page.wait_for_timeout.assert_not_awaited()
             playwright.chromium.connect_over_cdp.assert_awaited_once()
             browser.close.assert_awaited_once_with()
+
+        asyncio.run(scenario())
+
+    def test_disabled_attachment_type_is_a_clean_skip(self):
+        browser = AsyncMock()
+        page = AsyncMock()
+        page.url = "about:blank"
+        download = AsyncMock()
+        download.url = "https://example.com/form.docx"
+        response = MagicMock(
+            status=200,
+            url="https://example.com/form.docx",
+        )
+        response.request.redirected_to = None
+        response.header_value = AsyncMock(
+            side_effect=lambda name: (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                if name == "content-type"
+                else None
+            )
+        )
+
+        async def wait_for_event(event, **_kwargs):
+            return download if event == "download" else response
+
+        page.wait_for_event.side_effect = wait_for_event
+        page.goto.side_effect = PlaywrightError("Page.goto: Download is starting")
+        browser.new_page.return_value = page
+        playwright = MagicMock()
+        playwright.chromium.connect_over_cdp = AsyncMock(return_value=browser)
+
+        async def scenario():
+            result = await _acquire(
+                "https://example.com/form.docx",
+                policy(),
+                attempt_number=1,
+                playwright=playwright,
+            )
+            self.assertTrue(result.success)
+            self.assertEqual(result.outcome, "skipped")
+            self.assertEqual(
+                result.response_media_type,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            self.assertEqual(
+                result.attempt_evidence.failure_code,
+                "unsupported_content_type",
+            )
+            download.cancel.assert_awaited_once_with()
+            download.save_as.assert_not_awaited()
+
+        asyncio.run(scenario())
+
+    def test_enabled_attachment_type_is_captured_as_an_artifact(self):
+        media_type = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        attachment_policy = CrawlPolicySnapshot(
+            id=uuid4(),
+            slug="documents",
+            scheme="*",
+            host="*",
+            path_prefix="/",
+            path_mode="prefix",
+            content={
+                "accepted_content_types": [
+                    "text/html",
+                    "application/xhtml+xml",
+                    media_type,
+                ]
+            },
+        )
+        browser = AsyncMock()
+        page = AsyncMock()
+        page.url = "about:blank"
+        session = MagicMock()
+        session.send = AsyncMock(return_value={})
+        page.context.new_cdp_session.return_value = session
+        download = AsyncMock()
+        download.url = "https://example.com/form.docx"
+        download.failure.return_value = None
+        payload = b"PK\x03\x04docx"
+
+        async def save_as(path):
+            Path(path).write_bytes(payload)
+
+        download.save_as.side_effect = save_as
+        response = MagicMock(
+            status=200,
+            url="https://cdn.example.com/form.docx",
+        )
+        response.request.redirected_to = None
+        response.header_value = AsyncMock(
+            side_effect=lambda name: media_type if name == "content-type" else None
+        )
+        redirect = MagicMock(
+            status=302,
+            url="https://example.com/form.docx",
+        )
+        redirect.request.redirected_to = response.request
+        response.request.response = AsyncMock(return_value=response)
+
+        async def wait_for_event(event, **_kwargs):
+            return download if event == "download" else redirect
+
+        page.wait_for_event.side_effect = wait_for_event
+        page.goto.side_effect = PlaywrightError("Page.goto: Download is starting")
+        browser.new_page.return_value = page
+        playwright = MagicMock()
+        playwright.chromium.connect_over_cdp = AsyncMock(return_value=browser)
+
+        async def scenario():
+            result = await _acquire(
+                "https://example.com/form.docx",
+                attachment_policy,
+                attempt_number=1,
+                playwright=playwright,
+            )
+            self.assertTrue(result.success)
+            self.assertEqual(result.outcome, "success")
+            self.assertEqual(result.url, "https://cdn.example.com/form.docx")
+            self.assertEqual(result.response_media_type, media_type)
+            self.assertEqual(result.artifact, payload)
+            download.save_as.assert_awaited_once()
+            download.cancel.assert_not_awaited()
+
+        asyncio.run(scenario())
+
+    def test_inline_pdf_captures_network_bytes_before_chrome_viewer(self):
+        media_type = "application/pdf"
+        pdf_policy = CrawlPolicySnapshot(
+            id=uuid4(),
+            slug="pdfs",
+            scheme="*",
+            host="*",
+            path_prefix="/",
+            path_mode="prefix",
+            content={
+                "accepted_content_types": [
+                    "text/html",
+                    "application/xhtml+xml",
+                    media_type,
+                ]
+            },
+        )
+        browser = AsyncMock()
+        page = AsyncMock()
+        page.url = "https://example.com/report.pdf"
+        session = MagicMock()
+        session.send = AsyncMock()
+        paused_handler = None
+        payload = b"%PDF-1.7\r\nraw-pdf"
+        viewer = b"""<!doctype html><link rel="stylesheet"
+href="chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_embedder.css">"""
+
+        def register_handler(event, handler):
+            nonlocal paused_handler
+            self.assertEqual(event, "Fetch.requestPaused")
+            paused_handler = handler
+
+        session.on.side_effect = register_handler
+
+        async def send(method, params):
+            if method == "Fetch.getResponseBody":
+                self.assertEqual(params, {"requestId": "pdf-request"})
+                return {
+                    "body": base64.b64encode(payload).decode(),
+                    "base64Encoded": True,
+                }
+            return {}
+
+        session.send.side_effect = send
+        page.context.new_cdp_session.return_value = session
+        response = MagicMock(status=200)
+        response.header_value = AsyncMock(
+            side_effect=lambda name: media_type if name == "content-type" else None
+        )
+        response.body = AsyncMock(return_value=viewer)
+
+        async def goto(*_args, **_kwargs):
+            self.assertIsNotNone(paused_handler)
+            await paused_handler(
+                {
+                    "requestId": "pdf-request",
+                    "responseStatusCode": 200,
+                    "responseHeaders": [
+                        {"name": "Content-Type", "value": media_type}
+                    ],
+                }
+            )
+            return response
+
+        page.goto.side_effect = goto
+        browser.new_page.return_value = page
+        playwright = MagicMock()
+        playwright.chromium.connect_over_cdp = AsyncMock(return_value=browser)
+
+        async def scenario():
+            result = await _acquire(
+                "https://example.com/report.pdf",
+                pdf_policy,
+                attempt_number=1,
+                playwright=playwright,
+            )
+            self.assertTrue(result.success)
+            self.assertEqual(result.response_media_type, media_type)
+            self.assertEqual(result.artifact, payload)
+            response.body.assert_not_awaited()
+            session.send.assert_any_await(
+                "Fetch.enable",
+                {
+                    "patterns": [
+                        {
+                            "urlPattern": "*",
+                            "resourceType": "Document",
+                            "requestStage": "Response",
+                        }
+                    ]
+                },
+            )
+            session.send.assert_any_await(
+                "Fetch.continueRequest",
+                {"requestId": "pdf-request"},
+            )
 
         asyncio.run(scenario())
 
@@ -520,12 +750,17 @@ class CdpAcquisitionTests(unittest.TestCase):
                     repository_pipeline=pipeline,
                 )
             record = pipeline.enqueue_stored.await_args.args[0]
-            urls = pipeline.enqueue_stored.await_args.kwargs["urls"]
             attempts = pipeline.enqueue_stored.await_args.kwargs["crawl_attempts"]
             crawl_steps = pipeline.enqueue_stored.await_args.kwargs["crawl_steps"]
+            raw_write = pipeline.store_raw.await_args.kwargs
             self.assertTrue(page.success)
             self.assertEqual(record.outcome, "success")
-            self.assertGreaterEqual(len(urls), 1)
+            self.assertEqual(raw_write["source_url"], "https://example.com/")
+            self.assertEqual(raw_write["crawl_id"], context.crawl_request_id)
+            self.assertEqual(raw_write["captured_at"], record.content_captured_at)
+            self.assertEqual(raw_write["content_type"], "text/html")
+            self.assertEqual(record.requested_url, "https://example.com/")
+            self.assertEqual(record.url, "https://example.com/")
             self.assertEqual(len(attempts), 1)
             self.assertEqual(attempts[0].status_code, 200)
             self.assertIsNone(record.failure_code)
@@ -535,6 +770,62 @@ class CdpAcquisitionTests(unittest.TestCase):
             self.assertEqual(len(crawl_steps), 1)
             self.assertEqual(crawl_steps[0].crawl_id, context.crawl_request_id)
             self.assertEqual(crawl_steps[0].method, "wait_dynamic")
+
+        asyncio.run(scenario())
+
+    def test_artifact_write_uses_final_url_crawl_time_and_media_type(self):
+        context = GraphExecutionContext(
+            graph_id=uuid4(),
+            graph_run_id=uuid4(),
+            graph_node_id=uuid4(),
+            crawl_request_id=uuid4(),
+            effective_policy_snapshot_json=effective_policy().model_dump(mode="json"),
+        )
+        pipeline = AsyncMock()
+        result = CrawlPage(
+            url="https://example.com/final.pdf",
+            success=True,
+            status_code=200,
+            duration_seconds=0.1,
+            artifact=b"%PDF-1.7\n",
+            response_media_type="application/pdf",
+            attempt_evidence=AcquisitionAttemptEvidence(
+                attempt=1,
+                started_at="2026-07-25T00:00:00Z",
+                completed_at="2026-07-25T00:00:01Z",
+                requested_url="https://example.com/redirect",
+                final_url="https://example.com/final.pdf",
+                status_code=200,
+                response_media_type="application/pdf",
+                outcome="success",
+            ),
+        )
+
+        async def scenario():
+            with patch("actions.crawl.service._acquire", AsyncMock(return_value=result)):
+                await crawl_graph_request(
+                    session=None,
+                    url="https://example.com/redirect",
+                    context=context,
+                    playwright=MagicMock(),
+                    repository_pipeline=pipeline,
+                )
+
+            record = pipeline.enqueue_stored.await_args.args[0]
+            artifact_write = pipeline.store_artifact.await_args.kwargs
+            self.assertEqual(
+                artifact_write["source_url"],
+                "https://example.com/final.pdf",
+            )
+            self.assertEqual(artifact_write["crawl_id"], context.crawl_request_id)
+            self.assertEqual(
+                artifact_write["captured_at"],
+                record.content_captured_at,
+            )
+            self.assertEqual(
+                artifact_write["content_type"],
+                "application/pdf",
+            )
 
         asyncio.run(scenario())
 

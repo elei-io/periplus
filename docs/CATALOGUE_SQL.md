@@ -1,8 +1,8 @@
 # Catalogue SQL
 
-Atlas exposes the managed DuckLake schema as the default SQL namespace. Query `urls`, `documents`,
-`crawls`, `crawl_attempts`, `crawl_steps`, and `elements` directly; the `atlas.main` prefix is
-optional.
+Atlas exposes the managed DuckLake schema as the default SQL namespace. Query `documents`,
+`artifacts`, `crawls`, `crawl_attempts`, `crawl_steps`, and `elements` directly; the `atlas.main`
+prefix is optional. [LAKE_SCHEMA.md](../LAKE_SCHEMA.md) is the canonical physical contract.
 
 The SQL workbench submits queries to Atlas API and consumes Arrow IPC streams. The API owns bounded,
 reusable Quack client connections while the private Quack service owns analytical CPU, memory, and
@@ -13,31 +13,51 @@ Every request uses one explicit mode. **Run** executes the query and returns its
 returns DuckDB's JSON plan without executing the query, and **Explain analyze** executes it and
 returns the measured JSON plan. Run is the default; changing modes never rewrites the SQL saved by
 the user. The API validates one read-only public-catalogue query and sends it to Quack without
-helper expansion or other semantic rewriting. External file and table scans, dynamic SQL, secret
-inspection, system relations, and non-Atlas catalogues are rejected. Execution also has explicit
-timeouts, deployment-wide concurrency, row, result-byte, and cancellation limits.
+changing the authored query identity. Before execution, the catalogue compiler may expand managed
+definitions and apply proven semantics-preserving rewrites. External file and table scans, dynamic
+SQL, secret inspection, system relations, and non-Atlas catalogues are rejected. Execution also has
+explicit timeouts, deployment-wide concurrency, row, result-byte, and cancellation limits.
 
 ## Content and crawl identity
 
-`urls` contains one immutable row per normalized URL, identified by
-`sha256(normalized_url)`. `documents` contains unique, content-addressed captured HTML and
-`elements` contains one parsed DOM projection per document. `crawls` is one logical observation;
-its network history is normalized into ordered `crawl_attempts`, while browser completion evidence
-is in `crawl_steps`.
-
-`requested_url_id` is always present and `final_url_id` is nullable. The effective crawl URL is
-`coalesce(final_url_id, requested_url_id)`. Join that identity to `urls` for normalized text and
-URL components.
+`documents` contains unique, content-addressed captured HTML, `artifacts` contains unique retained
+non-HTML bytes, and `elements` contains one parsed DOM projection per document. `crawls` is one
+self-describing logical observation. Its normalized requested and effective URLs are stored
+directly; `scheme`, `host`, `port`, `registrable_domain`, `path`, and `query` describe the effective
+URL. Network history is normalized into ordered `crawl_attempts`, while browser completion evidence
+is in `crawl_steps`. `views.urls` is a distinct convenience projection over observed effective
+URLs, not a physical dimension.
 
 ```sql
-SELECT u.normalized_url, c.captured_at, c.duration_ms
+SELECT c.url, c.started_at, c.completed_at
 FROM crawls AS c
-JOIN urls AS u ON u.url_id = coalesce(c.final_url_id, c.requested_url_id)
-WHERE u.host = 'docs.example.com'
-  AND u.path LIKE '/guides/%'
-  AND c.captured_at >= TIMESTAMPTZ '2026-07-01 00:00:00+00'
-  AND c.captured_at <  TIMESTAMPTZ '2026-08-01 00:00:00+00';
+WHERE c.host = 'docs.example.com'
+  AND c.path LIKE '/guides/%'
+  AND c.completed_at >= TIMESTAMPTZ '2026-07-01 00:00:00+00'
+  AND c.completed_at <  TIMESTAMPTZ '2026-08-01 00:00:00+00';
 ```
+
+## From evidence to analysis
+
+The physical tables describe captured evidence, not universal semantic entities. Products, claims,
+people, organizations, places, and concepts belong in user-authored SQL whose definitions state how
+Atlas should infer them. CTEs, macros, and virtual views may organize those definitions without
+changing their raw-lake inputs.
+
+Derived observations should retain `crawl_id`, `document_id`, `url`, and a capture timestamp
+wherever those values are meaningful. Additional extractor-version, confidence, or matching
+evidence lets downstream users inspect why two observations were normalized together. Aggregates
+such as consensus, propagation, ownership, emergence, or disappearance can then refer back to the
+pages that produced them.
+
+The baseline analytical contract is direct execution over `crawls`, `documents`, `elements`,
+`crawl_attempts`, `crawl_steps`, and `artifacts`, including through user-authored virtual views. A
+user may materialize a useful derived relation, but benchmark correctness and ordinary query
+viability cannot depend on doing so.
+
+[Vision](VISION.md) describes the analytical thesis and
+[Analytical benchmarks](ANALYTICAL_BENCHMARKS.md) defines the ground-truth workloads used to prove
+it.
 
 ## DOM columns
 
@@ -104,8 +124,11 @@ SELECT
   macros.text_content(document_id, element_index) AS exact_text,
   macros.readable_text(document_id, element_index) AS readable
 FROM elements
-WHERE tag = 'a'
+WHERE document_id =
+      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+  AND tag = 'a'
   AND macros.has_attribute(attributes, 'href')
+ORDER BY element_index
 LIMIT 100;
 ```
 
@@ -118,16 +141,18 @@ queries, and fragments without changing the stored `href` attribute.
 
 ```sql
 SELECT
-  u.normalized_url AS source,
+  c.url AS source,
   macros.get_attribute(e.attributes, 'href') AS href,
   macros.resolve_url(
-    u.normalized_url,
+    c.url,
     macros.get_attribute(e.attributes, 'href')
   ) AS url
 FROM crawls c
-JOIN urls u ON u.url_id = coalesce(c.final_url_id, c.requested_url_id)
 JOIN elements e USING (document_id)
-WHERE e.tag = 'a'
+WHERE c.registrable_domain = 'example.com'
+  AND c.completed_at >= TIMESTAMPTZ '2026-07-01 00:00:00+00'
+  AND c.completed_at <  TIMESTAMPTZ '2026-07-02 00:00:00+00'
+  AND e.tag = 'a'
   AND macros.has_attribute(e.attributes, 'href');
 ```
 
@@ -142,13 +167,15 @@ macros.query_selector(selector [, document_id])
 
 `query_selector_all` returns every matching element. `query_selector` returns the first match in
 DOM order for each selected document. Passing a content-addressed `document_id` scopes the work to
-one document; omitting it searches every document in the catalogue. Prefer an explicit document
-scope for interactive queries, and add `ORDER BY document_id, element_index` whenever result order
-matters.
+one document. Omitting it describes a catalogue-wide selector and is therefore unsuitable for the
+interactive query boundary unless an outer relationship supplies a compiler-proven finite document
+scope. Prefer an explicit document scope for interactive queries, and add
+`ORDER BY document_id, element_index` whenever result order matters.
 
-An unscoped selector is an analytical catalogue scan. Structural matching may retain a
-catalogue-sized working set, so run broad selectors with the same memory and concurrency controls
-as other large DuckDB queries rather than using them as a low-cost lookup.
+An unscoped selector is a deliberate analytical catalogue scan. The interactive compiler rejects
+unbounded managed `elements` work before execution. Broad selectors belong in an explicitly
+budgeted analysis or materialization whose initial bootstrap can be long-running and whose later
+refreshes are scoped to changed documents.
 
 ```sql
 SELECT
@@ -156,7 +183,7 @@ SELECT
   macros.readable_text(document_id, element_index) AS label
 FROM macros.query_selector_all(
   'main article.card > a[href]',
-  'sha256:0123456789abcdef'
+  '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 )
 ORDER BY element_index;
 ```
@@ -168,9 +195,10 @@ descendant/child/adjacent/general-sibling combinators, attribute presence and th
 `an+b` formulas, and logical or relational pseudo-classes such as `:not()`, `:is()`, and `:has()`
 are intentionally unsupported and produce an error.
 
-The selector is parsed and evaluated inside DuckDB. There is no Atlas AST rewrite or generated
-binding layer in this interface, so the SQL is sent unchanged through Quack with the Atlas
-catalogue attached.
+The selector is parsed and evaluated inside DuckDB. There is no separate browser selector engine or
+generated binding layer. The catalogue compiler may expand the managed macro to prove document
+scope or apply ordinary relational rewrites, while the authored SQL remains the public query
+identity executed through Quack.
 
 ## Seeded views
 
@@ -201,12 +229,11 @@ crawl context:
 ```sql
 SELECT
   c.crawl_id,
-  u.normalized_url AS page_url,
-  macros.resolve_url(u.normalized_url, m.canonical_href) AS canonical_url,
+  c.url AS page_url,
+  macros.resolve_url(c.url, m.canonical_href) AS canonical_url,
   m.title,
   m.description
 FROM crawls AS c
-JOIN urls AS u ON u.url_id = coalesce(c.final_url_id, c.requested_url_id)
 JOIN views.page_metadata AS m USING (document_id)
 WHERE c.outcome = 'success';
 ```
@@ -287,6 +314,11 @@ The URL argument uses exact matching unless it contains `%`; a value containing 
 pattern matched against both the requested normalized URL and the effective final page URL. The
 macros include every successful matching crawl observation across graph runs.
 
+The result limit does not bound input history. Interactive execution still requires the compiler
+to prove that the matched crawls produce a document population below the configured document and
+element ceilings. Broader historical discovery belongs in a materialization or an explicitly
+budgeted analytical run.
+
 `macros.suggest_records(url)` ranks repeated sibling structures and returns up to ten candidates.
 Each candidate includes its record selector, total matched record count, matched crawl and page
 counts, history bounds, score, example HTML, twelve ranked field definitions, and a ready-to-run
@@ -361,24 +393,28 @@ returned crawl candidates. Fragment navigation can therefore be inspected withou
 fragment-specific crawl identities. Link labels and presentation attributes are deliberately absent:
 the relation describes URL topology, not anchor content.
 
-The seeded historical `views.page_links` relation stores `source_url_id` and `target_url_id`
-instead of repeating URL text; join both identities to `urls`. Its self-contained definition derives
-links from `crawls`, `urls`, and `elements`, and its placement under
+The seeded historical `views.page_links` relation stores `source_url` and `target_url` directly.
+Its self-contained definition derives links from `crawls` and `elements`, and its placement under
 `fixtures/materialized_views/crawl/` activates a materialization driven by crawl-table ticks.
-The materialization worker creates and fully populates the backing relation,
-then replaces affected `crawl_id` groups after coalesced ticks. Ingestion also inserts newly discovered normalized targets into `urls`, so every link
-identity is resolvable. Historical graph edges never wait
+The materialization worker creates and fully populates an incarnation-named backing relation under
+`_atlas_materializations`, then replaces the public view with a thin wrapper over that private
+table. Public view names and physical table names are deliberately independent, so arbitrary
+user-created views cannot collide with their backing tables across schemas. Interactive reads fail
+fast while an intended materialization is creating, failed, blocked, or deleting instead of
+executing its potentially expensive source definition.
+The worker then replaces affected `crawl_id` groups after coalesced ticks. Historical graph edges never wait
 for either pipeline and may observe an incomplete recent materialization refresh at their pinned
 pre-run snapshot; this intentional consistency contract is defined in
 [Crawl graphs](CRAWL_GRAPHS.md#historical-consistency-contract).
 
 ```sql
-SELECT source.host, target.host, count(*) AS links
-FROM views.page_links AS link
-JOIN urls AS source ON source.url_id = link.source_url_id
-JOIN urls AS target ON target.url_id = link.target_url_id
-WHERE link.relation_kind <> 'external'
-GROUP BY source.host, target.host
+SELECT
+  macros.url_parts(source_url).host AS source_host,
+  macros.url_parts(target_url).host AS target_host,
+  count(*) AS links
+FROM views.page_links
+WHERE relation_kind = 'external'
+GROUP BY source_host, target_host
 ORDER BY links DESC;
 ```
 
@@ -396,11 +432,12 @@ object-read capacity before starting; SQL bounds do not replace shared infrastru
 
 ## Physical layout
 
-`crawls` is partitioned by year, month, and day of `captured_at`, matching common site/path/time
-queries. Deduplicated `documents` and `elements` are not date-partitioned because one document can
-be observed by crawls on multiple dates. `elements` is not partitioned by tag so complete
-document-order projections remain physically cohesive. The seeded `views.page_links` backing table
-also carries `captured_at` and uses its year, month, and day partition transforms. Seeded
+`crawls` is partitioned by `day(completed_at)` and sorted by effective site, path, completion time,
+and crawl identity. `documents` and `elements` share `bucket(64, document_id)` partitioning;
+`elements` is sorted by `(document_id, element_index)` so a document projection remains cohesive
+without producing one partition per document. Attempts and completion steps use daily start-time
+partitions and crawl-local sorting. The seeded `views.page_links` backing table also carries
+`captured_at` and uses daily partitioning. Seeded
 materialized views use the same `_atlas_materializations` backing-table machinery,
 filtered NATS consumer, and worker ownership as user-created materializations; there is no private page-links table or
 ingestion exception.

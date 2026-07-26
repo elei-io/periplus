@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+from contextlib import suppress
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 import hashlib
 import io
 import json
 import logging
 import re
+import tempfile
 import time
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Awaitable, Callable, TypeVar
 from urllib.parse import urlparse
 
@@ -27,18 +32,17 @@ from repository.catalogue import (
     CrawlAttemptRecord,
     CrawlRecord,
     CrawlStepRecord,
-    UrlRecord,
+    NormalizedUrl,
 )
+from repository.catalogue.schema import POLICY_SCHEMA_VERSION
 from repository.ingestion.acquisition import AcquisitionPipeline
 from repository.objects.artifact import ArtifactIdentity
 from repository.objects.html import identify_html
 from runtime.context import GraphExecutionContext, graph_execution_scope
-from runtime.domain_pacing import record_domain_response, wait_for_domain_interval
-from runtime.resource_governor import (
-    DURABLE_RESOURCE_WAIT,
-    object_request,
-    remote_request,
-    resource_permits,
+from runtime.domain_pacing import (
+    domain_permit as acquire_domain_permit,
+    record_domain_response,
+    wait_for_domain_interval,
 )
 
 from .schemas import AcquisitionAttemptEvidence, CrawlPage, CrawlStepEvidence
@@ -74,6 +78,123 @@ def _is_execution_context_replaced(exc: PlaywrightError) -> bool:
 def _raise_if_playwright_runtime_lost(exc: PlaywrightError) -> None:
     if "connection closed while reading from the driver" in str(exc).lower():
         raise PlaywrightRuntimeLost("local Playwright driver connection was lost") from exc
+
+
+def _is_download_navigation(exc: PlaywrightError) -> bool:
+    return "download is starting" in str(exc).lower()
+
+
+async def _cancel_event_wait(task: asyncio.Task) -> None:
+    if not task.done():
+        task.cancel()
+    with suppress(asyncio.CancelledError, PlaywrightError):
+        await task
+
+
+def _is_navigation_response(response) -> bool:
+    try:
+        return response.request.is_navigation_request()
+    except PlaywrightError:
+        return False
+
+
+async def _final_redirect_response(response):
+    request = response.request
+    while request.redirected_to is not None:
+        request = request.redirected_to
+        redirected_response = await request.response()
+        if redirected_response is not None:
+            response = redirected_response
+    return response
+
+
+async def _download_bytes(download) -> bytes:
+    """Copy a remote-CDP download through Playwright before its context closes."""
+    with tempfile.NamedTemporaryFile(prefix="atlas-download-") as target:
+        await download.save_as(target.name)
+        failure = await download.failure()
+        if failure is not None:
+            raise PlaywrightError(failure)
+        return await asyncio.to_thread(Path(target.name).read_bytes)
+
+
+class _NavigationArtifactCapture:
+    """Capture a document response before Chromium hands it to a MIME viewer."""
+
+    def __init__(self, accepted_content_types: tuple[str, ...]) -> None:
+        self.accepted_content_types = accepted_content_types
+        self.body: bytes | None = None
+        self.error: str | None = None
+
+    async def handle_paused(self, session, event: dict[str, object]) -> None:
+        request_id = str(event["requestId"])
+        try:
+            status = event.get("responseStatusCode")
+            headers = {
+                str(entry.get("name", "")).lower(): str(entry.get("value", ""))
+                for entry in event.get("responseHeaders", [])
+                if isinstance(entry, dict)
+            }
+            media_type = _media_type(headers.get("content-type"))
+            disposition = headers.get("content-disposition", "").lower()
+            is_redirect = status in {301, 302, 303, 307, 308}
+            should_capture = (
+                not is_redirect
+                and "attachment" not in disposition
+                and media_type not in {"text/html", "application/xhtml+xml"}
+                and _accepted_media_type(
+                    media_type,
+                    self.accepted_content_types,
+                )
+            )
+            if should_capture:
+                response = await session.send(
+                    "Fetch.getResponseBody",
+                    {"requestId": request_id},
+                )
+                encoded = str(response.get("body", ""))
+                self.body = (
+                    base64.b64decode(encoded, validate=True)
+                    if response.get("base64Encoded")
+                    else encoded.encode()
+                )
+        except (binascii.Error, ValueError, PlaywrightError) as exc:
+            self.error = str(exc) or "raw navigation response capture failed"
+        finally:
+            await session.send(
+                "Fetch.continueRequest",
+                {"requestId": request_id},
+            )
+
+
+async def _enable_navigation_artifact_capture(
+    page,
+    accepted_content_types: tuple[str, ...],
+) -> _NavigationArtifactCapture | None:
+    if not any(
+        media_type not in {"text/html", "application/xhtml+xml"}
+        for media_type in accepted_content_types
+    ):
+        return None
+    session = await page.context.new_cdp_session(page)
+    capture = _NavigationArtifactCapture(accepted_content_types)
+    session.on(
+        "Fetch.requestPaused",
+        lambda event: capture.handle_paused(session, event),
+    )
+    await session.send(
+        "Fetch.enable",
+        {
+            "patterns": [
+                {
+                    "urlPattern": "*",
+                    "resourceType": "Document",
+                    "requestStage": "Response",
+                }
+            ]
+        },
+    )
+    return capture
 
 
 async def _with_context_recovery(
@@ -431,6 +552,10 @@ async def _acquire(
                 # such an operation and would force a lazy HTTP CDP facade to
                 # promote the request to a browser.
                 page = await browser.new_page()
+                artifact_capture = await _enable_navigation_artifact_capture(
+                    page,
+                    policy.content.accepted_content_types,
+                )
                 steps: list[CrawlStepEvidence] = []
                 status: int | None = None
                 media_type = "text/html"
@@ -438,6 +563,19 @@ async def _acquire(
                 html: str | None = None
                 navigation_timed_out = False
                 navigation_timeout_detail = ""
+                download_wait = asyncio.create_task(
+                    page.wait_for_event(
+                        "download",
+                        timeout=completion.navigation.timeout_ms,
+                    )
+                )
+                response_wait = asyncio.create_task(
+                    page.wait_for_event(
+                        "response",
+                        predicate=_is_navigation_response,
+                        timeout=completion.navigation.timeout_ms,
+                    )
+                )
                 try:
                     response = await page.goto(
                         url,
@@ -445,6 +583,8 @@ async def _acquire(
                         timeout=completion.navigation.timeout_ms,
                     )
                 except PlaywrightTimeoutError as exc:
+                    await _cancel_event_wait(download_wait)
+                    await _cancel_event_wait(response_wait)
                     navigation_timed_out = True
                     navigation_timeout_detail = (
                         str(exc) or "Page navigation timed out"
@@ -478,6 +618,106 @@ async def _acquire(
                             completion.navigation,
                         )
                     response = None
+                except PlaywrightError as exc:
+                    if not _is_download_navigation(exc):
+                        await _cancel_event_wait(download_wait)
+                        await _cancel_event_wait(response_wait)
+                        raise
+                    try:
+                        download, response = await asyncio.gather(
+                            download_wait,
+                            response_wait,
+                        )
+                        response = await _final_redirect_response(response)
+                    except PlaywrightError as download_exc:
+                        await _cancel_event_wait(download_wait)
+                        await _cancel_event_wait(response_wait)
+                        return _failed_page(
+                            url,
+                            started,
+                            started_at,
+                            attempt_number,
+                            str(download_exc),
+                            "download_failed",
+                            "navigation",
+                            True,
+                        )
+                    status = response.status
+                    final_url = response.url or download.url or url
+                    content_type = await response.header_value("content-type")
+                    media_type = _media_type(content_type)
+                    retry_after = _retry_after(
+                        await response.header_value("retry-after")
+                    )
+                    outcome = _status_outcome(status, policy)
+                    if outcome != "accept":
+                        await download.cancel()
+                        return _response_outcome_page(
+                            url=final_url,
+                            requested_url=url,
+                            started=started,
+                            started_at=started_at,
+                            attempt_number=attempt_number,
+                            status=status,
+                            media_type=media_type,
+                            outcome=outcome,
+                            failure_code="http_status",
+                            retry_after=retry_after,
+                        )
+                    if not _accepted_media_type(
+                        media_type, policy.content.accepted_content_types
+                    ):
+                        outcome = (
+                            policy.content.response_rules.unsupported_content_type
+                        )
+                        if outcome != "accept":
+                            await download.cancel()
+                            return _response_outcome_page(
+                                url=final_url,
+                                requested_url=url,
+                                started=started,
+                                started_at=started_at,
+                                attempt_number=attempt_number,
+                                status=status,
+                                media_type=media_type,
+                                outcome=outcome,
+                                failure_code="unsupported_content_type",
+                            )
+                    try:
+                        artifact = await _download_bytes(download)
+                    except (OSError, PlaywrightError) as download_exc:
+                        return _failed_page(
+                            url,
+                            started,
+                            started_at,
+                            attempt_number,
+                            str(download_exc),
+                            "download_failed",
+                            "acquisition",
+                            True,
+                        )
+                    evidence = _attempt(
+                        number=attempt_number,
+                        started_at=started_at,
+                        requested_url=url,
+                        final_url=final_url,
+                        status_code=status,
+                        media_type=media_type,
+                        outcome="success",
+                    )
+                    return CrawlPage(
+                        url=final_url,
+                        success=True,
+                        status_code=status,
+                        duration_seconds=time.perf_counter() - started,
+                        outcome="success",
+                        response_media_type=media_type,
+                        artifact=artifact,
+                        attempt_evidence=evidence,
+                    )
+                else:
+                    await _cancel_event_wait(download_wait)
+                    await _cancel_event_wait(response_wait)
                 status = response.status if response is not None else None
                 final_url = page.url
                 content_type = await response.header_value("content-type") if response is not None else None
@@ -495,7 +735,33 @@ async def _acquire(
                         browser = None
                         return _response_outcome_page(url=final_url, requested_url=url, started=started, started_at=started_at, attempt_number=attempt_number, status=status, media_type=media_type, outcome=outcome, failure_code="unsupported_content_type")
                 if media_type not in {"text/html", "application/xhtml+xml"}:
-                    artifact = await response.body() if response is not None else b""
+                    if artifact_capture is None:
+                        raise AssertionError(
+                            "non-HTML response was accepted without raw capture"
+                        )
+                    if artifact_capture.error is not None:
+                        return _failed_page(
+                            url,
+                            started,
+                            started_at,
+                            attempt_number,
+                            artifact_capture.error,
+                            "artifact_capture_failed",
+                            "acquisition",
+                            True,
+                        )
+                    if artifact_capture.body is None:
+                        return _failed_page(
+                            url,
+                            started,
+                            started_at,
+                            attempt_number,
+                            "raw navigation response body was not captured",
+                            "artifact_capture_failed",
+                            "acquisition",
+                            True,
+                        )
+                    artifact = artifact_capture.body
                     evidence = _attempt(number=attempt_number, started_at=started_at, requested_url=url, final_url=final_url, status_code=status, media_type=media_type, outcome="success")
                     await browser.close()
                     browser = None
@@ -640,7 +906,6 @@ async def crawl_graph_request(
     context: GraphExecutionContext,
     playwright: Playwright,
     repository_pipeline: AcquisitionPipeline | None = None,
-    resource_grants=None,
     domain_pacing=None,
     domain_permit=None,
     persist_retryable_failure: bool = True,
@@ -667,17 +932,12 @@ async def crawl_graph_request(
                     attempt_number=attempt_number,
                     playwright=playwright,
                 )
-        elif resource_grants is None:
-            if domain_pacing is not None:
-                await wait_for_domain_interval(domain_pacing, domain=remote_domain, interval_seconds=domain.minimum_request_interval_seconds)
-            page = await _acquire(
-                normalized,
-                policy,
-                attempt_number=attempt_number,
-                playwright=playwright,
-            )
-        else:
-            async with resource_permits(resource_grants, remote_request(f"domain:{context.crawl_request_id}:{attempt_number}", remote_domain=remote_domain, concurrency=domain.maximum_concurrency), acquire_timeout=DURABLE_RESOURCE_WAIT):
+        elif domain_pacing is not None:
+            async with acquire_domain_permit(
+                domain_pacing,
+                domain=remote_domain,
+                concurrency=domain.maximum_concurrency,
+            ):
                 if domain_pacing is not None:
                     await wait_for_domain_interval(domain_pacing, domain=remote_domain, interval_seconds=domain.minimum_request_interval_seconds)
                 page = await _acquire(
@@ -686,6 +946,13 @@ async def crawl_graph_request(
                     attempt_number=attempt_number,
                     playwright=playwright,
                 )
+        else:
+            page = await _acquire(
+                normalized,
+                policy,
+                attempt_number=attempt_number,
+                playwright=playwright,
+            )
         if domain_pacing is not None:
             try:
                 await record_domain_response(
@@ -708,31 +975,25 @@ async def crawl_graph_request(
             AcquisitionAttemptEvidence.model_validate(value)
             for value in context.prior_attempts_json
         ) + ((page.attempt_evidence,) if page.attempt_evidence is not None else ())
-        requested_url = UrlRecord.from_normalized_url(normalized)
+        requested_url = NormalizedUrl.from_normalized_url(normalized)
         final_normalized = normalize_url(page.url) if page.url else None
         final_url = (
-            UrlRecord.from_normalized_url(final_normalized)
+            NormalizedUrl.from_normalized_url(final_normalized)
             if final_normalized is not None
             else None
         )
-        urls = tuple(
-            {value.url_id: value for value in (requested_url, final_url) if value is not None}.values()
-        )
+        effective_url = final_url or requested_url
         crawl_attempts = tuple(
             CrawlAttemptRecord(
                 crawl_id=context.crawl_request_id,
                 attempt_number=attempt.attempt,
                 started_at=attempt.started_at,
                 completed_at=attempt.completed_at,
-                requested_url_id=UrlRecord.from_normalized_url(
-                    normalize_url(attempt.requested_url)
-                ).url_id,
-                final_url_id=(
-                    UrlRecord.from_normalized_url(
-                        normalize_url(attempt.final_url)
-                    ).url_id
+                requested_url=normalize_url(attempt.requested_url),
+                url=(
+                    normalize_url(attempt.final_url)
                     if attempt.final_url is not None
-                    else None
+                    else normalize_url(attempt.requested_url)
                 ),
                 status_code=attempt.status_code,
                 response_media_type=attempt.response_media_type,
@@ -742,17 +1003,13 @@ async def crawl_graph_request(
             )
             for attempt in attempt_evidence
         )
-        attempt_urls = tuple(
-            UrlRecord.from_normalized_url(normalize_url(value))
-            for attempt in attempt_evidence
-            for value in (attempt.requested_url, attempt.final_url)
-            if value is not None
-        )
-        urls = tuple(
-            {
-                value.url_id: value
-                for value in (*urls, *attempt_urls)
-            }.values()
+        if not crawl_attempts:
+            raise RuntimeError("crawl acquisition produced no typed attempt evidence")
+        completed_at = datetime.now(UTC)
+        content_captured_at = (
+            completed_at
+            if identity is not None or artifact_identity is not None
+            else None
         )
         record = CrawlRecord(
             crawl_id=context.crawl_request_id,
@@ -761,23 +1018,29 @@ async def crawl_graph_request(
             graph_id=context.graph_id,
             graph_run_id=context.graph_run_id,
             graph_node_id=context.graph_node_id,
-            crawl_request_id=context.crawl_request_id,
             source_crawl_id=context.source_crawl_id,
             source_edge_id=context.source_edge_id,
-            requested_url_id=requested_url.url_id,
-            final_url_id=final_url.url_id if final_url is not None else None,
-            captured_at=datetime.now(UTC),
+            requested_url=normalized,
+            url=effective_url.normalized_url,
+            scheme=effective_url.scheme,
+            host=effective_url.host,
+            port=effective_url.port,
+            registrable_domain=effective_url.registrable_domain,
+            path=effective_url.path,
+            query=effective_url.query,
+            started_at=crawl_attempts[0].started_at,
+            completed_at=completed_at,
+            content_captured_at=content_captured_at,
             status_code=page.status_code,
-            duration_ms=round(page.duration_seconds * 1000),
             response_media_type=page.response_media_type,
-            policy_config_hash=hashlib.sha256(policy_json.encode()).hexdigest(),
-            policy_config_json=policy_json_value,
-            crawl_policy_id=policy.id,
+            policy_schema_version=POLICY_SCHEMA_VERSION,
+            effective_policy_hash=hashlib.sha256(policy_json.encode()).hexdigest(),
+            effective_policy=policy_json_value,
             outcome=page.outcome,
-            failure_code=page.failure_code if not page.success else None,
-            failure_stage=page.failure_stage if not page.success else None,
-            failure_retryable=page.failure_retryable if not page.success else None,
-            failure_detail=page.error if not page.success else None,
+            failure_code=page.failure_code if page.outcome == "failed" else None,
+            failure_stage=page.failure_stage if page.outcome == "failed" else None,
+            failure_retryable=page.failure_retryable if page.outcome == "failed" else None,
+            failure_detail=page.error if page.outcome == "failed" else None,
         )
         crawl_steps = tuple(
             CrawlStepRecord(
@@ -788,23 +1051,29 @@ async def crawl_graph_request(
         )
 
         async def persist(pipeline: AcquisitionPipeline) -> CrawlPage:
+            source_url = final_normalized or normalized
             if identity is not None:
-                request = object_request(f"raw-html:{context.crawl_request_id}", direction="write", byte_count=identity.size_bytes, service_class="critical")
-                if resource_grants is None:
-                    await pipeline.store_raw(captured_html=page.html or "", identity=identity)
-                else:
-                    async with resource_permits(resource_grants, request, acquire_timeout=DURABLE_RESOURCE_WAIT):
-                        await pipeline.store_raw(captured_html=page.html or "", identity=identity)
+                assert content_captured_at is not None
+                await pipeline.store_raw(
+                    captured_html=page.html or "",
+                    source_url=source_url,
+                    crawl_id=context.crawl_request_id,
+                    captured_at=content_captured_at,
+                    content_type=page.response_media_type or "text/html",
+                    identity=identity,
+                )
             if artifact_identity is not None:
-                request = object_request(f"raw-artifact:{context.crawl_request_id}", direction="write", byte_count=artifact_identity.size_bytes, service_class="critical")
-                if resource_grants is None:
-                    await pipeline.store_artifact(content=io.BytesIO(page.artifact or b""), identity=artifact_identity)
-                else:
-                    async with resource_permits(resource_grants, request, acquire_timeout=DURABLE_RESOURCE_WAIT):
-                        await pipeline.store_artifact(content=io.BytesIO(page.artifact or b""), identity=artifact_identity)
+                assert content_captured_at is not None
+                await pipeline.store_artifact(
+                    content=io.BytesIO(page.artifact or b""),
+                    identity=artifact_identity,
+                    source_url=source_url,
+                    crawl_id=context.crawl_request_id,
+                    captured_at=content_captured_at,
+                    content_type=page.response_media_type or "application/octet-stream",
+                )
             await pipeline.enqueue_stored(
                 record,
-                urls=urls,
                 crawl_attempts=crawl_attempts,
                 crawl_steps=crawl_steps,
             )

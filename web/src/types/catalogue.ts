@@ -1,4 +1,21 @@
 export type CatalogueStatementKind = "query" | "explain" | "explain_analyze"
+export type CompilationOutcome =
+  | "invalid"
+  | "optimized"
+  | "unchanged"
+  | "unsupported"
+export type CompilationDiagnostic = {
+  code: string
+  severity: "warning" | "error"
+  message: string
+  sql_fragment: string | null
+  documentation_anchor: string | null
+}
+export type DefinitionDependency = {
+  kind: string
+  qualified_name: string
+  path: string[]
+}
 
 export type CatalogueQueryRequest = {
   sql: string
@@ -14,6 +31,17 @@ export type CatalogueQueryResult = {
 export type CatalogueQueryState = {
   id: string
   statement_kind: CatalogueStatementKind
+  optimization_status: "optimized" | "unchanged" | "degraded_fallback"
+  applied_rewrites: {
+    rule: string
+    evidence: string
+  }[]
+  optimization_diagnostics: {
+    code: string
+    severity: "info" | "warning"
+    message: string
+    documentation_anchor: string | null
+  }[]
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled"
   created_at: string
   started_at: string | null
@@ -66,10 +94,30 @@ export type CatalogueLintDiagnostic = {
   code: string
   severity: "warning" | "error"
   message: string
+  documentation_anchor: string | null
 }
 
 export type CatalogueLintResult = {
+  valid: boolean
+  supported: boolean
+  materialization_eligible: boolean
+  outcome: "invalid" | "optimized" | "unchanged" | "unsupported"
+  authored_sql: string
+  executable_sql: string | null
   diagnostics: CatalogueLintDiagnostic[]
+  applied_rewrites: Array<{ rule: string; evidence: string }>
+  dependencies: DefinitionDependency[]
+  catalogue_revision: string | null
+  compiler_version: string
+}
+
+export type MaterializationEligibility = {
+  eligible: boolean
+  diagnostics: Array<{
+    code: string
+    severity: "warning" | "error"
+    message: string
+  }>
 }
 
 export type CatalogueMaterializationSummary = {
@@ -79,6 +127,7 @@ export type CatalogueMaterializationSummary = {
 
 export type MaterializationObservedState =
   | "creating"
+  | "backfilling"
   | "live"
   | "paused"
   | "deleting"
@@ -198,6 +247,8 @@ export type CatalogueMaterializationRecord = {
   target_table_id: number | null
   ducklake_table_uuid: string | null
   bootstrap_snapshot: number | null
+  bootstrap_partition_count: number | null
+  bootstrap_partition_cursor: number | null
   processed_snapshot: number | null
   last_refreshed_at: string | null
   last_error: string | null

@@ -391,7 +391,6 @@ function ViewDetail({ view }: { view: CatalogueViewRecord }) {
 
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           <div className="grid gap-4">
-
             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
               <div className="grid gap-1.5">
                 <Label>Slug</Label>
@@ -539,7 +538,9 @@ function MaterializationStatus({
       variant={
         status === "deleting" || status === "blocked_schema" || status === "failed"
           ? "destructive"
-          : status === "live" || status === "creating"
+          : status === "live" ||
+              status === "creating" ||
+              status === "backfilling"
             ? "default"
             : "secondary"
       }
@@ -568,7 +569,9 @@ function MaterializationCell({
       <MaterializationStatus status={materialization.status} />
       <div className="mt-1 text-[10px] text-muted-foreground">
         {materialization.status === "creating"
-          ? "Creating stored table"
+          ? "Creating empty stored table"
+          : materialization.status === "backfilling"
+            ? "Live CDC with historical backfill"
           : materialization.status === "live"
             ? "Live maintenance enabled"
             : "Maintenance paused"}

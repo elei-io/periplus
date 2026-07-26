@@ -10,8 +10,8 @@ from uuid import uuid4
 
 from actions.crawl.service import PlaywrightRuntimeLost
 from repository.ingestion.health import HealthMonitor
+from runtime.domain_pacing import DomainCapacityUnavailable
 from runtime.graph_queue import CrawlRequest
-from runtime.resource_governor import ResourceCapacityUnavailable
 from workers.acquisition import (
     _BufferedCrawl,
     _HostnameDispatchBuffer,
@@ -97,9 +97,9 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
         buffer.add(ready)
         active: set[asyncio.Task] = set()
 
-        async def permit(_resource_grants, item):
+        async def permit(_domain_pacing, item):
             if item.hostname == blocked.hostname:
-                raise ResourceCapacityUnavailable("domain is full")
+                raise DomainCapacityUnavailable("domain is full")
             return None
 
         processor = AsyncMock()
@@ -122,7 +122,6 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
                 requests=object(),
                 progress=object(),
                 repository_pipeline=object(),
-                resource_grants=object(),
                 domain_pacing=object(),
                 jetstream=object(),
                 playwright=object(),
@@ -163,7 +162,6 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
                 requests=object(),
                 progress=object(),
                 repository_pipeline=object(),
-                resource_grants=object(),
                 domain_pacing=object(),
                 jetstream=object(),
                 playwright=object(),
@@ -203,7 +201,6 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
                 requests=object(),
                 progress=object(),
                 repository_pipeline=object(),
-                resource_grants=object(),
                 domain_pacing=object(),
                 jetstream=object(),
                 playwright=object(),

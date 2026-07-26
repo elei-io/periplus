@@ -8,7 +8,9 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from api.catalogue_control import CatalogueControl, get_catalogue_control
-from api.graph_submission import submit_graph_run
+from api.graph_runtime import ApiGraphRuntime, get_graph_runtime
+from api.graph_submission import frozen_edge_compiler, submit_graph_run
+from api.routers.catalogue import get_compiler_definitions
 from api.routers.graph_runs import GraphRunSubmission
 from control.crawl_graphs.service import (
     CrawlGraphNotFoundError,
@@ -39,6 +41,9 @@ from control.crawl_schedules.service import (
     record,
     set_schedule_enabled,
     update_schedule,
+)
+from repository.catalogue.compiler_definitions import (
+    CatalogueCompilerDefinitions,
 )
 from db.session import get_session
 
@@ -213,14 +218,21 @@ async def run_now(
     schedule_id: UUID,
     session: Annotated[Session, Depends(get_session)],
     control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
+    runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
+    definitions: Annotated[
+        CatalogueCompilerDefinitions,
+        Depends(get_compiler_definitions),
+    ],
 ) -> GraphRunSubmission:
     try:
         schedule = get_schedule(session, graph_id, schedule_id)
         run = await submit_graph_run(
             session,
+            runtime=runtime,
             graph_id=graph_id,
             urls=list(schedule.root_urls),
             catalogue_snapshot_resolver=control.latest_snapshot,
+            edge_compiler=frozen_edge_compiler(definitions),
             trigger_kind="manual",
             trigger_schedule_id=schedule.id,
             max_crawls=schedule.max_crawls,

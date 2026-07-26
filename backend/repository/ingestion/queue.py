@@ -22,6 +22,7 @@ from nats.js.errors import (
     KeyDeletedError,
     KeyNotFoundError,
     KeyWrongLastSequenceError,
+    NotFoundError,
 )
 from pydantic import BaseModel, ConfigDict, model_validator
 import zstandard
@@ -31,7 +32,6 @@ from repository.catalogue import (
     CrawlAttemptRecord,
     CrawlRecord,
     CrawlStepRecord,
-    UrlRecord,
 )
 from runtime.catalogue_queue import (
     DEAD_LETTER_STREAM,
@@ -53,7 +53,6 @@ class IngestionJob(BaseModel):
     request_id: str
     enqueued_at: datetime
     crawl: CrawlRecord
-    urls: tuple[UrlRecord, ...]
     crawl_attempts: tuple[CrawlAttemptRecord, ...]
     crawl_steps: tuple[CrawlStepRecord, ...] | None = ()
 
@@ -86,7 +85,6 @@ class IngestionState(BaseModel):
     request_id: str
     status: Literal["pending", "succeeded", "failed"]
     crawl: CrawlRecord
-    urls: tuple[UrlRecord, ...]
     crawl_attempts: tuple[CrawlAttemptRecord, ...]
     crawl_steps: tuple[CrawlStepRecord, ...] | None = ()
     enqueued_at: datetime
@@ -211,9 +209,37 @@ async def ensure_repository_consumer(jetstream) -> None:
     """Create or reconcile the writer consumer, then verify its safety contract."""
 
     expected = repository_consumer_config()
-    await jetstream.add_consumer(STREAM, config=expected)
-    info = await jetstream.consumer_info(STREAM, DURABLE)
+    try:
+        info = await jetstream.consumer_info(STREAM, DURABLE)
+    except NotFoundError:
+        try:
+            info = await jetstream.add_consumer(STREAM, config=expected)
+        except BadRequestError:
+            # Concurrent ingestion lanes may race only on first deployment.
+            info = await jetstream.consumer_info(STREAM, DURABLE)
     config = info.config
+    immutable_mismatches: list[str] = []
+    if config.ack_policy != AckPolicy.EXPLICIT:
+        immutable_mismatches.append("explicit acknowledgements")
+    if config.filter_subject != SUBJECT:
+        immutable_mismatches.append(f"filter_subject={SUBJECT}")
+    if immutable_mismatches:
+        raise RuntimeError(
+            f"JetStream consumer {DURABLE} must use "
+            + ", ".join(immutable_mismatches)
+        )
+    if (
+        config.ack_wait != expected.ack_wait
+        or config.max_ack_pending != expected.max_ack_pending
+        or config.max_deliver != expected.max_deliver
+    ):
+        try:
+            info = await jetstream.add_consumer(STREAM, config=expected)
+        except BadRequestError:
+            # Every ingestion lane reconciles the same startup contract.
+            info = await jetstream.consumer_info(STREAM, DURABLE)
+        config = info.config
+
     mismatches: list[str] = []
     if config.ack_policy != AckPolicy.EXPLICIT:
         mismatches.append("explicit acknowledgements")
@@ -252,7 +278,6 @@ async def ensure_pending_ingestion(
     *,
     request_id: str,
     crawl: CrawlRecord,
-    urls: tuple[UrlRecord, ...],
     crawl_attempts: tuple[CrawlAttemptRecord, ...],
     crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
 ) -> IngestionState:
@@ -263,7 +288,6 @@ async def ensure_pending_ingestion(
         request_id=request_id,
         status="pending",
         crawl=crawl,
-        urls=urls,
         crawl_attempts=crawl_attempts,
         crawl_steps=crawl_steps,
         enqueued_at=now,
@@ -426,7 +450,6 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
                 results,
                 request_id=dead_letter.job.request_id,
                 crawl=dead_letter.job.crawl,
-                urls=dead_letter.job.urls,
                 crawl_attempts=dead_letter.job.crawl_attempts,
                 crawl_steps=dead_letter.job.crawl_steps,
             )
@@ -513,7 +536,6 @@ class IngestionQueueClient:
         self,
         crawl: CrawlRecord,
         *,
-        urls: tuple[UrlRecord, ...],
         crawl_attempts: tuple[CrawlAttemptRecord, ...],
         request_id: str | None = None,
         crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
@@ -524,7 +546,6 @@ class IngestionQueueClient:
         state = await self._pending_state(
             request_id=request_id,
             crawl=crawl,
-            urls=urls,
             crawl_attempts=crawl_attempts,
             crawl_steps=crawl_steps,
         )
@@ -537,7 +558,6 @@ class IngestionQueueClient:
         self,
         crawl: CrawlRecord,
         *,
-        urls: tuple[UrlRecord, ...],
         crawl_attempts: tuple[CrawlAttemptRecord, ...],
         request_id: str | None = None,
         crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
@@ -548,7 +568,6 @@ class IngestionQueueClient:
         state = await self._pending_state(
             request_id=request_id,
             crawl=crawl,
-            urls=urls,
             crawl_attempts=crawl_attempts,
             crawl_steps=crawl_steps,
         )
@@ -558,7 +577,6 @@ class IngestionQueueClient:
             request_id=state.request_id,
             enqueued_at=state.enqueued_at,
             crawl=state.crawl,
-            urls=state.urls,
             crawl_attempts=state.crawl_attempts,
             crawl_steps=state.crawl_steps,
         )
@@ -589,7 +607,6 @@ class IngestionQueueClient:
         *,
         request_id: str,
         crawl: CrawlRecord,
-        urls: tuple[UrlRecord, ...],
         crawl_attempts: tuple[CrawlAttemptRecord, ...],
         crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
     ) -> IngestionState:
@@ -598,7 +615,6 @@ class IngestionQueueClient:
             self.results,
             request_id=request_id,
             crawl=crawl,
-            urls=urls,
             crawl_attempts=crawl_attempts,
             crawl_steps=crawl_steps,
         )
@@ -611,7 +627,6 @@ class IngestionQueueClient:
             request_id=state.request_id,
             enqueued_at=state.enqueued_at,
             crawl=state.crawl,
-            urls=state.urls,
             crawl_attempts=state.crawl_attempts,
             crawl_steps=state.crawl_steps,
         )

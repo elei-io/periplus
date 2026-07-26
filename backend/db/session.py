@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from config import get_str
+from config import get_float, get_int, get_str
 import db.models  # noqa: F401 - register every mapped table before ORM statements compile
 
 def get_database_url() -> str:
@@ -19,10 +19,17 @@ def get_database_url() -> str:
 
 @lru_cache
 def get_engine() -> Engine:
-    return create_engine(
+    engine = create_engine(
         get_database_url(),
         pool_pre_ping=True,
+        pool_size=get_int("ATLAS_POSTGRES_POOL_SIZE"),
+        max_overflow=0,
+        pool_timeout=get_float("ATLAS_POSTGRES_POOL_TIMEOUT_SECONDS"),
     )
+    from observability.postgres_metrics import instrument_postgres_pool
+
+    instrument_postgres_pool(engine)
+    return engine
 
 
 SessionLocal = sessionmaker(

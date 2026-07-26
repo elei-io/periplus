@@ -21,7 +21,6 @@ from control.catalogue_table_macros.service import (
     list_records,
     update_definition,
 )
-from repository.catalogue.operations import operation_lock
 from repository.catalogue.query import CatalogueQueryError
 from repository.catalogue.table_macros import (
     CatalogueTableMacroConflictError,
@@ -67,14 +66,11 @@ async def create(
     try:
 
         def operation(session, catalogue):
-            with operation_lock(
-                catalogue, f"catalogue-table-macro-create:{payload.slug}"
-            ):
-                return create_definition(
-                    session,
-                    CatalogueTableMacroStore(catalogue),
-                    **payload.model_dump(),
-                )
+            return create_definition(
+                session,
+                CatalogueTableMacroStore(catalogue),
+                **payload.model_dump(),
+            )
 
         return await control.run(operation)
     except (CatalogueTableMacroError, CatalogueQueryError, duckdb.Error) as exc:
@@ -97,20 +93,17 @@ async def update(
                 raise HTTPException(
                     status_code=409, detail="System table macros are read-only."
                 )
-            with operation_lock(
-                catalogue, f"catalogue-table-macro-update:{definition_id}"
-            ):
-                return update_definition(
-                    session,
-                    CatalogueTableMacroStore(catalogue),
-                    definition,
-                    expected_revision_id=payload.expected_definition_revision_id,
-                    parameters=payload.parameters,
-                    parameter_defaults=payload.parameter_defaults,
-                    sql=payload.sql,
-                    slug=payload.slug,
-                    description=payload.description,
-                )
+            return update_definition(
+                session,
+                CatalogueTableMacroStore(catalogue),
+                definition,
+                expected_revision_id=payload.expected_definition_revision_id,
+                parameters=payload.parameters,
+                parameter_defaults=payload.parameter_defaults,
+                sql=payload.sql,
+                slug=payload.slug,
+                description=payload.description,
+            )
 
         return await control.run(operation)
     except (CatalogueTableMacroError, CatalogueQueryError, duckdb.Error) as exc:
@@ -133,15 +126,12 @@ async def drop(
                 raise HTTPException(
                     status_code=409, detail="System table macros cannot be deleted."
                 )
-            with operation_lock(
-                catalogue, f"catalogue-table-macro-drop:{definition_id}"
-            ):
-                drop_definition(
-                    session,
-                    CatalogueTableMacroStore(catalogue),
-                    definition,
-                    expected_revision_id=expected_definition_revision_id,
-                )
+            drop_definition(
+                session,
+                CatalogueTableMacroStore(catalogue),
+                definition,
+                expected_revision_id=expected_definition_revision_id,
+            )
 
         await control.run(operation)
     except (CatalogueTableMacroError, duckdb.Error) as exc:

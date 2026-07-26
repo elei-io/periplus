@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from types import TracebackType
 from uuid import UUID
 from config.performance import (
@@ -19,7 +20,6 @@ from repository.catalogue import (
     CrawlAttemptRecord,
     CrawlRecord,
     CrawlStepRecord,
-    UrlRecord,
 )
 from observability import repository_metrics
 from repository.objects.html import HtmlIdentity
@@ -90,17 +90,31 @@ class RepositoryPipeline:
         *,
         captured_html: str,
         crawl: CrawlRecord,
+        source_url: str,
         identity: HtmlIdentity | None = None,
     ) -> CatalogueWriteResult:
         if not self._running:
             raise RuntimeError("repository pipeline is not running")
-        await self.store_raw(captured_html=captured_html, identity=identity)
-        return await self.submit_stored(crawl)
+        if crawl.content_captured_at is None:
+            raise ValueError("raw HTML storage requires content_captured_at")
+        await self.store_raw(
+            captured_html=captured_html,
+            source_url=source_url,
+            crawl_id=crawl.crawl_id,
+            captured_at=crawl.content_captured_at,
+            content_type=crawl.response_media_type or "text/html",
+            identity=identity,
+        )
+        return await self.submit_stored(crawl, crawl_attempts=())
 
     async def store_raw(
         self,
         *,
         captured_html: str,
+        source_url: str,
+        crawl_id: UUID,
+        captured_at: datetime,
+        content_type: str,
         identity: HtmlIdentity | None = None,
     ) -> None:
         if not self._running:
@@ -110,6 +124,10 @@ class RepositoryPipeline:
             stored = await asyncio.to_thread(
                 self.ingestor.store_raw,
                 captured_html,
+                source_url=source_url,
+                crawl_id=crawl_id,
+                captured_at=captured_at,
+                content_type=content_type,
                 identity=identity,
             )
         except BaseException:
@@ -130,7 +148,6 @@ class RepositoryPipeline:
         self,
         crawl: CrawlRecord,
         *,
-        urls: tuple[UrlRecord, ...],
         crawl_attempts: tuple[CrawlAttemptRecord, ...],
         request_id: str | None = None,
         crawl_steps: tuple[CrawlStepRecord, ...] | None = (),
@@ -139,7 +156,6 @@ class RepositoryPipeline:
             raise RuntimeError("repository pipeline is not running")
         return await self.queue.submit(
             crawl,
-            urls=urls,
             crawl_attempts=crawl_attempts,
             request_id=request_id,
             crawl_steps=crawl_steps,
@@ -150,6 +166,10 @@ class RepositoryPipeline:
         *,
         content,
         identity: ArtifactIdentity,
+        source_url: str,
+        crawl_id: UUID,
+        captured_at: datetime,
+        content_type: str,
     ) -> None:
         if not self._running:
             raise RuntimeError("repository pipeline is not running")
@@ -159,6 +179,10 @@ class RepositoryPipeline:
                 self.ingestor.artifact_repository.put,
                 content,
                 identity=identity,
+                source_url=source_url,
+                crawl_id=crawl_id,
+                captured_at=captured_at,
+                content_type=content_type,
             )
         except BaseException:
             repository_metrics.raw_write(
@@ -177,7 +201,6 @@ class RepositoryPipeline:
         self,
         crawl: CrawlRecord,
         *,
-        urls: tuple[UrlRecord, ...],
         crawl_attempts: tuple[CrawlAttemptRecord, ...],
         request_id: str | None = None,
         crawl_steps: tuple[CrawlStepRecord, ...] = (),
@@ -186,7 +209,6 @@ class RepositoryPipeline:
             raise RuntimeError("repository pipeline is not running")
         await self.queue.enqueue(
             crawl,
-            urls=urls,
             crawl_attempts=crawl_attempts,
             request_id=request_id,
             crawl_steps=crawl_steps,
@@ -210,18 +232,8 @@ class RepositoryPipeline:
                         f"DOM projection for {exc.crawl.document_id} remained stale after rebuild"
                     ) from exc
                 repaired_documents.add(exc.crawl.document_id)
-                url_ids = tuple(
-                    value
-                    for value in (
-                        exc.crawl.requested_url_id,
-                        exc.crawl.final_url_id,
-                    )
-                    if value is not None
-                )
-                stored_urls = self.ingestor.catalogue_service.get_urls(url_ids)
                 await self.submit_stored(
                     exc.crawl,
-                    urls=tuple(stored_urls.values()),
                     crawl_attempts=(),
                     request_id=projection_ingestion_request_id(exc.crawl.document_id),
                     crawl_steps=None,
@@ -260,18 +272,8 @@ class RepositoryPipeline:
                         f"DOM projection for {exc.crawl.document_id} remained stale after rebuild"
                     ) from exc
                 repaired_documents.add(exc.crawl.document_id)
-                url_ids = tuple(
-                    value
-                    for value in (
-                        exc.crawl.requested_url_id,
-                        exc.crawl.final_url_id,
-                    )
-                    if value is not None
-                )
-                stored_urls = self.ingestor.catalogue_service.get_urls(url_ids)
                 await self.submit_stored(
                     exc.crawl,
-                    urls=tuple(stored_urls.values()),
                     crawl_attempts=(),
                     request_id=projection_ingestion_request_id(exc.crawl.document_id),
                     crawl_steps=None,

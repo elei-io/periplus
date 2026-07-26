@@ -66,7 +66,9 @@ function StatusBadge({
       variant={
         status === "deleting" || status === "blocked_schema" || status === "failed"
           ? "destructive"
-          : status === "live" || status === "creating"
+          : status === "live" ||
+              status === "creating" ||
+              status === "backfilling"
             ? "default"
             : "secondary"
       }

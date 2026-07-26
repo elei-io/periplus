@@ -1,1 +1,1 @@
-"""DuckLake CDC to NATS catalogue event relay."""
+"""Basin CDC ingress and Atlas catalogue-event fan-out."""

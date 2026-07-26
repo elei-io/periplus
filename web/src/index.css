@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "@wterm/react/css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -47,6 +48,18 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+.wterm.atlas-wterm {
+  height: 100%;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.atlas-console-footer {
+  border-color: rgb(255 255 255 / 10%);
+  background: #1e1e1e;
+  color: #808080;
 }
 
 :root {
@@ -171,6 +184,23 @@
 
   .sql-workbench {
     box-shadow: 0 18px 50px oklch(0 0 0 / 5%), inset 0 1px 0 oklch(1 0 0 / 8%);
+  }
+
+  .atlas-wterm {
+    --term-bg: var(--background);
+    --term-fg: var(--foreground);
+    --term-cursor: var(--primary);
+    --term-color-1: var(--destructive);
+    --term-color-2: oklch(0.58 0.13 155);
+    --term-color-3: oklch(0.68 0.14 80);
+    --term-color-4: var(--primary);
+    --term-font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --term-font-size: 13px;
+    --term-row-height: 19px;
+    height: 100%;
+    border-radius: 0;
+    box-shadow: none;
+    padding: 16px;
   }
 
   .playground-command-bar {

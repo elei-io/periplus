@@ -1,4 +1,4 @@
-"""Atlas DuckLake CDC relay worker."""
+"""Basin CDC ingress worker for Atlas catalogue events."""
 
 from __future__ import annotations
 

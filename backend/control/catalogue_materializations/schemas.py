@@ -9,7 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 MaterializationDesiredState = Literal["live", "paused", "deleting"]
 MaterializationRefreshStrategy = Literal["keyed", "append", "full"]
 MaterializationObservedState = Literal[
-    "creating", "live", "paused", "deleting", "blocked_schema", "failed"
+    "creating",
+    "backfilling",
+    "live",
+    "paused",
+    "deleting",
+    "blocked_schema",
+    "failed",
 ]
 
 
@@ -43,6 +49,25 @@ class ViewMaterializationPut(BaseModel):
         if self.refresh_strategy == "full" and self.key_columns:
             raise ValueError("The full refresh strategy does not use key columns.")
         return self
+
+
+class ViewMaterializationEligibilityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_table: str = Field(min_length=1, max_length=63)
+    refresh_strategy: MaterializationRefreshStrategy
+    key_columns: list[str] = Field(default_factory=list, max_length=16)
+
+
+class MaterializationEligibilityDiagnostic(BaseModel):
+    code: str
+    severity: Literal["warning", "error"]
+    message: str
+
+
+class ViewMaterializationEligibility(BaseModel):
+    eligible: bool
+    diagnostics: list[MaterializationEligibilityDiagnostic]
 
 
 class CatalogueMaterializationStateUpdate(BaseModel):
@@ -86,6 +111,8 @@ class CatalogueMaterializationRecord(BaseModel):
     target_table_id: int | None
     ducklake_table_uuid: UUID | None
     bootstrap_snapshot: int | None
+    bootstrap_partition_count: int | None
+    bootstrap_partition_cursor: int | None
     processed_snapshot: int | None
     last_refreshed_at: datetime | None
     last_error: str | None

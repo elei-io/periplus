@@ -1,10 +1,16 @@
 """DuckLake catalogue behind the repository boundary."""
 
-from dataclasses import replace
-from tempfile import TemporaryDirectory
-
 from repository.catalogue.client import Catalogue
 from repository.catalogue.config import CatalogueConfig, catalogue_config_from_env
+from repository.catalogue.duckbasin import (
+    DuckBasinAuthenticationError,
+    DuckBasinClientMinter,
+    DuckBasinCredentialRejectedError,
+    DuckBasinError,
+    DuckBasinProtocolError,
+    DuckBasinUnavailableError,
+    ServiceAccountTokenProvider,
+)
 from repository.catalogue.exceptions import (
     CatalogueConfigError,
     CatalogueConflictError,
@@ -20,40 +26,46 @@ from repository.catalogue.records import (
     CrawlStepRecord,
     DocumentRecord,
     ElementRecord,
-    UrlRecord,
+    NormalizedUrl,
 )
-from repository.catalogue.service import CatalogueBatchEntry, CatalogueService
+from repository.catalogue.service import (
+    CatalogueBatchEntry,
+    CatalogueService,
+    ExistingCatalogueIdentities,
+)
 
 
 def catalogue_from_env(
     *,
     threads: int | None = None,
     memory_limit: str | None = None,
+    tokens: ServiceAccountTokenProvider | None = None,
 ):
-    """Open an embedded DuckDB connection to Atlas's shared DuckLake catalogue."""
+    """Mint one session-affine connection to Atlas's managed DuckLake."""
 
-    config = catalogue_config_from_env()
-    if threads is not None or memory_limit is not None:
-        config = replace(
+    if threads is not None and threads <= 0:
+        raise ValueError("threads must be greater than zero")
+    duckdb_config: dict[str, str] = {}
+    if threads is not None:
+        duckdb_config["threads"] = str(threads)
+    if memory_limit is not None:
+        duckdb_config["memory_limit"] = memory_limit
+    minter = DuckBasinClientMinter(tokens=tokens)
+    minted = None
+    try:
+        minted = minter.mint(duckdb_config=duckdb_config or None)
+        config = catalogue_config_from_env(alias=minted.catalogue_alias)
+        return Catalogue(
             config,
-            duckdb=replace(
-                config.duckdb,
-                threads=threads if threads is not None else config.duckdb.threads,
-                memory_limit=(
-                    memory_limit
-                    if memory_limit is not None
-                    else config.duckdb.memory_limit
-                ),
-            ),
+            minted=minted,
+            minter=minter,
+            duckdb_config=duckdb_config,
         )
-    temporary_directory = None
-    if config.duckdb.database == ":memory:" and config.duckdb.temp_directory is None:
-        temporary_directory = TemporaryDirectory(prefix="atlas-duckdb-")
-        config = replace(
-            config,
-            duckdb=replace(config.duckdb, temp_directory=temporary_directory.name),
-        )
-    return Catalogue(config, temporary_directory=temporary_directory)
+    except BaseException:
+        if minted is not None:
+            minted.close()
+        minter.close()
+        raise
 
 
 __all__ = [
@@ -64,6 +76,11 @@ __all__ = [
     "CatalogueConfigError",
     "CatalogueConflictError",
     "CatalogueError",
+    "DuckBasinAuthenticationError",
+    "DuckBasinCredentialRejectedError",
+    "DuckBasinError",
+    "DuckBasinProtocolError",
+    "DuckBasinUnavailableError",
     "CatalogueService",
     "CatalogueSchemaError",
     "CatalogueValidationError",
@@ -73,7 +90,9 @@ __all__ = [
     "CrawlStepRecord",
     "DocumentRecord",
     "ElementRecord",
-    "UrlRecord",
+    "ExistingCatalogueIdentities",
+    "ServiceAccountTokenProvider",
+    "NormalizedUrl",
     "catalogue_config_from_env",
     "catalogue_from_env",
 ]

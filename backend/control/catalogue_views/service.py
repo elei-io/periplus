@@ -15,6 +15,7 @@ from control.catalogue_materializations.service import (
     summary as materialization_summary,
 )
 from repository.catalogue.query import classify_select, compile_catalogue_definition
+from repository.catalogue.definition_compiler import compile_definition_authoring
 from repository.catalogue.views import (
     CatalogueViewConflictError,
     CatalogueViewStore,
@@ -129,7 +130,14 @@ def create_reference(
     description: str | None,
     created_from_query_revision_id: UUID | None = None,
 ) -> CatalogueViewRecord:
-    view = store.create(name=slug, sql=sql)
+    compile_definition_authoring(
+        store.catalogue,
+        sql,
+        kind="view",
+        schema_name="views",
+        object_name=slug,
+    )
+    view = store.create(name=slug, sql=sql, description=description)
     reference = _new_or_revived_reference(
         session, view, slug=slug, description=description
     )
@@ -149,6 +157,7 @@ def adopt_reference(
     view = store.get(view_uuid)
     if view is None:
         raise CatalogueViewConflictError("The DuckLake view no longer exists.")
+    store.set_comment(name=view.view_name, description=description)
     reference = _new_or_revived_reference(
         session, view, slug=slug, description=description
     )
@@ -189,6 +198,13 @@ def update_reference(
             "The view reference changed; refresh before editing."
         )
     classify_select(sql)
+    compile_definition_authoring(
+        store.catalogue,
+        sql,
+        kind="view",
+        schema_name=locked_reference.schema_name,
+        object_name=locked_reference.view_name,
+    )
     if materialization is not None:
         if compile_catalogue_definition(sql) != compile_catalogue_definition(
             materialization.source_sql
@@ -198,6 +214,7 @@ def update_reference(
             )
         locked_reference.slug = slug
         locked_reference.description = description
+        store.set_comment(name=locked_reference.view_name, description=description)
         _flush_reference(session)
         view = store.get(locked_reference.ducklake_view_uuid)
         if view is None:
@@ -207,7 +224,11 @@ def update_reference(
         )
     locked_reference.slug = slug
     locked_reference.description = description
-    view = store.replace(current_uuid=expected_uuid, sql=sql)
+    view = store.replace(
+        current_uuid=expected_uuid,
+        sql=sql,
+        description=description,
+    )
     _update_reference_identity(locked_reference, view)
     _flush_reference(session)
     return _record(view, locked_reference)

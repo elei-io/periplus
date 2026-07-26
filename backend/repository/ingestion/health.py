@@ -72,7 +72,13 @@ class HealthMonitor:
             )
         return 0.0 if pending <= 0 else max(0.0, now - last_progress)
 
-    def status(self) -> tuple[bool, str]:
+    def status(
+        self,
+        *,
+        include_liveness: bool = True,
+        include_queues: bool = True,
+        exclude_subsystems: frozenset[str] = frozenset(),
+    ) -> tuple[bool, str]:
         with self._lock:
             heartbeat_age = time.monotonic() - self._last_heartbeat
             dependencies_ready = self._dependencies_ready
@@ -80,14 +86,24 @@ class HealthMonitor:
             unavailable = {
                 name: detail
                 for name, (ready, detail) in self._subsystems.items()
-                if not ready
+                if not ready and name not in exclude_subsystems
             }
-            stalled = {
-                name: (pending, time.monotonic() - last_progress)
-                for name, (pending, _marker, last_progress, threshold) in self._queues.items()
-                if pending > 0 and time.monotonic() - last_progress > threshold
-            }
-        if heartbeat_age > self.heartbeat_timeout_seconds:
+            stalled = (
+                {
+                    name: (pending, time.monotonic() - last_progress)
+                    for name, (
+                        pending,
+                        _marker,
+                        last_progress,
+                        threshold,
+                    ) in self._queues.items()
+                    if pending > 0
+                    and time.monotonic() - last_progress > threshold
+                }
+                if include_queues
+                else {}
+            )
+        if include_liveness and heartbeat_age > self.heartbeat_timeout_seconds:
             return False, "event loop heartbeat is stale"
         if not dependencies_ready:
             return False, dependency_error or "dependencies are unavailable"

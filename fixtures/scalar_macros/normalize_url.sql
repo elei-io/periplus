@@ -1,3 +1,4 @@
+-- atlas:description=Normalizes a URL into Atlas canonical comparison form.
 CREATE OR REPLACE MACRO normalize_url(value) AS (
     WITH
     source AS (
@@ -50,34 +51,6 @@ CREATE OR REPLACE MACRO normalize_url(value) AS (
             END AS explicit_port
         FROM parts
     ),
-    query_items AS (
-        SELECT
-            authority_parts.*,
-            item,
-            ordinal,
-            try(
-                url_decode(
-                    replace(split_part(item, '=', 1), '+', ' ')
-                )
-            ) AS name,
-            try(
-                url_decode(
-                    replace(
-                        CASE
-                            WHEN strpos(item, '=') > 0
-                            THEN substring(item FROM strpos(item, '=') + 1)
-                            ELSE ''
-                        END,
-                        '+',
-                        ' '
-                    )
-                )
-            ) AS item_value
-        FROM authority_parts
-        LEFT JOIN unnest(string_split(raw_query, '&'))
-            WITH ORDINALITY query(item, ordinal)
-          ON item <> ''
-    ),
     normalized AS (
         SELECT
             url,
@@ -86,30 +59,8 @@ CREATE OR REPLACE MACRO normalize_url(value) AS (
             path,
             host,
             explicit_port,
-            string_agg(
-                replace(url_encode(name), '%20', '+')
-                    || '='
-                    || replace(url_encode(item_value), '%20', '+'),
-                '&'
-                ORDER BY name, item_value, ordinal
-            ) FILTER (
-                WHERE name IS NOT NULL
-                  AND NOT starts_with(lower(name), 'utm_')
-                  AND lower(name) NOT IN (
-                      'fbclid',
-                      'gclid',
-                      'dclid',
-                      'msclkid'
-                  )
-            ) AS query
-        FROM query_items
-        GROUP BY
-            url,
-            scheme,
-            authority,
-            path,
-            host,
-            explicit_port
+            raw_query AS query
+        FROM authority_parts
     )
     SELECT CASE
         WHEN scheme NOT IN ('http', 'https')

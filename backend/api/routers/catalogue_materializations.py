@@ -9,11 +9,15 @@ from control.catalogue_materializations.schemas import (
     CatalogueMaterializationListResponse,
     CatalogueMaterializationStateUpdate,
     CatalogueMaterializationRecord,
+    ViewMaterializationEligibility,
+    ViewMaterializationEligibilityRequest,
     ViewMaterializationPut,
 )
 from control.catalogue_materializations.service import (
     get_model,
     list_records,
+    materialization_eligibility,
+    materialization_store,
     put_for_view,
     record,
     request_dematerialization,
@@ -22,9 +26,7 @@ from control.catalogue_materializations.service import (
 from repository.catalogue.materializations import (
     MaterializationConflictError,
     MaterializationError,
-    MaterializationStore,
 )
-from repository.catalogue.operations import operation_lock
 from repository.catalogue.query import CatalogueQueryError
 
 router = APIRouter(tags=["catalogue-materializations"])
@@ -71,13 +73,12 @@ async def materialize_view(
     control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
 ) -> CatalogueMaterializationRecord:
     def operation(session, catalogue):
-        with operation_lock(catalogue, f"materialize-view:{view_reference_id}"):
-            return put_for_view(
-                session,
-                MaterializationStore(catalogue),
-                view_reference_id=view_reference_id,
-                **payload.model_dump(),
-            )
+        return put_for_view(
+            session,
+            materialization_store(session, catalogue),
+            view_reference_id=view_reference_id,
+            **payload.model_dump(),
+        )
 
     try:
         return await control.run(operation)
@@ -87,6 +88,29 @@ async def materialize_view(
         duckdb.Error,
         LookupError,
     ) as exc:
+        _raise(exc)
+
+
+@router.post(
+    "/catalogue/views/{view_reference_id}/materialization-eligibility",
+    response_model=ViewMaterializationEligibility,
+)
+async def materialization_eligibility_for_view(
+    view_reference_id: UUID,
+    payload: ViewMaterializationEligibilityRequest,
+    control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
+) -> ViewMaterializationEligibility:
+    def operation(session, catalogue):
+        return materialization_eligibility(
+            session,
+            materialization_store(session, catalogue),
+            view_reference_id=view_reference_id,
+            **payload.model_dump(),
+        )
+
+    try:
+        return await control.run(operation)
+    except (CatalogueQueryError, duckdb.Error, LookupError) as exc:
         _raise(exc)
 
 

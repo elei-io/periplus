@@ -21,7 +21,6 @@ from control.catalogue_scalar_macros.service import (
     list_records,
     update_definition,
 )
-from repository.catalogue.operations import operation_lock
 from repository.catalogue.scalar_macros import (
     CatalogueScalarMacroConflictError,
     CatalogueScalarMacroError,
@@ -66,14 +65,11 @@ async def create(
     try:
 
         def operation(session, catalogue):
-            with operation_lock(
-                catalogue, f"catalogue-scalar-macro-create:{payload.slug}"
-            ):
-                return create_definition(
-                    session,
-                    CatalogueScalarMacroStore(catalogue),
-                    **payload.model_dump(),
-                )
+            return create_definition(
+                session,
+                CatalogueScalarMacroStore(catalogue),
+                **payload.model_dump(),
+            )
 
         return await control.run(operation)
     except (CatalogueScalarMacroError, duckdb.Error) as exc:
@@ -92,19 +88,16 @@ async def update(
             definition = get_definition(session, definition_id)
             if definition is None:
                 raise HTTPException(status_code=404, detail="Scalar macro not found.")
-            with operation_lock(
-                catalogue, f"catalogue-scalar-macro-update:{definition_id}"
-            ):
-                return update_definition(
-                    session,
-                    CatalogueScalarMacroStore(catalogue),
-                    definition,
-                    expected_revision_id=payload.expected_definition_revision_id,
-                    parameters=payload.parameters,
-                    sql=payload.sql,
-                    slug=payload.slug,
-                    description=payload.description,
-                )
+            return update_definition(
+                session,
+                CatalogueScalarMacroStore(catalogue),
+                definition,
+                expected_revision_id=payload.expected_definition_revision_id,
+                parameters=payload.parameters,
+                sql=payload.sql,
+                slug=payload.slug,
+                description=payload.description,
+            )
 
         return await control.run(operation)
     except (CatalogueScalarMacroError, duckdb.Error) as exc:
@@ -123,15 +116,12 @@ async def drop(
             definition = get_definition(session, definition_id)
             if definition is None:
                 raise HTTPException(status_code=404, detail="Scalar macro not found.")
-            with operation_lock(
-                catalogue, f"catalogue-scalar-macro-drop:{definition_id}"
-            ):
-                drop_definition(
-                    session,
-                    CatalogueScalarMacroStore(catalogue),
-                    definition,
-                    expected_revision_id=expected_definition_revision_id,
-                )
+            drop_definition(
+                session,
+                CatalogueScalarMacroStore(catalogue),
+                definition,
+                expected_revision_id=expected_definition_revision_id,
+            )
 
         await control.run(operation)
     except (CatalogueScalarMacroError, duckdb.Error) as exc:

@@ -96,6 +96,9 @@ class FrozenGraphEdge(BaseModel):
     source_node_id: UUID
     target_node_id: UUID
     sql: str
+    executable_sql: str | None = None
+    uses_catalogue: bool | None = None
+    catalogue_revision: str | None = None
     dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph
 
 

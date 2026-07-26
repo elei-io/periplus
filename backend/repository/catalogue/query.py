@@ -2,40 +2,24 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterator
 from dataclasses import dataclass
-from enum import StrEnum
 
+import duckdb
 import pyarrow as pa
-from sqlglot import exp, parse
-from sqlglot.errors import ParseError
+from sqlglot import exp
 
+from atlas_sql import (
+    CatalogueLintDiagnostic,
+    CatalogueQueryError,
+    ClassifiedCatalogueStatement,
+    CatalogueStatementKind,
+    classify_catalogue_statement,
+    classify_select,
+    lint_catalogue_statement,
+    lint_select,
+)
 from repository.catalogue.client import Catalogue
-
-
-class CatalogueQueryError(ValueError):
-    """Raised when catalogue SQL is invalid or is not a single read query."""
-
-
-class CatalogueStatementKind(StrEnum):
-    QUERY = "query"
-    EXPLAIN = "explain"
-    EXPLAIN_ANALYZE = "explain_analyze"
-
-
-@dataclass(frozen=True, slots=True)
-class ClassifiedCatalogueStatement:
-    kind: CatalogueStatementKind
-    sql: str
-    query: exp.Query
-
-
-@dataclass(frozen=True, slots=True)
-class CatalogueLintDiagnostic:
-    code: str
-    severity: str
-    message: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,10 +29,6 @@ class PreparedCatalogueQuery:
     namespace: str
 
 
-_DOM_HELPERS = frozenset({"inner_html", "readable_text", "text_content"})
-_MANAGED_ROW_TABLES = frozenset({"artifacts", "crawls", "documents", "elements"})
-_MAX_DOM_HELPER_INPUT_ROWS = 10_000
-_ABSURD_LIMIT = 100_000
 _INTERACTIVE_SCHEMAS = frozenset({"main", "macros", "views"})
 _FORBIDDEN_INTERACTIVE_FUNCTIONS = frozenset(
     {
@@ -85,62 +65,13 @@ _FORBIDDEN_INTERACTIVE_FUNCTIONS = frozenset(
     }
 )
 _FORBIDDEN_INTERACTIVE_RELATION_PREFIXES = (
+    "_atlas_",
     "duckdb_",
     "pg_",
     "pragma_",
     "quack_",
     "sqlite_",
 )
-_EXPLAIN_PREFIX = re.compile(r"(?is)\A(?:\s|--[^\n]*(?:\n|\Z)|/\*.*?\*/)*EXPLAIN\b")
-
-
-def classify_select(sql: str) -> exp.Query:
-    """Parse one DuckDB statement and require a query expression."""
-
-    if not sql.strip():
-        raise CatalogueQueryError("SQL must not be empty")
-    try:
-        statements = [
-            statement for statement in parse(sql, dialect="duckdb") if statement
-        ]
-    except ParseError as exc:
-        raise CatalogueQueryError(f"invalid SQL: {exc}") from exc
-    if len(statements) != 1:
-        raise CatalogueQueryError("exactly one SQL statement is required")
-    statement = statements[0]
-    if not isinstance(statement, exp.Query):
-        raise CatalogueQueryError("only SELECT queries are allowed")
-    return statement
-
-
-def classify_catalogue_statement(sql: str) -> ClassifiedCatalogueStatement:
-    """Classify one native query or EXPLAIN statement and validate its inner query."""
-
-    explain = _EXPLAIN_PREFIX.match(sql)
-    if not explain:
-        query = classify_select(sql)
-        return ClassifiedCatalogueStatement(
-            kind=CatalogueStatementKind.QUERY,
-            sql=sql,
-            query=query,
-        )
-
-    inner_sql = sql[explain.end() :].strip()
-    analyze = re.match(r"(?is)^ANALYZE\b", inner_sql)
-    if analyze:
-        inner_sql = inner_sql[analyze.end() :].strip()
-    query = classify_select(inner_sql)
-    return ClassifiedCatalogueStatement(
-        kind=(
-            CatalogueStatementKind.EXPLAIN_ANALYZE
-            if analyze
-            else CatalogueStatementKind.EXPLAIN
-        ),
-        sql=inner_sql,
-        query=query,
-    )
-
-
 def validate_interactive_catalogue_statement(
     sql: str,
     *,
@@ -189,172 +120,40 @@ def validate_interactive_catalogue_statement(
     return statement
 
 
-def lint_catalogue_statement(sql: str) -> list[CatalogueLintDiagnostic]:
-    """Lint the query contained in a native query or EXPLAIN statement."""
-
-    try:
-        classified = classify_catalogue_statement(sql)
-    except CatalogueQueryError:
-        return []
-    return lint_select(classified.sql)
-
-
-def lint_select(sql: str) -> list[CatalogueLintDiagnostic]:
-    """Return advisory performance diagnostics for valid catalogue SQL."""
-
-    try:
-        statement = classify_select(sql)
-    except CatalogueQueryError:
-        return []
-
-    diagnostics: list[CatalogueLintDiagnostic] = []
-    bounded_ctes = _bounded_materialized_ctes(statement)
-    uses_bounded_source = _uses_outer_cte(statement, bounded_ctes)
-
-    if _uses_outer_dom_helper(statement) and not uses_bounded_source:
-        diagnostics.append(
-            CatalogueLintDiagnostic(
-                code="unbounded_dom_helper",
-                severity="warning",
-                message=(
-                    "DOM helpers may expand across every matching element before an outer "
-                    "LIMIT is applied. Select at most 10,000 elements in a MATERIALIZED CTE "
-                    "before calling macros.text_content(), macros.readable_text(), or "
-                    "macros.inner_html()."
-                ),
-            )
-        )
-
-    large_limits = [
-        value
-        for query in statement.find_all(exp.Query)
-        if (value := _literal_limit(query)) is not None and value > _ABSURD_LIMIT
-    ]
-    if large_limits:
-        diagnostics.append(
-            CatalogueLintDiagnostic(
-                code="absurd_limit",
-                severity="warning",
-                message=(
-                    f"LIMIT {max(large_limits):,} is unusually large for the interactive SQL "
-                    f"workbench. Consider {_ABSURD_LIMIT:,} rows or fewer."
-                ),
-            )
-        )
-
-    if (
-        _literal_limit(statement) is None
-        and not uses_bounded_source
-        and _reads_managed_rows(statement)
-        and not _is_single_aggregate(statement)
-    ):
-        diagnostics.append(
-            CatalogueLintDiagnostic(
-                code="missing_limit",
-                severity="warning",
-                message=(
-                    "This query may return many rows and has no outer LIMIT. Add a LIMIT for "
-                    "interactive exploration."
-                ),
-            )
-        )
-
-    return diagnostics
-
-
-def _bounded_materialized_ctes(statement: exp.Query) -> set[str]:
-    bounded: set[str] = set()
-    for cte in statement.find_all(exp.CTE):
-        limit = _literal_limit(cte.this) if isinstance(cte.this, exp.Query) else None
-        if cte.args.get("materialized") is True and limit is not None:
-            if limit <= _MAX_DOM_HELPER_INPUT_ROWS:
-                bounded.add(cte.alias_or_name.lower())
-    return bounded
-
-
-def _uses_outer_cte(statement: exp.Query, aliases: set[str]) -> bool:
-    if not aliases:
-        return False
-    return any(
-        table.name.lower() in aliases and table.find_ancestor(exp.CTE) is None
-        for table in statement.find_all(exp.Table)
-    )
-
-
-def _uses_outer_dom_helper(statement: exp.Query) -> bool:
-    for function in statement.find_all(exp.Func):
-        if function.find_ancestor(exp.CTE) is not None:
-            continue
-        name = (
-            function.name
-            if isinstance(function, exp.Anonymous)
-            else function.sql_name()
-        )
-        if name.lower() in _DOM_HELPERS:
-            return True
-    return False
-
-
-def _reads_managed_rows(statement: exp.Query) -> bool:
-    return any(
-        table.name.lower() in _MANAGED_ROW_TABLES
-        for table in statement.find_all(exp.Table)
-    )
-
-
-def _is_single_aggregate(statement: exp.Query) -> bool:
-    return (
-        isinstance(statement, exp.Select)
-        and statement.args.get("group") is None
-        and any(statement.find_all(exp.AggFunc))
-    )
-
-
-def _literal_limit(query: exp.Query) -> int | None:
-    limit = query.args.get("limit")
-    expression = limit.args.get("expression") if isinstance(limit, exp.Limit) else None
-    if not isinstance(expression, exp.Literal) or expression.is_string:
-        return None
-    try:
-        return int(expression.this)
-    except ValueError:
-        return None
-
-
-def execute_arrow_query(
+def trusted_execute_arrow_query(
     catalogue: Catalogue,
     sql: str,
     parameters: dict[str, object] | None = None,
 ) -> pa.RecordBatchReader:
-    """Execute a validated query in the managed catalogue namespace."""
+    """Execute trusted Atlas benchmark SQL in the managed namespace."""
 
     prepared = prepare_catalogue_query(catalogue, sql, parameters)
-    catalogue.connection.execute(f"USE {prepared.namespace}")
+    catalogue.trusted_connection.execute(f"USE {prepared.namespace}")
     cursor = (
-        catalogue.connection.execute(prepared.sql, prepared.bindings)
+        catalogue.trusted_connection.execute(prepared.sql, prepared.bindings)
         if prepared.bindings
-        else catalogue.connection.execute(prepared.sql)
+        else catalogue.trusted_connection.execute(prepared.sql)
     )
     return cursor.to_arrow_reader(batch_size=65_536)
 
 
-def explain_arrow_query(
+def trusted_explain_arrow_query(
     catalogue: Catalogue,
     sql: str,
     parameters: dict[str, object] | None = None,
     *,
     analyze: bool = False,
 ) -> pa.RecordBatchReader:
-    """Return DuckDB's JSON plan, optionally with execution measurements."""
+    """Explain trusted Atlas benchmark SQL with optional measurements."""
 
     prepared = prepare_catalogue_query(catalogue, sql, parameters)
-    catalogue.connection.execute(f"USE {prepared.namespace}")
+    catalogue.trusted_connection.execute(f"USE {prepared.namespace}")
     modifier = "ANALYZE, FORMAT JSON" if analyze else "FORMAT JSON"
     explain_sql = f"EXPLAIN ({modifier}) {prepared.sql}"
     cursor = (
-        catalogue.connection.execute(explain_sql, prepared.bindings)
+        catalogue.trusted_connection.execute(explain_sql, prepared.bindings)
         if prepared.bindings
-        else catalogue.connection.execute(explain_sql)
+        else catalogue.trusted_connection.execute(explain_sql)
     )
     return cursor.to_arrow_reader(batch_size=65_536)
 

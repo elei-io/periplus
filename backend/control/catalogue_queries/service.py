@@ -35,7 +35,12 @@ def create_query(
     query = CatalogueQuery(slug=slug, description=description)
     session.add(query)
     _flush_slug(session)
-    revision = _append_revision(query, sql=sql, change_note=change_note, number=1)
+    revision = _append_revision(
+        query,
+        sql=sql,
+        change_note=change_note,
+        number=1,
+    )
     session.add(revision)
     session.flush()
     query.current_revision_id = revision.id
@@ -99,7 +104,10 @@ def update_query(
             or 0
         ) + 1
         revision = _append_revision(
-            locked, sql=sql, change_note=change_note, number=next_number
+            locked,
+            sql=sql,
+            change_note=change_note,
+            number=next_number,
         )
         session.add(revision)
         session.flush()
@@ -202,7 +210,11 @@ def _current_revision(query: CatalogueQuery) -> CatalogueQueryRevision:
 
 
 def _append_revision(
-    query: CatalogueQuery, *, sql: str, change_note: str | None, number: int
+    query: CatalogueQuery,
+    *,
+    sql: str,
+    change_note: str | None,
+    number: int,
 ) -> CatalogueQueryRevision:
     return CatalogueQueryRevision(
         query=query,

@@ -39,12 +39,15 @@ def list_(
 
 
 @router.post("/", response_model=CatalogueQueryDetail, status_code=201)
-def create(
+async def create(
     payload: CatalogueQueryCreate,
     session: Annotated[Session, Depends(get_session)],
 ) -> CatalogueQueryDetail:
     try:
-        return create_query(session, **payload.model_dump())
+        return create_query(
+            session,
+            **payload.model_dump(),
+        )
     except CatalogueQueryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except CatalogueQueryError as exc:
@@ -62,7 +65,7 @@ def get(
 
 
 @router.put("/{query_id}", response_model=CatalogueQueryDetail)
-def update(
+async def update(
     query_id: UUID,
     payload: CatalogueQueryUpdate,
     session: Annotated[Session, Depends(get_session)],
@@ -88,7 +91,7 @@ def update(
 
 
 @router.post("/{query_id}/revisions/{revision_id}/restore", response_model=CatalogueQueryDetail)
-def restore_revision_(
+async def restore_revision_(
     query_id: UUID,
     revision_id: UUID,
     payload: CatalogueQueryRestore,

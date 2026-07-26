@@ -1,17 +1,16 @@
-"""JetStream work and KV-backed current crawl-graph execution state."""
+"""JetStream graph-work contracts and Postgres runtime read models."""
 
 from __future__ import annotations
 
 import hashlib
-import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID, uuid4
 
 from config import get_float, get_int
 from config.performance import GRAPH_ACK_WAIT_SECONDS, GRAPH_CONSUMER_MAX_ACK_PENDING
 from nats.js.api import AckPolicy, ConsumerConfig, KeyValueConfig, RetentionPolicy, StorageType, StreamConfig
-from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError, KeyNotFoundError, KeyWrongLastSequenceError, NotFoundError
+from nats.js.errors import BadRequestError, BucketNotFoundError, KeyDeletedError, KeyNotFoundError, NotFoundError
 from pydantic import BaseModel, ConfigDict, Field
 from control.crawl_graphs.schemas import (
     DEFAULT_GRAPH_RUN_MAX_CRAWLS,
@@ -32,13 +31,19 @@ NAVIGATION_READINESS_SUBJECT = "atlas.graph.navigation.readiness"
 CRAWL_CONSUMER = "atlas-graph-crawl-workers"
 EDGE_CONSUMER = "atlas-graph-edge-workers"
 NAVIGATION_READINESS_CONSUMER = "atlas-graph-navigation-readiness-workers"
-RUNS_BUCKET = "atlas_graph_runs"
-REQUESTS_BUCKET = "atlas_crawl_requests"
 WORKERS_BUCKET = "atlas_graph_workers"
-PROGRESS_BUCKET = "atlas_graph_progress"
 
-GraphRunStatus = Literal["queued", "running", "completed", "completed_with_errors", "failed", "cancelled"]
+GraphRunStatus = Literal[
+    "queued",
+    "running",
+    "paused",
+    "completed",
+    "completed_with_errors",
+    "failed",
+    "cancelled",
+]
 CrawlRequestStatus = Literal["queued", "crawling", "awaiting_navigation", "evaluating_edges", "completed", "failed", "cancelled"]
+CatalogueConsistency = Literal["run_frozen"]
 FailureStage = Literal[
     "admission",
     "connection",
@@ -51,33 +56,6 @@ FailureStage = Literal[
 ]
 TriggerKind = Literal["manual", "schedule"]
 MAX_GRAPH_RUN_FAILURE_GROUPS = 32
-
-
-class PendingAdmission(BaseModel):
-    """Frozen request creation/publication intent stored with the run reservation."""
-
-    model_config = ConfigDict(frozen=True)
-    request_id: UUID
-    identity: str
-    node_id: UUID
-    url: str
-    effective_policy_snapshot_json: dict
-    source_crawl_id: UUID | None = None
-    source_edge_id: UUID | None = None
-    parent_request_id: UUID | None = None
-    created_at: datetime
-
-
-class AdmissionReservation(BaseModel):
-    """Sharded deduplication and recovery marker for one admission identity."""
-
-    model_config = ConfigDict(frozen=True)
-    identity: str
-    graph_run_id: UUID
-    request_id: UUID | None = None
-    pending: PendingAdmission | None = None
-    counted: bool = False
-    delivered: bool = False
 
 
 class GraphRunFailureGroup(BaseModel):
@@ -100,13 +78,14 @@ class GraphRun(BaseModel):
     trigger_kind: TriggerKind
     trigger_schedule_id: UUID | None = None
     catalogue_snapshot_id: int | None = Field(default=None, ge=0)
+    catalogue_consistency: CatalogueConsistency = "run_frozen"
+    generation: int = Field(default=1, ge=1)
     status: GraphRunStatus = "queued"
     snapshot: FrozenGraphSnapshot
     trigger_urls: tuple[str, ...]
     max_crawls: int = Field(default=DEFAULT_GRAPH_RUN_MAX_CRAWLS, ge=1, le=MAX_GRAPH_RUN_CRAWLS)
     crawl_limit_reached: bool = False
     root_admission_cursor: int = Field(default=0, ge=0)
-    pending_admissions: tuple[PendingAdmission, ...] = ()
     request_count: int = 0
     pending_request_count: int = 0
     acquisition_pending_count: int = Field(default=0, ge=0)
@@ -117,6 +96,9 @@ class GraphRun(BaseModel):
     started_at: datetime | None = None
     last_progress_at: datetime | None = None
     completed_at: datetime | None = None
+    paused_at: datetime | None = None
+    not_before: datetime | None = None
+    deadline_at: datetime | None = None
     cancel_requested_at: datetime | None = None
     error: str | None = None
 
@@ -133,6 +115,9 @@ class CrawlRequest(BaseModel):
     source_edge_id: UUID | None = None
     parent_request_id: UUID | None = None
     status: CrawlRequestStatus = "queued"
+    generation: int = Field(default=1, ge=1)
+    priority: int = 0
+    not_before: datetime | None = None
     claim_token: UUID | None = None
     claim_expires_at: datetime | None = None
     created_at: datetime
@@ -146,6 +131,7 @@ class CrawlRequest(BaseModel):
 class CrawlWork(BaseModel):
     model_config = ConfigDict(frozen=True)
     crawl_request_id: UUID
+    generation: int = Field(default=1, ge=1)
 
 
 class EdgeWork(BaseModel):
@@ -154,6 +140,7 @@ class EdgeWork(BaseModel):
     crawl_request_id: UUID
     crawl_id: UUID
     edge_id: UUID
+    generation: int = Field(default=1, ge=1)
     navigation: NavigationPackage
     catalogue_snapshot_id: int | None = Field(default=None, ge=0)
 
@@ -181,6 +168,7 @@ class NavigationReadinessWork(BaseModel):
     crawl_id: UUID
     graph_run_id: UUID
     crawl_request_id: UUID
+    generation: int = Field(default=1, ge=1)
     navigation: NavigationPackage | None = None
     occurred_at: datetime
 
@@ -239,6 +227,7 @@ def new_graph_run(
     trigger_schedule_id: UUID | None = None,
     catalogue_snapshot_id: int | None = None,
     max_crawls: int = DEFAULT_GRAPH_RUN_MAX_CRAWLS,
+    max_run_seconds: int | None = None,
 ) -> GraphRun:
     now = now or datetime.now(UTC)
     normalized = tuple(dict.fromkeys(normalize_request_url(url) for url in urls))
@@ -265,6 +254,11 @@ def new_graph_run(
         trigger_urls=normalized,
         max_crawls=max_crawls,
         created_at=now,
+        deadline_at=(
+            now + timedelta(seconds=max_run_seconds)
+            if max_run_seconds is not None
+            else None
+        ),
     )
 
 
@@ -348,8 +342,8 @@ async def ensure_graph_storage(jetstream):
             max_ack_pending=pending,
             max_deliver=-1,
         )
-        await jetstream.add_consumer(GRAPH_STREAM, config=expected)
-        actual = (await jetstream.consumer_info(GRAPH_STREAM, durable)).config
+        consumer = await _ensure_consumer(jetstream, expected)
+        actual = consumer.config
         if (
             actual.ack_policy != AckPolicy.EXPLICIT
             or actual.ack_wait != ack_wait
@@ -361,31 +355,6 @@ async def ensure_graph_storage(jetstream):
                 f"JetStream consumer {durable} has the superseded graph-work contract; "
                 "reset disposable NATS state before starting Atlas"
             )
-    state_bytes = get_int("ATLAS_GRAPH_STATE_MAX_BYTES")
-    runs = await _bucket(
-        jetstream,
-        KeyValueConfig(
-            bucket=RUNS_BUCKET,
-            description="Recent Atlas graph-run execution state",
-            history=1,
-            ttl=get_float("ATLAS_GRAPH_RUN_TTL_SECONDS"),
-            max_bytes=state_bytes,
-            storage=StorageType.FILE,
-            replicas=replicas,
-        ),
-    )
-    requests = await _bucket(
-        jetstream,
-        KeyValueConfig(
-            bucket=REQUESTS_BUCKET,
-            description="Recent Atlas crawl-request and edge-evaluation state",
-            history=1,
-            ttl=get_float("ATLAS_CRAWL_REQUEST_TTL_SECONDS"),
-            max_bytes=state_bytes,
-            storage=StorageType.FILE,
-            replicas=replicas,
-        ),
-    )
     workers = await _bucket(
         jetstream,
         KeyValueConfig(
@@ -398,22 +367,28 @@ async def ensure_graph_storage(jetstream):
             replicas=replicas,
         ),
     )
-    return runs, requests, workers
+    from .graph_store import AsyncGraphRuntimeStore
+
+    runtime = AsyncGraphRuntimeStore()
+    return runtime, runtime, workers
 
 
-async def ensure_graph_progress_storage(jetstream):
-    return await _bucket(
-        jetstream,
-        KeyValueConfig(
-            bucket=PROGRESS_BUCKET,
-            description="Current per-component Atlas graph progress",
-            history=1,
-            ttl=get_float("ATLAS_GRAPH_PROGRESS_TTL_SECONDS"),
-            max_bytes=get_int("ATLAS_GRAPH_STATE_MAX_BYTES"),
-            storage=StorageType.FILE,
-            replicas=get_int("ATLAS_GRAPH_STREAM_REPLICAS"),
-        ),
-    )
+async def _ensure_consumer(jetstream, expected: ConsumerConfig):
+    durable = expected.durable_name
+    if durable is None:
+        raise ValueError("graph consumer requires a durable name")
+    try:
+        return await jetstream.consumer_info(GRAPH_STREAM, durable)
+    except NotFoundError:
+        try:
+            return await jetstream.add_consumer(
+                GRAPH_STREAM,
+                config=expected,
+            )
+        except BadRequestError:
+            # Another process may have created the durable after our lookup.
+            # Attach to it instead of reconfiguring it.
+            return await jetstream.consumer_info(GRAPH_STREAM, durable)
 
 
 async def _get(bucket, key: str, model):
@@ -425,80 +400,31 @@ async def _get(bucket, key: str, model):
 
 
 async def get_graph_run(bucket, run_id: UUID) -> GraphRun | None:
-    return await _get(bucket, run_id.hex, GraphRun)
+    return await bucket.get_run(run_id)
 
 
 async def get_crawl_request(bucket, request_id: UUID) -> CrawlRequest | None:
-    return await _get(bucket, request_id.hex, CrawlRequest)
-
-
-def edge_evaluation_key(identity: str) -> str:
-    return f"edge-{identity}"
-
-
-def admission_reservation_key(identity: str) -> str:
-    return f"admission-{identity}"
-
-
-async def get_admission_reservation(
-    bucket, identity: str
-) -> AdmissionReservation | None:
-    return await _get(
-        bucket, admission_reservation_key(identity), AdmissionReservation
-    )
-
-
-async def update_admission_reservation(bucket, identity: str, mutate):
-    return await _update(
-        bucket,
-        admission_reservation_key(identity),
-        AdmissionReservation,
-        mutate,
-    )
+    return await bucket.get_request(request_id)
 
 
 async def get_edge_evaluation(bucket, identity: str) -> EdgeEvaluation | None:
-    return await _get(bucket, edge_evaluation_key(identity), EdgeEvaluation)
-
-
-async def _update(bucket, key: str, model, mutate):
-    while True:
-        try:
-            entry = await bucket.get(key)
-        except (KeyNotFoundError, KeyDeletedError) as exc:
-            raise KeyError(key) from exc
-        current = model.model_validate_json(entry.value)
-        updated = mutate(current)
-        if updated is current or updated == current:
-            return current
-        try:
-            await bucket.update(key, updated.model_dump_json().encode(), last=entry.revision)
-            return updated
-        except KeyWrongLastSequenceError:
-            continue
+    return await bucket.get_edge_evaluation(identity)
 
 
 async def update_graph_run(bucket, run_id: UUID, mutate) -> GraphRun:
-    return await _update(bucket, run_id.hex, GraphRun, mutate)
+    return await bucket.update_run(run_id, mutate)
 
 
 async def update_crawl_request(bucket, request_id: UUID, mutate) -> CrawlRequest:
-    return await _update(bucket, request_id.hex, CrawlRequest, mutate)
+    return await bucket.update_request(request_id, mutate)
 
 
 async def update_edge_evaluation(bucket, identity: str, mutate) -> EdgeEvaluation:
-    return await _update(bucket, edge_evaluation_key(identity), EdgeEvaluation, mutate)
+    return await bucket.update_edge_evaluation(identity, mutate)
 
 
 async def list_graph_runs(bucket) -> list[GraphRun]:
-    keys = await _list_keys(bucket)
-    values: list[GraphRun] = []
-    for start in range(0, len(keys), 64):
-        batch = await asyncio.gather(
-            *(_get(bucket, key, GraphRun) for key in keys[start : start + 64])
-        )
-        values.extend(value for value in batch if value is not None)
-    return values
+    return await bucket.list_runs()
 
 
 async def list_worker_states(bucket) -> list[WorkerState]:
@@ -511,55 +437,11 @@ async def list_worker_states(bucket) -> list[WorkerState]:
 
 
 async def list_crawl_requests(bucket, *, graph_run_id: UUID | None = None) -> list[CrawlRequest]:
-    keys = await _list_keys(bucket)
-    request_keys = [key for key in keys if _is_request_key(key)]
-    values: list[CrawlRequest] = []
-    for start in range(0, len(request_keys), 64):
-        batch = await asyncio.gather(
-            *(_get(bucket, key, CrawlRequest) for key in request_keys[start : start + 64])
-        )
-        values.extend(
-            value for value in batch
-            if value is not None and (graph_run_id is None or value.graph_run_id == graph_run_id)
-        )
-    return values
-
-
-async def list_admission_reservations(
-    bucket, *, graph_run_id: UUID | None = None
-) -> list[AdmissionReservation]:
-    keys = await _list_keys(bucket)
-    reservation_keys = [key for key in keys if key.startswith("admission-")]
-    values: list[AdmissionReservation] = []
-    for start in range(0, len(reservation_keys), 64):
-        batch = await asyncio.gather(
-            *(
-                _get(bucket, key, AdmissionReservation)
-                for key in reservation_keys[start : start + 64]
-            )
-        )
-        values.extend(
-            value
-            for value in batch
-            if value is not None
-            and (graph_run_id is None or value.graph_run_id == graph_run_id)
-        )
-    return values
+    return await bucket.list_requests(graph_run_id=graph_run_id)
 
 
 async def list_edge_evaluations(bucket, *, graph_run_id: UUID | None = None) -> list[EdgeEvaluation]:
-    keys = await _list_keys(bucket)
-    evaluation_keys = [key for key in keys if key.startswith("edge-")]
-    values: list[EdgeEvaluation] = []
-    for start in range(0, len(evaluation_keys), 64):
-        batch = await asyncio.gather(
-            *(_get(bucket, key, EdgeEvaluation) for key in evaluation_keys[start : start + 64])
-        )
-        values.extend(
-            value for value in batch
-            if value is not None and (graph_run_id is None or value.graph_run_id == graph_run_id)
-        )
-    return values
+    return await bucket.list_edge_evaluations(graph_run_id=graph_run_id)
 
 
 async def _list_keys(bucket) -> list[str]:
@@ -597,18 +479,3 @@ def _is_request_key(key: str) -> bool:
     except ValueError:
         return False
     return True
-
-
-async def publish_crawl(jetstream, request: CrawlRequest) -> None:
-    work = CrawlWork(crawl_request_id=request.id)
-    await jetstream.publish(
-        CRAWL_SUBJECT,
-        work.model_dump_json().encode(),
-        stream=GRAPH_STREAM,
-        headers={"Nats-Msg-Id": request.id.hex},
-    )
-
-
-async def publish_edge(jetstream, work: EdgeWork) -> None:
-    identity = edge_evaluation_identity(work.graph_run_id, work.crawl_request_id, work.crawl_id, work.edge_id)
-    await jetstream.publish(EDGE_SUBJECT, work.model_dump_json().encode(), stream=GRAPH_STREAM, headers={"Nats-Msg-Id": identity})

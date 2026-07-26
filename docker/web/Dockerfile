@@ -1,5 +1,15 @@
 FROM node:24-alpine AS build
 
+WORKDIR /app
+
+COPY package.json package-lock.json tsconfig.console.json ./
+COPY atlas-cli/package.json atlas-cli/package.json
+COPY packages/console-core/package.json packages/console-core/package.json
+RUN npm ci --ignore-scripts
+
+COPY packages/console-core/ packages/console-core/
+RUN npm run build --workspace @atlas/console-core
+
 WORKDIR /app/web
 
 COPY web/package.json web/package-lock.json ./

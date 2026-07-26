@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from runtime.nats_client import connect_nats
+from runtime.nats_client import connect_basin_nats, connect_nats
 
 
 class NatsClientTests(unittest.IsolatedAsyncioTestCase):
@@ -14,7 +14,7 @@ class NatsClientTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.dict(
                 os.environ,
-                {"NATS_URL": "nats://localhost:4222"},
+                {"ATLAS_NATS_URL": "nats://localhost:4222"},
                 clear=True,
             ),
             patch("runtime.nats_client.nats.connect", connect),
@@ -35,8 +35,8 @@ class NatsClientTests(unittest.IsolatedAsyncioTestCase):
             patch.dict(
                 os.environ,
                 {
-                    "NATS_URL": "tls://nats.example.test:4222",
-                    "NATS_SEED": "SUATESTSEED",
+                    "ATLAS_NATS_URL": "tls://nats.example.test:4222",
+                    "ATLAS_NATS_SEED": "SUATESTSEED",
                 },
                 clear=True,
             ),
@@ -50,6 +50,32 @@ class NatsClientTests(unittest.IsolatedAsyncioTestCase):
             connect_timeout=4,
             max_reconnect_attempts=-1,
             nkeys_seed_str="SUATESTSEED",
+        )
+
+    async def test_basin_connection_uses_only_basin_identity(self) -> None:
+        client = object()
+        connect = AsyncMock(return_value=client)
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "DUCKBASIN_NATS_URL": "nats://basin.example.test:4222",
+                    "DUCKBASIN_NATS_SEED": "SUBASINSEED",
+                    "ATLAS_NATS_URL": "nats://atlas.example.test:4222",
+                    "ATLAS_NATS_SEED": "SUATLASSEED",
+                },
+                clear=True,
+            ),
+            patch("runtime.nats_client.nats.connect", connect),
+        ):
+            returned = await connect_basin_nats()
+
+        self.assertIs(returned, client)
+        connect.assert_awaited_once_with(
+            "nats://basin.example.test:4222",
+            connect_timeout=2,
+            max_reconnect_attempts=-1,
+            nkeys_seed_str="SUBASINSEED",
         )
 
 

@@ -1,29 +1,26 @@
+-- atlas:description=Extracts JSON-LD entities of a selected type from captured pages matching a URL or URL pattern into a supplied typed schema.
 CREATE MACRO macros.extract_json_ld(p_url, p_type, p_schema) AS TABLE (
     WITH pages AS MATERIALIZED (
         SELECT
             crawl_id,
             graph_run_id,
-            captured_at,
-            coalesce(final_url.normalized_url, requested_url.normalized_url) AS page_url,
+            content_captured_at AS captured_at,
+            url AS page_url,
             document_id
         FROM crawls AS crawl
-        JOIN urls AS requested_url
-          ON requested_url.url_id = crawl.requested_url_id
-        LEFT JOIN urls AS final_url
-          ON final_url.url_id = crawl.final_url_id
         WHERE (
                 (
                     contains(p_url, '%')
                     AND (
-                        requested_url.normalized_url ILIKE p_url
-                        OR final_url.normalized_url ILIKE p_url
+                        requested_url ILIKE p_url
+                        OR url ILIKE p_url
                     )
                 )
                 OR (
                     NOT contains(p_url, '%')
                     AND (
-                        requested_url.normalized_url = p_url
-                        OR final_url.normalized_url = p_url
+                        requested_url = p_url
+                        OR url = p_url
                     )
                 )
               )

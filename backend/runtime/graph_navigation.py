@@ -19,7 +19,6 @@ from nats.errors import TimeoutError as NatsTimeoutError
 
 from config import get_float, get_int, get_str
 from config.performance import CRAWL_ACQUISITION_LANES, GRAPH_ACK_WAIT_SECONDS
-from db.session import session_scope
 from repository.catalogue import catalogue_from_env
 from repository.catalogue.query import prepare_catalogue_query
 from repository.ingestion.health import HealthMonitor
@@ -27,7 +26,6 @@ from repository.exceptions import RepositoryObjectNotFound
 from repository.objects.config import object_store_from_env
 from repository.objects.html import RawHtmlRepository, html_object_key
 from runtime.catalogue_lane import catalogue_operation_lane
-from runtime.edge_sql import edge_uses_catalogue
 from runtime.graph_queue import (
     EDGE_CONSUMER,
     EDGE_SUBJECT,
@@ -37,20 +35,22 @@ from runtime.graph_queue import (
     EdgeWork,
     NavigationReadinessWork,
     edge_evaluation_identity,
-    ensure_graph_progress_storage,
     ensure_graph_storage,
+    get_crawl_request,
     get_edge_evaluation,
+    get_graph_run,
     list_graph_runs,
     update_edge_evaluation,
 )
 from runtime.nats_client import connect_nats
 from runtime.graph_runs import (
+    DatabasePolicySnapshotResolver,
     EdgeEvaluationBusy,
     EdgeEvaluationDeferred,
     EdgeEvaluationFailed,
+    EdgeEvaluationRetryable,
     evaluate_edge,
     handle_navigation_readiness,
-    resolve_policy_snapshot,
 )
 from runtime.navigation import (
     build_edge_selection_package,
@@ -63,15 +63,6 @@ from runtime.navigation import (
     put_navigation_package,
 )
 from runtime.navigation_contract import EdgeSelectionPackage, NavigationPackage
-from runtime.resource_governor import (
-    DURABLE_RESOURCE_WAIT,
-    ResourceCapacityUnavailable,
-    ResourcePermitLost,
-    catalogue_request,
-    ensure_resource_governor_storage,
-    object_request,
-    resource_permits,
-)
 
 
 class EdgeResultCache:
@@ -176,16 +167,8 @@ class EdgeUrlExecutor:
         table = table.append_column(
             "crawl_id", pa.array([crawl_id] * table.num_rows, type=pa.string())
         )
-        statement = parse_one(sql, dialect="duckdb")
-        for source in statement.find_all(exp.Table):
-            if (
-                source.db.lower() == "edge"
-                and source.name.lower() == "page_links"
-            ):
-                source.set("db", None)
-                source.set("this", exp.to_identifier("atlas_navigation_links"))
-
-        if not edge_uses_catalogue(sql):
+        if self._catalogue_snapshot_id is None:
+            statement = self._prepare_statement(sql)
             with duckdb.connect(":memory:") as connection:
                 with self._lock:
                     self._connection = connection
@@ -203,19 +186,16 @@ class EdgeUrlExecutor:
                     with self._lock:
                         self._connection = None
         else:
-            if self._catalogue_snapshot_id is None:
-                raise ValueError(
-                    "catalogue edge SQL requires the graph run's pinned snapshot"
-                )
             with catalogue_from_env() as catalogue:
                 with self._lock:
-                    self._connection = catalogue.connection
+                    self._connection = catalogue.trusted_connection
                 try:
-                    catalogue.connection.execute(
+                    statement = self._prepare_statement(sql)
+                    catalogue.trusted_connection.execute(
                         "SET memory_limit = ?",
                         [get_str("ATLAS_EDGE_QUERY_MEMORY_LIMIT")],
                     )
-                    catalogue.connection.register("atlas_navigation_links", table)
+                    catalogue.trusted_connection.register("atlas_navigation_links", table)
                     prepared = prepare_catalogue_query(
                         catalogue, statement.sql(dialect="duckdb"), bound
                     )
@@ -223,8 +203,8 @@ class EdgeUrlExecutor:
                         prepared.sql, dialect="duckdb"
                     )
                     self._pin_catalogue_sources(catalogue, prepared_statement)
-                    catalogue.connection.execute(f"USE {prepared.namespace}")
-                    reader = catalogue.connection.execute(
+                    catalogue.trusted_connection.execute(f"USE {prepared.namespace}")
+                    reader = catalogue.trusted_connection.execute(
                         prepared_statement.sql(dialect="duckdb"),
                         prepared.bindings,
                     ).to_arrow_reader(batch_size=65_536)
@@ -234,6 +214,23 @@ class EdgeUrlExecutor:
                         self._connection = None
         self._remember(tuple(urls))
         return urls
+
+    @staticmethod
+    def _prepare_statement(sql: str) -> exp.Query:
+        statement = parse_one(sql, dialect="duckdb")
+        if not isinstance(statement, exp.Query):
+            raise ValueError("Compiled edge SQL must be a query.")
+        for source in statement.find_all(exp.Table):
+            if (
+                source.db.lower() == "edge"
+                and source.name.lower() == "page_links"
+            ):
+                source.set("db", None)
+                source.set(
+                    "this",
+                    exp.to_identifier("atlas_navigation_links"),
+                )
+        return statement
 
     def _remember(self, urls: tuple[str, ...]) -> None:
         self._selected_urls = urls
@@ -264,7 +261,7 @@ class EdgeUrlExecutor:
                     "catalog", exp.to_identifier(catalogue.config.alias)
                 )
             view_name = f"atlas_edge_snapshot_{ordinal}"
-            catalogue.connection.execute(
+            catalogue.trusted_connection.execute(
                 f"CREATE OR REPLACE TEMP VIEW {view_name} AS "
                 f"SELECT * FROM {original.sql(dialect='duckdb')} "
                 f"AT (VERSION => {self._catalogue_snapshot_id})"
@@ -348,7 +345,6 @@ async def _process_navigation_readiness(
 async def _retain_deferred_edge_selection(
     *,
     requests,
-    resource_grants,
     object_store,
     work: EdgeWork,
     identity: str,
@@ -361,27 +357,17 @@ async def _retain_deferred_edge_selection(
     if current is None or current.selection is not None:
         return
     payload = await asyncio.to_thread(build_edge_selection_package, urls)
-    async with resource_permits(
-        resource_grants,
-        object_request(
-            f"edge-selection:{identity}",
-            direction="write",
-            byte_count=len(payload),
-            service_class="critical",
+    package = await asyncio.to_thread(
+        put_edge_selection_package,
+        object_store,
+        name=edge_selection_object_name(
+            work.graph_run_id,
+            identity,
+            sha256(payload).hexdigest(),
         ),
-        acquire_timeout=DURABLE_RESOURCE_WAIT,
-    ):
-        package = await asyncio.to_thread(
-            put_edge_selection_package,
-            object_store,
-            name=edge_selection_object_name(
-                work.graph_run_id,
-                identity,
-                sha256(payload).hexdigest(),
-            ),
-            payload=payload,
-            row_count=len(urls),
-        )
+        payload=payload,
+        row_count=len(urls),
+    )
     await update_edge_evaluation(
         requests,
         identity,
@@ -406,7 +392,6 @@ async def _process_edge(
     jetstream,
     object_store,
     catalogue_operation_lock: asyncio.Lock,
-    resource_grants,
     result_cache: EdgeResultCache,
 ) -> None:
     try:
@@ -419,6 +404,22 @@ async def _process_edge(
     identity = edge_evaluation_identity(
         work.graph_run_id, work.crawl_request_id, work.crawl_id, work.edge_id
     )
+    request = await get_crawl_request(requests, work.crawl_request_id)
+    if request is None or request.generation != work.generation:
+        await message.ack()
+        return
+    run = await get_graph_run(runs, work.graph_run_id)
+    if run is None or run.status in {
+        "completed",
+        "completed_with_errors",
+        "failed",
+        "cancelled",
+    }:
+        await message.ack()
+        return
+    if run.status == "paused":
+        await message.nak(delay=30)
+        return
     evaluation = await get_edge_evaluation(requests, identity)
     selection = evaluation.selection if evaluation is not None else None
     executor = EdgeUrlExecutor(
@@ -451,44 +452,17 @@ async def _process_edge(
 
     heartbeat = asyncio.create_task(keep_alive())
     try:
-        resource_request = (
-            object_request(
-                f"edge-selection:{identity}",
-                direction="read",
-                byte_count=selection.byte_size,
-                service_class="critical",
-            )
-            if selection is not None
-            else catalogue_request(
-                f"edge:{identity}",
-                service_class="critical",
-                object_read_units=1,
-            )
-            if work.catalogue_snapshot_id is not None
-            else object_request(
-                f"edge-navigation:{identity}",
-                direction="read",
-                byte_count=work.navigation.byte_size,
-                service_class="critical",
-            )
-        )
         async def execute() -> None:
-            async with resource_permits(
-                resource_grants,
-                resource_request,
-                acquire_timeout=DURABLE_RESOURCE_WAIT,
-            ):
-                with session_scope() as session:
-                    await evaluate_edge(
-                        runs=runs,
-                        requests=requests,
-                        progress=progress,
-                        jetstream=jetstream,
-                        work=work,
-                        execute_urls=executor,
-                        policy_resolver=lambda url: resolve_policy_snapshot(session, url),
-                        claim_token=claim_token,
-                    )
+            await evaluate_edge(
+                runs=runs,
+                requests=requests,
+                progress=progress,
+                jetstream=jetstream,
+                work=work,
+                execute_urls=executor,
+                policy_resolver=DatabasePolicySnapshotResolver(),
+                claim_token=claim_token,
+            )
         if work.catalogue_snapshot_id is None or selection is not None:
             await execute()
         else:
@@ -501,7 +475,6 @@ async def _process_edge(
         try:
             await _retain_deferred_edge_selection(
                 requests=requests,
-                resource_grants=resource_grants,
                 object_store=object_store,
                 work=work,
                 identity=identity,
@@ -515,12 +488,12 @@ async def _process_edge(
             )
         await message.nak(delay=1)
         return
+    except EdgeEvaluationRetryable:
+        await message.nak(delay=1)
+        return
     except EdgeEvaluationFailed:
         result_cache.discard(identity)
         await message.ack()
-        return
-    except (ResourceCapacityUnavailable, ResourcePermitLost):
-        await message.nak(delay=1)
         return
     except Exception:
         await message.nak(delay=1)
@@ -538,8 +511,7 @@ async def run(monitor: HealthMonitor | None = None) -> None:
     client = await connect_nats()
     jetstream = client.jetstream()
     runs, requests, _workers = await ensure_graph_storage(jetstream)
-    progress = await ensure_graph_progress_storage(jetstream)
-    resource_grants = await ensure_resource_governor_storage(jetstream)
+    progress = None
     capacity = CRAWL_ACQUISITION_LANES
     object_store = object_store_from_env(maximum_concurrency=capacity)
     navigation_readiness = await jetstream.pull_subscribe(
@@ -557,6 +529,11 @@ async def run(monitor: HealthMonitor | None = None) -> None:
         maximum_bytes=get_int("ATLAS_EDGE_MAX_OUTPUT_BYTES") * 2
     )
     active: set[asyncio.Task] = set()
+    pull_sources = (
+        (navigation_readiness, _process_navigation_readiness),
+        (edges, _process_edge),
+    )
+    pulls: dict[object, tuple[asyncio.Task, int]] = {}
     cleaned_runs = set()
     next_cleanup = 0.0
     try:
@@ -571,26 +548,11 @@ async def run(monitor: HealthMonitor | None = None) -> None:
                         and (now - graph_run.completed_at).total_seconds() >= grace
                     ):
                         try:
-                            async with resource_permits(
-                                resource_grants,
-                                object_request(
-                                    f"navigation-cleanup:{graph_run.id}",
-                                    direction="write",
-                                    byte_count=1,
-                                    service_class="critical",
-                                ),
-                                acquire_timeout=0,
-                            ):
-                                await asyncio.to_thread(
-                                    delete_run_navigation,
-                                    object_store,
-                                    graph_run.id,
-                                )
-                        except ResourceCapacityUnavailable:
-                            # Cleanup is off-path. Shared object-store pressure is
-                            # ordinary backpressure, so defer it without blocking
-                            # navigation work or alarming the operator.
-                            continue
+                            await asyncio.to_thread(
+                                delete_run_navigation,
+                                object_store,
+                                graph_run.id,
+                            )
                         except Exception:
                             logging.warning(
                                 "navigation package cleanup failed for graph run %s",
@@ -615,19 +577,14 @@ async def run(monitor: HealthMonitor | None = None) -> None:
                             "navigation", str(error) or type(error).__name__
                         )
             active.difference_update(completed)
-            available = capacity - len(active)
-            if available <= 0:
-                await asyncio.sleep(0.05)
-                continue
             fetched = False
-            for subscription, processor in (
-                (navigation_readiness, _process_navigation_readiness),
-                (edges, _process_edge),
-            ):
-                if available <= 0:
-                    break
+            for subscription, processor in pull_sources:
+                pending = pulls.get(processor)
+                if pending is None or not pending[0].done():
+                    continue
+                task, _reserved = pulls.pop(processor)
                 try:
-                    messages = await subscription.fetch(batch=available, timeout=0.1)
+                    messages = task.result()
                 except (NatsTimeoutError, asyncio.TimeoutError):
                     continue
                 fetched = fetched or bool(messages)
@@ -637,16 +594,46 @@ async def run(monitor: HealthMonitor | None = None) -> None:
                         arguments += (
                             object_store,
                             catalogue_operation_lock,
-                            resource_grants,
                             result_cache,
                         )
                     active.add(asyncio.create_task(processor(*arguments)))
-                    available -= 1
-                    if available <= 0:
-                        break
+            reserved = sum(batch for _task, batch in pulls.values())
+            available = capacity - len(active) - reserved
+            missing = [
+                (subscription, processor)
+                for subscription, processor in pull_sources
+                if processor not in pulls
+            ]
+            for index, (subscription, processor) in enumerate(missing):
+                if available <= 0:
+                    break
+                batch = max(1, available // (len(missing) - index))
+                task = asyncio.create_task(
+                    subscription.fetch(batch=batch, timeout=60),
+                    name=f"navigation-{processor.__name__}-pull",
+                )
+                pulls[processor] = (task, batch)
+                available -= batch
             if not fetched:
-                await asyncio.sleep(0.05)
+                waiters = {
+                    *active,
+                    *(task for task, _batch in pulls.values()),
+                }
+                if waiters:
+                    await asyncio.wait(
+                        waiters,
+                        timeout=0.05,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                else:
+                    await asyncio.sleep(0.05)
     finally:
         stop.set()
-        await asyncio.gather(*active, return_exceptions=True)
+        for task, _batch in pulls.values():
+            task.cancel()
+        await asyncio.gather(
+            *active,
+            *(task for task, _batch in pulls.values()),
+            return_exceptions=True,
+        )
         await client.drain()

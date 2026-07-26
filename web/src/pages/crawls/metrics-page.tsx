@@ -77,8 +77,6 @@ export function CrawlMetricsPage() {
         ingestionBacklog={ingestionBacklog}
         materializationBacklog={materializationBacklog}
       />
-      <SharedPressure capacity={capacityQuery.data} />
-      <DomainPoliteness capacity={capacityQuery.data} />
       <LatestRuns runs={runs} />
     </div>
   )
@@ -108,7 +106,7 @@ function WorkerCapacity({
         <CardTitle>Worker capacity</CardTitle>
         <CardDescription>
           Sustained full utilization with a growing backlog means this
-          deployment needs more replicas.
+          deployment needs more client lanes or worker replicas.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3 lg:grid-cols-3">
@@ -116,7 +114,8 @@ function WorkerCapacity({
           label="Acquisition"
           used={capacity?.runtime_active ?? 0}
           capacity={capacity?.runtime_capacity ?? 0}
-          replicas={capacity?.worker_count ?? 0}
+          instances={capacity?.worker_count ?? 0}
+          instanceLabel="replica"
           backlog={acquisitionBacklog}
           backlogLabel="pages queued"
         />
@@ -124,17 +123,33 @@ function WorkerCapacity({
           label="Ingestion"
           used={ingestion?.active ?? 0}
           capacity={ingestion?.capacity ?? 0}
-          replicas={ingestion?.worker_count ?? 0}
+          configuredCapacity={ingestion?.configured_capacity ?? 0}
+          degraded={ingestion?.degraded ?? 0}
+          instances={ingestion?.worker_count ?? 0}
+          instanceLabel="replica"
           backlog={ingestionBacklog}
           backlogLabel="catalogue jobs waiting"
+          queueDetail={
+            ingestion
+              ? `${ingestion.pending.toLocaleString()} queued · ${ingestion.ack_pending.toLocaleString()} ACK-pending · ${ingestion.redelivered.toLocaleString()} redelivered · ${ingestion.waiting_for_redelivery.toLocaleString()} waiting for redelivery`
+              : undefined
+          }
         />
         <WorkerCapacityCard
           label="Materialization"
           used={materialization?.active ?? 0}
           capacity={materialization?.capacity ?? 0}
-          replicas={materialization?.worker_count ?? 0}
+          configuredCapacity={materialization?.configured_capacity ?? 0}
+          degraded={materialization?.degraded ?? 0}
+          instances={materialization?.worker_count ?? 0}
+          instanceLabel="replica"
           backlog={materializationBacklog}
           backlogLabel="view updates waiting"
+          queueDetail={
+            materialization
+              ? `${materialization.pending.toLocaleString()} queued · ${materialization.ack_pending.toLocaleString()} ACK-pending · ${materialization.redelivered.toLocaleString()} redelivered · ${materialization.waiting_for_redelivery.toLocaleString()} waiting for redelivery`
+              : undefined
+          }
         />
       </CardContent>
     </Card>
@@ -145,21 +160,30 @@ function WorkerCapacityCard({
   label,
   used,
   capacity,
-  replicas,
+  configuredCapacity = capacity,
+  degraded = 0,
+  instances,
+  instanceLabel,
   backlog,
   backlogLabel,
+  queueDetail,
 }: {
   label: string
   used: number
   capacity: number
-  replicas: number
+  configuredCapacity?: number
+  degraded?: number
+  instances: number
+  instanceLabel: string
   backlog: number
   backlogLabel: string
+  queueDetail?: string
 }) {
   const percent = capacity > 0 ? Math.min(100, (used / capacity) * 100) : 0
   const full = capacity > 0 && used >= capacity
   const needsScale = full && backlog > 0
-  const unavailable = capacity === 0
+  const unavailable = configuredCapacity === 0 || capacity === 0
+  const partiallyDegraded = !unavailable && degraded > 0
 
   return (
     <div className="rounded-lg border bg-muted/10 p-4">
@@ -167,15 +191,15 @@ function WorkerCapacityCard({
         <div>
           <p className="font-medium">{label}</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            {replicas.toLocaleString()} healthy{" "}
-            {replicas === 1 ? "replica" : "replicas"}
+            {instances.toLocaleString()} {instanceLabel}
+            {instances === 1 ? "" : "s"}
           </p>
         </div>
         <Badge
           variant={
             unavailable || needsScale
               ? "destructive"
-              : full
+              : full || partiallyDegraded
                 ? "secondary"
                 : "outline"
           }
@@ -183,7 +207,9 @@ function WorkerCapacityCard({
           {unavailable
             ? "Unavailable"
             : needsScale
-              ? "Scale replicas"
+              ? "Add capacity"
+              : partiallyDegraded
+                ? "Degraded"
               : full
                 ? "At capacity"
                 : "Available"}
@@ -192,10 +218,7 @@ function WorkerCapacityCard({
       <p
         className={`mt-5 text-3xl font-semibold tabular-nums ${unavailable || needsScale ? "text-destructive" : ""}`}
       >
-        {used.toLocaleString()} / {capacity.toLocaleString()}
-      </p>
-      <p className="mt-0.5 text-xs text-muted-foreground">
-        active / total slots
+        {used.toLocaleString()} / {capacity.toLocaleString()} active slots
       </p>
       <div
         className="mt-3 h-2 overflow-hidden rounded-full bg-muted"
@@ -211,134 +234,22 @@ function WorkerCapacityCard({
         />
       </div>
       <p
-        className={`mt-3 text-sm tabular-nums ${backlog > 0 ? "font-medium" : "text-muted-foreground"}`}
+        className={`mt-3 text-sm tabular-nums ${partiallyDegraded || unavailable ? "font-medium text-destructive" : "text-muted-foreground"}`}
+      >
+        {capacity.toLocaleString()} of{" "}
+        {configuredCapacity.toLocaleString()} slots usable
+      </p>
+      <p
+        className={`mt-1 text-sm tabular-nums ${backlog > 0 ? "font-medium" : "text-muted-foreground"}`}
       >
         {backlog.toLocaleString()} {backlogLabel}
       </p>
+      {queueDetail ? (
+        <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+          {queueDetail}
+        </p>
+      ) : null}
     </div>
-  )
-}
-
-function SharedPressure({ capacity }: { capacity?: CrawlConcurrencyLimits }) {
-  const waiting = (capacity?.resources ?? []).filter(
-    (resource) =>
-      resource.waiting > 0 &&
-      (resource.name === "catalogue:hot" || resource.name.startsWith("object:"))
-  )
-  if (waiting.length === 0) return null
-
-  return (
-    <Card className="border-amber-500/40 bg-amber-500/5">
-      <CardHeader>
-        <CardTitle>Shared resource admission is delaying work</CardTitle>
-        <CardDescription>
-          Bounded foreground and maintenance operations share these budgets.
-          Maintenance can run concurrently; adding replicas alone does not
-          increase the configured catalogue or object-store capacity.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-        {waiting.map((resource) => (
-          <div
-            key={resource.name}
-            className="rounded-md border bg-background/60 p-3"
-          >
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-sm font-medium">
-                {resourceLabel(resource.name)}
-              </span>
-              <span className="font-medium tabular-nums">
-                {resource.used} / {resource.capacity}
-              </span>
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {resource.waiting.toLocaleString()} waiting · oldest{" "}
-              {formatAge(resource.oldest_wait_seconds * 1_000)}
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {[
-                ["critical", resource.critical_waiting],
-                ["live", resource.live_waiting],
-                ["backfill", resource.backfill_waiting],
-                ["maintenance", resource.maintenance_waiting],
-              ]
-                .filter(([, count]) => Number(count) > 0)
-                .map(([label, count]) => `${count} ${label}`)
-                .join(" · ")}
-            </p>
-          </div>
-        ))}
-      </CardContent>
-    </Card>
-  )
-}
-
-function DomainPoliteness({ capacity }: { capacity?: CrawlConcurrencyLimits }) {
-  const domains = (capacity?.resources ?? [])
-    .filter(
-      (resource) =>
-        resource.name.startsWith("remote:") &&
-        (resource.used > 0 || resource.waiting > 0)
-    )
-    .sort(
-      (left, right) =>
-        Number(right.waiting > 0) - Number(left.waiting > 0) ||
-        right.used / right.capacity - left.used / left.capacity ||
-        domainName(left.name).localeCompare(domainName(right.name))
-    )
-
-  if (domains.length === 0) return null
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Live domain politeness</CardTitle>
-        <CardDescription>
-          Current page acquisitions governed by each domain&apos;s maximum
-          concurrency. Limits disappear after their permits and waiters drain.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="overflow-x-auto rounded-md border">
-          <Table>
-            <TableHeader className="bg-muted/30">
-              <TableRow className="hover:bg-transparent">
-                <TableHead className="pl-4">Domain</TableHead>
-                <TableHead className="w-[12rem]">Concurrency</TableHead>
-                <TableHead className="w-[10rem] pr-4 text-right">
-                  Waiting
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {domains.map((resource) => (
-                <TableRow key={resource.name}>
-                  <TableCell className="py-3 pl-4 font-medium">
-                    {domainName(resource.name)}
-                  </TableCell>
-                  <TableCell className="py-3 tabular-nums">
-                    {resource.used.toLocaleString()} /{" "}
-                    {resource.capacity.toLocaleString()} active
-                  </TableCell>
-                  <TableCell className="py-3 pr-4 text-right tabular-nums">
-                    {resource.waiting > 0 ? (
-                      <span className="font-medium text-amber-700 dark:text-amber-400">
-                        {resource.waiting.toLocaleString()}
-                        {resource.oldest_wait_seconds > 0
-                          ? ` · oldest ${formatAge(resource.oldest_wait_seconds * 1_000)}`
-                          : ""}
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground">0</span>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      </CardContent>
-    </Card>
   )
 }
 
@@ -581,17 +492,6 @@ function describeRunProgress(run: GraphRunRecord) {
     stalled,
     activityLabel: `${run.completed_at ? "Finished" : "Progress"} ${age === "just now" ? age : `${age} ago`}`,
   }
-}
-
-function resourceLabel(name: string) {
-  if (name === "catalogue:hot") return "Catalogue"
-  if (name === "object:read") return "Object reads"
-  if (name === "object:write") return "Object writes"
-  return name
-}
-
-function domainName(resourceName: string) {
-  return resourceName.slice("remote:".length)
 }
 
 function isActiveRun(run: GraphRunRecord) {

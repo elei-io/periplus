@@ -1,0 +1,3 @@
+[submodule "packages/atlas-duckdb-extension/extension-ci-tools"]
+	path = packages/atlas-duckdb-extension/extension-ci-tools
+	url = https://github.com/duckdb/extension-ci-tools.git

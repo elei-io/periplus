@@ -31,23 +31,26 @@ from config.performance import (
     GRAPH_ACK_WAIT_SECONDS,
 )
 from control.crawl_policies.schemas import EffectivePolicySnapshot
-from db.session import session_scope
 from observability import crawl_metrics, navigation_metrics
 from repository.ingestion.acquisition import AcquisitionPipeline
 from repository.ingestion.health import HealthMonitor
 from runtime.context import GraphExecutionContext
-from runtime.domain_pacing import domain_backoff_seconds, ensure_domain_pacing_storage
+from runtime.domain_pacing import (
+    DomainCapacityUnavailable,
+    DomainPermitLost,
+    domain_backoff_seconds,
+    domain_permit,
+    ensure_domain_pacing_storage,
+)
 from runtime.graph_queue import (
     CRAWL_CONSUMER,
     CRAWL_SUBJECT,
     GRAPH_STREAM,
-    NAVIGATION_READINESS_SUBJECT,
     CrawlRequest,
     CrawlWork,
     NavigationReadinessWork,
     WorkerState,
     ensure_graph_storage,
-    ensure_graph_progress_storage,
     get_crawl_request,
     get_graph_run,
     list_graph_runs,
@@ -55,15 +58,11 @@ from runtime.graph_queue import (
 )
 from runtime.nats_client import connect_nats
 from runtime.graph_navigation import run as run_graph_navigation
-from runtime.graph_progress import bootstrap_run_progress, transition_node_progress
+from runtime.graph_outbox import run_outbox_relay
 from runtime.graph_runs import (
+    DatabasePolicySnapshotResolver,
     expire_graph_run,
     fill_root_admissions,
-    reconcile_acquisition_pending_count,
-    reconcile_admission_reservations,
-    reconcile_pending_admissions,
-    release_acquisition_slot,
-    resolve_policy_snapshot,
     settle_request,
 )
 from runtime.navigation import (
@@ -73,15 +72,6 @@ from runtime.navigation import (
     put_navigation_package,
 )
 from runtime.navigation_contract import NavigationPackage
-from runtime.resource_governor import (
-    DURABLE_RESOURCE_WAIT,
-    ResourceCapacityUnavailable,
-    ResourcePermitLost,
-    ensure_resource_governor_storage,
-    object_request,
-    remote_request,
-    resource_permits,
-)
 from workers.lifecycle import (
     WorkerEndpointConfig,
     WorkerEndpoints,
@@ -110,15 +100,19 @@ async def _watch_playwright_driver(playwright_context) -> None:
 async def _fill_root_window(
     *, runs, requests, progress, jetstream, run_id: UUID
 ) -> int:
-    with session_scope() as session:
-        return await fill_root_admissions(
-            runs=runs,
-            requests=requests,
-            progress=progress,
-            jetstream=jetstream,
-            run_id=run_id,
-            policy_resolver=lambda url: resolve_policy_snapshot(session, url),
-        )
+    run = await get_graph_run(runs, run_id)
+    if run is None:
+        return 0
+    resolver = DatabasePolicySnapshotResolver()
+    await asyncio.to_thread(resolver.prepare, run.trigger_urls)
+    return await fill_root_admissions(
+        runs=runs,
+        requests=requests,
+        progress=progress,
+        jetstream=jetstream,
+        run_id=run_id,
+        policy_resolver=resolver,
+    )
 
 
 @dataclass(slots=True)
@@ -266,6 +260,9 @@ async def _classify_crawl_message(message, requests) -> _BufferedCrawl | None:
     if request is None or request.status in {"completed", "failed", "cancelled"}:
         await message.ack()
         return None
+    if request.generation != work.generation:
+        await message.ack()
+        return None
     try:
         effective = EffectivePolicySnapshot.model_validate(
             request.effective_policy_snapshot_json
@@ -290,16 +287,13 @@ async def _classify_crawl_message(message, requests) -> _BufferedCrawl | None:
     )
 
 
-async def _try_domain_permit(resource_grants, item: _BufferedCrawl):
-    if resource_grants is None or not item.domain_policy_valid:
+async def _try_domain_permit(domain_pacing, item: _BufferedCrawl):
+    if domain_pacing is None or not item.domain_policy_valid:
         return None
-    context = resource_permits(
-        resource_grants,
-        remote_request(
-            f"domain:{item.request.id}:{item.attempt_number}",
-            remote_domain=item.hostname,
-            concurrency=item.domain_concurrency,
-        ),
+    context = domain_permit(
+        domain_pacing,
+        domain=item.hostname,
+        concurrency=item.domain_concurrency,
         acquire_timeout=0,
     )
     guard = await context.__aenter__()
@@ -312,7 +306,6 @@ async def _process_dispatched_crawl(
     requests,
     progress,
     repository_pipeline,
-    resource_grants,
     domain_pacing,
     jetstream,
     *,
@@ -326,7 +319,6 @@ async def _process_dispatched_crawl(
             requests,
             progress,
             repository_pipeline,
-            resource_grants,
             domain_pacing,
             jetstream,
             playwright=playwright,
@@ -336,7 +328,7 @@ async def _process_dispatched_crawl(
         if domain_permit is not None:
             try:
                 await domain_permit.release_if_unused()
-            except ResourcePermitLost:
+            except DomainPermitLost:
                 pass
 
 
@@ -349,7 +341,6 @@ async def _dispatch_buffered_crawls(
     requests,
     progress,
     repository_pipeline,
-    resource_grants,
     domain_pacing,
     jetstream,
     playwright: Playwright,
@@ -373,8 +364,10 @@ async def _dispatch_buffered_crawls(
                 )
                 blocked_hostnames.add(item.hostname)
                 continue
-            domain_permit = await _try_domain_permit(resource_grants, item)
-        except ResourceCapacityUnavailable:
+            acquired_domain_permit = await _try_domain_permit(
+                domain_pacing, item
+            )
+        except DomainCapacityUnavailable:
             buffer.add(item)
             buffer.defer_hostname(
                 item.hostname,
@@ -404,11 +397,10 @@ async def _dispatch_buffered_crawls(
                 requests,
                 progress,
                 repository_pipeline,
-                resource_grants,
                 domain_pacing,
                 jetstream,
                 playwright=playwright,
-                domain_permit=domain_permit,
+                domain_permit=acquired_domain_permit,
             )
         )
         active.add(task)
@@ -516,7 +508,6 @@ async def _derive_navigation_package(
     graph_run_id: UUID,
     crawl_request_id: UUID,
     repository_pipeline: AcquisitionPipeline,
-    resource_grants,
 ) -> NavigationPackage:
     if page.document_id is None or page.html is None:
         raise ValueError("navigation package requires retained HTML identity and content")
@@ -545,12 +536,6 @@ async def _derive_navigation_package(
 
     write_started = time.perf_counter()
     try:
-        request = object_request(
-            f"navigation-write:{crawl_request_id}",
-            direction="write",
-            byte_count=len(payload),
-            service_class="critical",
-        )
         object_name = navigation_object_name(
             graph_run_id,
             page.document_id,
@@ -565,15 +550,7 @@ async def _derive_navigation_package(
                 row_count=row_count,
             )
 
-        if resource_grants is None:
-            package = await asyncio.to_thread(write_package)
-        else:
-            async with resource_permits(
-                resource_grants,
-                request,
-                acquire_timeout=DURABLE_RESOURCE_WAIT,
-            ):
-                package = await asyncio.to_thread(write_package)
+        package = await asyncio.to_thread(write_package)
     except BaseException:
         navigation_metrics.package(
             phase="write",
@@ -637,13 +614,6 @@ async def _release_crawl_for_redelivery(
     current = await update_crawl_request(
         requests, request_id, release_claim
     )
-    if released:
-        try:
-            await transition_node_progress(
-                progress, current, previous_status="crawling"
-            )
-        except Exception:
-            pass
     await message.nak(delay=delay)
 
 
@@ -653,7 +623,6 @@ async def _process_crawl(
     requests,
     progress,
     repository_pipeline,
-    resource_grants=None,
     domain_pacing=None,
     jetstream=None,
     *,
@@ -668,6 +637,9 @@ async def _process_crawl(
         return
     request = await get_crawl_request(requests, work.crawl_request_id)
     if request is None or request.status in {"completed", "failed", "cancelled"}:
+        await message.ack()
+        return
+    if request.generation != work.generation:
         await message.ack()
         return
     claimed = False
@@ -703,11 +675,6 @@ async def _process_crawl(
         else:
             await message.ack()
         return
-    if previous_status != request.status:
-        try:
-            await transition_node_progress(progress, request, previous_status=previous_status)
-        except Exception:
-            pass
     run = await get_graph_run(runs, request.graph_run_id)
     if run is None:
         await settle_request(
@@ -732,6 +699,16 @@ async def _process_crawl(
             expected_claim_token=claim_token,
         )
         await message.ack()
+        return
+    if run.status == "paused":
+        await _release_crawl_for_redelivery(
+            message=message,
+            requests=requests,
+            progress=progress,
+            request_id=request.id,
+            claim_token=claim_token,
+            delay=30,
+        )
         return
 
     heartbeat = asyncio.create_task(
@@ -759,7 +736,6 @@ async def _process_crawl(
                 url=request.url,
                 context=context,
                 playwright=playwright,
-                resource_grants=resource_grants,
                 domain_pacing=domain_pacing,
                 domain_permit=domain_permit,
                 repository_pipeline=repository_pipeline,
@@ -802,24 +778,12 @@ async def _process_crawl(
             await message.ack()
             return
 
-        def record_document(current: CrawlRequest) -> CrawlRequest:
-            if current.status != "crawling" or current.claim_token != claim_token:
-                return current
-            return current.model_copy(
-                update={
-                    "document_id": page.document_id,
-                    "updated_at": datetime.now(UTC),
-                }
-            )
-
-        request = await update_crawl_request(requests, request.id, record_document)
         navigation = (
             await _derive_navigation_package(
                 page,
                 graph_run_id=run.id,
                 crawl_request_id=request.id,
                 repository_pipeline=repository_pipeline,
-                resource_grants=resource_grants,
             )
             if has_outgoing_edges and page.document_id is not None
             else None
@@ -830,43 +794,19 @@ async def _process_crawl(
             crawl_id=request.id,
             graph_run_id=run.id,
             crawl_request_id=request.id,
+            generation=request.generation,
             navigation=navigation,
             occurred_at=datetime.now(UTC),
         )
-        await jetstream.publish(
-            NAVIGATION_READINESS_SUBJECT,
-            readiness.model_dump_json().encode(),
-            headers={"Nats-Msg-Id": str(readiness.event_id)},
-        )
-
-        transitioned_to_navigation = False
-
-        def mark_awaiting_navigation(current: CrawlRequest) -> CrawlRequest:
-            nonlocal transitioned_to_navigation
-            transitioned_to_navigation = False
-            if current.status != "crawling" or current.claim_token != claim_token:
-                return current
-            transitioned_to_navigation = True
-            return current.model_copy(
-                update={
-                    "status": "awaiting_navigation",
-                    "claim_token": None,
-                    "claim_expires_at": None,
-                    "updated_at": datetime.now(UTC),
-                }
-            )
-
-        previous_status = request.status
-        request = await update_crawl_request(
-            requests, request.id, mark_awaiting_navigation
+        request, transitioned_to_navigation = await runs.complete_acquisition(
+            request_id=request.id,
+            generation=request.generation,
+            claim_token=claim_token,
+            document_id=page.document_id,
+            acquisition_attempts=request.acquisition_attempts_json,
+            readiness=readiness,
         )
         if transitioned_to_navigation:
-            try:
-                await release_acquisition_slot(runs, run.id)
-            except Exception:
-                await reconcile_acquisition_pending_count(
-                    runs, requests, run.id
-                )
             try:
                 await _fill_root_window(
                     runs=runs,
@@ -881,13 +821,8 @@ async def _process_crawl(
                     run.id,
                     exc_info=True,
                 )
-            try:
-                await transition_node_progress(
-                    progress, request, previous_status=previous_status
-                )
-            except Exception:
-                pass
         await message.ack()
+        return
     except asyncio.CancelledError:
         try:
             await _release_crawl_for_redelivery(
@@ -917,8 +852,8 @@ async def _process_crawl(
                 NatsTimeoutError,
                 OSError,
                 PlaywrightRuntimeLost,
-                ResourceCapacityUnavailable,
-                ResourcePermitLost,
+                DomainCapacityUnavailable,
+                DomainPermitLost,
             ),
         )
         failure_count = request.processing_failure_count
@@ -1008,41 +943,16 @@ async def run() -> None:
         f"acquisition:{os.uname().nodename}:{os.getpid()}"
     )
     capacity = CRAWL_ACQUISITION_LANES
-    object_request(
-        "acquisition-startup-validation",
-        direction="write",
-        byte_count=get_int("ATLAS_REPOSITORY_MAX_HTML_BYTES"),
-        service_class="critical",
-    )
     endpoints = WorkerEndpoints(WorkerEndpointConfig.from_env("acquisition"))
     endpoints.start_metrics()
 
     client = await connect_nats()
     jetstream = client.jetstream()
     runs, requests, workers = await ensure_graph_storage(jetstream)
-    progress = await ensure_graph_progress_storage(jetstream)
-    resource_grants = await ensure_resource_governor_storage(jetstream)
+    progress = None
     domain_pacing = await ensure_domain_pacing_storage(jetstream)
     for active_run in await list_graph_runs(runs):
         if active_run.status in {"queued", "running"}:
-            await reconcile_acquisition_pending_count(
-                runs, requests, active_run.id
-            )
-            await bootstrap_run_progress(progress, requests, active_run)
-            await reconcile_pending_admissions(
-                runs=runs,
-                requests=requests,
-                progress=progress,
-                jetstream=jetstream,
-                run=active_run,
-            )
-            await reconcile_admission_reservations(
-                runs=runs,
-                requests=requests,
-                progress=progress,
-                jetstream=jetstream,
-                run=active_run,
-            )
             await _fill_root_window(
                 runs=runs,
                 requests=requests,
@@ -1079,6 +989,10 @@ async def run() -> None:
     graph_navigation_task = asyncio.create_task(
         _run_graph_navigation_until_stopped(monitor),
         name="acquisition-graph-navigation",
+    )
+    graph_outbox_task = asyncio.create_task(
+        run_outbox_relay(runs, jetstream, stop=stop),
+        name="acquisition-graph-outbox",
     )
 
     async def release_dispatch_buffer() -> None:
@@ -1132,24 +1046,13 @@ async def run() -> None:
             ),
         )
         for active_run in await list_graph_runs(runs):
-            if active_run.status in {"queued", "running"}:
+            if active_run.status in {"queued", "running", "paused"}:
                 active_run = await expire_graph_run(
                     runs=runs,
                     requests=requests,
                     progress=progress,
                     run=active_run,
                 )
-                if (
-                    active_run.status in {"queued", "running"}
-                    and active_run.pending_admissions
-                ):
-                    await reconcile_pending_admissions(
-                        runs=runs,
-                        requests=requests,
-                        progress=progress,
-                        jetstream=jetstream,
-                        run=active_run,
-                    )
                 if active_run.status in {"queued", "running"}:
                     await _fill_root_window(
                         runs=runs,
@@ -1174,9 +1077,11 @@ async def run() -> None:
         buffered_heartbeat_task,
         event_loop_heartbeat_task,
         graph_navigation_task,
+        graph_outbox_task,
         presence_task,
     )
     playwright_context = async_playwright()
+    crawl_fetch_task: asyncio.Task | None = None
     try:
         async with (
             playwright_context as playwright,
@@ -1207,18 +1112,14 @@ async def run() -> None:
                     active.difference_update(completed)
                     if fatal_error is not None:
                         raise fatal_error
-                    delivery_room = (
-                        CRAWL_DISPATCH_WINDOW - len(dispatch_buffer) - len(active)
-                    )
                     messages = []
-                    if delivery_room > 0:
+                    if crawl_fetch_task is not None and crawl_fetch_task.done():
                         try:
-                            messages = await crawl_subscription.fetch(
-                                batch=delivery_room,
-                                timeout=0.1,
-                            )
+                            messages = crawl_fetch_task.result()
                         except (NatsTimeoutError, asyncio.TimeoutError):
                             messages = []
+                        finally:
+                            crawl_fetch_task = None
                         classified = await asyncio.gather(
                             *(
                                 _classify_crawl_message(message, requests)
@@ -1247,13 +1148,33 @@ async def run() -> None:
                         requests=requests,
                         progress=progress,
                         repository_pipeline=repository_pipeline,
-                        resource_grants=resource_grants,
                         domain_pacing=domain_pacing,
                         jetstream=jetstream,
                         playwright=playwright,
                     )
+                    delivery_room = (
+                        CRAWL_DISPATCH_WINDOW - len(dispatch_buffer) - len(active)
+                    )
+                    if crawl_fetch_task is None and delivery_room > 0:
+                        crawl_fetch_task = asyncio.create_task(
+                            crawl_subscription.fetch(
+                                batch=delivery_room,
+                                timeout=60,
+                            ),
+                            name="acquisition-crawl-pull",
+                        )
                     if not messages and not launched:
-                        await asyncio.sleep(0.05)
+                        waiters = set(active)
+                        if crawl_fetch_task is not None:
+                            waiters.add(crawl_fetch_task)
+                        if waiters:
+                            await asyncio.wait(
+                                waiters,
+                                timeout=0.05,
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                        else:
+                            await asyncio.sleep(0.05)
             except PlaywrightRuntimeLost as exc:
                 monitor.subsystem_unavailable(
                     "acquisition", str(exc) or type(exc).__name__
@@ -1267,6 +1188,8 @@ async def run() -> None:
                 raise
             finally:
                 stop.set()
+                if crawl_fetch_task is not None:
+                    crawl_fetch_task.cancel()
                 await release_dispatch_buffer()
                 playwright_driver_task.cancel()
                 presence_task.cancel()
@@ -1277,11 +1200,18 @@ async def run() -> None:
                     presence_task,
                     event_loop_heartbeat_task,
                     graph_navigation_task,
+                    *(
+                        (crawl_fetch_task,)
+                        if crawl_fetch_task is not None
+                        else ()
+                    ),
                     *active,
                     return_exceptions=True,
                 )
     finally:
         stop.set()
+        if crawl_fetch_task is not None:
+            crawl_fetch_task.cancel()
         await release_dispatch_buffer()
         presence_task.cancel()
         event_loop_heartbeat_task.cancel()
@@ -1290,6 +1220,7 @@ async def run() -> None:
             presence_task,
             event_loop_heartbeat_task,
             graph_navigation_task,
+            *((crawl_fetch_task,) if crawl_fetch_task is not None else ()),
             *active,
             return_exceptions=True,
         )

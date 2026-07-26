@@ -111,13 +111,13 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
             patch("workers.lifecycle.install_signal_handlers") as signals,
         ):
             await run_worker_process(
-                role="maintenance",
+                role="housekeeping",
                 monitor=monitor,
                 tasks={"work": work()},
                 stop=stop,
             )
 
-        config.assert_called_once_with("maintenance")
+        config.assert_called_once_with("housekeeping")
         endpoints.start_health.assert_called_once_with(monitor)
         endpoints.start_metrics.assert_called_once_with()
         signals.assert_called_once_with(stop)

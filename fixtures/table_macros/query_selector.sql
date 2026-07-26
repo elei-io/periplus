@@ -1,3 +1,4 @@
+-- atlas:description=Returns the first structural DOM element matching a CSS selector, optionally restricted to one retained document.
 CREATE MACRO macros.query_selector(
     selector,
     document_id := ''

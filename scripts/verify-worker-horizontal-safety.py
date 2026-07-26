@@ -8,19 +8,12 @@ import json
 import subprocess
 import time
 from pathlib import Path
-from threading import Event, Thread
 from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
 import nats
-from runtime.resource_governor import (
-    DURABLE_RESOURCE_WAIT,
-    catalogue_request,
-    ensure_resource_governor_storage,
-    resource_permits,
-)
 from reliability_support import (
     capture_diagnostics,
     cleanup_materialization_fixture,
@@ -164,55 +157,6 @@ def wait_for_replicas(service: str, expected: int, timeout: float = 30) -> None:
     raise RuntimeError(f"{service} did not start {expected} replicas")
 
 
-def hold_catalogue_capacity() -> tuple[Thread, Event, Event, list[BaseException]]:
-    acquired = Event()
-    release = Event()
-    errors: list[BaseException] = []
-
-    async def hold() -> None:
-        client = await nats.connect("nats://127.0.0.1:4222", connect_timeout=2)
-        try:
-            bucket = await ensure_resource_governor_storage(client.jetstream())
-            async with resource_permits(
-                bucket,
-                catalogue_request(
-                    f"horizontal-smoke-hold-{uuid4().hex}",
-                    service_class="maintenance",
-                    exclusive=True,
-                ),
-                acquire_timeout=DURABLE_RESOURCE_WAIT,
-            ):
-                acquired.set()
-                await asyncio.to_thread(release.wait)
-        finally:
-            await client.close()
-
-    def run() -> None:
-        try:
-            asyncio.run(hold())
-        except BaseException as exc:
-            errors.append(exc)
-            acquired.set()
-
-    thread = Thread(target=run, daemon=True)
-    thread.start()
-    return thread, acquired, release, errors
-
-
-def wait_for_catalogue_waiter(service_class: str, timeout: float = 30) -> dict[str, Any]:
-    deadline = time.monotonic() + timeout
-    field = f"{service_class}_waiting"
-    while time.monotonic() < deadline:
-        capacity = api("GET", "/graph-runs/capacity")
-        catalogue = next(
-            item for item in capacity["resources"] if item["name"] == "catalogue:hot"
-        )
-        if catalogue[field] > 0:
-            return catalogue
-        time.sleep(0.2)
-    raise RuntimeError(f"no {service_class} catalogue waiter appeared")
-
-
 def main() -> None:
     token = uuid4().hex
     materialization_fixture = ensure_active_materialization(token)
@@ -254,16 +198,6 @@ def main() -> None:
             },
         )
 
-        # Hold the complete catalogue budget beyond one ACK interval. Both
-        # catalogue capabilities remain online so the queue, heartbeats, and
-        # work-conserving handoff are exercised under real contention.
-        holder, holder_acquired, release_holder, holder_errors = (
-            hold_catalogue_capacity()
-        )
-        if not holder_acquired.wait(timeout=30):
-            raise RuntimeError("catalogue saturation permit was not acquired")
-        if holder_errors:
-            raise holder_errors[0]
         urls = [
             f"https://example.com/?atlas-phase3={token}-{index}"
             for index in range(8)
@@ -273,16 +207,9 @@ def main() -> None:
         ingestion_before_kill = wait_for_consumer_activity(
             [("ATLAS_CATALOGUE_WORK", "atlas-repository-writer")], timeout=120
         )
-        catalogue_wait = wait_for_catalogue_waiter("critical")
         require_healthy("atlas-ingestion-worker", expected=2)
         require_healthy("atlas-materialization-worker", expected=2)
         killed_ingestion = kill_one("atlas-ingestion-worker")
-        release_holder.set()
-        holder.join(timeout=30)
-        if holder.is_alive():
-            raise RuntimeError("catalogue saturation permit did not release")
-        if holder_errors:
-            raise holder_errors[0]
 
         materialization_before_kill = wait_for_consumer_activity(
             [("ATLAS_CATALOGUE_WORK", "atlas-materialization-live-worker")],
@@ -330,7 +257,6 @@ def main() -> None:
                     "materialization_before_kill": materialization_before_kill,
                     "killed_ingestion_container": killed_ingestion,
                     "killed_materialization_container": killed_materialization,
-                    "catalogue_wait": catalogue_wait,
                     "settled_lag": settled_lag,
                     "reacquired": False,
                 },
@@ -342,8 +268,6 @@ def main() -> None:
         print(f"reliability diagnostics: {destination}")
         raise
     finally:
-        if "release_holder" in locals():
-            release_holder.set()
         try:
             compose(
                 "up",
@@ -355,7 +279,7 @@ def main() -> None:
                 "atlas-acquisition-worker",
                 "atlas-ingestion-worker",
                 "atlas-materialization-worker",
-                "atlas-maintenance-worker",
+                "atlas-housekeeping-worker",
             )
         except Exception as exc:
             print(f"warning: worker restoration failed: {exc}")

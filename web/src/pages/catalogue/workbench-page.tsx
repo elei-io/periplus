@@ -1,1588 +1,299 @@
-import { Prec } from "@codemirror/state"
-import { EditorView } from "@codemirror/view"
-import CodeMirror from "@uiw/react-codemirror"
-import { useVirtualizer } from "@tanstack/react-virtual"
-import { useEffect, useMemo, useRef, useState } from "react"
 import {
-  CopyIcon,
-  DownloadIcon,
-  LockKeyholeIcon,
-  TriangleAlertIcon,
-} from "lucide-react"
-import { toast } from "sonner"
+  AtlasConsole,
+  GhostTextEditor,
+  HttpAtlasApi,
+  type AtomicCommandResult,
+  type ConsoleStatus,
+} from "@atlas/console-core"
+import { Terminal } from "@wterm/react"
+import type { WTerm } from "@wterm/dom"
+import { useEffect, useState } from "react"
 
-import { createCatalogueCompletionExtensions } from "@/components/catalogue/catalogue-completions"
-import { CatalogueExplainPlan } from "@/components/catalogue/catalogue-explain-plan"
-import { formatSql } from "@/components/catalogue/sql-format"
 import {
-  isWorkbenchCommandLike,
-  parseWorkbenchCommand,
-  runWorkbenchCommand,
-  workbenchCommandSuggestion,
-  WORKBENCH_COMMANDS,
-} from "@/components/catalogue/workbench-commands"
-import {
-  crawlColumnCandidates,
-  MAX_CRAWL_URLS,
-  parseCrawlCommandTarget,
-  selectionFromNamedColumn,
-  selectionFromUrl,
-  type CrawlUrlSelection,
-} from "@/components/catalogue/workbench-crawls"
-import { Button } from "@/components/ui/button"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from "@/components/ui/select"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
-import { useCatalogueLint } from "@/hooks/use-catalogue-lint"
-import { useCatalogueMetadata } from "@/hooks/use-catalogue-metadata"
-import { useCatalogueQuery } from "@/hooks/use-catalogue-query"
-import { useCatalogueStatus } from "@/hooks/use-catalogue-status"
-import {
-  useCrawlGraphs,
-  useGraphRun,
-  useTriggerCrawlGraph,
-} from "@/hooks/use-crawl-graphs"
-import { apiUrl, extractApiError } from "@/lib/api"
-import type {
-  CatalogueLintDiagnostic,
-  CatalogueQueryResult,
-} from "@/types/catalogue"
+  renderConsoleError,
+  renderConsoleAssistantHeading,
+  renderConsoleProgress,
+  renderConsoleResult,
+  renderConsoleWelcome,
+} from "@/lib/console-output"
+import { apiUrl } from "@/lib/api"
+import { WtermTerminal } from "@/lib/wterm-terminal"
 
-const WORKBENCH_HISTORY_KEY = "atlas.catalogue.workbench.history"
-const WORKBENCH_HISTORY_LIMIT = 10
+const HISTORY_KEY = "atlas.console.history"
+const HISTORY_LIMIT = 100
 
-function loadWorkbenchHistory() {
+export function CatalogueWorkbenchPage() {
+  const [terminal] = useState(() => new WtermTerminal())
+  const [atlasConsole] = useState(() => {
+    const baseUrl = new URL(apiUrl("/"), window.location.origin).toString()
+    const value = new AtlasConsole(new HttpAtlasApi(baseUrl))
+    value.history.push(...loadHistory())
+    return value
+  })
+  const [ready, setReady] = useState(false)
+  const [status, setStatus] = useState<ConsoleStatus>(
+    atlasConsole.status.snapshot()
+  )
+
+  useEffect(() => {
+    const subscription = atlasConsole.status.subscribe(() => {
+      setStatus(atlasConsole.status.snapshot())
+    })
+    return () => subscription.dispose()
+  }, [atlasConsole])
+
+  useEffect(() => {
+    if (!ready) return
+    let stopped = false
+    const editor = new GhostTextEditor(
+      terminal,
+      (input, cursor) => atlasConsole.complete(input, cursor),
+      75,
+      atlasConsole.history,
+      (input) => atlasConsole.status.updateInput(input)
+    )
+
+    async function run() {
+      const output = new ConsoleOutput(terminal)
+      await atlasConsole.status.connect(AbortSignal.timeout(3_000))
+      if (stopped) return
+      terminal.writeRaw("\u001b[2J\u001b[H")
+      terminal.writeRaw(renderConsoleWelcome(atlasConsole.status.snapshot()))
+      let initialInput = new URLSearchParams(window.location.search).get("sql") ?? ""
+
+      while (!stopped) {
+        const line = await editor.readLine("atlas> ", initialInput)
+        initialInput = ""
+        persistHistory(atlasConsole.history)
+        if (stopped || line.trim() === ".exit") return
+        if (!line.trim()) continue
+        try {
+          const result = await atlasConsole.execute(line)
+          if (!result || stopped) continue
+          if (result.kind === "stream") {
+            for await (const event of result.events) {
+              if (stopped) return
+              await output.emit(event)
+            }
+          } else {
+            await output.emit(result)
+          }
+        } catch (reason) {
+          output.stop()
+          if (stopped) return
+          if (isAbort(reason)) {
+            terminal.writeRaw("\u001b[2mQuery cancellation requested.\u001b[0m\r\n")
+          } else {
+            terminal.writeRaw(renderConsoleError(reason))
+          }
+        }
+      }
+      output.stop()
+    }
+
+    void run()
+    return () => {
+      stopped = true
+      atlasConsole.interrupt()
+      terminal.receive("\u0003")
+      atlasConsole.status.dispose()
+    }
+  }, [atlasConsole, ready, terminal])
+
+  function handleData(data: string) {
+    if (data === "\u0003" && atlasConsole.interrupt()) {
+      terminal.writeRaw("^C\r\n")
+      return
+    }
+    terminal.receive(data)
+  }
+
+  function handleReady(instance: WTerm) {
+    terminal.attach(instance)
+    setReady(true)
+    terminal.focus()
+  }
+
+  return (
+    <section className="flex h-full min-h-0 w-full flex-col bg-background">
+      <Terminal
+        className="atlas-wterm min-h-0 flex-1"
+        autoResize
+        cursorBlink
+        onData={handleData}
+        onReady={handleReady}
+        onResize={(columns) => terminal.resized(columns)}
+        onError={(error) => terminal.writeRaw(renderConsoleError(error))}
+      />
+      <ConsoleFooter status={status} />
+    </section>
+  )
+}
+
+class ConsoleOutput {
+  private animation?: ReturnType<typeof setInterval>
+  private transientLines = 0
+  private frame = 0
+  private readonly frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+  private readonly terminal: WtermTerminal
+
+  constructor(terminal: WtermTerminal) {
+    this.terminal = terminal
+  }
+
+  async emit(result: AtomicCommandResult): Promise<void> {
+    if (result.kind === "progress" && result.state === "active") {
+      if (result.groupStart) {
+        this.terminal.writeRaw(renderConsoleAssistantHeading())
+      }
+      this.start(result.label)
+      return
+    }
+    this.stop()
+    if (result.kind === "navigate") navigate(result.path)
+    if (result.kind === "copy") await navigator.clipboard.writeText(result.text)
+    this.clearTransient()
+    const rendered = renderConsoleResult(result, this.terminal.columns())
+    this.terminal.writeRaw(rendered)
+    if (result.kind === "table" && result.transient) {
+      this.transientLines = rendered.split("\r\n").length - 1
+    }
+  }
+
+  start(label: string): void {
+    this.stop()
+    const render = () => {
+      const frame = this.frames[this.frame % this.frames.length] ?? "⠋"
+      this.terminal.writeRaw(renderConsoleProgress(frame, label))
+      this.frame += 1
+    }
+    render()
+    this.animation = setInterval(render, 80)
+  }
+
+  stop(): void {
+    if (!this.animation) return
+    clearInterval(this.animation)
+    this.animation = undefined
+    this.terminal.writeRaw("\r\u001b[2K")
+  }
+
+  private clearTransient(): void {
+    if (this.transientLines === 0) return
+    this.terminal.writeRaw(
+      "\u001b[1A\u001b[2K".repeat(this.transientLines)
+    )
+    this.transientLines = 0
+  }
+}
+
+function ConsoleFooter({ status }: { status: ConsoleStatus }) {
+  const connection =
+    status.connection.state === "connected"
+      ? "● connected"
+      : status.connection.state === "connecting"
+        ? "◌ connecting"
+        : "○ disconnected"
+  const compiler = compilerLabel(status)
+  return (
+    <footer className="atlas-console-footer flex h-9 shrink-0 items-center gap-4 border-t px-4 font-mono text-[10px]">
+      <span
+        className={
+          status.connection.state === "connected"
+            ? "text-emerald-600 dark:text-emerald-400"
+            : status.connection.state === "disconnected"
+              ? "text-red-600 dark:text-red-400"
+              : undefined
+        }
+      >
+        {connection}
+      </span>
+      <span>lake {status.lakeSlug ?? "—"}</span>
+      <span>schema {status.schemaVersion ?? "—"}</span>
+      {compiler && (
+        <span className="ml-auto min-w-0 truncate" title={compiler.title}>
+          {compiler.label}
+        </span>
+      )}
+    </footer>
+  )
+}
+
+function compilerLabel(
+  status: ConsoleStatus
+): { label: string; title?: string } | undefined {
+  switch (status.compiler.state) {
+    case "idle":
+    case "debouncing":
+      return undefined
+    case "checking":
+      return { label: "◌ checking" }
+    case "valid":
+      return { label: "✓ valid" }
+    case "optimized":
+      return {
+        label: `⚡ optimized${
+          status.compiler.rewriteCount > 0
+            ? ` · ${status.compiler.rewriteCount} ${
+                status.compiler.rewriteCount === 1 ? "rewrite" : "rewrites"
+              }`
+            : ""
+        }`,
+      }
+    case "unavailable":
+      return { label: "compiler unavailable", title: status.compiler.message }
+    case "diagnostics": {
+      const errors = status.compiler.diagnostics.filter(
+        (item) => item.severity === "error"
+      )
+      const diagnostics = errors.length > 0
+        ? errors
+        : status.compiler.diagnostics
+      const symbol = errors.length > 0 ? "✗" : "⚠"
+      if (diagnostics.length === 0) return { label: "✗ invalid" }
+      return {
+        label:
+          diagnostics.length === 1
+            ? `${symbol} ${diagnostics[0]?.message ?? "Invalid SQL"}`
+            : `${symbol} ${diagnostics.length} ${
+                errors.length > 0 ? "errors" : "warnings"
+              }`,
+        title: diagnostics.map((item) => item.message).join("\n"),
+      }
+    }
+  }
+}
+
+function navigate(path: string): void {
+  window.history.pushState(null, "", path)
+  window.dispatchEvent(new PopStateEvent("popstate"))
+}
+
+function loadHistory(): string[] {
   try {
     const value: unknown = JSON.parse(
-      window.localStorage.getItem(WORKBENCH_HISTORY_KEY) ?? "[]"
+      window.localStorage.getItem(HISTORY_KEY) ?? "[]"
     )
     if (!Array.isArray(value)) return []
     return value
       .filter((item): item is string => typeof item === "string")
-      .slice(-WORKBENCH_HISTORY_LIMIT)
+      .slice(-HISTORY_LIMIT)
   } catch {
     return []
   }
 }
 
-function appendWorkbenchHistory(entries: string[], sql: string) {
-  const next = entries.at(-1) === sql ? entries : [...entries, sql]
-  return next.slice(-WORKBENCH_HISTORY_LIMIT)
-}
-
-type TranscriptEntry = {
-  id: string
-  sql: string
-  status: "running" | "success" | "error"
-  result?: CatalogueQueryResult
-  output?: "crawl" | "help" | "welcome" | "message"
-  crawlSelection?: CrawlUrlSelection
-  crawlGraphSlug?: string
-  message?: string
-  expanded?: boolean
-  error?: string
-  durationMs?: number
-}
-
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-const RUNNING_INDICATOR_DELAY_MS = 200
-
-function TerminalSpinner() {
-  const [frame, setFrame] = useState(0)
-
-  useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return
-
-    const interval = window.setInterval(
-      () => setFrame((current) => (current + 1) % SPINNER_FRAMES.length),
-      80
-    )
-    return () => window.clearInterval(interval)
-  }, [])
-
-  return (
-    <span aria-hidden="true" className="inline-block w-[1ch]">
-      {SPINNER_FRAMES[frame]}
-    </span>
-  )
-}
-
-function DelayedRunningIndicator({ compact = false }: { compact?: boolean }) {
-  const [visible, setVisible] = useState(false)
-
-  useEffect(() => {
-    const timeout = window.setTimeout(
-      () => setVisible(true),
-      RUNNING_INDICATOR_DELAY_MS
-    )
-    return () => window.clearTimeout(timeout)
-  }, [])
-
-  if (!visible) return null
-
-  return (
-    <span
-      role="status"
-      aria-label="Query running"
-      className={`${compact ? "ml-2 inline-flex align-middle" : "flex"} items-center gap-1.5 text-amber-600 dark:text-amber-300/80`}
-    >
-      <TerminalSpinner />
-      {!compact && <span>RUNNING</span>}
-    </span>
-  )
-}
-
-const workbenchPromptTheme = Prec.highest(
-  EditorView.theme({
-    "&": {
-      backgroundColor: "transparent",
-      color: "var(--foreground)",
-      fontSize: "13px",
-    },
-    "&.cm-focused": { outline: "none" },
-    ".cm-scroller": {
-      fontFamily:
-        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-      lineHeight: "24px",
-      overflow: "auto",
-    },
-    ".cm-content": {
-      minHeight: "12rem",
-      padding: "4px 0",
-      caretColor: "transparent",
-    },
-    ".cm-line": { padding: "0" },
-    ".cm-gutters": { display: "none" },
-    ".cm-activeLine": { backgroundColor: "transparent" },
-    ".cm-cursorLayer": { animation: "none !important" },
-    ".cm-cursor, .cm-dropCursor": {
-      animation: "none !important",
-      backgroundColor: "var(--primary)",
-      borderLeft: "0 !important",
-      display: "block",
-      width: "0.62em",
-    },
-    ".cm-selectionBackground": {
-      backgroundColor: "var(--sql-selection) !important",
-    },
-    ".cm-tooltip.atlas-terminal-completions": {
-      visibility: "hidden",
-      pointerEvents: "none",
-    },
-    ".cm-atlasGhostText": {
-      color: "var(--muted-foreground)",
-      opacity: "0.5",
-      pointerEvents: "none",
-    },
-  })
-)
-
-function PromptPrefix({ continuation = false }: { continuation?: boolean }) {
-  return (
-    <div
-      aria-hidden="true"
-      className={`flex h-6 w-36 shrink-0 items-center gap-1.5 text-[13px] leading-6 ${continuation ? "justify-end" : "justify-start"}`}
-    >
-      {continuation ? (
-        <>
-          <span className="text-muted-foreground/60">...</span>
-          <span className="ml-1 text-primary">›</span>
-        </>
-      ) : (
-        <>
-          <span className="font-semibold text-primary">atlas</span>
-          <span className="text-muted-foreground/50">:</span>
-          <span className="text-muted-foreground">catalogue</span>
-          <span className="ml-1 text-primary">›</span>
-        </>
-      )}
-    </div>
-  )
-}
-
-function PromptGutter({ value }: { value: string }) {
-  const lineCount = value.split("\n").length
-
-  return (
-    <div className="shrink-0 pt-1">
-      {Array.from({ length: lineCount }, (_, index) => (
-        <PromptPrefix key={index} continuation={index > 0} />
-      ))}
-    </div>
-  )
-}
-
-function formatCell(value: unknown) {
-  if (value === null || value === undefined) return "NULL"
-  if (typeof value === "bigint") return value.toString()
-  if (typeof value === "object") {
-    try {
-      return JSON.stringify(value)
-    } catch {
-      return String(value)
-    }
-  }
-  return String(value)
-}
-
-async function copyCellValue(value: unknown) {
+function persistHistory(history: readonly string[]): void {
   try {
-    await navigator.clipboard.writeText(formatCell(value))
-    toast.success("Cell copied.", {
-      id: "workbench-cell-copy",
-      duration: 1_200,
-    })
-  } catch (error) {
-    toast.error(extractApiError(error))
-  }
-}
-
-function isInteractiveCellTarget(target: EventTarget | null) {
-  return target instanceof Element && Boolean(target.closest("a, button"))
-}
-
-function webUrl(value: unknown) {
-  if (typeof value !== "string") return null
-  try {
-    const url = new URL(value)
-    return url.protocol === "http:" || url.protocol === "https:"
-      ? url.href
-      : null
+    window.localStorage.setItem(
+      HISTORY_KEY,
+      JSON.stringify(history.slice(-HISTORY_LIMIT))
+    )
   } catch {
-    return null
+    // History remains available for this browser session.
   }
 }
 
-const RESULT_CELL_PREVIEW_LIMIT = 2_000
-
-function ResultCellValue({
-  value,
-  column,
-  expandable = false,
-}: {
-  value: unknown
-  column?: string
-  expandable?: boolean
-}) {
-  const formatted = formatCell(value)
-  const documentHref =
-    column === "document_id" && typeof value === "string"
-      ? apiUrl(
-          `/operations/repository/documents/${encodeURIComponent(value)}/content`
-        )
-      : null
-  const artifactHref =
-    column === "artifact_id" && typeof value === "string"
-      ? apiUrl(
-          `/operations/repository/artifacts/${encodeURIComponent(value)}/content`
-        )
-      : null
-  const href = documentHref ?? artifactHref ?? webUrl(value)
-  const truncated = formatted.length > RESULT_CELL_PREVIEW_LIMIT
-  const [expanded, setExpanded] = useState(false)
-  const displayed =
-    truncated && !expanded
-      ? `${formatted.slice(0, RESULT_CELL_PREVIEW_LIMIT)}…`
-      : formatted
-
-  const content = href ? (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      title={href}
-      className="text-inherit underline decoration-current/35 underline-offset-2 hover:decoration-current"
-    >
-      {displayed}
-    </a>
-  ) : (
-    displayed
-  )
-
-  return (
-    <>
-      {content}
-      {truncated && expandable && (
-        <button
-          type="button"
-          className="ml-2 text-muted-foreground underline underline-offset-2 hover:text-foreground"
-          onClick={() => setExpanded((current) => !current)}
-        >
-          {expanded
-            ? "show less"
-            : `show all (${formatted.length.toLocaleString()} characters)`}
-        </button>
-      )}
-    </>
-  )
-}
-
-function jsonValue(value: unknown): unknown {
-  if (typeof value === "bigint") return value.toString()
-  if (value instanceof Uint8Array) return Array.from(value)
-  if (Array.isArray(value)) return value.map(jsonValue)
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, jsonValue(item)])
-    )
-  }
-  return value ?? null
-}
-
-function uniqueColumnNames(columns: string[]) {
-  const counts = new Map<string, number>()
-  return columns.map((column) => {
-    const count = (counts.get(column) ?? 0) + 1
-    counts.set(column, count)
-    return count === 1 ? column : `${column}_${count}`
-  })
-}
-
-function resultAsJson(result: CatalogueQueryResult) {
-  const columns = uniqueColumnNames(result.columns)
-  return JSON.stringify(
-    result.rows.map((row) =>
-      Object.fromEntries(
-        columns.map((column, index) => [column, jsonValue(row[index])])
-      )
-    ),
-    null,
-    2
-  )
-}
-
-function csvCell(value: unknown) {
-  const normalized =
-    value === null || value === undefined
-      ? ""
-      : typeof value === "object"
-        ? JSON.stringify(jsonValue(value))
-        : String(value)
-  return `"${normalized.replaceAll('"', '""')}"`
-}
-
-function resultAsCsv(result: CatalogueQueryResult) {
-  return [
-    result.columns.map(csvCell).join(","),
-    ...result.rows.map((row) => row.map(csvCell).join(",")),
-  ].join("\r\n")
-}
-
-type ResultExportFormat = "csv" | "json"
-
-function serializeResult(
-  result: CatalogueQueryResult,
-  format: ResultExportFormat
-) {
-  return format === "csv" ? resultAsCsv(result) : resultAsJson(result)
-}
-
-function ResultExportActions({ result }: { result: CatalogueQueryResult }) {
-  async function copy(format: ResultExportFormat) {
-    try {
-      await navigator.clipboard.writeText(serializeResult(result, format))
-      toast.success(`${format.toUpperCase()} copied.`)
-    } catch (error) {
-      toast.error(extractApiError(error))
-    }
-  }
-
-  function download(format: ResultExportFormat) {
-    try {
-      const contents = serializeResult(result, format)
-      const blob = new Blob([contents], {
-        type:
-          format === "csv"
-            ? "text/csv;charset=utf-8"
-            : "application/json;charset=utf-8",
-      })
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement("a")
-      link.href = url
-      link.download = `atlas-results-${new Date().toISOString().replaceAll(":", "-")}.${format}`
-      link.click()
-      URL.revokeObjectURL(url)
-    } catch (error) {
-      toast.error(extractApiError(error))
-    }
-  }
-
-  return (
-    <div className="flex justify-end gap-1 font-sans">
-      <Select
-        value={null}
-        onValueChange={(value) =>
-          value && void copy(value as ResultExportFormat)
-        }
-      >
-        <SelectTrigger
-          size="sm"
-          aria-label="Copy table result"
-          title="Copy table result"
-          className="h-6 border-transparent bg-transparent px-1.5 hover:bg-muted/60 dark:bg-transparent dark:hover:bg-muted/40"
-        >
-          <CopyIcon />
-        </SelectTrigger>
-        <SelectContent align="end" alignItemWithTrigger={false}>
-          <SelectItem value="csv">Copy as CSV</SelectItem>
-          <SelectItem value="json">Copy as JSON</SelectItem>
-        </SelectContent>
-      </Select>
-      <Select
-        value={null}
-        onValueChange={(value) =>
-          value && download(value as ResultExportFormat)
-        }
-      >
-        <SelectTrigger
-          size="sm"
-          aria-label="Download table result"
-          title="Download table result"
-          className="h-6 border-transparent bg-transparent px-1.5 hover:bg-muted/60 dark:bg-transparent dark:hover:bg-muted/40"
-        >
-          <DownloadIcon />
-        </SelectTrigger>
-        <SelectContent align="end" alignItemWithTrigger={false}>
-          <SelectItem value="csv">Download as CSV</SelectItem>
-          <SelectItem value="json">Download as JSON</SelectItem>
-        </SelectContent>
-      </Select>
-    </div>
-  )
-}
-
-function isClearCommand(value: string) {
-  return normalizeCommand(value) === "clear"
-}
-
-function normalizeCommand(value: string) {
-  return value.trim().replace(/;$/, "").trim().toLowerCase()
-}
-
-function isTerminatedSql(value: string) {
-  return value.trimEnd().endsWith(";")
-}
-
-function isLintableSql(value: string) {
-  return (
-    Boolean(value.trim()) &&
-    !isClearCommand(value) &&
-    normalizeCommand(value) !== "help" &&
-    !isWorkbenchCommandLike(value)
-  )
-}
-
-function isMetaCommand(value: string) {
-  return normalizeCommand(value) === "help" || isWorkbenchCommandLike(value)
-}
-
-function runsOnEnter(value: string) {
-  return isClearCommand(value) || isMetaCommand(value) || isTerminatedSql(value)
-}
-
-const MIN_COLUMN_WIDTH = 120
-const INITIAL_COLUMN_WIDTH = 180
-
-function HelpOutput() {
-  return (
-    <dl className="mt-2 space-y-1 font-mono text-xs">
-      {WORKBENCH_COMMANDS.map(({ command, description }) => (
-        <div key={command} className="flex gap-4">
-          <dt className="w-28 shrink-0 text-primary">{command}</dt>
-          <dd className="text-muted-foreground">{description}</dd>
-        </div>
-      ))}
-    </dl>
-  )
-}
-
-function WelcomeOutput({ schemaVersion }: { schemaVersion?: string }) {
-  return (
-    <div className="space-y-3 font-mono text-xs">
-      <pre className="leading-5 text-foreground/80">
-        {[
-          "     ___  ________  ___   _____",
-          "    / _ |/_  __/ / / _ | / ___/",
-          "   / __ | / / / /_/ __ |(__  )",
-          "  /_/ |_|/_/ /___/_/ |_/____/",
-          "",
-          "  --------------------------------",
-        ].join("\n")}
-      </pre>
-      <div className="space-y-1 text-muted-foreground">
-        <p className="text-foreground/80">SQL over the internet.</p>
-        <p>Query crawled pages, documents, and DOM data.</p>
-      </div>
-      <p className="text-muted-foreground">
-        Atlas schema {schemaVersion ?? "—"} · type{" "}
-        <span className="text-primary">\?</span> for help
-      </p>
-    </div>
-  )
-}
-
-function TranscriptActions({ sql }: { sql: string }) {
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(sql)
-      toast.success("SQL copied.")
-    } catch (error) {
-      toast.error(extractApiError(error))
-    }
-  }
-
-  return (
-    <div className="ml-auto flex h-6 shrink-0 items-center gap-1 pl-3">
-      <Button
-        type="button"
-        variant="ghost"
-        size="xs"
-        aria-label="Copy SQL"
-        title="Copy SQL"
-        className="h-6 px-1.5 font-sans"
-        onClick={() => void copy()}
-      >
-        <CopyIcon />
-      </Button>
-    </div>
-  )
-}
-
-function FooterLintDiagnostics({
-  diagnostics,
-}: {
-  diagnostics: CatalogueLintDiagnostic[]
-}) {
-  if (diagnostics.length === 0) return null
-
-  const diagnostic =
-    diagnostics.find((item) => item.severity === "error") ?? diagnostics[0]
-  const errorCount = diagnostics.filter(
-    (item) => item.severity === "error"
-  ).length
-  const count = errorCount || diagnostics.length
-  const noun = errorCount > 0 ? "error" : "warning"
-
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <span
-            role="status"
-            aria-live="polite"
-            tabIndex={0}
-            className={`flex min-w-0 items-center gap-1.5 outline-none ${diagnostic.severity === "error" ? "text-red-700/85 dark:text-red-300/75" : "text-amber-700/80 dark:text-amber-300/65"}`}
-          />
-        }
-      >
-        <TriangleAlertIcon aria-hidden="true" className="size-3 shrink-0" />
-        <span className="shrink-0">
-          {count} {noun}
-          {count === 1 ? "" : "s"}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent
-        side="top"
-        align="start"
-        className="max-w-md flex-col items-start font-mono text-[10px] whitespace-normal"
-      >
-        {diagnostics.map((item) => (
-          <span key={item.code}>{item.message}</span>
-        ))}
-      </TooltipContent>
-    </Tooltip>
-  )
-}
-
-function ExpandedResult({
-  result,
-  durationMs,
-}: {
-  result: CatalogueQueryResult
-  durationMs?: number
-}) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  // TanStack Virtual exposes mutable callbacks by design; this view stays uncompiled.
-  // eslint-disable-next-line react-hooks/incompatible-library
-  const virtualizer = useVirtualizer({
-    count: result.rows.length,
-    getScrollElement: () => containerRef.current,
-    estimateSize: () => 56 + result.columns.length * 44,
-    overscan: 4,
-  })
-
-  return (
-    <div className="mt-3 max-w-full font-mono text-xs">
-      <div
-        ref={containerRef}
-        className="max-h-[min(42vh,24rem)] overflow-auto border-y border-border/80"
-      >
-        <div
-          className="relative"
-          style={{ height: `${virtualizer.getTotalSize()}px` }}
-        >
-          {virtualizer.getVirtualItems().map((item) => {
-            const row = result.rows[item.index]
-            return (
-              <div
-                key={item.key}
-                ref={virtualizer.measureElement}
-                data-index={item.index}
-                className="absolute top-0 left-0 w-full border-b border-border/80"
-                style={{ transform: `translateY(${item.start}px)` }}
-              >
-                <div className="bg-muted/30 px-3 py-1 text-[10px] text-muted-foreground">
-                  record {item.index + 1}
-                </div>
-                {result.columns.map((column, columnIndex) => (
-                  <div
-                    key={`${column}-${columnIndex}`}
-                    className="grid grid-cols-[minmax(8rem,16rem)_minmax(0,1fr)] even:bg-muted/[0.06]"
-                  >
-                    <div className="border-r border-border/80 px-3 py-1.5">
-                      <span className="block truncate text-foreground/75">
-                        {column}
-                      </span>
-                      <span className="block truncate text-[9px] text-muted-foreground/70">
-                        {result.columnTypes[columnIndex] ?? "unknown"}
-                      </span>
-                    </div>
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      aria-label={`Copy ${column} cell value`}
-                      title="Click to copy cell value"
-                      className="px-3 py-1.5 break-words whitespace-pre-wrap text-foreground/85 hover:bg-muted/20 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
-                      onClick={(event) => {
-                        if (isInteractiveCellTarget(event.target)) return
-                        void copyCellValue(row[columnIndex])
-                      }}
-                      onKeyDown={(event) => {
-                        if (
-                          event.target !== event.currentTarget ||
-                          (event.key !== "Enter" && event.key !== " ")
-                        ) {
-                          return
-                        }
-                        event.preventDefault()
-                        void copyCellValue(row[columnIndex])
-                      }}
-                    >
-                      <ResultCellValue
-                        value={row[columnIndex]}
-                        column={column}
-                        expandable
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )
-          })}
-        </div>
-      </div>
-      <p className="mt-2 text-[10px] text-muted-foreground">
-        {result.rows.length} {result.rows.length === 1 ? "row" : "rows"}
-        {durationMs !== undefined && ` · ${formatDuration(durationMs)}`}
-      </p>
-    </div>
-  )
-}
-
-function ResultTable({
-  result,
-  durationMs,
-  expanded = false,
-}: {
-  result: CatalogueQueryResult
-  durationMs?: number
-  expanded?: boolean
-}) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [containerWidth, setContainerWidth] = useState(0)
-  const [columnWidths, setColumnWidths] = useState(() =>
-    result.columns.map(() => INITIAL_COLUMN_WIDTH)
-  )
-  const [resize, setResize] = useState<{
-    index: number
-    startX: number
-    startWidth: number
-  } | null>(null)
-  // TanStack Virtual exposes mutable callbacks by design; this view stays uncompiled.
-  // eslint-disable-next-line react-hooks/incompatible-library
-  const virtualizer = useVirtualizer({
-    count: result.rows.length,
-    getScrollElement: () => containerRef.current,
-    estimateSize: () => 30,
-    overscan: 12,
-  })
-
-  useEffect(() => {
-    const container = containerRef.current
-    if (!container) return
-
-    const observer = new ResizeObserver(([entry]) => {
-      const width = entry.contentRect.width
-      setContainerWidth(width)
-      setColumnWidths((current) => {
-        const currentWidth = current.reduce((total, value) => total + value, 0)
-        if (current.length === 0 || currentWidth >= width) return current
-
-        const extraWidth = (width - currentWidth) / current.length
-        return current.map((value) => value + extraWidth)
-      })
-    })
-
-    observer.observe(container)
-    return () => observer.disconnect()
-  }, [])
-
-  function resizeColumn(index: number, width: number) {
-    setColumnWidths((current) =>
-      current.map((value, currentIndex) =>
-        currentIndex === index ? Math.max(MIN_COLUMN_WIDTH, width) : value
-      )
-    )
-  }
-
-  const tableWidth = Math.max(
-    containerWidth,
-    columnWidths.reduce((total, value) => total + value, 0)
-  )
-
-  if (expanded && result.rows.length > 0) {
-    return (
-      <div className="mt-3 max-w-full">
-        <ResultExportActions result={result} />
-        <ExpandedResult result={result} durationMs={durationMs} />
-      </div>
-    )
-  }
-
-  return (
-    <div className="mt-3 max-w-full">
-      <ResultExportActions result={result} />
-      <div
-        ref={containerRef}
-        className="mt-1 max-h-[min(42vh,24rem)] w-full overflow-auto"
-      >
-        <div
-          className="bg-muted/[0.04] font-mono text-xs"
-          style={{ width: `${tableWidth}px` }}
-        >
-          <div
-            className="sticky top-0 z-10 grid"
-            style={{
-              gridTemplateColumns: columnWidths
-                .map((width) => `${width}px`)
-                .join(" "),
-            }}
-          >
-            {result.columns.map((column, index) => (
-              <div
-                key={`${column}-${index}`}
-                className="relative border-y border-r bg-muted/45 px-3 py-2 text-left font-medium text-foreground/75 backdrop-blur-[2px] first:border-l"
-              >
-                <span className="block truncate">{column}</span>
-                <span className="mt-0.5 block truncate text-[9px] leading-3 font-normal tracking-wide text-muted-foreground/70">
-                  {result.columnTypes[index] ?? "unknown"}
-                </span>
-                <button
-                  type="button"
-                  aria-label={`Resize ${column} column`}
-                  className="group absolute inset-y-0 -right-1 z-20 flex w-2 cursor-col-resize touch-none justify-center"
-                  onPointerDown={(event) => {
-                    event.currentTarget.setPointerCapture(event.pointerId)
-                    setResize({
-                      index,
-                      startX: event.clientX,
-                      startWidth: columnWidths[index],
-                    })
-                  }}
-                  onPointerMove={(event) => {
-                    if (!resize || resize.index !== index) return
-                    resizeColumn(
-                      index,
-                      resize.startWidth + event.clientX - resize.startX
-                    )
-                  }}
-                  onPointerUp={(event) => {
-                    event.currentTarget.releasePointerCapture(event.pointerId)
-                    setResize(null)
-                  }}
-                  onKeyDownCapture={(event) => {
-                    if (
-                      event.key !== "ArrowLeft" &&
-                      event.key !== "ArrowRight"
-                    ) {
-                      return
-                    }
-                    event.preventDefault()
-                    resizeColumn(
-                      index,
-                      columnWidths[index] +
-                        (event.key === "ArrowRight" ? 16 : -16)
-                    )
-                  }}
-                >
-                  <span className="h-full w-px bg-border transition-colors group-hover:bg-primary group-focus-visible:bg-primary" />
-                </button>
-              </div>
-            ))}
-          </div>
-          <div
-            className="relative"
-            style={{ height: `${virtualizer.getTotalSize()}px` }}
-          >
-            {virtualizer.getVirtualItems().map((item) => {
-              const row = result.rows[item.index]
-              return (
-                <div
-                  key={item.key}
-                  className="absolute top-0 left-0 grid even:bg-muted/10 hover:bg-muted/15"
-                  style={{
-                    width: `${tableWidth}px`,
-                    height: `${item.size}px`,
-                    transform: `translateY(${item.start}px)`,
-                    gridTemplateColumns: columnWidths
-                      .map((width) => `${width}px`)
-                      .join(" "),
-                  }}
-                >
-                  {row.map((value, columnIndex) => {
-                    const formatted = formatCell(value)
-                    return (
-                      <div
-                        key={columnIndex}
-                        role="button"
-                        tabIndex={0}
-                        aria-label={`Copy ${result.columns[columnIndex]} cell value`}
-                        title={`${formatted}\nClick to copy cell value`}
-                        className="truncate border-r border-b px-3 py-1.5 text-foreground/85 first:border-l hover:bg-muted/25 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
-                        onClick={(event) => {
-                          if (isInteractiveCellTarget(event.target)) return
-                          void copyCellValue(value)
-                        }}
-                        onKeyDown={(event) => {
-                          if (
-                            event.target !== event.currentTarget ||
-                            (event.key !== "Enter" && event.key !== " ")
-                          ) {
-                            return
-                          }
-                          event.preventDefault()
-                          void copyCellValue(value)
-                        }}
-                      >
-                        <ResultCellValue
-                          value={value}
-                          column={result.columns[columnIndex]}
-                        />
-                      </div>
-                    )
-                  })}
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      </div>
-      <p className="mt-2 font-mono text-[10px] text-muted-foreground">
-        {result.rows.length} {result.rows.length === 1 ? "row" : "rows"}
-        {durationMs !== undefined && ` · ${formatDuration(durationMs)}`}
-      </p>
-    </div>
-  )
-}
-
-function QueryResult({
-  result,
-  durationMs,
-  expanded,
-}: {
-  result: CatalogueQueryResult
-  durationMs?: number
-  expanded?: boolean
-}) {
-  if (result.statementKind !== "query") {
-    return <CatalogueExplainPlan result={result} mode={result.statementKind} />
-  }
-  return (
-    <ResultTable result={result} durationMs={durationMs} expanded={expanded} />
-  )
-}
-
-function CrawlLaunchOutput({
-  selection,
-  graphSlug,
-}: {
-  selection: CrawlUrlSelection
-  graphSlug: string
-}) {
-  const [runId, setRunId] = useState<string | null>(null)
-  const startedRef = useRef(false)
-  const graphsQuery = useCrawlGraphs()
-  const graphs = graphsQuery.data?.items ?? []
-  const selectedGraph = graphs.find((graph) => graph.slug === graphSlug)
-  const triggerRun = useTriggerCrawlGraph(selectedGraph?.id ?? "")
-  const runQuery = useGraphRun(runId)
-  const run = runQuery.data
-  const mutate = triggerRun.mutate
-  const urls = selection.urls
-
-  useEffect(() => {
-    if (
-      startedRef.current ||
-      !selectedGraph ||
-      selectedGraph.root_node_id === null ||
-      urls.length > MAX_CRAWL_URLS
-    ) {
-      return
-    }
-    startedRef.current = true
-    mutate(
-      { urls, max_crawls: urls.length },
-      {
-        onSuccess: (submission) => setRunId(submission.run_id),
-      }
-    )
-  }, [mutate, selectedGraph, urls])
-
-  if (graphsQuery.isLoading) {
-    return (
-      <p className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-        <TerminalSpinner /> Resolving graph {graphSlug}
-      </p>
-    )
-  }
-
-  if (graphsQuery.error) {
-    return (
-      <p className="mt-2 text-xs text-red-700 dark:text-red-300/80">
-        {extractApiError(graphsQuery.error)}
-      </p>
-    )
-  }
-
-  if (!selectedGraph) {
-    return (
-      <p className="mt-2 text-xs text-red-700 dark:text-red-300/80">
-        Crawl graph not found: {graphSlug}
-      </p>
-    )
-  }
-
-  if (selectedGraph.root_node_id === null) {
-    return (
-      <p className="mt-2 text-xs text-red-700 dark:text-red-300/80">
-        Crawl graph {graphSlug} has no root node.
-      </p>
-    )
-  }
-
-  if (urls.length > MAX_CRAWL_URLS) {
-    return (
-      <p className="mt-2 text-xs text-red-700 dark:text-red-300/80">
-        A graph run accepts at most {MAX_CRAWL_URLS.toLocaleString()} URLs.
-      </p>
-    )
-  }
-
-  if (triggerRun.error) {
-    return (
-      <p className="mt-2 text-xs text-red-700 dark:text-red-300/80">
-        {extractApiError(triggerRun.error)}
-      </p>
-    )
-  }
-
-  const status = run?.status ?? "queued"
-  const active = !runId || status === "queued" || status === "running"
-  return (
-    <div className="mt-2 max-w-xl space-y-2 text-xs">
-      <p className="flex items-center gap-2">
-        <span className="text-primary" aria-hidden="true">
-          {active ? "›" : "✓"}
-        </span>
-        {runId ? (
-          <>
-            Graph{" "}
-            <a
-              href={`/crawls/graphs/${selectedGraph.id}`}
-              className="text-link hover:underline"
-            >
-              {selectedGraph.slug}
-            </a>{" "}
-            · {status.replaceAll("_", " ")}
-          </>
-        ) : (
-          `Starting ${graphSlug}`
-        )}
-        {active && <TerminalSpinner />}
-      </p>
-      {runId && (
-        <>
-          <p className="text-muted-foreground">
-            {urls.length.toLocaleString()} initial · {run?.request_count ?? 0}{" "}
-            admitted · {run?.pending_request_count ?? 0} pending ·{" "}
-            {run?.failed_request_count ?? 0} failed
-          </p>
-          <p className="text-[10px] text-muted-foreground">run {runId}</p>
-        </>
-      )}
-      {run?.error && (
-        <p className="text-red-700 dark:text-red-300/80">{run.error}</p>
-      )}
-    </div>
-  )
-}
-
-export function CatalogueWorkbenchPage() {
-  const [input, setInput] = useState(() =>
-    formatSql(new URLSearchParams(window.location.search).get("sql") ?? "")
-  )
-  const [transcript, setTranscript] = useState<TranscriptEntry[]>([
-    {
-      id: "welcome",
-      sql: "",
-      status: "success",
-      output: "welcome",
-    },
-  ])
-  const [history, setHistory] = useState<string[]>(loadWorkbenchHistory)
-  const [historyIndex, setHistoryIndex] = useState<number | null>(null)
-  const [expandedOutput, setExpandedOutput] = useState(false)
-  const historyDraftRef = useRef("")
-  const editorRef = useRef<EditorView | null>(null)
-  const transcriptEndRef = useRef<HTMLDivElement>(null)
-  const catalogueQuery = useCatalogueQuery()
-  const catalogueLint = useCatalogueLint(input, isLintableSql(input))
-  const catalogueMetadata = useCatalogueMetadata()
-  const catalogueStatus = useCatalogueStatus()
-  const editorExtensions = useMemo(
-    () => [
-      workbenchPromptTheme,
-      ...createCatalogueCompletionExtensions(catalogueMetadata.data),
-      EditorView.lineWrapping,
-    ],
-    [catalogueMetadata.data]
-  )
-
-  useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ block: "nearest" })
-  }, [transcript])
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        WORKBENCH_HISTORY_KEY,
-        JSON.stringify(history)
-      )
-    } catch {
-      // History remains available for this session when storage is unavailable.
-    }
-  }, [history])
-
-  function replaceInput(value: string) {
-    setInput(value)
-    requestAnimationFrame(() => {
-      const editor = editorRef.current
-      if (!editor) return
-      editor.dispatch({ selection: { anchor: editor.state.doc.length } })
-      editor.focus()
-    })
-  }
-
-  function clearPrompt() {
-    const editor = editorRef.current
-    if (editor && editor.state.doc.length > 0) {
-      editor.dispatch({
-        changes: { from: 0, to: editor.state.doc.length, insert: "" },
-        selection: { anchor: 0 },
-      })
-    }
-    setInput("")
-  }
-
-  function navigateHistory(direction: "up" | "down") {
-    if (history.length === 0) return
-
-    if (direction === "up") {
-      if (historyIndex === null) historyDraftRef.current = input
-      const nextIndex =
-        historyIndex === null
-          ? history.length - 1
-          : Math.max(0, historyIndex - 1)
-      setHistoryIndex(nextIndex)
-      replaceInput(history[nextIndex])
-      return
-    }
-
-    if (historyIndex === null) return
-    if (historyIndex < history.length - 1) {
-      const nextIndex = historyIndex + 1
-      setHistoryIndex(nextIndex)
-      replaceInput(history[nextIndex])
-      return
-    }
-
-    setHistoryIndex(null)
-    replaceInput(historyDraftRef.current)
-  }
-
-  function canNavigateHistory(direction: "up" | "down") {
-    const editor = editorRef.current
-    if (!editor || !editor.state.selection.main.empty) return false
-
-    const head = editor.state.selection.main.head
-    const line = editor.state.doc.lineAt(head)
-    return direction === "up"
-      ? line.number === 1
-      : historyIndex !== null && line.number === editor.state.doc.lines
-  }
-
-  function crawlTranscriptEntry(
-    id: string,
-    sql: string,
-    argument: string
-  ): TranscriptEntry {
-    const target = parseCrawlCommandTarget(argument)
-    if (target.kind === "error") {
-      return { id, sql, status: "error", error: target.error }
-    }
-
-    if (target.kind === "url") {
-      const selection = selectionFromUrl(target.url)
-      return "error" in selection
-        ? { id, sql, status: "error", error: selection.error }
-        : {
-            id,
-            sql,
-            status: "success",
-            output: "crawl",
-            crawlSelection: selection,
-            crawlGraphSlug: target.graph,
-          }
-    }
-
-    const lastResult = transcript
-      .toReversed()
-      .find(
-        (entry) =>
-          entry.status === "success" &&
-          entry.result?.statementKind === "query" &&
-          !isMetaCommand(entry.sql)
-      )?.result
-    if (!lastResult) {
-      return {
-        id,
-        sql,
-        status: "error",
-        error:
-          "No query result is available. Supply a URL or run a query first.",
-      }
-    }
-
-    if (target.column) {
-      const selection = selectionFromNamedColumn(lastResult, target.column)
-      if ("error" in selection) {
-        return { id, sql, status: "error", error: selection.error }
-      }
-      if (selection.urls.length === 0) {
-        return {
-          id,
-          sql,
-          status: "error",
-          error: `Column ${target.column} contains no valid HTTP(S) URLs.`,
-        }
-      }
-      return {
-        id,
-        sql,
-        status: "success",
-        output: "crawl",
-        crawlSelection: selection,
-        crawlGraphSlug: target.graph,
-      }
-    }
-
-    const candidates = crawlColumnCandidates(lastResult)
-    if (candidates.length === 0) {
-      return {
-        id,
-        sql,
-        status: "error",
-        error:
-          "The last query result has no URL column. Use \\crawl --column <column> to choose one explicitly.",
-      }
-    }
-    if (candidates.length > 1) {
-      return {
-        id,
-        sql,
-        status: "error",
-        error:
-          "The last query result has multiple URL columns. Use --column <column> explicitly.",
-      }
-    }
-    return {
-      id,
-      sql,
-      status: "success",
-      output: "crawl",
-      crawlSelection: candidates[0],
-      crawlGraphSlug: target.graph,
-    }
-  }
-
-  function execute() {
-    const sql = input.trim()
-    if (!sql) return
-    const command = parseWorkbenchCommand(sql)
-
-    if (isClearCommand(sql)) {
-      setTranscript([])
-      clearPrompt()
-      setHistoryIndex(null)
-      historyDraftRef.current = ""
-      return
-    }
-
-    if (command) {
-      const id = crypto.randomUUID()
-      const outcome = runWorkbenchCommand(command, {
-        metadata: catalogueMetadata.data,
-        status: catalogueStatus.data,
-        history,
-      })
-      let entry: TranscriptEntry
-
-      switch (outcome.kind) {
-        case "help":
-          entry = { id, sql, status: "success", output: "help" }
-          break
-        case "result":
-          entry = {
-            id,
-            sql,
-            status: "success",
-            result: outcome.result,
-            expanded: expandedOutput,
-          }
-          break
-        case "message":
-          entry = {
-            id,
-            sql,
-            status: "success",
-            output: "message",
-            message: outcome.message,
-          }
-          break
-        case "toggle-expanded": {
-          const next = !expandedOutput
-          setExpandedOutput(next)
-          entry = {
-            id,
-            sql,
-            status: "success",
-            output: "message",
-            message: `Expanded result display is ${next ? "on" : "off"}.`,
-          }
-          break
-        }
-        case "crawl":
-          entry = crawlTranscriptEntry(id, sql, outcome.argument)
-          break
-        case "error":
-          entry = { id, sql, status: "error", error: outcome.error }
-          break
-      }
-
-      setTranscript((entries) => [...entries, entry])
-      setHistory((entries) => appendWorkbenchHistory(entries, sql))
-      clearPrompt()
-      setHistoryIndex(null)
-      historyDraftRef.current = ""
-      return
-    }
-
-    if (isWorkbenchCommandLike(sql)) {
-      const id = crypto.randomUUID()
-      const suggestion = workbenchCommandSuggestion(sql)
-      setTranscript((entries) => [
-        ...entries,
-        {
-          id,
-          sql,
-          status: "error",
-          error: suggestion
-            ? `Unknown meta-command: ${sql}. Did you mean ${suggestion}?`
-            : `Unknown meta-command: ${sql}. Try \\?.`,
-        },
-      ])
-      setHistory((entries) => appendWorkbenchHistory(entries, sql))
-      clearPrompt()
-      setHistoryIndex(null)
-      historyDraftRef.current = ""
-      return
-    }
-
-    if (!isTerminatedSql(sql)) return
-    if (catalogueQuery.isPending) return
-
-    const id = crypto.randomUUID()
-    const startedAt = performance.now()
-    setTranscript((entries) => [
-      ...entries,
-      { id, sql, status: "running", expanded: expandedOutput },
-    ])
-    setHistory((entries) => appendWorkbenchHistory(entries, sql))
-    clearPrompt()
-    setHistoryIndex(null)
-    historyDraftRef.current = ""
-
-    catalogueQuery.mutate(
-      { sql },
-      {
-        onSuccess: (result) =>
-          setTranscript((entries) =>
-            entries.map((entry) =>
-              entry.id === id
-                ? {
-                    ...entry,
-                    status: "success",
-                    result,
-                    durationMs: performance.now() - startedAt,
-                  }
-                : entry
-            )
-          ),
-        onError: (error) =>
-          setTranscript((entries) =>
-            entries.map((entry) =>
-              entry.id === id
-                ? {
-                    ...entry,
-                    status: "error",
-                    error: extractApiError(error),
-                    durationMs: performance.now() - startedAt,
-                  }
-                : entry
-            )
-          ),
-      }
-    )
-  }
-
-  return (
-    <section
-      aria-label="Catalogue SQL workbench"
-      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background text-foreground"
-    >
-      <div className="relative flex min-h-0 flex-1 flex-col overflow-auto bg-background">
-        <div className="flex flex-1 flex-col px-5 py-6 sm:px-6">
-          <div className="space-y-7">
-            {transcript.map((entry) => (
-              <div key={entry.id} className="font-mono">
-                {entry.output !== "welcome" && (
-                  <div className="flex min-w-0 items-start gap-2">
-                    <PromptGutter value={entry.sql} />
-                    <pre className="min-w-0 flex-1 py-1 text-[13px] leading-6 whitespace-pre-wrap text-foreground/85">
-                      {entry.sql}
-                      {entry.status === "running" && (
-                        <DelayedRunningIndicator compact />
-                      )}
-                    </pre>
-                    {!isMetaCommand(entry.sql) && (
-                      <TranscriptActions sql={entry.sql} />
-                    )}
-                  </div>
-                )}
-                <div className="pt-1">
-                  {entry.status === "success" && entry.output === "welcome" && (
-                    <WelcomeOutput
-                      schemaVersion={
-                        catalogueStatus.data?.catalogue_schema_version
-                      }
-                    />
-                  )}
-                  {entry.status === "error" && (
-                    <p className="text-xs text-red-700 dark:text-red-300/80">
-                      {entry.error}
-                    </p>
-                  )}
-                  {entry.status === "success" && entry.output === "help" && (
-                    <HelpOutput />
-                  )}
-                  {entry.status === "success" && entry.output === "message" && (
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      {entry.message}
-                    </p>
-                  )}
-                  {entry.status === "success" &&
-                    entry.output === "crawl" &&
-                    entry.crawlSelection &&
-                    entry.crawlGraphSlug && (
-                      <CrawlLaunchOutput
-                        selection={entry.crawlSelection}
-                        graphSlug={entry.crawlGraphSlug}
-                      />
-                    )}
-                  {entry.status === "success" && entry.result && (
-                    <QueryResult
-                      result={entry.result}
-                      durationMs={entry.durationMs}
-                      expanded={entry.expanded}
-                    />
-                  )}
-                </div>
-              </div>
-            ))}
-
-            <div className="font-mono">
-              <div className="flex min-w-0 items-start gap-2">
-                <PromptGutter value={input} />
-                <div className="min-h-48 min-w-0 flex-1">
-                  <CodeMirror
-                    autoFocus
-                    aria-label="SQL prompt"
-                    value={input}
-                    theme="none"
-                    extensions={editorExtensions}
-                    basicSetup={{
-                      lineNumbers: false,
-                      foldGutter: false,
-                      dropCursor: false,
-                      allowMultipleSelections: false,
-                      indentOnInput: true,
-                      bracketMatching: true,
-                      closeBrackets: true,
-                      autocompletion: false,
-                      highlightSelectionMatches: false,
-                      highlightActiveLine: false,
-                      highlightActiveLineGutter: false,
-                      syntaxHighlighting: false,
-                      highlightSpecialChars: false,
-                    }}
-                    onCreateEditor={(view) => {
-                      editorRef.current = view
-                      view.dispatch({
-                        selection: { anchor: view.state.doc.length },
-                      })
-                    }}
-                    onChange={setInput}
-                    onKeyDown={(event) => {
-                      if (
-                        event.altKey &&
-                        event.shiftKey &&
-                        !event.ctrlKey &&
-                        !event.metaKey &&
-                        event.key.toLocaleLowerCase() === "f"
-                      ) {
-                        event.preventDefault()
-                        replaceInput(formatSql(input))
-                        return
-                      }
-                      if (
-                        !event.altKey &&
-                        !event.ctrlKey &&
-                        !event.metaKey &&
-                        !event.shiftKey &&
-                        event.key === "ArrowUp" &&
-                        canNavigateHistory("up")
-                      ) {
-                        event.preventDefault()
-                        navigateHistory("up")
-                        return
-                      }
-                      if (
-                        !event.altKey &&
-                        !event.ctrlKey &&
-                        !event.metaKey &&
-                        !event.shiftKey &&
-                        event.key === "ArrowDown" &&
-                        canNavigateHistory("down")
-                      ) {
-                        event.preventDefault()
-                        navigateHistory("down")
-                        return
-                      }
-                      const selection = editorRef.current?.state.selection.main
-                      const submitsAtCursor =
-                        selection?.empty &&
-                        selection.head === editorRef.current?.state.doc.length
-                      if (
-                        event.key === "Enter" &&
-                        submitsAtCursor &&
-                        runsOnEnter(input)
-                      ) {
-                        event.preventDefault()
-                        event.nativeEvent.stopImmediatePropagation()
-                        execute()
-                      }
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-          <div ref={transcriptEndRef} />
-        </div>
-      </div>
-
-      <footer className="flex h-9 shrink-0 items-center justify-between gap-4 border-t bg-background px-4 font-mono text-[10px] text-muted-foreground">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <span className="hidden shrink-0 items-center gap-1.5 sm:flex">
-            <LockKeyholeIcon className="size-3" />
-            read only
-          </span>
-          {catalogueQuery.isPending ? (
-            <DelayedRunningIndicator />
-          ) : (
-            <FooterLintDiagnostics
-              diagnostics={catalogueLint.data?.diagnostics ?? []}
-            />
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-3">
-          <span
-            className="hidden sm:inline"
-            title={
-              catalogueStatus.data
-                ? `${catalogueStatus.data.active_file_count.toLocaleString()} active Parquet files`
-                : undefined
-            }
-          >
-            catalogue {formatBytes(catalogueStatus.data?.active_storage_bytes)}
-          </span>
-          <span className="hidden md:inline">
-            DuckLake {catalogueStatus.data?.ducklake_version ?? "—"}
-          </span>
-        </div>
-      </footer>
-    </section>
-  )
-}
-
-function formatBytes(value: number | undefined): string {
-  if (value === undefined) return "—"
-  if (value < 1024) return `${value} B`
-  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`
-  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`
-  return `${(value / 1024 ** 3).toFixed(1)} GB`
-}
-
-function formatDuration(value: number | undefined): string {
-  if (value === undefined) return "—"
-  if (value < 1_000) return `${Math.round(value)} ms`
-  return `${(value / 1_000).toFixed(2)} s`
+function isAbort(reason: unknown): boolean {
+  return reason instanceof Error && reason.name === "AbortError"
 }

@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { PauseIcon, PlayIcon, Trash2Icon } from "lucide-react"
+import { PauseIcon, PlayIcon, RotateCcwIcon, Trash2Icon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -30,6 +30,9 @@ export function CatalogueMaterializationDetail({
   const terminal = ["deleting", "blocked_schema", "failed"].includes(
     materialization.observed_state
   )
+  const building = ["creating", "backfilling"].includes(
+    materialization.observed_state
+  )
 
   return (
     <>
@@ -48,6 +51,20 @@ export function CatalogueMaterializationDetail({
                 {materialization.observed_state}
               </span>
             </div>
+            {materialization.bootstrap_partition_count !== null ? (
+              <div className="flex items-center justify-between gap-3 py-3">
+                <div>
+                  <div className="text-sm">Historical backfill</div>
+                  <div className="text-xs text-muted-foreground">
+                    Live CDC remains active between bounded batches
+                  </div>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {materialization.bootstrap_partition_cursor ?? 0} /{" "}
+                  {materialization.bootstrap_partition_count} partitions
+                </span>
+              </div>
+            ) : null}
             <div className="flex items-center justify-between gap-3 py-3">
               <div>
                 <div className="text-sm">Refresh strategy</div>
@@ -76,7 +93,7 @@ export function CatalogueMaterializationDetail({
                     desired_state: paused ? "live" : "paused",
                   })
                 }
-                disabled={update.isPending || terminal}
+                disabled={update.isPending || terminal || building}
               >
                 {paused ? <PlayIcon /> : <PauseIcon />}
                 {paused ? "Continue" : "Pause"}
@@ -120,9 +137,26 @@ export function CatalogueMaterializationDetail({
             </div>
           </div>
           {materialization.last_error ? (
-            <p className="mt-3 rounded-md bg-destructive/10 p-3 text-xs text-destructive">
-              {materialization.last_error}
-            </p>
+            <div className="mt-3 rounded-md bg-destructive/10 p-3 text-xs text-destructive">
+              <p>{materialization.last_error}</p>
+              {materialization.observed_state === "failed" ? (
+                <Button
+                  className="mt-3"
+                  size="sm"
+                  variant="outline"
+                  disabled={update.isPending}
+                  onClick={() =>
+                    update.mutate({
+                      id: materialization.id,
+                      desired_state: "live",
+                    })
+                  }
+                >
+                  <RotateCcwIcon />
+                  Retry from checkpoint
+                </Button>
+              ) : null}
+            </div>
           ) : null}
         </section>
         <div className="flex justify-end border-t pt-4">

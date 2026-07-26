@@ -8,23 +8,24 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.errors import NotFoundError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from api.graph_submission import submit_graph_run
+from api.graph_submission import frozen_edge_compiler, submit_graph_run
+from api.routers.catalogue import get_compiler_definitions
+from api.graph_runtime import ApiGraphRuntime, get_graph_runtime
 from api.catalogue_control import CatalogueControl, get_catalogue_control
 from config.performance import (
-    GRAPH_CONSUMER_MAX_ACK_PENDING,
     CRAWL_ACQUISITION_LANES,
-    RESOURCE_ACQUIRE_TIMEOUT_SECONDS,
-    catalogue_max_concurrency,
+    GRAPH_CONSUMER_MAX_ACK_PENDING,
+    INGESTION_QUACK_CLIENTS,
+    MATERIALIZATION_QUACK_CLIENTS,
     duckdb_memory_limit,
     duckdb_threads,
-    object_io_max_concurrency,
 )
+from control.catalogue_materializations.models import CatalogueMaterialization
 from control.crawl_graphs.models import CrawlGraph
 from control.crawl_graphs.schemas import (
     DEFAULT_GRAPH_RUN_MAX_CRAWLS,
@@ -36,36 +37,26 @@ from control.crawl_graphs.service import (
 )
 from db.session import get_session
 from repository.ingestion.queue import DURABLE as INGESTION_DURABLE
+from repository.catalogue.compiler_definitions import (
+    CatalogueCompilerDefinitions,
+)
 from runtime.catalogue_events import DML_SUBJECT_PREFIX, EVENT_STREAM
 from runtime.catalogue_queue import WORK_STREAM
 from runtime.graph_queue import (
     GraphRun,
-    ensure_graph_progress_storage,
-    ensure_graph_storage,
     get_graph_run,
     list_graph_runs,
     list_worker_states,
 )
-from runtime.nats_client import connect_nats
 from runtime.graph_runs import (
     GraphRunNotFoundError,
+    pause_graph_run,
     request_cancellation,
+    resume_graph_run,
 )
 from runtime.catalogue_workers import (
     CatalogueCapability,
-    ensure_catalogue_worker_storage,
     list_catalogue_worker_states,
-)
-from runtime.graph_progress import (
-    EdgeProgress,
-    NodeProgress,
-    bootstrap_run_progress,
-    node_progress_key,
-)
-from runtime.resource_governor import (
-    ResourceUsage,
-    ensure_resource_governor_storage,
-    resource_usage,
 )
 
 router = APIRouter(prefix="/graph-runs", tags=["graph-runs"])
@@ -81,6 +72,11 @@ class GraphRunTrigger(BaseModel):
         ge=1,
         le=MAX_GRAPH_RUN_CRAWLS,
     )
+    max_run_seconds: int | None = Field(
+        default=None,
+        ge=60,
+        le=365 * 24 * 60 * 60,
+    )
 
 
 class GraphRunSubmission(BaseModel):
@@ -94,7 +90,13 @@ class GraphRunSummary(BaseModel):
     graph_id: UUID
     graph_slug: str | None
     status: Literal[
-        "queued", "running", "completed", "completed_with_errors", "failed", "cancelled"
+        "queued",
+        "running",
+        "paused",
+        "completed",
+        "completed_with_errors",
+        "failed",
+        "cancelled",
     ]
     trigger_kind: Literal["manual", "schedule"]
     trigger_schedule_id: UUID | None
@@ -112,6 +114,9 @@ class GraphRunSummary(BaseModel):
     started_at: datetime | None
     last_progress_at: datetime | None
     completed_at: datetime | None
+    paused_at: datetime | None
+    not_before: datetime | None
+    deadline_at: datetime | None
     cancel_requested_at: datetime | None
     error: str | None
 
@@ -131,31 +136,33 @@ class RuntimeWorkerCapacity(BaseModel):
 class CatalogueExecutorCapacity(BaseModel):
     capability: CatalogueCapability
     worker_count: int
+    configured_capacity: int
     capacity: int
     active: int
+    degraded: int
     backlog: int
+    pending: int
+    ack_pending: int
+    redelivered: int
+    waiting_for_redelivery: int
 
 
 class CrawlConcurrencyLimits(BaseModel):
     worker_count: int
     runtime_capacity: int
     runtime_active: int
-    resource_acquire_timeout_seconds: float
-    resources: list[ResourceUsage]
     workers: list[RuntimeWorkerCapacity]
     catalogue_executors: list[CatalogueExecutorCapacity]
-    tuning: RuntimeSizing
+    tuning: "RuntimeSizing"
 
 
 class RuntimeSizing(BaseModel):
-    catalogue_max_concurrency: int
-    effective_catalogue_concurrency: int
-    object_io_max_concurrency: int
     crawl_lanes_per_replica: int
-    catalogue_lanes_per_replica: int
+    ingestion_clients_per_replica: int
+    materialization_clients_per_replica: int
     graph_consumer_delivery_ceiling: int
-    duckdb_threads_per_executor: int
-    duckdb_memory_limit_per_executor: str
+    duckdb_threads_per_client: int
+    duckdb_memory_limit_per_client: str
 
 
 class GraphRunFailureGroupResponse(BaseModel):
@@ -178,6 +185,9 @@ async def _run_summaries(
     progress,
     runs: list[GraphRun],
 ) -> list[GraphRunSummary]:
+    stage_counts = await asyncio.gather(
+        *(_run_stage_counts(progress, run) for run in runs)
+    )
     graph_ids = {run.graph_id for run in runs}
     slugs = (
         dict(
@@ -189,9 +199,6 @@ async def _run_summaries(
         )
         if graph_ids
         else {}
-    )
-    stage_counts = await asyncio.gather(
-        *(_run_stage_counts(progress, run) for run in runs)
     )
     return [
         GraphRunSummary(
@@ -206,119 +213,148 @@ async def _run_summaries(
 
 
 async def _run_stage_counts(progress, run: GraphRun) -> tuple[int, int, int]:
-    entries = await asyncio.gather(
-        *(
-            progress.get(node_progress_key(run.id, node.id))
-            for node in run.snapshot.nodes
-        ),
-        return_exceptions=True,
+    counts = await progress.progress_counts(run.id)
+    queued = sum(
+        count
+        for (_node_id, status), count in counts.items()
+        if status == "queued"
     )
-    nodes: list[NodeProgress] = []
-    for entry in entries:
-        if isinstance(entry, Exception):
-            continue
-        nodes.append(NodeProgress.model_validate_json(entry.value))
-    pending = run.pending_request_count
-    queued = min(pending, sum(node.queued for node in nodes))
-    fetching = min(pending - queued, sum(node.crawling for node in nodes))
-    navigating = max(0, pending - queued - fetching)
+    fetching = sum(
+        count
+        for (_node_id, status), count in counts.items()
+        if status == "crawling"
+    )
+    navigating = sum(
+        count
+        for (_node_id, status), count in counts.items()
+        if status in {"awaiting_navigation", "evaluating_edges"}
+    )
     return queued, fetching, navigating
 
 
-async def _storage():
-    client = await connect_nats()
-    jetstream = client.jetstream()
-    runs, requests, _workers = await ensure_graph_storage(jetstream)
-    progress = await ensure_graph_progress_storage(jetstream)
-    return client, runs, requests, progress
-
-
 @router.get("/capacity", response_model=CrawlConcurrencyLimits)
-async def capacity() -> CrawlConcurrencyLimits:
-    client = await connect_nats()
-    try:
-        jetstream = client.jetstream()
-        _runs, _requests, workers_bucket = await ensure_graph_storage(jetstream)
-        resource_grants = await ensure_resource_governor_storage(jetstream)
-        catalogue_workers_bucket = await ensure_catalogue_worker_storage(jetstream)
-        workers = sorted(
-            await list_worker_states(workers_bucket), key=lambda value: value.worker_id
-        )
-        catalogue_workers = sorted(
-            await list_catalogue_worker_states(catalogue_workers_bucket),
-            key=lambda value: value.worker_id,
-        )
-        resources = await resource_usage(resource_grants)
+async def capacity(
+    runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
+    session: Annotated[Session, Depends(get_session)],
+) -> CrawlConcurrencyLimits:
+    workers = sorted(
+        await list_worker_states(runtime.workers),
+        key=lambda value: value.worker_id,
+    )
+    catalogue_workers = sorted(
+        await list_catalogue_worker_states(runtime.catalogue_workers),
+        key=lambda value: value.worker_id,
+    )
 
-        async def consumer_backlog(durable: str) -> int:
-            try:
-                info = await jetstream.consumer_info(WORK_STREAM, durable)
-            except NotFoundError:
-                return 0
-            return int(info.num_pending or 0) + int(info.num_ack_pending or 0)
-
+    async def consumer_counts(durable: str) -> tuple[int, int, int]:
         try:
-            materialization_consumers = await jetstream.consumers_info(
-                EVENT_STREAM
-            )
+            info = await runtime.jetstream.consumer_info(WORK_STREAM, durable)
         except NotFoundError:
-            materialization_consumers = []
-        catalogue_backlogs = {
-            "ingestion": await consumer_backlog(INGESTION_DURABLE),
-            "materialization": sum(
-                int(info.num_pending or 0) + int(info.num_ack_pending or 0)
-                for info in materialization_consumers
-                if (info.config.filter_subject or "").startswith(
-                    f"{DML_SUBJECT_PREFIX}."
-                )
-            ),
-        }
-    finally:
-        await client.drain()
-    catalogue_executors = [
-        CatalogueExecutorCapacity(
-            capability=capability,
-            worker_count=sum(
-                worker.capability == capability and worker.healthy
-                for worker in catalogue_workers
-            ),
-            capacity=sum(
-                worker.capacity
-                for worker in catalogue_workers
-                if worker.capability == capability and worker.healthy
-            ),
-            active=sum(
-                worker.active_operation_count
-                for worker in catalogue_workers
-                if worker.capability == capability and worker.healthy
-            ),
-            backlog=catalogue_backlogs[capability],
+            return 0, 0, 0
+        return (
+            int(info.num_pending or 0),
+            int(info.num_ack_pending or 0),
+            int(info.num_redelivered or 0),
         )
-        for capability in ("ingestion", "materialization")
+
+    try:
+        materialization_consumers = await runtime.jetstream.consumers_info(
+            EVENT_STREAM
+        )
+    except NotFoundError:
+        materialization_consumers = []
+    active_materialization_consumers = set(
+        session.scalars(
+            select(CatalogueMaterialization.nats_consumer_name).where(
+                CatalogueMaterialization.archived_at.is_(None)
+            )
+        )
+    )
+    relevant_materialization_consumers = [
+        info
+        for info in materialization_consumers
+        if (
+            (info.config.filter_subject or "").startswith(
+                f"{DML_SUBJECT_PREFIX}."
+            )
+            and (info.name or info.config.durable_name)
+            in active_materialization_consumers
+        )
     ]
-    executor_capacity = sum(item.capacity for item in catalogue_executors)
+    catalogue_queues = {
+        "ingestion": await consumer_counts(INGESTION_DURABLE),
+        "materialization": (
+            sum(
+                int(info.num_pending or 0)
+                for info in relevant_materialization_consumers
+            ),
+            sum(
+                int(info.num_ack_pending or 0)
+                for info in relevant_materialization_consumers
+            ),
+            sum(
+                int(info.num_redelivered or 0)
+                for info in relevant_materialization_consumers
+            ),
+        ),
+    }
+    catalogue_executors: list[CatalogueExecutorCapacity] = []
+    for capability in ("ingestion", "materialization"):
+        configured_capacity = sum(
+            worker.configured_capacity
+            for worker in catalogue_workers
+            if worker.capability == capability
+        )
+        usable_capacity = sum(
+            worker.usable_capacity
+            for worker in catalogue_workers
+            if worker.capability == capability and worker.process_ready
+        )
+        active = sum(
+            worker.active_operation_count
+            for worker in catalogue_workers
+            if worker.capability == capability
+        )
+        pending, ack_pending, redelivered = catalogue_queues[capability]
+        catalogue_executors.append(
+            CatalogueExecutorCapacity(
+                capability=capability,
+                worker_count=sum(
+                    worker.capability == capability
+                    for worker in catalogue_workers
+                ),
+                configured_capacity=configured_capacity,
+                capacity=usable_capacity,
+                active=active,
+                degraded=configured_capacity - usable_capacity,
+                backlog=pending + ack_pending,
+                pending=pending,
+                ack_pending=ack_pending,
+                redelivered=redelivered,
+                # JetStream does not publish per-message delayed-NAK deadlines.
+                # A quiescent consumer with only ACK-pending deliveries is the
+                # bounded, server-authoritative wait state we can prove.
+                waiting_for_redelivery=(
+                    ack_pending if pending == 0 and active == 0 else 0
+                ),
+            )
+        )
     return CrawlConcurrencyLimits(
         worker_count=len(workers),
         runtime_capacity=sum(worker.capacity for worker in workers),
         runtime_active=sum(worker.active_request_count for worker in workers),
-        resource_acquire_timeout_seconds=RESOURCE_ACQUIRE_TIMEOUT_SECONDS,
-        resources=resources,
         workers=[
             RuntimeWorkerCapacity.model_validate(worker, from_attributes=True)
             for worker in workers
         ],
         catalogue_executors=catalogue_executors,
         tuning=RuntimeSizing(
-            catalogue_max_concurrency=catalogue_max_concurrency(),
-            effective_catalogue_concurrency=min(
-                catalogue_max_concurrency(), executor_capacity
-            ),
-            object_io_max_concurrency=object_io_max_concurrency(),
             crawl_lanes_per_replica=CRAWL_ACQUISITION_LANES,
-            catalogue_lanes_per_replica=1,
+            ingestion_clients_per_replica=INGESTION_QUACK_CLIENTS,
+            materialization_clients_per_replica=MATERIALIZATION_QUACK_CLIENTS,
             graph_consumer_delivery_ceiling=GRAPH_CONSUMER_MAX_ACK_PENDING,
-            duckdb_threads_per_executor=duckdb_threads(),
-            duckdb_memory_limit_per_executor=duckdb_memory_limit(),
+            duckdb_threads_per_client=duckdb_threads(),
+            duckdb_memory_limit_per_client=duckdb_memory_limit(),
         ),
     )
 
@@ -331,14 +367,22 @@ async def trigger(
     payload: GraphRunTrigger,
     session: Annotated[Session, Depends(get_session)],
     control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
+    runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
+    definitions: Annotated[
+        CatalogueCompilerDefinitions,
+        Depends(get_compiler_definitions),
+    ],
 ) -> GraphRunSubmission:
     try:
         run = await submit_graph_run(
             session,
+            runtime=runtime,
             graph_id=graph_id,
             urls=payload.urls,
             catalogue_snapshot_resolver=control.latest_snapshot,
+            edge_compiler=frozen_edge_compiler(definitions),
             max_crawls=payload.max_crawls,
+            max_run_seconds=payload.max_run_seconds,
         )
     except CrawlGraphNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -354,18 +398,16 @@ async def trigger(
 async def active_graph_runs(
     graph_id: UUID,
     session: Annotated[Session, Depends(get_session)],
+    runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
 ) -> GraphRunList:
-    client, runs, _requests, progress = await _storage()
-    try:
-        items = [
-            run
-            for run in await list_graph_runs(runs)
-            if run.graph_id == graph_id and run.status in {"queued", "running"}
-        ]
-        items.sort(key=lambda run: run.created_at, reverse=True)
-        summaries = await _run_summaries(session, progress, items)
-    finally:
-        await client.drain()
+    items = [
+        run
+        for run in await list_graph_runs(runtime.runs)
+        if run.graph_id == graph_id
+        and run.status in {"queued", "running", "paused"}
+    ]
+    items.sort(key=lambda run: run.created_at, reverse=True)
+    summaries = await _run_summaries(session, runtime.runs, items)
     return GraphRunList(
         items=summaries,
         total=len(items),
@@ -373,12 +415,11 @@ async def active_graph_runs(
 
 
 @router.get("/{run_id}", response_model=GraphRun)
-async def get(run_id: UUID) -> GraphRun:
-    client, runs, _requests, _progress = await _storage()
-    try:
-        run = await get_graph_run(runs, run_id)
-    finally:
-        await client.drain()
+async def get(
+    run_id: UUID,
+    runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
+) -> GraphRun:
+    run = await get_graph_run(runtime.runs, run_id)
     if run is None:
         raise HTTPException(
             status_code=404, detail=f"Graph run {run_id} was not found."
@@ -387,17 +428,16 @@ async def get(run_id: UUID) -> GraphRun:
 
 
 @router.get("/{run_id}/failure-summary", response_model=GraphRunFailureSummary)
-async def failure_summary(run_id: UUID) -> GraphRunFailureSummary:
-    client, runs, _requests, _progress = await _storage()
-    try:
-        run = await get_graph_run(runs, run_id)
-        if run is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Graph run {run_id} was not found.",
-            )
-    finally:
-        await client.drain()
+async def failure_summary(
+    run_id: UUID,
+    runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
+) -> GraphRunFailureSummary:
+    run = await get_graph_run(runtime.runs, run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Graph run {run_id} was not found.",
+        )
     groups = sorted(
         run.failure_groups,
         key=lambda group: (-group.count, group.failure_stage, group.failure_code),
@@ -414,102 +454,109 @@ async def failure_summary(run_id: UUID) -> GraphRunFailureSummary:
 @router.get("/", response_model=GraphRunList)
 async def list_runs(
     session: Annotated[Session, Depends(get_session)],
+    runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
 ) -> GraphRunList:
-    client, runs, _requests, progress = await _storage()
-    try:
-        items = await list_graph_runs(runs)
-        items.sort(key=lambda run: run.created_at, reverse=True)
-        summaries = await _run_summaries(session, progress, items)
-    finally:
-        await client.drain()
+    items = await list_graph_runs(runtime.runs)
+    items.sort(key=lambda run: run.created_at, reverse=True)
+    summaries = await _run_summaries(session, runtime.runs, items)
     return GraphRunList(
         items=summaries,
         total=len(items),
     )
 
 
-def _progress_value(entry):
-    model = NodeProgress if ".node." in entry.key else EdgeProgress
-    return model.model_validate_json(entry.value)
-
-
-async def _run_events(request: Request, client, runs, progress, run: GraphRun):
-    watcher = await progress.watch(f"{run.id.hex}.>")
-    try:
-        nodes: dict[str, object] = {}
-        edges: dict[str, object] = {}
-        snapshot_revision = 0
-        while True:
-            try:
-                entry = await watcher.updates(timeout=10)
-            except NatsTimeoutError:
-                yield "event: heartbeat\ndata: {}\n\n"
-                continue
-            if entry is None:
-                break
-            if entry.key.endswith(".ready"):
-                continue
-            value = _progress_value(entry)
-            snapshot_revision = max(snapshot_revision, entry.revision)
-            target = nodes if isinstance(value, NodeProgress) else edges
-            target[
-                str(value.node_id if isinstance(value, NodeProgress) else value.edge_id)
-            ] = value.model_dump(mode="json")
+async def _run_events(request: Request, runs, progress, run: GraphRun):
+    revision = 0
+    previous = None
+    last_heartbeat = asyncio.get_running_loop().time()
+    while not await request.is_disconnected():
+        nodes, edges = await progress.progress_snapshot(run.id)
         payload = json.dumps(
-            {"graph_run_id": str(run.id), "nodes": nodes, "edges": edges},
+            {
+                "graph_run_id": str(run.id),
+                "nodes": {
+                    str(node.node_id): node.model_dump(mode="json")
+                    for node in nodes
+                },
+                "edges": {
+                    str(edge.edge_id): edge.model_dump(mode="json")
+                    for edge in edges
+                },
+            },
             separators=(",", ":"),
         )
-        yield f"id: {snapshot_revision}\nevent: progress_snapshot\ndata: {payload}\n\n"
+        if payload != previous:
+            revision += 1
+            previous = payload
+            yield (
+                f"id: {revision}\nevent: progress_snapshot"
+                f"\ndata: {payload}\n\n"
+            )
         current = await get_graph_run(runs, run.id) or run
-        if current.status not in {"queued", "running"}:
-            yield f"event: run_settled\ndata: {current.model_dump_json()}\n\n"
+        if current.status not in {"queued", "running", "paused"}:
+            yield (
+                "event: run_settled\ndata: "
+                f"{current.model_dump_json()}\n\n"
+            )
             return
-
-        while not await request.is_disconnected():
-            try:
-                entry = await watcher.updates(timeout=10)
-            except NatsTimeoutError:
-                yield "event: heartbeat\ndata: {}\n\n"
-                continue
-            if entry is None:
-                continue
-            if entry.key.endswith(".ready"):
-                continue
-            value = _progress_value(entry)
-            yield f"id: {entry.revision}\nevent: {value.kind}\ndata: {value.model_dump_json()}\n\n"
-            if value.settled:
-                current = await get_graph_run(runs, run.id) or run
-                if current.status not in {"queued", "running"}:
-                    yield f"event: run_settled\ndata: {current.model_dump_json()}\n\n"
-                    return
-    finally:
-        await watcher.stop()
-        await client.drain()
+        now = asyncio.get_running_loop().time()
+        if now - last_heartbeat >= 10:
+            yield "event: heartbeat\ndata: {}\n\n"
+            last_heartbeat = now
+        await asyncio.sleep(1)
 
 
 @router.get("/{run_id}/events")
-async def run_events(run_id: UUID, request: Request) -> StreamingResponse:
-    client, runs, requests, progress = await _storage()
-    run = await get_graph_run(runs, run_id)
+async def run_events(
+    run_id: UUID,
+    request: Request,
+    runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
+) -> StreamingResponse:
+    run = await get_graph_run(runtime.runs, run_id)
     if run is None:
-        await client.drain()
         raise HTTPException(
             status_code=404, detail=f"Graph run {run_id} was not found."
         )
-    await bootstrap_run_progress(progress, requests, run)
     return StreamingResponse(
-        _run_events(request, client, runs, progress, run),
+        _run_events(request, runtime.runs, runtime.runs, run),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
 @router.post("/{run_id}/cancel", response_model=GraphRun)
-async def cancel(run_id: UUID) -> GraphRun:
-    client, runs, requests, progress = await _storage()
+async def cancel(
+    run_id: UUID,
+    runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
+) -> GraphRun:
     try:
-        return await request_cancellation(runs, requests, run_id, progress=progress)
+        return await request_cancellation(
+            runtime.runs,
+            runtime.requests,
+            run_id,
+            progress=runtime.runs,
+        )
     except GraphRunNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    finally:
-        await client.drain()
+
+
+@router.post("/{run_id}/pause", response_model=GraphRun)
+async def pause(
+    run_id: UUID,
+    runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
+) -> GraphRun:
+    try:
+        return await pause_graph_run(runtime.runs, run_id)
+    except GraphRunNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{run_id}/resume", response_model=GraphRun)
+async def resume(
+    run_id: UUID,
+    runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
+) -> GraphRun:
+    try:
+        return await resume_graph_run(runtime.runs, run_id)
+    except GraphRunNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

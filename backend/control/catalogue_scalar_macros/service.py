@@ -13,6 +13,7 @@ from repository.catalogue.scalar_macros import (
     CatalogueScalarMacroConflictError,
     CatalogueScalarMacroStore,
 )
+from repository.catalogue.definition_compiler import compile_definition_authoring
 
 from .models import CatalogueScalarMacroDefinition
 from .schemas import CatalogueScalarMacroRecord
@@ -58,6 +59,14 @@ def create_definition(
     sql: str,
     description: str | None,
 ) -> CatalogueScalarMacroRecord:
+    compile_definition_authoring(
+        store.catalogue,
+        sql,
+        kind="scalar_macro",
+        schema_name=SCALAR_MACRO_SCHEMA,
+        object_name=slug,
+        parameters=tuple(parameters),
+    )
     existing = session.scalar(
         select(CatalogueScalarMacroDefinition).where(
             CatalogueScalarMacroDefinition.schema_name == SCALAR_MACRO_SCHEMA,
@@ -68,7 +77,11 @@ def create_definition(
         raise CatalogueScalarMacroConflictError(
             f"Scalar macro {SCALAR_MACRO_SCHEMA}.{slug} is already managed by Atlas."
         )
-    macro = store.create(name=slug, parameters=parameters, sql=sql)
+    macro = store.create(
+        name=slug,
+        parameters=parameters,
+        sql=sql,
+    )
     definition = CatalogueScalarMacroDefinition(
         schema_name=SCALAR_MACRO_SCHEMA,
         macro_name=slug,
@@ -111,7 +124,19 @@ def update_definition(
         raise CatalogueScalarMacroConflictError(
             "The scalar macro changed; refresh before editing."
         )
-    macro = store.replace(name=locked.macro_name, parameters=parameters, sql=sql)
+    compile_definition_authoring(
+        store.catalogue,
+        sql,
+        kind="scalar_macro",
+        schema_name=SCALAR_MACRO_SCHEMA,
+        object_name=locked.macro_name,
+        parameters=tuple(parameters),
+    )
+    macro = store.replace(
+        name=locked.macro_name,
+        parameters=parameters,
+        sql=sql,
+    )
     locked.parameters = list(macro.parameters)
     locked.sql = sql.strip()
     locked.slug = slug

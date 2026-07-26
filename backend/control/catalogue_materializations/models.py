@@ -35,7 +35,8 @@ class CatalogueMaterialization(Base):
         ),
         CheckConstraint(
             "observed_state IN "
-            "('creating', 'live', 'paused', 'deleting', 'blocked_schema', 'failed')",
+            "('creating', 'backfilling', 'live', 'paused', 'deleting', "
+            "'blocked_schema', 'failed')",
             name="ck_catalogue_materializations_observed_state",
         ),
         CheckConstraint(
@@ -67,6 +68,7 @@ class CatalogueMaterialization(Base):
     display_name: Mapped[str] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_sql: Mapped[str] = mapped_column(Text)
+    fixture_source_sql: Mapped[str | None] = mapped_column(Text, nullable=True)
     view_reference_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("catalogue_view_references.id")
     )
@@ -87,6 +89,12 @@ class CatalogueMaterialization(Base):
         PG_UUID(as_uuid=True), nullable=True
     )
     bootstrap_snapshot: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    bootstrap_partition_count: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    bootstrap_partition_cursor: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
     processed_snapshot: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     last_refreshed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

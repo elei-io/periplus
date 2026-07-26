@@ -67,9 +67,10 @@ class RepositoryHealthTests(unittest.TestCase):
     def test_health_fails_when_owned_queue_stops_advancing(self) -> None:
         monitor = HealthMonitor(heartbeat_timeout_seconds=30)
         monitor.dependencies_ready()
+        clock = [10.0]
         with patch(
             "repository.ingestion.health.time.monotonic",
-            side_effect=[10.0, 10.0, 12.0, 12.0, 12.0, 12.0],
+            side_effect=lambda: clock[0],
         ):
             monitor.heartbeat()
             monitor.queue_observed(
@@ -78,6 +79,7 @@ class RepositoryHealthTests(unittest.TestCase):
                 progress_marker=(4, 2),
                 stalled_after_seconds=1,
             )
+            clock[0] = 12.0
             monitor.queue_observed(
                 "ingestion",
                 pending=3,
@@ -85,9 +87,11 @@ class RepositoryHealthTests(unittest.TestCase):
                 stalled_after_seconds=1,
             )
             ready, detail = monitor.status()
+            lane_ready = monitor.status(include_queues=False)
 
         self.assertFalse(ready)
         self.assertIn("ingestion: 3 work items without progress", detail)
+        self.assertEqual(lane_ready, (True, "ready"))
 
 
 if __name__ == "__main__":

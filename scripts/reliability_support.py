@@ -377,7 +377,7 @@ def capture_diagnostics(scenario: str) -> Path:
         "atlas-acquisition-worker": (9099, 9090),
         "atlas-ingestion-worker": (9092, 9091),
         "atlas-materialization-worker": (9096, 9093),
-        "atlas-maintenance-worker": (9095, 9094),
+        "atlas-housekeeping-worker": (9095, 9094),
     }
     for service, (health_port, metrics_port) in worker_endpoints.items():
         try:

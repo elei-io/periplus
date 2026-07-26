@@ -355,7 +355,11 @@ export function useGraphRun(runId: string | null) {
     enabled: runId !== null,
     refetchInterval: (query) => {
       const status = (query.state.data as GraphRunRecord | undefined)?.status
-      return status === "queued" || status === "running" ? 2_000 : false
+      return status === "queued" ||
+        status === "running" ||
+        status === "paused"
+        ? 2_000
+        : false
     },
     queryFn: async () =>
       jsonResponse<GraphRunRecord>(await fetch(apiUrl(`/graph-runs/${runId}`))),
@@ -363,11 +367,25 @@ export function useGraphRun(runId: string | null) {
 }
 
 export function useCancelGraphRun() {
+  return useGraphRunControl("cancel")
+}
+
+export function usePauseGraphRun() {
+  return useGraphRunControl("pause")
+}
+
+export function useResumeGraphRun() {
+  return useGraphRunControl("resume")
+}
+
+function useGraphRunControl(action: "cancel" | "pause" | "resume") {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (runId: string) =>
       jsonResponse<GraphRunRecord>(
-        await fetch(apiUrl(`/graph-runs/${runId}/cancel`), { method: "POST" })
+        await fetch(apiUrl(`/graph-runs/${runId}/${action}`), {
+          method: "POST",
+        })
       ),
     onSuccess: async (run) => {
       queryClient.setQueryData(["graph-runs", run.id], run)

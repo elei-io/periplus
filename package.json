@@ -1,0 +1,22 @@
+{
+  "name": "atlas-clients",
+  "private": true,
+  "workspaces": [
+    "packages/console-core",
+    "atlas-cli"
+  ],
+  "scripts": {
+    "build:console": "npm run build --workspace @atlas/console-core && npm run build --workspace atlas-cli",
+    "check:console": "npm run check --workspace @atlas/console-core && npm run build --workspace @atlas/console-core --silent && npm run check --workspace atlas-cli",
+    "test:console": "npm run test --workspace @atlas/console-core && npm run test --workspace atlas-cli",
+    "atlas": "npm run build:console --silent && node atlas-cli/dist/main.js",
+    "prepare": "npm run build:console"
+  },
+  "dependencies": {
+    "atlas-cli": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "~6.0.0"
+  }
+}

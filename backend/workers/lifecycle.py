@@ -19,7 +19,7 @@ WorkerRole = Literal[
     "ingestion",
     "catalogue_relay",
     "materialization",
-    "maintenance",
+    "housekeeping",
 ]
 
 

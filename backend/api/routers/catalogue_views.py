@@ -25,7 +25,6 @@ from control.catalogue_views.service import (
     update_reference,
 )
 from repository.catalogue.query import CatalogueQueryError
-from repository.catalogue.operations import operation_lock
 from repository.catalogue.views import (
     CatalogueViewConflictError,
     CatalogueViewError,
@@ -71,15 +70,14 @@ async def create(
     try:
 
         def operation(session, catalogue):
-            with operation_lock(catalogue, f"catalogue-view-create:{payload.slug}"):
-                return create_reference(
-                    session,
-                    CatalogueViewStore(catalogue),
-                    slug=payload.slug,
-                    sql=payload.sql,
-                    description=payload.description,
-                    created_from_query_revision_id=payload.created_from_query_revision_id,
-                )
+            return create_reference(
+                session,
+                CatalogueViewStore(catalogue),
+                slug=payload.slug,
+                sql=payload.sql,
+                description=payload.description,
+                created_from_query_revision_id=payload.created_from_query_revision_id,
+            )
 
         return await control.run(operation)
     except (CatalogueViewError, CatalogueQueryError, duckdb.Error) as exc:
@@ -94,17 +92,13 @@ async def adopt(
     try:
 
         def operation(session, catalogue):
-            with operation_lock(
-                catalogue,
-                f"catalogue-view-adopt:{payload.ducklake_view_uuid}",
-            ):
-                return adopt_reference(
-                    session,
-                    CatalogueViewStore(catalogue),
-                    view_uuid=payload.ducklake_view_uuid,
-                    slug=payload.slug,
-                    description=payload.description,
-                )
+            return adopt_reference(
+                session,
+                CatalogueViewStore(catalogue),
+                view_uuid=payload.ducklake_view_uuid,
+                slug=payload.slug,
+                description=payload.description,
+            )
 
         return await control.run(operation)
     except (CatalogueViewError, duckdb.Error) as exc:
@@ -125,16 +119,15 @@ async def update(
                 raise HTTPException(
                     status_code=404, detail="Catalogue view reference not found."
                 )
-            with operation_lock(catalogue, f"catalogue-view-update:{reference_id}"):
-                return update_reference(
-                    session,
-                    CatalogueViewStore(catalogue),
-                    reference,
-                    expected_uuid=payload.expected_ducklake_view_uuid,
-                    sql=payload.sql,
-                    slug=payload.slug,
-                    description=payload.description,
-                )
+            return update_reference(
+                session,
+                CatalogueViewStore(catalogue),
+                reference,
+                expected_uuid=payload.expected_ducklake_view_uuid,
+                sql=payload.sql,
+                slug=payload.slug,
+                description=payload.description,
+            )
 
         return await control.run(operation)
     except (CatalogueViewError, CatalogueQueryError, duckdb.Error) as exc:
@@ -175,13 +168,12 @@ async def drop(
                 raise HTTPException(
                     status_code=404, detail="Catalogue view reference not found."
                 )
-            with operation_lock(catalogue, f"catalogue-view-drop:{reference_id}"):
-                drop_referenced_view(
-                    session,
-                    CatalogueViewStore(catalogue),
-                    reference,
-                    expected_uuid=expected_ducklake_view_uuid,
-                )
+            drop_referenced_view(
+                session,
+                CatalogueViewStore(catalogue),
+                reference,
+                expected_uuid=expected_ducklake_view_uuid,
+            )
 
         await control.run(operation)
     except (CatalogueViewError, duckdb.Error) as exc:

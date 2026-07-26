@@ -8,6 +8,7 @@ import {
 } from "react"
 
 import { AppSidebar } from "@/components/app-sidebar"
+import { useLakeIdentity } from "@/hooks/use-lake-identity"
 import {
   defaultNavigationItem,
   findNavigationItem,
@@ -22,11 +23,6 @@ import {
 const CatalogueWorkbenchPage = lazy(() =>
   import("@/pages/catalogue/workbench-page").then((module) => ({
     default: module.CatalogueWorkbenchPage,
-  }))
-)
-const SearchPage = lazy(() =>
-  import("@/pages/chat-page").then((module) => ({
-    default: module.ChatPage,
   }))
 )
 const CatalogueViewsPage = lazy(() =>
@@ -84,22 +80,6 @@ const DomainPoliciesPage = lazy(() =>
     default: module.DomainPoliciesPage,
   }))
 )
-const SqlQueriesDocsPage = lazy(() =>
-  import("@/pages/docs/docs-page").then((module) => ({
-    default: module.SqlQueriesDocsPage,
-  }))
-)
-const CrawlGraphsDocsPage = lazy(() =>
-  import("@/pages/docs/docs-page").then((module) => ({
-    default: module.CrawlGraphsDocsPage,
-  }))
-)
-const ResourcesScalingDocsPage = lazy(() =>
-  import("@/pages/docs/docs-page").then((module) => ({
-    default: module.ResourcesScalingDocsPage,
-  }))
-)
-
 function PageFallback() {
   return (
     <div
@@ -115,19 +95,13 @@ function getCurrentPathname() {
   return window.location.pathname
 }
 
-function getCurrentChatId() {
-  return new URLSearchParams(window.location.search).get("chat")
-}
-
 export function App() {
   const [pathname, setPathname] = useState(getCurrentPathname)
-  const [activeChatId, setActiveChatId] = useState(getCurrentChatId)
-  const [chatBusy, setChatBusy] = useState(false)
+  const lakeIdentity = useLakeIdentity()
 
   useEffect(() => {
     const handlePopState = () => {
       setPathname(getCurrentPathname())
-      setActiveChatId(getCurrentChatId())
     }
 
     window.addEventListener("popstate", handlePopState)
@@ -146,7 +120,8 @@ export function App() {
     )
   }, [activeItem.href])
 
-  const isFullScreenWorkbench = pathname === "/catalogue/workbench"
+  const isFullScreenWorkbench =
+    pathname === "/" || pathname === "/catalogue/workbench"
 
   const handleNavigate = useCallback((href: string) => {
     const target = new URL(href, window.location.origin)
@@ -157,20 +132,11 @@ export function App() {
 
     window.history.pushState(null, "", href)
     setPathname(targetPathname)
-    setActiveChatId(target.searchParams.get("chat"))
   }, [])
 
   const page = (() => {
     if (pathname === "/") {
-      return (
-        <SearchPage
-          chatId={activeChatId}
-          onBusyChange={setChatBusy}
-          onChatChange={(chatId: string | null) =>
-            handleNavigate(chatId ? `/?chat=${chatId}` : "/")
-          }
-        />
-      )
+      return <CatalogueWorkbenchPage />
     }
 
     if (activeItem.href === "/catalogue/workbench") {
@@ -247,18 +213,6 @@ export function App() {
       return <DomainPoliciesPage />
     }
 
-    if (activeItem.href === "/docs/sql-queries") {
-      return <SqlQueriesDocsPage onNavigate={handleNavigate} />
-    }
-
-    if (activeItem.href === "/docs/crawl-graphs") {
-      return <CrawlGraphsDocsPage onNavigate={handleNavigate} />
-    }
-
-    if (activeItem.href === "/docs/resources-scaling") {
-      return <ResourcesScalingDocsPage onNavigate={handleNavigate} />
-    }
-
     return (
       <div className="flex flex-1 items-center justify-center p-6">
         <h1 className="text-2xl font-medium tracking-normal">
@@ -271,9 +225,7 @@ export function App() {
   return (
     <SidebarProvider>
       <AppSidebar
-        activeChatId={activeChatId}
-        chatBusy={chatBusy}
-        pathname={pathname === "/" ? pathname : activeItem.href}
+        pathname={activeItem.href}
         onNavigate={handleNavigate}
       />
       <SidebarInset className="h-svh min-h-0 overflow-hidden">
@@ -281,16 +233,22 @@ export function App() {
           <SidebarTrigger />
           <div className="flex min-w-0 flex-col">
             <span className="truncate text-sm font-medium">
-              {pathname === "/"
-                ? "Atlas chat"
-                : (activeItem.title ?? activeItem.name)}
+              {activeItem.title ?? activeItem.name}
             </span>
             <span className="text-xs text-muted-foreground">
-              {pathname === "/"
-                ? "Analyze retained evidence or plan new acquisition"
-                : (activeItem.description ?? activeGroup.name)}
+              {activeItem.description ?? activeGroup.name}
             </span>
           </div>
+          <span
+            className="ml-auto max-w-48 truncate rounded-md border bg-muted/40 px-2 py-1 font-mono text-xs text-muted-foreground"
+            title={
+              lakeIdentity.data
+                ? `DuckLake ${lakeIdentity.data.lake_slug}`
+                : "DuckLake unavailable"
+            }
+          >
+            {lakeIdentity.data?.lake_slug ?? "lake unavailable"}
+          </span>
         </header>
         <div
           className={
@@ -306,9 +264,7 @@ export function App() {
             className={
               isFullScreenWorkbench
                 ? "relative z-10 flex h-full min-h-0 min-w-0"
-                : pathname === "/"
-                  ? "relative z-10 flex min-h-full min-w-0"
-                  : "relative z-10 flex min-h-full min-w-0 pb-10"
+                : "relative z-10 flex min-h-full min-w-0 pb-10"
             }
           >
             <Suspense fallback={<PageFallback />}>{page}</Suspense>

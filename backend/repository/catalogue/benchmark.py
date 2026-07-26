@@ -11,7 +11,10 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from repository.catalogue.client import Catalogue
-from repository.catalogue.query import execute_arrow_query, prepare_catalogue_query
+from repository.catalogue.query import (
+    prepare_catalogue_query,
+    trusted_execute_arrow_query,
+)
 from repository.catalogue.service import CatalogueService
 
 
@@ -33,19 +36,15 @@ def run_hot_path_benchmark(
         raise ValueError("query_repetitions must be greater than zero")
     service = CatalogueService(catalogue)
     table = service._table
-    document_rows = catalogue.connection.execute(
+    document_rows = catalogue.trusted_connection.execute(
         "SELECT document_id FROM "
         f"{table('documents')} LIMIT ?",
         [samples],
     ).fetchall()
-    crawl_rows = catalogue.connection.execute(
-        "SELECT crawl.document_id, requested.normalized_url, "
-        "effective.normalized_url, crawl.policy_config_hash, crawl.captured_at FROM "
+    crawl_rows = catalogue.trusted_connection.execute(
+        "SELECT crawl.document_id, crawl.requested_url, "
+        "crawl.url, crawl.effective_policy_hash, crawl.content_captured_at FROM "
         f"{table('crawls')} AS crawl "
-        f"JOIN {table('urls')} AS requested "
-        "ON requested.url_id = crawl.requested_url_id "
-        f"JOIN {table('urls')} AS effective "
-        "ON effective.url_id = coalesce(crawl.final_url_id, crawl.requested_url_id) "
         "WHERE crawl.document_id IS NOT NULL "
         "LIMIT ?",
         [samples],
@@ -61,7 +60,7 @@ def run_hot_path_benchmark(
             lambda normalized_url=normalized_url, config_hash=config_hash: (
                 service.find_cached_crawls(
                     normalized_url=str(normalized_url),
-                    policy_config_hash=str(config_hash),
+                    effective_policy_hash=str(config_hash),
                     limit=1,
                 )
             )
@@ -152,11 +151,11 @@ def _representative_queries(
     queries = {
         "date_bounded_crawls": (
             """
-            SELECT crawl_id, document_id, captured_at, requested_url_id
+            SELECT crawl_id, document_id, content_captured_at, requested_url
             FROM crawls
-            WHERE captured_at >= $window_start
-              AND captured_at < $window_end
-            ORDER BY captured_at DESC
+            WHERE completed_at >= $window_start
+              AND completed_at < $window_end
+            ORDER BY completed_at DESC
             LIMIT $limit
             """,
             window_parameters,
@@ -173,15 +172,15 @@ def _representative_queries(
         "date_bounded_crawl_element_join": (
             """
             WITH bounded_crawls AS MATERIALIZED (
-                SELECT crawl_id, document_id, captured_at
+                SELECT crawl_id, document_id, completed_at
                 FROM crawls
-                WHERE captured_at >= $window_start
-                  AND captured_at < $window_end
+                WHERE completed_at >= $window_start
+                  AND completed_at < $window_end
                   AND document_id IS NOT NULL
-                ORDER BY captured_at DESC
+                ORDER BY completed_at DESC
                 LIMIT $limit
             )
-            SELECT c.crawl_id, c.captured_at, e.element_index,
+            SELECT c.crawl_id, c.completed_at, e.element_index,
                    macros.get_attribute(e.attributes, 'href') AS href
             FROM bounded_crawls AS c
             JOIN macros.query_selector_all(
@@ -235,14 +234,14 @@ def _measure_query(
     repetitions: int,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    first_result = execute_arrow_query(catalogue, sql, parameters).read_all()
+    first_result = trusted_execute_arrow_query(catalogue, sql, parameters).read_all()
     first_run_seconds = time.perf_counter() - started
 
     warm_timings: list[float] = []
     warm_rows: list[int] = []
     for _ in range(repetitions):
         started = time.perf_counter()
-        result = execute_arrow_query(catalogue, sql, parameters).read_all()
+        result = trusted_execute_arrow_query(catalogue, sql, parameters).read_all()
         warm_timings.append(time.perf_counter() - started)
         warm_rows.append(result.num_rows)
     if any(rows != first_result.num_rows for rows in warm_rows):
@@ -263,12 +262,12 @@ def _profile_query(
     parameters: dict[str, object],
 ) -> dict[str, Any]:
     prepared = prepare_catalogue_query(catalogue, sql, parameters)
-    catalogue.connection.execute(f"USE {prepared.namespace}")
+    catalogue.trusted_connection.execute(f"USE {prepared.namespace}")
     explain_sql = f"EXPLAIN (ANALYZE, FORMAT JSON) {prepared.sql}"
     row = (
-        catalogue.connection.execute(explain_sql, prepared.bindings).fetchone()
+        catalogue.trusted_connection.execute(explain_sql, prepared.bindings).fetchone()
         if prepared.bindings
-        else catalogue.connection.execute(explain_sql).fetchone()
+        else catalogue.trusted_connection.execute(explain_sql).fetchone()
     )
     if row is None:
         raise RuntimeError("EXPLAIN ANALYZE returned no profile")

@@ -10,10 +10,12 @@ from repository.objects.html import (
     identify_html,
 )
 from repository.objects.artifact import (
+    ArtifactMediaTypeDetection,
     ArtifactIdentity,
     RawArtifactRepository,
     StoredArtifact,
     artifact_object_key,
+    detect_artifact_media_type,
 )
 from repository.objects.store import FileObjectStore, S3ObjectStore
 from repository.ingestion.pipeline import RepositoryPipeline
@@ -25,6 +27,7 @@ from repository.service import (
 
 __all__ = [
     "FileObjectStore",
+    "ArtifactMediaTypeDetection",
     "ArtifactIdentity",
     "RawArtifactRepository",
     "RawHtmlRepository",
@@ -37,6 +40,7 @@ __all__ = [
     "S3ObjectStore",
     "StoredArtifact",
     "artifact_object_key",
+    "detect_artifact_media_type",
     "identify_html",
     "repository_ingestor_from_env",
 ]

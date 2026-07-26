@@ -6,10 +6,10 @@ import os
 import tempfile
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Protocol, runtime_checkable
+from typing import BinaryIO, Mapping, Protocol, runtime_checkable
 
 from botocore.exceptions import ClientError
 
@@ -23,11 +23,26 @@ class ObjectMetadata:
     last_modified: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class ObjectWriteHeaders:
+    """HTTP representation headers attached when an object is first stored."""
+
+    content_type: str
+    content_encoding: str | None = None
+    metadata: Mapping[str, str] = field(default_factory=dict)
+
+
 @runtime_checkable
 class ObjectStore(Protocol):
     """Minimal repository object-store contract."""
 
-    def put_if_absent(self, key: str, content: BinaryIO) -> bool:
+    def put_if_absent(
+        self,
+        key: str,
+        content: BinaryIO,
+        *,
+        headers: ObjectWriteHeaders | None = None,
+    ) -> bool:
         """Store content only when key is absent; return whether it was created."""
 
     def open(self, key: str) -> AbstractContextManager[BinaryIO]:
@@ -59,7 +74,13 @@ class FileObjectStore:
         self.root = root.expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def put_if_absent(self, key: str, content: BinaryIO) -> bool:
+    def put_if_absent(
+        self,
+        key: str,
+        content: BinaryIO,
+        *,
+        headers: ObjectWriteHeaders | None = None,
+    ) -> bool:
         destination = self._path(key)
         destination.parent.mkdir(parents=True, exist_ok=True)
         file_descriptor, temporary_name = tempfile.mkstemp(
@@ -152,14 +173,27 @@ class S3ObjectStore:
         self.bucket = bucket
         self.prefix = prefix.strip("/")
 
-    def put_if_absent(self, key: str, content: BinaryIO) -> bool:
+    def put_if_absent(
+        self,
+        key: str,
+        content: BinaryIO,
+        *,
+        headers: ObjectWriteHeaders | None = None,
+    ) -> bool:
+        options: dict[str, object] = {
+            "Bucket": self.bucket,
+            "Key": self._object_key(key),
+            "Body": content,
+            "IfNoneMatch": "*",
+        }
+        if headers is not None:
+            options["ContentType"] = headers.content_type
+            if headers.content_encoding is not None:
+                options["ContentEncoding"] = headers.content_encoding
+            if headers.metadata:
+                options["Metadata"] = dict(headers.metadata)
         try:
-            self.client.put_object(
-                Bucket=self.bucket,
-                Key=self._object_key(key),
-                Body=content,
-                IfNoneMatch="*",
-            )
+            self.client.put_object(**options)
         except ClientError as exc:
             if _status_code(exc) in {409, 412}:
                 return False

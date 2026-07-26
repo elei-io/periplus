@@ -1,39 +1,313 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
-from uuid import uuid4
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID, uuid4
 
-from ducklake_client import DiskStorage, DuckDBCatalog
 from nats.js.api import DiscardPolicy, RetentionPolicy, StorageType, StreamConfig
 from nats.js.errors import BadRequestError, NotFoundError
 
+from catalogue.compiler import ScalarMacroDefinition
 from control.catalogue_materializations.models import CatalogueMaterialization
 from control.catalogue_materializations.schemas import ViewMaterializationPut
-from repository.catalogue import Catalogue, CatalogueConfig
-from repository.catalogue.materializations import (
-    MaterializationAppendOnlyViolation,
-    MaterializationStore,
+from materialization.dematerialization import dematerialize_one
+from materialization.executor import (
+    _backing_view_sql,
+    _bootstrap_materialization,
+    _load_bootstrap_plan,
+    _materialization_store,
+    _refresh_materialization,
+    _source_view,
+    reconcile_materialization_consumers,
 )
-from materialization.executor import _backing_view_sql, _source_view
+from repository.catalogue.materializations import (
+    DuckLakeTableIdentity,
+    MaterializationError,
+    MaterializationStore,
+    physical_materialization_name,
+)
 from runtime.catalogue_events import (
-    CatalogueDDLEvent,
-    CatalogueDMLTick,
+    DDL_RECONCILER_DURABLE,
     DDL_SUBJECT,
     DML_ALL_SUBJECT,
     EVENT_STREAM,
+    CatalogueDDLEvent,
+    CatalogueDMLTick,
+    basin_ddl_durable,
+    basin_ddl_subject,
+    basin_dml_durable,
+    basin_dml_subject,
     dml_subject,
     ensure_catalogue_event_stream,
     materialization_durable,
-    relay_ddl_consumer,
-    relay_dml_consumer,
 )
 
 
+def _mock_compiler_snapshot(catalogue: MagicMock) -> None:
+    catalogue.trusted_connection.execute.return_value.fetchall.side_effect = (
+        [[(17,)], [], [], [], [], [(17,)]] * 3
+    )
+
+
 class MaterializationEventContractTests(unittest.TestCase):
+    def test_compiler_metadata_reads_use_one_remote_transaction(self) -> None:
+        catalogue = MagicMock()
+        catalogue.config.alias = "atlas"
+        definitions = SimpleNamespace(
+            scalar_macros=(),
+            table_macros=(),
+            views=(),
+            scalar_functions=(),
+        )
+
+        with patch(
+            "materialization.executor.read_catalogue_compiler_definitions",
+            return_value=definitions,
+        ) as read_definitions:
+            store = _materialization_store(catalogue)
+
+        self.assertIsInstance(store, MaterializationStore)
+        catalogue.remote_transaction.assert_called_once_with()
+        read_definitions.assert_called_once_with(
+            catalogue.trusted_connection,
+            catalogue_alias="atlas",
+        )
+
+    def test_persisted_backfill_state_remains_loadable_after_restart(self) -> None:
+        model = SimpleNamespace(
+            id=uuid4(),
+            archived_at=None,
+            observed_state="backfilling",
+            desired_state="live",
+            view_reference_id=uuid4(),
+            source_sql="SELECT document_id FROM documents",
+            source_table="documents",
+            refresh_strategy="keyed",
+            key_columns=["document_id"],
+            partition_column=None,
+            ducklake_table_uuid=uuid4(),
+            bootstrap_partition_count=100,
+            bootstrap_partition_cursor=7,
+            source_view_uuid=uuid4(),
+        )
+        reference = SimpleNamespace(
+            ducklake_view_uuid=uuid4(),
+            view_name="page_metadata",
+        )
+        session = MagicMock()
+        session.get.side_effect = [model, reference]
+        with patch(
+            "materialization.executor.session_scope"
+        ) as session_scope:
+            session_scope.return_value.__enter__.return_value = session
+            plan = _load_bootstrap_plan(model.id)
+
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.model["observed_state"], "backfilling")
+        self.assertEqual(plan.model["bootstrap_partition_cursor"], 7)
+
+    def test_keyed_bootstrap_creates_empty_target_before_backfill(self) -> None:
+        materialization_id = uuid4()
+        source_view_uuid = uuid4()
+        reference_uuid = uuid4()
+        plan = SimpleNamespace(
+            model={
+                "id": materialization_id,
+                "view_reference_id": uuid4(),
+                "observed_state": "creating",
+                "source_sql": "SELECT crawl_id FROM crawls",
+                "source_table": "crawls",
+                "refresh_strategy": "keyed",
+                "key_columns": ("crawl_id",),
+                "partition_column": None,
+                "ducklake_table_uuid": None,
+                "bootstrap_partition_count": None,
+                "bootstrap_partition_cursor": None,
+                "source_view_uuid": source_view_uuid,
+                "desired_state": "live",
+            },
+            reference={
+                "ducklake_view_uuid": reference_uuid,
+                "view_name": "page_links",
+            },
+        )
+        table = SimpleNamespace(table_id=81, table_uuid=uuid4())
+        store = MagicMock()
+        store.table_identity.side_effect = MaterializationError("missing")
+        store.create_empty.return_value = (table, 100)
+        store.bootstrap_partition_count.return_value = 14
+        view_store = MagicMock()
+        view_store.get.return_value = SimpleNamespace(
+            view_uuid=source_view_uuid
+        )
+        model = SimpleNamespace(
+            id=materialization_id,
+            archived_at=None,
+            observed_state="creating",
+            desired_state="live",
+            view_reference_id=plan.model["view_reference_id"],
+            source_sql=plan.model["source_sql"],
+            source_view_uuid=source_view_uuid,
+            source_table="crawls",
+            refresh_strategy="keyed",
+            key_columns=["crawl_id"],
+            partition_column=None,
+            target_table_id=None,
+            ducklake_table_uuid=None,
+            bootstrap_snapshot=None,
+            bootstrap_partition_count=None,
+            bootstrap_partition_cursor=None,
+            processed_snapshot=None,
+            last_refreshed_at=None,
+            last_error=None,
+        )
+        reference = SimpleNamespace(ducklake_view_uuid=reference_uuid)
+        session = MagicMock()
+        session.get.side_effect = [model, reference]
+        catalogue = MagicMock()
+        catalogue.latest_snapshot.return_value = 102
+        _mock_compiler_snapshot(catalogue)
+
+        with (
+            patch(
+                "materialization.executor._load_bootstrap_plan",
+                return_value=plan,
+            ),
+            patch(
+                "materialization.executor.MaterializationStore",
+                return_value=store,
+            ),
+            patch(
+                "materialization.executor.CatalogueViewStore",
+                return_value=view_store,
+            ),
+            patch("materialization.executor.session_scope") as session_scope,
+        ):
+            session_scope.return_value.__enter__.return_value = session
+            _bootstrap_materialization(catalogue, materialization_id)
+
+        store.create_empty.assert_called_once_with(
+            name=physical_materialization_name(materialization_id),
+            sql=plan.model["source_sql"],
+        )
+        store.create_full.assert_not_called()
+        store.bootstrap_partition_count.assert_called_once_with(
+            source_table="crawls",
+            key_columns=("crawl_id",),
+        )
+        view_store.replace.assert_not_called()
+        self.assertEqual(model.observed_state, "backfilling")
+        self.assertEqual(model.bootstrap_partition_count, 14)
+        self.assertEqual(model.bootstrap_partition_cursor, 0)
+        self.assertEqual(model.processed_snapshot, 100)
+
+    def test_empty_target_schema_and_backfill_keys_are_bounded(self) -> None:
+        catalogue = MagicMock()
+        catalogue.config = SimpleNamespace(alias="atlas", schema="main")
+        catalogue.latest_snapshot.return_value = 40
+        catalogue.remote_transaction.return_value.__enter__.return_value = None
+        table = SimpleNamespace(table_uuid=uuid4())
+        store = MaterializationStore(catalogue)
+
+        with (
+            patch.object(
+                store,
+                "table_identity",
+                side_effect=MaterializationError("missing"),
+            ),
+            patch.object(store, "inspect", return_value=table),
+        ):
+            created, snapshot = store.create_empty(
+                name="m_test",
+                sql="SELECT crawl_id FROM crawls",
+            )
+
+        self.assertIs(created, table)
+        self.assertEqual(snapshot, 40)
+        create_sql = catalogue.trusted_remote_execute.call_args.args[0]
+        self.assertIn('CREATE TABLE "atlas"."_atlas_materializations"."m_test"', create_sql)
+        self.assertIn("LIMIT 0", create_sql)
+
+        catalogue.trusted_remote_execute.reset_mock()
+        store._prepare_backfill_keys(
+            source_table="crawls",
+            key_columns=("crawl_id",),
+            partition=3,
+            partition_count=14,
+        )
+        key_sql = catalogue.trusted_remote_execute.call_args.args[0]
+        self.assertIn('FROM "atlas"."main"."crawls"', key_sql)
+        self.assertIn('hash("crawl_id") % 14 = 3', key_sql)
+
+    def test_bootstrap_uses_four_keys_per_hash_partition(self) -> None:
+        catalogue = MagicMock()
+        catalogue.config = SimpleNamespace(alias="atlas", schema="main")
+        catalogue.trusted_remote_rows.return_value = [(10,)]
+        store = MaterializationStore(catalogue)
+
+        count = store.bootstrap_partition_count(
+            source_table="crawls",
+            key_columns=("crawl_id",),
+        )
+
+        self.assertEqual(count, 3)
+
+    def test_dematerialization_recovers_unrecorded_private_table_identity(self) -> None:
+        materialization_id = uuid4()
+        reference = SimpleNamespace(
+            ducklake_view_uuid=uuid4(),
+            view_name="page_links",
+        )
+        model = SimpleNamespace(
+            id=materialization_id,
+            archived_at=None,
+            desired_state="deleting",
+            view_reference_id=uuid4(),
+            source_sql="SELECT 1",
+            source_view_uuid=uuid4(),
+            name="page_links",
+            ducklake_table_uuid=None,
+            last_error="bootstrap interrupted",
+        )
+        session = MagicMock()
+        session.get.side_effect = [model, reference]
+        restored = SimpleNamespace(view_uuid=uuid4())
+        view_store = MagicMock()
+        view_store.name_for_uuid.return_value = "page_links"
+        view_store.replace.return_value = restored
+        target = DuckLakeTableIdentity(
+            table_id=42,
+            table_uuid=uuid4(),
+            schema_name="_atlas_materializations",
+            table_name=physical_materialization_name(materialization_id),
+        )
+        materialization_store = MagicMock()
+        materialization_store.table_identity.return_value = target
+
+        with (
+            patch(
+                "materialization.dematerialization.session_scope"
+            ) as session_scope,
+            patch(
+                "materialization.dematerialization.CatalogueViewStore",
+                return_value=view_store,
+            ),
+            patch(
+                "materialization.dematerialization.MaterializationStore",
+                return_value=materialization_store,
+            ),
+        ):
+            session_scope.return_value.__enter__.return_value = session
+            dematerialize_one(MagicMock(), materialization_id)
+
+        materialization_store.drop.assert_called_once_with(
+            name=physical_materialization_name(materialization_id),
+            expected_uuid=target.table_uuid,
+        )
+        self.assertIsNotNone(model.archived_at)
+        self.assertIsNone(model.last_error)
+
     def test_missing_source_view_is_recreated_from_durable_definition(self) -> None:
         reference = SimpleNamespace(
             ducklake_view_uuid=uuid4(),
@@ -49,19 +323,67 @@ class MaterializationEventContractTests(unittest.TestCase):
 
         self.assertIs(_source_view(store, reference, model), restored)
         self.assertEqual(reference.ducklake_view_uuid, restored.view_uuid)
-        self.assertEqual(model.source_view_uuid, restored.view_uuid)
 
-    def test_backing_view_is_a_select_over_the_physical_table(self) -> None:
+    def test_backing_view_targets_incarnation_private_table(self) -> None:
         catalogue = SimpleNamespace(
             config=SimpleNamespace(alias="atlas", schema="main")
         )
-
+        incarnation = UUID("25b2c3a6-2810-4089-8459-ae15c3d7bd6e")
+        physical_name = physical_materialization_name(incarnation)
         self.assertEqual(
-            _backing_view_sql(catalogue, "page_links"),
-            'SELECT * FROM "atlas"."_atlas_materializations"."page_links"',
+            physical_name,
+            "m_25b2c3a6281040898459ae15c3d7bd6e",
+        )
+        self.assertEqual(
+            _backing_view_sql(catalogue, physical_name),
+            'SELECT * FROM "atlas"."_atlas_materializations".'
+            '"m_25b2c3a6281040898459ae15c3d7bd6e"',
         )
 
-    def test_control_model_has_refresh_strategy_without_scope_or_revision(self) -> None:
+    def test_refresh_targets_incarnation_private_table(self) -> None:
+        materialization_id = uuid4()
+        table_uuid = uuid4()
+        model = SimpleNamespace(
+            id=materialization_id,
+            archived_at=None,
+            desired_state="live",
+            ducklake_table_uuid=table_uuid,
+            refresh_strategy="full",
+            source_sql="SELECT 1",
+            processed_snapshot=None,
+            last_refreshed_at=None,
+            observed_state="live",
+            last_error=None,
+        )
+        session = MagicMock()
+        session.get.return_value = model
+        store = MagicMock()
+        catalogue = MagicMock()
+        _mock_compiler_snapshot(catalogue)
+
+        with (
+            patch("materialization.executor.session_scope") as session_scope,
+            patch(
+                "materialization.executor.MaterializationStore",
+                return_value=store,
+            ),
+        ):
+            session_scope.return_value.__enter__.return_value = session
+            _refresh_materialization(
+                catalogue,
+                materialization_id,
+                from_snapshot=10,
+                processed_snapshot=12,
+            )
+
+        store.refresh_full.assert_called_once_with(
+            name=physical_materialization_name(materialization_id),
+            expected_uuid=table_uuid,
+            sql="SELECT 1",
+        )
+        self.assertEqual(model.processed_snapshot, 12)
+
+    def test_control_model_has_direct_refresh_state(self) -> None:
         columns = set(CatalogueMaterialization.__table__.columns.keys())
         self.assertTrue(
             {
@@ -75,56 +397,34 @@ class MaterializationEventContractTests(unittest.TestCase):
                 "processed_snapshot",
             }.issubset(columns)
         )
-        self.assertFalse(
-            {
-                "definition_revision_id",
-                "scope_kind",
-                "scope_column",
-                "activation_snapshot",
-                "live_enabled",
-                "backfill_enabled",
-            }
-            & columns
-        )
 
     def test_refresh_strategy_requires_the_right_key_shape(self) -> None:
-        keyed = ViewMaterializationPut(
-            name="links",
-            source_table="crawls",
-            refresh_strategy="keyed",
-            key_columns=["tenant_id", "crawl_id"],
+        self.assertEqual(
+            ViewMaterializationPut(
+                name="links",
+                source_table="crawls",
+                refresh_strategy="keyed",
+                key_columns=["crawl_id"],
+            ).key_columns,
+            ["crawl_id"],
         )
-        self.assertEqual(keyed.key_columns, ["tenant_id", "crawl_id"])
-
-        append = ViewMaterializationPut(
-            name="events",
-            source_table="crawl_steps",
-            refresh_strategy="append",
-            key_columns=["crawl_id", "step_index"],
+        self.assertEqual(
+            ViewMaterializationPut(
+                name="totals",
+                source_table="crawls",
+                refresh_strategy="full",
+            ).key_columns,
+            [],
         )
-        self.assertEqual(append.refresh_strategy, "append")
+        with self.assertRaises(ValueError):
+            ViewMaterializationPut(
+                name="invalid",
+                source_table="crawls",
+                refresh_strategy="append",
+                key_columns=[],
+            )
 
-        full = ViewMaterializationPut(
-            name="totals",
-            source_table="crawls",
-            refresh_strategy="full",
-        )
-        self.assertEqual(full.key_columns, [])
-
-        for strategy, key_columns in (
-            ("keyed", []),
-            ("append", []),
-            ("full", ["crawl_id"]),
-        ):
-            with self.subTest(strategy=strategy), self.assertRaises(ValueError):
-                ViewMaterializationPut(
-                    name="invalid",
-                    source_table="crawls",
-                    refresh_strategy=strategy,
-                    key_columns=key_columns,
-                )
-
-    def test_subjects_and_message_ids_are_physical_incarnation_stable(self) -> None:
+    def test_subjects_and_message_ids_are_incarnation_stable(self) -> None:
         table_uuid = uuid4()
         tick = CatalogueDMLTick(
             table_id=7,
@@ -138,11 +438,13 @@ class MaterializationEventContractTests(unittest.TestCase):
         self.assertEqual(dml_subject(table_uuid), f"atlas.catalogue.dml.{table_uuid.hex}")
         self.assertEqual(tick.message_id, f"dml:{table_uuid}:19")
         self.assertEqual(
-            relay_dml_consumer(), "atlas-catalogue-dml-relay"
+            basin_dml_subject("atlas"), "basin.cdc.atlas.lake.dml_ticks"
         )
         self.assertEqual(
-            relay_ddl_consumer(), "atlas-catalogue-global-ddl-relay"
+            basin_ddl_subject("atlas"), "basin.cdc.atlas.lake.ddl"
         )
+        self.assertEqual(basin_dml_durable("atlas"), "atlas-basin-atlas-dml")
+        self.assertEqual(basin_ddl_durable("atlas"), "atlas-basin-atlas-ddl")
         incarnation = uuid4()
         self.assertEqual(
             materialization_durable(incarnation),
@@ -161,191 +463,288 @@ class MaterializationEventContractTests(unittest.TestCase):
         )
         self.assertEqual(ddl.message_id, "ddl:20:table:7:altered")
 
-    def test_full_refresh_retains_target_uuid(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            with Catalogue(
-                CatalogueConfig(
-                    catalog=DuckDBCatalog(root / "catalog.ducklake"),
-                    storage=DiskStorage(root / "lake"),
-                )
-            ) as catalogue:
-                catalogue.bootstrap()
-                catalogue.connection.execute(
-                    "INSERT INTO documents BY NAME SELECT "
-                    "'doc-1' AS document_id, 'h' AS html_sha256, "
-                    "'key' AS html_object_key, 'text/html' AS html_content_type, "
-                    "'utf-8' AS html_encoding, 1 AS html_size_bytes, "
-                    "1 AS html_compressed_size_bytes, 'none' AS compression, "
-                    "1 AS dom_schema_version, 'test' AS parser_name, "
-                    "'1' AS parser_version, 'hash' AS parser_options_hash, "
-                    "0 AS element_count, now() AS created_at"
-                )
-                store = MaterializationStore(catalogue)
-                table, _snapshot = store.create_full(
-                    name="document_ids",
-                    sql="SELECT document_id FROM documents",
-                )
-                original_uuid = table.table_uuid
-                catalogue.connection.execute(
-                    "UPDATE documents SET document_id = 'doc-2' "
-                    "WHERE document_id = 'doc-1'"
-                )
-                refreshed = store.refresh_full(
-                    name="document_ids",
-                    expected_uuid=original_uuid,
-                    sql="SELECT document_id FROM documents",
-                )
-                self.assertEqual(refreshed.table_uuid, original_uuid)
-                self.assertEqual(
-                    catalogue.connection.execute(
-                        "SELECT document_id FROM _atlas_materializations.document_ids"
-                    ).fetchone()[0],
-                    "doc-2",
+    def test_unavailable_optimization_blocks_materialization(self) -> None:
+        catalogue = SimpleNamespace(
+            config=SimpleNamespace(alias="atlas", schema="main")
+        )
+        store = MaterializationStore(catalogue)
+        for sql in (
+            "SELECT document_id FROM elements",
+            (
+                "WITH documents AS (SELECT 1 AS document_id) "
+                "SELECT document_id FROM documents"
+            ),
+        ):
+            with self.subTest(sql=sql), self.assertRaisesRegex(
+                MaterializationError,
+                "cannot be materialized",
+            ):
+                store._scope_incremental_query(
+                    sql,
+                    source_table="documents",
+                    refresh_strategy="keyed",
+                    key_columns=("document_id",),
                 )
 
-    def test_composite_key_refresh_replaces_only_changed_groups(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            with Catalogue(
-                CatalogueConfig(
-                    catalog=DuckDBCatalog(root / "catalog.ducklake"),
-                    storage=DiskStorage(root / "lake"),
-                )
-            ) as catalogue:
-                catalogue.bootstrap()
-                catalogue.connection.execute(
-                    "CREATE TABLE keyed_source "
-                    "(tenant_id INTEGER, document_id INTEGER, value VARCHAR)"
-                )
-                catalogue.connection.execute(
-                    "INSERT INTO keyed_source VALUES "
-                    "(1, 10, 'old-a'), (1, 11, 'old-b'), (2, 10, 'untouched')"
-                )
-                store = MaterializationStore(catalogue)
-                table, source_snapshot = store.create_full(
-                    name="keyed_result",
-                    sql="SELECT * FROM keyed_source",
-                )
-                catalogue.connection.execute(
-                    "UPDATE keyed_source SET value = 'new-a' "
-                    "WHERE tenant_id = 1 AND document_id = 10"
-                )
-                catalogue.connection.execute(
-                    "UPDATE keyed_source SET value = 'not-in-window' "
-                    "WHERE tenant_id = 2 AND document_id = 10"
-                )
-                self._install_changes_macro(
-                    catalogue,
-                    columns="tenant_id INTEGER, document_id INTEGER",
-                    values=f"({source_snapshot + 1}, 1, 'update_postimage', 1, 10)",
-                )
-
-                refreshed = store.refresh_keyed(
-                    name="keyed_result",
-                    expected_uuid=table.table_uuid,
-                    sql="SELECT * FROM keyed_source",
-                    source_table_id=store.table_identity("keyed_source").table_id,
-                    from_snapshot=source_snapshot + 1,
-                    to_snapshot=source_snapshot + 1,
-                    key_columns=("tenant_id", "document_id"),
-                )
-
-                self.assertEqual(refreshed.table_uuid, table.table_uuid)
-                self.assertEqual(
-                    catalogue.connection.execute(
-                        "SELECT * FROM _atlas_materializations.keyed_result "
-                        "ORDER BY tenant_id, document_id"
-                    ).fetchall(),
-                    [
-                        (1, 10, "new-a"),
-                        (1, 11, "old-b"),
-                        (2, 10, "untouched"),
-                    ],
-                )
-
-    def test_append_refresh_is_idempotent_and_rejects_mutation(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            with Catalogue(
-                CatalogueConfig(
-                    catalog=DuckDBCatalog(root / "catalog.ducklake"),
-                    storage=DiskStorage(root / "lake"),
-                )
-            ) as catalogue:
-                catalogue.bootstrap()
-                catalogue.connection.execute(
-                    "CREATE TABLE append_source "
-                    "(tenant_id INTEGER, event_id INTEGER, value VARCHAR)"
-                )
-                catalogue.connection.execute(
-                    "INSERT INTO append_source VALUES (1, 10, 'first')"
-                )
-                store = MaterializationStore(catalogue)
-                table, source_snapshot = store.create_full(
-                    name="append_result",
-                    sql="SELECT * FROM append_source",
-                    append_key_columns=("tenant_id", "event_id"),
-                )
-                catalogue.connection.execute(
-                    "INSERT INTO append_source VALUES (1, 11, 'second')"
-                )
-                self._install_changes_macro(
-                    catalogue,
-                    columns="tenant_id INTEGER, event_id INTEGER",
-                    values=f"({source_snapshot + 1}, 1, 'insert', 1, 11)",
-                )
-                kwargs = {
-                    "name": "append_result",
-                    "expected_uuid": table.table_uuid,
-                    "sql": "SELECT * FROM append_source",
-                    "source_table_id": store.table_identity("append_source").table_id,
-                    "from_snapshot": source_snapshot + 1,
-                    "to_snapshot": source_snapshot + 1,
-                    "key_columns": ("tenant_id", "event_id"),
-                }
-
-                store.refresh_append(**kwargs)
-                store.refresh_append(**kwargs)
-
-                self.assertEqual(
-                    catalogue.connection.execute(
-                        "SELECT * FROM _atlas_materializations.append_result "
-                        "ORDER BY tenant_id, event_id"
-                    ).fetchall(),
-                    [(1, 10, "first"), (1, 11, "second")],
-                )
-
-                self._install_changes_macro(
-                    catalogue,
-                    columns="tenant_id INTEGER, event_id INTEGER",
-                    values=f"({source_snapshot + 1}, 1, 'delete', 1, 11)",
-                )
-                with self.assertRaises(MaterializationAppendOnlyViolation):
-                    store.refresh_append(**kwargs)
-
-    @staticmethod
-    def _install_changes_macro(
-        catalogue: Catalogue, *, columns: str, values: str
+    def test_full_refresh_unavailable_optimization_blocks_materialization(
+        self,
     ) -> None:
-        catalogue.connection.execute("DROP MACRO IF EXISTS cdc_dml_changes_query")
-        catalogue.connection.execute("DROP TABLE IF EXISTS materialization_test_changes")
-        catalogue.connection.execute(
-            "CREATE TEMP TABLE materialization_test_changes "
-            f"(snapshot_id BIGINT, rowid BIGINT, change_type VARCHAR, {columns})"
+        catalogue = SimpleNamespace(
+            config=SimpleNamespace(alias="atlas", schema="main")
         )
-        catalogue.connection.execute(
-            f"INSERT INTO materialization_test_changes VALUES {values}"
+        store = MaterializationStore(catalogue)
+
+        with self.assertRaisesRegex(
+            MaterializationError,
+            "cannot be materialized",
+        ):
+            store._compile_full_query(
+                "SELECT macros.installed(title) AS title FROM documents;"
+            )
+
+    def test_full_refresh_sql_uses_broad_materialization_purpose(self) -> None:
+        catalogue = SimpleNamespace(
+            config=SimpleNamespace(alias="atlas", schema="main")
         )
-        catalogue.connection.execute(
-            "CREATE TEMP MACRO cdc_dml_changes_query("
-            "catalog_name, from_snapshot, to_snapshot, table_id := NULL"
-            ") AS TABLE SELECT * FROM materialization_test_changes "
-            "WHERE snapshot_id BETWEEN from_snapshot AND to_snapshot"
+        store = MaterializationStore(
+            catalogue,
+            scalar_macros=(
+                ScalarMacroDefinition(
+                    schema_name="macros",
+                    macro_name="normalized",
+                    parameters=("value",),
+                    sql="lower(trim(value))",
+                ),
+            ),
+        )
+
+        compiled = store._compile_full_query(
+            "SELECT macros.normalized(title) AS title "
+            "FROM documents ORDER BY title LIMIT 5"
+        )
+
+        self.assertIn("LOWER(TRIM(title))", compiled)
+        self.assertIn("LIMIT 5", compiled)
+        self.assertNotIn("macros.normalized", compiled)
+
+    def test_refresh_full_executes_compiled_sql(self) -> None:
+        catalogue = MagicMock()
+        catalogue.config.alias = "atlas"
+        catalogue.config.schema = "main"
+        store = MaterializationStore(catalogue)
+        table_uuid = uuid4()
+        table = SimpleNamespace(table_uuid=table_uuid)
+        store.inspect = MagicMock(side_effect=(table, table))
+        store._compile_full_query = MagicMock(
+            return_value="SELECT lower(title) AS title FROM documents"
+        )
+
+        result = store.refresh_full(
+            name="m_materialized",
+            expected_uuid=table_uuid,
+            sql="SELECT macros.normalized(title) AS title FROM documents",
+        )
+
+        self.assertIs(result, table)
+        store._compile_full_query.assert_called_once_with(
+            "SELECT macros.normalized(title) AS title FROM documents"
+        )
+        statements = [
+            call.args[0] for call in catalogue.trusted_remote_execute.call_args_list
+        ]
+        self.assertTrue(
+            any(
+                "SELECT lower(title) AS title FROM documents"
+                in statement
+                for statement in statements
+            )
+        )
+
+    def test_single_table_keyed_sql_uses_compiler_plan(self) -> None:
+        catalogue = SimpleNamespace(
+            config=SimpleNamespace(alias="atlas", schema="main")
+        )
+        store = MaterializationStore(catalogue)
+
+        scoped = store._scope_incremental_query(
+            "SELECT document.document_id, document.captured_at "
+            "FROM documents AS document "
+            "WHERE document.captured_at IS NOT NULL",
+            source_table="documents",
+            refresh_strategy="keyed",
+            key_columns=("document_id",),
+        )
+
+        self.assertIn("_atlas_materialization_changed_keys", scoped)
+        self.assertIn("IS NOT DISTINCT FROM", scoped)
+        self.assertIn("document.captured_at IS NULL", scoped)
+        self.assertIn("EXISTS", scoped)
+
+    def test_inner_join_without_scope_hints_uses_catalogue_compiler(self) -> None:
+        catalogue = SimpleNamespace(
+            config=SimpleNamespace(alias="atlas", schema="main")
+        )
+        store = MaterializationStore(catalogue)
+
+        scoped = store._scope_incremental_query(
+            "SELECT document.document_id, element.element_index "
+            "FROM documents AS document "
+            "JOIN elements AS element USING (document_id)",
+            source_table="documents",
+            refresh_strategy="keyed",
+            key_columns=("document_id",),
+        )
+
+        self.assertEqual(
+            scoped.count("_atlas_materialization_changed_keys"),
+            2,
+        )
+        self.assertNotIn("materialized_source.*", scoped)
+
+    def test_incremental_sql_binds_compiler_derived_dependent_scans(self) -> None:
+        catalogue = MagicMock()
+        catalogue.config.alias = "atlas"
+        catalogue.config.schema = "main"
+        catalogue.trusted_remote_rows.return_value = [("doc-a",), ("doc-b",)]
+        store = MaterializationStore(catalogue)
+        scoped = store._scope_incremental_query(
+            "SELECT document.document_id "
+            "FROM documents AS document "
+            "JOIN elements AS element USING (document_id)",
+            source_table="documents",
+            refresh_strategy="keyed",
+            key_columns=("document_id",),
+            bind_key_rows=True,
+        )
+
+        self.assertNotIn("_atlas_materialization_changed_keys", scoped)
+        self.assertIn("FROM elements AS", scoped)
+        self.assertIn("'doc-a'", scoped)
+        self.assertIn("'doc-b'", scoped)
+        self.assertGreaterEqual(scoped.count("document_id"), 4)
+
+    def test_incremental_changes_use_native_ducklake_history(self) -> None:
+        catalogue = MagicMock()
+        catalogue.config.alias = "atlas"
+        catalogue.config.schema = "main"
+        store = MaterializationStore(catalogue)
+        store.table_identity_from_id = MagicMock(
+            return_value=DuckLakeTableIdentity(
+                table_id=7,
+                table_uuid=uuid4(),
+                schema_name="main",
+                table_name="documents",
+            )
+        )
+
+        store._prepare_changes(
+            source_table_id=7,
+            from_snapshot=10,
+            to_snapshot=12,
+            key_columns=("document_id",),
+        )
+
+        sql = catalogue.trusted_remote_execute.call_args_list[0].args[0]
+        self.assertIn("ducklake_table_changes(", sql)
+        self.assertNotIn("cdc_dml_changes_query", sql)
+
+    def test_backfill_key_lifecycle_stays_inside_remote_transaction(
+        self,
+    ) -> None:
+        catalogue = MagicMock()
+        catalogue.config.alias = "atlas"
+        catalogue.config.schema = "main"
+        events: list[str] = []
+        catalogue.remote_transaction.return_value.__enter__.side_effect = (
+            lambda: events.append("begin")
+        )
+        catalogue.remote_transaction.return_value.__exit__.side_effect = (
+            lambda *_args: events.append("commit")
+        )
+        store = MaterializationStore(catalogue)
+        table = SimpleNamespace(table_uuid=uuid4())
+        store._checked_target = MagicMock(return_value=table)
+        store._prepare_backfill_keys = MagicMock(
+            side_effect=lambda **_kwargs: events.append("prepare")
+        )
+        store._has_changed_keys = MagicMock(
+            side_effect=lambda: events.append("read") or False
+        )
+        store._drop_changes = MagicMock(
+            side_effect=lambda: events.append("drop")
+        )
+
+        result = store.backfill_keyed_partition(
+            name="m_materialized",
+            expected_uuid=table.table_uuid,
+            sql="SELECT document_id FROM documents",
+            source_table="documents",
+            key_columns=("document_id",),
+            partition=0,
+            partition_count=1,
+        )
+
+        self.assertIs(result, table)
+        self.assertEqual(
+            events,
+            ["begin", "prepare", "read", "commit", "drop"],
         )
 
 
 class CatalogueEventStreamTests(unittest.IsolatedAsyncioTestCase):
+    async def test_orphaned_materialization_consumers_are_deleted(self) -> None:
+        active = SimpleNamespace(
+            nats_consumer_name="atlas-materialization-active"
+        )
+
+        def consumer(name: str, subject: str):
+            return SimpleNamespace(
+                name=name,
+                config=SimpleNamespace(
+                    durable_name=name,
+                    filter_subject=subject,
+                ),
+            )
+
+        jetstream = SimpleNamespace(
+            consumers_info=AsyncMock(
+                return_value=[
+                    consumer(
+                        active.nats_consumer_name,
+                        "atlas.catalogue.dml.active",
+                    ),
+                    consumer(
+                        "atlas-materialization-orphan",
+                        "atlas.catalogue.dml.orphan",
+                    ),
+                    consumer(
+                        "other-sink",
+                        "atlas.catalogue.dml.other",
+                    ),
+                    consumer(
+                        DDL_RECONCILER_DURABLE,
+                        DDL_SUBJECT,
+                    ),
+                ]
+            ),
+            delete_consumer=AsyncMock(),
+        )
+
+        with patch(
+            "materialization.executor._active_definitions",
+            return_value=[active],
+        ):
+            deleted = await reconcile_materialization_consumers(jetstream)
+
+        self.assertEqual(
+            deleted,
+            ("atlas-materialization-orphan",),
+        )
+        jetstream.delete_consumer.assert_awaited_once_with(
+            EVENT_STREAM,
+            "atlas-materialization-orphan",
+        )
+
     async def test_concurrent_stream_creation_attaches_and_validates(self) -> None:
         config = StreamConfig(
             name=EVENT_STREAM,
@@ -378,10 +777,7 @@ class CatalogueEventStreamTests(unittest.IsolatedAsyncioTestCase):
                     "ATLAS_CATALOGUE_EVENT_MAX_BYTES": 1024,
                 }[name],
             ),
-            patch(
-                "runtime.catalogue_events.get_float",
-                return_value=3600,
-            ),
+            patch("runtime.catalogue_events.get_float", return_value=3600),
         ):
             await ensure_catalogue_event_stream(JetStream())
 

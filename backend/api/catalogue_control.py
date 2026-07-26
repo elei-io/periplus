@@ -1,10 +1,11 @@
-"""One serialized embedded catalogue session for mandatory API control work."""
+"""One serialized Basin catalogue session for mandatory API control work."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+import logging
 from typing import TypeVar
 
 from fastapi import Request
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from db.session import session_scope
 from repository.catalogue import Catalogue, catalogue_from_env
+from repository.catalogue.schema import CATALOGUE_SCHEMA_VERSION
 
 
 T = TypeVar("T")
@@ -19,7 +21,7 @@ CatalogueOperation = Callable[[Session, Catalogue], T]
 
 
 class CatalogueControl:
-    """Own one DuckDB connection on one thread for the API process lifetime."""
+    """Own one session-affine DuckDB client on one thread for the API lifetime."""
 
     def __init__(
         self,
@@ -56,7 +58,20 @@ class CatalogueControl:
     def _open(self) -> None:
         if self._catalogue is not None:
             raise RuntimeError("API catalogue control is already started.")
-        self._catalogue = self._factory()
+        catalogue = self._factory()
+        try:
+            catalogue.validate_schema()
+        except BaseException:
+            catalogue.close()
+            raise
+        logging.info(
+            "Atlas DuckLake binding ready: component=api lake=%s schema=%s "
+            "schema_version=%s",
+            catalogue.lake_slug,
+            catalogue.config.schema,
+            CATALOGUE_SCHEMA_VERSION,
+        )
+        self._catalogue = catalogue
 
     def _close(self) -> None:
         if self._catalogue is None:

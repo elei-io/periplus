@@ -104,11 +104,13 @@ export type GraphRunSubmission = {
 export type GraphRunTrigger = {
   urls: string[]
   max_crawls: number
+  max_run_seconds?: number
 }
 
 export type GraphRunStatus =
   | "queued"
   | "running"
+  | "paused"
   | "completed"
   | "completed_with_errors"
   | "failed"
@@ -135,6 +137,9 @@ export type GraphRunRecord = {
   started_at: string | null
   last_progress_at: string | null
   completed_at: string | null
+  paused_at: string | null
+  not_before: string | null
+  deadline_at: string | null
   cancel_requested_at: string | null
   error: string | null
 }
@@ -163,22 +168,6 @@ export type CrawlConcurrencyLimits = {
   worker_count: number
   runtime_capacity: number
   runtime_active: number
-  resource_acquire_timeout_seconds: number
-  resources: Array<{
-    name: string
-    capacity: number
-    used: number
-    critical: number
-    live: number
-    backfill: number
-    maintenance: number
-    waiting: number
-    critical_waiting: number
-    live_waiting: number
-    backfill_waiting: number
-    maintenance_waiting: number
-    oldest_wait_seconds: number
-  }>
   workers: Array<{
     worker_id: string
     capacity: number
@@ -188,18 +177,22 @@ export type CrawlConcurrencyLimits = {
   catalogue_executors: Array<{
     capability: "ingestion" | "materialization"
     worker_count: number
+    configured_capacity: number
     capacity: number
     active: number
+    degraded: number
     backlog: number
+    pending: number
+    ack_pending: number
+    redelivered: number
+    waiting_for_redelivery: number
   }>
   tuning: {
-    catalogue_max_concurrency: number
-    effective_catalogue_concurrency: number
-    object_io_max_concurrency: number
     crawl_lanes_per_replica: number
-    catalogue_lanes_per_replica: number
+    ingestion_clients_per_replica: number
+    materialization_clients_per_replica: number
     graph_consumer_delivery_ceiling: number
-    duckdb_threads_per_executor: number
-    duckdb_memory_limit_per_executor: string
+    duckdb_threads_per_client: number
+    duckdb_memory_limit_per_client: string
   }
 }

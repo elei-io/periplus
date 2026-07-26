@@ -1,3 +1,4 @@
+-- atlas:description=Parsed JSON-LD nodes discovered in retained document scripts.
 CREATE VIEW views.json_ld_nodes AS
 WITH scripts AS (
     SELECT

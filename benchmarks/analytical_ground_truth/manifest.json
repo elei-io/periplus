@@ -1,0 +1,13 @@
+{
+  "name": "atlas-analytical-ground-truth-v1",
+  "scenario": "product_market",
+  "start_at": "2026-06-01T00:00:00+00:00",
+  "observation_day_offsets": [0, 1, 2, 4, 5, 7, 8, 10, 12, 13],
+  "retailer_count": 12,
+  "product_count": 24,
+  "retailers_per_product": 4,
+  "crawl_count": 960,
+  "default_filler_elements": 24,
+  "allowed_lakes": ["atlas_test"],
+  "overlay_lake": "atlas_load"
+}

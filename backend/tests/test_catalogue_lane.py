@@ -4,7 +4,7 @@ import asyncio
 import threading
 import unittest
 
-from runtime.catalogue_lane import run_catalogue_operation
+from runtime.catalogue_lane import catalogue_operation_lane
 
 
 class CatalogueLaneTests(unittest.IsolatedAsyncioTestCase):
@@ -22,9 +22,13 @@ class CatalogueLaneTests(unittest.IsolatedAsyncioTestCase):
         def second() -> None:
             order.append("second")
 
-        first_task = asyncio.create_task(run_catalogue_operation(first))
+        async def run(function) -> None:
+            async with catalogue_operation_lane():
+                await asyncio.to_thread(function)
+
+        first_task = asyncio.create_task(run(first))
         await asyncio.to_thread(first_started.wait, 2)
-        second_task = asyncio.create_task(run_catalogue_operation(second))
+        second_task = asyncio.create_task(run(second))
         await asyncio.sleep(0)
         self.assertEqual(order, ["first-start"])
         release_first.set()
