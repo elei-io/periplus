@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 import logging
+import re
 import threading
 from typing import Any
 
@@ -24,10 +25,13 @@ from repository.catalogue.schema import (
     COLUMN_COMMENTS,
     INGEST_SCHEMA,
     MATERIAL_SCHEMA,
+    RelationName,
     TABLE_COMMENTS,
     TABLE_LAYOUTS,
     expected_columns,
 )
+
+_INTERNAL_TABLE_NAME = re.compile(r"^_atlas_[a-z0-9_]+$")
 
 
 class Catalogue:
@@ -283,6 +287,107 @@ class Catalogue:
         if errors:
             raise CatalogueSchemaError("; ".join(errors))
 
+    def create_materialization_generation(
+        self,
+        relation_name: RelationName,
+        generation_table: str,
+    ) -> None:
+        """Create one empty, fully typed rebuild destination."""
+
+        if relation_name.schema != MATERIAL_SCHEMA:
+            raise ValueError("only material tables can have rebuild generations")
+        if not _INTERNAL_TABLE_NAME.fullmatch(generation_table):
+            raise ValueError("invalid internal generation table name")
+        columns = expected_columns()[relation_name]
+        relation = _qualified(
+            self.config.alias,
+            relation_name.schema,
+            generation_table,
+        )
+        definitions = ", ".join(
+            f"{_quote_identifier(name)} {_column_type(column)}"
+            + ("" if column.nullable else " NOT NULL")
+            for name, column in columns.items()
+        )
+        with self.remote_transaction():
+            self.trusted_remote_execute(
+                f"CREATE TABLE IF NOT EXISTS {relation} ({definitions})"
+            )
+            layout = TABLE_LAYOUTS[relation_name]
+            if layout.partition_by:
+                self.trusted_remote_execute(
+                    f"ALTER TABLE {relation} SET PARTITIONED BY "
+                    f"({', '.join(layout.partition_by)})"
+                )
+            if layout.sort_by:
+                self.trusted_remote_execute(
+                    f"ALTER TABLE {relation} SET SORTED BY "
+                    f"({', '.join(layout.sort_by)})"
+                )
+            self.trusted_remote_execute(
+                f"COMMENT ON TABLE {relation} IS "
+                f"{_quote_literal(TABLE_COMMENTS[relation_name])}"
+            )
+            for column_name, comment in COLUMN_COMMENTS[relation_name].items():
+                self.trusted_remote_execute(
+                    f"COMMENT ON COLUMN {relation}."
+                    f"{_quote_identifier(column_name)} IS "
+                    f"{_quote_literal(comment)}"
+                )
+
+    def activate_materialization_generations(
+        self,
+        generations: Mapping[RelationName, str],
+        *,
+        activation_id: str,
+    ) -> None:
+        """Atomically replace selected public material tables."""
+
+        if not generations:
+            raise ValueError("at least one generation is required")
+        suffix = re.sub(r"[^a-z0-9]", "", activation_id.lower())[:20]
+        if not suffix:
+            raise ValueError("activation_id must contain letters or digits")
+        for relation_name, generation_table in generations.items():
+            if relation_name.schema != MATERIAL_SCHEMA:
+                raise ValueError("only material tables can be activated")
+            if not _INTERNAL_TABLE_NAME.fullmatch(generation_table):
+                raise ValueError("invalid internal generation table name")
+        with self.remote_transaction():
+            retired: list[str] = []
+            for relation_name, generation_table in generations.items():
+                retired_table = (
+                    f"_atlas_retired_{relation_name.table}_{suffix}"
+                )
+                current = _qualified(
+                    self.config.alias,
+                    relation_name.schema,
+                    relation_name.table,
+                )
+                generation = _qualified(
+                    self.config.alias,
+                    relation_name.schema,
+                    generation_table,
+                )
+                self.trusted_remote_execute(
+                    f"ALTER TABLE {current} RENAME TO "
+                    f"{_quote_identifier(retired_table)}"
+                )
+                self.trusted_remote_execute(
+                    f"ALTER TABLE {generation} RENAME TO "
+                    f"{_quote_identifier(relation_name.table)}"
+                )
+                retired.append(
+                    _qualified(
+                        self.config.alias,
+                        relation_name.schema,
+                        retired_table,
+                    )
+                )
+            for relation in retired:
+                self.trusted_remote_execute(f"DROP TABLE {relation}")
+        self.validate_schema()
+
     def latest_snapshot(self) -> int | None:
         rows = self.trusted_remote_rows(
             "SELECT max(snapshot_id) "
@@ -380,6 +485,11 @@ class Catalogue:
             self._minted.close()
         finally:
             self._minter.close()
+
+    def refresh_metadata(self) -> None:
+        """Mint a fresh session after Atlas creates internal rebuild tables."""
+
+        self._remint_connection(self._minted)
 
     def __enter__(self) -> Catalogue:
         return self

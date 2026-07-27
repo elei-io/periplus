@@ -5,3 +5,4 @@ import control.domain_policies.models  # noqa: F401
 import control.crawl_graphs.models  # noqa: F401
 import control.crawl_schedules.models  # noqa: F401
 import runtime.graph_models  # noqa: F401
+import materialization.models  # noqa: F401

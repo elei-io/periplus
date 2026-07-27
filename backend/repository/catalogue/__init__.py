@@ -31,6 +31,7 @@ from repository.catalogue.records import (
     VisitRecord,
     attempt_id_for,
     document_id_for,
+    link_id_for,
     page_id_for,
 )
 from repository.catalogue.service import CatalogueService
@@ -96,6 +97,7 @@ __all__ = [
     "ServiceAccountTokenProvider",
     "attempt_id_for",
     "document_id_for",
+    "link_id_for",
     "page_id_for",
     "catalogue_config_from_env",
     "catalogue_from_env",

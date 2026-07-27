@@ -4,6 +4,7 @@ import {
   ShieldCheckIcon,
   Globe2Icon,
   CalendarClockIcon,
+  DatabaseZapIcon,
   SquareTerminalIcon,
 } from "lucide-react"
 
@@ -11,8 +12,8 @@ import type { NavigationGroup } from "@/types/navigation"
 
 export const navigationGroups: NavigationGroup[] = [
   {
-    name: "SQL",
-    slug: "sql",
+    name: "Data",
+    slug: "data",
     items: [
       {
         name: "Console",
@@ -20,6 +21,13 @@ export const navigationGroups: NavigationGroup[] = [
         icon: SquareTerminalIcon,
         title: "SQL Console",
         description: "Query ingest and material relations.",
+      },
+      {
+        name: "Materializations",
+        href: "/materializations",
+        icon: DatabaseZapIcon,
+        title: "Materializations",
+        description: "Backfill or rebuild fixed Atlas projections.",
       },
     ],
   },

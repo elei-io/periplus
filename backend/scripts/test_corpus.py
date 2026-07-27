@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+import gzip
 import hashlib
 import io
 import json
@@ -22,15 +23,21 @@ import httpx
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DOMAINS = ROOT / "backend" / "tests" / "corpus" / "known_domains.txt"
+DEFAULT_KNOWN_DOMAINS = (
+    ROOT / "backend" / "tests" / "corpus" / "known_domains.txt"
+)
 DEFAULT_CACHE = ROOT / ".atlas" / "test-corpus"
 DEFAULT_API_URL = "http://127.0.0.1:8000"
 DEFAULT_CRAWL = "CC-MAIN-2026-25"
 DEFAULT_SEED = 20260727
-DATASET_VERSION = "v1"
+DATASET_VERSION = "v3"
 COMMON_CRAWL_DATA = "https://data.commoncrawl.org"
 COMMON_CRAWL_INDEX = "https://index.commoncrawl.org"
 KNOWN_CAPTURES_PER_DOMAIN = 1_000
+DEFAULT_NOISE_INDEX_SHARDS = 3
+MINIMUM_NOISE_SAMPLE_ROWS = 50_000
+NOISE_SAMPLE_MULTIPLIER = 5
+NOISE_CAPTURES_PER_DOMAIN = 20
 
 Tier = Literal["known", "noise", "failure"]
 
@@ -123,8 +130,17 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--known-domains",
         type=Path,
-        default=DEFAULT_DOMAINS,
+        default=DEFAULT_KNOWN_DOMAINS,
         help="newline-delimited known-domain list",
+    )
+    parser.add_argument(
+        "--noise-index-shards",
+        type=positive_int,
+        default=DEFAULT_NOISE_INDEX_SHARDS,
+        help=(
+            "maximum deterministic Common Crawl Parquet shards to sample "
+            f"(default: {DEFAULT_NOISE_INDEX_SHARDS})"
+        ),
     )
     parser.add_argument(
         "--cache-dir",
@@ -141,7 +157,10 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="show the reconciliation without changing Atlas or downloading WARC data",
+        help=(
+            "select and cache the complete manifest without changing Atlas or "
+            "downloading WARC records"
+        ),
     )
     arguments = parser.parse_args(argv)
     if arguments.failure_rate > 0 and arguments.noise == 0:
@@ -194,9 +213,9 @@ def load_domains(path: Path) -> list[str]:
         if line.strip() and not line.lstrip().startswith("#")
     ]
     if not domains:
-        raise ValueError(f"known-domain list is empty: {path}")
+        raise ValueError(f"domain list is empty: {path}")
     if any("/" in domain or ":" in domain for domain in domains):
-        raise ValueError("known-domain entries must be bare domain names")
+        raise ValueError("domain entries must be bare domain names")
     return list(dict.fromkeys(domains))
 
 
@@ -325,12 +344,18 @@ def query_domain_candidates(
                 f"select {label}: domain {domain_number}/{len(domains)} "
                 f"{domain}; candidates={len(candidates)}"
             )
-            response = get_cdx_response(
-                client,
-                crawl=crawl,
-                domain=domain,
-                status_filter=status_filter,
-            )
+            try:
+                response = get_cdx_response(
+                    client,
+                    crawl=crawl,
+                    domain=domain,
+                    status_filter=status_filter,
+                )
+            except httpx.HTTPError as exc:
+                report(
+                    f"select {label}: skipping {domain} after retries: {exc}"
+                )
+                continue
             if is_empty_cdx_result(response):
                 continue
             response.raise_for_status()
@@ -362,6 +387,261 @@ def query_domain_candidates(
             str(item["filename"]),
             str(item["offset"]),
         ),
+    )
+
+
+def query_noise_index_candidates(
+    *,
+    crawl: str,
+    seed: int,
+    cache_dir: Path,
+    known_domains: list[str],
+    noise_target: int,
+    failure_target: int,
+    shard_limit: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    noise_paths = load_noise_index_paths(
+        crawl=crawl,
+        cache_dir=cache_dir,
+        subset="warc",
+    )
+    failure_paths = load_noise_index_paths(
+        crawl=crawl,
+        cache_dir=cache_dir,
+        subset="crawldiagnostics",
+    )
+    selected_noise_paths = sorted(
+        noise_paths,
+        key=lambda path: stable_key(seed, path),
+    )[:shard_limit]
+    selected_failure_paths = sorted(
+        failure_paths,
+        key=lambda path: stable_key(seed, path),
+    )[:shard_limit]
+    sample_rows = max(
+        MINIMUM_NOISE_SAMPLE_ROWS,
+        (noise_target + failure_target) * NOISE_SAMPLE_MULTIPLIER,
+    )
+    noise: dict[tuple[str, str, int], dict[str, Any]] = {}
+    failure: dict[tuple[str, str, int], dict[str, Any]] = {}
+    noise_domain_counts: dict[str, int] = {}
+    failure_domain_counts: dict[str, int] = {}
+    for shard_number, remote_path in enumerate(selected_noise_paths, start=1):
+        report(
+            f"select noise index: success shard {shard_number}/{shard_limit}; "
+            f"noise={len(noise)}/{noise_target}"
+        )
+        local_path = download_noise_index_shard(
+            remote_path=remote_path,
+            cache_dir=cache_dir,
+        )
+        for item in sample_noise_index_shard(
+            path=local_path,
+            seed=seed + shard_number - 1,
+            sample_rows=sample_rows,
+        ):
+            hostname = str(item["hostname"]).lower()
+            if domain_is_known(hostname, known_domains):
+                continue
+            registered_domain = str(item["registered_domain"] or hostname)
+            if (
+                noise_domain_counts.get(registered_domain, 0)
+                >= NOISE_CAPTURES_PER_DOMAIN
+            ):
+                continue
+            if int(item["status"]) != 200:
+                continue
+            key = (
+                str(item["filename"]),
+                str(item["offset"]),
+                int(item["length"]),
+            )
+            if key in noise:
+                continue
+            noise[key] = item
+            noise_domain_counts[registered_domain] = (
+                noise_domain_counts.get(registered_domain, 0) + 1
+            )
+        if len(noise) >= noise_target:
+            break
+    for shard_number, remote_path in enumerate(
+        selected_failure_paths,
+        start=1,
+    ):
+        report(
+            f"select noise index: failure shard {shard_number}/{shard_limit}; "
+            f"failure={len(failure)}/{failure_target}"
+        )
+        local_path = download_noise_index_shard(
+            remote_path=remote_path,
+            cache_dir=cache_dir,
+        )
+        for item in sample_noise_index_shard(
+            path=local_path,
+            seed=seed + shard_number - 1,
+            sample_rows=sample_rows,
+        ):
+            hostname = str(item["hostname"]).lower()
+            if domain_is_known(hostname, known_domains):
+                continue
+            registered_domain = str(item["registered_domain"] or hostname)
+            if (
+                failure_domain_counts.get(registered_domain, 0)
+                >= NOISE_CAPTURES_PER_DOMAIN
+            ):
+                continue
+            if int(item["status"]) == 200:
+                continue
+            key = (
+                str(item["filename"]),
+                str(item["offset"]),
+                int(item["length"]),
+            )
+            if key in failure:
+                continue
+            failure[key] = item
+            failure_domain_counts[registered_domain] = (
+                failure_domain_counts.get(registered_domain, 0) + 1
+            )
+        if len(failure) >= failure_target:
+            break
+    return (
+        sorted(
+            noise.values(),
+            key=lambda item: stable_key(
+                seed,
+                str(item["url"]),
+                str(item["filename"]),
+                str(item["offset"]),
+            ),
+        ),
+        sorted(
+            failure.values(),
+            key=lambda item: stable_key(
+                seed,
+                str(item["url"]),
+                str(item["filename"]),
+                str(item["offset"]),
+            ),
+        ),
+    )
+
+
+def load_noise_index_paths(
+    *,
+    crawl: str,
+    cache_dir: Path,
+    subset: str,
+) -> list[str]:
+    index_dir = cache_dir / "index" / crawl
+    path = index_dir / "cc-index-table.paths"
+    if not path.exists():
+        report("select noise index: downloading shard list")
+        response = httpx.get(
+            f"{COMMON_CRAWL_DATA}/crawl-data/{crawl}/"
+            "cc-index-table.paths.gz",
+            timeout=120,
+        )
+        response.raise_for_status()
+        index_dir.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(gzip.decompress(response.content))
+    paths = [
+        line.strip()
+        for line in path.read_text().splitlines()
+        if f"/subset={subset}/" in line
+    ]
+    if not paths:
+        raise RuntimeError(
+            f"Common Crawl published no {subset} URL-index shards for {crawl}"
+        )
+    return paths
+
+
+def download_noise_index_shard(*, remote_path: str, cache_dir: Path) -> Path:
+    crawl = remote_path.split("/crawl=", 1)[1].split("/", 1)[0]
+    subset = remote_path.split("/subset=", 1)[1].split("/", 1)[0]
+    local_dir = cache_dir / "index" / crawl / subset
+    local_path = local_dir / Path(remote_path).name
+    if local_path.exists():
+        report(f"select noise index: cached {local_path.name}")
+        return local_path
+    local_dir.mkdir(parents=True, exist_ok=True)
+    temporary = local_path.with_suffix(local_path.suffix + ".partial")
+    report(f"select noise index: downloading {local_path.name}")
+    last_error: Exception | None = None
+    for attempt in range(5):
+        try:
+            with httpx.stream(
+                "GET",
+                f"{COMMON_CRAWL_DATA}/{remote_path}",
+                timeout=120,
+            ) as response:
+                response.raise_for_status()
+                with temporary.open("wb") as output:
+                    for chunk in response.iter_bytes():
+                        output.write(chunk)
+            temporary.replace(local_path)
+            return local_path
+        except (httpx.HTTPError, OSError) as exc:
+            last_error = exc
+            if attempt == 4:
+                break
+            time.sleep(0.5 * (2**attempt))
+    raise RuntimeError(f"failed to download URL-index shard {remote_path}") from (
+        last_error
+    )
+
+
+def sample_noise_index_shard(
+    *,
+    path: Path,
+    seed: int,
+    sample_rows: int,
+) -> list[dict[str, Any]]:
+    import duckdb
+
+    sql = f"""
+        SELECT url,
+               url_host_name AS hostname,
+               url_host_registered_domain AS registered_domain,
+               fetch_time,
+               fetch_status AS status,
+               content_mime_type AS mime,
+               content_charset AS encoding,
+               warc_filename AS filename,
+               warc_record_offset AS offset,
+               warc_record_length AS length
+        FROM read_parquet(?)
+        WHERE content_mime_detected = 'text/html'
+          AND fetch_status IS NOT NULL
+          AND warc_filename IS NOT NULL
+          AND warc_record_offset IS NOT NULL
+          AND warc_record_length IS NOT NULL
+        USING SAMPLE reservoir ({sample_rows} ROWS) REPEATABLE ({seed})
+    """
+    with duckdb.connect() as connection:
+        columns = [
+            description[0]
+            for description in connection.execute(sql, [str(path)]).description
+        ]
+        rows = connection.fetchall()
+    return [
+        noise_index_row(dict(zip(columns, row, strict=True)))
+        for row in rows
+    ]
+
+
+def noise_index_row(row: dict[str, Any]) -> dict[str, Any]:
+    observed_at = row.pop("fetch_time")
+    assert isinstance(observed_at, datetime)
+    row["timestamp"] = observed_at.astimezone(UTC).strftime("%Y%m%d%H%M%S")
+    return row
+
+
+def domain_is_known(hostname: str, known_domains: list[str]) -> bool:
+    return any(
+        hostname == domain or hostname.endswith(f".{domain}")
+        for domain in known_domains
     )
 
 
@@ -435,8 +715,16 @@ def extend_from_candidates(
             return
     raise RuntimeError(
         f"domain queries yielded only {len(captures)} unique {tier} pages; "
-        "add domains or reduce --known"
+        + shortage_advice(tier)
     )
+
+
+def shortage_advice(tier: Tier) -> str:
+    if tier == "known":
+        return "add known domains or reduce --known"
+    if tier == "noise":
+        return "increase --noise-index-shards or reduce --noise"
+    return "increase --noise-index-shards or reduce --fail"
 
 
 def candidate_identity(item: dict[str, Any]) -> tuple[str, int, int]:
@@ -678,28 +966,21 @@ def reconcile(arguments: argparse.Namespace) -> int:
         f"(known={len(existing['known'])}, noise={len(existing['noise'])}, "
         f"failure={len(existing['failure'])})"
     )
-    if arguments.dry_run:
-        print("dry-run: no Common Crawl data downloaded and no Atlas data changed")
-        return 0
-
     captures = load_manifest(path)
     grouped = captures_by_tier(captures)
-    domains = load_domains(arguments.known_domains)
+    known_domains = load_domains(arguments.known_domains)
     report("phase=selection")
-    successful_candidates = (
+    known_candidates = (
         query_domain_candidates(
-            label="successful pages",
-            domains=domains,
+            label="known pages",
+            domains=known_domains,
             crawl=arguments.crawl,
             seed=arguments.seed,
             status_filter="status:200",
-            minimum_candidates=targets.known + targets.noise,
-            minimum_domains=min(3, len(domains)),
+            minimum_candidates=targets.known,
+            minimum_domains=min(3, len(known_domains)),
         )
-        if (
-            len(grouped["known"]) < targets.known
-            or len(grouped["noise"]) < targets.noise
-        )
+        if len(grouped["known"]) < targets.known
         else []
     )
     excluded: set[tuple[str, int, int]] = set()
@@ -707,28 +988,30 @@ def reconcile(arguments: argparse.Namespace) -> int:
         grouped["known"],
         tier="known",
         target=targets.known,
-        candidates=successful_candidates,
+        candidates=known_candidates,
         excluded=excluded,
     )
+    if (
+        len(grouped["noise"]) < targets.noise
+        or len(grouped["failure"]) < targets.failure
+    ):
+        noise_candidates, failure_candidates = query_noise_index_candidates(
+            crawl=arguments.crawl,
+            seed=arguments.seed,
+            cache_dir=arguments.cache_dir.resolve(),
+            known_domains=known_domains,
+            noise_target=targets.noise,
+            failure_target=targets.failure,
+            shard_limit=arguments.noise_index_shards,
+        )
+    else:
+        noise_candidates, failure_candidates = [], []
     extend_from_candidates(
         grouped["noise"],
         tier="noise",
         target=targets.noise,
-        candidates=successful_candidates,
+        candidates=noise_candidates,
         excluded=excluded,
-    )
-    failure_candidates = (
-        query_domain_candidates(
-            label="failed pages",
-            domains=domains,
-            crawl=arguments.crawl,
-            seed=arguments.seed,
-            status_filter="!status:200",
-            minimum_candidates=targets.failure,
-            minimum_domains=1,
-        )
-        if len(grouped["failure"]) < targets.failure
-        else []
     )
     extend_from_candidates(
         grouped["failure"],
@@ -744,6 +1027,12 @@ def reconcile(arguments: argparse.Namespace) -> int:
     ]
     save_manifest(path, all_captures)
     report(f"selection complete: {len(all_captures)} captures")
+    if arguments.dry_run:
+        print(
+            f"dry-run: manifest cached at {path}; "
+            "no WARC records downloaded and no Atlas data changed"
+        )
+        return 0
 
     report("phase=reconciliation")
     removed = delete_excess(dataset, targets)

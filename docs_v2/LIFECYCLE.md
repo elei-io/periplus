@@ -37,30 +37,35 @@ detected media type.
 Projection identity includes the document content identity, projection type, and projector version.
 Partial projections never become queryable.
 
-The Basin DML event supplies the changed table and DuckLake snapshot window. HTML materialization
-queries DuckLake's data change feed for that window, reduces changed document rows to affected
-content hashes, parses only live hashes not already present in `material.html_elements`, and
-commits only those rows. Hashes no longer referenced by HTML documents are removed by a scoped
-merge. Startup reconciliation compares source and target hash identities rather than rebuilding
-covered projections.
-
-JSON-LD replaces only affected content-hash slices after `material.html_elements` changes. Pages
-merge deterministic identities for changed observed visit URLs. Links read only changed HTML
-document observations, wait until their content hashes are present in `material.html_elements`,
-and merge source-target pairs using `least(first_seen_at)` and `greatest(last_seen_at)`. Repeated
-delivery and out-of-order imported observations are therefore idempotent without rescanning prior
-visits. Existing durable consumers resume their acknowledged sequence on process restart; a full
-non-HTML backfill runs only for a new consumer.
+The Basin DML event supplies the changed source table and DuckLake snapshot window. The document
+workload reduces changed document rows to affected content hashes, commits HTML elements, replaces
+their JSON-LD slices, streams any new normalized link pairs, and replaces each changed document's
+anchor observations. The visit workload merges page identities and page observations for changed
+visits. Repeated delivery is idempotent, and duplicate document content does not create a
+target-to-target CDC hop.
 
 A materialization workload defines:
 
 ```text
-CDC source -> workload logic -> owned material.* target
+ingest.documents CDC -> HTML elements -> JSON-LD
+                                      -> links + link observations
+ingest.visits CDC    -> pages -> page observations
 ```
 
-Each workload owns one consumer and writes only its own target relation. It may read other
-relations, coalesce changes, and retry until its dependencies are available. It never creates or
-updates rows in another materialization.
+Each source workload owns one consumer and its fixed target stages. It coalesces changes and ACKs
+only after every stage commits. A replay starts from the same source window and safely skips or
+merges completed stage output. Source ownership does not pin a DuckBasin client: stages borrow
+from the process-wide eight-client pool. Pages and page observations run concurrently. JSON-LD
+and links run concurrently after HTML elements commit. I/O-heavy stages declare bounded
+`select -> project -> serialized write` plans so source-byte partitioning, shared-lane scheduling,
+backpressure, progress timing, and target-scoped retry behavior are consistent across current and
+future fixed materializations.
+
+Backfills and rebuilds invoke the same fixed stage functions in bounded batches. Postgres stores
+the pinned source snapshot, stage cursor, projector version, shadow destinations, and counters.
+Backfills target live tables. Rebuilds target shadows, catch up post-snapshot source changes in
+bounded batches, and atomically activate only after a source high-water recheck under the ordinary
+target lease.
 
 ## 3. Materialization
 
@@ -76,22 +81,24 @@ Generic JSON, XML, PDF, DOCX, CSV, and other format projections are deferred.
 Atlas also maintains compact semantic indexes:
 
 ```text
-ingest.documents CDC       -> html_elements_lane -> material.html_elements
-material.html_elements CDC -> jsonld_values_lane -> material.jsonld_values
-ingest.visits CDC           -> pages_lane         -> material.pages
-ingest.visits CDC           -> page_observations_lane
-                           -> material.page_observations
-ingest.documents CDC       -> links_lane         -> material.links
+ingest.documents CDC -> material.html_elements
+                     -> material.jsonld_values
+                     -> material.links
+                     -> material.link_observations
+ingest.visits CDC    -> material.pages
+                     -> material.page_observations
 ```
 
-The links workload reads visits, documents, and reusable HTML projections. If a required projection
-is not ready, it retries the document change rather than subscribing to a second CDC source.
+The document workload's links stage reads visits, documents, and reusable HTML projections. If a
+required projection is not ready, it retries the document change rather than subscribing to a
+second CDC source.
 
 `material.page_observations` connects each normalized page identity to its visit, optional document,
-and observation time. `material.links` deduplicates normalized source and target URL pairs,
-classifies their deterministic site relationship, and retains their first and last positive
-observation times. Its source and target page identities are deterministic even when the target
-has never been visited; it does not create page rows for unvisited targets.
+and observation time. `material.links` deduplicates normalized source and target URL pairs and
+classifies their deterministic site relationship. `material.link_observations` retains the
+document, content hash, element index, raw href, and observation time for every anchor occurrence.
+Its source and target page identities are deterministic even when the target has never been
+visited; it does not create page rows for unvisited targets.
 
 Materialization failure never changes the committed ingestion record. Work can be replayed from
 CDC or rebuilt from upstream relations.

@@ -135,7 +135,8 @@ Versioned, rebuildable relations maintained by Atlas:
 - `material.jsonld_values` — structured data extracted from JSON-LD embedded in HTML documents.
 - `material.pages` — visits reduced to unique page identities.
 - `material.page_observations` — normalized pages connected to their visit and document evidence.
-- `material.links` — observed links reduced by source and target URL.
+- `material.links` — stable normalized source-target page pairs.
+- `material.link_observations` — document-owned anchor evidence for those pairs.
 
 Structural projections for generic JSON, XML, PDF, DOCX, CSV, and other formats are deferred. Their
 relation names and schemas are not yet part of the contract.
@@ -241,20 +242,18 @@ page-to-document compiler plans. Raw requested and effective URLs remain only in
 One row represents a normalized source-target URL pair positively observed in HTML evidence.
 
 ```text
+link_id         # Deterministic identity of the directed normalized page pair.
 source_page_id  # Deterministic identity of source_url.
 target_page_id  # Deterministic identity of target_url, whether visited or not.
 source_url       # Normalized fragment-free URL where the link was observed.
 target_url       # Normalized fragment-free URL resolved from the observed href.
 relation_scope   # self, same_origin, same_host, same_site, or external.
-
-first_seen_at    # Earliest positive observation of this pair.
-last_seen_at     # Latest positive observation of this pair.
 ```
 
 The row identity is:
 
 ```text
-UNIQUE(source_url, target_url)
+UNIQUE(link_id)
 ```
 
 `relation_scope` uses mutually exclusive precedence:
@@ -267,13 +266,33 @@ same_site   # Registrable domain is equal, but hostname differs.
 external    # Registrable domain differs.
 ```
 
-Link materialization does not create rows in `material.pages`. A target may never have been visited,
-but its deterministic `target_page_id` is still non-null. Page resolution happens through an
-optional query-time join on page identity.
+Link materialization does not create rows in `material.pages`. A target may never have been
+visited, but its deterministic `target_page_id` is still non-null. Page resolution happens through
+an optional query-time join on page identity.
 
-`first_seen_at` and `last_seen_at` are derived with `MIN` and `MAX` over immutable positive
-observations, making refresh and replay idempotent. They do not claim that a link remained present
-in later visits.
+### `material.link_observations`
+
+One row represents one anchor occurrence in one observed HTML document.
+
+```text
+link_id         # Pair identity in material.links.
+document_id     # Document observation that contained the anchor.
+content_sha256  # Identity of the immutable HTML bytes.
+element_index   # Source anchor in material.html_elements.
+raw_href        # Exact href attribute before URL resolution.
+observed_at     # Time the document representation was captured.
+```
+
+The row identity is:
+
+```text
+UNIQUE(document_id, element_index)
+```
+
+Incremental refresh replaces only changed document slices. New pair identities are streamed into
+`material.links`; no historical observations are scanned or merged. Earliest and latest positive
+observations are ordinary query-time `MIN(observed_at)` and `MAX(observed_at)` aggregates over this
+evidence table.
 
 URL normalization, public-suffix data, and relation-scope rules are versioned materialization
 metadata.

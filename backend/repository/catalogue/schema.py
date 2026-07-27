@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from schema_types import ColumnDef, MapType
 
-CATALOGUE_SCHEMA_VERSION = "2.2.0"
+CATALOGUE_SCHEMA_VERSION = "2.3.0"
 INGEST_SCHEMA = "ingest"
 MATERIAL_SCHEMA = "material"
 
@@ -37,6 +37,7 @@ JSONLD_VALUES = RelationName(MATERIAL_SCHEMA, "jsonld_values")
 PAGES = RelationName(MATERIAL_SCHEMA, "pages")
 PAGE_OBSERVATIONS = RelationName(MATERIAL_SCHEMA, "page_observations")
 LINKS = RelationName(MATERIAL_SCHEMA, "links")
+LINK_OBSERVATIONS = RelationName(MATERIAL_SCHEMA, "link_observations")
 
 
 TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
@@ -145,13 +146,20 @@ TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
         "observed_at": ColumnDef("TIMESTAMPTZ", nullable=False),
     },
     LINKS: {
+        "link_id": ColumnDef("UUID", nullable=False),
         "source_page_id": ColumnDef("UUID", nullable=False),
         "target_page_id": ColumnDef("UUID", nullable=False),
         "source_url": ColumnDef("VARCHAR", nullable=False),
         "target_url": ColumnDef("VARCHAR", nullable=False),
         "relation_scope": ColumnDef("VARCHAR", nullable=False),
-        "first_seen_at": ColumnDef("TIMESTAMPTZ", nullable=False),
-        "last_seen_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+    },
+    LINK_OBSERVATIONS: {
+        "link_id": ColumnDef("UUID", nullable=False),
+        "document_id": ColumnDef("UUID", nullable=False),
+        "content_sha256": ColumnDef("VARCHAR", nullable=False),
+        "element_index": ColumnDef("INTEGER", nullable=False),
+        "raw_href": ColumnDef("VARCHAR", nullable=False),
+        "observed_at": ColumnDef("TIMESTAMPTZ", nullable=False),
     },
 }
 
@@ -195,7 +203,11 @@ TABLE_LAYOUTS: dict[RelationName, TableLayout] = {
     ),
     LINKS: TableLayout(
         partition_by=("bucket(64, source_page_id)",),
-        sort_by=("source_page_id ASC", "target_page_id ASC"),
+        sort_by=("source_page_id ASC", "target_page_id ASC", "link_id ASC"),
+    ),
+    LINK_OBSERVATIONS: TableLayout(
+        partition_by=("bucket(64, document_id)",),
+        sort_by=("document_id ASC", "element_index ASC", "link_id ASC"),
     ),
 }
 
@@ -210,7 +222,8 @@ TABLE_STABLE_KEYS: dict[RelationName, tuple[str, ...]] = {
     JSONLD_VALUES: ("content_sha256", "element_index"),
     PAGES: ("normalized_url",),
     PAGE_OBSERVATIONS: ("visit_id",),
-    LINKS: ("source_url", "target_url"),
+    LINKS: ("link_id",),
+    LINK_OBSERVATIONS: ("document_id", "element_index"),
 }
 
 
@@ -227,6 +240,9 @@ TABLE_COMMENTS: dict[RelationName, str] = {
         "Rebuildable page-to-visit evidence index for observed documents."
     ),
     LINKS: "Rebuildable normalized source-target pairs positively observed in HTML.",
+    LINK_OBSERVATIONS: (
+        "Rebuildable document-owned evidence for observed HTML link occurrences."
+    ),
 }
 
 
@@ -322,6 +338,9 @@ def _column_comment(relation: RelationName, column: str) -> str:
         (PAGE_OBSERVATIONS, "observed_at"): (
             "Time the page representation was captured."
         ),
+        (LINKS, "link_id"): (
+            "Versioned deterministic identity of the directed normalized page pair."
+        ),
         (LINKS, "source_page_id"): (
             "Deterministic identity of the normalized source URL."
         ),
@@ -331,8 +350,24 @@ def _column_comment(relation: RelationName, column: str) -> str:
         (LINKS, "source_url"): "Normalized fragment-free URL where the link was observed.",
         (LINKS, "target_url"): "Normalized fragment-free URL resolved from the observed href.",
         (LINKS, "relation_scope"): "Most-specific deterministic source-target relationship.",
-        (LINKS, "first_seen_at"): "Earliest positive observation of this pair.",
-        (LINKS, "last_seen_at"): "Latest positive observation of this pair.",
+        (LINK_OBSERVATIONS, "link_id"): (
+            "Stable link identity supported by this occurrence."
+        ),
+        (LINK_OBSERVATIONS, "document_id"): (
+            "Document observation that owns this link occurrence."
+        ),
+        (LINK_OBSERVATIONS, "content_sha256"): (
+            "Immutable HTML content containing the source anchor."
+        ),
+        (LINK_OBSERVATIONS, "element_index"): (
+            "Source anchor position in material.html_elements."
+        ),
+        (LINK_OBSERVATIONS, "raw_href"): (
+            "Exact non-empty href attribute observed on the source anchor."
+        ),
+        (LINK_OBSERVATIONS, "observed_at"): (
+            "Time the containing document representation was captured."
+        ),
     }[(relation, column)]
 
 

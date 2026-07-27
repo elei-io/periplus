@@ -7,7 +7,8 @@ from runtime.nats_topology import ensure_stream_contract
 
 WORK_STREAM = "ATLAS_CATALOGUE_WORK"
 INGEST_SUBJECT = "atlas.catalogue.ingest"
-WORK_SUBJECTS = (INGEST_SUBJECT,)
+MATERIALIZATION_MAINTENANCE_SUBJECT = "atlas.catalogue.materialization"
+WORK_SUBJECTS = (INGEST_SUBJECT, MATERIALIZATION_MAINTENANCE_SUBJECT)
 
 DEAD_LETTER_STREAM = "ATLAS_DEAD_LETTER"
 INGEST_DEAD_LETTER_SUBJECT = "atlas.dead_letter.ingest"

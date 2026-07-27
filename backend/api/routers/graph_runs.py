@@ -258,11 +258,8 @@ async def capacity(
     except NotFoundError:
         materialization_consumers = []
     active_materialization_consumers = {
-        "atlas-material-html_elements-v1",
-        "atlas-material-jsonld_values-v1",
-        "atlas-material-pages-v1",
-        "atlas-material-page_observations-v1",
-        "atlas-material-links-v1",
+        "atlas-material-documents-v1",
+        "atlas-material-visits-v1",
     }
     relevant_materialization_consumers = [
         info

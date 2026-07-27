@@ -28,12 +28,13 @@ Atlas can:
 1. Run a crawl graph and retain immutable document bytes.
 2. Commit terminal crawl, visit, attempt, step, and document evidence under `ingest.*`.
 3. Relay committed changes through CDC.
-4. Maintain the five Atlas-owned `material.*` relations:
+4. Maintain the six Atlas-owned `material.*` relations:
    - `material.html_elements`
    - `material.jsonld_values`
    - `material.pages`
    - `material.page_observations`
    - `material.links`
+   - `material.link_observations`
 5. Recover from redelivery, retries, worker restarts, and temporarily unavailable materialization
    dependencies without corrupting or losing committed evidence.
 6. Expose normal ingestion and materialization health, capacity, backlog, and failure signals.
@@ -76,25 +77,31 @@ atomically.
 The materialization worker runs fixed Atlas-owned workloads rather than user-authored catalogue
 materializations.
 
-Each workload owns one CDC consumer and one target relation:
+Two source workloads own the fixed projection stages:
 
 ```text
-ingest.documents CDC       -> material.html_elements
-material.html_elements CDC -> material.jsonld_values
-ingest.visits CDC          -> material.pages
-ingest.visits CDC          -> material.page_observations
-ingest.documents CDC       -> material.links
+ingest.documents CDC -> material.html_elements
+                     -> material.jsonld_values
+                     -> material.links
+                     -> material.link_observations
+ingest.visits CDC    -> material.pages
+                     -> material.page_observations
 ```
 
-A workload may read its dependencies but never writes another workload's target. It acknowledges
-source changes only after its own target transaction commits. Replay and repeated delivery are
-idempotent. A missing dependency is retried rather than treated as permanent failure.
+A workload acknowledges source changes only after its stages commit in dependency order. Replay
+and repeated delivery are idempotent. Its stages borrow from the shared eight-client pool rather
+than reserving a client per source workload. Independent stages execute concurrently.
 
 All fixed materializations are maintained from bounded CDC deltas. HTML computes uncovered live
 content hashes; JSON-LD replaces changed hash slices; pages merge changed observed URLs; page
-observations index their visit and document evidence; and links fold changed HTML document
-observations into source-target timestamp ranges after their element projection is ready. Restart
-HTML reconciliation scans hash identities and does not reparse already covered content.
+observations index their visit and document evidence; and the links stage streams new normalized
+pairs while replacing only the changed documents' anchor observations after their element
+projection is ready.
+
+The operations API can run any selected fixed table as a bounded backfill or shadow rebuild.
+Rebuild dependency closure is explicit: rebuilding HTML also rebuilds JSON-LD, links, and link
+observations. Links and link observations are rebuilt together. Cursors and high-water catch-up
+progress are durable in Postgres; activation is an atomic metadata swap.
 
 No generic keyed, append, or full user-view materialization framework remains at this cutoff.
 User-owned maintained extractions can be designed with the compiler later.

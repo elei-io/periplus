@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import httpx
 
@@ -16,6 +17,26 @@ SPEC.loader.exec_module(test_corpus)
 
 
 class TestCorpusTests(unittest.TestCase):
+    @staticmethod
+    def candidate(
+        *,
+        url: str,
+        status: int,
+        offset: int,
+    ) -> dict[str, object]:
+        return {
+            "url": url,
+            "hostname": url.split("/", 3)[2],
+            "registered_domain": url.split("/", 3)[2],
+            "status": status,
+            "timestamp": "20260101000000",
+            "filename": "crawl-data/example.warc.gz",
+            "offset": str(offset),
+            "length": "10",
+            "mime": "text/html",
+            "encoding": "UTF-8",
+        }
+
     def test_failure_rate_is_taken_from_noise_without_growing_total(self):
         targets = test_corpus.targets_for(known=1_000, noise=100_000, rate=0.02)
 
@@ -27,7 +48,19 @@ class TestCorpusTests(unittest.TestCase):
     def test_dataset_identity_pins_version_crawl_and_seed(self):
         self.assertEqual(
             test_corpus.dataset_name("CC-MAIN-2026-25", 42),
-            "atlas-test-corpus/v1/CC-MAIN-2026-25/42",
+            "atlas-test-corpus/v3/CC-MAIN-2026-25/42",
+        )
+
+    def test_known_domain_exclusion_includes_subdomains(self):
+        domains = ["example.com", "docs.python.org"]
+
+        self.assertTrue(test_corpus.domain_is_known("example.com", domains))
+        self.assertTrue(test_corpus.domain_is_known("www.example.com", domains))
+        self.assertTrue(
+            test_corpus.domain_is_known("docs.python.org", domains)
+        )
+        self.assertFalse(
+            test_corpus.domain_is_known("packages.python.org", domains)
         )
 
     def test_manifest_requires_contiguous_ordinals_per_tier(self):
@@ -125,6 +158,83 @@ class TestCorpusTests(unittest.TestCase):
 
         self.assertEqual([capture.offset for capture in known], [0, 1])
         self.assertEqual([capture.offset for capture in noise], [2])
+
+    def test_shortage_advice_names_the_owning_domain_pool(self):
+        self.assertEqual(
+            test_corpus.shortage_advice("known"),
+            "add known domains or reduce --known",
+        )
+        self.assertEqual(
+            test_corpus.shortage_advice("noise"),
+            "increase --noise-index-shards or reduce --noise",
+        )
+        self.assertEqual(
+            test_corpus.shortage_advice("failure"),
+            "increase --noise-index-shards or reduce --fail",
+        )
+
+    def test_dry_run_selects_and_caches_without_querying_atlas(self):
+        known = self.candidate(
+            url="https://known.example/page",
+            status=200,
+            offset=1,
+        )
+        noise = self.candidate(
+            url="https://noise.example/page",
+            status=200,
+            offset=2,
+        )
+        failure = self.candidate(
+            url="https://failure.example/missing",
+            status=404,
+            offset=3,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            arguments = test_corpus.parse_arguments(
+                [
+                    "--known",
+                    "1",
+                    "--noise",
+                    "2",
+                    "--fail",
+                    str(1 / 3),
+                    "--cache-dir",
+                    directory,
+                    "--dry-run",
+                ]
+            )
+            with (
+                mock.patch.object(
+                    test_corpus,
+                    "query_existing",
+                    side_effect=AssertionError("Atlas must not be queried"),
+                ),
+                mock.patch.object(
+                    test_corpus,
+                    "query_domain_candidates",
+                    return_value=[known],
+                ),
+                mock.patch.object(
+                    test_corpus,
+                    "query_noise_index_candidates",
+                    return_value=([noise], [failure]),
+                ),
+            ):
+                result = test_corpus.reconcile(arguments)
+
+            manifest = test_corpus.load_manifest(
+                test_corpus.manifest_path(
+                    Path(directory),
+                    arguments.crawl,
+                    arguments.seed,
+                )
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            [capture.tier for capture in manifest],
+            ["known", "noise", "failure"],
+        )
 
 
 if __name__ == "__main__":

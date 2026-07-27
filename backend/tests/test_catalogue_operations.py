@@ -93,6 +93,39 @@ class CatalogueOperationRetryTests(unittest.TestCase):
         self.assertEqual(result, "committed")
         self.assertEqual(operation.call_count, 2)
 
+    def test_duckbasin_unavailability_stays_live_past_conflict_limit(
+        self,
+    ) -> None:
+        operation = MagicMock(
+            side_effect=[
+                DuckBasinUnavailableError("Quack returned 503"),
+                DuckBasinUnavailableError("Quack still unavailable"),
+                "committed",
+            ]
+        )
+        with (
+            patch(
+                "repository.catalogue.operations.CATALOGUE_OPERATION_MAX_ATTEMPTS",
+                1,
+            ),
+            patch(
+                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
+                0.1,
+            ),
+            patch(
+                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
+                0.25,
+            ),
+            patch("repository.catalogue.operations.time.sleep") as sleep,
+        ):
+            result = run_with_catalogue_retry(
+                operation, description="materialization partition"
+            )
+
+        self.assertEqual(result, "committed")
+        self.assertEqual(operation.call_count, 3)
+        self.assertEqual(sleep.call_args_list, [call(0.1), call(0.2)])
+
     def test_transaction_conflict_retry_is_bounded(self) -> None:
         operation = MagicMock(
             side_effect=duckdb.TransactionException("still conflicting")

@@ -24,6 +24,11 @@ const SqlConsolePage = lazy(() =>
     default: module.SqlConsolePage,
   }))
 )
+const MaterializationsPage = lazy(() =>
+  import("@/pages/materializations-page").then((module) => ({
+    default: module.MaterializationsPage,
+  }))
+)
 const CrawlGraphsPage = lazy(() =>
   import("@/pages/admin/graphs-page").then((module) => ({
     default: module.CrawlGraphsPage,
@@ -121,6 +126,10 @@ export function App() {
 
     if (activeItem.href === "/sql") {
       return <SqlConsolePage />
+    }
+
+    if (activeItem.href === "/materializations") {
+      return <MaterializationsPage />
     }
 
     if (activeItem.href === "/crawls/graphs") {

@@ -12,6 +12,7 @@ from api.routers import (
     domain_policies,
     graph_runs,
     ingestion,
+    materializations,
     operational_metrics,
     repository_operations,
     sql_console,
@@ -24,6 +25,8 @@ from runtime.graph_queue import (
 from runtime.graph_outbox import run_outbox_relay
 from runtime.nats_client import connect_nats
 from repository.ingestion.external import EvidenceImportService
+from materialization.store import AsyncMaterializationRunStore
+from runtime.catalogue_queue import ensure_catalogue_work_stream
 
 
 @asynccontextmanager
@@ -37,6 +40,7 @@ async def lifespan(app: FastAPI):
     evidence_import_service = None
     try:
         jetstream = nats_client.jetstream()
+        await ensure_catalogue_work_stream(jetstream)
         runs, requests, workers = await ensure_graph_storage(jetstream)
         catalogue_workers = await ensure_catalogue_worker_storage(jetstream)
         graph_runtime = ApiGraphRuntime(
@@ -48,6 +52,7 @@ async def lifespan(app: FastAPI):
             catalogue_workers=catalogue_workers,
         )
         app.state.graph_runtime = graph_runtime
+        app.state.materialization_runs = AsyncMaterializationRunStore()
         evidence_import_service = EvidenceImportService()
         await evidence_import_service.start()
         app.state.evidence_import_service = evidence_import_service
@@ -93,6 +98,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Atlas API", lifespan=lifespan)
 app.include_router(operational_metrics.router)
 app.include_router(repository_operations.router)
+app.include_router(materializations.router)
 app.include_router(ingestion.router)
 app.include_router(sql_console.router)
 app.include_router(crawl_graphs.router)

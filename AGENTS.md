@@ -34,14 +34,17 @@ changing worker ownership, queue routing, managed DuckDB use, or deployment scal
   `critical` catalogue work, never settle graph traversal, and never wait for user materialization.
 - The CDC ingress consumes Basin-owned global DML/DDL JetStream streams, publishes per-table
   DML ticks and global DDL changes into Atlas JetStream, and ACKs Basin only after Atlas PubAcks.
-  Each materialization owns one filtered durable NATS consumer, coalesces ticks, and commits its
-  owned target changes before ACK. Fixed materializations use DuckLake snapshot changes to compute
-  only affected content hashes, visit URLs, or document observations. Links wait for required HTML
-  projections and fold only changed source-target observations. Startup reconciliation compares
-  source and target identities without reparsing covered HTML. There is no scope queue, coverage
-  table, revision fence, fan-out ledger, or separate commit queue.
+  Two source-owned workloads consume `ingest.documents` and `ingest.visits`, coalesce ticks, and
+  commit their fixed projection stages before ACK. The document workload owns HTML elements,
+  JSON-LD, and links; the visit workload owns pages and page observations. Fixed projections use
+  DuckLake snapshot changes to compute only affected content hashes, visit URLs, or document
+  observations. Backfills and rebuilds use the same bounded stage logic. Rebuilds scan a pinned
+  source snapshot into shadow tables, catch up in persisted bounded batches, and atomically swap
+  only after reaching the source high-water mark. There is no target-to-target CDC chain, scope
+  queue, coverage table, revision fence, fan-out ledger, or separate commit queue.
 - An ingestion process owns four independent session-affine DuckBasin clients; a materialization
-  process owns eight. Every client is serialized, while different clients run concurrently.
+  process owns a shared pool of eight. Every client is serialized, while independent fixed
+  projection stages and maintenance batches borrow different clients and run concurrently.
   Bounded client pools provide the normal executor capacity; horizontal replicas are an
   availability and post-saturation scaling control.
 - Page-only graph edges use bounded standalone DuckDB connections. Historical edge joins use a

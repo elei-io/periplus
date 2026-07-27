@@ -1,7 +1,8 @@
+import asyncio
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pyarrow as pa
 
@@ -10,96 +11,61 @@ from materialization.executor import (
     _apply_html_element_delta,
     _arrow_table,
     _changed_html_hashes,
+    _jsonld_rows,
     _jsonld_type_terms,
-    _materialize_html_hashes,
-    _merge_link_rows,
+    _link_rows_for_documents,
+    _materialize_jsonld_hashes,
     _merge_page_observation_rows,
     _merge_page_rows,
-    _refresh_html_elements_incremental,
-    _refresh_jsonld_values,
-    _refresh_jsonld_values_incremental,
-    _refresh_links_incremental,
     _refresh_page_observations_incremental,
     _refresh_pages_incremental,
+    _refresh_documents,
+    _refresh_visits,
     _relation_scope,
-    _requires_startup_backfill,
+    _replace_link_document_slices,
+    _select_html_stage,
     workloads,
 )
+from materialization.lanes import MaterializationLanePool
+from materialization.pipeline import StageExecution
 
 
 class FixedMaterializationTests(unittest.TestCase):
-    def test_topology_is_fixed_and_has_one_source_per_target(self) -> None:
+    def test_topology_has_two_source_owned_workloads(self) -> None:
         self.assertEqual(
             [
                 (
+                    item.name,
                     item.source_schema,
                     item.source_table,
-                    item.target_table,
+                    item.stages,
                     item.durable,
                 )
                 for item in workloads()
             ],
             [
                 (
+                    "documents",
                     "ingest",
                     "documents",
-                    "html_elements",
-                    "atlas-material-html_elements-v1",
+                    (
+                        "html_elements",
+                        "jsonld_values",
+                        "links",
+                        "link_observations",
+                    ),
+                    "atlas-material-documents-v1",
                 ),
                 (
-                    "material",
-                    "html_elements",
-                    "jsonld_values",
-                    "atlas-material-jsonld_values-v1",
-                ),
-                (
+                    "visits",
                     "ingest",
                     "visits",
-                    "pages",
-                    "atlas-material-pages-v1",
-                ),
-                (
-                    "ingest",
-                    "visits",
-                    "page_observations",
-                    "atlas-material-page_observations-v1",
-                ),
-                (
-                    "ingest",
-                    "documents",
-                    "links",
-                    "atlas-material-links-v1",
+                    ("pages", "page_observations"),
+                    "atlas-material-visits-v1",
                 ),
             ],
         )
 
-    def test_only_new_durable_consumers_require_full_non_html_backfill(self) -> None:
-        by_name = {workload.name: workload for workload in workloads()}
-        new_consumer = SimpleNamespace(
-            delivered=SimpleNamespace(consumer_seq=0)
-        )
-        existing_consumer = SimpleNamespace(
-            delivered=SimpleNamespace(consumer_seq=42)
-        )
-
-        self.assertTrue(
-            _requires_startup_backfill(
-                by_name["jsonld_values"],
-                new_consumer,
-            )
-        )
-        self.assertFalse(
-            _requires_startup_backfill(
-                by_name["jsonld_values"],
-                existing_consumer,
-            )
-        )
-        self.assertTrue(
-            _requires_startup_backfill(
-                by_name["html_elements"],
-                existing_consumer,
-            )
-        )
 
     def test_jsonld_type_terms_are_distinct_raw_strings(self) -> None:
         value = {
@@ -111,18 +77,9 @@ class FixedMaterializationTests(unittest.TestCase):
         )
 
     def test_jsonld_refresh_ignores_script_with_valueless_type(self) -> None:
-        class CatalogueStub:
-            def trusted_remote_rows(self, _sql):
-                return [("content-hash", 0, {"type": None}, "")]
-
-        with patch("materialization.executor._replace") as replace:
-            _refresh_jsonld_values(CatalogueStub(), None)
-
-        replace.assert_called_once_with(
-            ANY,
-            "jsonld_values",
+        self.assertEqual(
+            _jsonld_rows([("content-hash", 0, {"type": None}, "")]),
             [],
-            variant_columns={"value"},
         )
 
     def test_arrow_table_preserves_sparse_attribute_maps(self) -> None:
@@ -167,74 +124,6 @@ class FixedMaterializationTests(unittest.TestCase):
         )
         self.assertIn("lower(detected_media_type) = 'text/html'", sql)
 
-    @patch("materialization.executor._materialize_html_hashes")
-    @patch("materialization.executor._changed_html_hashes")
-    def test_html_refresh_uses_upstream_inclusive_snapshot_bounds(
-        self,
-        changed_html_hashes,
-        materialize_html_hashes,
-    ) -> None:
-        changed_html_hashes.return_value = {"changed"}
-        materialize_html_hashes.return_value = (1, 0)
-
-        _refresh_html_elements_incremental(
-            MagicMock(),
-            MagicMock(),
-            (
-                SimpleNamespace(
-                    start_snapshot=40,
-                    snapshot_id=42,
-                    end_snapshot=43,
-                ),
-                SimpleNamespace(
-                    start_snapshot=44,
-                    snapshot_id=46,
-                    end_snapshot=47,
-                ),
-            ),
-        )
-
-        changed_html_hashes.assert_called_once_with(
-            ANY,
-            start_snapshot=40,
-            end_snapshot=47,
-        )
-
-    @patch("materialization.executor._apply_html_element_delta")
-    @patch("materialization.executor._project_html_documents")
-    @patch("materialization.executor._covered_html_hashes")
-    @patch("materialization.executor._html_documents")
-    def test_html_delta_projects_only_uncovered_content(
-        self,
-        html_documents,
-        covered_html_hashes,
-        project_html_documents,
-        apply_html_element_delta,
-    ) -> None:
-        html_documents.return_value = [
-            ("covered", "covered-key", "identity"),
-            ("new", "new-key", "identity"),
-        ]
-        covered_html_hashes.return_value = {"covered", "orphaned"}
-        project_html_documents.return_value = [{"content_sha256": "new"}]
-
-        result = _materialize_html_hashes(
-            MagicMock(),
-            SimpleNamespace(),
-            {"covered", "new", "orphaned"},
-        )
-
-        self.assertEqual(result, (1, 1))
-        project_html_documents.assert_called_once_with(
-            ANY,
-            [("new", "new-key", "identity")],
-        )
-        apply_html_element_delta.assert_called_once_with(
-            ANY,
-            rows=[{"content_sha256": "new"}],
-            removed_hashes={"orphaned"},
-        )
-
     def test_html_delta_uses_scoped_delete_merge_and_bounded_insert(self) -> None:
         catalogue = MagicMock()
 
@@ -273,15 +162,49 @@ class FixedMaterializationTests(unittest.TestCase):
         self.assertIn("WHEN MATCHED THEN DELETE", mutations[0])
         self.assertNotIn("DELETE FROM material.html_elements", mutations[0])
 
+    @patch(
+        "materialization.executor._covered_html_hashes",
+        return_value={"covered", "removed"},
+    )
+    @patch(
+        "materialization.executor._html_documents",
+        return_value=[
+            ("covered", "covered-key", "identity"),
+            ("new", "new-key", "zstd"),
+        ],
+    )
+    @patch(
+        "materialization.executor._changed_html_hashes",
+        return_value={"covered", "new", "removed"},
+    )
+    def test_html_stage_selects_only_uncovered_content(
+        self,
+        _changed_html_hashes,
+        _html_documents,
+        _covered_html_hashes,
+    ) -> None:
+        catalogue = MagicMock()
+        catalogue.trusted_remote_rows.return_value = [
+            ("covered", 10),
+            ("new", 20),
+        ]
+
+        selection = _select_html_stage(catalogue, 41, 47)
+
+        self.assertEqual(len(selection.items), 1)
+        self.assertEqual(selection.items[0].content_sha256, "new")
+        self.assertEqual(selection.items[0].content_bytes, 20)
+        self.assertEqual(
+            selection.initial_outputs[0].removed_hashes,
+            {"removed"},
+        )
+
     @patch("materialization.executor._replace_content_hash_slices")
-    @patch("materialization.executor._changed_material_hashes")
     def test_jsonld_replaces_only_changed_hash_slices(
         self,
-        changed_material_hashes,
         replace_content_hash_slices,
     ) -> None:
         catalogue = MagicMock()
-        changed_material_hashes.return_value = {"hash-a"}
         catalogue.trusted_remote_rows.return_value = [
             (
                 "hash-a",
@@ -291,20 +214,12 @@ class FixedMaterializationTests(unittest.TestCase):
             )
         ]
 
-        _refresh_jsonld_values_incremental(
+        result = _materialize_jsonld_hashes(
             catalogue,
-            MagicMock(),
-            (
-                SimpleNamespace(start_snapshot=10, end_snapshot=14),
-            ),
+            {"hash-a"},
         )
 
-        changed_material_hashes.assert_called_once_with(
-            catalogue,
-            table_name="html_elements",
-            start_snapshot=10,
-            end_snapshot=14,
-        )
+        self.assertEqual(result, 1)
         replace_content_hash_slices.assert_called_once_with(
             catalogue,
             table_name="jsonld_values",
@@ -426,19 +341,12 @@ class FixedMaterializationTests(unittest.TestCase):
         self.assertIn("target.visit_id = delta.visit_id", sql)
         self.assertIn("WHEN NOT MATCHED THEN INSERT", sql)
 
-    @patch("materialization.executor._merge_link_rows")
     @patch("materialization.executor._elements_by_hash")
-    @patch("materialization.executor._changed_html_observations")
-    def test_links_process_only_changed_document_observations(
+    def test_links_project_pair_and_document_owned_observation(
         self,
-        changed_html_observations,
         elements_by_hash,
-        merge_link_rows,
     ) -> None:
         observed_at = datetime.fromisoformat("2026-01-02T03:04:05+00:00")
-        changed_html_observations.return_value = [
-            ("hash-a", "https://example.com/base", observed_at),
-        ]
         elements_by_hash.return_value = {
             "hash-a": [
                 SimpleNamespace(
@@ -460,74 +368,106 @@ class FixedMaterializationTests(unittest.TestCase):
             ]
         }
 
-        _refresh_links_incremental(
+        output = _link_rows_for_documents(
             MagicMock(),
-            MagicMock(),
-            (SimpleNamespace(start_snapshot=30, end_snapshot=34),),
-        )
-
-        merge_link_rows.assert_called_once_with(
-            ANY,
             [
-                {
-                    "source_page_id": "0b18275f-712b-5d4d-88f5-aaa0ff71b1cc",
-                    "target_page_id": "6b1ac597-4b02-512d-9905-2c457bb69aa9",
-                    "source_url": "https://example.com/base",
-                    "target_url": "https://example.com/next",
-                    "relation_scope": "same_origin",
-                    "first_seen_at": observed_at,
-                    "last_seen_at": observed_at,
-                }
+                (
+                    "cd7ea411-330c-5492-93ac-f804eb2a3859",
+                    "hash-a",
+                    "https://example.com/base",
+                    observed_at,
+                )
             ],
         )
 
+        self.assertEqual(len(output.link_rows), 1)
+        self.assertEqual(len(output.observation_rows), 1)
+        self.assertEqual(
+            output.observation_rows[0]["link_id"],
+            output.link_rows[0]["link_id"],
+        )
+        self.assertEqual(
+            output.observation_rows[0]["document_id"],
+            "cd7ea411-330c-5492-93ac-f804eb2a3859",
+        )
+        self.assertEqual(output.observation_rows[0]["element_index"], 1)
+        self.assertEqual(output.observation_rows[0]["raw_href"], "/next")
+        self.assertNotIn("first_seen_at", output.link_rows[0])
+
     @patch("materialization.executor._elements_by_hash", return_value={})
-    @patch("materialization.executor._changed_html_observations")
-    def test_links_retry_when_changed_html_projection_is_not_ready(
+    def test_links_retry_when_html_projection_is_not_ready(
         self,
-        changed_html_observations,
         _elements_by_hash,
     ) -> None:
-        changed_html_observations.return_value = [
-            (
-                "missing",
-                "https://example.com/",
-                datetime.fromisoformat("2026-01-02T03:04:05+00:00"),
-            )
-        ]
-
         with self.assertRaises(MaterializationDependencyNotReady):
-            _refresh_links_incremental(
+            _link_rows_for_documents(
                 MagicMock(),
-                MagicMock(),
-                (SimpleNamespace(start_snapshot=30, end_snapshot=34),),
+                [
+                    (
+                        "cd7ea411-330c-5492-93ac-f804eb2a3859",
+                        "missing",
+                        "https://example.com/",
+                        datetime.fromisoformat(
+                            "2026-01-02T03:04:05+00:00"
+                        ),
+                    )
+                ],
             )
 
-    def test_link_delta_uses_merge_timestamp_fold(self) -> None:
+    def test_link_delta_streams_missing_pairs_and_replaces_document_slice(
+        self,
+    ) -> None:
         catalogue = MagicMock()
+        catalogue.trusted_remote_rows.return_value = []
         observed_at = datetime.fromisoformat("2026-01-02T03:04:05+00:00")
 
-        _merge_link_rows(
-            catalogue,
-            [
+        output = _link_rows_for_documents(
+            MagicMock(),
+            [],
+        )
+        output = type(output)(
+            document_ids=frozenset(
+                {"cd7ea411-330c-5492-93ac-f804eb2a3859"}
+            ),
+            link_rows=[
                 {
+                    "link_id": "1091ed91-eec0-5bd9-b90c-8699c4d748dd",
                     "source_page_id": "463802e4-2f8a-58f2-bac0-3f6080ec8588",
                     "target_page_id": "6b1ac597-4b02-512d-9905-2c457bb69aa9",
                     "source_url": "https://example.com/",
                     "target_url": "https://example.com/next",
                     "relation_scope": "same_origin",
-                    "first_seen_at": observed_at,
-                    "last_seen_at": observed_at,
+                }
+            ],
+            observation_rows=[
+                {
+                    "link_id": "1091ed91-eec0-5bd9-b90c-8699c4d748dd",
+                    "document_id": "cd7ea411-330c-5492-93ac-f804eb2a3859",
+                    "content_sha256": "hash-a",
+                    "element_index": 1,
+                    "raw_href": "/next",
+                    "observed_at": observed_at,
                 }
             ],
         )
+        _replace_link_document_slices(
+            catalogue,
+            output,
+        )
 
+        self.assertEqual(catalogue.append.call_count, 2)
+        self.assertEqual(
+            catalogue.append.call_args_list[0].args[0],
+            "links",
+        )
+        self.assertEqual(
+            catalogue.append.call_args_list[1].args[0],
+            "link_observations",
+        )
         sql = catalogue.trusted_remote_execute.call_args.args[0]
-        self.assertIn("MERGE INTO material.links", sql)
-        self.assertIn("first_seen_at = least", sql)
-        self.assertIn("last_seen_at = greatest", sql)
-        self.assertIn("WHEN NOT MATCHED THEN INSERT", sql)
-        self.assertNotIn("DELETE FROM material.links", sql)
+        self.assertIn("DELETE FROM material.link_observations", sql)
+        self.assertIn("document_id IN", sql)
+        self.assertNotIn("MERGE", sql)
 
     def test_relation_scope_precedence(self) -> None:
         source = "https://www.example.com/a"
@@ -545,6 +485,121 @@ class FixedMaterializationTests(unittest.TestCase):
         self.assertEqual(
             _relation_scope(source, "https://example.net/b"), "external"
         )
+
+
+class MaterializationLanePoolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_all_lanes_are_shared_and_reusable(self) -> None:
+        release = asyncio.Event()
+        entered = 0
+        all_entered = asyncio.Event()
+
+        class Lane:
+            async def call(self, operation, *args):
+                nonlocal entered
+                entered += 1
+                if entered == 8:
+                    all_entered.set()
+                await release.wait()
+                return operation(*args)
+
+        reporters = tuple(
+            SimpleNamespace(active_operation_count=0) for _ in range(8)
+        )
+        pool = MaterializationLanePool(
+            [Lane() for _ in range(8)],
+            reporters,
+        )
+        tasks = [
+            asyncio.create_task(pool.call(lambda value: value, index))
+            for index in range(8)
+        ]
+
+        await asyncio.wait_for(all_entered.wait(), timeout=1)
+        self.assertEqual(
+            [reporter.active_operation_count for reporter in reporters],
+            [1] * 8,
+        )
+        release.set()
+        self.assertEqual(await asyncio.gather(*tasks), list(range(8)))
+        self.assertEqual(
+            [reporter.active_operation_count for reporter in reporters],
+            [0] * 8,
+        )
+        self.assertEqual(await pool.call(lambda: "reused"), "reused")
+
+    async def test_visit_stages_run_concurrently(self) -> None:
+        release = asyncio.Event()
+        both_started = asyncio.Event()
+        started: list[str] = []
+
+        async def run_stage(_leases, _pool, target, _operation, *_args):
+            started.append(target)
+            if len(started) == 2:
+                both_started.set()
+            await release.wait()
+
+        with patch(
+            "materialization.executor._run_stage",
+            side_effect=run_stage,
+        ):
+            operation = asyncio.create_task(
+                _refresh_visits(
+                    MagicMock(),
+                    MagicMock(),
+                    MagicMock(),
+                    (SimpleNamespace(start_snapshot=1, end_snapshot=2),),
+                )
+            )
+            await asyncio.wait_for(both_started.wait(), timeout=1)
+            self.assertCountEqual(
+                started,
+                ["pages", "page_observations"],
+            )
+            release.set()
+            await operation
+
+    async def test_document_stage_results_are_reported_after_dependencies(
+        self,
+    ) -> None:
+        def result(*, items, partitions, rows):
+            return StageExecution(
+                source_items=items,
+                source_bytes=10,
+                partitions=partitions,
+                output_rows=rows,
+                select_seconds=0.1,
+                project_seconds=0.2,
+                write_seconds=0.3,
+                elapsed_seconds=0.4,
+            )
+
+        async def execute(_leases, _pool, plan, *_args):
+            if plan.target == "html_elements":
+                return result(items=2, partitions=1, rows=20)
+            return result(items=3, partitions=2, rows=30)
+
+        async def run_stage(*_args):
+            return 4
+
+        pool = AsyncMock()
+        pool.capacity = 8
+        pool.call.return_value = {"hash-a", "hash-b"}
+        with (
+            patch(
+                "materialization.executor.execute_bounded_stage",
+                side_effect=execute,
+            ),
+            patch(
+                "materialization.executor._run_stage",
+                side_effect=run_stage,
+            ),
+        ):
+            await _refresh_documents(
+                MagicMock(),
+                pool,
+                MagicMock(),
+                (SimpleNamespace(start_snapshot=1, end_snapshot=2),),
+            )
 
 
 if __name__ == "__main__":
