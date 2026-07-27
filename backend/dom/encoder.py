@@ -65,10 +65,28 @@ def parse_html(source: str) -> Element:
     )
 
 
+def parse_html_bytes(source: bytes) -> Element:
+    """Parse exact response bytes using HTML5 encoding detection."""
+
+    if not isinstance(source, bytes):
+        raise TypeError("source must be exact HTML bytes")
+    return html5lib.parse(
+        source,
+        treebuilder=_PARSER_OPTIONS["treebuilder"],
+        namespaceHTMLElements=_PARSER_OPTIONS["namespace_html_elements"],
+    )
+
+
 def iter_html_elements(source: str) -> Iterator[ElementRow]:
     """Yield deterministic depth-first rows without materializing a row list."""
 
     yield from iter_tree_elements(parse_html(source))
+
+
+def iter_html_byte_elements(source: bytes) -> Iterator[ElementRow]:
+    """Yield elements from exact response bytes with HTML5 charset sniffing."""
+
+    yield from iter_tree_elements(parse_html_bytes(source))
 
 
 def iter_tree_elements(root: Element) -> Iterator[ElementRow]:

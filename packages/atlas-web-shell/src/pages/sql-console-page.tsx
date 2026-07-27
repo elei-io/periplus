@@ -61,6 +61,7 @@ class BrowserSqlSession {
   private readonly terminal: WtermTerminal
   private readonly sqlConsole: SqlConsole
   private busy = false
+  private closed = false
   private progress?: BrowserProgress
 
   constructor(
@@ -80,7 +81,7 @@ class BrowserSqlSession {
   }
 
   async receive(data: string): Promise<void> {
-    if (this.busy) {
+    if (this.busy || this.closed) {
       if (data === "\u0003" && this.sqlConsole.interrupt()) {
         this.progress?.stop()
         this.terminal.write("^C\r\n")
@@ -145,7 +146,12 @@ class BrowserSqlSession {
     try {
       const result = await this.sqlConsole.run(sql)
       this.progress?.stop()
-      if (result) this.render(result)
+      if (result?.kind === "exit") {
+        this.closed = true
+        this.terminal.write("\u001b[2mSession closed.\u001b[0m\r\n")
+      } else if (result) {
+        this.render(result)
+      }
     } catch (error) {
       this.progress?.stop()
       if (isAbort(error)) {
@@ -159,7 +165,7 @@ class BrowserSqlSession {
       this.progress = undefined
       this.busy = false
     }
-    this.prompt()
+    if (!this.closed) this.prompt()
   }
 
   private render(result: ConsoleResult) {
@@ -167,6 +173,8 @@ class BrowserSqlSession {
       this.terminal.write("\u001b[2J\u001b[H")
     } else if (result.kind === "message") {
       this.terminal.write(`${result.text.replaceAll("\n", "\r\n")}\r\n`)
+    } else if (result.kind === "exit") {
+      return
     } else {
       this.terminal.write(renderSqlResult(result, this.terminal.columns()))
     }

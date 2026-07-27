@@ -331,7 +331,15 @@ def _crawl_values(record: CrawlRecord) -> dict[str, object]:
 
 
 def _visit_values(record: VisitRecord) -> dict[str, object]:
-    return record.model_dump(mode="python")
+    values = record.model_dump(mode="python")
+    provenance = values["provenance"]
+    values["provenance"] = {
+        "kind": provenance["kind"],
+        "system": provenance.get("system"),
+        "dataset": provenance.get("dataset"),
+        "source_record_id": provenance.get("source_record_id"),
+    }
+    return values
 
 
 def _attempt_values(record: AttemptRecord) -> dict[str, object]:

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from schema_types import ColumnDef, MapType
 
-CATALOGUE_SCHEMA_VERSION = "2.0.0"
+CATALOGUE_SCHEMA_VERSION = "2.2.0"
 INGEST_SCHEMA = "ingest"
 MATERIAL_SCHEMA = "material"
 
@@ -35,13 +35,15 @@ DOCUMENTS = RelationName(INGEST_SCHEMA, "documents")
 HTML_ELEMENTS = RelationName(MATERIAL_SCHEMA, "html_elements")
 JSONLD_VALUES = RelationName(MATERIAL_SCHEMA, "jsonld_values")
 PAGES = RelationName(MATERIAL_SCHEMA, "pages")
+PAGE_OBSERVATIONS = RelationName(MATERIAL_SCHEMA, "page_observations")
 LINKS = RelationName(MATERIAL_SCHEMA, "links")
 
 
 TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
     CRAWLS: {
         "crawl_id": ColumnDef("UUID", nullable=False),
-        "graph_id": ColumnDef("UUID", nullable=False),
+        "kind": ColumnDef("VARCHAR", nullable=False),
+        "graph_id": ColumnDef("UUID"),
         "graph_config_hash": ColumnDef("VARCHAR", nullable=False),
         "graph_config": ColumnDef("VARIANT", nullable=False),
         "root_url_count": ColumnDef("BIGINT", nullable=False),
@@ -61,6 +63,11 @@ TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
         "outcome": ColumnDef("VARCHAR", nullable=False),
         "status_code": ColumnDef("INTEGER"),
         "document_id": ColumnDef("UUID"),
+        "provenance": ColumnDef(
+            'STRUCT(kind VARCHAR, "system" VARCHAR, dataset VARCHAR, '
+            "source_record_id VARCHAR)",
+            nullable=False,
+        ),
     },
     ATTEMPTS: {
         "attempt_id": ColumnDef("UUID", nullable=False),
@@ -90,7 +97,7 @@ TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
     DOCUMENTS: {
         "document_id": ColumnDef("UUID", nullable=False),
         "visit_id": ColumnDef("UUID", nullable=False),
-        "attempt_id": ColumnDef("UUID", nullable=False),
+        "attempt_id": ColumnDef("UUID"),
         "observed_at": ColumnDef("TIMESTAMPTZ", nullable=False),
         "representation": ColumnDef("VARCHAR", nullable=False),
         "declared_media_type": ColumnDef("VARCHAR"),
@@ -131,7 +138,15 @@ TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
         "query": ColumnDef("VARCHAR"),
         "registrable_domain": ColumnDef("VARCHAR"),
     },
+    PAGE_OBSERVATIONS: {
+        "page_id": ColumnDef("UUID", nullable=False),
+        "visit_id": ColumnDef("UUID", nullable=False),
+        "document_id": ColumnDef("UUID"),
+        "observed_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+    },
     LINKS: {
+        "source_page_id": ColumnDef("UUID", nullable=False),
+        "target_page_id": ColumnDef("UUID", nullable=False),
         "source_url": ColumnDef("VARCHAR", nullable=False),
         "target_url": ColumnDef("VARCHAR", nullable=False),
         "relation_scope": ColumnDef("VARCHAR", nullable=False),
@@ -171,12 +186,16 @@ TABLE_LAYOUTS: dict[RelationName, TableLayout] = {
         sort_by=("content_sha256 ASC", "element_index ASC"),
     ),
     PAGES: TableLayout(
-        partition_by=("bucket(64, normalized_url)",),
-        sort_by=("normalized_url ASC",),
+        partition_by=("bucket(64, page_id)",),
+        sort_by=("page_id ASC", "normalized_url ASC"),
+    ),
+    PAGE_OBSERVATIONS: TableLayout(
+        partition_by=("bucket(64, page_id)",),
+        sort_by=("page_id ASC", "observed_at DESC", "visit_id ASC"),
     ),
     LINKS: TableLayout(
-        partition_by=("bucket(64, source_url)",),
-        sort_by=("source_url ASC", "target_url ASC"),
+        partition_by=("bucket(64, source_page_id)",),
+        sort_by=("source_page_id ASC", "target_page_id ASC"),
     ),
 }
 
@@ -190,6 +209,7 @@ TABLE_STABLE_KEYS: dict[RelationName, tuple[str, ...]] = {
     HTML_ELEMENTS: ("content_sha256", "element_index"),
     JSONLD_VALUES: ("content_sha256", "element_index"),
     PAGES: ("normalized_url",),
+    PAGE_OBSERVATIONS: ("visit_id",),
     LINKS: ("source_url", "target_url"),
 }
 
@@ -203,6 +223,9 @@ TABLE_COMMENTS: dict[RelationName, str] = {
     HTML_ELEMENTS: "Rebuildable structural projections of immutable HTML content.",
     JSONLD_VALUES: "Rebuildable parsed JSON-LD payloads embedded in HTML content.",
     PAGES: "Rebuildable identities for normalized URLs observed through visits.",
+    PAGE_OBSERVATIONS: (
+        "Rebuildable page-to-visit evidence index for observed documents."
+    ),
     LINKS: "Rebuildable normalized source-target pairs positively observed in HTML.",
 }
 
@@ -210,6 +233,7 @@ TABLE_COMMENTS: dict[RelationName, str] = {
 def _column_comment(relation: RelationName, column: str) -> str:
     return {
         (CRAWLS, "crawl_id"): "Unique identity of the terminal crawl execution.",
+        (CRAWLS, "kind"): "Whether Atlas acquired pages or imported external evidence.",
         (CRAWLS, "graph_id"): "Stable logical identity of the crawl graph.",
         (CRAWLS, "graph_config_hash"): "SHA-256 of the canonical frozen graph configuration.",
         (CRAWLS, "graph_config"): "Complete frozen graph configuration.",
@@ -228,6 +252,7 @@ def _column_comment(relation: RelationName, column: str) -> str:
         (VISITS, "outcome"): "Stable terminal logical outcome.",
         (VISITS, "status_code"): "Final HTTP status when available.",
         (VISITS, "document_id"): "Document observation produced by this visit, if any.",
+        (VISITS, "provenance"): "Typed origin of this observation.",
         (ATTEMPTS, "attempt_id"): "Unique deterministic identity of this acquisition attempt.",
         (ATTEMPTS, "visit_id"): "Visit that owns this attempt.",
         (ATTEMPTS, "attempt_index"): "Zero-based execution order within the visit.",
@@ -251,7 +276,7 @@ def _column_comment(relation: RelationName, column: str) -> str:
         (STEPS, "error_message"): "Bounded diagnostic detail, if needed.",
         (DOCUMENTS, "document_id"): "Unique identity of this document observation.",
         (DOCUMENTS, "visit_id"): "Visit that produced this document.",
-        (DOCUMENTS, "attempt_id"): "Successful attempt that produced this document.",
+        (DOCUMENTS, "attempt_id"): "Successful acquisition attempt, if the source retained one.",
         (DOCUMENTS, "observed_at"): "Time the document representation was captured.",
         (DOCUMENTS, "representation"): "Meaning of the retained document bytes.",
         (DOCUMENTS, "declared_media_type"): "Media type claimed by the source, if available.",
@@ -285,6 +310,24 @@ def _column_comment(relation: RelationName, column: str) -> str:
         (PAGES, "path"): "Normalized URL path.",
         (PAGES, "query"): "Preserved query string, null when absent.",
         (PAGES, "registrable_domain"): "Public-suffix-aware domain when derivable.",
+        (PAGE_OBSERVATIONS, "page_id"): (
+            "Deterministic normalized page identity observed by this visit."
+        ),
+        (PAGE_OBSERVATIONS, "visit_id"): (
+            "Visit supplying this page observation and its provenance."
+        ),
+        (PAGE_OBSERVATIONS, "document_id"): (
+            "Document produced by this visit, when one was retained."
+        ),
+        (PAGE_OBSERVATIONS, "observed_at"): (
+            "Time the page representation was captured."
+        ),
+        (LINKS, "source_page_id"): (
+            "Deterministic identity of the normalized source URL."
+        ),
+        (LINKS, "target_page_id"): (
+            "Deterministic identity of the normalized target URL."
+        ),
         (LINKS, "source_url"): "Normalized fragment-free URL where the link was observed.",
         (LINKS, "target_url"): "Normalized fragment-free URL resolved from the observed href.",
         (LINKS, "relation_scope"): "Most-specific deterministic source-target relationship.",

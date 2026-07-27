@@ -15,6 +15,7 @@ from repository.catalogue import (
     document_id_for,
 )
 from repository.catalogue.records import canonical_json
+from repository.catalogue.service import _visit_values
 from repository.ingestion.queue import (
     crawl_ingestion_job,
     visit_ingestion_job,
@@ -96,6 +97,15 @@ class IngestionEvidenceTests(unittest.TestCase):
 
         self.assertEqual(job.identity, visit_id)
         self.assertNotEqual(document_id.hex, evidence.document.content_sha256)
+        self.assertEqual(
+            _visit_values(evidence.visit)["provenance"],
+            {
+                "kind": "atlas",
+                "system": None,
+                "dataset": None,
+                "source_record_id": None,
+            },
+        )
 
     def test_document_requires_visit_derived_observation_identity(self) -> None:
         visit_id = uuid4()

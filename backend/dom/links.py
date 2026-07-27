@@ -175,7 +175,7 @@ def _scan_elements(
 
         tag = element.tag.lower()
         if tag == "a":
-            href = element.attributes.get("href", "").strip()
+            href = (element.attributes.get("href") or "").strip()
             if href:
                 finished_anchors.append(
                     DomAnchor(
@@ -196,7 +196,7 @@ def _scan_elements(
             and tag == "base"
             and any(ancestor.tag == "head" for ancestor in stack[:-1])
         ):
-            href = element.attributes.get("href", "").strip()
+            href = (element.attributes.get("href") or "").strip()
             if href:
                 resolved = urljoin(page_url, href)
                 parsed = urlparse(resolved)

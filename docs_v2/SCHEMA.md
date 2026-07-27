@@ -15,7 +15,7 @@ Immutable source bytes remain in object storage rather than being copied into th
 
 ## `ingest.*`
 
-Append-only records committed by acquisition:
+Append-only records committed by native acquisition or evidence import:
 
 - `ingest.crawls` — bounded executions of crawl graphs.
 - `ingest.visits` — destinations observed during a crawl.
@@ -30,7 +30,8 @@ the ingestion schema.
 
 ```text
 crawl_id           # Unique identity of this crawl execution.
-graph_id           # Stable logical identity of the crawl graph.
+kind               # atlas or import.
+graph_id           # Stable logical identity of the crawl graph; null for imports.
 graph_config_hash  # Hash of the canonical frozen graph configuration.
 graph_config       # Complete frozen graph configuration as VARIANT.
 root_url_count     # Number of root URLs admitted to the initial frontier.
@@ -105,7 +106,7 @@ A visit produces zero or one authoritative document. A document belongs to exact
 ```text
 document_id      # Unique identity of this document observation.
 visit_id         # Visit that produced the document.
-attempt_id       # Successful attempt that produced the document.
+attempt_id       # Successful attempt; null when an import did not retain one.
 
 observed_at      # Time the document representation was captured.
 representation   # Meaning of the bytes, such as response_body or rendered_html.
@@ -122,6 +123,10 @@ storage_encoding # Encoding used for the stored bytes.
 stored_bytes     # Size of the stored object.
 ```
 
+Imported visits retain typed provenance. Native observations use `atlas`; imports retain their
+source system, optional dataset, and source record identity. The physical column is a native
+`STRUCT(kind, system, dataset, source_record_id)`, not semi-structured JSON or `VARIANT`.
+
 ## `material.*`
 
 Versioned, rebuildable relations maintained by Atlas:
@@ -129,6 +134,7 @@ Versioned, rebuildable relations maintained by Atlas:
 - `material.html_elements` — structural projections of HTML documents.
 - `material.jsonld_values` — structured data extracted from JSON-LD embedded in HTML documents.
 - `material.pages` — visits reduced to unique page identities.
+- `material.page_observations` — normalized pages connected to their visit and document evidence.
 - `material.links` — observed links reduced by source and target URL.
 
 Structural projections for generic JSON, XML, PDF, DOCX, CSV, and other formats are deferred. Their
@@ -209,11 +215,34 @@ UNIQUE(normalized_url)
 URL normalization and public-suffix data are versioned materialization metadata. Visit-derived
 counters, timestamps, and document pointers are not part of page identity and are omitted.
 
+### `material.page_observations`
+
+One row connects an observed normalized page to the immutable visit and document evidence that
+supports it.
+
+```text
+page_id      # Deterministic identity of the normalized observed URL.
+visit_id     # Visit that made this page observation.
+document_id  # Document produced by the visit; null when none was retained.
+observed_at  # Time the page representation was captured.
+```
+
+The row identity is:
+
+```text
+UNIQUE(visit_id)
+```
+
+This is the covering evidence index used for page-history, latest-document, and
+page-to-document compiler plans. Raw requested and effective URLs remain only in `ingest.visits`.
+
 ### `material.links`
 
 One row represents a normalized source-target URL pair positively observed in HTML evidence.
 
 ```text
+source_page_id  # Deterministic identity of source_url.
+target_page_id  # Deterministic identity of target_url, whether visited or not.
 source_url       # Normalized fragment-free URL where the link was observed.
 target_url       # Normalized fragment-free URL resolved from the observed href.
 relation_scope   # self, same_origin, same_host, same_site, or external.
@@ -239,7 +268,8 @@ external    # Registrable domain differs.
 ```
 
 Link materialization does not create rows in `material.pages`. A target may never have been visited,
-and page resolution happens through an optional query-time join on normalized URL.
+but its deterministic `target_page_id` is still non-null. Page resolution happens through an
+optional query-time join on page identity.
 
 `first_seen_at` and `last_seen_at` are derived with `MIN` and `MAX` over immutable positive
 observations, making refresh and replay idempotent. They do not claim that a link remained present

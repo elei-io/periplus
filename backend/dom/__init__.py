@@ -6,9 +6,11 @@ from dom.encoder import (
     PARSER_VERSION,
     ElementRow,
     encode_html,
+    iter_html_byte_elements,
     iter_html_elements,
     iter_tree_elements,
     parse_html,
+    parse_html_bytes,
 )
 from dom.links import (
     DomAnchor,
@@ -30,8 +32,10 @@ __all__ = [
     "anchors_from_elements",
     "encode_html",
     "iter_html_elements",
+    "iter_html_byte_elements",
     "iter_tree_elements",
     "links_from_elements",
     "links_from_html",
     "parse_html",
+    "parse_html_bytes",
 ]

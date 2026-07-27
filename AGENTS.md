@@ -34,8 +34,11 @@ changing worker ownership, queue routing, managed DuckDB use, or deployment scal
   `critical` catalogue work, never settle graph traversal, and never wait for user materialization.
 - The CDC ingress consumes Basin-owned global DML/DDL JetStream streams, publishes per-table
   DML ticks and global DDL changes into Atlas JetStream, and ACKs Basin only after Atlas PubAcks.
-  Each materialization owns one filtered durable NATS consumer, coalesces ticks, and commits one
-  whole-table refresh while retaining a stable target identity. There is no scope queue, coverage
+  Each materialization owns one filtered durable NATS consumer, coalesces ticks, and commits its
+  owned target changes before ACK. Fixed materializations use DuckLake snapshot changes to compute
+  only affected content hashes, visit URLs, or document observations. Links wait for required HTML
+  projections and fold only changed source-target observations. Startup reconciliation compares
+  source and target identities without reparsing covered HTML. There is no scope queue, coverage
   table, revision fence, fan-out ledger, or separate commit queue.
 - An ingestion process owns four independent session-affine DuckBasin clients; a materialization
   process owns eight. Every client is serialized, while different clients run concurrently.

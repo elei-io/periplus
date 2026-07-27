@@ -13,6 +13,9 @@ superseded schema.
 crawl graph -> immutable bytes -> ingest.* -> CDC -> material.*
 ```
 
+Externally acquired HTML may enter at the immutable-byte
+boundary and follows the same downstream path.
+
 It does not include compilation, the `web.*` semantic interface, agents, user-defined views, or
 maintained user extractions. A bounded read-only console may execute SQL directly against the
 physical `ingest.*` and `material.*` relations; this inspection surface does not compile, rewrite,
@@ -25,14 +28,16 @@ Atlas can:
 1. Run a crawl graph and retain immutable document bytes.
 2. Commit terminal crawl, visit, attempt, step, and document evidence under `ingest.*`.
 3. Relay committed changes through CDC.
-4. Maintain the four Atlas-owned `material.*` relations:
+4. Maintain the five Atlas-owned `material.*` relations:
    - `material.html_elements`
    - `material.jsonld_values`
    - `material.pages`
+   - `material.page_observations`
    - `material.links`
 5. Recover from redelivery, retries, worker restarts, and temporarily unavailable materialization
    dependencies without corrupting or losing committed evidence.
 6. Expose normal ingestion and materialization health, capacity, backlog, and failure signals.
+7. Accept exact external HTML without bypassing ingestion or materialization.
 
 Ingestion is complete without materialization. Materialization failure never changes ingestion
 evidence or graph execution state.
@@ -77,12 +82,19 @@ Each workload owns one CDC consumer and one target relation:
 ingest.documents CDC       -> material.html_elements
 material.html_elements CDC -> material.jsonld_values
 ingest.visits CDC          -> material.pages
+ingest.visits CDC          -> material.page_observations
 ingest.documents CDC       -> material.links
 ```
 
 A workload may read its dependencies but never writes another workload's target. It acknowledges
 source changes only after its own target transaction commits. Replay and repeated delivery are
 idempotent. A missing dependency is retried rather than treated as permanent failure.
+
+All fixed materializations are maintained from bounded CDC deltas. HTML computes uncovered live
+content hashes; JSON-LD replaces changed hash slices; pages merge changed observed URLs; page
+observations index their visit and document evidence; and links fold changed HTML document
+observations into source-target timestamp ranges after their element projection is ready. Restart
+HTML reconciliation scans hash identities and does not reparse already covered content.
 
 No generic keyed, append, or full user-view materialization framework remains at this cutoff.
 User-owned maintained extractions can be designed with the compiler later.

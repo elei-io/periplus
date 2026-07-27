@@ -30,6 +30,16 @@ DuckBasin, and Basin-published JetStream CDC.
 - **Atlas status:** materialization CDC is replayable and idempotent, but exactly-once remote query
   acknowledgement still belongs upstream.
 
+## Quack cannot MERGE a registered Arrow source into a remote DuckLake target
+
+- **Atlas caller:** incremental fixed materializations uploading bounded Arrow projections.
+- **Evidence:** DuckLake accepts `MERGE INTO` with a remote SQL source, while a registered Arrow
+  `USING` relation fails through Quack with `Binder Error: Can only merge into base tables`.
+- **Needed upstream contract:** forward `MERGE INTO remote_target USING registered_arrow_relation`
+  through the session-affine Quack connection, preserving the surrounding remote transaction.
+- **Atlas status:** Atlas holds the target operation lease, checks content-hash coverage, appends
+  only absent immutable projections, and uses remote `MERGE` for scoped deletion sets.
+
 ## Public Quack remote SQL can resolve the Basin control catalogue
 
 - **Atlas caller:** trusted server-side table-identity and fixed materialization SQL.

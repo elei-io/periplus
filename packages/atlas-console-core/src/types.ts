@@ -38,6 +38,7 @@ export interface QueryResult {
 
 export type CommandResult =
   | { kind: "clear" }
+  | { kind: "exit" }
   | { kind: "message"; text: string }
 
 export type ConsoleResult = QueryResult | CommandResult

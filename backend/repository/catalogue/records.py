@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 import json
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
@@ -40,9 +40,27 @@ class CatalogueRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 
+class AtlasProvenance(CatalogueRecord):
+    kind: Literal["atlas"] = "atlas"
+
+
+class ExternalProvenance(CatalogueRecord):
+    kind: Literal["external"] = "external"
+    system: str = Field(min_length=1, max_length=256)
+    dataset: str | None = Field(default=None, min_length=1, max_length=512)
+    source_record_id: str = Field(min_length=1, max_length=2048)
+
+
+EvidenceProvenance = Annotated[
+    AtlasProvenance | ExternalProvenance,
+    Field(discriminator="kind"),
+]
+
+
 class CrawlRecord(CatalogueRecord):
     crawl_id: UUID
-    graph_id: UUID
+    kind: Literal["atlas", "import"] = "atlas"
+    graph_id: UUID | None = None
     graph_config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     graph_config: JsonValue
     root_url_count: int = Field(ge=0)
@@ -52,6 +70,10 @@ class CrawlRecord(CatalogueRecord):
 
     @model_validator(mode="after")
     def validate_record(self) -> CrawlRecord:
+        if self.kind == "atlas" and self.graph_id is None:
+            raise ValueError("Atlas crawl evidence requires graph_id")
+        if self.kind == "import" and self.graph_id is not None:
+            raise ValueError("import crawl evidence cannot claim a graph_id")
         if self.finished_at < self.started_at:
             raise ValueError("crawl finished_at cannot precede started_at")
         digest = hashlib.sha256(canonical_json(self.graph_config).encode()).hexdigest()
@@ -74,17 +96,32 @@ class VisitRecord(CatalogueRecord):
     outcome: Literal["succeeded", "failed", "cancelled", "skipped"]
     status_code: int | None = Field(default=None, ge=100, le=599)
     document_id: UUID | None = None
+    provenance: EvidenceProvenance = Field(
+        default_factory=AtlasProvenance,
+        discriminator="kind",
+    )
 
     @model_validator(mode="after")
     def validate_record(self) -> VisitRecord:
-        if self.started_at is not None and self.started_at < self.admitted_at:
+        if (
+            self.provenance.kind == "atlas"
+            and self.started_at is not None
+            and self.started_at < self.admitted_at
+        ):
             raise ValueError("visit started_at cannot precede admitted_at")
-        if self.finished_at < (self.started_at or self.admitted_at):
+        if (
+            self.provenance.kind == "atlas"
+            and self.finished_at < (self.started_at or self.admitted_at)
+        ):
             raise ValueError("visit finished_at precedes its start")
         if self.observed_at is not None:
-            if self.started_at is None:
+            if self.provenance.kind == "atlas" and self.started_at is None:
                 raise ValueError("an observed visit must have started")
-            if not self.started_at <= self.observed_at <= self.finished_at:
+            if (
+                self.provenance.kind == "atlas"
+                and self.started_at is not None
+                and not self.started_at <= self.observed_at <= self.finished_at
+            ):
                 raise ValueError("visit observed_at must fall within execution")
         if (self.document_id is not None) != (self.observed_at is not None):
             raise ValueError(
@@ -157,7 +194,7 @@ class StepRecord(CatalogueRecord):
 class DocumentRecord(CatalogueRecord):
     document_id: UUID
     visit_id: UUID
-    attempt_id: UUID
+    attempt_id: UUID | None = None
     observed_at: datetime
     representation: Literal["response_body", "rendered_html"]
     declared_media_type: str | None = Field(default=None, min_length=1)
@@ -201,15 +238,19 @@ class VisitEvidence(CatalogueRecord):
             raise ValueError("attempt indexes must be contiguous from zero")
         attempt_ids = {attempt.attempt_id for attempt in self.attempts}
         if self.document is not None:
-            if self.document.attempt_id not in attempt_ids:
-                raise ValueError("document attempt is absent from visit evidence")
-            successful = next(
-                attempt
-                for attempt in self.attempts
-                if attempt.attempt_id == self.document.attempt_id
-            )
-            if successful.outcome != "succeeded":
-                raise ValueError("document attempt must have succeeded")
+            if self.visit.provenance.kind == "atlas":
+                if self.document.attempt_id not in attempt_ids:
+                    raise ValueError("document attempt is absent from visit evidence")
+                successful = next(
+                    attempt
+                    for attempt in self.attempts
+                    if attempt.attempt_id == self.document.attempt_id
+                )
+                if successful.outcome != "succeeded":
+                    raise ValueError("document attempt must have succeeded")
+            elif self.document.attempt_id is not None:
+                if self.document.attempt_id not in attempt_ids:
+                    raise ValueError("document attempt is absent from visit evidence")
         grouped: dict[UUID, list[int]] = {}
         for step in self.steps:
             if step.attempt_id not in attempt_ids:

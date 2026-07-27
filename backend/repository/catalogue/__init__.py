@@ -19,9 +19,12 @@ from repository.catalogue.exceptions import (
     CatalogueValidationError,
 )
 from repository.catalogue.records import (
+    AtlasProvenance,
     AttemptRecord,
     CrawlRecord,
     DocumentRecord,
+    EvidenceProvenance,
+    ExternalProvenance,
     IngestionWriteResult,
     StepRecord,
     VisitEvidence,
@@ -69,6 +72,7 @@ def catalogue_from_env(
 __all__ = [
     "Catalogue",
     "AttemptRecord",
+    "AtlasProvenance",
     "CatalogueConfig",
     "CatalogueConfigError",
     "CatalogueConflictError",
@@ -83,6 +87,8 @@ __all__ = [
     "CatalogueValidationError",
     "CrawlRecord",
     "DocumentRecord",
+    "EvidenceProvenance",
+    "ExternalProvenance",
     "IngestionWriteResult",
     "StepRecord",
     "VisitEvidence",

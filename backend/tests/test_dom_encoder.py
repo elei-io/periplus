@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import unittest
 from xml.etree.ElementTree import Element, SubElement
 
@@ -192,6 +193,21 @@ class DomEncoderTests(unittest.TestCase):
                 encode_html(html),
                 page_url="https://www.example.com/dir/page",
             ),
+        )
+
+    def test_link_projection_ignores_null_href_evidence(self) -> None:
+        rows = encode_html("<a>ignored</a>")
+        anchor_index = next(
+            index for index, row in enumerate(rows) if row.tag == "a"
+        )
+        rows[anchor_index] = replace(
+            rows[anchor_index],
+            attributes={"href": None},  # type: ignore[dict-item]
+        )
+
+        self.assertEqual(
+            links_from_elements(rows, page_url="https://example.com/"),
+            {"internal": [], "external": []},
         )
 
 

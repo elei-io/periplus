@@ -13,9 +13,17 @@ The active delivered path is:
 crawl graph -> immutable bytes -> ingest.* -> CDC -> material.*
 ```
 
+External HTML joins at the same immutable-byte boundary:
+
+```text
+external evidence -> immutable bytes -> ingest.* -> CDC -> material.*
+```
+
 Postgres owns editable control state and current graph execution. NATS owns work delivery,
 ephemeral presence, scoped leases, and CDC events. DuckLake owns immutable observed evidence
 and rebuildable Atlas materializations. The object repository owns content-addressed source bytes.
 
 The Python compiler is archived outside the runtime and the public `web.*` semantic interface is not
 currently delivered.
+
+External import details are defined in [`docs_v2/IMPORTS.md`](../docs_v2/IMPORTS.md).

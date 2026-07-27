@@ -13,7 +13,7 @@ from nats.js.api import (
     StreamConfig,
 )
 from runtime.nats_topology import ensure_stream_contract
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 EVENT_STREAM = "ATLAS_CDC"
@@ -28,6 +28,8 @@ DDL_RECONCILER_DURABLE = "atlas-materialization-ddl-reconciler"
 class DMLTick(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    start_snapshot: int
+    end_snapshot: int
     table_id: int
     table_uuid: UUID
     schema_name: str
@@ -35,6 +37,12 @@ class DMLTick(BaseModel):
     snapshot_id: int
     snapshot_time: datetime | None
     schema_version: int
+
+    @model_validator(mode="after")
+    def validate_snapshot_window(self) -> DMLTick:
+        if not self.start_snapshot <= self.snapshot_id <= self.end_snapshot:
+            raise ValueError("snapshot_id must fall within the source snapshot window")
+        return self
 
     @property
     def message_id(self) -> str:

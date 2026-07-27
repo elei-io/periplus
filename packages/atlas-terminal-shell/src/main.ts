@@ -2,6 +2,7 @@
 
 import { createInterface } from "node:readline"
 import { SqlApi, SqlConsole, WELCOME } from "atlas-console-core"
+import { MultilineInput } from "./input.js"
 import { renderConsoleResult, startProgress } from "./render.js"
 
 const apiUrl =
@@ -33,29 +34,43 @@ async function interactive(): Promise<void> {
         .catch(() => callback(null, [[], ""]))
     },
   })
+  let execution = Promise.resolve()
+  let exiting = false
+  const input = new MultilineInput((value) => {
+    execution = execution.then(async () => {
+      const sql = value.trim()
+      if (sql && (await execute(sql))) {
+        exiting = true
+        terminal.close()
+        return
+      }
+      if (!exiting) terminal.prompt()
+    })
+  })
   process.stdout.write(`\u001b[2J\u001b[H${WELCOME}\n\n`)
   terminal.prompt()
   terminal.on("SIGINT", () => {
     if (sqlConsole.interrupt()) {
       process.stdout.write("^C\n")
     } else {
+      input.clear()
       process.stdout.write("\r\u001b[2K")
       terminal.prompt()
     }
   })
-  for await (const line of terminal) {
-    const sql = line.trim()
-    if (sql) await execute(sql)
-    terminal.prompt()
-  }
-  terminal.close()
+  terminal.on("line", (line) => input.push(line))
+  await new Promise<void>((resolve) => terminal.once("close", resolve))
+  exiting = true
+  input.close()
+  await execution
 }
 
-async function execute(sql: string): Promise<void> {
+async function execute(sql: string): Promise<boolean> {
   const progress = sql.startsWith(".") ? undefined : startProgress("Running query…")
   try {
     const result = await sqlConsole.run(sql)
     progress?.stop()
+    if (result?.kind === "exit") return true
     if (result) process.stdout.write(renderConsoleResult(result))
   } catch (error) {
     progress?.stop()
@@ -65,4 +80,5 @@ async function execute(sql: string): Promise<void> {
   } finally {
     progress?.stop()
   }
+  return false
 }

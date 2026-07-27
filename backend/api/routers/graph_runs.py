@@ -261,6 +261,7 @@ async def capacity(
         "atlas-material-html_elements-v1",
         "atlas-material-jsonld_values-v1",
         "atlas-material-pages-v1",
+        "atlas-material-page_observations-v1",
         "atlas-material-links-v1",
     }
     relevant_materialization_consumers = [

@@ -55,6 +55,31 @@ class ExactDocumentIdentity:
         return document_object_key(self.sha256)
 
 
+def identify_document(
+    content: BinaryIO,
+    *,
+    maximum_bytes: int | None = None,
+    chunk_bytes: int = 1024 * 1024,
+) -> ExactDocumentIdentity:
+    """Hash one seekable exact representation and restore its cursor."""
+
+    if chunk_bytes <= 0:
+        raise ValueError("chunk_bytes must be greater than zero")
+    digest = hashlib.sha256()
+    size_bytes = 0
+    content.seek(0)
+    while chunk := content.read(chunk_bytes):
+        size_bytes += len(chunk)
+        if maximum_bytes is not None and size_bytes > maximum_bytes:
+            raise ValueError("document exceeds the configured byte budget")
+        digest.update(chunk)
+    content.seek(0)
+    return ExactDocumentIdentity(
+        sha256=digest.hexdigest(),
+        size_bytes=size_bytes,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class StoredDocument:
     sha256: str

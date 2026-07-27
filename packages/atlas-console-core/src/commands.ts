@@ -52,6 +52,11 @@ export const commands: CommandRegistry = new CommandRegistry([
     execute: () => ({ kind: "clear" }),
   },
   {
+    name: "exit",
+    summary: "Exit the console.",
+    execute: () => ({ kind: "exit" }),
+  },
+  {
     name: "help",
     summary: "Show available commands.",
     execute: (): CommandResult => ({

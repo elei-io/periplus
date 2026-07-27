@@ -97,6 +97,21 @@ class CDCRelayTests(unittest.IsolatedAsyncioTestCase):
         await _publish_dml_message(jetstream, resolver, message)
 
         self.assertEqual(jetstream.publish.await_count, 2)
+        relayed = [
+            json.loads(call.args[1])
+            for call in jetstream.publish.await_args_list
+        ]
+        self.assertEqual(
+            {
+                (
+                    event["start_snapshot"],
+                    event["snapshot_id"],
+                    event["end_snapshot"],
+                )
+                for event in relayed
+            },
+            {(10, 10, 10)},
+        )
         self.assertEqual(
             {
                 call.kwargs["headers"]["Nats-Msg-Id"]
@@ -115,6 +130,8 @@ class CDCRelayTests(unittest.IsolatedAsyncioTestCase):
         resolver.resolve.return_value = {first.table_id: first}
         message = _message(
             {
+                "start_snapshot": 10,
+                "end_snapshot": 10,
                 "snapshot_id": 10,
                 "snapshot_time": None,
                 "schema_version": 1,

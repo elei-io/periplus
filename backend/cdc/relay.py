@@ -62,6 +62,8 @@ class BasinDMLTick(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
+    start_snapshot: int
+    end_snapshot: int
     snapshot_id: int
     snapshot_time: datetime | None
     schema_version: int
@@ -409,6 +411,8 @@ async def _publish_dml_message(
             snapshot_id=source.snapshot_id,
         )
         event = DMLTick(
+            start_snapshot=source.start_snapshot,
+            end_snapshot=source.end_snapshot,
             table_id=table.table_id,
             table_uuid=table.table_uuid,
             schema_name=table.schema_name,

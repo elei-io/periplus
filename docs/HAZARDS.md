@@ -5,6 +5,8 @@
 - Do not put editable or current graph state in DuckLake.
 - Do not put crawl history in Postgres.
 - Do not expose a document row before its immutable object bytes are durable.
+- Do not let external loaders write DuckLake directly, invoke materialization, fabricate missing
+  acquisition facts, or bypass the ordinary ingestion queue.
 - Do not interpret documents in ingestion; interpretation belongs to fixed rebuildable
   materializations.
 - Do not acknowledge Basin CDC before Atlas publication, or Atlas materialization CDC before the

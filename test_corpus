@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+exec uv run \
+  --project "$repo_dir/backend" \
+  --with "warcio==1.7.5" \
+  python -u "$repo_dir/backend/scripts/test_corpus.py" "$@"
