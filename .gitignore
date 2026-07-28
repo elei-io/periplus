@@ -12,6 +12,7 @@ wheels/
 
 
 .env
+.env.extra
 
 .cache
 .artifacts

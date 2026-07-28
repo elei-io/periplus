@@ -6,7 +6,9 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 ownership, repository storage, DOM generation, NATS, DuckLake, or managed DuckDB use. Read
 [docs/CUTOFF.md](docs/CUTOFF.md) before adding a service, queue, persistence path,
 compatibility layer, or abstraction. Read [docs/QUERY.md](docs/QUERY.md) before changing
-`web.*`, SDK, or DuckDB extension boundaries.
+`web.*`, SDK, or DuckDB extension boundaries. Read
+[docs/EXTENSION_DEVELOPMENT.md](docs/EXTENSION_DEVELOPMENT.md) before building, testing, or
+changing the Atlas DuckDB extension.
 
 ## Non-negotiable boundaries
 
@@ -121,13 +123,43 @@ npm run typecheck
 npm run build
 ```
 
+### DuckDB extension development
+
+The C++ extension is a separate sibling repository at `../atlas-duckdb-extension`, created from
+DuckDB's official extension template. Keep its DuckDB submodule pinned to the exact DuckDB version
+used by `backend/`.
+
+Use the native debug runner while implementing a rule, then build the release artifact used by the
+direct development connection:
+
+```sh
+cd ../atlas-duckdb-extension
+make debug
+make test_debug
+make release
+make test_release
+
+cd ../atlas
+./ducklake.sh
+```
+
+`./ducklake.sh` opens the native DuckDB terminal with `atlas_test` attached read-only. Pass
+`--sql "..."` to execute one statement and exit. The direct connection is development-only:
+credentials stay in the root `.env.extra`, and production Atlas continues to use Quack without
+lake metadata or object-store credentials. See
+[docs/EXTENSION_DEVELOPMENT.md](docs/EXTENSION_DEVELOPMENT.md) for the full loop and testing
+requirements.
+
 ## DuckBasin and Quack upstream
 
-Atlas intentionally uses only the official DuckDB Python package plus Quack for managed DuckLake
-access. Do not reintroduce a Basin SDK, `ducklake-client`, local DuckLake attachment configuration,
-lake object-store credentials, or Atlas-owned CDC cursors. When Atlas reveals a missing Quack or
-DuckBasin primitive, record actionable evidence in [UPSTREAM.md](UPSTREAM.md) and prefer a coherent
-upstream fix over an Atlas-only compatibility layer.
+Atlas runtime code intentionally uses only the official DuckDB Python package plus Quack for
+managed DuckLake access. Do not introduce a Basin SDK, `ducklake-client`, local DuckLake attachment
+configuration, lake object-store credentials, or Atlas-owned CDC cursors into application packages
+or deployed processes. The development-only direct client under `backend/scripts/`, documented in
+[docs/EXTENSION_DEVELOPMENT.md](docs/EXTENSION_DEVELOPMENT.md), is the sole local attachment
+boundary. When Atlas reveals a missing Quack or DuckBasin primitive, record actionable evidence in
+[UPSTREAM.md](UPSTREAM.md) and prefer a coherent upstream fix over an Atlas-only compatibility
+layer.
 
 ## Implementation rules
 

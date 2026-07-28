@@ -28,4 +28,5 @@ portable `web.*` queries faster but must never be required for correctness.
 Atlas will not maintain parallel stable-C and C++ production extensions or CI paths. With Quack,
 the matching extension is loaded on the server and the complete query executes there. Without
 Quack, a user may load the matching extension locally. In both cases the DuckLake catalogue remains
-the authoritative interface.
+the authoritative interface. The local build, direct DuckLake, and differential testing workflow is
+documented in [`EXTENSION_DEVELOPMENT.md`](EXTENSION_DEVELOPMENT.md).

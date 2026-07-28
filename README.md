@@ -78,4 +78,5 @@ The canonical product and data contracts are:
 - [schema](docs/SCHEMA.md)
 - [lifecycle](docs/LIFECYCLE.md)
 - [query](docs/QUERY.md)
+- [DuckDB extension development](docs/EXTENSION_DEVELOPMENT.md)
 - [vision](docs/VISION.md)
