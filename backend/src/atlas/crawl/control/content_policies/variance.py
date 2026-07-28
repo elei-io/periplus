@@ -1,4 +1,4 @@
-"""Sparse per-crawl experiments for numeric content-completion settings."""
+"""Sparse per-crawl experiments for numeric content-policy settings."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .schemas import (
-    ContentPolicy,
+    ContentPolicyConfig,
     ContentPolicyVariance,
     ContentVarianceArm,
     ContentVarianceSetting,
@@ -135,10 +135,10 @@ def _effective_value(
 
 
 def vary_content_policy(
-    content: ContentPolicy,
+    content: ContentPolicyConfig,
     *,
     rng: VarianceRandom = random,
-) -> tuple[ContentPolicy, ContentPolicyVariance | None]:
+) -> tuple[ContentPolicyConfig, ContentPolicyVariance | None]:
     """Vary one active setting and return its frozen experiment assignment."""
 
     varied = content.model_dump(mode="python")
@@ -169,4 +169,4 @@ def vary_content_policy(
         configured_value=configured,
         effective_value=effective,
     )
-    return ContentPolicy.model_validate(varied), assignment
+    return ContentPolicyConfig.model_validate(varied), assignment

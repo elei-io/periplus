@@ -14,7 +14,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from atlas.platform.config.performance import CRAWL_RUN_ACQUISITION_PENDING_LIMIT
-from atlas.crawl.control.crawl_graphs.schemas import EdgeDedupeMode
 from atlas.platform.postgres.session import SessionLocal
 from atlas.platform.catalogue import CrawlRecord
 from atlas.platform.catalogue.records import canonical_json
@@ -435,9 +434,7 @@ class GraphRuntimeStore:
         node_id: UUID,
         url: str,
         effective_policy_snapshot: dict,
-        dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph,
         source_crawl_id: UUID | None = None,
-        source_content_sha256: str | None = None,
         source_edge_id: UUID | None = None,
         parent_request_id: UUID | None = None,
         priority: int = 0,
@@ -449,15 +446,7 @@ class GraphRuntimeStore:
         from atlas.crawl.runtime.graph_runs import deterministic_request_id
 
         now = now or datetime.now(UTC)
-        identity = request_identity(
-            run_id,
-            url,
-            dedupe_mode=dedupe_mode,
-            source_edge_id=source_edge_id,
-            source_crawl_id=source_crawl_id,
-            source_content_sha256=source_content_sha256,
-        )
-        graph_identity = request_identity(run_id, url)
+        identity = request_identity(run_id, url)
         request_id = deterministic_request_id(identity)
 
         try:
@@ -531,15 +520,6 @@ class GraphRuntimeStore:
                         created_at=now,
                     )
                 )
-                if graph_identity != identity:
-                    session.add(
-                        GraphAdmissionRecord(
-                            identity=graph_identity,
-                            graph_run_id=run_id,
-                            crawl_request_id=request_id,
-                            created_at=now,
-                        )
-                    )
                 work = CrawlWork(
                     crawl_request_id=request_id,
                     generation=request.generation,
@@ -565,13 +545,9 @@ class GraphRuntimeStore:
                 result = _crawl_request(request)
             return AdmissionResult(result, True)
         except IntegrityError:
-            # A concurrent transaction may have inserted either dedupe identity.
+            # A concurrent transaction may have inserted the plan-wide identity.
             with self._session_factory() as session:
                 admission = session.get(GraphAdmissionRecord, identity)
-                if admission is None:
-                    admission = session.get(
-                        GraphAdmissionRecord, graph_identity
-                    )
                 if admission is None:
                     raise
                 request = session.get(
@@ -1375,8 +1351,6 @@ def _same_run_or_raise(current: GraphRun, requested: GraphRun) -> GraphRun:
         or current.trigger_urls != requested.trigger_urls
         or current.trigger_kind != requested.trigger_kind
         or current.trigger_schedule_id != requested.trigger_schedule_id
-        or current.catalogue_snapshot_id != requested.catalogue_snapshot_id
-        or current.catalogue_consistency != requested.catalogue_consistency
         or current.max_crawls != requested.max_crawls
     ):
         raise ValueError(
@@ -1397,8 +1371,6 @@ def _graph_run_record(run: GraphRun) -> GraphRunRecord:
         graph_id=run.graph_id,
         trigger_kind=run.trigger_kind,
         trigger_schedule_id=run.trigger_schedule_id,
-        catalogue_snapshot_id=run.catalogue_snapshot_id,
-        catalogue_consistency=run.catalogue_consistency,
         generation=run.generation,
         status=run.status,
         snapshot=run.snapshot.model_dump(mode="json"),
@@ -1432,8 +1404,6 @@ def _graph_run(record: GraphRunRecord) -> GraphRun:
         graph_id=record.graph_id,
         trigger_kind=record.trigger_kind,
         trigger_schedule_id=record.trigger_schedule_id,
-        catalogue_snapshot_id=record.catalogue_snapshot_id,
-        catalogue_consistency=record.catalogue_consistency,
         generation=record.generation,
         status=record.status,
         snapshot=record.snapshot,
@@ -1489,8 +1459,6 @@ def _crawl_request(record: CrawlRequestRecord) -> CrawlRequest:
 
 
 def _apply_graph_run(record: GraphRunRecord, run: GraphRun) -> None:
-    record.catalogue_snapshot_id = run.catalogue_snapshot_id
-    record.catalogue_consistency = run.catalogue_consistency
     record.generation = run.generation
     record.status = run.status
     record.max_crawls = run.max_crawls

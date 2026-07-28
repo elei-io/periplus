@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from atlas.platform.catalogue.control import CatalogueControl, get_catalogue_control
 from atlas.crawl.api_runtime import ApiGraphRuntime, get_graph_runtime
 from atlas.crawl.submission import submit_graph_run
 from atlas.crawl.api.runs import GraphRunSubmission
@@ -44,7 +43,7 @@ from atlas.crawl.control.crawl_schedules.service import (
 from atlas.platform.postgres.session import get_session
 
 
-router = APIRouter(prefix="/crawl-graphs", tags=["crawl-schedules"])
+router = APIRouter(prefix="/crawl-plans", tags=["crawl-schedules"])
 resource_router = APIRouter(prefix="/crawl-schedules", tags=["crawl-schedules"])
 
 
@@ -213,7 +212,6 @@ async def run_now(
     graph_id: UUID,
     schedule_id: UUID,
     session: Annotated[Session, Depends(get_session)],
-    control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
     runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
 ) -> GraphRunSubmission:
     try:
@@ -222,8 +220,7 @@ async def run_now(
             session,
             runtime=runtime,
             graph_id=graph_id,
-            urls=list(schedule.root_urls),
-            catalogue_snapshot_resolver=control.latest_snapshot,
+            url=schedule.root_url,
             trigger_kind="manual",
             trigger_schedule_id=schedule.id,
             max_crawls=schedule.max_crawls,
@@ -236,4 +233,4 @@ async def run_now(
         raise _translate(exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return GraphRunSubmission(graph_id=graph_id, run_id=run.id)
+    return GraphRunSubmission(plan_id=graph_id, run_id=run.id)

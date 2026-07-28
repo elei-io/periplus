@@ -17,7 +17,7 @@ Immutable source bytes remain in object storage rather than being copied into th
 
 Append-only records committed by native acquisition or evidence import:
 
-- `ingest.crawls` — bounded executions of crawl graphs.
+- `ingest.crawls` — bounded executions of crawl plans.
 - `ingest.visits` — destinations observed during a crawl.
 - `ingest.attempts` — acquisition attempts made for a visit.
 - `ingest.steps` — ordered content-completion executions within an attempt.
@@ -31,10 +31,10 @@ the ingestion schema.
 ```text
 crawl_id           # Unique identity of this crawl execution.
 kind               # atlas or import.
-graph_id           # Stable logical identity of the crawl graph; null for imports.
+graph_id           # Stable logical identity of the crawl plan; null for imports.
 graph_config_hash  # Hash of the canonical frozen graph configuration.
 graph_config       # Complete frozen graph configuration as VARIANT.
-root_url_count     # Number of root URLs admitted to the initial frontier.
+root_url_count     # One for a native crawl whose root was admitted; zero otherwise.
 started_at         # Time at which crawl execution began.
 finished_at        # Time at which crawl execution stopped.
 stop_reason        # Reason the crawl stopped.

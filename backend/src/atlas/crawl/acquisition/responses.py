@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 
 from atlas.crawl.acquisition.models import AcquisitionAttemptEvidence, AcquisitionResult
-from atlas.crawl.control.crawl_policies.schemas import ResponseOutcome
+from atlas.crawl.control.content_policies.schemas import ResponseOutcome
 
 
 def status_outcome(status: int | None, policy) -> ResponseOutcome:

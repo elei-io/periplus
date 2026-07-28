@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -23,17 +22,15 @@ async def submit_graph_run(
     *,
     runtime: ApiGraphRuntime,
     graph_id: UUID,
-    urls: list[str],
-    catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]],
+    url: str,
     trigger_kind: str = "manual",
     trigger_schedule_id: UUID | None = None,
     max_crawls: int = DEFAULT_GRAPH_RUN_MAX_CRAWLS,
     max_run_seconds: int | None = None,
 ) -> GraphRun:
     snapshot = freeze_graph(session, graph_id)
-    normalized_urls = list(
-        dict.fromkeys(normalize_request_url(url) for url in urls)
-    )
+    normalized_url = normalize_request_url(url)
+    normalized_urls = [normalized_url]
     policies = resolve_policy_snapshots(session, normalized_urls)
     session.commit()
     return await create_graph_run(
@@ -44,7 +41,6 @@ async def submit_graph_run(
         snapshot=snapshot,
         urls=normalized_urls,
         policy_resolver=policies.__getitem__,
-        catalogue_snapshot_resolver=catalogue_snapshot_resolver,
         trigger_kind=trigger_kind,
         trigger_schedule_id=trigger_schedule_id,
         max_crawls=max_crawls,

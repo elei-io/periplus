@@ -82,7 +82,7 @@ class CrawlScheduleInput(ScheduleWindow):
         ge=1,
         le=MAX_GRAPH_RUN_CRAWLS,
     )
-    root_urls: list[str] = Field(min_length=1, max_length=10_000)
+    root_url: str = Field(min_length=1, max_length=8_192)
     overlap_policy: OverlapPolicy = "skip"
     misfire_policy: MisfirePolicy = "skip"
 
@@ -97,7 +97,7 @@ class CrawlScheduleUpdate(CrawlScheduleInput):
 
 class CrawlScheduleRecord(CrawlScheduleInput):
     id: UUID
-    graph_id: UUID
+    plan_id: UUID
     status: ScheduleStatus
     run_count: int
     next_run_at: datetime | None
@@ -114,7 +114,7 @@ class CrawlScheduleList(BaseModel):
 
 
 class CrawlScheduleResource(CrawlScheduleRecord):
-    graph_slug: str
+    plan_slug: str
 
 
 class CrawlScheduleResourceList(BaseModel):

@@ -15,7 +15,7 @@ compatibility layer, or abstraction. Read [docs/QUERY.md](docs/QUERY.md) before 
   the contract directly and delete the superseded path. Prefer resetting disposable development
   state over carrying compatibility code unless the user explicitly requires a real data
   migration.
-- Postgres owns editable control state and current graph execution: crawl graphs, runs, requests,
+- Postgres owns editable control state and current graph execution: crawl plans, runs, requests,
   edge evaluations, admission deduplication, progress counters, schedules, policies, matches,
   schemas, catalogue definitions, and the transactional graph outbox.
 - NATS JetStream/KV owns graph work delivery, worker presence, CDC events, operation leases,
@@ -49,8 +49,8 @@ compatibility layer, or abstraction. Read [docs/QUERY.md](docs/QUERY.md) before 
   projection stages and maintenance batches borrow different clients and run concurrently.
   Bounded client pools provide the normal executor capacity; horizontal replicas are an
   availability and post-saturation scaling control.
-- Page-only graph edges use bounded standalone DuckDB connections. Historical edge joins use a
-  pinned snapshot through one serialized, read-only catalogue operation per acquisition process.
+- Crawl-plan edges use bounded standalone DuckDB connections over the current
+  page's navigation package. Historical catalogue joins are not a plan-edge capability.
 - DuckBasin owns compaction, old-file cleanup, and physical lake maintenance. Atlas housekeeping
   only reclaims Atlas-owned staging and navigation objects.
 - Per-domain crawl permits and operation leases are distinct. Domain permits enforce website
@@ -132,7 +132,7 @@ upstream fix over an Atlas-only compatibility layer.
 ## Implementation rules
 
 - Prefer typed Pydantic boundaries and SQLAlchemy 2 models.
-- Keep content completion and response handling in the crawl policy boundary. Keep per-domain
+- Keep content completion and response handling in the content policy boundary. Keep per-domain
   politeness in DomainPolicy. The CDP service owns transport configuration and browser-fleet capacity.
 - Keep object keys repository-relative and local filesystem paths out of public contracts.
 - Add formats, services, queues, and abstractions only for an active caller.

@@ -5,6 +5,7 @@ import {
   Globe2Icon,
   CalendarClockIcon,
   DatabaseZapIcon,
+  FileTextIcon,
   SquareTerminalIcon,
 } from "lucide-react"
 
@@ -21,6 +22,13 @@ export const navigationGroups: NavigationGroup[] = [
         icon: SquareTerminalIcon,
         title: "SQL Console",
         description: "Query ingest and material relations.",
+      },
+      {
+        name: "Documents",
+        href: "/data/documents",
+        icon: FileTextIcon,
+        title: "Documents",
+        description: "Browse acquired documents and their owned bytes.",
       },
       {
         name: "Metrics",
@@ -44,46 +52,40 @@ export const navigationGroups: NavigationGroup[] = [
     slug: "crawls",
     items: [
       {
-        name: "Graphs",
-        href: "/crawls/graphs",
+        name: "Plans",
+        href: "/crawls/plans",
         icon: GitForkIcon,
-        title: "Crawl Graphs",
-        description: "Compose and run page-acquisition graphs.",
+        title: "Crawl Plans",
+        description: "Compose and run reusable page-acquisition plans.",
       },
       {
         name: "Schedules",
         href: "/crawls/schedules",
         icon: CalendarClockIcon,
         title: "Crawl Schedules",
-        description: "Run crawl graphs automatically on intervals or cron.",
+        description: "Run crawl plans automatically on intervals or cron.",
+      },
+      {
+        name: "Content policies",
+        href: "/content-policies",
+        icon: ShieldCheckIcon,
+        title: "Content Policies",
+        description:
+          "Control response handling and rendered-content completion.",
+      },
+      {
+        name: "Domain policies",
+        href: "/domain-policies",
+        icon: Globe2Icon,
+        title: "Domain Policies",
+        description: "Limit concurrent and paced requests to websites.",
       },
       {
         name: "Metrics",
         href: "/crawls/metrics",
         icon: ChartNoAxesCombinedIcon,
         title: "Crawl Metrics",
-        description: "See page acquisition progress, capacity, and graph runs.",
-      },
-    ],
-  },
-  {
-    name: "Settings",
-    slug: "settings",
-    items: [
-      {
-        name: "Content policies",
-        href: "/crawl-policies",
-        icon: ShieldCheckIcon,
-        title: "Policies",
-        description:
-          "Control response handling and rendered-content completion.",
-      },
-      {
-        name: "Domain politeness",
-        href: "/domain-policies",
-        icon: Globe2Icon,
-        title: "Domain Politeness",
-        description: "Limit concurrent and paced requests to websites.",
+        description: "See page acquisition progress, capacity, and crawl runs.",
       },
     ],
   },
@@ -92,20 +94,20 @@ export const navigationGroups: NavigationGroup[] = [
 export const defaultNavigationItem = navigationGroups[0].items[0]
 
 export function findNavigationItem(pathname: string) {
-  if (pathname.startsWith("/crawls/graphs/")) {
+  if (pathname.startsWith("/crawls/plans/")) {
     return navigationGroups
       .flatMap((group) => group.items)
-      .find((item) => item.href === "/crawls/graphs")
+      .find((item) => item.href === "/crawls/plans")
   }
   if (pathname.startsWith("/crawls/schedules/")) {
     return navigationGroups
       .flatMap((group) => group.items)
       .find((item) => item.href === "/crawls/schedules")
   }
-  if (pathname.startsWith("/crawl-policies/")) {
+  if (pathname.startsWith("/content-policies/")) {
     return navigationGroups
       .flatMap((group) => group.items)
-      .find((item) => item.href === "/crawl-policies")
+      .find((item) => item.href === "/content-policies")
   }
   return navigationGroups
     .flatMap((group) => group.items)

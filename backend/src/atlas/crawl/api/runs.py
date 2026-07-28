@@ -3,22 +3,25 @@
 import asyncio
 import json
 from datetime import datetime
+from enum import StrEnum
 from typing import Annotated, Literal
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from atlas.crawl.submission import submit_graph_run
 from atlas.crawl.api_runtime import ApiGraphRuntime, get_graph_runtime
-from atlas.platform.catalogue.control import CatalogueControl, get_catalogue_control
 from atlas.crawl.control.crawl_graphs.models import CrawlGraph
 from atlas.crawl.control.crawl_graphs.schemas import (
     DEFAULT_GRAPH_RUN_MAX_CRAWLS,
     MAX_GRAPH_RUN_CRAWLS,
+    FrozenGraphEdge,
+    FrozenGraphNode,
+    FrozenGraphSnapshot,
 )
 from atlas.crawl.control.crawl_graphs.service import (
     CrawlGraphNotFoundError,
@@ -33,19 +36,64 @@ from atlas.crawl.runtime.graph_queue import (
 )
 from atlas.crawl.runtime.graph_runs import (
     GraphRunNotFoundError,
+    create_graph_run,
     pause_graph_run,
     request_cancellation,
+    resolve_policy_snapshots,
     resume_graph_run,
 )
+from atlas.crawl.runtime.graph_queue import normalize_request_url
 
 router = APIRouter(prefix="/graph-runs", tags=["graph-runs"])
-trigger_router = APIRouter(prefix="/crawl-graphs", tags=["crawl-graphs"])
+trigger_router = APIRouter(prefix="/crawl-plans", tags=["crawl-plans"])
+crawl_router = APIRouter(prefix="/crawls", tags=["crawls"])
+
+_BUILTIN_PLAN_NAMESPACE = UUID("fb6992b7-1908-4672-93af-207007c83fe2")
+
+
+class CrawlRelationScope(StrEnum):
+    same_origin = "same_origin"
+    same_host = "same_host"
+    same_site = "same_site"
+    external = "external"
+
+
+class CrawlCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(min_length=1, max_length=8_192)
+    depth: int | None = Field(default=None, ge=0, le=32)
+    relation_scope: CrawlRelationScope | None = None
+    plan: str | None = Field(
+        default=None,
+        pattern=r"^[a-z0-9][a-z0-9_-]{0,62}$",
+    )
+    max_crawls: int = Field(
+        default=DEFAULT_GRAPH_RUN_MAX_CRAWLS,
+        ge=1,
+        le=MAX_GRAPH_RUN_CRAWLS,
+    )
+    max_run_seconds: int | None = Field(
+        default=None,
+        ge=60,
+        le=365 * 24 * 60 * 60,
+    )
+
+    @model_validator(mode="after")
+    def validate_strategy(self) -> "CrawlCreate":
+        if self.plan is not None and (
+            self.depth is not None or self.relation_scope is not None
+        ):
+            raise ValueError(
+                "A crawl chooses either a stored plan or depth/relation_scope."
+            )
+        return self
 
 
 class GraphRunTrigger(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    urls: list[str] = Field(min_length=1, max_length=10_000)
+    url: str = Field(min_length=1, max_length=8_192)
     max_crawls: int = Field(
         default=DEFAULT_GRAPH_RUN_MAX_CRAWLS,
         ge=1,
@@ -59,15 +107,15 @@ class GraphRunTrigger(BaseModel):
 
 
 class GraphRunSubmission(BaseModel):
-    graph_id: UUID
+    plan_id: UUID
     run_id: UUID
     status: str = "queued"
 
 
 class GraphRunSummary(BaseModel):
     id: UUID
-    graph_id: UUID
-    graph_slug: str | None
+    plan_id: UUID
+    plan_slug: str | None
     status: Literal[
         "queued",
         "running",
@@ -79,7 +127,7 @@ class GraphRunSummary(BaseModel):
     ]
     trigger_kind: Literal["manual", "schedule"]
     trigger_schedule_id: UUID | None
-    trigger_urls: tuple[str, ...]
+    url: str
     max_crawls: int
     crawl_limit_reached: bool
     request_count: int
@@ -134,6 +182,64 @@ class GraphRunFailureSummary(BaseModel):
     total: int
 
 
+def _builtin_plan_snapshot(
+    depth: int,
+    relation_scope: CrawlRelationScope,
+) -> FrozenGraphSnapshot:
+    plan_id = uuid5(
+        _BUILTIN_PLAN_NAMESPACE,
+        f"depth={depth}:relation_scope={relation_scope.value}",
+    )
+    nodes = [
+        FrozenGraphNode(
+            id=uuid5(plan_id, f"depth-{level}"),
+            name="root" if level == 0 else f"depth-{level}",
+        )
+        for level in range(depth + 1)
+    ]
+    scopes = {
+        CrawlRelationScope.same_origin: ("self", "same_origin"),
+        CrawlRelationScope.same_host: (
+            "self",
+            "same_origin",
+            "same_host",
+        ),
+        CrawlRelationScope.same_site: (
+            "self",
+            "same_origin",
+            "same_host",
+            "same_site",
+        ),
+        CrawlRelationScope.external: (
+            "self",
+            "same_origin",
+            "same_host",
+            "same_site",
+            "external",
+        ),
+    }[relation_scope]
+    values = ", ".join(f"'{scope}'" for scope in scopes)
+    edges = [
+        FrozenGraphEdge(
+            id=uuid5(plan_id, f"edge-{level}-{level + 1}"),
+            name=f"depth-{level + 1}",
+            source_node_id=nodes[level].id,
+            target_node_id=nodes[level + 1].id,
+            sql=(
+                "SELECT target_url AS url FROM nav.links "
+                f"WHERE relation_scope IN ({values})"
+            ),
+        )
+        for level in range(depth)
+    ]
+    return FrozenGraphSnapshot(
+        graph_id=plan_id,
+        root_node_id=nodes[0].id,
+        nodes=nodes,
+        edges=edges,
+    )
+
+
 async def _run_summaries(
     session: Session,
     progress,
@@ -156,8 +262,12 @@ async def _run_summaries(
     )
     return [
         GraphRunSummary(
-            **run.model_dump(),
-            graph_slug=slugs.get(run.graph_id),
+            **run.model_dump(
+                exclude={"graph_id", "snapshot", "trigger_urls"}
+            ),
+            plan_id=run.graph_id,
+            plan_slug=slugs.get(run.graph_id),
+            url=run.trigger_urls[0],
             queued_request_count=counts[0],
             fetching_request_count=counts[1],
             navigating_request_count=counts[2],
@@ -205,6 +315,59 @@ async def capacity(
     )
 
 
+@crawl_router.post("/", response_model=GraphRunSubmission, status_code=202)
+async def crawl(
+    payload: CrawlCreate,
+    session: Annotated[Session, Depends(get_session)],
+    runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
+) -> GraphRunSubmission:
+    if payload.plan is not None:
+        plan_id = session.scalar(
+            select(CrawlGraph.id).where(CrawlGraph.slug == payload.plan)
+        )
+        if plan_id is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Crawl plan {payload.plan!r} was not found.",
+            )
+        try:
+            run = await submit_graph_run(
+                session,
+                runtime=runtime,
+                graph_id=plan_id,
+                url=payload.url,
+                max_crawls=payload.max_crawls,
+                max_run_seconds=payload.max_run_seconds,
+            )
+        except (CrawlGraphValidationError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return GraphRunSubmission(plan_id=plan_id, run_id=run.id)
+
+    depth = payload.depth if payload.depth is not None else 0
+    relation_scope = (
+        payload.relation_scope or CrawlRelationScope.same_origin
+    )
+    snapshot = _builtin_plan_snapshot(depth, relation_scope)
+    try:
+        normalized_url = normalize_request_url(payload.url)
+        policies = resolve_policy_snapshots(session, [normalized_url])
+        session.commit()
+        run = await create_graph_run(
+            runs=runtime.runs,
+            requests=runtime.requests,
+            progress=runtime.runs,
+            jetstream=runtime.jetstream,
+            snapshot=snapshot,
+            urls=[normalized_url],
+            policy_resolver=policies.__getitem__,
+            max_crawls=payload.max_crawls,
+            max_run_seconds=payload.max_run_seconds,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return GraphRunSubmission(plan_id=snapshot.graph_id, run_id=run.id)
+
+
 @trigger_router.post(
     "/{graph_id}/runs", response_model=GraphRunSubmission, status_code=202
 )
@@ -212,7 +375,6 @@ async def trigger(
     graph_id: UUID,
     payload: GraphRunTrigger,
     session: Annotated[Session, Depends(get_session)],
-    control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
     runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
 ) -> GraphRunSubmission:
     try:
@@ -220,8 +382,7 @@ async def trigger(
             session,
             runtime=runtime,
             graph_id=graph_id,
-            urls=payload.urls,
-            catalogue_snapshot_resolver=control.latest_snapshot,
+            url=payload.url,
             max_crawls=payload.max_crawls,
             max_run_seconds=payload.max_run_seconds,
         )
@@ -232,7 +393,7 @@ async def trigger(
 
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return GraphRunSubmission(graph_id=graph_id, run_id=run.id)
+    return GraphRunSubmission(plan_id=graph_id, run_id=run.id)
 
 
 @trigger_router.get("/{graph_id}/runs/active", response_model=GraphRunList)

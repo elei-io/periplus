@@ -51,7 +51,7 @@ def upgrade() -> None:
         initially='DEFERRED',
         deferrable=True,
     )
-    op.create_table('crawl_policies',
+    op.create_table('content_policies',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('slug', sa.Text(), nullable=False),
     sa.Column('scheme', sa.Text(), nullable=False),
@@ -62,14 +62,14 @@ def upgrade() -> None:
     sa.Column('enabled', sa.Boolean(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.CheckConstraint("path_mode IN ('exact', 'prefix')", name='ck_crawl_policies_path_mode'),
-    sa.CheckConstraint("scheme IN ('*', 'http', 'https')", name='ck_crawl_policies_scheme'),
+    sa.CheckConstraint("path_mode IN ('exact', 'prefix')", name='ck_content_policies_path_mode'),
+    sa.CheckConstraint("scheme IN ('*', 'http', 'https')", name='ck_content_policies_scheme'),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('scheme', 'host', 'path_prefix', 'path_mode', name='uq_crawl_policies_match'),
+    sa.UniqueConstraint('scheme', 'host', 'path_prefix', 'path_mode', name='uq_content_policies_match'),
     sa.UniqueConstraint('slug')
     )
-    op.create_index('ix_crawl_policies_enabled', 'crawl_policies', ['enabled'], unique=False)
-    op.create_index('ix_crawl_policies_host', 'crawl_policies', ['host'], unique=False)
+    op.create_index('ix_content_policies_enabled', 'content_policies', ['enabled'], unique=False)
+    op.create_index('ix_content_policies_host', 'content_policies', ['host'], unique=False)
     op.create_table('domain_policies',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('slug', sa.Text(), nullable=False),
@@ -91,8 +91,6 @@ def upgrade() -> None:
     sa.Column('graph_id', sa.UUID(), nullable=False),
     sa.Column('trigger_kind', sa.Text(), nullable=False),
     sa.Column('trigger_schedule_id', sa.UUID(), nullable=True),
-    sa.Column('catalogue_snapshot_id', sa.BigInteger(), nullable=True),
-    sa.Column('catalogue_consistency', sa.Text(), nullable=False),
     sa.Column('generation', sa.Integer(), nullable=False),
     sa.Column('status', sa.Text(), nullable=False),
     sa.Column('snapshot', sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), 'postgresql'), nullable=False),
@@ -115,7 +113,6 @@ def upgrade() -> None:
     sa.Column('deadline_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('cancel_requested_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('error', sa.Text(), nullable=True),
-    sa.CheckConstraint("catalogue_consistency = 'run_frozen'", name='ck_graph_runs_catalogue_consistency'),
     sa.CheckConstraint("status IN ('queued', 'running', 'paused', 'completed', 'completed_with_errors', 'failed', 'cancelled')", name='ck_graph_runs_status'),
     sa.CheckConstraint("trigger_kind IN ('manual', 'schedule')", name='ck_graph_runs_trigger_kind'),
     sa.CheckConstraint('generation >= 1', name='ck_graph_runs_generation'),
@@ -137,7 +134,6 @@ def upgrade() -> None:
     sa.Column('name', sa.Text(), nullable=False),
     sa.Column('description', sa.Text(), nullable=True),
     sa.Column('sql', sa.Text(), nullable=False),
-    sa.Column('dedupe_mode', sa.Enum('graph', 'crawl', 'document', name='crawl_graph_edge_dedupe_mode'), server_default='graph', nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['graph_id', 'source_node_id'], ['crawl_graph_nodes.graph_id', 'crawl_graph_nodes.id'], name='fk_crawl_graph_edges_source_node', ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['graph_id', 'target_node_id'], ['crawl_graph_nodes.graph_id', 'crawl_graph_nodes.id'], name='fk_crawl_graph_edges_target_node', ondelete='CASCADE'),
@@ -196,7 +192,7 @@ def upgrade() -> None:
     sa.Column('ends_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('maximum_run_count', sa.Integer(), nullable=True),
     sa.Column('max_crawls', sa.Integer(), nullable=False),
-    sa.Column('root_urls', sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), 'postgresql'), nullable=False),
+    sa.Column('root_url', sa.Text(), nullable=False),
     sa.Column('overlap_policy', sa.Text(), nullable=False),
     sa.Column('misfire_policy', sa.Text(), nullable=False),
     sa.Column('run_count', sa.Integer(), nullable=False),
@@ -349,9 +345,9 @@ def downgrade() -> None:
     op.drop_table('graph_runs')
     op.drop_index('ix_domain_policies_enabled', table_name='domain_policies')
     op.drop_table('domain_policies')
-    op.drop_index('ix_crawl_policies_host', table_name='crawl_policies')
-    op.drop_index('ix_crawl_policies_enabled', table_name='crawl_policies')
-    op.drop_table('crawl_policies')
+    op.drop_index('ix_content_policies_host', table_name='content_policies')
+    op.drop_index('ix_content_policies_enabled', table_name='content_policies')
+    op.drop_table('content_policies')
     op.drop_constraint('fk_crawl_graphs_root_node', 'crawl_graphs', type_='foreignkey')
     op.drop_index(op.f('ix_crawl_graph_nodes_graph_id'), table_name='crawl_graph_nodes')
     op.drop_table('crawl_graph_nodes')

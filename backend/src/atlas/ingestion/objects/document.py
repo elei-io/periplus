@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cache
@@ -135,15 +136,24 @@ class ExactDocumentRepository:
         )
 
     def read_bytes(self, object_key: str, *, chunk_bytes: int = 1024 * 1024) -> bytes:
+        return b"".join(self.iter_bytes(object_key, chunk_bytes=chunk_bytes))
+
+    def iter_bytes(
+        self,
+        object_key: str,
+        *,
+        chunk_bytes: int = 1024 * 1024,
+    ) -> Iterator[bytes]:
+        """Yield exact bytes while verifying their content-addressed identity."""
+
         if chunk_bytes <= 0:
             raise ValueError("chunk_bytes must be greater than zero")
-        chunks: list[bytes] = []
         digest = hashlib.sha256()
         try:
             with self.store.open(object_key) as content:
                 while chunk := content.read(chunk_bytes):
                     digest.update(chunk)
-                    chunks.append(chunk)
+                    yield chunk
         except RepositoryIntegrityError:
             raise
         except Exception as exc:
@@ -155,7 +165,6 @@ class ExactDocumentRepository:
             raise RepositoryIntegrityError(
                 f"document object failed content-address verification: {object_key}"
             )
-        return b"".join(chunks)
 
     def verify(
         self,

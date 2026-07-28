@@ -7,7 +7,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 
-from atlas.crawl.control.crawl_policies.service import ensure_default_crawl_policy
+from atlas.crawl.control.content_policies.service import ensure_default_content_policy
 from atlas.crawl.control.domain_policies.service import ensure_default_domain_policy
 from atlas.platform.postgres.session import session_scope
 from atlas.platform.catalogue import catalogue_from_env
@@ -31,7 +31,7 @@ def bootstrap_catalogue() -> None:
 
 def seed_system_control_plane() -> None:
     with session_scope() as session:
-        ensure_default_crawl_policy(session)
+        ensure_default_content_policy(session)
         ensure_default_domain_policy(session)
 
 

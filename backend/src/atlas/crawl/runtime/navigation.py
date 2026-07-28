@@ -13,7 +13,7 @@ from atlas.ingestion.objects.store import ObjectStore
 from atlas.crawl.runtime.navigation_contract import EdgeSelectionPackage, NavigationPackage
 
 NAVIGATION_RECIPE = sha256(
-    f"{PARSER_NAME}:{PARSER_VERSION}:{PARSER_OPTIONS_HASH}:page-links-v6".encode()
+    f"{PARSER_NAME}:{PARSER_VERSION}:{PARSER_OPTIONS_HASH}:nav-links-v8".encode()
 ).hexdigest()
 _EVENT_NAMESPACE = UUID("f0d15d8a-a735-48b7-a576-a08f85ecac74")
 
@@ -34,7 +34,7 @@ LINKS_SCHEMA = pa.schema(
         ("target_path", pa.string()),
         ("target_query", pa.string()),
         ("target_fragment", pa.string()),
-        ("relation_kind", pa.string()),
+        ("relation_scope", pa.string()),
         ("raw_href", pa.string()),
         ("element_index", pa.int64()),
     ]
@@ -49,6 +49,7 @@ def build_navigation_package(
     rows = []
     for links in grouped.values():
         for link in links:
+            relation_kind = str(link["relation_kind"])
             rows.append(
                 {
                     "content_sha256": content_sha256,
@@ -68,7 +69,13 @@ def build_navigation_package(
                     "target_path": str(link["target_path"]),
                     "target_query": link["target_query"],
                     "target_fragment": link["target_fragment"],
-                    "relation_kind": str(link["relation_kind"]),
+                    "relation_scope": (
+                        "self"
+                        if relation_kind == "same_url"
+                        else "same_origin"
+                        if relation_kind in {"same_path", "same_origin"}
+                        else relation_kind
+                    ),
                     "raw_href": str(link.get("raw_href") or ""),
                     "element_index": int(link["element_index"]),
                 }
@@ -115,7 +122,7 @@ def put_navigation_package(
     return NavigationPackage(
         object_name=name,
         sha256=digest,
-        schema_version=5,
+        schema_version=6,
         recipe=NAVIGATION_RECIPE,
         row_count=row_count,
         byte_size=len(payload),

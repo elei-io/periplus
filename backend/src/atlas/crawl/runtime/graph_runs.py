@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4, uuid5
@@ -16,21 +16,18 @@ from atlas.platform.config.performance import (
     CRAWL_RUN_ACQUISITION_PENDING_LIMIT,
     GRAPH_ACK_WAIT_SECONDS,
 )
-from atlas.crawl.control.crawl_policies.schemas import EffectivePolicySnapshot
-from atlas.crawl.control.crawl_policies.service import (
-    find_crawl_policies_for_urls,
-    policy_snapshot,
+from atlas.crawl.control.content_policies.schemas import EffectivePolicySnapshot
+from atlas.crawl.control.content_policies.service import (
+    content_policy_snapshot,
+    find_content_policies_for_urls,
 )
-from atlas.crawl.control.crawl_policies.variance import vary_content_policy
+from atlas.crawl.control.content_policies.variance import vary_content_policy
 from atlas.crawl.control.domain_policies.service import (
     find_domain_policies_for_urls,
     domain_policy_snapshot,
 )
 from atlas.platform.postgres.session import session_scope
-from atlas.crawl.control.crawl_graphs.schemas import (
-    DEFAULT_GRAPH_RUN_MAX_CRAWLS,
-    EdgeDedupeMode,
-)
+from atlas.crawl.control.crawl_graphs.schemas import DEFAULT_GRAPH_RUN_MAX_CRAWLS
 from .graph_queue import (
     CrawlRequest,
     EdgeEvaluation,
@@ -114,16 +111,16 @@ def resolve_policy_snapshot(session, url: str) -> dict:
 
 
 def resolve_policy_snapshots(session, urls: list[str]) -> dict[str, dict]:
-    crawls = find_crawl_policies_for_urls(session, urls=urls)
+    content_policies = find_content_policies_for_urls(session, urls=urls)
     domains = find_domain_policies_for_urls(session, urls=urls)
     resolved = {}
     for url in urls:
-        crawl_snapshot = policy_snapshot(crawls[url])
+        content_snapshot = content_policy_snapshot(content_policies[url])
         varied_content, content_variance = vary_content_policy(
-            crawl_snapshot.content
+            content_snapshot.content
         )
         resolved[url] = EffectivePolicySnapshot(
-            crawl=crawl_snapshot.model_copy(
+            content=content_snapshot.model_copy(
                 update={
                     "content": varied_content,
                     "content_variance": content_variance,
@@ -178,9 +175,7 @@ async def admit_request(
     node_id: UUID,
     url: str,
     policy_resolver: Callable[[str], dict],
-    dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph,
     source_crawl_id: UUID | None = None,
-    source_content_sha256: str | None = None,
     source_edge_id: UUID | None = None,
     parent_request_id: UUID | None = None,
     now: datetime | None = None,
@@ -216,9 +211,7 @@ async def admit_request(
             node_id=node_id,
             url=normalized,
             effective_policy_snapshot=policy_resolver(normalized),
-            dedupe_mode=dedupe_mode,
             source_crawl_id=source_crawl_id,
-            source_content_sha256=source_content_sha256,
             source_edge_id=source_edge_id,
             parent_request_id=parent_request_id,
             now=now,
@@ -314,7 +307,6 @@ async def create_graph_run(
     snapshot: FrozenGraphSnapshot,
     urls: list[str],
     policy_resolver: Callable[[str], dict],
-    catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]] | None = None,
     trigger_kind: str = "manual",
     run_id: UUID | None = None,
     trigger_schedule_id: UUID | None = None,
@@ -323,28 +315,8 @@ async def create_graph_run(
     now: datetime | None = None,
 ) -> GraphRun:
     existing = await get_graph_run(runs, run_id) if run_id is not None else None
-    if existing is None:
-        if snapshot.edges:
-            raise ValueError(
-                "SQL graph edges are unavailable until the C compiler is delivered."
-            )
-    else:
+    if existing is not None:
         snapshot = existing.snapshot
-    catalogue_snapshot_id = (
-        existing.catalogue_snapshot_id if existing is not None else None
-    )
-    if existing is None and any(
-        edge.uses_catalogue for edge in snapshot.edges
-    ):
-        if catalogue_snapshot_resolver is None:
-            raise RuntimeError(
-                "historical edge SQL requires a catalogue snapshot resolver"
-            )
-        catalogue_snapshot_id = await catalogue_snapshot_resolver()
-        if catalogue_snapshot_id is None:
-            raise RuntimeError(
-                "historical edge SQL requires an initialized catalogue snapshot"
-            )
     run = new_graph_run(
         snapshot,
         urls,
@@ -352,7 +324,6 @@ async def create_graph_run(
         now=now,
         run_id=run_id,
         trigger_schedule_id=trigger_schedule_id,
-        catalogue_snapshot_id=catalogue_snapshot_id,
         max_crawls=max_crawls,
         max_run_seconds=(
             max_run_seconds
@@ -548,9 +519,6 @@ async def handle_navigation_readiness(
                 edge_id=edge.id,
                 generation=event.generation,
                 navigation=event.navigation,
-                catalogue_snapshot_id=(
-                    run.catalogue_snapshot_id if edge.uses_catalogue else None
-                ),
             )
             identity = edge_evaluation_identity(
                 run.id, request.id, event.crawl_id, edge.id
@@ -669,9 +637,7 @@ async def evaluate_edge(
             asyncio.to_thread(
                 lambda: list(
                     execute_urls(
-                        edge.executable_sql
-                        if edge.executable_sql is not None
-                        else _missing_frozen_edge_sql(edge.id),
+                        edge.sql,
                         {
                             "crawl_id": work.crawl_id,
                             "_page_url": request.url,
@@ -710,9 +676,7 @@ async def evaluate_edge(
                     node_id=edge.target_node_id,
                     url=str(url),
                     policy_resolver=policy_resolver,
-                    dedupe_mode=edge.dedupe_mode,
                     source_crawl_id=work.crawl_id,
-                    source_content_sha256=request.content_sha256,
                     source_edge_id=edge.id,
                     parent_request_id=request.id,
                 )
@@ -812,7 +776,3 @@ async def evaluate_edge(
             f"edge evaluation {identity} was reclaimed before completion"
         )
     return count
-
-
-def _missing_frozen_edge_sql(edge_id: UUID) -> str:
-    raise RuntimeError(f"Frozen edge {edge_id} has no executable SQL.")

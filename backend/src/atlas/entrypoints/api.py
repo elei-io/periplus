@@ -5,13 +5,14 @@ from fastapi import FastAPI
 
 from atlas.crawl.api_runtime import ApiGraphRuntime
 from atlas.crawl.api import (
-    crawl_policies,
+    content_policies,
     domain_policies,
     graphs,
     runs,
     schedules,
 )
 from atlas.ingestion import http as ingestion
+from atlas.ingestion import documents_http as documents
 from atlas.materialization import http as materializations
 from atlas.operations.api import data_status
 from atlas.operations.api import ingestion as repository_operations
@@ -57,6 +58,7 @@ async def lifespan(app: FastAPI):
         evidence_import_service = EvidenceImportService()
         await evidence_import_service.start()
         app.state.evidence_import_service = evidence_import_service
+        app.state.document_store = evidence_import_service.document_repository.store
         outbox_stop = asyncio.Event()
         outbox_task = asyncio.create_task(
             run_outbox_relay(runs, jetstream, stop=outbox_stop),
@@ -73,7 +75,6 @@ async def lifespan(app: FastAPI):
                 requests=requests,
                 progress=runs,
                 jetstream=jetstream,
-                catalogue_snapshot_resolver=catalogue_control.latest_snapshot,
             ),
             name="crawl-scheduler",
         )
@@ -102,11 +103,13 @@ app.include_router(data_status.router)
 app.include_router(repository_operations.router)
 app.include_router(materializations.router)
 app.include_router(ingestion.router)
+app.include_router(documents.router)
 app.include_router(sql_console.router)
 app.include_router(graphs.router)
 app.include_router(schedules.router)
 app.include_router(schedules.resource_router)
 app.include_router(runs.trigger_router)
+app.include_router(runs.crawl_router)
 app.include_router(runs.router)
-app.include_router(crawl_policies.router)
+app.include_router(content_policies.router)
 app.include_router(domain_policies.router)

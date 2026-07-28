@@ -9,10 +9,14 @@ export type PaginatedResponse<T> = {
 
 export type ResponseOutcome = "retry" | "fail" | "skip" | "accept"
 
-export type ContentPolicy = {
+export type ContentPolicyConfig = {
   accepted_content_types: string[]
   response_rules: {
-    http_status: Array<{ minimum: number; maximum: number; outcome: ResponseOutcome }>
+    http_status: Array<{
+      minimum: number
+      maximum: number
+      outcome: ResponseOutcome
+    }>
     unsupported_content_type: ResponseOutcome
   }
   completion: {
@@ -46,7 +50,7 @@ export type ContentPolicy = {
   }
 }
 
-export type CrawlPolicyRecord = {
+export type ContentPolicyRecord = {
   id: string
   slug: string
   scheme: "*" | "http" | "https"
@@ -54,25 +58,34 @@ export type CrawlPolicyRecord = {
   path_prefix: string
   path_mode: "exact" | "prefix"
   match: string
-  content: ContentPolicy
+  content: ContentPolicyConfig
   enabled: boolean
   created_at: string
   updated_at: string
 }
 
-export type CrawlPolicyDetailRecord = CrawlPolicyRecord
-export type CrawlPolicyListResponse = PaginatedResponse<CrawlPolicyRecord>
+export type ContentPolicyDetailRecord = ContentPolicyRecord
+export type ContentPolicyListResponse = PaginatedResponse<ContentPolicyRecord>
 
-export type CrawlPolicyUpdateRequest = Partial<
-  Pick<CrawlPolicyRecord, "enabled" | "scheme" | "host" | "path_prefix" | "path_mode" | "content">
+export type ContentPolicyUpdateRequest = Partial<
+  Pick<
+    ContentPolicyRecord,
+    "enabled" | "scheme" | "host" | "path_prefix" | "path_mode" | "content"
+  >
 >
 
-export type CrawlPolicyCreateRequest = Pick<
-  CrawlPolicyRecord,
-  "slug" | "scheme" | "host" | "path_prefix" | "path_mode" | "content" | "enabled"
+export type ContentPolicyCreateRequest = Pick<
+  ContentPolicyRecord,
+  | "slug"
+  | "scheme"
+  | "host"
+  | "path_prefix"
+  | "path_mode"
+  | "content"
+  | "enabled"
 >
 
-export type CrawlPolicyFilters = {
+export type ContentPolicyFilters = {
   matchPattern: string
   enabled: "all" | "enabled" | "disabled"
 }
@@ -89,5 +102,20 @@ export type DomainPolicyRecord = {
 }
 
 export type DomainPolicyListResponse = PaginatedResponse<DomainPolicyRecord>
-export type DomainPolicyCreateRequest = Pick<DomainPolicyRecord, "slug" | "host_match" | "maximum_concurrency" | "minimum_request_interval_seconds" | "enabled">
-export type DomainPolicyUpdateRequest = Partial<Pick<DomainPolicyRecord, "host_match" | "maximum_concurrency" | "minimum_request_interval_seconds" | "enabled">>
+export type DomainPolicyCreateRequest = Pick<
+  DomainPolicyRecord,
+  | "slug"
+  | "host_match"
+  | "maximum_concurrency"
+  | "minimum_request_interval_seconds"
+  | "enabled"
+>
+export type DomainPolicyUpdateRequest = Partial<
+  Pick<
+    DomainPolicyRecord,
+    | "host_match"
+    | "maximum_concurrency"
+    | "minimum_request_interval_seconds"
+    | "enabled"
+  >
+>

@@ -3,15 +3,12 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, ForeignKeyConstraint, Text, UniqueConstraint
+from sqlalchemy import DateTime, Float, ForeignKey, ForeignKeyConstraint, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from atlas.platform.postgres import Base
 from atlas.platform.postgres.types import utc_now
-from .schemas import EdgeDedupeMode
-
-
 class CrawlGraph(Base):
     __tablename__ = "crawl_graphs"
     __table_args__ = (
@@ -86,10 +83,5 @@ class CrawlGraphEdge(Base):
     name: Mapped[str] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     sql: Mapped[str] = mapped_column(Text)
-    dedupe_mode: Mapped[EdgeDedupeMode] = mapped_column(
-        Enum(EdgeDedupeMode, name="crawl_graph_edge_dedupe_mode"),
-        default=EdgeDedupeMode.graph,
-        server_default=EdgeDedupeMode.graph.value,
-    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     graph: Mapped[CrawlGraph] = relationship(back_populates="edges")

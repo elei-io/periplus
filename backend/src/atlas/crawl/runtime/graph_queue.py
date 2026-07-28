@@ -15,12 +15,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from atlas.crawl.control.crawl_graphs.schemas import (
     DEFAULT_GRAPH_RUN_MAX_CRAWLS,
     MAX_GRAPH_RUN_CRAWLS,
-    EdgeDedupeMode,
     FrozenGraphEdge,
     FrozenGraphNode,
     FrozenGraphSnapshot,
 )
-from atlas.crawl.control.crawl_policies.schemas import CrawlPolicySnapshot
 from atlas.urls import normalize_url
 from atlas.crawl.runtime.navigation_contract import EdgeSelectionPackage, NavigationPackage
 from atlas.platform.messaging.topology import list_kv_keys
@@ -44,7 +42,6 @@ GraphRunStatus = Literal[
     "cancelled",
 ]
 CrawlRequestStatus = Literal["queued", "crawling", "awaiting_navigation", "evaluating_edges", "completed", "failed", "cancelled"]
-CatalogueConsistency = Literal["run_frozen"]
 FailureStage = Literal[
     "admission",
     "connection",
@@ -78,8 +75,6 @@ class GraphRun(BaseModel):
     graph_id: UUID
     trigger_kind: TriggerKind
     trigger_schedule_id: UUID | None = None
-    catalogue_snapshot_id: int | None = Field(default=None, ge=0)
-    catalogue_consistency: CatalogueConsistency = "run_frozen"
     generation: int = Field(default=1, ge=1)
     status: GraphRunStatus = "queued"
     snapshot: FrozenGraphSnapshot
@@ -143,7 +138,6 @@ class EdgeWork(BaseModel):
     edge_id: UUID
     generation: int = Field(default=1, ge=1)
     navigation: NavigationPackage
-    catalogue_snapshot_id: int | None = Field(default=None, ge=0)
 
 
 class EdgeEvaluation(BaseModel):
@@ -194,24 +188,11 @@ def normalize_request_url(url: str) -> str:
 def request_identity(
     graph_run_id: UUID,
     url: str,
-    *,
-    dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph,
-    source_edge_id: UUID | None = None,
-    source_crawl_id: UUID | None = None,
-    source_content_sha256: str | None = None,
 ) -> str:
     normalized = normalize_request_url(url)
-    if dedupe_mode == EdgeDedupeMode.graph:
-        value = f"{graph_run_id}:graph:{normalized}"
-    elif dedupe_mode == EdgeDedupeMode.crawl:
-        if source_edge_id is None or source_crawl_id is None:
-            raise ValueError("Crawl deduplication requires a source edge and crawl.")
-        value = f"{graph_run_id}:crawl:{source_edge_id}:{source_crawl_id}:{normalized}"
-    else:
-        if source_edge_id is None or source_content_sha256 is None:
-            raise ValueError("Document deduplication requires a source edge and content hash.")
-        value = f"{graph_run_id}:document:{source_edge_id}:{source_content_sha256}:{normalized}"
-    return hashlib.sha256(value.encode()).hexdigest()
+    return hashlib.sha256(
+        f"{graph_run_id}:plan:{normalized}".encode()
+    ).hexdigest()
 
 
 def edge_evaluation_identity(graph_run_id: UUID, crawl_request_id: UUID, crawl_id: UUID, edge_id: UUID) -> str:
@@ -226,7 +207,6 @@ def new_graph_run(
     *,
     run_id: UUID | None = None,
     trigger_schedule_id: UUID | None = None,
-    catalogue_snapshot_id: int | None = None,
     max_crawls: int = DEFAULT_GRAPH_RUN_MAX_CRAWLS,
     max_run_seconds: int | None = None,
 ) -> GraphRun:
@@ -250,7 +230,6 @@ def new_graph_run(
         graph_id=snapshot.graph_id,
         trigger_kind=trigger_kind,
         trigger_schedule_id=trigger_schedule_id,
-        catalogue_snapshot_id=catalogue_snapshot_id,
         snapshot=snapshot,
         trigger_urls=normalized,
         max_crawls=max_crawls,

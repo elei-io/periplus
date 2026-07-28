@@ -4,8 +4,11 @@ import { toast } from "sonner"
 import { apiErrorFromResponse, apiUrl, extractApiError } from "@/lib/api"
 import type {
   CrawlGraphDetail,
+  CrawlGraphEdge,
+  CrawlGraphEdgeInput,
   CrawlGraphListResponse,
   CrawlGraphNode,
+  CrawlGraphUpdateInput,
   CrawlConcurrencyLimits,
   GraphRunSubmission,
   GraphRunTrigger,
@@ -21,7 +24,7 @@ import type {
   ScheduleTiming,
 } from "@/types/graphs"
 
-const graphsKey = ["crawl-graphs"] as const
+const graphsKey = ["crawl-plans"] as const
 
 async function jsonResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -35,7 +38,7 @@ export function useCrawlGraphs() {
     queryKey: graphsKey,
     queryFn: async () =>
       jsonResponse<CrawlGraphListResponse>(
-        await fetch(apiUrl("/crawl-graphs/"))
+        await fetch(apiUrl("/crawl-plans/"))
       ),
   })
 }
@@ -46,7 +49,7 @@ export function useCrawlGraph(graphId: string | null) {
     enabled: graphId !== null,
     queryFn: async () =>
       jsonResponse<CrawlGraphDetail>(
-        await fetch(apiUrl(`/crawl-graphs/${graphId}`))
+        await fetch(apiUrl(`/crawl-plans/${graphId}`))
       ),
   })
 }
@@ -65,23 +68,33 @@ function useGraphMutation<TVariables, TResult>(
 }
 
 export function useCreateCrawlGraph() {
-  return useGraphMutation<
-    { slug: string; description: string },
-    CrawlGraphDetail
-  >(async (payload) =>
+  return useGraphMutation<void, CrawlGraphDetail>(async () =>
     jsonResponse<CrawlGraphDetail>(
-      await fetch(apiUrl("/crawl-graphs/"), {
+      await fetch(apiUrl("/crawl-plans/"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: "{}",
       })
     )
   )
 }
 
+export function useUpdateCrawlGraph(graphId: string) {
+  return useGraphMutation<CrawlGraphUpdateInput, CrawlGraphDetail>(
+    async (payload) =>
+      jsonResponse<CrawlGraphDetail>(
+        await fetch(apiUrl(`/crawl-plans/${graphId}`), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+      )
+  )
+}
+
 export function useDeleteCrawlGraph() {
   return useGraphMutation<string, void>(async (graphId) => {
-    const response = await fetch(apiUrl(`/crawl-graphs/${graphId}`), {
+    const response = await fetch(apiUrl(`/crawl-plans/${graphId}`), {
       method: "DELETE",
     })
     if (!response.ok) {
@@ -96,7 +109,7 @@ export function useCreateCrawlGraphNode(graphId: string) {
     CrawlGraphNode
   >(async (payload) =>
     jsonResponse(
-      await fetch(apiUrl(`/crawl-graphs/${graphId}/nodes`), {
+      await fetch(apiUrl(`/crawl-plans/${graphId}/nodes`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -108,7 +121,47 @@ export function useCreateCrawlGraphNode(graphId: string) {
 export function useDeleteCrawlGraphNode(graphId: string) {
   return useGraphMutation<string, void>(async (nodeId) => {
     const response = await fetch(
-      apiUrl(`/crawl-graphs/${graphId}/nodes/${nodeId}`),
+      apiUrl(`/crawl-plans/${graphId}/nodes/${nodeId}`),
+      { method: "DELETE" }
+    )
+    if (!response.ok) {
+      throw await apiErrorFromResponse(response)
+    }
+  })
+}
+
+export function useCreateCrawlGraphEdge(graphId: string) {
+  return useGraphMutation<CrawlGraphEdgeInput, CrawlGraphEdge>(
+    async (payload) =>
+      jsonResponse(
+        await fetch(apiUrl(`/crawl-plans/${graphId}/edges`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+      )
+  )
+}
+
+export function useUpdateCrawlGraphEdge(graphId: string) {
+  return useGraphMutation<
+    { id: string; payload: CrawlGraphEdgeInput },
+    CrawlGraphEdge
+  >(async ({ id, payload }) =>
+    jsonResponse(
+      await fetch(apiUrl(`/crawl-plans/${graphId}/edges/${id}`), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+    )
+  )
+}
+
+export function useDeleteCrawlGraphEdge(graphId: string) {
+  return useGraphMutation<string, void>(async (edgeId) => {
+    const response = await fetch(
+      apiUrl(`/crawl-plans/${graphId}/edges/${edgeId}`),
       { method: "DELETE" }
     )
     if (!response.ok) {
@@ -123,7 +176,7 @@ export function useUpdateCrawlGraphNode(graphId: string) {
     CrawlGraphNode
   >(async ({ id, ...payload }) =>
     jsonResponse(
-      await fetch(apiUrl(`/crawl-graphs/${graphId}/nodes/${id}`), {
+      await fetch(apiUrl(`/crawl-plans/${graphId}/nodes/${id}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -146,7 +199,7 @@ export function useUpdateCrawlGraphNodePosition(graphId: string) {
     }) =>
       jsonResponse<CrawlGraphNode>(
         await fetch(
-          apiUrl(`/crawl-graphs/${graphId}/nodes/${nodeId}/position`),
+          apiUrl(`/crawl-plans/${graphId}/nodes/${nodeId}/position`),
           {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
@@ -175,7 +228,7 @@ export function useUpdateCrawlGraphNodePosition(graphId: string) {
 export function useSetCrawlGraphRoot(graph: CrawlGraphDetail) {
   return useGraphMutation<string, CrawlGraphDetail>(async (rootNodeId) =>
     jsonResponse(
-      await fetch(apiUrl(`/crawl-graphs/${graph.id}`), {
+      await fetch(apiUrl(`/crawl-plans/${graph.id}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -193,7 +246,7 @@ export function useTriggerCrawlGraph(graphId: string) {
   return useMutation({
     mutationFn: async (payload: GraphRunTrigger) =>
       jsonResponse<GraphRunSubmission>(
-        await fetch(apiUrl(`/crawl-graphs/${graphId}/runs`), {
+        await fetch(apiUrl(`/crawl-plans/${graphId}/runs`), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
@@ -243,7 +296,7 @@ export function useActiveGraphRuns(graphId: string) {
     refetchInterval: 2_000,
     queryFn: async () =>
       jsonResponse<GraphRunListResponse>(
-        await fetch(apiUrl(`/crawl-graphs/${graphId}/runs/active`))
+        await fetch(apiUrl(`/crawl-plans/${graphId}/runs/active`))
       ),
   })
 }
@@ -254,9 +307,7 @@ export function useGraphRun(runId: string | null) {
     enabled: runId !== null,
     refetchInterval: (query) => {
       const status = (query.state.data as GraphRunRecord | undefined)?.status
-      return status === "queued" ||
-        status === "running" ||
-        status === "paused"
+      return status === "queued" || status === "running" || status === "paused"
         ? 2_000
         : false
     },
@@ -303,7 +354,7 @@ export function useCrawlSchedules(graphId: string) {
     refetchInterval: 15_000,
     queryFn: async () =>
       jsonResponse<CrawlScheduleListResponse>(
-        await fetch(apiUrl(`/crawl-graphs/${graphId}/schedules`))
+        await fetch(apiUrl(`/crawl-plans/${graphId}/schedules`))
       ),
   })
 }
@@ -351,7 +402,7 @@ export function useCreateCrawlSchedule(graphId: string) {
     graphId,
     async (payload) =>
       jsonResponse<CrawlSchedule>(
-        await fetch(apiUrl(`/crawl-graphs/${graphId}/schedules`), {
+        await fetch(apiUrl(`/crawl-plans/${graphId}/schedules`), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
@@ -366,7 +417,7 @@ export function useUpdateCrawlSchedule(graphId: string) {
     CrawlSchedule
   >(graphId, async ({ scheduleId, payload }) =>
     jsonResponse<CrawlSchedule>(
-      await fetch(apiUrl(`/crawl-graphs/${graphId}/schedules/${scheduleId}`), {
+      await fetch(apiUrl(`/crawl-plans/${graphId}/schedules/${scheduleId}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -382,7 +433,7 @@ export function useSetCrawlScheduleEnabled(graphId: string) {
   >(graphId, async ({ scheduleId, enabled }) =>
     jsonResponse<CrawlSchedule>(
       await fetch(
-        apiUrl(`/crawl-graphs/${graphId}/schedules/${scheduleId}/enabled`),
+        apiUrl(`/crawl-plans/${graphId}/schedules/${scheduleId}/enabled`),
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -396,7 +447,7 @@ export function useSetCrawlScheduleEnabled(graphId: string) {
 export function useDeleteCrawlSchedule(graphId: string) {
   return useScheduleMutation<string, void>(graphId, async (scheduleId) => {
     const response = await fetch(
-      apiUrl(`/crawl-graphs/${graphId}/schedules/${scheduleId}`),
+      apiUrl(`/crawl-plans/${graphId}/schedules/${scheduleId}`),
       { method: "DELETE" }
     )
     if (!response.ok) throw await apiErrorFromResponse(response)
@@ -409,7 +460,7 @@ export function useRunCrawlScheduleNow(graphId: string) {
     mutationFn: async (scheduleId: string) =>
       jsonResponse<GraphRunSubmission>(
         await fetch(
-          apiUrl(`/crawl-graphs/${graphId}/schedules/${scheduleId}/run`),
+          apiUrl(`/crawl-plans/${graphId}/schedules/${scheduleId}/run`),
           { method: "POST" }
         )
       ),
@@ -429,7 +480,7 @@ export function usePreviewCrawlSchedule(graphId: string) {
       count?: number
     }) =>
       jsonResponse<SchedulePreviewResponse>(
-        await fetch(apiUrl(`/crawl-graphs/${graphId}/schedules/preview`), {
+        await fetch(apiUrl(`/crawl-plans/${graphId}/schedules/preview`), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),

@@ -19,7 +19,6 @@ import {
   SelectItem,
   SelectTrigger,
 } from "@/components/ui/select"
-import { Textarea } from "@/components/ui/textarea"
 import {
   useCreateCrawlSchedule,
   usePreviewCrawlSchedule,
@@ -66,7 +65,7 @@ export function ScheduleEditorDialog({
   schedule,
   initialName,
   initialMaxCrawls,
-  initialUrls,
+  initialUrl,
   open,
   onOpenChange,
   onSaved,
@@ -75,7 +74,7 @@ export function ScheduleEditorDialog({
   schedule: CrawlSchedule | null
   initialName?: string
   initialMaxCrawls?: number
-  initialUrls?: string[]
+  initialUrl?: string
   open: boolean
   onOpenChange: (open: boolean) => void
   onSaved?: (schedule: CrawlSchedule) => void
@@ -107,8 +106,8 @@ export function ScheduleEditorDialog({
   const [maxCrawls, setMaxCrawls] = useState(
     (schedule?.max_crawls ?? initialMaxCrawls ?? 1000).toString()
   )
-  const [urls, setUrls] = useState(
-    schedule?.root_urls.join("\n") ?? initialUrls?.join("\n") ?? ""
+  const [rootUrl, setRootUrl] = useState(
+    schedule?.root_url ?? initialUrl ?? ""
   )
   const [overlap, setOverlap] = useState<"skip" | "allow">(
     schedule?.overlap_policy ?? "skip"
@@ -136,25 +135,19 @@ export function ScheduleEditorDialog({
     ends_at: instant(endsAt),
     maximum_run_count: maximumRuns ? Number(maximumRuns) : null,
     max_crawls: Number(maxCrawls),
-    root_urls: urls
-      .split("\n")
-      .map((value) => value.trim())
-      .filter(Boolean),
+    root_url: rootUrl.trim(),
     overlap_policy: overlap,
     misfire_policy: misfire,
   })
 
   const save = () => {
     const values = payload()
-    if (!values.name || values.root_urls.length === 0) {
-      toast.error("Schedule name and at least one root URL are required.")
+    if (!values.name || !values.root_url) {
+      toast.error("Schedule name and a root URL are required.")
       return
     }
-    if (
-      !Number.isInteger(values.max_crawls) ||
-      values.max_crawls < values.root_urls.length
-    ) {
-      toast.error("Maximum crawls must be at least the number of root URLs.")
+    if (!Number.isInteger(values.max_crawls) || values.max_crawls < 1) {
+      toast.error("Maximum crawls must be at least one.")
       return
     }
     const options = {
@@ -182,7 +175,7 @@ export function ScheduleEditorDialog({
             {schedule ? "Edit schedule" : "Create schedule"}
           </DialogTitle>
           <DialogDescription>
-            Future occurrences use the latest saved graph and these root URLs.
+            Future occurrences use the latest saved plan and this root URL.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-5">
@@ -291,14 +284,12 @@ export function ScheduleEditorDialog({
             </Field>
           </div>
 
-          <Field label="Root URLs · one per line">
-            <Textarea
-              className="min-h-32 font-mono text-xs"
-              value={urls}
-              placeholder={
-                "https://example.com/\nhttps://example.com/catalogue"
-              }
-              onChange={(event) => setUrls(event.target.value)}
+          <Field label="Root URL">
+            <Input
+              className="font-mono text-xs"
+              value={rootUrl}
+              placeholder="https://example.com/"
+              onChange={(event) => setRootUrl(event.target.value)}
             />
           </Field>
 

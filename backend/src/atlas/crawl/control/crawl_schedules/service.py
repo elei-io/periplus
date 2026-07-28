@@ -131,31 +131,13 @@ def preview_occurrences(
     return values
 
 
-def _normalized_urls(values: list[str]) -> list[str]:
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        try:
-            url = normalize_url(value)
-        except ValueError as exc:
-            raise CrawlScheduleValidationError(
-                f"Schedule URL must be absolute HTTP(S): {value}"
-            ) from exc
-        if url not in seen:
-            seen.add(url)
-            normalized.append(url)
-    if not normalized:
+def _normalized_url(value: str) -> str:
+    try:
+        return normalize_url(value)
+    except ValueError as exc:
         raise CrawlScheduleValidationError(
-            "A crawl schedule requires at least one root URL."
-        )
-    return normalized
-
-
-def _validate_crawl_budget(urls: list[str], max_crawls: int) -> None:
-    if max_crawls < len(urls):
-        raise CrawlScheduleValidationError(
-            "Maximum crawls per run cannot be smaller than the number of root URLs."
-        )
+            f"Schedule URL must be absolute HTTP(S): {value}"
+        ) from exc
 
 
 def schedule_status(
@@ -181,7 +163,7 @@ def record(
 ) -> CrawlScheduleRecord:
     return CrawlScheduleRecord(
         id=schedule.id,
-        graph_id=schedule.graph_id,
+        plan_id=schedule.graph_id,
         name=schedule.name,
         enabled=schedule.enabled,
         timing=schedule_timing_adapter.validate_python(schedule.timing),
@@ -189,7 +171,7 @@ def record(
         ends_at=schedule.ends_at,
         maximum_run_count=schedule.maximum_run_count,
         max_crawls=schedule.max_crawls,
-        root_urls=schedule.root_urls,
+        root_url=schedule.root_url,
         overlap_policy=schedule.overlap_policy,  # type: ignore[arg-type]
         misfire_policy=schedule.misfire_policy,  # type: ignore[arg-type]
         status=schedule_status(schedule, now=now),
@@ -222,7 +204,7 @@ def list_schedule_resources(session: Session) -> list[CrawlScheduleResource]:
     return [
         CrawlScheduleResource(
             **record(schedule).model_dump(),
-            graph_slug=graph_slug,
+            plan_slug=graph_slug,
         )
         for schedule, graph_slug in rows
     ]
@@ -239,7 +221,7 @@ def get_schedule_resource(session: Session, schedule_id: UUID) -> CrawlScheduleR
     schedule, graph_slug = row
     return CrawlScheduleResource(
         **record(schedule).model_dump(),
-        graph_slug=graph_slug,
+        plan_slug=graph_slug,
     )
 
 
@@ -276,8 +258,7 @@ def create_schedule(
         )
     validate_timing(request.timing)
     now = _utc(now or datetime.now(UTC))
-    root_urls = _normalized_urls(request.root_urls)
-    _validate_crawl_budget(root_urls, request.max_crawls)
+    root_url = _normalized_url(request.root_url)
     schedule = CrawlSchedule(
         graph_id=graph_id,
         name=_clean_name(request.name),
@@ -287,7 +268,7 @@ def create_schedule(
         ends_at=request.ends_at,
         maximum_run_count=request.maximum_run_count,
         max_crawls=request.max_crawls,
-        root_urls=root_urls,
+        root_url=root_url,
         overlap_policy=request.overlap_policy,
         misfire_policy=request.misfire_policy,
         next_run_at=(
@@ -320,8 +301,7 @@ def update_schedule(
     schedule = get_schedule(session, graph_id, schedule_id, lock=True)
     validate_timing(request.timing)
     now = _utc(now or datetime.now(UTC))
-    root_urls = _normalized_urls(request.root_urls)
-    _validate_crawl_budget(root_urls, request.max_crawls)
+    root_url = _normalized_url(request.root_url)
     schedule.name = _clean_name(request.name)
     schedule.enabled = request.enabled
     schedule.timing = request.timing.model_dump(mode="json")
@@ -329,7 +309,7 @@ def update_schedule(
     schedule.ends_at = request.ends_at
     schedule.maximum_run_count = request.maximum_run_count
     schedule.max_crawls = request.max_crawls
-    schedule.root_urls = root_urls
+    schedule.root_url = root_url
     schedule.overlap_policy = request.overlap_policy
     schedule.misfire_policy = request.misfire_policy
     schedule.next_run_at = (

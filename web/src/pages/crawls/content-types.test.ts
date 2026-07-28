@@ -7,7 +7,7 @@ import {
   setContentTypeGroup,
 } from "./content-types.ts"
 
-test("download groups add their MIME types without removing custom values", () => {
+test("content groups add their MIME types without removing custom values", () => {
   const result = setContentTypeGroup(
     "text/html, application/x-custom",
     "word",

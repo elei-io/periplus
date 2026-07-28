@@ -31,7 +31,7 @@ from atlas.platform.config.performance import (
     CRAWL_DOMAIN_PERMIT_RETRY_SECONDS,
     GRAPH_ACK_WAIT_SECONDS,
 )
-from atlas.crawl.control.crawl_policies.schemas import EffectivePolicySnapshot
+from atlas.crawl.control.content_policies.schemas import EffectivePolicySnapshot
 from atlas.crawl import metrics as crawl_metrics
 from atlas.crawl import navigation_metrics
 from atlas.ingestion.acquisition import AcquisitionPipeline

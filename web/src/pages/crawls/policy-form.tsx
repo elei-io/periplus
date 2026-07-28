@@ -18,7 +18,7 @@ import {
   SelectTrigger,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import type { CrawlPolicyRecord, ResponseOutcome } from "@/types/resources"
+import type { ContentPolicyRecord, ResponseOutcome } from "@/types/resources"
 
 import {
   contentTypeGroups,
@@ -59,7 +59,7 @@ export type PolicyDraft = {
   enabled: boolean
 }
 
-export function policyDraft(policy?: CrawlPolicyRecord): PolicyDraft {
+export function policyDraft(policy?: ContentPolicyRecord): PolicyDraft {
   const rules = policy?.content.response_rules.http_status ?? []
   const outcome = (
     minimum: number,
@@ -221,7 +221,7 @@ export function PolicyForm({
         <CardHeader>
           <CardTitle>Where this policy applies</CardTitle>
           <CardDescription>
-            The most specific matching policy is frozen into each crawl.
+            The most specific matching content policy is frozen into each crawl.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">

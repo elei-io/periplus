@@ -27,6 +27,11 @@ External loading:
 
 A visible document reference must always point to durable bytes.
 
+For a branch node, each outgoing plan edge executes a bounded query over that
+navigation package. Selected URLs are normalized and deduplicated across the
+entire run before admission to the target node. Edge execution does not read
+the historical catalogue.
+
 ## 2. CDC
 
 Change data capture is the glue between committed evidence and derived relations.

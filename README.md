@@ -6,10 +6,11 @@ in DuckLake, and maintains rebuildable structural and URL relations through CDC.
 The currently delivered path is:
 
 ```text
-crawl graph -> immutable bytes -> ingest.* -> CDC -> material.*
+crawl plan -> immutable bytes -> ingest.* -> CDC -> material.*
 ```
 
-The Python compiler is archived as inert reference material under `archive/python_compiler/`.
+Acquisition-plan edges are page-local DuckDB queries and do not require a SQL
+compiler or historical catalogue connection.
 Compilation, the `web.*` semantic interface, user views/macros, and user-authored materializations
 are intentionally unavailable in the current milestone. The replacement begins with portable,
 versioned DuckLake views and macros, followed by a Python SDK for connection and control

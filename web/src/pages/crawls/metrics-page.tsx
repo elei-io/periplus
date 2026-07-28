@@ -117,7 +117,7 @@ function AcquisitionStatus({
       <CardHeader className="border-b">
         <CardTitle>Acquisition status</CardTitle>
         <CardDescription>
-          Pages moving through crawl graphs right now.
+          Pages moving through crawl plans right now.
         </CardDescription>
         <CardAction>
           <Badge variant={unavailable ? "destructive" : "outline"}>
@@ -128,7 +128,7 @@ function AcquisitionStatus({
       <CardContent className="grid gap-6 sm:grid-cols-3">
         <StatusCount value={queued} label="pages queued" />
         <StatusCount value={acquiring} label="pages acquiring" />
-        <StatusCount value={navigating} label="navigating the graph" />
+        <StatusCount value={navigating} label="following plan edges" />
       </CardContent>
     </Card>
   )
@@ -220,7 +220,7 @@ function LatestRuns({ runs }: { runs: GraphRunRecord[] }) {
             <TableHeader className="bg-muted/30">
               <TableRow className="hover:bg-transparent">
                 <TableHead className="w-[8rem] pl-4">Status</TableHead>
-                <TableHead className="w-[15rem]">Graph</TableHead>
+                <TableHead className="w-[15rem]">Plan</TableHead>
                 <TableHead>Pages</TableHead>
                 <TableHead className="w-[6rem] text-right">Errors</TableHead>
               </TableRow>
@@ -233,7 +233,7 @@ function LatestRuns({ runs }: { runs: GraphRunRecord[] }) {
           </Table>
           {runs.length === 0 ? (
             <p className="py-10 text-center text-sm text-muted-foreground">
-              No graph runs yet
+              No crawl runs yet
             </p>
           ) : null}
         </div>
@@ -259,10 +259,10 @@ function RunRow({ run }: { run: GraphRunRecord }) {
       </TableCell>
       <TableCell className="py-4 align-top whitespace-normal">
         <a
-          href={`/crawls/graphs/${run.graph_id}`}
+          href={`/crawls/plans/${run.plan_id}`}
           className="inline-flex max-w-full items-center gap-1 font-medium hover:underline"
         >
-          <span className="truncate">{run.graph_slug || "Deleted graph"}</span>
+          <span className="truncate">{run.plan_slug || "Deleted plan"}</span>
           <ExternalLinkIcon className="size-3 shrink-0 text-muted-foreground" />
         </a>
         <p className="mt-1 text-xs text-muted-foreground tabular-nums">
@@ -291,7 +291,7 @@ function RunRow({ run }: { run: GraphRunRecord }) {
           <p className="mt-1.5 text-xs text-muted-foreground tabular-nums">
             {run.queued_request_count.toLocaleString()} queued ·{" "}
             {run.fetching_request_count.toLocaleString()} acquiring ·{" "}
-            {run.navigating_request_count.toLocaleString()} navigating graph
+            {run.navigating_request_count.toLocaleString()} navigating plan
           </p>
         ) : null}
       </TableCell>

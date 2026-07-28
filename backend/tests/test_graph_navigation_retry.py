@@ -67,7 +67,6 @@ class GraphNavigationRetryTests(unittest.IsolatedAsyncioTestCase):
                 None,
                 None,
                 object(),
-                asyncio.Lock(),
                 Mock(),
             )
 

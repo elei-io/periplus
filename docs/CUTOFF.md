@@ -10,7 +10,7 @@ with the superseded schema.
 “Working end to end” in this milestone means:
 
 ```text
-crawl graph -> immutable bytes -> ingest.* -> CDC -> material.*
+crawl plan -> immutable bytes -> ingest.* -> CDC -> material.*
 ```
 
 Externally acquired HTML may enter at the immutable-byte
@@ -25,7 +25,7 @@ persist, or manage SQL.
 
 Atlas can:
 
-1. Run a crawl graph and retain immutable document bytes.
+1. Run a crawl plan and retain immutable document bytes.
 2. Commit terminal crawl, visit, attempt, step, and document evidence under `ingest.*`.
 3. Relay committed changes through CDC.
 4. Maintain the six Atlas-owned `material.*` relations:
@@ -132,32 +132,18 @@ materialization schemas. Compiler-facing query, optimization, agent, and user-de
 workflows remain unavailable until the portable `web.*` catalogue is delivered. Direct read-only
 physical SQL and schema autocomplete are explicitly not `web.*` behavior.
 
-The Python compiler is archived intact as reference material rather than deleted. Its implementation,
-documentation, corpus, and focused tests move under a clearly non-runtime archive location. Archived
-compiler material:
-
-- Is not packaged as an Atlas runtime module.
-- Is not imported by application or worker code.
-- Has no API, CLI, agent, setup, fixture, or frontend entrypoint.
-- Is not initialized or validated during setup or readiness.
-- Is not executed by the active test suite or required to pass active lint and type checks.
-- Does not constrain names, schemas, types, relationships, or implementation decisions in
-  `ingest.*` or `material.*`.
-- May be consulted when defining the replacement portable catalogue and any later optimizer rules.
-
-Active Python compiler integrations and schema-dependent runtime code are removed. The archive is
-the sole exception to the rule that superseded code is deleted: it is inert source material, not a
-supported dormant feature. The later query interface starts from the established `ingest.*` and
-`material.*` contracts.
+The superseded Python compiler and its schema-dependent integrations are
+removed. Crawl-plan edges do not depend on the query layer: they execute only
+against the current page's bounded navigation package.
 
 ## Exit criteria
 
 The cutoff is complete only when all of the following are true:
 
-- A clean deployment bootstraps and validates only the new Atlas-owned ingestion and materialization
-  contract.
-- The normal setup path completes without importing, initializing, invoking, or checking either the
-  archived Python compiler or future query-layer code.
+- A clean deployment bootstraps and validates only the new Atlas-owned
+  acquisition, ingestion, and materialization contract.
+- The normal setup path completes without importing, initializing, invoking,
+  or checking superseded compiler code or future query-layer code.
 - A low-depth crawl with low concurrency produces correct `ingest.*` evidence and all applicable
   `material.*` results.
 - Repeated content produces distinct document observations while reusing content-addressed bytes
@@ -172,17 +158,13 @@ The cutoff is complete only when all of the following are true:
   normal API and operational surfaces.
 - The terminal and web consoles execute bounded read-only SQL against `ingest.*` and `material.*`,
   and autocomplete their current schemas without loading query-layer code.
-- Repository-wide searches find no superseded table names, queue contracts, seeded definitions,
-  management surfaces, projection repair, compatibility paths, or stale documentation outside the
-  explicitly named Python compiler archive.
-- Repository-wide dependency and import checks confirm that nothing outside the archive references
-  the archived compiler.
+- Repository-wide searches find no superseded table names, queue contracts,
+  seeded definitions, management surfaces, projection repair, compatibility
+  paths, compiler archive, or stale documentation.
 - Backend checks and targeted ingestion, CDC, materialization, recovery, and worker lifecycle tests
   pass.
 - The old lake and disposable control state can be deleted without losing any behavior that Atlas
   still claims to support.
 
 There is no partial cutoff. If Atlas still carries an old path, exposes a broken old surface, or
-requires a compatibility explanation, the cutoff has not been reached. The archived Python compiler
-does not weaken this rule because it has no runtime, setup, test, packaging, or dependency path back
-into Atlas.
+requires a compatibility explanation, the cutoff has not been reached.

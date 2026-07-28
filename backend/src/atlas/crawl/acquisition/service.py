@@ -14,7 +14,7 @@ from playwright.async_api import Playwright
 from atlas.crawl.acquisition.capture import capture_page
 from atlas.crawl.acquisition.errors import RetryableAcquisitionFailure
 from atlas.crawl.acquisition.models import AcquisitionAttemptEvidence, AcquisitionResult
-from atlas.crawl.control.crawl_policies.schemas import EffectivePolicySnapshot
+from atlas.crawl.control.content_policies.schemas import EffectivePolicySnapshot
 from atlas.urls import normalize_url
 from atlas.platform.catalogue import (
     AttemptRecord,
@@ -54,7 +54,7 @@ async def acquire_page(
     effective = EffectivePolicySnapshot.model_validate(
         context.effective_policy_snapshot_json
     )
-    policy = effective.crawl
+    policy = effective.content
     domain = effective.domain
     normalized = normalize_url(url)
     remote_domain = (urlparse(normalized).hostname or "unknown").lower()

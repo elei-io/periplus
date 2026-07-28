@@ -279,7 +279,7 @@ function NewDomainPolicy({
         <DialogHeader>
           <DialogTitle>New domain policy</DialogTitle>
           <DialogDescription>
-            Set distributed website politeness for matching acquisition workers.
+            Set distributed crawl limits for matching acquisition workers.
           </DialogDescription>
         </DialogHeader>
         {draft ? (

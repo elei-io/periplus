@@ -8,8 +8,6 @@ export type CrawlGraphNode = {
   created_at: string
 }
 
-export type EdgeDedupeMode = "graph" | "crawl" | "document"
-
 export type CrawlGraphEdge = {
   id: string
   graph_id: string
@@ -18,8 +16,15 @@ export type CrawlGraphEdge = {
   name: string
   description: string | null
   sql: string
-  dedupe_mode: EdgeDedupeMode
   created_at: string
+}
+
+export type CrawlGraphEdgeInput = {
+  source_node_id: string
+  target_node_id: string
+  name: string
+  description: string
+  sql: string
 }
 
 export type CrawlGraphSummary = {
@@ -42,6 +47,12 @@ export type CrawlGraphDetail = {
   edges: CrawlGraphEdge[]
 }
 
+export type CrawlGraphUpdateInput = {
+  slug: string
+  description: string
+  root_node_id: string | null
+}
+
 export type CrawlGraphListResponse = {
   items: CrawlGraphSummary[]
   total: number
@@ -59,14 +70,14 @@ export type CrawlScheduleInput = {
   ends_at: string | null
   maximum_run_count: number | null
   max_crawls: number
-  root_urls: string[]
+  root_url: string
   overlap_policy: "skip" | "allow"
   misfire_policy: "skip" | "run_once"
 }
 
 export type CrawlSchedule = CrawlScheduleInput & {
   id: string
-  graph_id: string
+  plan_id: string
   status: "active" | "paused" | "not_started" | "exhausted" | "ended"
   run_count: number
   next_run_at: string | null
@@ -78,7 +89,7 @@ export type CrawlSchedule = CrawlScheduleInput & {
 }
 
 export type CrawlScheduleResource = CrawlSchedule & {
-  graph_slug: string
+  plan_slug: string
 }
 
 export type CrawlScheduleListResponse = {
@@ -96,13 +107,13 @@ export type SchedulePreviewResponse = {
 }
 
 export type GraphRunSubmission = {
-  graph_id: string
+  plan_id: string
   run_id: string
   status: "queued"
 }
 
 export type GraphRunTrigger = {
-  urls: string[]
+  url: string
   max_crawls: number
   max_run_seconds?: number
 }
@@ -118,12 +129,12 @@ export type GraphRunStatus =
 
 export type GraphRunRecord = {
   id: string
-  graph_id: string
-  graph_slug?: string | null
+  plan_id: string
+  plan_slug?: string | null
   status: GraphRunStatus
   trigger_kind: "manual" | "schedule"
   trigger_schedule_id: string | null
-  trigger_urls: string[]
+  url: string
   max_crawls: number
   crawl_limit_reached: boolean
   request_count: number

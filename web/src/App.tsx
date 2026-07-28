@@ -34,6 +34,11 @@ const DataMetricsPage = lazy(() =>
     default: module.DataMetricsPage,
   }))
 )
+const DocumentsPage = lazy(() =>
+  import("@/pages/data/documents-page").then((module) => ({
+    default: module.DocumentsPage,
+  }))
+)
 const CrawlGraphsPage = lazy(() =>
   import("@/pages/admin/graphs-page").then((module) => ({
     default: module.CrawlGraphsPage,
@@ -59,18 +64,18 @@ const CrawlScheduleDetailPage = lazy(() =>
     default: module.CrawlScheduleDetailPage,
   }))
 )
-const CrawlPoliciesPage = lazy(() =>
-  import("@/pages/settings/crawl-policies-page").then((module) => ({
-    default: module.CrawlPoliciesPage,
+const ContentPoliciesPage = lazy(() =>
+  import("@/pages/crawls/content-policies-page").then((module) => ({
+    default: module.ContentPoliciesPage,
   }))
 )
-const CrawlPolicyDetailPage = lazy(() =>
-  import("@/pages/settings/crawl-policy-detail-page").then((module) => ({
-    default: module.CrawlPolicyDetailPage,
+const ContentPolicyDetailPage = lazy(() =>
+  import("@/pages/crawls/content-policy-detail-page").then((module) => ({
+    default: module.ContentPolicyDetailPage,
   }))
 )
 const DomainPoliciesPage = lazy(() =>
-  import("@/pages/settings/domain-policies-page").then((module) => ({
+  import("@/pages/crawls/domain-policies-page").then((module) => ({
     default: module.DomainPoliciesPage,
   }))
 )
@@ -142,8 +147,12 @@ export function App() {
       return <DataMetricsPage />
     }
 
-    if (activeItem.href === "/crawls/graphs") {
-      const graphId = pathname.match(/^\/crawls\/graphs\/([^/]+)$/)?.[1]
+    if (activeItem.href === "/data/documents") {
+      return <DocumentsPage />
+    }
+
+    if (activeItem.href === "/crawls/plans") {
+      const graphId = pathname.match(/^\/crawls\/plans\/([^/]+)$/)?.[1]
       if (graphId) {
         return (
           <CrawlGraphDetailPage
@@ -172,13 +181,15 @@ export function App() {
       return <CrawlSchedulesPage onNavigate={handleNavigate} />
     }
 
-    if (activeItem.href === "/crawl-policies") {
-      const policyId = pathname.match(/^\/crawl-policies\/([^/]+)$/)?.[1]
+    if (activeItem.href === "/content-policies") {
+      const policyId = pathname.match(/^\/content-policies\/([^/]+)$/)?.[1]
       if (policyId) {
-        return <CrawlPolicyDetailPage policyId={decodeURIComponent(policyId)} />
+        return (
+          <ContentPolicyDetailPage policyId={decodeURIComponent(policyId)} />
+        )
       }
 
-      return <CrawlPoliciesPage />
+      return <ContentPoliciesPage />
     }
 
     if (activeItem.href === "/domain-policies") {

@@ -31,11 +31,14 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import {
-  useCreateCrawlPolicy,
-  useCrawlPolicies,
-  useUpdateCrawlPolicy,
+  useCreateContentPolicy,
+  useContentPolicies,
+  useUpdateContentPolicy,
 } from "@/hooks/use-resource-data"
-import type { CrawlPolicyFilters, CrawlPolicyRecord } from "@/types/resources"
+import type {
+  ContentPolicyFilters,
+  ContentPolicyRecord,
+} from "@/types/resources"
 import {
   PolicyForm,
   policyDraft,
@@ -44,14 +47,17 @@ import {
   type PolicyDraft,
 } from "./policy-form"
 
-export function CrawlPoliciesPage() {
-  const [filters, setFilters] = useState<CrawlPolicyFilters>({
+export function ContentPoliciesPage() {
+  const [filters, setFilters] = useState<ContentPolicyFilters>({
     matchPattern: "",
     enabled: "all",
   })
   const [offset, setOffset] = useState(0)
   const [draft, setDraft] = useState<PolicyDraft | null>(null)
-  const query = useCrawlPolicies(filters, { limit: RESOURCE_PAGE_SIZE, offset })
+  const query = useContentPolicies(filters, {
+    limit: RESOURCE_PAGE_SIZE,
+    offset,
+  })
   const policies = query.data?.items ?? []
   return (
     <div className="flex min-h-0 w-full flex-col gap-4">
@@ -112,8 +118,8 @@ export function CrawlPoliciesPage() {
   )
 }
 
-function PolicyRow({ policy }: { policy: CrawlPolicyRecord }) {
-  const update = useUpdateCrawlPolicy(policy.id)
+function PolicyRow({ policy }: { policy: ContentPolicyRecord }) {
+  const update = useUpdateContentPolicy(policy.id)
   const fallback = policy.slug === "default"
   const completion = policy.content.completion
   const enabled = [
@@ -127,7 +133,7 @@ function PolicyRow({ policy }: { policy: CrawlPolicyRecord }) {
       <TableCell>
         <a
           className="font-medium text-link hover:underline"
-          href={`/crawl-policies/${policy.id}`}
+          href={`/content-policies/${policy.id}`}
         >
           {coverage(policy)}
         </a>
@@ -166,7 +172,7 @@ function NewPolicyDialog({
   draft: PolicyDraft | null
   setDraft: (value: PolicyDraft | null) => void
 }) {
-  const create = useCreateCrawlPolicy()
+  const create = useCreateContentPolicy()
   const submit = () => {
     if (!draft) return
     const error = policyDraftError(draft)
@@ -198,7 +204,7 @@ function NewPolicyDialog({
     </Dialog>
   )
 }
-function coverage(policy: CrawlPolicyRecord) {
+function coverage(policy: ContentPolicyRecord) {
   const host = policy.host.startsWith("*.")
     ? `subdomains of ${policy.host.slice(2)}`
     : policy.host

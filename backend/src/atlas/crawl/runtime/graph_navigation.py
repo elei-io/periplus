@@ -110,7 +110,6 @@ class EdgeUrlExecutor:
         object_store,
         package: NavigationPackage,
         *,
-        catalogue_snapshot_id: int | None = None,
         result_cache: EdgeResultCache | None = None,
         cache_key: str | None = None,
         selection: EdgeSelectionPackage | None = None,
@@ -119,7 +118,6 @@ class EdgeUrlExecutor:
         self._connection = None
         self._object_store = object_store
         self._package = package
-        self._catalogue_snapshot_id = catalogue_snapshot_id
         self._result_cache = result_cache
         self._cache_key = cache_key
         self._selection = selection
@@ -155,37 +153,41 @@ class EdgeUrlExecutor:
             content_sha256=content_sha256,
             page_url=page_url,
         )
-        crawl_id = bound.get("crawl_id")
+        crawl_id = bound.pop("crawl_id", None)
         if crawl_id is None:
-            raise ValueError("Edge SQL requires its crawl_id parameter.")
+            raise ValueError("Edge evaluation requires a crawl_id.")
         crawl_id = str(UUID(str(crawl_id)))
         bound["crawl_id"] = crawl_id
         table = pa.ipc.open_file(pa.BufferReader(navigation_payload)).read_all()
         table = table.append_column(
             "crawl_id", pa.array([crawl_id] * table.num_rows, type=pa.string())
         )
-        if self._catalogue_snapshot_id is None:
-            statement = self._prepare_statement(sql)
-            with duckdb.connect(":memory:") as connection:
+        statement = self._prepare_statement(sql)
+        with duckdb.connect(":memory:") as connection:
+            with self._lock:
+                self._connection = connection
+            try:
+                connection.execute(
+                    "SET memory_limit = ?",
+                    [get_str("ATLAS_EDGE_QUERY_MEMORY_LIMIT")],
+                )
+                connection.execute("SET enable_external_access = false")
+                connection.execute("SET autoinstall_known_extensions = false")
+                connection.execute("SET autoload_known_extensions = false")
+                connection.register("atlas_navigation_links", table)
+                connection.execute("CREATE SCHEMA nav")
+                connection.execute(
+                    "CREATE VIEW nav.links AS "
+                    "SELECT * FROM atlas_navigation_links"
+                )
+                connection.execute("SET lock_configuration = true")
+                reader = connection.execute(
+                    statement.sql(dialect="duckdb")
+                ).to_arrow_reader(batch_size=65_536)
+                urls = self._collect_urls(reader)
+            finally:
                 with self._lock:
-                    self._connection = connection
-                try:
-                    connection.execute(
-                        "SET memory_limit = ?",
-                        [get_str("ATLAS_EDGE_QUERY_MEMORY_LIMIT")],
-                    )
-                    connection.register("atlas_navigation_links", table)
-                    reader = connection.execute(
-                        statement.sql(dialect="duckdb"), bound
-                    ).to_arrow_reader(batch_size=65_536)
-                    urls = self._collect_urls(reader)
-                finally:
-                    with self._lock:
-                        self._connection = None
-        else:
-            raise RuntimeError(
-                "catalogue-backed graph edges require the future C compiler"
-            )
+                    self._connection = None
         self._remember(tuple(urls))
         return urls
 
@@ -194,57 +196,12 @@ class EdgeUrlExecutor:
         statement = parse_one(sql, dialect="duckdb")
         if not isinstance(statement, exp.Query):
             raise ValueError("Compiled edge SQL must be a query.")
-        for source in statement.find_all(exp.Table):
-            if (
-                source.db.lower() == "edge"
-                and source.name.lower() == "page_links"
-            ):
-                source.set("db", None)
-                source.set(
-                    "this",
-                    exp.to_identifier("atlas_navigation_links"),
-                )
         return statement
 
     def _remember(self, urls: tuple[str, ...]) -> None:
         self._selected_urls = urls
         if self._result_cache is not None and self._cache_key is not None:
             self._result_cache.put(self._cache_key, urls)
-
-    def _pin_catalogue_sources(self, catalogue, statement: exp.Expression) -> None:
-        cte_names = {
-            cte.alias_or_name.lower()
-            for cte in statement.find_all(exp.CTE)
-            if cte.alias_or_name
-        }
-        sources = [
-            source
-            for source in statement.find_all(exp.Table)
-            if source.name != "atlas_navigation_links"
-            and not (
-                not source.db and source.name.lower() in cte_names
-            )
-        ]
-        for ordinal, source in enumerate(sources):
-            original = source.copy()
-            original.set("alias", None)
-            if not original.db:
-                raise RuntimeError(
-                    "catalogue-backed edge SQL must schema-qualify every table"
-                )
-            if not original.catalog:
-                original.set(
-                    "catalog", exp.to_identifier(catalogue.config.alias)
-                )
-            view_name = f"atlas_edge_snapshot_{ordinal}"
-            catalogue.trusted_connection.execute(
-                f"CREATE OR REPLACE TEMP VIEW {view_name} AS "
-                f"SELECT * FROM {original.sql(dialect='duckdb')} "
-                f"AT (VERSION => {self._catalogue_snapshot_id})"
-            )
-            source.set("catalog", exp.to_identifier("temp"))
-            source.set("db", exp.to_identifier("main"))
-            source.set("this", exp.to_identifier(view_name))
 
     @staticmethod
     def _collect_urls(reader) -> list[str]:
@@ -367,7 +324,6 @@ async def _process_edge(
     progress,
     jetstream,
     object_store,
-    catalogue_operation_lock: asyncio.Lock,
     result_cache: EdgeResultCache,
 ) -> None:
     try:
@@ -401,7 +357,6 @@ async def _process_edge(
     executor = EdgeUrlExecutor(
         object_store,
         work.navigation,
-        catalogue_snapshot_id=work.catalogue_snapshot_id,
         result_cache=result_cache,
         cache_key=identity,
         selection=selection,
@@ -428,22 +383,16 @@ async def _process_edge(
 
     heartbeat = asyncio.create_task(keep_alive())
     try:
-        async def execute() -> None:
-            await evaluate_edge(
-                runs=runs,
-                requests=requests,
-                progress=progress,
-                jetstream=jetstream,
-                work=work,
-                execute_urls=executor,
-                policy_resolver=DatabasePolicySnapshotResolver(),
-                claim_token=claim_token,
-            )
-        if work.catalogue_snapshot_id is None or selection is not None:
-            await execute()
-        else:
-            async with catalogue_operation_lock:
-                await execute()
+        await evaluate_edge(
+            runs=runs,
+            requests=requests,
+            progress=progress,
+            jetstream=jetstream,
+            work=work,
+            execute_urls=executor,
+            policy_resolver=DatabasePolicySnapshotResolver(),
+            claim_token=claim_token,
+        )
     except EdgeEvaluationBusy:
         await message.nak(delay=1)
         return
@@ -500,7 +449,6 @@ async def run(monitor: HealthMonitor | None = None) -> None:
     )
     if monitor is not None:
         monitor.subsystem_ready("navigation")
-    catalogue_operation_lock = asyncio.Lock()
     result_cache = EdgeResultCache(
         maximum_bytes=get_int("ATLAS_EDGE_MAX_OUTPUT_BYTES") * 2
     )
@@ -569,7 +517,6 @@ async def run(monitor: HealthMonitor | None = None) -> None:
                     if processor is _process_edge:
                         arguments += (
                             object_store,
-                            catalogue_operation_lock,
                             result_cache,
                         )
                     active.add(asyncio.create_task(processor(*arguments)))

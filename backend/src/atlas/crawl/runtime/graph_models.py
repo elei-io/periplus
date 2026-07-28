@@ -7,7 +7,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
-    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -56,10 +55,6 @@ class GraphRunRecord(Base):
             "trigger_kind IN ('manual', 'schedule')",
             name="ck_graph_runs_trigger_kind",
         ),
-        CheckConstraint(
-            "catalogue_consistency = 'run_frozen'",
-            name="ck_graph_runs_catalogue_consistency",
-        ),
         CheckConstraint("generation >= 1", name="ck_graph_runs_generation"),
         CheckConstraint("max_crawls >= 1", name="ck_graph_runs_max_crawls"),
         CheckConstraint(
@@ -85,12 +80,6 @@ class GraphRunRecord(Base):
     trigger_kind: Mapped[str] = mapped_column(Text)
     trigger_schedule_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), nullable=True, index=True
-    )
-    catalogue_snapshot_id: Mapped[int | None] = mapped_column(
-        BigInteger, nullable=True
-    )
-    catalogue_consistency: Mapped[str] = mapped_column(
-        Text, default="run_frozen"
     )
     generation: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(Text, default="queued", index=True)

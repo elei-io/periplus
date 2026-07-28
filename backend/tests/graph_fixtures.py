@@ -1,7 +1,6 @@
 from uuid import uuid4
 
 from atlas.crawl.control.crawl_graphs.schemas import (
-    EdgeDedupeMode,
     FrozenGraphEdge,
     FrozenGraphNode,
     FrozenGraphSnapshot,
@@ -22,7 +21,7 @@ def navigation_package() -> NavigationPackage:
 
 def policy_snapshot(_variant: str = "default") -> dict:
     return {
-        "crawl": {
+        "content": {
             "id": str(uuid4()),
             "slug": "content-policy-test",
             "scheme": "*",
@@ -45,7 +44,6 @@ def snapshot(
     *,
     entry: bool = True,
     self_edge: bool = False,
-    dedupe_mode: EdgeDedupeMode = EdgeDedupeMode.graph,
 ) -> FrozenGraphSnapshot:
     graph_id = uuid4()
     source = FrozenGraphNode(id=uuid4(), name="source")
@@ -56,10 +54,9 @@ def snapshot(
         source_node_id=source.id,
         target_node_id=target.id,
         sql=(
-            "SELECT target_url AS url FROM edge.page_links "
-            "WHERE crawl_id = $crawl_id LIMIT 10"
+            "SELECT target_url AS url FROM nav.links "
+            "LIMIT 10"
         ),
-        dedupe_mode=dedupe_mode,
     )
     return FrozenGraphSnapshot(
         graph_id=graph_id,

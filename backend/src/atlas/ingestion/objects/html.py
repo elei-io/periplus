@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -123,22 +124,37 @@ class RawHtmlRepository:
     def read_bytes(self, object_key: str, *, chunk_bytes: int = 1024 * 1024) -> bytes:
         """Return the exact canonical UTF-8 bytes after verifying their identity."""
 
+        return b"".join(self.iter_bytes(object_key, chunk_bytes=chunk_bytes))
+
+    def iter_bytes(
+        self,
+        object_key: str,
+        *,
+        chunk_bytes: int = 1024 * 1024,
+    ) -> Iterator[bytes]:
+        """Yield canonical UTF-8 bytes while verifying their immutable identity."""
+
         if chunk_bytes <= 0:
             raise ValueError("chunk_bytes must be greater than zero")
-        chunks: list[bytes] = []
         digest = hashlib.sha256()
-        with self.store.open(object_key) as content:
-            decompressor = zstandard.ZstdDecompressor()
-            with decompressor.stream_reader(content) as reader:
-                while chunk := reader.read(chunk_bytes):
-                    digest.update(chunk)
-                    chunks.append(chunk)
+        try:
+            with self.store.open(object_key) as content:
+                decompressor = zstandard.ZstdDecompressor()
+                with decompressor.stream_reader(content) as reader:
+                    while chunk := reader.read(chunk_bytes):
+                        digest.update(chunk)
+                        yield chunk
+        except RepositoryIntegrityError:
+            raise
+        except Exception as exc:
+            raise RepositoryIntegrityError(
+                f"HTML object could not be verified: {object_key}"
+            ) from exc
         expected = _sha256_from_key(object_key)
         if expected is not None and digest.hexdigest() != expected:
             raise RepositoryIntegrityError(
                 f"HTML object failed content-address verification: {object_key}"
             )
-        return b"".join(chunks)
 
     def verify(
         self,

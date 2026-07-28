@@ -2,16 +2,18 @@ from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import MagicMock
 
-from atlas.crawl.control.crawl_policies.service import (
+from atlas.crawl.api.content_policies import router
+from atlas.crawl.control.content_policies.models import ContentPolicy
+from atlas.crawl.control.content_policies.service import (
     DEFAULT_POLICY_SLUG,
     _matches,
     default_content_policy,
-    delete_crawl_policy,
-    ensure_default_crawl_policy,
-    find_crawl_policies_for_urls,
-    update_crawl_policy,
+    delete_content_policy,
+    ensure_default_content_policy,
+    find_content_policies_for_urls,
+    update_content_policy,
 )
-from atlas.crawl.control.crawl_policies.schemas import CrawlPolicyCreateRequest
+from atlas.crawl.control.content_policies.schemas import ContentPolicyCreateRequest
 
 
 def policy(
@@ -38,7 +40,11 @@ def session_with(*policies):
     return session
 
 
-class CrawlPolicyResolutionTests(TestCase):
+class ContentPolicyResolutionTests(TestCase):
+    def test_resource_contract_uses_content_policy_names(self) -> None:
+        self.assertEqual(router.prefix, "/content-policies")
+        self.assertEqual(ContentPolicy.__tablename__, "content_policies")
+
     def test_wildcard_match_covers_http_and_https(self) -> None:
         catch_all = policy(slug=DEFAULT_POLICY_SLUG)
 
@@ -62,7 +68,7 @@ class CrawlPolicyResolutionTests(TestCase):
             path_mode="exact",
         )
 
-        resolved = find_crawl_policies_for_urls(
+        resolved = find_content_policies_for_urls(
             session_with(default, site, docs, exact),
             urls=[
                 "https://example.com/docs",
@@ -95,7 +101,7 @@ class CrawlPolicyResolutionTests(TestCase):
         wikipedia = policy(slug="wikipedia", host="*.wikipedia.org")
         english = policy(slug="english-wikipedia", host="en.wikipedia.org")
 
-        resolved = find_crawl_policies_for_urls(
+        resolved = find_content_policies_for_urls(
             session_with(default, wikipedia, english),
             urls=[
                 "https://en.wikipedia.org/wiki/Atlas",
@@ -111,7 +117,7 @@ class CrawlPolicyResolutionTests(TestCase):
         org = policy(slug="org", host="*.org")
         wikipedia = policy(slug="wikipedia", host="*.wikipedia.org")
 
-        resolved = find_crawl_policies_for_urls(
+        resolved = find_content_policies_for_urls(
             session_with(default, org, wikipedia),
             urls=["https://en.wikipedia.org/wiki/Atlas"],
         )
@@ -119,7 +125,7 @@ class CrawlPolicyResolutionTests(TestCase):
         self.assertIs(resolved["https://en.wikipedia.org/wiki/Atlas"], wikipedia)
 
     def test_request_accepts_only_supported_host_wildcards(self) -> None:
-        request = CrawlPolicyCreateRequest(
+        request = ContentPolicyCreateRequest(
             slug="wikipedia",
             scheme="*",
             host=" *.Wikipedia.org ",
@@ -127,15 +133,15 @@ class CrawlPolicyResolutionTests(TestCase):
 
         self.assertEqual(request.host, "*.wikipedia.org")
         with self.assertRaisesRegex(ValueError, r"\*\.domain wildcard"):
-            CrawlPolicyCreateRequest(
+            ContentPolicyCreateRequest(
                 slug="invalid",
                 scheme="*",
                 host="wiki*.wikipedia.org",
             )
 
     def test_missing_catch_all_fails_instead_of_using_an_implicit_profile(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "catch-all CrawlPolicy"):
-            find_crawl_policies_for_urls(
+        with self.assertRaisesRegex(RuntimeError, "catch-all content policy"):
+            find_content_policies_for_urls(
                 session_with(), urls=["https://example.com/"]
             )
 
@@ -144,14 +150,14 @@ class CrawlPolicyResolutionTests(TestCase):
         default = SimpleNamespace(slug=DEFAULT_POLICY_SLUG)
 
         with self.assertRaisesRegex(ValueError, "cannot be deleted"):
-            delete_crawl_policy(session, policy=default)
+            delete_content_policy(session, policy=default)
         session.delete.assert_not_called()
 
     def test_setup_creates_the_canonical_default_content_policy(self) -> None:
         session = MagicMock()
         session.scalar.return_value = None
 
-        default = ensure_default_crawl_policy(session)
+        default = ensure_default_content_policy(session)
 
         self.assertEqual(default.slug, DEFAULT_POLICY_SLUG)
         self.assertEqual(
@@ -184,7 +190,7 @@ class CrawlPolicyResolutionTests(TestCase):
         session = MagicMock()
         session.scalar.return_value = stored
 
-        preserved = ensure_default_crawl_policy(session)
+        preserved = ensure_default_content_policy(session)
 
         self.assertIs(preserved, stored)
         self.assertEqual(
@@ -214,7 +220,7 @@ class CrawlPolicyResolutionTests(TestCase):
         weakened = default_content_policy().model_dump(mode="json")
         weakened["completion"]["scroll"]["enabled"] = False
 
-        updated = update_crawl_policy(session, policy=stored, content=weakened)
+        updated = update_content_policy(session, policy=stored, content=weakened)
 
         self.assertFalse(updated.content["completion"]["scroll"]["enabled"])
         session.flush.assert_called_once_with()
@@ -235,9 +241,9 @@ class CrawlPolicyResolutionTests(TestCase):
         session.scalar.return_value = stored
 
         with self.assertRaisesRegex(ValueError, "match every URL"):
-            update_crawl_policy(session, policy=stored, host="example.com")
+            update_content_policy(session, policy=stored, host="example.com")
         with self.assertRaisesRegex(ValueError, "cannot be disabled"):
-            update_crawl_policy(session, policy=stored, enabled=False)
+            update_content_policy(session, policy=stored, enabled=False)
 
     def test_update_accepts_serialized_content_from_api_payload(self) -> None:
         stored = SimpleNamespace(
@@ -254,7 +260,7 @@ class CrawlPolicyResolutionTests(TestCase):
         session = MagicMock()
         session.scalar.return_value = stored
 
-        updated = update_crawl_policy(
+        updated = update_content_policy(
             session,
             policy=stored,
             content={

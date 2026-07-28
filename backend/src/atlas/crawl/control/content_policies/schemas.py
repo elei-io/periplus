@@ -149,7 +149,7 @@ class ContentCompletion(BaseModel):
         )
 
 
-class ContentPolicy(BaseModel):
+class ContentPolicyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     accepted_content_types: tuple[str, ...] = ("text/html", "application/xhtml+xml")
@@ -176,7 +176,7 @@ class ContentPolicyVariance(BaseModel):
     effective_value: int
 
 
-class CrawlPolicySnapshot(BaseModel):
+class ContentPolicySnapshot(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: UUID
@@ -185,18 +185,18 @@ class CrawlPolicySnapshot(BaseModel):
     host: str
     path_prefix: str
     path_mode: PathMode
-    content: ContentPolicy = Field(default_factory=ContentPolicy)
+    content: ContentPolicyConfig = Field(default_factory=ContentPolicyConfig)
     content_variance: ContentPolicyVariance | None = None
 
 
 class EffectivePolicySnapshot(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    crawl: CrawlPolicySnapshot
+    content: ContentPolicySnapshot
     domain: DomainPolicySnapshot
 
 
-class CrawlPolicyRecord(BaseModel):
+class ContentPolicyRecord(BaseModel):
     id: UUID
     slug: str
     scheme: Literal["*", "http", "https"]
@@ -204,14 +204,14 @@ class CrawlPolicyRecord(BaseModel):
     path_prefix: str
     path_mode: PathMode
     match: str
-    content: ContentPolicy
+    content: ContentPolicyConfig
     enabled: bool
     created_at: datetime
     updated_at: datetime
 
 
-class CrawlPolicyListResponse(BaseModel):
-    items: list[CrawlPolicyRecord]
+class ContentPolicyListResponse(BaseModel):
+    items: list[ContentPolicyRecord]
     total: int
     limit: int
     offset: int
@@ -229,20 +229,20 @@ class _PolicyFields(BaseModel):
         return None if value is None else _normalize_match_path(value)
 
 
-class CrawlPolicyUpdateRequest(_PolicyFields):
+class ContentPolicyUpdateRequest(_PolicyFields):
     enabled: bool | None = None
     scheme: Literal["*", "http", "https"] | None = None
     host: str | None = Field(default=None, min_length=1)
     path_prefix: str | None = Field(default=None, min_length=1)
     path_mode: PathMode | None = None
-    content: ContentPolicy | None = None
+    content: ContentPolicyConfig | None = None
 
 
-class CrawlPolicyCreateRequest(_PolicyFields):
+class ContentPolicyCreateRequest(_PolicyFields):
     slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
     scheme: Literal["*", "http", "https"]
     host: str = Field(min_length=1)
     path_prefix: str = Field(default="/", min_length=1)
     path_mode: PathMode = "prefix"
-    content: ContentPolicy = Field(default_factory=ContentPolicy)
+    content: ContentPolicyConfig = Field(default_factory=ContentPolicyConfig)
     enabled: bool = True

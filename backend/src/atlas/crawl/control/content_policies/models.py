@@ -12,20 +12,20 @@ from atlas.platform.postgres import Base
 from atlas.platform.postgres.types import utc_now
 
 
-class CrawlPolicy(Base):
+class ContentPolicy(Base):
     """URL-matched Atlas content-completeness behavior.
 
     The CDP service owns acquisition transport, provider selection, and capacity.
     Atlas freezes only the behavior it applies while inspecting rendered HTML.
     """
 
-    __tablename__ = "crawl_policies"
+    __tablename__ = "content_policies"
     __table_args__ = (
-        CheckConstraint("scheme IN ('*', 'http', 'https')", name="ck_crawl_policies_scheme"),
-        CheckConstraint("path_mode IN ('exact', 'prefix')", name="ck_crawl_policies_path_mode"),
-        UniqueConstraint("scheme", "host", "path_prefix", "path_mode", name="uq_crawl_policies_match"),
-        Index("ix_crawl_policies_enabled", "enabled"),
-        Index("ix_crawl_policies_host", "host"),
+        CheckConstraint("scheme IN ('*', 'http', 'https')", name="ck_content_policies_scheme"),
+        CheckConstraint("path_mode IN ('exact', 'prefix')", name="ck_content_policies_path_mode"),
+        UniqueConstraint("scheme", "host", "path_prefix", "path_mode", name="uq_content_policies_match"),
+        Index("ix_content_policies_enabled", "enabled"),
+        Index("ix_content_policies_host", "host"),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)

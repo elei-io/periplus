@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 import logging
 from uuid import UUID, uuid5
@@ -69,7 +68,6 @@ async def _process_due_schedule(
     progress,
     jetstream,
     now: datetime,
-    catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]],
 ) -> None:
     run_id = scheduled_run_id(schedule_id, expected_occurrence)
     existing = await get_graph_run(runs, run_id)
@@ -147,8 +145,8 @@ async def _process_due_schedule(
             return
 
         snapshot = freeze_graph(session, schedule.graph_id)
-        urls = list(schedule.root_urls)
-        policies = resolve_policy_snapshots(session, urls)
+        url = schedule.root_url
+        policies = resolve_policy_snapshots(session, [url])
         schedule_snapshot = schedule
         session.commit()
 
@@ -159,9 +157,8 @@ async def _process_due_schedule(
                 progress=progress,
                 jetstream=jetstream,
                 snapshot=snapshot,
-                urls=urls,
+                urls=[url],
                 policy_resolver=policies.__getitem__,
-                catalogue_snapshot_resolver=catalogue_snapshot_resolver,
                 trigger_kind="schedule",
                 run_id=run_id,
                 trigger_schedule_id=schedule.id,
@@ -232,7 +229,6 @@ async def run_schedule_tick(
     requests,
     progress,
     jetstream,
-    catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]],
     now: datetime | None = None,
 ) -> int:
     now = now or datetime.now(UTC)
@@ -255,7 +251,6 @@ async def run_schedule_tick(
                 progress=progress,
                 jetstream=jetstream,
                 now=now,
-                catalogue_snapshot_resolver=catalogue_snapshot_resolver,
             )
         except Exception:
             logging.exception(
@@ -273,7 +268,6 @@ async def run_scheduler(
     requests,
     progress,
     jetstream,
-    catalogue_snapshot_resolver: Callable[[], Awaitable[int | None]],
 ) -> None:
     interval = get_float("ATLAS_SCHEDULE_POLL_SECONDS")
     while not stop.is_set():
@@ -283,7 +277,6 @@ async def run_scheduler(
                 requests=requests,
                 progress=progress,
                 jetstream=jetstream,
-                catalogue_snapshot_resolver=catalogue_snapshot_resolver,
             )
         except Exception:
             logging.exception("crawl scheduler tick failed")
