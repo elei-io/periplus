@@ -160,6 +160,25 @@ settings take precedence. Native selectors consume the one-row value returned by
 `dom.document(content_id)` so plans never need to aggregate the complete element relation into
 scope-wide nested lists.
 
+Optimizer actions and diagnostics share `AtlasPlanAnalyzer` and the ordered Atlas policy registry.
+A new rule must be based on reusable plan facts such as relation grain, capability, cardinality,
+expansion, or blocking state. Do not add a second whole-plan visitor for one SQL spelling or
+function. Hard errors must follow the relevant dataflow and have high-confidence activation tests;
+warnings may be advisory but need a specific rewrite hint.
+
+Add SQLLogicTests for:
+
+- the triggering plan and diagnostic code;
+- a bounded or otherwise safe neighboring plan;
+- an unrelated Atlas query family to guard against overmatching;
+- independent plan branches that must not be treated as one dataflow; and
+- plain `EXPLAIN` access plus enforced `EXPLAIN ANALYZE` for any plan rejected during normal
+  execution.
+
+`atlas_lint_query(sql, profile := 'interactive')` binds and optimizes one `SELECT` or `EXPLAIN`
+without executing it. Use it to assert structured warnings and would-be errors. Keep lint output
+stable and machine-readable; shell and SDK presentation belongs outside the extension.
+
 Use real `atlas_test` queries for plan and performance investigation, but keep deterministic
 correctness coverage in SQLLogicTests.
 

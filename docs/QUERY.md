@@ -101,3 +101,50 @@ the matching extension is loaded on the server and the complete query executes t
 Quack, a user may load the matching extension locally. In both cases the DuckLake catalogue remains
 the authoritative interface. The local build, direct DuckLake, and differential testing workflow is
 documented in [`EXTENSION_DEVELOPMENT.md`](EXTENSION_DEVELOPMENT.md).
+
+### Shared plan analysis and policy
+
+The native extension has one Atlas plan-analysis boundary. It reduces DuckDB's optimized logical
+plan to reusable facts about physical Atlas relations and grain, native capabilities, estimated
+cardinality, expansion boundaries, blocking state, and the operator path connecting a hazard to
+its consumer. An ordered policy registry consumes those facts and produces optimizer actions,
+structured diagnostics, or enforced errors. Feature-specific code may contribute capabilities and
+rules, but it must not install an independent whole-plan visitor.
+
+The initial rules cover both DOM and non-DOM plans: unsafe collection of element-grain rows before
+document evaluation, large Cartesian products between Atlas relations, unexpectedly broad
+document operations, repeated DOM work, immediate selector-list expansion, and unbounded blocking
+state over large Atlas relations. The selector dynamic-filter adjustment is an optimizer action
+from this shared policy rather than a standalone selector patch.
+
+The internal native table function:
+
+```sql
+atlas_lint_query(sql, profile := 'interactive')
+```
+
+accepts exactly one `SELECT` or `EXPLAIN`, binds and fully optimizes it without executing it, and
+returns:
+
+```text
+severity, code, message, hint, operator_path,
+estimated_rows, estimated_bytes, confidence
+```
+
+It returns warnings and would-be errors as rows so an SDK or shell can decide how to present them.
+Normal execution throws only error-severity diagnostics while safety is enforced. Plain `EXPLAIN`
+never throws, while `EXPLAIN ANALYZE` executes its child and remains subject to enforcement. The
+session settings are:
+
+```sql
+SET atlas_query_safety = 'enforce';      -- enforce, audit, or off
+SET atlas_query_profile = 'interactive'; -- interactive or batch
+```
+
+Profiles are versioned cardinality and state budgets, not wall-clock predictions. Interactive
+budgets protect request/console work; batch budgets permit deliberate larger work. Hard errors
+require a high-confidence unsafe shape and an exceeded budget. `estimated_bytes` is a working-state
+proxy derived from estimated rows and operator shape, not an exact peak-allocation prediction. The
+Atlas shells continue to validate their public namespace boundary independently; exposing lint
+through those shells or the SDK does not make this internal function part of the portable `web.*`
+or `dom.*` contract.
