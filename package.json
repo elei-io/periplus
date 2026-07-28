@@ -4,13 +4,16 @@
   "workspaces": [
     "packages/atlas-console-core",
     "packages/atlas-terminal-shell",
-    "packages/atlas-web-shell"
+    "packages/atlas-web-shell",
+    "web"
   ],
   "scripts": {
-    "build:console": "npm run build --workspace atlas-console-core && npm run build --workspace atlas-terminal-shell",
-    "check:console": "npm run check --workspace atlas-console-core && npm run build --workspace atlas-console-core --silent && npm run check --workspace atlas-terminal-shell",
-    "test:console": "npm run test --workspace atlas-console-core && npm run test --workspace atlas-terminal-shell",
-    "atlas": "npm run build:console --silent && node packages/atlas-terminal-shell/dist/main.js"
+    "build:packages": "npm run build --workspace atlas-console-core && npm run build --workspace atlas-web-shell && npm run build --workspace atlas-terminal-shell",
+    "check:packages": "npm run check --workspace atlas-console-core && npm run build --workspace atlas-console-core --silent && npm run check --workspace atlas-web-shell && npm run build --workspace atlas-web-shell --silent && npm run check --workspace atlas-terminal-shell",
+    "test:packages": "npm run test --workspace atlas-console-core && npm run test --workspace atlas-terminal-shell",
+    "build:web": "npm run build --workspace atlas-console-core --silent && npm run build --workspace atlas-web-shell --silent && npm run build --workspace atlas-web",
+    "check:web": "npm run build --workspace atlas-console-core --silent && npm run build --workspace atlas-web-shell --silent && npm run typecheck --workspace atlas-web && npm run lint --workspace atlas-web && npm run test --workspace atlas-web",
+    "atlas": "npm run build --workspace atlas-console-core --silent && npm run build --workspace atlas-terminal-shell --silent && node packages/atlas-terminal-shell/dist/main.js"
   },
   "dependencies": {
     "atlas-terminal-shell": "*"

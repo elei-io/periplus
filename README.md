@@ -11,9 +11,15 @@ crawl graph -> immutable bytes -> ingest.* -> CDC -> material.*
 
 The Python compiler is archived as inert reference material under `archive/python_compiler/`.
 Compilation, the `web.*` semantic interface, user views/macros, and user-authored materializations
-are intentionally unavailable until the replacement C compiler is delivered. A bounded read-only
+are intentionally unavailable in the current milestone. The replacement begins with portable,
+versioned DuckLake views and macros, followed by a Python SDK for connection and control
+ergonomics; one optional C++ extension may later optimize measured plan gaps. A bounded read-only
 SQL console remains available for direct inspection of `ingest.*` and `material.*` in both the web
 application and the `atlas` terminal client.
+
+The TypeScript workspace keeps its distributable clients under `packages/`:
+`atlas-console-core`, `atlas-web-shell`, and `atlas-terminal-shell`. The deployable React
+application lives under `web/` and consumes `atlas-web-shell`.
 
 ## Development
 
@@ -26,6 +32,17 @@ make sync
 make check
 make compose-up
 ```
+
+If a greenfield baseline replacement leaves local Postgres stamped at a
+revision that no longer exists, reset only the disposable control plane and
+start again:
+
+```sh
+make compose-reset-control
+make compose-up
+```
+
+This preserves DuckLake, repository objects, and local NATS state.
 
 Run one query from the terminal:
 
@@ -51,10 +68,9 @@ make housekeeping-worker
 
 The canonical product and data contracts are:
 
+- [architecture](docs_v2/ARCHITECTURE.md)
 - [cutoff](docs_v2/CUTOFF.md)
 - [schema](docs_v2/SCHEMA.md)
 - [lifecycle](docs_v2/LIFECYCLE.md)
+- [query](docs_v2/QUERY.md)
 - [vision](docs_v2/VISION.md)
-- [runtime architecture](docs/ARCHITECTURE.md)
-- [worker architecture](docs/WORKER_ARCHITECTURE.md)
-- [hazards](docs/HAZARDS.md)

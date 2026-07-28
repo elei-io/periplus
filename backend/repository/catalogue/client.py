@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
 import logging
 import re
 import threading
-from typing import Any
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 
 import duckdb
 import pyarrow as pa
 
 from repository.catalogue.config import CatalogueConfig
 from repository.catalogue.duckbasin import (
-    DuckBasinCredentialRejectedError,
     DuckBasinClientMinter,
-    DuckBasinUnavailableError,
+    DuckBasinCredentialRejectedError,
     MintedDuckDB,
     classify_quack_connection_error,
 )
@@ -25,9 +23,9 @@ from repository.catalogue.schema import (
     COLUMN_COMMENTS,
     INGEST_SCHEMA,
     MATERIAL_SCHEMA,
-    RelationName,
     TABLE_COMMENTS,
     TABLE_LAYOUTS,
+    RelationName,
     expected_columns,
 )
 
@@ -353,9 +351,43 @@ class Catalogue:
                 raise ValueError("only material tables can be activated")
             if not _INTERNAL_TABLE_NAME.fullmatch(generation_table):
                 raise ValueError("invalid internal generation table name")
+        pending: dict[RelationName, str] = {}
+        for relation_name, generation_table in generations.items():
+            retired_table = (
+                f"_atlas_retired_{relation_name.table}_{suffix}"
+            )
+            rows = self.trusted_remote_rows(
+                "SELECT table_name "
+                "FROM duckdb_tables() "
+                f"WHERE database_name = {_quote_literal(self.config.alias)} "
+                f"AND schema_name = {_quote_literal(relation_name.schema)} "
+                "AND table_name IN "
+                f"({_quote_literal(relation_name.table)}, "
+                f"{_quote_literal(generation_table)}, "
+                f"{_quote_literal(retired_table)})"
+            )
+            existing = {str(row[0]) for row in rows}
+            if generation_table in existing:
+                pending[relation_name] = generation_table
+                continue
+            if (
+                relation_name.table in existing
+                and retired_table in existing
+            ):
+                continue
+            raise RuntimeError(
+                "materialization generation is missing and the public "
+                f"table was not activated by {activation_id}: "
+                f"{relation_name.schema}.{generation_table}"
+            )
+        if not pending:
+            return
+        if len(pending) != len(generations):
+            raise RuntimeError(
+                "materialization activation is partially applied"
+            )
         with self.remote_transaction():
-            retired: list[str] = []
-            for relation_name, generation_table in generations.items():
+            for relation_name, generation_table in pending.items():
                 retired_table = (
                     f"_atlas_retired_{relation_name.table}_{suffix}"
                 )
@@ -377,16 +409,56 @@ class Catalogue:
                     f"ALTER TABLE {generation} RENAME TO "
                     f"{_quote_identifier(relation_name.table)}"
                 )
-                retired.append(
-                    _qualified(
+    def finalize_materialization_activation(
+        self,
+        relations,
+        *,
+        activation_id: str,
+    ) -> None:
+        """Remove replay markers after control state records completion."""
+
+        suffix = re.sub(r"[^a-z0-9]", "", activation_id.lower())[:20]
+        if not suffix:
+            raise ValueError("activation_id must contain letters or digits")
+        selected = tuple(relations)
+        if not selected:
+            return
+        with self.remote_transaction():
+            for relation_name in selected:
+                if relation_name.schema != MATERIAL_SCHEMA:
+                    raise ValueError(
+                        "only material tables can be finalized"
+                    )
+                retired_table = (
+                    f"_atlas_retired_{relation_name.table}_{suffix}"
+                )
+                self.trusted_remote_execute(
+                    "DROP TABLE IF EXISTS "
+                    f"{_qualified(
                         self.config.alias,
                         relation_name.schema,
                         retired_table,
-                    )
+                    )}"
                 )
-            for relation in retired:
-                self.trusted_remote_execute(f"DROP TABLE {relation}")
-        self.validate_schema()
+
+    def drop_materialization_generations(
+        self,
+        generation_tables,
+    ) -> None:
+        """Drop failed rebuild tables without touching public relations."""
+
+        tables = tuple(generation_tables)
+        for table in tables:
+            if not _INTERNAL_TABLE_NAME.fullmatch(table):
+                raise ValueError("invalid internal generation table name")
+        if not tables:
+            return
+        with self.remote_transaction():
+            for table in tables:
+                self.trusted_remote_execute(
+                    "DROP TABLE IF EXISTS "
+                    f"{_qualified(self.config.alias, MATERIAL_SCHEMA, table)}"
+                )
 
     def latest_snapshot(self) -> int | None:
         rows = self.trusted_remote_rows(
@@ -443,20 +515,6 @@ class Catalogue:
             sql,
         ).fetchall()
 
-    def trusted_sql_dicts(
-        self,
-        sql: str,
-        parameters: Mapping[str, object] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Execute trusted Atlas SQL and return rows keyed by column name."""
-
-        cursor = self.trusted_connection.execute(sql, dict(parameters or {}))
-        names = [description[0] for description in cursor.description]
-        return [
-            dict(zip(names, row, strict=True))
-            for row in cursor.fetchall()
-        ]
-
     def append(
         self,
         table_name: str,
@@ -466,16 +524,44 @@ class Catalogue:
     ) -> None:
         if not rows:
             return
-        registration = f"_atlas_upload_{id(rows):x}"
-        self.trusted_connection.register(registration, pa.Table.from_pylist(rows))
+        self.append_arrow(
+            table_name,
+            pa.Table.from_pylist(rows),
+            schema_name=schema_name,
+        )
+
+    def append_arrow(
+        self,
+        table_name: str,
+        table: pa.Table,
+        *,
+        schema_name: str,
+        variant_columns: frozenset[str] = frozenset(),
+    ) -> None:
+        """Stream one typed local Arrow relation into a managed table."""
+
+        if table.num_rows == 0:
+            return
+        registration = f"_atlas_upload_{id(table):x}"
+        self.trusted_connection.register(registration, table)
         try:
             relation = _qualified(
                 schema_name,
                 table_name,
             )
+            projections = ", ".join(
+                (
+                    f"{_quote_identifier(name)}::JSON::VARIANT "
+                    f"AS {_quote_identifier(name)}"
+                    if name in variant_columns
+                    else _quote_identifier(name)
+                )
+                for name in table.column_names
+            )
             self.trusted_connection.execute(
                 f"INSERT INTO {relation} BY NAME "
-                f"SELECT * FROM {_quote_identifier(registration)}"
+                f"SELECT {projections} "
+                f"FROM {_quote_identifier(registration)}"
             )
         finally:
             self.trusted_connection.unregister(registration)

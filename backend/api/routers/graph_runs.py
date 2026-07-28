@@ -8,7 +8,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from nats.js.errors import NotFoundError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,14 +15,6 @@ from sqlalchemy.orm import Session
 from api.graph_submission import submit_graph_run
 from api.graph_runtime import ApiGraphRuntime, get_graph_runtime
 from api.catalogue_control import CatalogueControl, get_catalogue_control
-from config.performance import (
-    CRAWL_ACQUISITION_LANES,
-    GRAPH_CONSUMER_MAX_ACK_PENDING,
-    INGESTION_QUACK_CLIENTS,
-    MATERIALIZATION_QUACK_CLIENTS,
-    duckdb_memory_limit,
-    duckdb_threads,
-)
 from control.crawl_graphs.models import CrawlGraph
 from control.crawl_graphs.schemas import (
     DEFAULT_GRAPH_RUN_MAX_CRAWLS,
@@ -34,9 +25,6 @@ from control.crawl_graphs.service import (
     CrawlGraphValidationError,
 )
 from db.session import get_session
-from repository.ingestion.queue import DURABLE as INGESTION_DURABLE
-from cdc.events import DML_SUBJECT_PREFIX, EVENT_STREAM
-from runtime.catalogue_queue import WORK_STREAM
 from runtime.graph_queue import (
     GraphRun,
     get_graph_run,
@@ -48,10 +36,6 @@ from runtime.graph_runs import (
     pause_graph_run,
     request_cancellation,
     resume_graph_run,
-)
-from runtime.catalogue_workers import (
-    CatalogueCapability,
-    list_catalogue_worker_states,
 )
 
 router = APIRouter(prefix="/graph-runs", tags=["graph-runs"])
@@ -128,36 +112,11 @@ class RuntimeWorkerCapacity(BaseModel):
     last_seen_at: datetime
 
 
-class CatalogueExecutorCapacity(BaseModel):
-    capability: CatalogueCapability
-    worker_count: int
-    configured_capacity: int
-    capacity: int
-    active: int
-    degraded: int
-    backlog: int
-    pending: int
-    ack_pending: int
-    redelivered: int
-    waiting_for_redelivery: int
-
-
 class CrawlConcurrencyLimits(BaseModel):
     worker_count: int
     runtime_capacity: int
     runtime_active: int
     workers: list[RuntimeWorkerCapacity]
-    catalogue_executors: list[CatalogueExecutorCapacity]
-    tuning: "RuntimeSizing"
-
-
-class RuntimeSizing(BaseModel):
-    crawl_lanes_per_replica: int
-    ingestion_clients_per_replica: int
-    materialization_clients_per_replica: int
-    graph_consumer_delivery_ceiling: int
-    duckdb_threads_per_client: int
-    duckdb_memory_limit_per_client: str
 
 
 class GraphRunFailureGroupResponse(BaseModel):
@@ -235,101 +194,6 @@ async def capacity(
         await list_worker_states(runtime.workers),
         key=lambda value: value.worker_id,
     )
-    catalogue_workers = sorted(
-        await list_catalogue_worker_states(runtime.catalogue_workers),
-        key=lambda value: value.worker_id,
-    )
-
-    async def consumer_counts(durable: str) -> tuple[int, int, int]:
-        try:
-            info = await runtime.jetstream.consumer_info(WORK_STREAM, durable)
-        except NotFoundError:
-            return 0, 0, 0
-        return (
-            int(info.num_pending or 0),
-            int(info.num_ack_pending or 0),
-            int(info.num_redelivered or 0),
-        )
-
-    try:
-        materialization_consumers = await runtime.jetstream.consumers_info(
-            EVENT_STREAM
-        )
-    except NotFoundError:
-        materialization_consumers = []
-    active_materialization_consumers = {
-        "atlas-material-documents-v1",
-        "atlas-material-visits-v1",
-    }
-    relevant_materialization_consumers = [
-        info
-        for info in materialization_consumers
-        if (
-            (info.config.filter_subject or "").startswith(
-                f"{DML_SUBJECT_PREFIX}."
-            )
-            and (info.name or info.config.durable_name)
-            in active_materialization_consumers
-        )
-    ]
-    catalogue_queues = {
-        "ingestion": await consumer_counts(INGESTION_DURABLE),
-        "materialization": (
-            sum(
-                int(info.num_pending or 0)
-                for info in relevant_materialization_consumers
-            ),
-            sum(
-                int(info.num_ack_pending or 0)
-                for info in relevant_materialization_consumers
-            ),
-            sum(
-                int(info.num_redelivered or 0)
-                for info in relevant_materialization_consumers
-            ),
-        ),
-    }
-    catalogue_executors: list[CatalogueExecutorCapacity] = []
-    for capability in ("ingestion", "materialization"):
-        configured_capacity = sum(
-            worker.configured_capacity
-            for worker in catalogue_workers
-            if worker.capability == capability
-        )
-        usable_capacity = sum(
-            worker.usable_capacity
-            for worker in catalogue_workers
-            if worker.capability == capability and worker.process_ready
-        )
-        active = sum(
-            worker.active_operation_count
-            for worker in catalogue_workers
-            if worker.capability == capability
-        )
-        pending, ack_pending, redelivered = catalogue_queues[capability]
-        catalogue_executors.append(
-            CatalogueExecutorCapacity(
-                capability=capability,
-                worker_count=sum(
-                    worker.capability == capability
-                    for worker in catalogue_workers
-                ),
-                configured_capacity=configured_capacity,
-                capacity=usable_capacity,
-                active=active,
-                degraded=configured_capacity - usable_capacity,
-                backlog=pending + ack_pending,
-                pending=pending,
-                ack_pending=ack_pending,
-                redelivered=redelivered,
-                # JetStream does not publish per-message delayed-NAK deadlines.
-                # A quiescent consumer with only ACK-pending deliveries is the
-                # bounded, server-authoritative wait state we can prove.
-                waiting_for_redelivery=(
-                    ack_pending if pending == 0 and active == 0 else 0
-                ),
-            )
-        )
     return CrawlConcurrencyLimits(
         worker_count=len(workers),
         runtime_capacity=sum(worker.capacity for worker in workers),
@@ -338,15 +202,6 @@ async def capacity(
             RuntimeWorkerCapacity.model_validate(worker, from_attributes=True)
             for worker in workers
         ],
-        catalogue_executors=catalogue_executors,
-        tuning=RuntimeSizing(
-            crawl_lanes_per_replica=CRAWL_ACQUISITION_LANES,
-            ingestion_clients_per_replica=INGESTION_QUACK_CLIENTS,
-            materialization_clients_per_replica=MATERIALIZATION_QUACK_CLIENTS,
-            graph_consumer_delivery_ceiling=GRAPH_CONSUMER_MAX_ACK_PENDING,
-            duckdb_threads_per_client=duckdb_threads(),
-            duckdb_memory_limit_per_client=duckdb_memory_limit(),
-        ),
     )
 
 

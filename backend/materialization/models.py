@@ -5,12 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
+from db import Base
+from db.types import json_type, utc_now
 from sqlalchemy import BigInteger, CheckConstraint, DateTime, Integer, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
-
-from db import Base
-from db.types import json_type, utc_now
 
 
 class MaterializationRunRecord(Base):

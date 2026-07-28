@@ -1,34 +1,45 @@
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from uuid import UUID
 
+from materialization.contracts import (
+    ordered_projections,
+    workload_projections,
+)
 from materialization.maintenance import (
     _within_byte_budget,
-    dependency_closure,
     generation_table,
-    materialize_catchup_batch,
+    materialize_visit_batch,
 )
 from materialization.runtime import _source_highwater
 
 
 class MaterializationMaintenanceTests(unittest.TestCase):
-    def test_html_rebuild_closes_over_semantic_dependants(self) -> None:
+    def test_requested_tables_remain_independently_selectable(self) -> None:
         self.assertEqual(
-            dependency_closure({"html_elements"}),
-            (
-                "html_elements",
-                "jsonld_values",
-                "links",
-                "link_observations",
-            ),
+            ordered_projections({"html_elements"}),
+            ("html_elements",),
         )
         self.assertEqual(
-            dependency_closure({"links"}),
-            ("links", "link_observations"),
+            ordered_projections({"links", "page_observations"}),
+            ("links", "page_observations"),
+        )
+
+    def test_selected_document_tables_share_one_workload(self) -> None:
+        stages = (
+            "html_elements",
+            "jsonld_values",
+            "link_observations",
+            "pages",
         )
         self.assertEqual(
-            dependency_closure({"pages"}),
+            workload_projections(stages, "html_elements"),
+            ("html_elements", "jsonld_values", "link_observations"),
+        )
+        self.assertEqual(
+            workload_projections(stages, "pages"),
             ("pages",),
         )
 
@@ -49,58 +60,48 @@ class MaterializationMaintenanceTests(unittest.TestCase):
             rows[:1],
         )
 
-    @patch("materialization.maintenance._merge_page_rows")
-    def test_page_catchup_is_cursor_bounded_and_replay_safe(
-        self,
-        merge_page_rows,
-    ) -> None:
+    def test_visit_catchup_replaces_deleted_and_corrected_visits(self) -> None:
         catalogue = MagicMock()
         catalogue.config.alias = "atlas"
-        catalogue.trusted_remote_rows.return_value = [
-            (
-                "00000000-0000-0000-0000-000000000002",
-                None,
-                "https://example.com/two",
-                object(),
-            ),
-            (
-                "00000000-0000-0000-0000-000000000003",
-                None,
-                "https://example.com/three",
-                object(),
-            ),
+        catalogue.trusted_remote_rows.side_effect = [
+            [("visit-a",), ("visit-deleted",)],
+            [
+                (
+                    "visit-a",
+                    None,
+                    "https://example.com/two",
+                    datetime.fromisoformat(
+                        "2026-01-02T03:04:05+00:00"
+                    ),
+                )
+            ],
         ]
 
-        result = materialize_catchup_batch(
+        result = materialize_visit_batch(
             catalogue,
-            MagicMock(),
-            stage="pages",
+            stages=("page_observations",),
+            source_snapshot=10,
             after_snapshot=10,
             through_snapshot=20,
-            after_cursor="00000000-0000-0000-0000-000000000001",
+            after_cursor=None,
             item_budget=2,
-            byte_budget=1024,
-            destinations={"pages": "_atlas_rebuild_pages_run"},
+            destinations={
+                "page_observations": "_atlas_rebuild_page_observations_run"
+            },
         )
 
-        self.assertEqual(result.source_items, 2)
-        self.assertEqual(
-            result.cursor,
-            "00000000-0000-0000-0000-000000000003",
+        self.assertEqual(result.cursor, "visit-deleted")
+        sql = "\n".join(
+            call.args[0]
+            for call in catalogue.trusted_remote_execute.call_args_list
         )
-        sql = catalogue.trusted_remote_rows.call_args.args[0]
-        self.assertIn("11, 20", sql)
-        self.assertIn("LIMIT 2", sql)
         self.assertIn(
-            "visits.visit_id::VARCHAR > "
-            "'00000000-0000-0000-0000-000000000001'",
+            "DELETE FROM material._atlas_rebuild_page_observations_run",
             sql,
         )
-        merge_page_rows.assert_called_once()
-        self.assertEqual(
-            merge_page_rows.call_args.kwargs["table_name"],
-            "_atlas_rebuild_pages_run",
-        )
+        self.assertIn("AT (VERSION => 20)", (
+            catalogue.trusted_remote_rows.call_args_list[1].args[0]
+        ))
 
     def test_source_highwater_ignores_shadow_table_commits(self) -> None:
         catalogue = MagicMock()

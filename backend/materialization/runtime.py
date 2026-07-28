@@ -3,34 +3,41 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 import logging
 from uuid import UUID
 
 from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
-from pydantic import BaseModel, ConfigDict
-
-from materialization.lanes import MaterializationLane, MaterializationLanePool
-from materialization.maintenance import (
-    BatchResult,
-    activate_rebuild,
-    materialize_batch,
-    materialize_catchup_batch,
-    prepare_rebuild,
-)
-from materialization.store import (
-    AsyncMaterializationRunStore,
-    MaterializationRun,
-)
+from pydantic import BaseModel, ConfigDict, ValidationError
 from repository.objects.html import RawHtmlRepository
 from runtime.catalogue_queue import (
     MATERIALIZATION_MAINTENANCE_SUBJECT,
     WORK_STREAM,
     ensure_catalogue_work_stream,
 )
-from runtime.operation_leases import operation_leases
+from runtime.operation_leases import (
+    OperationLeaseLost,
+    OperationLeaseUnavailable,
+    operation_leases,
+)
 
+from materialization.contracts import (
+    DOCUMENT_PROJECTIONS,
+    workload_projections,
+)
+from materialization.lanes import MaterializationLanePool
+from materialization.maintenance import (
+    BatchResult,
+    activate_rebuild,
+    finalize_rebuild,
+    materialize_document_batch,
+    materialize_visit_batch,
+    prepare_rebuild,
+)
+from materialization.store import (
+    AsyncMaterializationRunStore,
+    MaterializationRun,
+)
 
 MAINTENANCE_DURABLE = "atlas-materialization-maintenance-v1"
 
@@ -90,9 +97,16 @@ async def run_maintenance(
             message = messages[0]
             try:
                 work = MaintenanceWork.model_validate_json(message.data)
+            except ValidationError:
+                logging.exception(
+                    "discarding invalid materialization maintenance work"
+                )
+                await message.term()
+                continue
+            try:
                 done = await _with_ack_heartbeat(
                     message,
-                    _process_with_lane(
+                    _process_one_batch(
                         work.run_id,
                         runs,
                         leases,
@@ -102,9 +116,36 @@ async def run_maintenance(
                 )
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logging.exception("materialization maintenance batch failed")
+            except (OperationLeaseLost, OperationLeaseUnavailable):
+                logging.info(
+                    "materialization maintenance lease is unavailable; "
+                    "retrying",
+                    exc_info=True,
+                )
                 await message.nak(delay=1)
+                continue
+            except Exception as exc:
+                logging.exception(
+                    "materialization maintenance run failed permanently"
+                )
+                try:
+                    run = await runs.fail(work.run_id, exc)
+                    if run.status == "completed":
+                        await message.nak(delay=1)
+                        continue
+                    if run.mode == "rebuild" and run.destinations:
+                        await lane_pool.call(
+                            _discard_rebuild,
+                            run.destinations,
+                        )
+                except Exception:
+                    logging.exception(
+                        "failed to record or clean up failed "
+                        "materialization run"
+                    )
+                    await message.nak(delay=1)
+                    continue
+                await message.ack()
                 continue
             if done:
                 await message.ack()
@@ -119,34 +160,49 @@ async def _process_one_batch(
     run_id: UUID,
     store: AsyncMaterializationRunStore,
     leases,
-    lane: MaterializationLane,
+    lane_pool: MaterializationLanePool,
     html_repository: RawHtmlRepository,
 ) -> bool:
-    run = await store.start(run_id)
+    try:
+        run = await store.start(run_id)
+    except KeyError:
+        logging.warning(
+            "discarding materialization maintenance work for unknown run %s",
+            run_id,
+        )
+        return True
     if run.status == "completed":
+        if run.mode == "rebuild":
+            await lane_pool.call(_finalize_run, run)
         return True
     if run.status == "failed":
+        if run.mode == "rebuild" and run.destinations:
+            await lane_pool.call(
+                _discard_rebuild,
+                run.destinations,
+            )
         return True
     if run.mode == "rebuild" and not run.destinations:
-        destinations = await lane.call(
+        destinations = await lane_pool.call(
             prepare_rebuild,
             run.id,
             run.stages,
         )
-        await lane.call(_refresh_metadata)
+        await lane_pool.call_all(_refresh_metadata)
         run = await store.set_destinations(run.id, destinations)
     stage = run.active_stage
     if stage is not None:
-        async with _batch_lease(leases, run):
-            result = await lane.call(
-                _materialize_run_batch,
-                html_repository,
-                run,
-                stage,
-            )
+        stages = workload_projections(run.stages, stage)
+        result = await _materialize_run_batch(
+            leases,
+            lane_pool,
+            html_repository,
+            run,
+            stages,
+        )
         await store.advance(
             run.id,
-            stage=stage,
+            stages=stages,
             cursor=result.cursor,
             done=result.done,
             source_items=result.source_items,
@@ -157,15 +213,17 @@ async def _process_one_batch(
     if run.mode == "rebuild":
         catchup_stage = run.active_catchup_stage
         if catchup_stage is not None:
-            result = await lane.call(
-                _materialize_catchup_run_batch,
+            stages = workload_projections(run.stages, catchup_stage)
+            result = await _materialize_catchup_run_batch(
+                leases,
+                lane_pool,
                 html_repository,
                 run,
-                catchup_stage,
+                stages,
             )
             await store.advance_catchup(
                 run.id,
-                stage=catchup_stage,
+                stages=stages,
                 cursor=result.cursor,
                 done=result.done,
                 source_items=result.source_items,
@@ -173,7 +231,7 @@ async def _process_one_batch(
                 output_rows=result.output_rows,
             )
             return False
-        latest_snapshot = await lane.call(_source_highwater, run)
+        latest_snapshot = await lane_pool.call(_source_highwater, run)
         if latest_snapshot > run.catchup_snapshot:
             await store.begin_catchup(
                 run.id,
@@ -186,15 +244,17 @@ async def _process_one_batch(
             phase="materialization",
             acquire_timeout=0,
         ):
-            latest_snapshot = await lane.call(_source_highwater, run)
+            latest_snapshot = await lane_pool.call(_source_highwater, run)
             if latest_snapshot != run.catchup_snapshot:
                 await store.begin_catchup(
                     run.id,
                     target_snapshot=latest_snapshot,
                 )
                 return False
-            await lane.call(_activate_run, run)
-    await store.complete(run.id)
+            await lane_pool.call(_activate_run, run)
+    run = await store.complete(run.id)
+    if run.mode == "rebuild":
+        await lane_pool.call(_finalize_run, run)
     logging.info(
         "completed %s materialization run %s stages=%s items=%s rows=%s",
         run.mode,
@@ -204,23 +264,6 @@ async def _process_one_batch(
         run.output_rows,
     )
     return True
-
-
-async def _process_with_lane(
-    run_id: UUID,
-    store: AsyncMaterializationRunStore,
-    leases,
-    lane_pool: MaterializationLanePool,
-    html_repository: RawHtmlRepository,
-) -> bool:
-    async with lane_pool.acquire() as lane:
-        return await _process_one_batch(
-            run_id,
-            store,
-            leases,
-            lane,
-            html_repository,
-        )
 
 
 async def _with_ack_heartbeat(message, operation) -> bool:
@@ -237,47 +280,94 @@ async def _with_ack_heartbeat(message, operation) -> bool:
             await asyncio.gather(task, return_exceptions=True)
 
 
-def _materialize_run_batch(
-    catalogue,
+async def _materialize_run_batch(
+    leases,
+    lane_pool: MaterializationLanePool,
     html_repository: RawHtmlRepository,
     run: MaterializationRun,
-    stage,
-):
-    return materialize_batch(
-        catalogue,
-        html_repository,
-        stage=stage,
-        source_snapshot=run.source_snapshot,
-        after_cursor=run.cursors.get(stage),
-        item_budget=run.item_budget,
-        byte_budget=run.byte_budget,
-        destinations=run.destinations,
-    )
+    stages,
+) -> BatchResult:
+    cursor = run.cursors.get(stages[0])
+    if stages[0] in DOCUMENT_PROJECTIONS:
+        return await materialize_document_batch(
+            leases,
+            lane_pool,
+            html_repository,
+            stages=stages,
+            source_snapshot=run.source_snapshot,
+            after_cursor=cursor,
+            item_budget=run.item_budget,
+            byte_budget=run.byte_budget,
+            destinations=run.destinations,
+        )
+    async with operation_leases(
+        leases,
+        tuple(f"material.{stage}" for stage in stages),
+        phase="materialization",
+        acquire_timeout=0,
+    ):
+        return await lane_pool.call(
+            _materialize_visit_on_lane,
+            {
+                "stages": stages,
+                "source_snapshot": run.source_snapshot,
+                "after_cursor": cursor,
+                "item_budget": run.item_budget,
+                "destinations": run.destinations,
+            },
+        )
 
 
 def _refresh_metadata(catalogue) -> None:
     catalogue.refresh_metadata()
 
 
-def _materialize_catchup_run_batch(
-    catalogue,
+async def _materialize_catchup_run_batch(
+    leases,
+    lane_pool: MaterializationLanePool,
     html_repository: RawHtmlRepository,
     run: MaterializationRun,
-    stage,
+    stages,
 ) -> BatchResult:
     if run.catchup_target_snapshot is None:
         raise RuntimeError("catch-up target is not fixed")
-    return materialize_catchup_batch(
-        catalogue,
-        html_repository,
-        stage=stage,
-        after_snapshot=run.catchup_snapshot,
-        through_snapshot=run.catchup_target_snapshot,
-        after_cursor=run.catchup_cursors.get(stage),
-        item_budget=run.item_budget,
-        byte_budget=run.byte_budget,
-        destinations=run.destinations,
-    )
+    cursor = run.catchup_cursors.get(stages[0])
+    if stages[0] in DOCUMENT_PROJECTIONS:
+        return await materialize_document_batch(
+            leases,
+            lane_pool,
+            html_repository,
+            stages=stages,
+            source_snapshot=run.source_snapshot,
+            after_snapshot=run.catchup_snapshot,
+            through_snapshot=run.catchup_target_snapshot,
+            after_cursor=cursor,
+            item_budget=run.item_budget,
+            byte_budget=run.byte_budget,
+            destinations=run.destinations,
+        )
+    async with operation_leases(
+        leases,
+        tuple(f"material.{stage}" for stage in stages),
+        phase="materialization",
+        acquire_timeout=0,
+    ):
+        return await lane_pool.call(
+            _materialize_visit_on_lane,
+            {
+                "stages": stages,
+                "source_snapshot": run.source_snapshot,
+                "after_snapshot": run.catchup_snapshot,
+                "through_snapshot": run.catchup_target_snapshot,
+                "after_cursor": cursor,
+                "item_budget": run.item_budget,
+                "destinations": run.destinations,
+            },
+        )
+
+
+def _materialize_visit_on_lane(catalogue, scope: dict) -> BatchResult:
+    return materialize_visit_batch(catalogue, **scope)
 
 
 def _source_highwater(catalogue, run: MaterializationRun) -> int:
@@ -320,22 +410,15 @@ def _activate_run(
     activate_rebuild(catalogue, run.id, run.destinations)
 
 
-@asynccontextmanager
-async def _batch_lease(leases, run: MaterializationRun):
-    if run.mode == "rebuild":
-        yield
-        return
-    stage = run.active_stage
-    if stage is None:
-        yield
-        return
-    async with operation_leases(
-        leases,
-        (f"material.{stage}",),
-        phase="materialization",
-        acquire_timeout=0,
-    ):
-        yield
+def _finalize_run(
+    catalogue,
+    run: MaterializationRun,
+) -> None:
+    finalize_rebuild(catalogue, run.id, run.destinations)
+
+
+def _discard_rebuild(catalogue, destinations: dict[str, str]) -> None:
+    catalogue.drop_materialization_generations(destinations.values())
 
 
 async def _publish_queued_runs(

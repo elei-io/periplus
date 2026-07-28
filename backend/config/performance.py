@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-
 # Local executor lanes.
 CRAWL_ACQUISITION_LANES = 12
 # Keep a small delivery look-ahead so a saturated hostname cannot hide other
@@ -29,11 +28,11 @@ NAVIGATION_CLEANUP_BATCH_SIZE = 500
 # first, keeping latency bounded for small deployments and amortising commits
 # automatically when replicas are busy.
 INGEST_BATCH_MAX_ITEMS = 100
-INGEST_BATCH_MAX_ELEMENT_ROWS = 250_000
 INGEST_BATCH_MAX_BYTES = 256 * 1024 * 1024
 INGEST_BATCH_MAX_WAIT_SECONDS = 10.0
 # Native DuckDB calls cannot be cancelled safely after entering C++.
 INGESTION_CATALOGUE_HARD_TIMEOUT_SECONDS = 300.0
+MATERIALIZATION_CATALOGUE_HARD_TIMEOUT_SECONDS = 300.0
 
 # Durable consumers cap unacknowledged delivery at bounded executor capacity.
 # Ingestion may hold at most one full batch per client lane; acquisition uses

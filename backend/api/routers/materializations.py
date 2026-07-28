@@ -8,17 +8,16 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
-
-from api.catalogue_control import CatalogueControl, get_catalogue_control
-from materialization.maintenance import ProjectionName
+from materialization.contracts import ProjectionName
 from materialization.runtime import publish_run
 from materialization.store import (
     AsyncMaterializationRunStore,
     MaterializationRun,
     RunMode,
 )
+from pydantic import BaseModel, ConfigDict, Field
 
+from api.catalogue_control import CatalogueControl, get_catalogue_control
 
 router = APIRouter(
     prefix="/operations/materializations",

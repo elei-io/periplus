@@ -8,16 +8,15 @@ from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
 
+from db.session import session_scope
 from sqlalchemy import select
 
-from db.session import session_scope
-from materialization.maintenance import (
+from materialization.contracts import (
     PROJECTOR_VERSIONS,
     ProjectionName,
-    dependency_closure,
+    ordered_projections,
 )
 from materialization.models import MaterializationRunRecord
-
 
 RunStatus = Literal["queued", "running", "completed", "failed"]
 RunMode = Literal["backfill", "rebuild"]
@@ -79,7 +78,7 @@ class MaterializationRunStore:
         item_budget: int,
         byte_budget: int,
     ) -> MaterializationRun:
-        stages = dependency_closure(requested_stages)
+        stages = ordered_projections(requested_stages)
         if not stages:
             raise ValueError("at least one materialization stage is required")
         with session_scope() as session:
@@ -149,7 +148,7 @@ class MaterializationRunStore:
         self,
         run_id: UUID,
         *,
-        stage: ProjectionName,
+        stages: tuple[ProjectionName, ...],
         cursor: str | None,
         done: bool,
         source_items: int,
@@ -160,20 +159,21 @@ class MaterializationRunStore:
             record = _required(session, run_id)
             if record.status != "running":
                 raise RuntimeError("only a running run can advance")
-            if (
-                record.current_stage >= len(record.stages)
-                or record.stages[record.current_stage] != stage
-            ):
-                raise RuntimeError("materialization stage progress is stale")
+            expected = record.stages[
+                record.current_stage : record.current_stage + len(stages)
+            ]
+            if tuple(expected) != stages:
+                raise RuntimeError("materialization workload progress is stale")
             cursors = dict(record.cursors)
             if cursor is not None:
-                cursors[stage] = cursor
+                for stage in stages:
+                    cursors[stage] = cursor
             record.cursors = cursors
             record.source_items += source_items
             record.source_bytes += source_bytes
             record.output_rows += output_rows
             if done:
-                record.current_stage += 1
+                record.current_stage += len(stages)
             return _run(record)
 
     def begin_catchup(
@@ -201,7 +201,7 @@ class MaterializationRunStore:
         self,
         run_id: UUID,
         *,
-        stage: ProjectionName,
+        stages: tuple[ProjectionName, ...],
         cursor: str | None,
         done: bool,
         source_items: int,
@@ -210,21 +210,26 @@ class MaterializationRunStore:
     ) -> MaterializationRun:
         with session_scope() as session:
             record = _required(session, run_id)
+            expected = record.stages[
+                record.catchup_stage : record.catchup_stage + len(stages)
+            ]
             if (
                 record.catchup_target_snapshot is None
-                or record.catchup_stage >= len(record.stages)
-                or record.stages[record.catchup_stage] != stage
+                or tuple(expected) != stages
             ):
-                raise RuntimeError("materialization catch-up progress is stale")
+                raise RuntimeError(
+                    "materialization catch-up workload progress is stale"
+                )
             cursors = dict(record.catchup_cursors)
             if cursor is not None:
-                cursors[stage] = cursor
+                for stage in stages:
+                    cursors[stage] = cursor
             record.catchup_cursors = cursors
             record.source_items += source_items
             record.source_bytes += source_bytes
             record.output_rows += output_rows
             if done:
-                record.catchup_stage += 1
+                record.catchup_stage += len(stages)
             if record.catchup_stage == len(record.stages):
                 record.catchup_snapshot = record.catchup_target_snapshot
                 record.catchup_target_snapshot = None
@@ -244,6 +249,8 @@ class MaterializationRunStore:
     def fail(self, run_id: UUID, error: BaseException) -> MaterializationRun:
         with session_scope() as session:
             record = _required(session, run_id)
+            if record.status == "completed":
+                return _run(record)
             record.status = "failed"
             record.completed_at = datetime.now(timezone.utc)
             record.error = f"{type(error).__name__}: {error}"[:4000]

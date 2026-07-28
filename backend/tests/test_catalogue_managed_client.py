@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import duckdb
-
 from repository.catalogue.client import Catalogue
 from repository.catalogue.config import CatalogueConfig, catalogue_config_from_env
 from repository.catalogue.duckbasin import DuckBasinCredentialRejectedError
+from repository.catalogue.schema import HTML_ELEMENTS
 
 
 class _Cursor:
@@ -159,10 +159,9 @@ class ManagedCatalogueClientTests(unittest.TestCase):
         with (
             patch.object(catalogue, "trusted_remote_execute", side_effect=execute),
             self.assertLogs(level="WARNING"),
-            self.assertRaises(RuntimeError) as raised,
+            self.assertRaises(RuntimeError) as raised,catalogue.remote_transaction()
         ):
-            with catalogue.remote_transaction():
-                raise operation_error
+            raise operation_error
 
         self.assertIs(raised.exception, operation_error)
         self.assertIn(
@@ -291,10 +290,9 @@ class ManagedCatalogueClientTests(unittest.TestCase):
         with self.assertRaisesRegex(
             DuckBasinCredentialRejectedError,
             "credential",
-        ):
-            with catalogue.remote_transaction():
-                connection.failure_once = "Authentication failed"
-                catalogue.trusted_remote_execute("INSERT INTO main.events VALUES (1)")
+        ), catalogue.remote_transaction():
+            connection.failure_once = "Authentication failed"
+            catalogue.trusted_remote_execute("INSERT INTO main.events VALUES (1)")
 
         self.assertEqual(minter.invalidated_generations, [1])
         self.assertEqual(minter.minted, [])
@@ -321,6 +319,43 @@ class ManagedCatalogueClientTests(unittest.TestCase):
                 ['SELECT id FROM "atlas".last_committed_snapshot()'],
             ),
         )
+
+    def test_materialization_activation_replay_detects_public_generation(
+        self,
+    ) -> None:
+        catalogue = MagicMock()
+        catalogue.config.alias = "atlas"
+        catalogue.trusted_remote_rows.return_value = [
+            ("html_elements",),
+            ("_atlas_retired_html_elements_run123",),
+        ]
+
+        Catalogue.activate_materialization_generations(
+            catalogue,
+            {HTML_ELEMENTS: "_atlas_rebuild_html_elements_run123"},
+            activation_id="run-123",
+        )
+
+        catalogue.remote_transaction.assert_not_called()
+
+    def test_materialization_activation_rejects_missing_generation(
+        self,
+    ) -> None:
+        catalogue = MagicMock()
+        catalogue.config.alias = "atlas"
+        catalogue.trusted_remote_rows.return_value = [
+            ("html_elements",)
+        ]
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "generation is missing",
+        ):
+            Catalogue.activate_materialization_generations(
+                catalogue,
+                {HTML_ELEMENTS: "_atlas_rebuild_html_elements_run123"},
+                activation_id="run-123",
+            )
 
 
 if __name__ == "__main__":

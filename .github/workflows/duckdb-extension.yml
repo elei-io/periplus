@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   stable:
-    name: DuckDB 1.5.4 (${{ matrix.os }})
+    name: DuckDB 1.5.5 (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

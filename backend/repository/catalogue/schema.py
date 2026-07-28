@@ -164,6 +164,9 @@ TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
 }
 
 
+PARTITION_BUCKETS = 64
+
+
 TABLE_LAYOUTS: dict[RelationName, TableLayout] = {
     CRAWLS: TableLayout(
         partition_by=("day(finished_at)",),
@@ -182,48 +185,33 @@ TABLE_LAYOUTS: dict[RelationName, TableLayout] = {
         sort_by=("attempt_id ASC", "step_index ASC"),
     ),
     DOCUMENTS: TableLayout(
-        partition_by=("bucket(64, content_sha256)",),
+        partition_by=(f"bucket({PARTITION_BUCKETS}, content_sha256)",),
         sort_by=("content_sha256 ASC", "observed_at ASC", "document_id ASC"),
     ),
     HTML_ELEMENTS: TableLayout(
-        partition_by=("bucket(64, content_sha256)",),
+        partition_by=(f"bucket({PARTITION_BUCKETS}, content_sha256)",),
         sort_by=("content_sha256 ASC", "element_index ASC"),
     ),
     JSONLD_VALUES: TableLayout(
-        partition_by=("bucket(64, content_sha256)",),
+        partition_by=(f"bucket({PARTITION_BUCKETS}, content_sha256)",),
         sort_by=("content_sha256 ASC", "element_index ASC"),
     ),
     PAGES: TableLayout(
-        partition_by=("bucket(64, page_id)",),
+        partition_by=(f"bucket({PARTITION_BUCKETS}, page_id)",),
         sort_by=("page_id ASC", "normalized_url ASC"),
     ),
     PAGE_OBSERVATIONS: TableLayout(
-        partition_by=("bucket(64, page_id)",),
+        partition_by=(f"bucket({PARTITION_BUCKETS}, page_id)",),
         sort_by=("page_id ASC", "observed_at DESC", "visit_id ASC"),
     ),
     LINKS: TableLayout(
-        partition_by=("bucket(64, source_page_id)",),
+        partition_by=(f"bucket({PARTITION_BUCKETS}, source_page_id)",),
         sort_by=("source_page_id ASC", "target_page_id ASC", "link_id ASC"),
     ),
     LINK_OBSERVATIONS: TableLayout(
-        partition_by=("bucket(64, document_id)",),
+        partition_by=(f"bucket({PARTITION_BUCKETS}, document_id)",),
         sort_by=("document_id ASC", "element_index ASC", "link_id ASC"),
     ),
-}
-
-
-TABLE_STABLE_KEYS: dict[RelationName, tuple[str, ...]] = {
-    CRAWLS: ("crawl_id",),
-    VISITS: ("visit_id",),
-    ATTEMPTS: ("attempt_id",),
-    STEPS: ("attempt_id", "step_index"),
-    DOCUMENTS: ("document_id",),
-    HTML_ELEMENTS: ("content_sha256", "element_index"),
-    JSONLD_VALUES: ("content_sha256", "element_index"),
-    PAGES: ("normalized_url",),
-    PAGE_OBSERVATIONS: ("visit_id",),
-    LINKS: ("link_id",),
-    LINK_OBSERVATIONS: ("document_id", "element_index"),
 }
 
 

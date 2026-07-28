@@ -1,11 +1,12 @@
 # Working in Atlas
 
-Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
-[docs/CRAWL_GRAPHS.md](docs/CRAWL_GRAPHS.md) before changing graph execution, crawling,
-repository storage, DOM generation, NATS, or DuckLake. Read
-[docs/HAZARDS.md](docs/HAZARDS.md) before adding a service, queue, persistence path, compatibility
-layer, or abstraction. Read [docs/WORKER_ARCHITECTURE.md](docs/WORKER_ARCHITECTURE.md) before
-changing worker ownership, queue routing, managed DuckDB use, or deployment scaling.
+Read [docs_v2/ARCHITECTURE.md](docs_v2/ARCHITECTURE.md),
+[docs_v2/SCHEMA.md](docs_v2/SCHEMA.md), and
+[docs_v2/LIFECYCLE.md](docs_v2/LIFECYCLE.md) before changing graph execution, crawling, worker
+ownership, repository storage, DOM generation, NATS, DuckLake, or managed DuckDB use. Read
+[docs_v2/CUTOFF.md](docs_v2/CUTOFF.md) before adding a service, queue, persistence path,
+compatibility layer, or abstraction. Read [docs_v2/QUERY.md](docs_v2/QUERY.md) before changing
+`web.*`, SDK, or DuckDB extension boundaries.
 
 ## Non-negotiable boundaries
 
@@ -83,7 +84,8 @@ changing worker ownership, queue routing, managed DuckDB use, or deployment scal
 - `backend/dom/` — versioned structural DOM projection.
 - `backend/api/` and `backend/cli/` — thin adapters.
 - `backend/db/` — SQLAlchemy setup and Alembic migrations.
-- `packages/atlas-web-shell/` — React frontend.
+- `packages/atlas-web-shell/` — distributable browser SQL shell built on `atlas-console-core`.
+- `web/` — React frontend application; it consumes `atlas-web-shell`.
 
 Keep editable graph and policy definitions under `control/`, current graph execution under
 `runtime/`, acquisition behavior in the shared crawl path, navigation in the acquisition worker,
@@ -110,7 +112,7 @@ Run `make check` after Python changes. Add targeted tests for changed behavior. 
 exercise one low-depth URL with low concurrency. For frontend changes, run:
 
 ```sh
-cd packages/atlas-web-shell
+cd web
 npm run typecheck
 npm run build
 ```
@@ -137,5 +139,5 @@ upstream fix over an Atlas-only compatibility layer.
 - Manage schema changes with Alembic; do not add compatibility models for removed storage paths.
 
 For the frontend, use shadcn components, React Query for server state, shared API types under
-`packages/atlas-web-shell/src/types/`, and named exports except for `App.tsx`. Every mutation must surface
+`web/src/types/`, and named exports except for `App.tsx`. Every mutation must surface
 `extractApiError` through `toast.error()`.

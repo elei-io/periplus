@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from config.performance import materialization_duckdb_memory_limit
+from config.performance import (
+    MATERIALIZATION_CATALOGUE_HARD_TIMEOUT_SECONDS,
+    materialization_duckdb_memory_limit,
+)
 from repository.catalogue import (
     Catalogue,
     ServiceAccountTokenProvider,
@@ -48,12 +53,42 @@ class MaterializationLane:
         return cls(catalogue=catalogue, executor=executor)
 
     async def call(self, operation, *args):
-        return await asyncio.get_running_loop().run_in_executor(
+        future = asyncio.get_running_loop().run_in_executor(
             self.executor,
             operation,
             self.catalogue,
             *args,
         )
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(future),
+                timeout=MATERIALIZATION_CATALOGUE_HARD_TIMEOUT_SECONDS,
+            )
+        except asyncio.CancelledError:
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(future),
+                    timeout=MATERIALIZATION_CATALOGUE_HARD_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                logging.critical(
+                    "cancelled materialization catalogue operation %s "
+                    "remained stuck for %.3fs; terminating worker",
+                    getattr(operation, "__name__", type(operation).__name__),
+                    MATERIALIZATION_CATALOGUE_HARD_TIMEOUT_SECONDS,
+                )
+                os._exit(70)
+            except Exception:
+                pass
+            raise
+        except TimeoutError:
+            logging.critical(
+                "materialization catalogue operation %s remained stuck "
+                "for %.3fs; terminating worker",
+                getattr(operation, "__name__", type(operation).__name__),
+                MATERIALIZATION_CATALOGUE_HARD_TIMEOUT_SECONDS,
+            )
+            os._exit(70)
 
     async def close(self) -> None:
         try:
@@ -101,3 +136,26 @@ class MaterializationLanePool:
     async def call(self, operation, *args):
         async with self.acquire() as lane:
             return await lane.call(operation, *args)
+
+    async def call_all(self, operation, *args) -> tuple:
+        """Run one metadata barrier on every session-affine client."""
+
+        indexes = [
+            await self._available.get()
+            for _ in range(self.capacity)
+        ]
+        for index in indexes:
+            self._reporters[index].active_operation_count += 1
+        try:
+            return tuple(
+                await asyncio.gather(
+                    *(
+                        self._lanes[index].call(operation, *args)
+                        for index in indexes
+                    )
+                )
+            )
+        finally:
+            for index in indexes:
+                self._reporters[index].active_operation_count -= 1
+                self._available.put_nowait(index)

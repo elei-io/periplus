@@ -9,6 +9,7 @@ from api.routers import (
     crawl_graphs,
     crawl_schedules,
     crawl_policies,
+    data_status,
     domain_policies,
     graph_runs,
     ingestion,
@@ -97,6 +98,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Atlas API", lifespan=lifespan)
 app.include_router(operational_metrics.router)
+app.include_router(data_status.router)
 app.include_router(repository_operations.router)
 app.include_router(materializations.router)
 app.include_router(ingestion.router)

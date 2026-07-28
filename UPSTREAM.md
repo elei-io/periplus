@@ -40,6 +40,26 @@ DuckBasin, and Basin-published JetStream CDC.
 - **Atlas status:** Atlas holds the target operation lease, checks content-hash coverage, appends
   only absent immutable projections, and uses remote `MERGE` for scoped deletion sets.
 
+## Quack Arrow inserts fragment one logical DuckLake write by streamed chunk
+
+- **Atlas caller:** typed, bucket-grouped Arrow materialization rebuilds inserted through an
+  attached Quack catalogue.
+- **Evidence:** a 10,000-document HTML-elements benchmark grouped source hashes into the table's
+  64 DuckLake buckets and used at most eight concurrent insert statements. After 9,125,303 rows
+  and 463 MB of active Parquet data had committed, DuckLake exposed 3,038 active data files. The
+  client had stopped using CPU and network for more than five minutes while the combined
+  write-and-instrumentation operation had not returned; the run did not isolate whether the
+  outstanding Quack query was a write or the file enumeration. A 100-document smoke run completed
+  successfully with 72,461 rows, 19.5 MB of Arrow input, and 58 files.
+- **Needed upstream contract:** one streamed Arrow/Parquet bulk insert must remain one continuous
+  server-side DuckDB sink per target partition, with a bounded file count and an unambiguous
+  completion acknowledgement. Alternatively, expose a managed upload-and-register primitive that
+  accepts validated Parquet bytes, places them in lake-owned storage, and atomically registers
+  them with DuckLake.
+- **Atlas status:** Atlas coalesces and bucket-groups local projection work, but does not claim that
+  larger Arrow batches control final lake file sizes. Basin remains responsible for compaction;
+  the benchmark keeps file-count measurement off the latency-sensitive CDC path.
+
 ## Public Quack remote SQL can resolve the Basin control catalogue
 
 - **Atlas caller:** trusted server-side table-identity and fixed materialization SQL.

@@ -1,0 +1,30 @@
+@import "@wterm/react/css";
+
+.atlas-web-shell {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--background, #fff);
+}
+
+.wterm.atlas-wterm {
+  --term-bg: var(--background, #fff);
+  --term-fg: var(--foreground, #171717);
+  --term-cursor: var(--primary, #24a9c4);
+  --term-color-1: var(--destructive, #dc2626);
+  --term-color-2: oklch(0.58 0.13 155);
+  --term-color-3: oklch(0.68 0.14 80);
+  --term-color-4: var(--primary, #24a9c4);
+  --term-font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --term-font-size: 13px;
+  --term-row-height: 19px;
+  min-height: 0;
+  flex: 1;
+  height: 100%;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 16px;
+}

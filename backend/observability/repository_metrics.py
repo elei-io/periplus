@@ -12,15 +12,18 @@ _attempts = Counter("atlas_repository_ingestion_attempts_total", "Repository ing
 _batches = Counter("atlas_repository_ingestion_batches_total", "Repository batch outcomes.", ("outcome",))
 _duration = Histogram("atlas_repository_ingestion_duration_seconds", "Repository ingestion phase duration.", ("phase", "outcome"))
 _batch_items = Histogram("atlas_repository_ingestion_batch_items", "Items per repository batch.")
-_batch_flushes = Counter(
-    "atlas_repository_ingestion_batch_flushes_total",
-    "Reasons an ingestion batch was flushed.",
-    ("reason",),
+_raw_bytes = Histogram(
+    "atlas_repository_raw_write_bytes",
+    "Raw logical and stored bytes per repository write.",
+    ("representation",),
 )
-_identity_preflight = Counter(
-    "atlas_repository_ingestion_identity_preflight_total",
-    "Catalogue identities skipped or leased after ingestion preflight.",
-    ("kind", "outcome"),
+_batch_element_rows = Histogram(
+    "atlas_repository_ingestion_batch_element_rows",
+    "DOM element rows per repository batch.",
+)
+_batch_staged_bytes = Histogram(
+    "atlas_repository_ingestion_batch_staged_bytes",
+    "Arrow or Parquet bytes staged per repository batch.",
 )
 _pending = Gauge("atlas_repository_ingestion_jobs_pending", "Repository jobs waiting in JetStream.")
 _ack_pending = Gauge("atlas_repository_ingestion_jobs_ack_pending", "Delivered repository jobs awaiting acknowledgement.")
@@ -94,6 +97,10 @@ _CIRCUIT_STATES = ("closed", "open", "half_open", "recovering")
 def raw_write(*, outcome: str, duration_seconds: float, html_bytes: int | None = None, compressed_bytes: int | None = None) -> None:
     _raw_writes.labels(outcome).inc()
     _duration.labels("raw_write", outcome).observe(max(0.0, duration_seconds))
+    if html_bytes is not None:
+        _raw_bytes.labels("logical").observe(max(0, html_bytes))
+    if compressed_bytes is not None:
+        _raw_bytes.labels("stored").observe(max(0, compressed_bytes))
 
 
 def attempt(*, outcome: str, queue_seconds: float) -> None:
@@ -109,15 +116,8 @@ def batch(*, outcome: str, duration_seconds: float, items: int, element_rows: in
     _batches.labels(outcome).inc()
     _duration.labels("commit", outcome).observe(max(0.0, duration_seconds))
     _batch_items.observe(items)
-
-
-def batch_flush(*, reason: str) -> None:
-    _batch_flushes.labels(reason).inc()
-
-
-def identity_preflight(*, kind: str, skipped: int, leased: int) -> None:
-    _identity_preflight.labels(kind, "skipped").inc(skipped)
-    _identity_preflight.labels(kind, "leased").inc(leased)
+    _batch_element_rows.observe(max(0, element_rows))
+    _batch_staged_bytes.observe(max(0, staged_bytes))
 
 
 def queue_state(

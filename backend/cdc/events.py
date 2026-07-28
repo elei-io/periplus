@@ -12,17 +12,14 @@ from nats.js.api import (
     StorageType,
     StreamConfig,
 )
-from runtime.nats_topology import ensure_stream_contract
 from pydantic import BaseModel, ConfigDict, model_validator
-
+from runtime.nats_topology import ensure_stream_contract
 
 EVENT_STREAM = "ATLAS_CDC"
 DML_SUBJECT_PREFIX = "atlas.cdc.dml"
 DML_ALL_SUBJECT = f"{DML_SUBJECT_PREFIX}.*"
 DDL_SUBJECT = "atlas.cdc.ddl"
 EVENT_SUBJECTS = (DML_ALL_SUBJECT, DDL_SUBJECT)
-MATERIALIZATION_DURABLE_PREFIX = "atlas-materialization-"
-DDL_RECONCILER_DURABLE = "atlas-materialization-ddl-reconciler"
 
 
 class DMLTick(BaseModel):
@@ -72,10 +69,6 @@ class DDLEvent(BaseModel):
 
 def dml_subject(table_uuid: UUID) -> str:
     return f"{DML_SUBJECT_PREFIX}.{table_uuid.hex}"
-
-
-def materialization_durable(materialization_id: UUID) -> str:
-    return f"{MATERIALIZATION_DURABLE_PREFIX}{materialization_id.hex}"
 
 
 def basin_ddl_subject(lake: str) -> str:
