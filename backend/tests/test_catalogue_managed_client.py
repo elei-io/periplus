@@ -5,10 +5,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import duckdb
-from repository.catalogue.client import Catalogue
-from repository.catalogue.config import CatalogueConfig, catalogue_config_from_env
-from repository.catalogue.duckbasin import DuckBasinCredentialRejectedError
-from repository.catalogue.schema import HTML_ELEMENTS
+from atlas.platform.catalogue.client import Catalogue
+from atlas.platform.catalogue.config import CatalogueConfig, catalogue_config_from_env
+from atlas.platform.catalogue.duckbasin import DuckBasinCredentialRejectedError
+from atlas.platform.catalogue.schema import HTML_ELEMENTS
 
 
 class _Cursor:

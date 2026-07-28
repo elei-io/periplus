@@ -112,6 +112,7 @@ export function App() {
       ) ?? navigationGroups[0]
     )
   }, [activeItem.href])
+  const ActiveItemIcon = activeItem.icon
 
   const handleNavigate = useCallback((href: string) => {
     const target = new URL(href, window.location.origin)
@@ -198,7 +199,12 @@ export function App() {
       <AppSidebar pathname={activeItem.href} onNavigate={handleNavigate} />
       <SidebarInset className="h-svh min-h-0 overflow-hidden">
         <header className="relative z-10 flex h-14 shrink-0 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur-xl">
-          <SidebarTrigger />
+          <SidebarTrigger
+            aria-label={`Toggle sidebar · ${activeItem.name}`}
+            title={`Toggle sidebar · ${activeItem.name}`}
+          >
+            <ActiveItemIcon />
+          </SidebarTrigger>
           <div className="flex min-w-0 flex-col">
             <span className="truncate text-sm font-medium">
               {activeItem.title ?? activeItem.name}

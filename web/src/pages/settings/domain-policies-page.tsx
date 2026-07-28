@@ -1,4 +1,4 @@
-import { Globe2Icon, PlusIcon } from "lucide-react"
+import { PlusIcon } from "lucide-react"
 import { useId, useState } from "react"
 import { toast } from "sonner"
 
@@ -57,11 +57,7 @@ export function DomainPoliciesPage() {
   return (
     <div className="flex min-h-0 w-full flex-col gap-4">
       <section className="flex items-center justify-between gap-3 border-b pb-4">
-        <div className="flex items-center gap-2">
-          <Globe2Icon className="size-4 text-muted-foreground" />
-          <h1 className="text-lg font-medium">Domain politeness</h1>
-          <Badge variant="outline">{query.data?.total ?? 0}</Badge>
-        </div>
+        <Badge variant="outline">{query.data?.total ?? 0} total</Badge>
         <Button
           size="sm"
           onClick={() =>
@@ -72,10 +68,6 @@ export function DomainPoliciesPage() {
           New policy
         </Button>
       </section>
-      <p className="text-sm text-muted-foreground">
-        Limit Atlas pressure on websites independently of CDP browser-fleet
-        capacity.
-      </p>
       <Table containerClassName="min-h-0 flex-1 rounded-md border bg-card/80">
         <TableHeader>
           <TableRow>

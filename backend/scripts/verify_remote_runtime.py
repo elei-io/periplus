@@ -81,12 +81,12 @@ def drop_probe(catalogue, table_name: str) -> None:
 
 
 async def verify(wait_seconds: float) -> dict[str, object]:
-    from cdc.relay import BasinDDLEvent, BasinDMLTick
-    from repository.catalogue import catalogue_from_env
-    from cdc.events import basin_ddl_subject, basin_dml_subject
-    from runtime.catalogue_workers import ensure_catalogue_worker_storage
-    from cdc.connections import connect_basin_cdc
-    from runtime.nats_client import connect_nats
+    from atlas.materialization.cdc.relay import BasinDDLEvent, BasinDMLTick
+    from atlas.platform.catalogue import catalogue_from_env
+    from atlas.materialization.cdc.events import basin_ddl_subject, basin_dml_subject
+    from atlas.platform.messaging.catalogue_workers import ensure_catalogue_worker_storage
+    from atlas.materialization.cdc.connections import connect_basin_cdc
+    from atlas.platform.messaging.client import connect_nats
 
     atlas = await connect_nats()
     basin = await connect_basin_cdc()

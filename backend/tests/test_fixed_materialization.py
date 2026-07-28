@@ -4,17 +4,17 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from materialization.document_sources import document_observation_rows
-from materialization.document_workload import select_document_changes
-from materialization.executor import (
+from atlas.materialization.document_sources import document_observation_rows
+from atlas.materialization.document_workload import select_document_changes
+from atlas.materialization.executor import (
     _refresh_documents,
     _refresh_page_observations_incremental,
     _refresh_visits,
     workloads,
 )
-from materialization.lanes import MaterializationLanePool
-from materialization.pipeline import StageExecution
-from materialization.visit_workload import (
+from atlas.materialization.lanes import MaterializationLanePool
+from atlas.materialization.pipeline import StageExecution
+from atlas.materialization.visit_workload import (
     changed_visit_rows,
     merge_page_observation_rows,
 )
@@ -57,23 +57,23 @@ class FixedMaterializationTests(unittest.TestCase):
         )
 
     @patch(
-        "materialization.document_workload._changed_document_corrections",
+        "atlas.materialization.document_workload._changed_document_corrections",
         return_value=set(),
     )
     @patch(
-        "materialization.document_workload._covered_html_hashes",
+        "atlas.materialization.document_workload._covered_html_hashes",
         return_value=set(),
     )
     @patch(
-        "materialization.document_workload.document_observation_rows",
+        "atlas.materialization.document_workload.document_observation_rows",
         return_value=[],
     )
     @patch(
-        "materialization.document_workload.changed_document_ids",
+        "atlas.materialization.document_workload.changed_document_ids",
         return_value=[],
     )
     @patch(
-        "materialization.document_workload._changed_html_hashes",
+        "atlas.materialization.document_workload._changed_html_hashes",
         return_value={"hash-a"},
     )
     def test_document_selection_pins_all_live_source_reads(
@@ -165,14 +165,14 @@ class FixedMaterializationTests(unittest.TestCase):
         self.assertNotIn("change_type IN", changes_sql)
         self.assertIn("AT (VERSION => 24)", current_sql)
 
-    @patch("materialization.executor.merge_page_observation_rows")
+    @patch("atlas.materialization.executor.merge_page_observation_rows")
     def test_observation_refresh_replaces_changed_visit_slices(
         self,
         merge,
     ) -> None:
         observed_at = datetime.fromisoformat("2026-01-02T03:04:05+00:00")
         with patch(
-            "materialization.executor.changed_visit_rows",
+            "atlas.materialization.executor.changed_visit_rows",
             return_value=(
                 frozenset({"visit-a", "visit-deleted"}),
                 [
@@ -299,7 +299,7 @@ class MaterializationLanePoolTests(unittest.IsolatedAsyncioTestCase):
             await release.wait()
 
         with patch(
-            "materialization.executor._run_stage",
+            "atlas.materialization.executor._run_stage",
             side_effect=run_stage,
         ):
             operation = asyncio.create_task(
@@ -333,7 +333,7 @@ class MaterializationLanePoolTests(unittest.IsolatedAsyncioTestCase):
         pool = MagicMock()
         pool.capacity = 8
         with patch(
-            "materialization.executor.execute_bounded_stage",
+            "atlas.materialization.executor.execute_bounded_stage",
             return_value=result,
         ) as execute:
             await _refresh_documents(

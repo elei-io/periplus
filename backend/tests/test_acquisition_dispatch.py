@@ -8,11 +8,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-from acquisition.errors import PlaywrightRuntimeLost
-from repository.ingestion.health import HealthMonitor
-from runtime.domain_pacing import DomainCapacityUnavailable
-from runtime.graph_queue import CrawlRequest
-from workers.acquisition import (
+from atlas.crawl.acquisition.errors import PlaywrightRuntimeLost
+from atlas.platform.health import HealthMonitor
+from atlas.crawl.runtime.domain_pacing import DomainCapacityUnavailable
+from atlas.crawl.runtime.graph_queue import CrawlRequest
+from atlas.crawl.worker import (
     _BufferedCrawl,
     _dispatch_buffered_crawls,
     _HostnameDispatchBuffer,
@@ -104,12 +104,12 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
         processor = AsyncMock()
         with (
             patch(
-                "workers.acquisition.domain_backoff_seconds",
+                "atlas.crawl.worker.domain_backoff_seconds",
                 new=AsyncMock(return_value=0),
             ),
-            patch("workers.acquisition._try_domain_permit", side_effect=permit),
+            patch("atlas.crawl.worker._try_domain_permit", side_effect=permit),
             patch(
-                "workers.acquisition._process_dispatched_crawl",
+                "atlas.crawl.worker._process_dispatched_crawl",
                 processor,
             ),
         ):
@@ -141,15 +141,15 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "workers.acquisition.domain_backoff_seconds",
+                "atlas.crawl.worker.domain_backoff_seconds",
                 new=AsyncMock(return_value=0),
             ),
             patch(
-                "workers.acquisition._try_domain_permit",
+                "atlas.crawl.worker._try_domain_permit",
                 new=AsyncMock(return_value=None),
             ),
             patch(
-                "workers.acquisition._process_dispatched_crawl",
+                "atlas.crawl.worker._process_dispatched_crawl",
                 processor,
             ),
         ):
@@ -186,11 +186,11 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "workers.acquisition.domain_backoff_seconds",
+                "atlas.crawl.worker.domain_backoff_seconds",
                 side_effect=backoff,
             ),
-            patch("workers.acquisition._try_domain_permit", permit),
-            patch("workers.acquisition._process_dispatched_crawl", processor),
+            patch("atlas.crawl.worker._try_domain_permit", permit),
+            patch("atlas.crawl.worker._process_dispatched_crawl", processor),
         ):
             launched = await _dispatch_buffered_crawls(
                 buffer,
@@ -217,7 +217,7 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
         buffer.add(item)
         with (
             patch(
-                "workers.acquisition.asyncio.sleep",
+                "atlas.crawl.worker.asyncio.sleep",
                 new=AsyncMock(side_effect=[None, asyncio.CancelledError]),
             ),
             self.assertRaises(asyncio.CancelledError),

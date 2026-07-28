@@ -4,8 +4,8 @@ import asyncio
 import unittest
 from unittest.mock import MagicMock, patch
 
-from repository.ingestion.health import HealthMonitor
-from workers.lifecycle import (
+from atlas.platform.health import HealthMonitor
+from atlas.platform.process import (
     WorkerEndpointConfig,
     WorkerEndpoints,
     cancel_task,
@@ -101,14 +101,14 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "workers.lifecycle.WorkerEndpointConfig.from_env",
+                "atlas.platform.process.WorkerEndpointConfig.from_env",
                 return_value=MagicMock(),
             ) as config,
             patch(
-                "workers.lifecycle.WorkerEndpoints",
+                "atlas.platform.process.WorkerEndpoints",
                 return_value=endpoints,
             ),
-            patch("workers.lifecycle.install_signal_handlers") as signals,
+            patch("atlas.platform.process.install_signal_handlers") as signals,
         ):
             await run_worker_process(
                 role="housekeeping",
@@ -136,11 +136,11 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         monitor = HealthMonitor()
         with (
             patch(
-                "workers.lifecycle.start_health_server",
+                "atlas.platform.process.start_health_server",
                 return_value=(health_server, MagicMock()),
             ) as start_health,
             patch(
-                "workers.lifecycle.start_http_server",
+                "atlas.platform.process.start_http_server",
                 return_value=(metrics_server, MagicMock()),
             ) as start_metrics,
         ):

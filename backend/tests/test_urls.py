@@ -1,6 +1,6 @@
 import unittest
 
-from control.urls import normalize_url
+from atlas.urls import normalize_url
 
 
 class NormalizeUrlTests(unittest.TestCase):

@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 
-from materialization.document_projection import (
+from atlas.materialization.document_projection import (
     HTML_ELEMENT_SCHEMA,
     JSONLD_SCHEMA,
     LINK_OBSERVATION_SCHEMA,
@@ -13,7 +13,7 @@ from materialization.document_projection import (
     ducklake_varchar_bucket,
     project_documents,
 )
-from materialization.document_workload import (
+from atlas.materialization.document_workload import (
     DocumentProjectionOutput,
     combine_document_outputs,
     partition_document_output,

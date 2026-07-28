@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ChevronDownIcon,
   Clock3Icon,
-  DatabaseZapIcon,
   LoaderCircleIcon,
   RefreshCwIcon,
 } from "lucide-react"
@@ -131,26 +130,6 @@ export function MaterializationsPage() {
 
   return (
     <div className="flex min-h-0 w-full flex-col gap-4">
-      <section className="flex flex-wrap items-end justify-between gap-4 border-b pb-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <DatabaseZapIcon className="size-4 text-muted-foreground" />
-            <h1 className="text-lg font-medium">Material tables</h1>
-            <Badge variant="outline">{projections.length}</Badge>
-          </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Select tables to repair in place or rebuild through a shadow
-            generation.
-          </p>
-        </div>
-        <Badge
-          variant={included.size > 0 ? "secondary" : "outline"}
-          className="h-6 px-2.5"
-        >
-          {included.size} selected
-        </Badge>
-      </section>
-
       <section className="overflow-hidden rounded-lg border bg-card/70 shadow-xs">
         <div className="flex flex-wrap items-center justify-between gap-4 border-b bg-muted/20 px-4 py-3">
           <div className="flex flex-wrap items-center gap-3">
@@ -247,7 +226,7 @@ export function MaterializationsPage() {
                           material.{projection.value}
                         </code>
                       </div>
-                      <p className="mt-1 max-w-xl whitespace-normal text-xs text-muted-foreground">
+                      <p className="mt-1 max-w-xl text-xs whitespace-normal text-muted-foreground">
                         {projection.description}
                       </p>
                     </TableCell>
@@ -292,10 +271,7 @@ export function MaterializationsPage() {
                   </TableRow>
                   {isExpanded && (
                     <TableRow className="hover:bg-transparent">
-                      <TableCell
-                        colSpan={5}
-                        className="bg-muted/15 px-4 py-0"
-                      >
+                      <TableCell colSpan={5} className="bg-muted/15 px-4 py-0">
                         <RunHistory
                           projection={projection}
                           runs={history.slice(0, 5)}
@@ -326,7 +302,7 @@ function RunHistory({
   runs: MaterializationRun[]
 }) {
   return (
-    <div className="py-4 pl-9 pr-10">
+    <div className="py-4 pr-10 pl-9">
       <div className="mb-3 flex items-center gap-2">
         <Clock3Icon className="size-3.5 text-muted-foreground" />
         <h2 className="text-xs font-medium">

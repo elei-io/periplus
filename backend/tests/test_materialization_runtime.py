@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
-from materialization.runtime import (
+from atlas.materialization.runtime import (
     MaintenanceWork,
     _discard_rebuild,
     _finalize_run,
@@ -80,10 +80,10 @@ class MaterializationRuntimeTests(unittest.IsolatedAsyncioTestCase):
             destinations,
         )
 
-    @patch("materialization.runtime.ensure_catalogue_work_stream")
-    @patch("materialization.runtime._publish_queued_runs")
+    @patch("atlas.materialization.runtime.ensure_catalogue_work_stream")
+    @patch("atlas.materialization.runtime._publish_queued_runs")
     @patch(
-        "materialization.runtime._process_one_batch",
+        "atlas.materialization.runtime._process_one_batch",
         side_effect=ValueError("deterministic failure"),
     )
     async def test_permanent_failure_is_recorded_cleaned_and_acked(
@@ -129,7 +129,7 @@ class MaterializationRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         publish_queued.side_effect = wait_for_stop
 
-        with patch("materialization.runtime.logging.exception"):
+        with patch("atlas.materialization.runtime.logging.exception"):
             await run_maintenance(
                 jetstream,
                 MagicMock(),

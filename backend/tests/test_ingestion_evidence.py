@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from repository.catalogue import (
+from atlas.platform.catalogue import (
     AttemptRecord,
     CrawlRecord,
     DocumentRecord,
@@ -14,9 +14,9 @@ from repository.catalogue import (
     attempt_id_for,
     document_id_for,
 )
-from repository.catalogue.records import canonical_json
-from repository.catalogue.service import _visit_values
-from repository.ingestion.queue import (
+from atlas.platform.catalogue.records import canonical_json
+from atlas.platform.catalogue.service import _visit_values
+from atlas.ingestion.queue import (
     crawl_ingestion_job,
     visit_ingestion_job,
 )

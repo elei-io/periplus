@@ -33,16 +33,19 @@ dev = [
 ]
 
 [project.scripts]
-atlas-setup = "deployment:main"
-atlas-worker = "workers.cli:main"
+atlas-setup = "atlas.entrypoints.setup:main"
+atlas-worker = "atlas.entrypoints.worker:main"
 
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-py-modules = ["deployment"]
-
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 exclude = ["tests*", "build*"]
+
+[tool.setuptools.package-data]
+"atlas.platform.postgres" = [
+    "alembic.ini",
+    "alembic/script.py.mako",
+]

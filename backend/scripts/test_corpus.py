@@ -778,8 +778,8 @@ def stable_key(seed: int, *values: str) -> bytes:
 
 def delete_excess(dataset: str, targets: Targets) -> int:
     """Delete only excess evidence owned by this exact disposable corpus."""
-    from repository.catalogue import catalogue_from_env
-    from repository.objects.config import object_store_from_env
+    from atlas.platform.catalogue import catalogue_from_env
+    from atlas.ingestion.objects.config import object_store_from_env
 
     predicate = corpus_predicate(dataset)
     excess = excess_predicate(targets)

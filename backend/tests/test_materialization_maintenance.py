@@ -4,16 +4,16 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 from uuid import UUID
 
-from materialization.contracts import (
+from atlas.materialization.contracts import (
     ordered_projections,
     workload_projections,
 )
-from materialization.maintenance import (
+from atlas.materialization.maintenance import (
     _within_byte_budget,
     generation_table,
     materialize_visit_batch,
 )
-from materialization.runtime import _source_highwater
+from atlas.materialization.runtime import _source_highwater
 
 
 class MaterializationMaintenanceTests(unittest.TestCase):

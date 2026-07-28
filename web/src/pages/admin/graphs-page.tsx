@@ -1,5 +1,4 @@
 import {
-  GitForkIcon,
   LoaderCircleIcon,
   PauseIcon,
   PlayIcon,
@@ -45,10 +44,7 @@ import {
   useSetCrawlGraphRoot,
   useTriggerCrawlGraph,
 } from "@/hooks/use-crawl-graphs"
-import type {
-  CrawlGraphDetail,
-  CrawlGraphNode,
-} from "@/types/graphs"
+import type { CrawlGraphDetail, CrawlGraphNode } from "@/types/graphs"
 
 export function CrawlGraphsPage({
   onNavigate,
@@ -84,11 +80,7 @@ export function CrawlGraphsPage({
     <div className="flex min-h-0 w-full flex-col gap-4">
       <section className="flex min-h-0 flex-col gap-3 rounded-lg border bg-card/80 p-4">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <GitForkIcon className="size-4 text-muted-foreground" />
-            <h1 className="font-medium">Crawl Graphs</h1>
-            <Badge variant="outline">{graphsQuery.data?.total ?? 0}</Badge>
-          </div>
+          <Badge variant="outline">{graphsQuery.data?.total ?? 0} total</Badge>
           <Button
             size="icon-sm"
             variant="ghost"

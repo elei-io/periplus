@@ -8,8 +8,8 @@ from uuid import uuid4
 
 from nats.js.errors import NotFoundError
 
-from api.routers.data_status import _queue_status, data_status
-from runtime.catalogue_workers import (
+from atlas.operations.api.data_status import _queue_status, data_status
+from atlas.platform.messaging.catalogue_workers import (
     CatalogueLaneState,
     CatalogueWorkerState,
 )
@@ -89,7 +89,7 @@ class DataStatusTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with patch(
-            "api.routers.data_status.list_catalogue_worker_states",
+            "atlas.operations.api.data_status.list_catalogue_worker_states",
             AsyncMock(return_value=workers),
         ):
             status = await data_status(request, runtime)
@@ -178,7 +178,7 @@ class DataStatusTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with patch(
-            "api.routers.data_status.list_catalogue_worker_states",
+            "atlas.operations.api.data_status.list_catalogue_worker_states",
             AsyncMock(return_value=workers),
         ):
             status = await data_status(

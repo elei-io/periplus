@@ -1,7 +1,7 @@
 # Cutoff
 
 This cutoff completes the transition from the current catalogue model to the schema and lifecycle
-defined in `docs_v2`.
+defined in `docs/`.
 
 At the cutoff, Atlas has a working acquisition-to-materialization path. The query layer is
 explicitly outside this milestone. Nothing retained for that future layer may require compatibility

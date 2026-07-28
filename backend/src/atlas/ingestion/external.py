@@ -1,0 +1,204 @@
+"""Typed external HTML ingestion through the durable repository boundary."""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, datetime
+import hashlib
+from typing import BinaryIO
+from uuid import UUID, uuid5
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from atlas.platform.config import get_int
+from atlas.urls import normalize_url
+from atlas.platform.catalogue import (
+    CrawlRecord,
+    DocumentRecord,
+    ExternalProvenance,
+    VisitEvidence,
+    VisitRecord,
+    document_id_for,
+)
+from atlas.platform.catalogue.records import canonical_json
+from atlas.ingestion.queue import IngestionQueueClient
+from atlas.ingestion.objects.config import object_store_from_env
+from atlas.ingestion.objects.document import (
+    ExactDocumentRepository,
+    identify_document,
+)
+from atlas.ingestion.objects.store import ObjectStore
+
+
+_IMPORT_NAMESPACE = UUID("94be7653-f7f0-5534-bec8-aa154373eb7e")
+_VISIT_NAMESPACE = UUID("d967f180-4d23-55bb-b341-88ea5032e60b")
+
+
+class ExternalHtmlMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_record_id: str = Field(min_length=1, max_length=2048)
+    system: str = Field(min_length=1, max_length=256)
+    dataset: str | None = Field(default=None, min_length=1, max_length=512)
+    requested_url: str = Field(min_length=1)
+    effective_url: str | None = Field(default=None, min_length=1)
+    observed_at: datetime
+    status_code: int | None = Field(default=None, ge=100, le=599)
+    declared_media_type: str | None = Field(default="text/html", min_length=1)
+    charset: str | None = Field(default=None, min_length=1)
+
+    @field_validator("observed_at")
+    @classmethod
+    def require_observation_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("observed_at must include a timezone")
+        return value.astimezone(UTC)
+
+
+class HtmlIngestionResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    crawl_id: UUID
+    visit_id: UUID
+    document_id: UUID
+    content_sha256: str
+    content_bytes: int
+    object_key: str
+    disposition: str
+    ingestion_status: str = "pending"
+
+
+class EvidenceImportService:
+    """Store exact external bytes before publishing ordinary ingestion evidence."""
+
+    def __init__(
+        self,
+        *,
+        queue: IngestionQueueClient | None = None,
+        maximum_document_bytes: int | None = None,
+        object_store: ObjectStore | None = None,
+    ) -> None:
+        self.queue = queue or IngestionQueueClient()
+        self.document_repository = ExactDocumentRepository(
+            object_store or object_store_from_env()
+        )
+        self.maximum_document_bytes = maximum_document_bytes or get_int(
+            "ATLAS_REPOSITORY_MAX_HTML_BYTES"
+        )
+        self._running = False
+
+    async def start(self) -> None:
+        await self.queue.connect()
+        self._running = True
+
+    async def close(self) -> None:
+        if not self._running:
+            return
+        await self.queue.close()
+        self._running = False
+
+    async def ingest_external_html(
+        self,
+        content: BinaryIO,
+        metadata: ExternalHtmlMetadata,
+    ) -> HtmlIngestionResult:
+        if not self._running:
+            raise RuntimeError("evidence import service is not running")
+        identity = (
+            f"{metadata.system}\n{metadata.dataset or ''}\n"
+            f"{metadata.source_record_id}"
+        )
+        crawl_id = uuid5(_IMPORT_NAMESPACE, identity)
+        visit_id = uuid5(
+            _VISIT_NAMESPACE,
+            f"{crawl_id}\n{metadata.source_record_id}",
+        )
+        requested_url = normalize_url(metadata.requested_url)
+        effective_url = (
+            normalize_url(metadata.effective_url)
+            if metadata.effective_url is not None
+            else None
+        )
+        document_identity = await asyncio.to_thread(
+            identify_document,
+            content,
+            maximum_bytes=self.maximum_document_bytes,
+        )
+        stored = await asyncio.to_thread(
+            self.document_repository.put,
+            content,
+            identity=document_identity,
+            source_url=effective_url or requested_url,
+            visit_id=visit_id,
+            observed_at=metadata.observed_at,
+            content_type=metadata.declared_media_type or "text/html",
+        )
+        document_id = document_id_for(visit_id)
+        document = DocumentRecord(
+            document_id=document_id,
+            visit_id=visit_id,
+            attempt_id=None,
+            observed_at=metadata.observed_at,
+            representation="response_body",
+            declared_media_type=metadata.declared_media_type,
+            detected_media_type="text/html",
+            charset=metadata.charset,
+            content_sha256=stored.sha256,
+            content_bytes=stored.size_bytes,
+            object_key=stored.object_key,
+            storage_encoding="identity",
+            stored_bytes=stored.size_bytes,
+        )
+        visit = VisitRecord(
+            visit_id=visit_id,
+            crawl_id=crawl_id,
+            requested_url=requested_url,
+            effective_url=effective_url,
+            admitted_at=metadata.observed_at,
+            started_at=None,
+            observed_at=metadata.observed_at,
+            finished_at=metadata.observed_at,
+            outcome="succeeded",
+            status_code=metadata.status_code,
+            document_id=document_id,
+            provenance=ExternalProvenance(
+                system=metadata.system,
+                dataset=metadata.dataset,
+                source_record_id=metadata.source_record_id,
+            ),
+        )
+        await self.queue.enqueue_visit(
+            VisitEvidence(
+                visit=visit,
+                attempts=(),
+                document=document,
+            )
+        )
+        config = {
+            "kind": "external",
+            "system": metadata.system,
+            "dataset": metadata.dataset,
+        }
+        encoded = canonical_json(config)
+        await self.queue.enqueue_crawl(
+            CrawlRecord(
+                crawl_id=crawl_id,
+                kind="import",
+                graph_id=None,
+                graph_config_hash=hashlib.sha256(encoded.encode()).hexdigest(),
+                graph_config=config,
+                root_url_count=1,
+                started_at=metadata.observed_at,
+                finished_at=metadata.observed_at,
+                stop_reason="imported",
+            )
+        )
+        return HtmlIngestionResult(
+            crawl_id=crawl_id,
+            visit_id=visit_id,
+            document_id=document_id,
+            content_sha256=stored.sha256,
+            content_bytes=stored.size_bytes,
+            object_key=stored.object_key,
+            disposition="created" if stored.created else "deduplicated",
+        )

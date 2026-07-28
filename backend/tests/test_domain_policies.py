@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 from pydantic import ValidationError
 
-from control.domain_policies.schemas import DomainPolicyCreateRequest
-from control.domain_policies.service import DEFAULT_DOMAIN_POLICY_SLUG, find_domain_policy_for_url
-from runtime.domain_pacing import (
+from atlas.crawl.control.domain_policies.schemas import DomainPolicyCreateRequest
+from atlas.crawl.control.domain_policies.service import DEFAULT_DOMAIN_POLICY_SLUG, find_domain_policy_for_url
+from atlas.crawl.runtime.domain_pacing import (
     DomainCapacityUnavailable,
     DomainPacingState,
     domain_permit,
@@ -129,7 +129,7 @@ class DomainPacingTests(unittest.TestCase):
         bucket = FakeBucket()
 
         async def scenario():
-            with patch("runtime.domain_pacing.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            with patch("atlas.crawl.runtime.domain_pacing.asyncio.sleep", new_callable=AsyncMock) as sleep:
                 await wait_for_domain_interval(bucket, domain="example.com", interval_seconds=2)
                 await wait_for_domain_interval(bucket, domain="example.com", interval_seconds=2)
             self.assertEqual(sleep.await_count, 1)

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 
-from api.routers.graph_runs import (
+from atlas.crawl.api.runs import (
     _run_stage_counts,
     capacity,
 )
@@ -36,7 +36,7 @@ class GraphRunStageMetricsTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "api.routers.graph_runs.list_worker_states",
+            "atlas.crawl.api.runs.list_worker_states",
             AsyncMock(return_value=workers),
         ):
             result = await capacity(runtime)

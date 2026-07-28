@@ -5,18 +5,18 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from repository.ingestion.external import (
+from atlas.ingestion.external import (
     EvidenceImportService,
     ExternalHtmlMetadata,
 )
-from repository.catalogue.schema import (
+from atlas.platform.catalogue.schema import (
     ATTEMPTS,
     DOCUMENTS,
     TABLE_COLUMNS,
     VISITS,
 )
-from repository.catalogue.service import _visit_values
-from repository.objects.store import FileObjectStore
+from atlas.platform.catalogue.service import _visit_values
+from atlas.ingestion.objects.store import FileObjectStore
 
 
 class _Queue:

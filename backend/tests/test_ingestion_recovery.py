@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from repository.catalogue import DuckBasinUnavailableError
-from repository.ingestion.recovery import IngestionDependencyCircuit
+from atlas.platform.catalogue import DuckBasinUnavailableError
+from atlas.ingestion.recovery import IngestionDependencyCircuit
 
 
 class IngestionDependencyCircuitTests(unittest.IsolatedAsyncioTestCase):

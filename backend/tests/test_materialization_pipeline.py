@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import duckdb
-from materialization.lanes import MaterializationLanePool
-from materialization.pipeline import (
+from atlas.materialization.lanes import MaterializationLanePool
+from atlas.materialization.pipeline import (
     BoundedStagePlan,
     StageSelection,
     _partition,
@@ -100,7 +100,7 @@ class MaterializationPipelineTests(unittest.IsolatedAsyncioTestCase):
             parallelism=8,
         )
 
-        with patch("materialization.pipeline.operation_leases", _lease):
+        with patch("atlas.materialization.pipeline.operation_leases", _lease):
             result = await execute_bounded_stage(
                 SimpleNamespace(),
                 pool,
@@ -148,8 +148,8 @@ class MaterializationPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            patch("materialization.pipeline.operation_leases", _lease),
-            patch("materialization.pipeline.time.sleep"),
+            patch("atlas.materialization.pipeline.operation_leases", _lease),
+            patch("atlas.materialization.pipeline.time.sleep"),
         ):
             result = await execute_bounded_stage(
                 SimpleNamespace(),
@@ -199,7 +199,7 @@ class MaterializationPipelineTests(unittest.IsolatedAsyncioTestCase):
             output_bytes=lambda _output: 16,
         )
 
-        with patch("materialization.pipeline.operation_leases", _lease):
+        with patch("atlas.materialization.pipeline.operation_leases", _lease):
             result = await execute_bounded_stage(
                 SimpleNamespace(),
                 pool,

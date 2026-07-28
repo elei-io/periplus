@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import MagicMock
 
-from control.crawl_policies.service import (
+from atlas.crawl.control.crawl_policies.service import (
     DEFAULT_POLICY_SLUG,
     _matches,
     default_content_policy,
@@ -11,7 +11,7 @@ from control.crawl_policies.service import (
     find_crawl_policies_for_urls,
     update_crawl_policy,
 )
-from control.crawl_policies.schemas import CrawlPolicyCreateRequest
+from atlas.crawl.control.crawl_policies.schemas import CrawlPolicyCreateRequest
 
 
 def policy(

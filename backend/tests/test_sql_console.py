@@ -1,6 +1,6 @@
 import unittest
 
-from api.routers.sql_console import _bounded_query
+from atlas.query.http import _bounded_query
 
 
 class SqlConsoleValidationTests(unittest.TestCase):

@@ -8,13 +8,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from api.routers.crawl_schedules import resource_router, router
-from control.crawl_graphs.models import CrawlGraph, CrawlGraphEdge, CrawlGraphNode
-from control.crawl_graphs.schemas import CrawlGraphCreate, CrawlGraphNodeCreate
-from control.crawl_graphs.service import create_graph, create_node
-from control.crawl_schedules.models import CrawlSchedule
-from db import Base
-from db.session import get_session
+from atlas.crawl.api.schedules import resource_router, router
+from atlas.crawl.control.crawl_graphs.models import CrawlGraph, CrawlGraphEdge, CrawlGraphNode
+from atlas.crawl.control.crawl_graphs.schemas import CrawlGraphCreate, CrawlGraphNodeCreate
+from atlas.crawl.control.crawl_graphs.service import create_graph, create_node
+from atlas.crawl.control.crawl_schedules.models import CrawlSchedule
+from atlas.platform.postgres import Base
+from atlas.platform.postgres.session import get_session
 
 
 class CrawlScheduleApiTests(unittest.TestCase):

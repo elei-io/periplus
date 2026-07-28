@@ -94,7 +94,7 @@ services:
   atlas-api:
     <<: *atlas-backend
     container_name: atlas-api
-    command: fastapi run api/app.py --host 0.0.0.0 --port 8000
+    command: fastapi run src/atlas/entrypoints/api.py --host 0.0.0.0 --port 8000
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
@@ -292,7 +292,7 @@ services:
       context: .
       dockerfile: docker/atlas/Dockerfile
     # Run the image-time package so schema changes require an explicit rebuild.
-    command: python -m deployment
+    command: atlas-setup
     environment:
       <<: [*atlas-control-environment, *duckbasin-environment]
     depends_on:

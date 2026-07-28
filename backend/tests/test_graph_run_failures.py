@@ -7,9 +7,9 @@ import unittest
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-from api.routers.graph_runs import failure_summary
-from runtime.graph_queue import GraphRunFailureGroup
-from runtime.graph_runs import _updated_failure_groups
+from atlas.crawl.api.runs import failure_summary
+from atlas.crawl.runtime.graph_queue import GraphRunFailureGroup
+from atlas.crawl.runtime.graph_runs import _updated_failure_groups
 
 
 class GraphRunFailureApiTests(unittest.TestCase):
@@ -72,7 +72,7 @@ class GraphRunFailureApiTests(unittest.TestCase):
             )
             runtime = SimpleNamespace(runs=object())
             with patch(
-                "api.routers.graph_runs.get_graph_run",
+                "atlas.crawl.api.runs.get_graph_run",
                 AsyncMock(return_value=run),
             ):
                 result = await failure_summary(uuid4(), runtime)

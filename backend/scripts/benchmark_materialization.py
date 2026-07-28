@@ -8,20 +8,20 @@ import json
 import logging
 from uuid import uuid4
 
-from cdc.events import ensure_cdc_stream
-from config.performance import MATERIALIZATION_QUACK_CLIENTS
-from materialization.document_projection import DocumentProjectionSource
-from materialization.document_workload import document_stage_plan
-from materialization.lanes import MaterializationLane, MaterializationLanePool
-from materialization.pipeline import StageSelection, execute_bounded_stage
-from repository.catalogue import ServiceAccountTokenProvider
-from repository.catalogue.duckbasin import DuckBasinConfig
-from repository.catalogue.schema import HTML_ELEMENTS
-from repository.objects.config import object_store_from_env
-from repository.objects.html import RawHtmlRepository
-from runtime.catalogue_workers import CatalogueLaneReporter
-from runtime.nats_client import connect_nats
-from runtime.operation_leases import ensure_operation_lease_storage
+from atlas.materialization.cdc.events import ensure_cdc_stream
+from atlas.platform.config.performance import MATERIALIZATION_QUACK_CLIENTS
+from atlas.materialization.document_projection import DocumentProjectionSource
+from atlas.materialization.document_workload import document_stage_plan
+from atlas.materialization.lanes import MaterializationLane, MaterializationLanePool
+from atlas.materialization.pipeline import StageSelection, execute_bounded_stage
+from atlas.platform.catalogue import ServiceAccountTokenProvider
+from atlas.platform.catalogue.duckbasin import DuckBasinConfig
+from atlas.platform.catalogue.schema import HTML_ELEMENTS
+from atlas.ingestion.objects.config import object_store_from_env
+from atlas.ingestion.objects.html import RawHtmlRepository
+from atlas.platform.messaging.catalogue_workers import CatalogueLaneReporter
+from atlas.platform.messaging.client import connect_nats
+from atlas.platform.messaging.leases import ensure_operation_lease_storage
 
 
 async def run(*, documents: int, keep: bool) -> None:

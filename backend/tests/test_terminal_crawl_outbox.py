@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import unittest
 from uuid import uuid4
 
-from repository.ingestion.queue import IngestionJob
-from runtime.graph_store import _enqueue_terminal_crawl
+from atlas.ingestion.queue import IngestionJob
+from atlas.crawl.runtime.graph_store import _enqueue_terminal_crawl
 
 
 class _Session:

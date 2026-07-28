@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import duckdb
 
-from cdc.relay import (
+from atlas.materialization.cdc.relay import (
     BasinDDLEvent,
     RelayedTable,
     TableResolver,
@@ -188,7 +188,7 @@ class CDCRelayTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(resolver.resolve({7}), {})
 
-    @patch("cdc.relay.load_relayed_tables", return_value={})
+    @patch("atlas.materialization.cdc.relay.load_relayed_tables", return_value={})
     def test_absent_table_is_retired_during_historical_replay(
         self,
         load_tables: MagicMock,
@@ -207,7 +207,7 @@ class CDCRelayTests(unittest.IsolatedAsyncioTestCase):
         on_retry = MagicMock()
 
         with patch(
-            "cdc.relay.asyncio.sleep",
+            "atlas.materialization.cdc.relay.asyncio.sleep",
             new=AsyncMock(),
         ):
             result = await _retry_transient_source_operation(

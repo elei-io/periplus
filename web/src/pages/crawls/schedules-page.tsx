@@ -64,11 +64,7 @@ export function CrawlSchedulesPage({
   return (
     <div className="flex min-h-0 w-full flex-col gap-4">
       <section className="flex flex-wrap items-center justify-between gap-3 border-b pb-4">
-        <div className="flex items-center gap-2">
-          <CalendarClockIcon className="size-4 text-muted-foreground" />
-          <h1 className="text-lg font-medium">Schedules</h1>
-          <Badge variant="outline">{schedulesQuery.data?.total ?? 0}</Badge>
-        </div>
+        <Badge variant="outline">{schedulesQuery.data?.total ?? 0} total</Badge>
         <div className="flex gap-2">
           <Button
             size="sm"

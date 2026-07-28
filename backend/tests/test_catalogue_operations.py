@@ -6,11 +6,11 @@ from unittest.mock import MagicMock, call, patch
 import duckdb
 import psycopg
 
-from repository.catalogue.duckbasin import (
+from atlas.platform.catalogue.duckbasin import (
     DuckBasinAuthenticationError,
     DuckBasinUnavailableError,
 )
-from repository.catalogue.operations import (
+from atlas.platform.catalogue.operations import (
     is_retryable_catalogue_unavailability,
     run_with_catalogue_retry,
 )
@@ -47,14 +47,14 @@ class CatalogueOperationRetryTests(unittest.TestCase):
 
         with (
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
+                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
                 0.1,
             ),
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
+                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
                 0.25,
             ),
-            patch("repository.catalogue.operations.time.sleep") as sleep,
+            patch("atlas.platform.catalogue.operations.time.sleep") as sleep,
         ):
             result = run_with_catalogue_retry(operation, description="test commit")
 
@@ -77,14 +77,14 @@ class CatalogueOperationRetryTests(unittest.TestCase):
         )
         with (
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
+                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
                 0,
             ),
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
+                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
                 0,
             ),
-            patch("repository.catalogue.operations.time.sleep"),
+            patch("atlas.platform.catalogue.operations.time.sleep"),
         ):
             result = run_with_catalogue_retry(
                 operation, description="materialization partition"
@@ -105,18 +105,18 @@ class CatalogueOperationRetryTests(unittest.TestCase):
         )
         with (
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_MAX_ATTEMPTS",
+                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_MAX_ATTEMPTS",
                 1,
             ),
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
+                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
                 0.1,
             ),
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
+                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
                 0.25,
             ),
-            patch("repository.catalogue.operations.time.sleep") as sleep,
+            patch("atlas.platform.catalogue.operations.time.sleep") as sleep,
         ):
             result = run_with_catalogue_retry(
                 operation, description="materialization partition"
@@ -132,18 +132,18 @@ class CatalogueOperationRetryTests(unittest.TestCase):
         )
         with (
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_MAX_ATTEMPTS",
+                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_MAX_ATTEMPTS",
                 3,
             ),
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
+                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
                 0,
             ),
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
+                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
                 0,
             ),
-            patch("repository.catalogue.operations.time.sleep"),
+            patch("atlas.platform.catalogue.operations.time.sleep"),
             self.assertRaises(duckdb.TransactionException),
         ):
             run_with_catalogue_retry(operation, description="test commit")

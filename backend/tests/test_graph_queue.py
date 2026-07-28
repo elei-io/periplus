@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 from nats.js.api import ConsumerConfig, KeyValueConfig, StorageType, StreamConfig
 from nats.js.errors import NotFoundError
 
-from runtime.graph_queue import _bucket, _ensure_consumer
+from atlas.crawl.runtime.graph_queue import _bucket, _ensure_consumer
 
 
 class FakeBucket:

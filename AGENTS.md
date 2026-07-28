@@ -1,11 +1,11 @@
 # Working in Atlas
 
-Read [docs_v2/ARCHITECTURE.md](docs_v2/ARCHITECTURE.md),
-[docs_v2/SCHEMA.md](docs_v2/SCHEMA.md), and
-[docs_v2/LIFECYCLE.md](docs_v2/LIFECYCLE.md) before changing graph execution, crawling, worker
+Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
+[docs/SCHEMA.md](docs/SCHEMA.md), and
+[docs/LIFECYCLE.md](docs/LIFECYCLE.md) before changing graph execution, crawling, worker
 ownership, repository storage, DOM generation, NATS, DuckLake, or managed DuckDB use. Read
-[docs_v2/CUTOFF.md](docs_v2/CUTOFF.md) before adding a service, queue, persistence path,
-compatibility layer, or abstraction. Read [docs_v2/QUERY.md](docs_v2/QUERY.md) before changing
+[docs/CUTOFF.md](docs/CUTOFF.md) before adding a service, queue, persistence path,
+compatibility layer, or abstraction. Read [docs/QUERY.md](docs/QUERY.md) before changing
 `web.*`, SDK, or DuckDB extension boundaries.
 
 ## Non-negotiable boundaries
@@ -21,7 +21,8 @@ compatibility layer, or abstraction. Read [docs_v2/QUERY.md](docs_v2/QUERY.md) b
 - NATS JetStream/KV owns graph work delivery, worker presence, CDC events, operation leases,
   and per-domain crawl pacing/concurrency. It is not authoritative graph state.
 - Crawl history belongs only in DuckLake; never reintroduce it into control-plane Postgres.
-- Raw HTML is immutable, content-addressed, and stored through `backend/repository/`.
+- Raw HTML is immutable, content-addressed, and stored through
+  `backend/src/atlas/ingestion/objects/`.
 - `crawl` is the only page-acquisition primitive. Graph nodes map admitted URL inputs to crawl work;
   scoped SQL edges derive URL inputs for subsequent nodes from durable crawl evidence.
 - Acquisition workers acquire one page, store immutable raw HTML, publish frozen ingestion jobs,
@@ -31,7 +32,7 @@ compatibility layer, or abstraction. Read [docs_v2/QUERY.md](docs_v2/QUERY.md) b
   bounded by their owning process.
 - A standard CDP endpoint is the sole acquisition boundary. Atlas has one crawl queue; the CDP
   service owns transport choice, browser-farm capacity, profiles, and acquisition strategy.
-- Ingestion workers own base crawl/DOM/system-projection writes. They are independently observable
+- Ingestion workers own base crawl evidence writes. They are independently observable
   `critical` catalogue work, never settle graph traversal, and never wait for user materialization.
 - The CDC ingress consumes Basin-owned global DML/DDL JetStream streams, publishes per-table
   DML ticks and global DDL changes into Atlas JetStream, and ACKs Basin only after Atlas PubAcks.
@@ -68,32 +69,35 @@ compatibility layer, or abstraction. Read [docs_v2/QUERY.md](docs_v2/QUERY.md) b
 
 ## Code map
 
-- `backend/acquisition/` — standard-CDP page capture, readiness, response classification, and
-  acquisition evidence; do not add traversal loops here.
-- `backend/control/` — editable Postgres-backed crawl graphs, policies, matches, schemas, and
-  catalogue definitions.
-- `backend/runtime/` — Postgres-backed graph execution and transactional outbox; NATS work delivery,
-  workers, operation leases, and per-domain pacing.
-- `backend/workers/` — CDP acquisition, ingestion, materialization, and housekeeping
-  process entrypoints.
-- `backend/repository/objects/` — immutable content-addressed raw HTML.
-- `backend/repository/ingestion/` — repository queue, pipeline, writer, health, and recovery.
-- `backend/repository/catalogue/` — DuckBasin connection minter and logical DuckLake boundary.
-- `backend/cdc/` — Basin CDC connections, contracts, ingress, metrics, and worker process.
-- `backend/repository/service.py` — application-facing durable repository boundary.
-- `backend/dom/` — versioned structural DOM projection.
-- `backend/api/` and `backend/cli/` — thin adapters.
-- `backend/db/` — SQLAlchemy setup and Alembic migrations.
+- `backend/src/atlas/crawl/control/` — editable Postgres-backed crawl graphs, policies, and
+  schedules.
+- `backend/src/atlas/crawl/runtime/` — current graph execution, transactional outbox, work
+  delivery, navigation, progress, and per-domain pacing.
+- `backend/src/atlas/crawl/acquisition/` — standard-CDP page capture, readiness, response
+  classification, and acquisition evidence; do not add traversal loops here.
+- `backend/src/atlas/crawl/worker.py` — acquisition process composition.
+- `backend/src/atlas/ingestion/` — immutable objects, ingestion contracts, queue, writer, import,
+  health, and recovery.
+- `backend/src/atlas/materialization/` — fixed document and visit projections, maintenance, and
+  materialization process composition.
+- `backend/src/atlas/materialization/cdc/` — Basin CDC connections, contracts, ingress, metrics,
+  and process composition.
+- `backend/src/atlas/materialization/dom/` — versioned structural DOM projection.
+- `backend/src/atlas/query/` — bounded physical SQL inspection.
+- `backend/src/atlas/operations/` — status, dead-letter operations, and housekeeping.
+- `backend/src/atlas/platform/` — configuration, worker health/lifecycle, and Postgres, NATS, and
+  DuckBasin adapters; business workflows do not belong here.
+- `backend/src/atlas/entrypoints/` — thin API, worker CLI, and setup composition roots.
 - `packages/atlas-web-shell/` — distributable browser SQL shell built on `atlas-console-core`.
 - `web/` — React frontend application; it consumes `atlas-web-shell`.
 
-Keep editable graph and policy definitions under `control/`, current graph execution under
-`runtime/`, acquisition behavior in the shared crawl path, navigation in the acquisition worker,
-catalogue ingestion under the ingestion worker, user materialization under the materialization
-worker, and generic Postgres infrastructure under `backend/db/`. Do not add generic deployment-wide
-resource locking; bound clients locally and keep distributed coordination scoped to the exact
-domain or operation identity. Do not add a task, action primitive, or action-specific traversal
-loop when a node and scoped SQL edge express the behavior.
+Keep editable graph and policy definitions under `crawl/control/`, current graph execution under
+`crawl/runtime/`, acquisition behavior in the shared crawl path, durable evidence under
+`ingestion/`, fixed projections under `materialization/`, and generic adapters under `platform/`.
+Entrypoints validate, compose, and run these capabilities; they do not own domain transitions. Do
+not add generic deployment-wide resource locking; bound clients locally and keep distributed
+coordination scoped to the exact domain or operation identity. Do not add a task, action primitive,
+or action-specific traversal loop when a node and scoped SQL edge express the behavior.
 
 ## Workflow
 

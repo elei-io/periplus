@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 import unittest
 
-from repository.ingestion.health import HealthMonitor
-from runtime.catalogue_workers import (
+from atlas.platform.health import HealthMonitor
+from atlas.platform.messaging.catalogue_workers import (
     CatalogueLaneReporter,
     CatalogueLaneState,
     CatalogueWorkerState,

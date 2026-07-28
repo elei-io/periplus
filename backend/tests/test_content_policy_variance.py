@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from control.crawl_policies.schemas import (
+from atlas.crawl.control.crawl_policies.schemas import (
     ContentCompletion,
     ContentPolicy,
     CrawlPolicySnapshot,
@@ -13,9 +13,9 @@ from control.crawl_policies.schemas import (
     WaitDynamicCompletion,
     WaitFixedCompletion,
 )
-from control.crawl_policies.variance import vary_content_policy
-from control.domain_policies.schemas import DomainPolicySnapshot
-from runtime.graph_runs import resolve_policy_snapshot
+from atlas.crawl.control.crawl_policies.variance import vary_content_policy
+from atlas.crawl.control.domain_policies.schemas import DomainPolicySnapshot
+from atlas.crawl.runtime.graph_runs import resolve_policy_snapshot
 
 
 class IndexedRandom:
@@ -186,17 +186,17 @@ class ContentPolicyVarianceTests(unittest.TestCase):
 
         with (
             patch(
-                "runtime.graph_runs.find_crawl_policies_for_urls",
+                "atlas.crawl.runtime.graph_runs.find_crawl_policies_for_urls",
                 return_value={"https://example.com/": object()},
             ),
             patch(
-                "runtime.graph_runs.find_domain_policies_for_urls",
+                "atlas.crawl.runtime.graph_runs.find_domain_policies_for_urls",
                 return_value={"https://example.com/": object()},
             ),
-            patch("runtime.graph_runs.policy_snapshot", return_value=crawl),
-            patch("runtime.graph_runs.domain_policy_snapshot", return_value=domain),
+            patch("atlas.crawl.runtime.graph_runs.policy_snapshot", return_value=crawl),
+            patch("atlas.crawl.runtime.graph_runs.domain_policy_snapshot", return_value=domain),
             patch(
-                "runtime.graph_runs.vary_content_policy",
+                "atlas.crawl.runtime.graph_runs.vary_content_policy",
                 return_value=(varied_content, assignment),
             ),
         ):

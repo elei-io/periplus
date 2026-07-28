@@ -4,19 +4,21 @@ import ast
 from pathlib import Path
 import unittest
 
-from cdc.events import DDL_SUBJECT, DML_SUBJECT_PREFIX, EVENT_STREAM
+from atlas.materialization.cdc.events import DDL_SUBJECT, DML_SUBJECT_PREFIX, EVENT_STREAM
 
 
 class CDCOwnershipTests(unittest.TestCase):
     def test_cdc_runtime_code_has_one_module_owner(self) -> None:
         backend = Path(__file__).parents[1]
 
-        self.assertTrue((backend / "cdc").is_dir())
+        self.assertTrue(
+            (backend / "src" / "atlas" / "materialization" / "cdc").is_dir()
+        )
         for retired_path in (
-            "catalogue_relay",
-            "runtime/catalogue_events.py",
-            "observability/catalogue_event_metrics.py",
-            "workers/catalogue_relay.py",
+            "src/atlas/catalogue_relay",
+            "src/atlas/crawl/runtime/catalogue_events.py",
+            "src/atlas/operations/observability/catalogue_event_metrics.py",
+            "src/atlas/operations/catalogue_relay.py",
         ):
             self.assertFalse((backend / retired_path).exists(), retired_path)
 

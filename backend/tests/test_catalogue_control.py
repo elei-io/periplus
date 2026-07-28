@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from api.catalogue_control import CatalogueControl
+from atlas.platform.catalogue.control import CatalogueControl
 
 
 class _FakeCatalogue:
@@ -68,7 +68,7 @@ class CatalogueControlTests(unittest.IsolatedAsyncioTestCase):
             active -= 1
 
         control = CatalogueControl(factory=factory)
-        with patch("api.catalogue_control.session_scope", fake_session_scope):
+        with patch("atlas.platform.catalogue.control.session_scope", fake_session_scope):
             await control.start()
             await asyncio.gather(*(control.run(operation) for _ in range(8)))
             snapshot = await control.latest_snapshot()

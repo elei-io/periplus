@@ -1,12 +1,12 @@
 from uuid import uuid4
 
-from control.crawl_graphs.schemas import (
+from atlas.crawl.control.crawl_graphs.schemas import (
     EdgeDedupeMode,
     FrozenGraphEdge,
     FrozenGraphNode,
     FrozenGraphSnapshot,
 )
-from runtime.navigation_contract import NavigationPackage
+from atlas.crawl.runtime.navigation_contract import NavigationPackage
 
 
 def navigation_package() -> NavigationPackage:

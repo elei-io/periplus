@@ -5,7 +5,7 @@ sync:
 	npm install
 
 check:
-	cd backend && uv run python -m compileall acquisition api cdc config control db dom materialization observability repository runtime workers
+	cd backend && uv run python -m compileall src/atlas
 	cd backend && uv run python -m unittest discover -s tests
 	npm run check:packages
 	npm run test:packages
@@ -16,13 +16,13 @@ setup:
 	cd backend && uv run atlas-setup
 
 catalogue-check:
-	cd backend && uv run python -m repository.catalogue check
+	cd backend && uv run python -m atlas.platform.catalogue check
 
 verify-remote-runtime:
 	cd backend && uv run python scripts/verify_remote_runtime.py
 
 api:
-	cd backend && uv run fastapi dev api/app.py
+	cd backend && uv run fastapi dev src/atlas/entrypoints/api.py
 
 acquisition-worker:
 	cd backend && uv run atlas-worker acquisition
@@ -40,7 +40,7 @@ housekeeping-worker:
 	cd backend && uv run atlas-worker housekeeping
 
 db-revision:
-	cd backend && uv run alembic -c db/alembic.ini revision --autogenerate -m "$(m)"
+	cd backend && uv run alembic -c src/atlas/platform/postgres/alembic.ini revision --autogenerate -m "$(m)"
 
 compose-up:
 	docker compose up --build -d --wait

@@ -8,7 +8,7 @@ from uuid import UUID
 
 import httpx
 
-from repository.catalogue.duckbasin import (
+from atlas.platform.catalogue.duckbasin import (
     DuckBasinAuthenticationError,
     DuckBasinClientMinter,
     DuckBasinConfig,

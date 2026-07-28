@@ -6,23 +6,23 @@ import unittest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from control.crawl_graphs.models import CrawlGraph, CrawlGraphEdge, CrawlGraphNode
-from control.crawl_graphs.schemas import CrawlGraphCreate, CrawlGraphNodeCreate
-from control.crawl_graphs.service import create_graph, create_node
-from control.crawl_schedules.models import CrawlSchedule
-from control.crawl_schedules.schemas import (
+from atlas.crawl.control.crawl_graphs.models import CrawlGraph, CrawlGraphEdge, CrawlGraphNode
+from atlas.crawl.control.crawl_graphs.schemas import CrawlGraphCreate, CrawlGraphNodeCreate
+from atlas.crawl.control.crawl_graphs.service import create_graph, create_node
+from atlas.crawl.control.crawl_schedules.models import CrawlSchedule
+from atlas.crawl.control.crawl_schedules.schemas import (
     CronTiming,
     CrawlScheduleCreate,
     IntervalTiming,
     SchedulePreviewRequest,
 )
-from control.crawl_schedules.service import (
+from atlas.crawl.control.crawl_schedules.service import (
     CrawlScheduleValidationError,
     create_schedule,
     preview_occurrences,
     set_schedule_enabled,
 )
-from db import Base
+from atlas.platform.postgres import Base
 
 
 class CrawlScheduleTests(unittest.TestCase):

@@ -4,8 +4,8 @@ import unittest
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
-from runtime.graph_outbox import publish_outbox_once
-from runtime.graph_store import OutboxDelivery
+from atlas.crawl.runtime.graph_outbox import publish_outbox_once
+from atlas.crawl.runtime.graph_store import OutboxDelivery
 
 
 class GraphOutboxTests(unittest.IsolatedAsyncioTestCase):

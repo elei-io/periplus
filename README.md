@@ -21,6 +21,10 @@ The TypeScript workspace keeps its distributable clients under `packages/`:
 `atlas-console-core`, `atlas-web-shell`, and `atlas-terminal-shell`. The deployable React
 application lives under `web/` and consumes `atlas-web-shell`.
 
+The backend is one `atlas` Python package organized by capability under `backend/src/atlas/`.
+API, acquisition, ingestion, CDC, materialization, and housekeeping remain independently runnable
+process roles from the same package.
+
 ## Development
 
 Requirements are Python 3.14 with `uv`, Node.js 22 or newer, Docker Compose, DuckBasin credentials,
@@ -68,9 +72,9 @@ make housekeeping-worker
 
 The canonical product and data contracts are:
 
-- [architecture](docs_v2/ARCHITECTURE.md)
-- [cutoff](docs_v2/CUTOFF.md)
-- [schema](docs_v2/SCHEMA.md)
-- [lifecycle](docs_v2/LIFECYCLE.md)
-- [query](docs_v2/QUERY.md)
-- [vision](docs_v2/VISION.md)
+- [architecture](docs/ARCHITECTURE.md)
+- [cutoff](docs/CUTOFF.md)
+- [schema](docs/SCHEMA.md)
+- [lifecycle](docs/LIFECYCLE.md)
+- [query](docs/QUERY.md)
+- [vision](docs/VISION.md)
