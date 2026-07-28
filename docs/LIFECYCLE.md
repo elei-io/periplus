@@ -77,6 +77,7 @@ ordinary target leases.
 Atlas decodes documents into rebuildable structural relations:
 
 ```text
+HTML -> material.html_documents
 HTML -> material.html_elements
 HTML -> material.jsonld_values
 ```
@@ -86,7 +87,8 @@ Generic JSON, XML, PDF, DOCX, CSV, and other format projections are deferred.
 Atlas also maintains compact semantic indexes:
 
 ```text
-ingest.documents CDC -> material.html_elements
+ingest.documents CDC -> material.html_documents
+                     -> material.html_elements
                      -> material.jsonld_values
                      -> material.links
                      -> material.link_observations
@@ -109,11 +111,11 @@ CDC or rebuilt from upstream relations.
 
 ## 4. Query
 
-Users query `web.*`, not the physical plan.
+Users query the public `web.*` and `dom.*` catalogue, not the physical plan.
 
-Atlas initialization installs and versions `web.*` as persistent DuckLake views and macros over
-the physical evidence and materialization schemas. Expensive recurring computations become fixed
-materializations. A later native optimizer may accelerate measured plan gaps without defining
-query semantics. See [`QUERY.md`](QUERY.md).
+Atlas initialization installs and versions both public namespaces as persistent DuckLake views
+and macros over the physical evidence and materialization schemas. Expensive recurring
+computations become fixed materializations. A later native optimizer may accelerate measured plan
+gaps without defining query semantics. See [`QUERY.md`](QUERY.md).
 
 Users persist their own interpretations under `data.*`.

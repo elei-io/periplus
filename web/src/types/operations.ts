@@ -2,6 +2,7 @@ export type DataStatusState =
   "current" | "processing" | "attention" | "unavailable"
 
 export type MaterializationProjection =
+  | "html_documents"
   | "html_elements"
   | "jsonld_values"
   | "links"

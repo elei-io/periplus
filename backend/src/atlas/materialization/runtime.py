@@ -377,6 +377,7 @@ def _source_highwater(catalogue, run: MaterializationRun) -> int:
     tables: list[str] = []
     stages = set(run.stages)
     if stages & {
+        "html_documents",
         "html_elements",
         "jsonld_values",
         "links",

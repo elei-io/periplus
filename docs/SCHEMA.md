@@ -131,6 +131,7 @@ source system, optional dataset, and source record identity. The physical column
 
 Versioned, rebuildable relations maintained by Atlas:
 
+- `material.html_documents` — canonical per-content HTML DOMs and costing statistics.
 - `material.html_elements` — structural projections of HTML documents.
 - `material.jsonld_values` — structured data extracted from JSON-LD embedded in HTML documents.
 - `material.pages` — visits reduced to unique page identities.
@@ -140,6 +141,28 @@ Versioned, rebuildable relations maintained by Atlas:
 
 Structural projections for generic JSON, XML, PDF, DOCX, CSV, and other formats are deferred. Their
 relation names and schemas are not yet part of the contract.
+
+### `material.html_documents`
+
+One row represents one canonical parsed HTML DOM for one immutable content identity:
+
+```text
+content_sha256 # Identity of the projected immutable HTML bytes.
+node_count     # Number of elements in the canonical DOM.
+max_depth      # Maximum element depth from the document root.
+nodes          # Canonical flattened elements in document order as LIST<STRUCT>.
+```
+
+The row identity is:
+
+```text
+UNIQUE(content_sha256)
+```
+
+`nodes` uses the same fields and semantics as `material.html_elements`. Both projections are
+emitted from the same parse. The document-grain copy exists for bounded native DOM operations;
+the element-grain relation remains the portable relational inspection and candidate-discovery
+surface.
 
 ### `material.html_elements`
 
@@ -297,10 +320,12 @@ evidence table.
 URL normalization, public-suffix data, and relation-scope rules are versioned materialization
 metadata.
 
-## `web.*`
+## Public SQL catalogue
 
-`web.*` is the stable SQL interface over Atlas evidence. It is installed as versioned DuckLake
-views and macros and is organized around three kinds of relation:
+`web.*` and `dom.*` form the stable SQL interface over Atlas evidence. Web identities,
+observations, history, and document-derived formats live in `web.*`. Structural DOM relations and
+operations live in `dom.*`. The catalogue is installed as versioned DuckLake views and macros and
+is organized around three kinds of relation:
 
 - identities: pages, directed links, and immutable content;
 - observations: the visit, document, page, link, and crawl evidence that establishes those
@@ -312,7 +337,8 @@ observation, collapse history, or infer that something is current. Reductions su
 "first", "changed", or "currently present" must be requested explicitly.
 
 The public content key is `content_id`. It is the same content-addressed value stored physically as
-`content_sha256`, exposed under one semantic name throughout `web.*`. It is not a second identity
+`content_sha256`, exposed under one semantic name throughout the public catalogue. It is not a
+second identity
 or a compatibility alias. A `document_id` identifies an observation of a representation; a
 `content_id` identifies its immutable logical bytes. Many documents may therefore refer to the
 same content.
@@ -345,6 +371,33 @@ UNIQUE(url)
 `url` is the normalized logical URL. Exact requested and effective URLs remain observation
 evidence in `web.visits`. Link targets do not create page rows: a target may have a deterministic
 page identity in `web.links` without having been visited.
+
+#### `web.page_stats`
+
+One row summarizes retained observation and directed-link evidence for one visited page identity.
+
+```text
+page_id                # Page identity being summarized.
+visit_count            # Number of page observations.
+document_count         # Number of page observations with a retained document.
+distinct_content_count # Number of distinct immutable content identities across those documents.
+first_observed_at       # Earliest page observation time.
+last_observed_at        # Latest page observation time.
+inbound_link_count      # Number of distinct normalized source-target pairs targeting this page.
+outbound_link_count     # Number of distinct normalized source-target pairs sourced from this page.
+```
+
+The row identity is:
+
+```text
+UNIQUE(page_id)
+```
+
+Every `web.pages` row has one `web.page_stats` row. Counts are zero when no supporting evidence is
+present; observation timestamps are null when no page observation is present. Inbound and outbound
+counts reduce `web.links`, whose rows are already unique directed page pairs. They do not count
+repeated anchor occurrences from `web.link_observations`. A self-link contributes once to both the
+inbound and outbound counts for its page.
 
 #### `web.links`
 
@@ -386,7 +439,7 @@ UNIQUE(content_id)
 
 This is a semantic identity projection over retained document evidence, not a second physical
 copy of the bytes. Immutable source bytes remain behind the object repository boundary. Their
-queryable structural projections are exposed through `web.html` and `web.jsonld`.
+queryable projections are exposed through `dom.elements` and `web.jsonld`.
 
 ### Observation and provenance relations
 
@@ -418,7 +471,7 @@ One row records one anchor occurrence in one observed HTML document.
 link_id       # Directed normalized page-pair identity.
 document_id   # Document observation containing the anchor.
 content_id    # Immutable HTML content containing the anchor.
-element_index # Exact source anchor in web.html.
+element_index # Exact source anchor in dom.elements.
 raw_href      # href value before URL resolution and normalization.
 observed_at   # Time the representation was captured.
 ```
@@ -429,7 +482,7 @@ The row identity is:
 UNIQUE(document_id, element_index)
 ```
 
-`(content_id, element_index)` connects the occurrence to its exact `web.html` element.
+`(content_id, element_index)` connects the occurrence to its exact `dom.elements` row.
 
 #### `web.documents`
 
@@ -456,7 +509,7 @@ UNIQUE(document_id)
 
 `page_id` is factual denormalization from the owning visit so common page-to-document history
 queries do not need an extra join. Storage keys, encodings, and stored-object sizes are physical
-repository details and are not part of `web.*`.
+repository details and are not part of the public catalogue.
 
 #### `web.visits`
 
@@ -508,7 +561,27 @@ UNIQUE(crawl_id)
 
 ### Content projections
 
-#### `web.html`
+#### `dom.documents`
+
+One row represents one canonical HTML DOM:
+
+```text
+content_id # Identity of the projected immutable HTML bytes.
+node_count # Number of elements in the canonical DOM.
+max_depth  # Maximum element depth from the document root.
+```
+
+The keyed table macro:
+
+```sql
+dom.document(content_id)
+```
+
+returns the same identity and statistics plus its canonical `nodes` value for at most one content
+identity. Requiring the content key prevents an unbounded public projection of every nested DOM.
+The optional Atlas extension consumes this value for standards-based CSS selector matching.
+
+#### `dom.elements`
 
 One row represents one element in one unique immutable HTML payload.
 
@@ -524,7 +597,6 @@ namespace        # HTML, SVG, MathML, or another element namespace.
 attributes       # Attribute names and string values as MAP(VARCHAR, VARCHAR).
 text_direct      # Text directly inside this element before its child elements.
 text_tail        # Text following this element within its parent.
-text_content     # Derived text contained by this element's complete subtree.
 ```
 
 The row identity is:
@@ -533,11 +605,30 @@ The row identity is:
 UNIQUE(content_id, element_index)
 ```
 
-`text_content` concatenates stored text nodes inside the selected element's subtree in document
-order, preserves their stored whitespace, and excludes the selected element's own `text_tail`.
-It is DOM text-content reconstruction, not browser-layout `innerText`: it does not infer CSS
-visibility, generated content, line wrapping, or visual whitespace. Its portable definition must
-remain projection-prunable because reconstructing text for many large subtrees can be expensive.
+The keyed table macro:
+
+```sql
+dom.text_content(content_id, element_index)
+```
+
+returns `content_id`, `element_index`, and `text_content` for at most one selected element.
+`text_content` concatenates stored text nodes inside that element's subtree in document order,
+preserves their stored whitespace, and excludes the selected element's own `text_tail`. It is DOM
+text-content reconstruction, not browser-layout `innerText`: it does not infer CSS visibility,
+generated content, line wrapping, or visual whitespace.
+
+Subtree reconstruction is deliberately absent from the `dom.elements` base view. Keeping it behind
+required content and element keys prevents an unbounded relation scan from expanding every
+ancestor-descendant pair before an outer projection or limit can take effect. The macro makes its
+one-row identity bound explicit so keyed lateral calls retain that bound when DuckDB decorrelates
+them.
+
+The name follows the standard DOM `Node.textContent` property. Atlas does not expose a generic
+`text` operation because the DOM defines no such property. `inner_text` would mean
+`HTMLElement.innerText`, whose rendered-text semantics require layout and computed CSS that the
+structural projection does not retain. `inner_html` and `outer_html` are also deferred: conforming
+DOM serialization requires node information, including comments, that `material.html_elements`
+does not retain. Those names must not be used for approximate or source-slice results.
 
 #### `web.jsonld`
 
@@ -546,7 +637,7 @@ payload.
 
 ```text
 content_id    # Identity of the containing immutable HTML bytes.
-element_index # Source <script> element in web.html.
+element_index # Source <script> element in dom.elements.
 type_terms    # Distinct raw @type strings found in the payload as VARCHAR[].
 value         # Complete parsed JSON-LD payload as VARIANT.
 ```
@@ -570,6 +661,7 @@ web.crawls
 web.pages
   -> page_id -> web.page_observations
   -> page_id -> web.documents
+  -> page_id -> web.page_stats
 
 web.links
   -> link_id -> web.link_observations
@@ -577,10 +669,10 @@ web.links
 
 web.documents
   -> document_id -> web.page_observations / web.link_observations
-  -> content_id -> web.content / web.html / web.jsonld
+  -> content_id -> web.content / dom.elements / web.jsonld
 
 web.link_observations
-  -> (content_id, element_index) -> web.html
+  -> (content_id, element_index) -> dom.elements
 ```
 
 Same-named keys have the same meaning and may be joined with `USING`. Directional link endpoints
@@ -599,16 +691,17 @@ The destination join is optional because a positively observed target need not h
 Its absence says only that Atlas has no visit-backed page identity for that URL; it says nothing
 about whether the page exists on the live web.
 
-### Explicit reductions
+### Convenience macros and explicit reductions
 
 The scalar macro:
 
 ```text
-web.attribute(element_attributes, attribute_name)
+dom.get_attribute(element_attributes, attribute_name)
 ```
 
-returns one attribute value from an HTML attribute map, or `NULL` when the name is absent. It is
-equivalent to DuckDB's `map_extract_value` and exists to keep common element queries concise.
+returns one attribute value from an HTML attribute map, or `NULL` when the name is absent. The
+name follows DOM `Element.getAttribute`; the macro is equivalent to DuckDB's
+`map_extract_value` and exists to keep common element queries concise.
 
 Two table macros provide filtered history without changing its grain:
 
@@ -627,10 +720,7 @@ web.link_history(link_id)
 Neither macro selects a latest row or guarantees result order. Callers use an explicit
 `ORDER BY observed_at` when order matters.
 
-Further convenience views and table macros may shorten common history queries, but their names
-must state any reduction they perform. Interfaces such as `latest_page_documents` or
-`html_changes` are added only with an active caller and their exact grain is documented here when
-introduced. The unqualified base relations never mean "latest".
+The unqualified base relations never mean "latest".
 
 Portable catalogue definitions are authoritative. An optional native extension may recognize and
 accelerate the same valid SQL plans, but it does not define different query semantics. See
@@ -641,6 +731,6 @@ the contract.
 
 ## `data.*`
 
-User-owned views, tables, and maintained extractions built primarily from `web.*`.
+User-owned views, tables, and maintained extractions built primarily from the public catalogue.
 
 Tables are defined by the user.

@@ -50,10 +50,30 @@ class SqlConsoleValidationTests(unittest.TestCase):
 
         self.assertIn("web.page_history", bounded)
 
+    def test_accepts_dom_relation_and_table_macro(self):
+        bounded = _bounded_query(
+            """
+            SELECT element.tag, text.text_content
+            FROM dom.elements AS element
+            JOIN LATERAL dom.text_content(
+                element.content_id,
+                element.element_index
+            ) AS text USING (content_id, element_index)
+            """
+        )
+
+        self.assertIn("FROM dom.elements", bounded)
+        self.assertIn("dom.text_content", bounded)
+
     def test_accepts_describe_for_public_relation(self):
         self.assertEqual(
             _bounded_query("DESCRIBE web.pages;"),
             "DESCRIBE web.pages",
+        )
+
+        self.assertEqual(
+            _bounded_query("DESCRIBE dom.elements;"),
+            "DESCRIBE dom.elements",
         )
 
     def test_rejects_describe_for_physical_relation(self):
@@ -86,10 +106,19 @@ class SqlConsoleValidationTests(unittest.TestCase):
             "SUMMARIZE web.pages",
         )
 
+        self.assertEqual(
+            _bounded_query("SUMMARIZE dom.elements"),
+            "SUMMARIZE dom.elements",
+        )
+
     def test_accepts_show_tables_for_public_schema(self):
         self.assertEqual(
             _bounded_query("SHOW TABLES FROM web"),
             "SHOW TABLES FROM web",
+        )
+        self.assertEqual(
+            _bounded_query("SHOW TABLES FROM dom"),
+            "SHOW TABLES FROM dom",
         )
 
     def test_rejects_show_all_tables(self):

@@ -68,3 +68,14 @@ DuckBasin, and Basin-published JetStream CDC.
   relations or another lake's metadata.
 - **Atlas status:** Quack remains private, credentials remain server-side, and Atlas accepts no
   user-authored remote SQL.
+
+## DuckLake rejects column comments on views
+
+- **Atlas caller:** public catalogue installation for `web.*` and `dom.*` view documentation.
+- **Evidence:** `COMMENT ON VIEW web.pages` succeeds, while
+  `COMMENT ON COLUMN web.pages.page_id` fails remotely with
+  `Cannot comment on columns for entry pages - it is not a table`.
+- **Needed upstream contract:** allow standard DuckDB column comments on persistent DuckLake views
+  and expose them through `duckdb_columns()`.
+- **Atlas status:** Atlas publishes supported view comments and serves view-column descriptions
+  from its validated public catalogue manifest.

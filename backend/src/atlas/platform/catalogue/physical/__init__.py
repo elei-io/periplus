@@ -16,6 +16,7 @@ from atlas.platform.catalogue.physical.ingest import (
     VISITS,
 )
 from atlas.platform.catalogue.physical.material import (
+    HTML_DOCUMENTS,
     HTML_ELEMENTS,
     JSONLD_VALUES,
     LINKS,
@@ -29,6 +30,7 @@ __all__ = [
     "CATALOGUE_SCHEMA_VERSION",
     "CRAWLS",
     "DOCUMENTS",
+    "HTML_DOCUMENTS",
     "HTML_ELEMENTS",
     "INGEST_SCHEMA",
     "JSONLD_VALUES",

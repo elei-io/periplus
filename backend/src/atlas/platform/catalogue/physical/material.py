@@ -11,6 +11,7 @@ from atlas.platform.catalogue.physical.base import (
 from atlas.platform.catalogue.schema_types import ColumnDef, MapType
 
 
+HTML_DOCUMENTS = RelationName(MATERIAL_SCHEMA, "html_documents")
 HTML_ELEMENTS = RelationName(MATERIAL_SCHEMA, "html_elements")
 JSONLD_VALUES = RelationName(MATERIAL_SCHEMA, "jsonld_values")
 PAGES = RelationName(MATERIAL_SCHEMA, "pages")
@@ -20,6 +21,26 @@ LINK_OBSERVATIONS = RelationName(MATERIAL_SCHEMA, "link_observations")
 
 
 TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
+    HTML_DOCUMENTS: {
+        "content_sha256": ColumnDef("VARCHAR", nullable=False),
+        "node_count": ColumnDef("INTEGER", nullable=False),
+        "max_depth": ColumnDef("INTEGER", nullable=False),
+        "nodes": ColumnDef(
+            "STRUCT("
+            "element_index INTEGER, "
+            "parent_index INTEGER, "
+            "subtree_end_index INTEGER, "
+            "depth INTEGER, "
+            "child_index INTEGER, "
+            "tag VARCHAR, "
+            "namespace VARCHAR, "
+            "attributes MAP(VARCHAR, VARCHAR), "
+            "text_direct VARCHAR, "
+            "text_tail VARCHAR"
+            ")[]",
+            nullable=False,
+        ),
+    },
     HTML_ELEMENTS: {
         "content_sha256": ColumnDef("VARCHAR", nullable=False),
         "element_index": ColumnDef("INTEGER", nullable=False),
@@ -75,6 +96,10 @@ TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
 
 
 TABLE_LAYOUTS = {
+    HTML_DOCUMENTS: TableLayout(
+        partition_by=(f"bucket({PARTITION_BUCKETS}, content_sha256)",),
+        sort_by=("content_sha256 ASC",),
+    ),
     HTML_ELEMENTS: TableLayout(
         partition_by=(f"bucket({PARTITION_BUCKETS}, content_sha256)",),
         sort_by=("content_sha256 ASC", "element_index ASC"),
@@ -103,6 +128,9 @@ TABLE_LAYOUTS = {
 
 
 TABLE_COMMENTS = {
+    HTML_DOCUMENTS: (
+        "Canonical per-content HTML DOMs and costing statistics."
+    ),
     HTML_ELEMENTS: "Rebuildable structural projections of immutable HTML content.",
     JSONLD_VALUES: "Rebuildable parsed JSON-LD payloads embedded in HTML content.",
     PAGES: "Rebuildable identities for normalized URLs observed through visits.",
@@ -117,6 +145,12 @@ TABLE_COMMENTS = {
 
 
 COLUMN_COMMENTS = {
+    HTML_DOCUMENTS: {
+        "content_sha256": "Identity of projected immutable HTML bytes.",
+        "node_count": "Number of elements in the canonical DOM.",
+        "max_depth": "Maximum element depth from the document root.",
+        "nodes": "Canonical flattened DOM stored in document order.",
+    },
     HTML_ELEMENTS: {
         "content_sha256": "Identity of projected immutable HTML bytes.",
         "element_index": "Zero-based depth-first document position.",

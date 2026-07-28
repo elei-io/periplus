@@ -6,16 +6,17 @@ in DuckLake, and maintains rebuildable structural and URL relations through CDC.
 The currently delivered path is:
 
 ```text
-crawl plan -> immutable bytes -> ingest.* -> CDC -> material.* -> web.*
+crawl plan -> immutable bytes -> ingest.* -> CDC -> material.* -> web.* / dom.*
 ```
 
 Acquisition-plan edges are page-local DuckDB queries and do not require a SQL
 compiler or historical catalogue connection.
-The public SQL interface is a portable, versioned set of DuckLake views and macros under `web.*`.
-One optional C++ extension may later optimize measured plan gaps without defining different
-semantics. The bounded read-only SQL console exposes only qualified `web.*` relations in both the
-web application and the `atlas` terminal client; physical `ingest.*` and `material.*` relations
-remain Atlas implementation details.
+The public SQL interface is a portable, versioned set of DuckLake views and macros under `web.*`
+and `dom.*`. Web evidence and history remain in `web.*`; structural DOM relations and operations
+live in `dom.*`. One optional C++ extension may later optimize measured plan gaps without defining
+different semantics. The bounded read-only SQL console exposes only qualified public relations in
+both the web application and the `atlas` terminal client; physical `ingest.*` and `material.*`
+relations remain Atlas implementation details.
 
 The TypeScript workspace keeps its distributable clients under `packages/`:
 `atlas-console-core`, `atlas-web-shell`, and `atlas-terminal-shell`. The deployable React
@@ -51,11 +52,16 @@ This preserves DuckLake, repository objects, and local NATS state.
 Run one query from the terminal:
 
 ```sh
-npm run atlas -- 'SELECT count(*) FROM ingest.visits'
+npm run atlas -- 'SELECT count(*) FROM web.visits'
 ```
 
 Run `npm run atlas` without SQL to open the interactive terminal. Set `ATLAS_API_URL` when the API
-is not available at `http://127.0.0.1:8000`.
+is not available at `http://127.0.0.1:8000`. Inside either shell, `.tables` lists the public
+catalogue, `.describe dom.elements` shows an object's columns, `.history` shows recent input, and
+`.macros` shows scalar and table macro signatures. `.ai <question>` investigates the public
+catalogue, shows concise query purposes and timings, and offers validated formatted SQL drafts for
+review. Press `W` after an answer to inspect the exact SQL work behind it; use
+`.ai --fresh <question>` to omit recent assistant context. `.help` lists all local commands.
 
 Useful commands:
 

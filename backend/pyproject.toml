@@ -14,6 +14,7 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "prometheus-client>=0.22",
     "pydantic>=2.12",
+    "pydantic-ai-slim[openai]>=2.14.0",
     "pytz>=2025.2",
     "python-dotenv>=1.2",
     "sqlalchemy>=2.0",
@@ -50,6 +51,9 @@ exclude = ["tests*", "build*"]
     "alembic/script.py.mako",
 ]
 "atlas.platform.catalogue" = [
+    "sql/dom/macros_scalar/*.sql",
+    "sql/dom/views/*.sql",
+    "sql/dom/macros_table/*.sql",
     "sql/web/macros_scalar/*.sql",
     "sql/web/views/*.sql",
     "sql/web/macros_table/*.sql",

@@ -130,6 +130,7 @@ _MATERIALIZATION_WORKLOADS = (
         "documents",
         "ingest.documents",
         (
+            "material.html_documents",
             "material.html_elements",
             "material.jsonld_values",
             "material.links",

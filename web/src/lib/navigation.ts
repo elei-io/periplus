@@ -21,7 +21,7 @@ export const navigationGroups: NavigationGroup[] = [
         href: "/sql",
         icon: SquareTerminalIcon,
         title: "SQL Console",
-        description: "Query ingest and material relations.",
+        description: "Query the public web and DOM catalogue.",
       },
       {
         name: "Documents",

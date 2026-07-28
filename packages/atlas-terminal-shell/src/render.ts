@@ -1,5 +1,8 @@
 import {
   formatSqlResult,
+  formatTableResult,
+  renderFormattedTable,
+  sanitizeTerminalText,
   startProgress as startProgressTimer,
   type ConsoleResult,
 } from "atlas-console-core"
@@ -10,18 +13,22 @@ export function renderConsoleResult(
 ): string {
   if (output.kind === "clear") return "\u001b[2J\u001b[H"
   if (output.kind === "exit") return ""
-  if (output.kind === "message") return `${output.text}\n`
-  if (output.result.columns.length === 0) return "(no columns)\n"
-  const formatted = formatSqlResult(
-    output.result,
-    columns,
-    output.durationMilliseconds,
+  if (output.kind === "ai") return ""
+  if (output.kind === "message") {
+    return surround(sanitizeTerminalText(output.text, true))
+  }
+  const formatted =
+    output.kind === "query"
+      ? formatSqlResult(output.result, columns, output.durationMilliseconds)
+      : formatTableResult(output, columns)
+  if (!formatted.table.length) return surround("(no columns)")
+  return surround(
+    renderFormattedTable(formatted, Boolean(process.stdout.isTTY)).join("\n"),
   )
-  return [
-    ...formatted.table,
-    `\u001b[2m${formatted.summary}\u001b[0m`,
-    "",
-  ].join("\n")
+}
+
+function surround(value: string): string {
+  return `\n${value}\n\n`
 }
 
 export function startProgress(

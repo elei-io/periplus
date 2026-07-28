@@ -22,6 +22,32 @@ from atlas.ingestion.objects.html import RawHtmlRepository
 
 _TLD_EXTRACT = tldextract.TLDExtract(suffix_list_urls=())
 
+HTML_NODE_TYPE = pa.struct(
+    [
+        pa.field("element_index", pa.int32(), nullable=False),
+        pa.field("parent_index", pa.int32()),
+        pa.field("subtree_end_index", pa.int32(), nullable=False),
+        pa.field("depth", pa.int32(), nullable=False),
+        pa.field("child_index", pa.int32(), nullable=False),
+        pa.field("tag", pa.string(), nullable=False),
+        pa.field("namespace", pa.string(), nullable=False),
+        pa.field(
+            "attributes",
+            pa.map_(pa.string(), pa.string()),
+            nullable=False,
+        ),
+        pa.field("text_direct", pa.string(), nullable=False),
+        pa.field("text_tail", pa.string(), nullable=False),
+    ]
+)
+HTML_DOCUMENT_SCHEMA = pa.schema(
+    [
+        pa.field("content_sha256", pa.string(), nullable=False),
+        pa.field("node_count", pa.int32(), nullable=False),
+        pa.field("max_depth", pa.int32(), nullable=False),
+        pa.field("nodes", pa.list_(HTML_NODE_TYPE), nullable=False),
+    ]
+)
 HTML_ELEMENT_SCHEMA = pa.schema(
     [
         pa.field("content_sha256", pa.string(), nullable=False),
@@ -98,6 +124,7 @@ class DocumentProjection:
 
     content_hashes: frozenset[str]
     document_ids: frozenset[str]
+    html_documents: pa.Table
     html_elements: pa.Table
     jsonld_values: pa.Table
     links: pa.Table
@@ -125,6 +152,7 @@ def project_documents(
     """Read and parse every distinct content body exactly once."""
 
     exact_repository = ExactDocumentRepository(html_repository.store)
+    html_document_rows: list[tuple[object, ...]] = []
     html_columns: list[list[object]] = [[] for _ in HTML_ELEMENT_SCHEMA]
     jsonld_columns: list[list[object]] = [[] for _ in JSONLD_SCHEMA]
     link_rows: dict[str, tuple[object, ...]] = {}
@@ -147,6 +175,23 @@ def project_documents(
             iter_html_byte_elements(html)
             if isinstance(html, bytes)
             else iter_html_elements(html)
+        )
+        html_document_rows.append(
+            (
+                source.content_sha256,
+                len(elements),
+                max((element.depth for element in elements), default=0),
+                [
+                    dict(
+                        zip(
+                            HTML_NODE_TYPE.names,
+                            _html_element_values(element),
+                            strict=True,
+                        )
+                    )
+                    for element in elements
+                ],
+            )
         )
         _append_html_columns(
             html_columns,
@@ -195,6 +240,10 @@ def project_documents(
     return DocumentProjection(
         content_hashes=frozenset(content_hashes),
         document_ids=frozenset(document_ids),
+        html_documents=_table_from_rows(
+            HTML_DOCUMENT_SCHEMA,
+            html_document_rows,
+        ),
         html_elements=_table_from_columns(
             HTML_ELEMENT_SCHEMA,
             html_columns,
@@ -224,21 +273,24 @@ def _append_html_columns(
     elements: tuple[ElementRow, ...],
 ) -> None:
     for element in elements:
-        values = (
-            content_sha256,
-            element.element_index,
-            element.parent_index,
-            element.subtree_end_index,
-            element.depth,
-            element.child_index,
-            element.tag.lower(),
-            _namespace_name(element.namespace_uri),
-            list(element.attributes.items()),
-            element.text_direct,
-            element.text_tail,
-        )
+        values = (content_sha256, *_html_element_values(element))
         for column, value in zip(columns, values, strict=True):
             column.append(value)
+
+
+def _html_element_values(element: ElementRow) -> tuple[object, ...]:
+    return (
+        element.element_index,
+        element.parent_index,
+        element.subtree_end_index,
+        element.depth,
+        element.child_index,
+        element.tag.lower(),
+        _namespace_name(element.namespace_uri),
+        list(element.attributes.items()),
+        element.text_direct,
+        element.text_tail,
+    )
 
 
 def _append_jsonld_columns(

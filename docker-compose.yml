@@ -115,6 +115,11 @@ services:
           *atlas-repository-environment,
           *atlas-graph-environment,
         ]
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ATLAS_AI_MODEL: ${ATLAS_AI_MODEL:-openai:gpt-5.6-sol}
+      ATLAS_AI_MODEL_TIMEOUT_SECONDS: ${ATLAS_AI_MODEL_TIMEOUT_SECONDS:-180}
+      ATLAS_AI_REQUEST_LIMIT: ${ATLAS_AI_REQUEST_LIMIT:-32}
+      ATLAS_AI_TOOL_CALL_LIMIT: ${ATLAS_AI_TOOL_CALL_LIMIT:-24}
     depends_on:
       atlas-setup:
         condition: service_completed_successfully

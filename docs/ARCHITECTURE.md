@@ -3,13 +3,13 @@
 Atlas delivers one evidence path:
 
 ```text
-crawl plan -> immutable bytes -> ingest.* -> CDC -> material.* -> web.*
+crawl plan -> immutable bytes -> ingest.* -> CDC -> material.* -> web.* / dom.*
 ```
 
 External HTML joins at the same immutable-byte boundary:
 
 ```text
-external evidence -> immutable bytes -> ingest.* -> CDC -> material.* -> web.*
+external evidence -> immutable bytes -> ingest.* -> CDC -> material.* -> web.* / dom.*
 ```
 
 ## Authorities
@@ -20,7 +20,7 @@ external evidence -> immutable bytes -> ingest.* -> CDC -> material.* -> web.*
   and CDC events. They are not authoritative graph state.
 - The object repository owns immutable content-addressed source bytes.
 - DuckLake owns historical observed evidence, rebuildable Atlas materializations, and the portable
-  `web.*` catalogue.
+  public `web.*` and `dom.*` catalogue.
 
 Current graph execution never moves into DuckLake. Crawl history never moves into control-plane
 Postgres.

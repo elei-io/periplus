@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from atlas.platform.catalogue.schema import (
+    HTML_DOCUMENTS,
     HTML_ELEMENTS,
     JSONLD_VALUES,
     LINK_OBSERVATIONS,
@@ -15,6 +16,7 @@ from atlas.platform.catalogue.schema import (
 )
 
 ProjectionName = Literal[
+    "html_documents",
     "html_elements",
     "jsonld_values",
     "links",
@@ -24,6 +26,7 @@ ProjectionName = Literal[
 ]
 
 DOCUMENT_PROJECTIONS: tuple[ProjectionName, ...] = (
+    "html_documents",
     "html_elements",
     "jsonld_values",
     "links",
@@ -36,6 +39,7 @@ VISIT_PROJECTIONS: tuple[ProjectionName, ...] = (
 PROJECTION_ORDER = (*DOCUMENT_PROJECTIONS, *VISIT_PROJECTIONS)
 
 RELATIONS: dict[ProjectionName, RelationName] = {
+    "html_documents": HTML_DOCUMENTS,
     "html_elements": HTML_ELEMENTS,
     "jsonld_values": JSONLD_VALUES,
     "links": LINKS,
@@ -45,6 +49,7 @@ RELATIONS: dict[ProjectionName, RelationName] = {
 }
 
 PROJECTOR_VERSIONS: dict[ProjectionName, int] = {
+    "html_documents": 1,
     "html_elements": 1,
     "jsonld_values": 1,
     "links": 2,

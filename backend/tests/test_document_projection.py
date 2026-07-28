@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 
 from atlas.materialization.document_projection import (
+    HTML_DOCUMENT_SCHEMA,
     HTML_ELEMENT_SCHEMA,
     JSONLD_SCHEMA,
     LINK_OBSERVATION_SCHEMA,
@@ -62,6 +63,7 @@ class DocumentProjectionTests(unittest.TestCase):
         )
 
         repository.read.assert_called_once_with("objects/abc")
+        self.assertEqual(projection.html_documents.schema, HTML_DOCUMENT_SCHEMA)
         self.assertEqual(projection.html_elements.schema, HTML_ELEMENT_SCHEMA)
         self.assertEqual(projection.jsonld_values.schema, JSONLD_SCHEMA)
         self.assertEqual(projection.links.schema, LINK_SCHEMA)
@@ -69,6 +71,7 @@ class DocumentProjectionTests(unittest.TestCase):
             projection.link_observations.schema,
             LINK_OBSERVATION_SCHEMA,
         )
+        self.assertEqual(projection.html_documents.num_rows, 1)
         self.assertGreater(projection.html_elements.num_rows, 0)
         self.assertEqual(projection.jsonld_values.num_rows, 1)
         self.assertEqual(projection.links.num_rows, 1)
@@ -81,10 +84,23 @@ class DocumentProjectionTests(unittest.TestCase):
             projection.links["target_url"].to_pylist(),
             ["https://example.com/next"],
         )
+        document = projection.html_documents.to_pylist()[0]
+        self.assertEqual(document["content_sha256"], "abc")
+        self.assertEqual(
+            document["node_count"],
+            projection.html_elements.num_rows,
+        )
+        self.assertGreaterEqual(document["max_depth"], 2)
+        self.assertEqual(
+            len(document["nodes"]),
+            projection.html_elements.num_rows,
+        )
+        self.assertEqual(document["nodes"][0]["element_index"], 0)
         self.assertGreater(
             sum(
                 table.nbytes
                 for table in (
+                    projection.html_documents,
                     projection.html_elements,
                     projection.jsonld_values,
                     projection.links,
@@ -122,6 +138,7 @@ class DocumentProjectionTests(unittest.TestCase):
         projection = project_documents(repository, sources)
         enabled_targets = frozenset(
             {
+                "html_documents",
                 "html_elements",
                 "jsonld_values",
                 "links",
@@ -160,6 +177,7 @@ class DocumentProjectionTests(unittest.TestCase):
             ]
         )
         for table_name in (
+            "html_documents",
             "html_elements",
             "jsonld_values",
             "links",

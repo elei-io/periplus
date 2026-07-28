@@ -35,6 +35,13 @@ type ProjectionDefinition = {
 
 const projections: ProjectionDefinition[] = [
   {
+    value: "html_documents",
+    label: "HTML documents",
+    description:
+      "One selector-ready structural DOM and costing summary per HTML body.",
+    source: "ingest.documents",
+  },
+  {
     value: "html_elements",
     label: "HTML elements",
     description: "Versioned structural DOM elements for each HTML body.",

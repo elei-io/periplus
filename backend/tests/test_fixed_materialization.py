@@ -39,6 +39,7 @@ class FixedMaterializationTests(unittest.TestCase):
                     "ingest",
                     "documents",
                     (
+                        "html_documents",
                         "html_elements",
                         "jsonld_values",
                         "links",

@@ -28,3 +28,30 @@
   box-shadow: none;
   padding: 16px;
 }
+
+.atlas-web-shell-footer {
+  display: flex;
+  height: 36px;
+  flex: 0 0 36px;
+  align-items: center;
+  gap: 16px;
+  border-top: 1px solid var(--border, rgb(127 127 127 / 20%));
+  padding: 0 16px;
+  color: var(--muted-foreground, #737373);
+  background: var(--background, #fff);
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10px;
+}
+
+.atlas-web-shell-footer [data-state="connected"] {
+  color: oklch(0.58 0.13 155);
+}
+
+.atlas-web-shell-footer [data-state="disconnected"] {
+  color: var(--destructive, #dc2626);
+}
+
+.atlas-web-shell-footer-version {
+  margin-left: auto;
+}

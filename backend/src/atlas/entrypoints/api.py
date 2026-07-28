@@ -19,6 +19,7 @@ from atlas.operations.api import ingestion as repository_operations
 from atlas.operations.api import metrics as operational_metrics
 from atlas.platform.messaging.catalogue_workers import ensure_catalogue_worker_storage
 from atlas.query import http as sql_console
+from atlas.query import ai as sql_assistant
 from atlas.platform.catalogue.control import CatalogueControl
 from atlas.crawl.runtime.crawl_scheduler import run_scheduler
 from atlas.crawl.runtime.graph_queue import (
@@ -105,6 +106,7 @@ app.include_router(materializations.router)
 app.include_router(ingestion.router)
 app.include_router(documents.router)
 app.include_router(sql_console.router)
+app.include_router(sql_assistant.router)
 app.include_router(graphs.router)
 app.include_router(schedules.router)
 app.include_router(schedules.resource_router)

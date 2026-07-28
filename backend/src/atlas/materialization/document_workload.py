@@ -249,6 +249,12 @@ def combine_document_outputs(
             document_ids=frozenset().union(
                 *(projection.document_ids for projection in projections)
             ),
+            html_documents=pa.concat_tables(
+                [
+                    projection.html_documents
+                    for projection in projections
+                ]
+            ),
             html_elements=pa.concat_tables(
                 [
                     projection.html_elements
@@ -318,6 +324,12 @@ def partition_document_output(
         return (output,)
     partitions: list[DocumentProjectionOutput] = []
     for partition_index in range(partition_count):
+        html_documents = _filter_output_partition(
+            projection.html_documents,
+            key="content_sha256",
+            partition_index=partition_index,
+            partition_count=partition_count,
+        )
         html_elements = _filter_output_partition(
             projection.html_elements,
             key="content_sha256",
@@ -345,13 +357,18 @@ def partition_document_output(
         split = DocumentProjection(
             content_hashes=frozenset(
                 str(value)
-                for table in (html_elements, jsonld_values)
+                for table in (
+                    html_documents,
+                    html_elements,
+                    jsonld_values,
+                )
                 for value in table["content_sha256"].to_pylist()
             ),
             document_ids=frozenset(
                 str(value)
                 for value in link_observations["document_id"].to_pylist()
             ),
+            html_documents=html_documents,
             html_elements=html_elements,
             jsonld_values=jsonld_values,
             links=links,
@@ -424,6 +441,13 @@ def write_document_output(
         with catalogue.remote_transaction():
             for target, table, identity_column, identities, variants in (
                 (
+                    "html_documents",
+                    projection.html_documents,
+                    "content_sha256",
+                    projection.content_hashes,
+                    frozenset(),
+                ),
+                (
                     "html_elements",
                     projection.html_elements,
                     "content_sha256",
@@ -485,10 +509,15 @@ def apply_document_corrections(
         return 0
     with catalogue.remote_transaction():
         if output.removed_hashes and (
-            enabled_targets & {"html_elements", "jsonld_values"}
+            enabled_targets
+            & {"html_documents", "html_elements", "jsonld_values"}
         ):
             hashes = sql_string_list(set(output.removed_hashes))
-            for target in ("html_elements", "jsonld_values"):
+            for target in (
+                "html_documents",
+                "html_elements",
+                "jsonld_values",
+            ):
                 if target in enabled_targets:
                     catalogue.trusted_remote_execute(
                         f"DELETE FROM material.{table_names[target]} "
@@ -602,7 +631,7 @@ def _covered_html_hashes(
     rows = catalogue.trusted_remote_rows(
         f"""
         SELECT DISTINCT content_sha256
-        FROM material.html_elements
+        FROM material.html_documents
         WHERE content_sha256 IN ({sql_string_list(content_hashes)})
         """
     )

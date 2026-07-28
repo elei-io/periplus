@@ -107,6 +107,10 @@ class DataStatusTests(unittest.IsolatedAsyncioTestCase):
             status.materialization.workloads[0].queue.total,
             9,
         )
+        self.assertIn(
+            "material.html_documents",
+            status.materialization.workloads[0].projections,
+        )
         self.assertIsNone(
             status.materialization.workloads[
                 0

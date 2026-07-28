@@ -76,6 +76,7 @@ def workloads() -> tuple[Workload, ...]:
             "ingest",
             "documents",
             (
+                "html_documents",
                 "html_elements",
                 "jsonld_values",
                 "links",

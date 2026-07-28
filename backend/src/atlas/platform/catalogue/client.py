@@ -28,9 +28,9 @@ from atlas.platform.catalogue.schema import (
     RelationName,
     expected_columns,
 )
-from atlas.platform.catalogue.web import (
-    install_web_catalogue,
-    validate_web_catalogue,
+from atlas.platform.catalogue.public import (
+    install_public_catalogue,
+    validate_public_catalogue,
 )
 
 _INTERNAL_TABLE_NAME = re.compile(r"^_atlas_[a-z0-9_]+$")
@@ -203,7 +203,7 @@ class Catalogue:
                             f"{_quote_identifier(column_name)} IS "
                             f"{_quote_literal(comment)}"
                         )
-        install_web_catalogue(self)
+        install_public_catalogue(self)
         self._use_schema_if_available()
         self.validate_schema()
 
@@ -289,7 +289,7 @@ class Catalogue:
                         )
         if errors:
             raise CatalogueSchemaError("; ".join(errors))
-        validate_web_catalogue(self)
+        validate_public_catalogue(self)
 
     def create_materialization_generation(
         self,

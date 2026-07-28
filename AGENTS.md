@@ -6,9 +6,15 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 ownership, repository storage, DOM generation, NATS, DuckLake, or managed DuckDB use. Read
 [docs/CUTOFF.md](docs/CUTOFF.md) before adding a service, queue, persistence path,
 compatibility layer, or abstraction. Read [docs/QUERY.md](docs/QUERY.md) before changing
-`web.*`, SDK, or DuckDB extension boundaries. Read
+`web.*`, `dom.*`, SDK, or DuckDB extension boundaries. Read
 [docs/EXTENSION_DEVELOPMENT.md](docs/EXTENSION_DEVELOPMENT.md) before building, testing, or
 changing the Atlas DuckDB extension.
+
+For every query performance issue, first classify it as schema/catalogue design, compiler/optimizer
+behavior, or both, using the evidence and decision rules in [docs/QUERY.md](docs/QUERY.md).
+Compiler actions include warnings, boundedness errors, and semantics-preserving SQL or plan
+rewrites. Do not use a rewrite to conceal a poor public schema, and do not change the schema merely
+to encode around one accidental optimizer plan.
 
 ## Non-negotiable boundaries
 

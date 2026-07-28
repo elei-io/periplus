@@ -1,7 +1,8 @@
 # DuckDB extension development
 
-Atlas keeps portable query semantics in the persistent `web.*` DuckLake catalogue. The optional
-C++ extension recognizes and accelerates those plans; it must not be required for correctness.
+Atlas keeps portable query semantics in the persistent `web.*` and `dom.*` DuckLake catalogue.
+The optional C++ extension recognizes and accelerates those plans; it must not be required for
+correctness.
 See [`QUERY.md`](QUERY.md) for the query boundary.
 
 This guide describes the local development loop. It deliberately connects directly to Basin's
@@ -98,7 +99,8 @@ example:
   --sql "EXPLAIN SELECT * FROM web.pages LIMIT 10"
 ```
 
-The `web.*` objects are persistent DuckLake catalogue definitions installed by `make setup` or,
+The `web.*` and `dom.*` objects are persistent DuckLake catalogue definitions installed by
+`make setup` or,
 when only the analytical catalogue needs reconciliation:
 
 ```sh
@@ -106,7 +108,8 @@ cd backend
 uv run python -m atlas.platform.catalogue bootstrap
 ```
 
-The direct client attaches the lake read-only. It can verify and exercise `web.*`, but cannot
+The direct client attaches the lake read-only. It can verify and exercise both public namespaces,
+but cannot
 install or replace catalogue definitions.
 
 If the extension repository is not the default sibling, point the wrapper at it:
@@ -138,13 +141,24 @@ The file is held inside a private temporary directory and removed when the termi
 
 ## Optimizer testing requirements
 
+Before implementing an optimizer rule, record the performance-triage classification required by
+[`QUERY.md`](QUERY.md). Native work is appropriate only for the compiler part of the issue after
+any required schema or catalogue correction. A warning or boundedness error may be the correct
+compiler action when execution should not be rewritten.
+
 Every optimizer rewrite needs evidence for both semantics and activation:
 
 - A differential correctness test must compare the portable and optimized result bags.
 - An `EXPLAIN` assertion or another positive signal must prove the intended rule fired.
 - Tests must cover empty and `NULL` inputs, duplicate preservation, relevant limit/order
   behavior, and aliases or projections affected by the rewrite.
-- The same `web.*` query must remain correct when the Atlas extension is absent.
+- The same public query must remain correct when the Atlas extension is absent.
+
+The selector optimizer preserves keyed DuckLake pruning by increasing DuckDB's dynamic hash-join
+`IN` filter threshold only for plans that contain Atlas DOM selector functions. Explicit user
+settings take precedence. Native selectors consume the one-row value returned by
+`dom.document(content_id)` so plans never need to aggregate the complete element relation into
+scope-wide nested lists.
 
 Use real `atlas_test` queries for plan and performance investigation, but keep deterministic
 correctness coverage in SQLLogicTests.

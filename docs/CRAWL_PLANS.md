@@ -68,7 +68,7 @@ crawl_id
 ```
 
 Plan SQL cannot read files, call table functions, attach databases, or access
-`ingest.*`, `material.*`, `web.*`, or user data. It runs in a bounded
+`ingest.*`, `material.*`, `web.*`, `dom.*`, or user data. It runs in a bounded
 in-memory DuckDB connection with external access and extension loading
 disabled.
 

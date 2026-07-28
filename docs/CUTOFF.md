@@ -16,7 +16,7 @@ crawl plan -> immutable bytes -> ingest.* -> CDC -> material.*
 Externally acquired HTML may enter at the immutable-byte
 boundary and follows the same downstream path.
 
-It does not include compilation, the `web.*` semantic interface, agents, user-defined views, or
+It does not include compilation, the public SQL interface, agents, user-defined views, or
 maintained user extractions. A bounded read-only console may execute SQL directly against the
 physical `ingest.*` and `material.*` relations; this inspection surface does not compile, rewrite,
 persist, or manage SQL.
@@ -28,7 +28,8 @@ Atlas can:
 1. Run a crawl plan and retain immutable document bytes.
 2. Commit terminal crawl, visit, attempt, step, and document evidence under `ingest.*`.
 3. Relay committed changes through CDC.
-4. Maintain the six Atlas-owned `material.*` relations:
+4. Maintain the seven Atlas-owned `material.*` relations:
+   - `material.html_documents`
    - `material.html_elements`
    - `material.jsonld_values`
    - `material.pages`
@@ -80,7 +81,8 @@ materializations.
 Two source workloads own the fixed projection stages:
 
 ```text
-ingest.documents CDC -> material.html_elements
+ingest.documents CDC -> material.html_documents
+                     -> material.html_elements
                      -> material.jsonld_values
                      -> material.links
                      -> material.link_observations
@@ -126,11 +128,11 @@ kept merely because the future query layer might need something similar.
 
 ## Query boundary
 
-The query layer and `web.*` semantic interface are not delivered by this cutoff. No time is spent
+The query layer and public SQL interface are not delivered by this cutoff. No time is spent
 adapting, repairing, validating, or optimizing the Python compiler for the new ingestion and
 materialization schemas. Compiler-facing query, optimization, agent, and user-defined data
-workflows remain unavailable until the portable `web.*` catalogue is delivered. Direct read-only
-physical SQL and schema autocomplete are explicitly not `web.*` behavior.
+workflows remain unavailable until the portable public catalogue is delivered. Direct read-only
+physical SQL and schema autocomplete are explicitly not public-catalogue behavior.
 
 The superseded Python compiler and its schema-dependent integrations are
 removed. Crawl-plan edges do not depend on the query layer: they execute only
