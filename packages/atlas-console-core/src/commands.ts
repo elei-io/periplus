@@ -67,7 +67,9 @@ export const commands: CommandRegistry = new CommandRegistry([
           .all()
           .map((command) => `  .${command.name.padEnd(8)} ${command.summary}`),
         "",
-        "Enter read-only SQL against ingest.* or material.*. Press Tab to complete.",
+        "Enter read-only SQL, DESCRIBE, EXPLAIN, or SUMMARIZE against web.*.",
+        "Use SHOW TABLES FROM web to list public relations.",
+        "Press Tab to complete.",
       ].join("\n"),
     }),
   },

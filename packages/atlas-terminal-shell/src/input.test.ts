@@ -16,11 +16,11 @@ test("waits for the final chunk of a multiline SQL paste", async () => {
 
   assert.deepEqual(submissions, [])
 
-  input.push("FROM ingest.visits;")
+  input.push("FROM web.visits;")
   await wait(15)
 
   assert.deepEqual(submissions, [
-    "SELECT\n  requested_url,\n  status_code\nFROM ingest.visits;",
+    "SELECT\n  requested_url,\n  status_code\nFROM web.visits;",
   ])
 })
 

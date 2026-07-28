@@ -49,3 +49,8 @@ exclude = ["tests*", "build*"]
     "alembic.ini",
     "alembic/script.py.mako",
 ]
+"atlas.platform.catalogue" = [
+    "sql/web/macros_scalar/*.sql",
+    "sql/web/views/*.sql",
+    "sql/web/macros_table/*.sql",
+]

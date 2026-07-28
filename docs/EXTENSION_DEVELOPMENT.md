@@ -86,7 +86,7 @@ To execute one statement without entering the terminal:
 
 ```sh
 ./ducklake.sh --sql \
-  "SELECT atlas_optimizer_loaded(), count(*) FROM material.pages"
+  "SELECT web._catalogue_version(), count(*) FROM web.pages"
 ```
 
 All arguments accepted by `backend/scripts/direct_ducklake.py` pass through the wrapper. For
@@ -95,8 +95,19 @@ example:
 ```sh
 ./ducklake.sh \
   --lake atlas_test \
-  --sql "EXPLAIN SELECT * FROM web.page LIMIT 10"
+  --sql "EXPLAIN SELECT * FROM web.pages LIMIT 10"
 ```
+
+The `web.*` objects are persistent DuckLake catalogue definitions installed by `make setup` or,
+when only the analytical catalogue needs reconciliation:
+
+```sh
+cd backend
+uv run python -m atlas.platform.catalogue bootstrap
+```
+
+The direct client attaches the lake read-only. It can verify and exercise `web.*`, but cannot
+install or replace catalogue definitions.
 
 If the extension repository is not the default sibling, point the wrapper at it:
 

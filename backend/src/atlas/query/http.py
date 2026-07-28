@@ -1,7 +1,8 @@
-"""Bounded read-only SQL access to the physical Atlas catalogue."""
+"""Bounded read-only SQL access to the public Atlas web catalogue."""
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any, Literal
 
 import duckdb
@@ -16,7 +17,8 @@ from atlas.platform.catalogue.control import CatalogueControl, get_catalogue_con
 router = APIRouter(prefix="/sql", tags=["sql"])
 _MAX_ROWS = 10_000
 _MAX_SQL_BYTES = 100_000
-_READABLE_SCHEMAS = frozenset({"ingest", "material"})
+_READABLE_SCHEMAS = frozenset({"web"})
+_EXPLAIN_PREFIX = re.compile(r"^EXPLAIN\s+(?:ANALYZE\s+)?", re.IGNORECASE)
 _FORBIDDEN_FUNCTIONS = frozenset(
     {
         "attach",
@@ -74,7 +76,7 @@ class SqlColumn(BaseModel):
 
 
 class SqlRelation(BaseModel):
-    schema_name: Literal["ingest", "material"]
+    schema_name: Literal["web"]
     name: str
     kind: Literal["table", "view"]
     columns: list[SqlColumn]
@@ -123,7 +125,7 @@ async def metadata(
             JOIN information_schema.columns AS columns
               USING (table_catalog, table_schema, table_name)
             WHERE tables.table_catalog = current_catalog()
-              AND tables.table_schema IN ('ingest', 'material')
+              AND tables.table_schema = 'web'
             ORDER BY tables.table_schema, tables.table_name,
                      columns.ordinal_position
             """
@@ -153,13 +155,57 @@ async def metadata(
 
 def _bounded_query(sql: str) -> str:
     source = sql.strip()
+    normalized = source.removesuffix(";").rstrip()
+    explain_prefix = _EXPLAIN_PREFIX.match(normalized)
+    if explain_prefix is not None:
+        explained = normalized[explain_prefix.end() :].strip()
+        statement = _one_statement(explained)
+        if not isinstance(statement, exp.Query):
+            raise ValueError("EXPLAIN accepts one read-only query")
+        _validate_catalogue_access(statement)
+        return normalized
+
+    statement = _one_statement(source)
+    if isinstance(statement, exp.Query):
+        _validate_catalogue_access(statement)
+        return (
+            f"SELECT * FROM ({normalized}) AS atlas_console_query "
+            f"LIMIT {_MAX_ROWS + 1}"
+        )
+    if isinstance(statement, (exp.Describe, exp.Summarize)):
+        target = statement.this
+        if not isinstance(target, (exp.Query, exp.Table)):
+            raise ValueError(
+                f"{statement.key.upper()} requires a web.* relation or read-only query"
+            )
+        _validate_catalogue_access(statement)
+        return normalized
+    if isinstance(statement, exp.Show):
+        source_schema = statement.args.get("from_")
+        if (
+            str(statement.this).upper() == "TABLES"
+            and isinstance(source_schema, exp.Table)
+            and not source_schema.db
+            and source_schema.name.lower() == "web"
+        ):
+            return normalized
+        raise ValueError("SHOW is limited to SHOW TABLES FROM web")
+    raise ValueError(
+        "SQL console accepts one read-only query or public inspection statement"
+    )
+
+
+def _one_statement(sql: str) -> exp.Expression:
     try:
-        statements = parse(source, read="duckdb")
+        statements = parse(sql, read="duckdb")
     except ParseError as exc:
         raise ValueError(str(exc)) from exc
-    if len(statements) != 1 or not isinstance(statements[0], exp.Query):
-        raise ValueError("SQL console accepts exactly one read-only query")
-    statement = statements[0]
+    if len(statements) != 1 or statements[0] is None:
+        raise ValueError("SQL console accepts exactly one statement")
+    return statements[0]
+
+
+def _validate_catalogue_access(statement: exp.Expression) -> None:
     ctes = {
         cte.alias_or_name.lower()
         for cte in statement.find_all(exp.CTE)
@@ -169,18 +215,14 @@ def _bounded_query(sql: str) -> str:
         if table.catalog:
             raise ValueError("SQL console does not accept explicit catalog names")
         if table.db and table.db.lower() not in _READABLE_SCHEMAS:
-            raise ValueError("SQL console may only read ingest.* and material.*")
+            raise ValueError("SQL console may only read web.*")
         name = table.name.lower()
         if name in ctes:
             continue
         if name.startswith(_FORBIDDEN_RELATION_PREFIXES):
             raise ValueError("SQL console may not read system relations")
         if not table.db:
-            raise ValueError(
-                "catalogue relations must be qualified with ingest or material"
-            )
+            raise ValueError("catalogue relations must be qualified with web")
     for function in statement.find_all(exp.Func):
         if function.name.lower() in _FORBIDDEN_FUNCTIONS:
             raise ValueError(f"SQL console may not call {function.name}")
-    normalized = source.removesuffix(";").rstrip()
-    return f"SELECT * FROM ({normalized}) AS atlas_console_query LIMIT {_MAX_ROWS + 1}"

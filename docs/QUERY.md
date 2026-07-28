@@ -9,9 +9,21 @@ scalar macros, and table macros over `ingest.*` and `material.*`. These catalogu
 the complete semantics of `web.*` and must remain correct without an Atlas SDK or native extension.
 They are changed only by Atlas catalogue upgrades, never by Quack replica startup.
 
+The authoritative one-object SQL definitions live under
+`backend/src/atlas/platform/catalogue/sql/web/`, split into `macros_scalar`, `views`, and
+`macros_table`. The explicit manifest in `atlas.platform.catalogue.web` installs them in that
+dependency order. `atlas-setup` replaces the complete interface transactionally after reconciling
+the typed physical schema, then validates object names, columns, macro kinds, and catalogue
+version. Ordinary processes validate this contract and never repair it at startup.
+
 Recurring expensive computations belong in Atlas-owned `material.*` relations maintained through
 the ordinary materialization lifecycle. Quack is an optional execution transport, not a dependency
 of the catalogue contract.
+
+The shared terminal and web shell accepts bounded read-only SQL over qualified `web.*` relations
+only. It also accepts `DESCRIBE`, `EXPLAIN`, `EXPLAIN ANALYZE`, and `SUMMARIZE` when their target
+passes the same public-namespace validation, plus `SHOW TABLES FROM web`. Its metadata and
+autocomplete endpoints expose no `ingest.*` or `material.*` objects.
 
 ## 2. Python SDK
 

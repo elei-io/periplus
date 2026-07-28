@@ -17,6 +17,11 @@ const KEYWORDS = [
   "OR",
   "COUNT",
   "DISTINCT",
+  "DESCRIBE",
+  "EXPLAIN",
+  "EXPLAIN ANALYZE",
+  "SUMMARIZE",
+  "SHOW TABLES FROM web",
 ] as const
 
 export class SqlCompleter {
@@ -39,10 +44,9 @@ export class SqlCompleter {
     }
 
     for (const keyword of KEYWORDS) add(keyword, "keyword")
-    for (const schema of ["ingest", "material"]) add(schema, "schema")
+    add("web", "schema")
     for (const relation of this.metadata.relations) {
       add(`${relation.schema_name}.${relation.name}`, "relation")
-      add(relation.name, "relation")
     }
     for (const column of columnsInScope(input, this.metadata.relations)) {
       add(column, "column")

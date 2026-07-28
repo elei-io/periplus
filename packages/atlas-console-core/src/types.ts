@@ -5,7 +5,7 @@ export interface SqlColumn {
 }
 
 export interface SqlRelation {
-  schema_name: "ingest" | "material"
+  schema_name: "web"
   name: string
   kind: "table" | "view"
   columns: SqlColumn[]

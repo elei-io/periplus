@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from atlas.platform.postgres.session import session_scope
 from atlas.platform.catalogue import Catalogue, catalogue_from_env
 from atlas.platform.catalogue.schema import CATALOGUE_SCHEMA_VERSION
+from atlas.platform.catalogue.web import WEB_CATALOGUE_VERSION
 
 
 T = TypeVar("T")
@@ -65,10 +66,11 @@ class CatalogueControl:
             catalogue.close()
             raise
         logging.info(
-            "Atlas DuckLake binding ready: component=api lake=%s schemas=ingest,material "
-            "schema_version=%s",
+            "Atlas DuckLake binding ready: component=api lake=%s "
+            "schemas=ingest,material,web schema_version=%s web_version=%s",
             catalogue.lake_slug,
             CATALOGUE_SCHEMA_VERSION,
+            WEB_CATALOGUE_VERSION,
         )
         self._catalogue = catalogue
 

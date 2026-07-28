@@ -7,18 +7,18 @@ import type { SqlMetadata } from "./types.js"
 const metadata: SqlMetadata = {
   relations: [
     {
-      schema_name: "ingest",
+      schema_name: "web",
       name: "visits",
-      kind: "table",
+      kind: "view",
       columns: [
         { name: "visit_id", data_type: "UUID", nullable: false },
         { name: "requested_url", data_type: "VARCHAR", nullable: false },
       ],
     },
     {
-      schema_name: "material",
+      schema_name: "web",
       name: "pages",
-      kind: "table",
+      kind: "view",
       columns: [
         { name: "page_id", data_type: "UUID", nullable: false },
         { name: "hostname", data_type: "VARCHAR", nullable: false },
@@ -29,15 +29,16 @@ const metadata: SqlMetadata = {
 
 test("completes qualified relations", async () => {
   const completer = new SqlCompleter(async () => metadata)
-  const values = await completer.complete("SELECT * FROM mat")
+  const values = await completer.complete("SELECT * FROM web.p")
 
-  assert(values.some((item) => item.value === "material.pages"))
+  assert(values.some((item) => item.value === "web.pages"))
+  assert(!values.some((item) => item.value === "pages"))
 })
 
 test("completes columns from relations in scope", async () => {
   const completer = new SqlCompleter(async () => metadata)
   const values = await completer.complete(
-    "SELECT req FROM ingest.visits",
+    "SELECT req FROM web.visits",
     "SELECT req".length,
   )
 

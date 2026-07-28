@@ -18,6 +18,7 @@ test("help is generated from the command registry", () => {
     assert.match(result.text, /\.clear\s+Clear the screen\./)
     assert.match(result.text, /\.exit\s+Exit the console\./)
     assert.match(result.text, /\.help\s+Show available commands\./)
+    assert.match(result.text, /DESCRIBE, EXPLAIN, or SUMMARIZE against web\.\*/)
   }
 })
 
