@@ -168,8 +168,68 @@ def merge_page_head_rows(
     *,
     table_name: str = "page_heads",
 ) -> None:
+    mutations = _page_head_mutations(
+        catalogue,
+        rows,
+        table_name=table_name,
+    )
+    commit_material_mutations(catalogue, mutations)
+
+
+def commit_visit_projection_rows(
+    catalogue: Catalogue,
+    *,
+    pages: list[dict[str, object]],
+    observations: list[dict[str, object]],
+    heads: list[dict[str, object]],
+    destinations: dict[str, str],
+) -> None:
+    """Commit one rebuild visit slice in one Basin snapshot."""
+
+    mutations: list[MaterialMutation] = []
+    if pages:
+        mutations.append(
+            _replace_mutation(
+                file_id="10-replace-pages",
+                relation=PAGES,
+                table_name=destinations.get("pages", "pages"),
+                rows=pages,
+                match_columns=("page_id",),
+            )
+        )
+    if observations:
+        mutations.append(
+            _replace_mutation(
+                file_id="20-replace-page-observations",
+                relation=PAGE_OBSERVATIONS,
+                table_name=destinations.get(
+                    "page_observations",
+                    "page_observations",
+                ),
+                rows=observations,
+                match_columns=("visit_id",),
+            )
+        )
+    mutations.extend(
+        _page_head_mutations(
+            catalogue,
+            heads,
+            table_name=destinations.get("page_heads", "page_heads"),
+            file_id="30-replace-page-heads",
+        )
+    )
+    commit_material_mutations(catalogue, tuple(mutations))
+
+
+def _page_head_mutations(
+    catalogue: Catalogue,
+    rows: list[dict[str, object]],
+    *,
+    table_name: str,
+    file_id: str = "replace-page_heads",
+) -> tuple[MaterialMutation, ...]:
     if not rows:
-        return
+        return ()
     newest: dict[str, dict[str, object]] = {}
     for row in rows:
         page_id = str(row["page_id"])
@@ -196,12 +256,16 @@ def merge_page_head_rows(
         if page_id not in existing
         or (row["visit_at"], str(row["visit_id"])) > existing[page_id]
     ]
-    _replace_rows(
-        catalogue,
-        relation=PAGE_HEADS,
-        table_name=table_name,
-        rows=replacements,
-        match_columns=("page_id",),
+    if not replacements:
+        return ()
+    return (
+        _replace_mutation(
+            file_id=file_id,
+            relation=PAGE_HEADS,
+            table_name=table_name,
+            rows=replacements,
+            match_columns=("page_id",),
+        ),
     )
 
 

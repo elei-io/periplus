@@ -222,6 +222,70 @@ class MaterializationMaintenanceTests(unittest.TestCase):
             catalogue.trusted_remote_rows.call_args_list[1].args[0]
         ))
 
+    def test_visit_rebuild_commits_all_projections_in_one_snapshot(
+        self,
+    ) -> None:
+        catalogue = MagicMock()
+        observed_at = datetime.fromisoformat(
+            "2026-01-02T03:04:05+00:00"
+        )
+        catalogue.trusted_remote_rows.side_effect = [
+            [
+                (
+                    "10000000-0000-0000-0000-000000000001",
+                    None,
+                    "https://example.com/one",
+                    observed_at,
+                ),
+                (
+                    "10000000-0000-0000-0000-000000000002",
+                    None,
+                    "https://example.com/two",
+                    observed_at,
+                ),
+            ],
+            [],
+        ]
+
+        result = materialize_visit_batch(
+            catalogue,
+            stages=("pages", "page_observations", "page_heads"),
+            source_snapshot=10,
+            after_cursor=None,
+            item_budget=300,
+            destinations={
+                "pages": "_atlas_rebuild_pages_run",
+                "page_observations": (
+                    "_atlas_rebuild_page_observations_run"
+                ),
+                "page_heads": "_atlas_rebuild_page_heads_run",
+            },
+        )
+
+        self.assertEqual(result.source_items, 2)
+        self.assertEqual(result.output_rows, 6)
+        catalogue.commit_bulk_files.assert_called_once()
+        mutations = catalogue.commit_bulk_files.call_args.args[0]
+        self.assertEqual(
+            [
+                (item.table, item.mutation_mode, item.match_columns)
+                for item in mutations
+            ],
+            [
+                ("_atlas_rebuild_pages_run", "replace", ("page_id",)),
+                (
+                    "_atlas_rebuild_page_observations_run",
+                    "replace",
+                    ("visit_id",),
+                ),
+                (
+                    "_atlas_rebuild_page_heads_run",
+                    "replace",
+                    ("page_id",),
+                ),
+            ],
+        )
+
     def test_source_highwater_ignores_shadow_table_commits(self) -> None:
         catalogue = MagicMock()
         catalogue.config.alias = "atlas"

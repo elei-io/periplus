@@ -28,6 +28,7 @@ from atlas.materialization.lanes import MaterializationLanePool
 from atlas.materialization.pipeline import StageSelection, execute_bounded_stage
 from atlas.materialization.sql import sql_string, sql_string_list
 from atlas.materialization.visit_workload import (
+    commit_visit_projection_rows,
     merge_page_head_rows,
     merge_page_observation_rows,
     merge_page_rows,
@@ -211,40 +212,58 @@ def materialize_visit_batch(
                 f"({sql_string_list(set(replaced_visit_ids))})"
             )
         }
+    pages: list[dict[str, object]] = []
     if "pages" in enabled:
         by_url = {
             (url := normalize_url(str(row[2]))): page_row(url)
             for row in rows
         }
         pages = list(by_url.values())
-        merge_page_rows(
-            catalogue,
-            pages,
-            table_name=destinations.get("pages", "pages"),
-        )
         output_rows += len(pages)
+    observations: list[dict[str, object]] = []
     if "page_observations" in enabled:
         observations = [
             page_observation_row(*row[:4])
             for row in rows
         ]
-        merge_page_observation_rows(
-            catalogue,
-            observations,
-            table_name=destinations.get(
-                "page_observations", "page_observations"
-            ),
-            replaced_visit_ids=replaced_visit_ids,
-        )
         output_rows += len(observations)
+    heads: list[dict[str, object]] = []
     if "page_heads" in enabled:
         heads = [page_head_row(*row[:4]) for row in rows]
-        heads_table = destinations.get("page_heads", "page_heads")
-        merge_page_head_rows(
+        output_rows += len(heads)
+    if after_snapshot is None:
+        commit_visit_projection_rows(
             catalogue,
-            heads,
-            table_name=heads_table,
+            pages=pages,
+            observations=observations,
+            heads=heads,
+            destinations=destinations,
         )
+    else:
+        if pages:
+            merge_page_rows(
+                catalogue,
+                pages,
+                table_name=destinations.get("pages", "pages"),
+            )
+        if "page_observations" in enabled:
+            merge_page_observation_rows(
+                catalogue,
+                observations,
+                table_name=destinations.get(
+                    "page_observations", "page_observations"
+                ),
+                replaced_visit_ids=replaced_visit_ids,
+            )
+        if "page_heads" in enabled:
+            heads_table = destinations.get("page_heads", "page_heads")
+            merge_page_head_rows(
+                catalogue,
+                heads,
+                table_name=heads_table,
+            )
+    if "page_heads" in enabled:
+        heads_table = destinations.get("page_heads", "page_heads")
         affected_page_ids = old_page_ids | {
             str(row["page_id"]) for row in heads
         }
@@ -257,7 +276,6 @@ def materialize_visit_batch(
                 ),
                 heads_table=heads_table,
             )
-        output_rows += len(heads)
     return BatchResult(
         cursor=(
             max(replaced_visit_ids)
