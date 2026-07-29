@@ -108,14 +108,36 @@ DuckBasin, and Basin-published JetStream CDC.
   and Basin-owned layout. Basin revision `c74ac9f` now provides restricted append,
   replace-by-key, and delete-by-key actions over uploaded Parquet sources, with validated
   identifiers and all actions committed under the same operation marker; it does not expose
-  arbitrary SQL. Rebuild lifecycle still needs a generic
-  create-like-target, atomically activate-generation, and cleanup-retired-tables operation with the
-  same durable idempotency and lost-ack recovery.
-- **Atlas status:** all five live and shadow document insertions now use one atomic bulk operation
-  with at most one uploaded file per table. Document correction deletions use one keyed bulk
-  operation. Exact link-rollup refreshes, visit projections, and generation DDL remain on bounded
-  trusted SQL while their staged-row and generation lifecycle integrations are completed; Atlas
-  will not disguise them as append-only data or introduce a second Atlas-owned lake control plane.
+  arbitrary SQL. Basin revision `75d2697` adds generic clone, atomic generation swap, and table
+  cleanup actions under the same durable operation contract.
+- **Atlas status:** all fixed-projection mutations and rebuild lifecycle actions now use Basin bulk
+  operations. A live worker-loss test interrupted Atlas after Basin committed a five-table
+  document bundle but before Atlas advanced its cursor; restart replayed the identical source
+  slice, wrote zero rows, and then advanced safely. Quack remains a read path and is no longer a
+  materialization write path.
+
+## Bulk copy can create compaction debt faster than fixed-tier maintenance removes it
+
+- **Atlas caller:** partitioned fixed projections written in bounded rebuild and CDC batches.
+- **Evidence:** a live 300-document rebuild projected roughly 87--110 MiB per batch and sustained
+  about 4.2 documents per second through three or four concurrent Basin operations. Because
+  `copy` honors each table's 64-bucket partition layout, every populated target gained roughly one
+  small file per touched bucket per batch. At 2,388 documents, the five shadow tables had
+  247--488 active files each, averaging about 0.03--0.22 MiB. Basin correctly discovered and
+  compacted the internal shadow tables, but its fixed-tier passes ran about once per table per
+  minute and processed only 8--15 files into four while the next document batch added roughly
+  50--64 files per populated target. Projection throughput remained flat at this corpus size, so
+  this is accumulated physical debt rather than a current write stall.
+- **Needed upstream contract:** bulk ingestion and automatic maintenance must expose and enforce a
+  bounded debt envelope. Compaction admission and worker throughput should scale with files and
+  bytes created by bulk operations, including generation tables, and provide an observable
+  completion barrier suitable before generation activation. The mechanism must remain generic:
+  Atlas should not know DuckLake file paths, run lake maintenance SQL, or special-case Basin's
+  compaction tiers.
+- **Atlas status:** Atlas keeps source and output work bounded and records file fan-out as an
+  upstream physical-maintenance concern. A 12,410-content live rebuild is validating that debt can
+  be drained after writes quiesce. Million-document readiness remains unproven until Basin can
+  demonstrate that its compactor catches up from the resulting bulk debt within a bounded time.
 
 ## Public Quack remote SQL can resolve the Basin control catalogue
 
