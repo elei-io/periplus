@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
+import duckdb
+
 from atlas.materialization.runtime import (
     MaintenanceWork,
     _discard_rebuild,
@@ -147,6 +149,64 @@ class MaterializationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         message.ack.assert_awaited_once()
         message.nak.assert_not_awaited()
+
+    @patch("atlas.materialization.runtime.ensure_catalogue_work_stream")
+    @patch("atlas.materialization.runtime._publish_queued_runs")
+    @patch(
+        "atlas.materialization.runtime._process_one_batch",
+        side_effect=duckdb.TransactionException(
+            "Transaction conflict - another transaction compacted it"
+        ),
+    )
+    async def test_transaction_conflict_preserves_rebuild_for_retry(
+        self,
+        _process,
+        publish_queued,
+        ensure_stream,
+    ) -> None:
+        stop = asyncio.Event()
+        run_id = UUID("705ca93c-11fe-48d8-833e-c454ee726668")
+        message = SimpleNamespace(
+            data=MaintenanceWork(run_id=run_id).model_dump_json().encode(),
+            in_progress=AsyncMock(),
+            ack=AsyncMock(),
+            term=AsyncMock(),
+        )
+
+        async def retry(*, delay: float) -> None:
+            self.assertEqual(delay, 1)
+            stop.set()
+
+        message.nak = AsyncMock(side_effect=retry)
+        subscription = SimpleNamespace(
+            fetch=AsyncMock(return_value=[message])
+        )
+        jetstream = SimpleNamespace(
+            pull_subscribe=AsyncMock(return_value=subscription)
+        )
+        store = SimpleNamespace(fail=AsyncMock())
+        lane_pool = SimpleNamespace(call=AsyncMock())
+
+        async def wait_for_stop(*_args, **_kwargs) -> None:
+            await stop.wait()
+
+        publish_queued.side_effect = wait_for_stop
+
+        with patch("atlas.materialization.runtime.logging.warning"):
+            await run_maintenance(
+                jetstream,
+                MagicMock(),
+                lane_pool,
+                MagicMock(),
+                stop=stop,
+                store=store,
+            )
+
+        ensure_stream.assert_awaited_once_with(jetstream)
+        store.fail.assert_not_awaited()
+        lane_pool.call.assert_not_awaited()
+        message.nak.assert_awaited_once_with(delay=1)
+        message.ack.assert_not_awaited()
 
 
 if __name__ == "__main__":

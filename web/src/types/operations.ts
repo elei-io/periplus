@@ -2,13 +2,14 @@ export type DataStatusState =
   "current" | "processing" | "attention" | "unavailable"
 
 export type MaterializationProjection =
-  | "html_documents"
+  | "content_stats"
   | "html_elements"
   | "jsonld_values"
   | "links"
-  | "link_observations"
+  | "link_occurrences"
   | "pages"
   | "page_observations"
+  | "page_heads"
 
 export type MaterializationRun = {
   id: string

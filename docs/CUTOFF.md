@@ -29,13 +29,13 @@ Atlas can:
 2. Commit terminal crawl, visit, attempt, step, and document evidence under `ingest.*`.
 3. Relay committed changes through CDC.
 4. Maintain the seven Atlas-owned `material.*` relations:
-   - `material.html_documents`
+   - `material.content_stats`
    - `material.html_elements`
    - `material.jsonld_values`
    - `material.pages`
    - `material.page_observations`
    - `material.links`
-   - `material.link_observations`
+   - `material.link_occurrences`
 5. Recover from redelivery, retries, worker restarts, and temporarily unavailable materialization
    dependencies without corrupting or losing committed evidence.
 6. Expose normal ingestion and materialization health, capacity, backlog, and failure signals.
@@ -81,13 +81,14 @@ materializations.
 Two source workloads own the fixed projection stages:
 
 ```text
-ingest.documents CDC -> material.html_documents
+ingest.documents CDC -> material.content_stats
                      -> material.html_elements
                      -> material.jsonld_values
                      -> material.links
-                     -> material.link_observations
+                     -> material.link_occurrences
 ingest.visits CDC    -> material.pages
                      -> material.page_observations
+                     -> material.page_heads
 ```
 
 A workload acknowledges source changes only after its selected targets commit. Replay and repeated
@@ -96,9 +97,9 @@ partition writers borrow from the shared eight-client pool.
 
 All fixed materializations are maintained from bounded CDC deltas. One pinned document selection
 reads and parses each affected HTML body once and emits HTML, JSON-LD, link-pair, and link-
-observation Arrow outputs. Enabled document outputs are grouped into at most eight stable writes
+occurrence Arrow outputs. Enabled document outputs are grouped into at most eight stable writes
 targeting roughly 32 MiB each. One pinned visit selection maintains pages and replaces visit-owned
-observations exactly across inserts, corrections, and deletions.
+observations and deterministic page heads exactly across inserts, corrections, and deletions.
 
 The operations API can run any selected fixed table as a bounded backfill or shadow rebuild.
 Tables are independently selectable, while selected tables owned by the same source share one

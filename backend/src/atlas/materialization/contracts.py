@@ -5,67 +5,77 @@ from __future__ import annotations
 from typing import Literal
 
 from atlas.platform.catalogue.schema import (
-    HTML_DOCUMENTS,
+    CONTENT_STATS,
     HTML_ELEMENTS,
     JSONLD_VALUES,
-    LINK_OBSERVATIONS,
+    LINK_OCCURRENCES,
     LINKS,
+    PAGE_HEADS,
     PAGE_OBSERVATIONS,
     PAGES,
     RelationName,
 )
 
 ProjectionName = Literal[
-    "html_documents",
+    "content_stats",
     "html_elements",
     "jsonld_values",
     "links",
-    "link_observations",
+    "link_occurrences",
     "pages",
     "page_observations",
+    "page_heads",
 ]
 
 DOCUMENT_PROJECTIONS: tuple[ProjectionName, ...] = (
-    "html_documents",
+    "content_stats",
     "html_elements",
     "jsonld_values",
     "links",
-    "link_observations",
+    "link_occurrences",
 )
 VISIT_PROJECTIONS: tuple[ProjectionName, ...] = (
     "pages",
     "page_observations",
+    "page_heads",
 )
 PROJECTION_ORDER = (*DOCUMENT_PROJECTIONS, *VISIT_PROJECTIONS)
 
 RELATIONS: dict[ProjectionName, RelationName] = {
-    "html_documents": HTML_DOCUMENTS,
+    "content_stats": CONTENT_STATS,
     "html_elements": HTML_ELEMENTS,
     "jsonld_values": JSONLD_VALUES,
     "links": LINKS,
-    "link_observations": LINK_OBSERVATIONS,
+    "link_occurrences": LINK_OCCURRENCES,
     "pages": PAGES,
     "page_observations": PAGE_OBSERVATIONS,
+    "page_heads": PAGE_HEADS,
 }
 
 PROJECTOR_VERSIONS: dict[ProjectionName, int] = {
-    "html_documents": 1,
+    "content_stats": 1,
     "html_elements": 1,
     "jsonld_values": 1,
     "links": 2,
-    "link_observations": 1,
+    "link_occurrences": 1,
     "pages": 1,
     "page_observations": 1,
+    "page_heads": 1,
 }
 
 
 def ordered_projections(
     requested: set[ProjectionName],
 ) -> tuple[ProjectionName, ...]:
+    expanded = set(requested)
+    if expanded & {"page_observations", "page_heads"}:
+        expanded.update({"page_observations", "page_heads"})
+    if expanded & {"links", "link_occurrences"}:
+        expanded.update({"links", "link_occurrences"})
     return tuple(
         projection
         for projection in PROJECTION_ORDER
-        if projection in requested
+        if projection in expanded
     )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import re
 import threading
 from collections.abc import Iterator, Mapping, Sequence
@@ -12,6 +13,12 @@ import duckdb
 import pyarrow as pa
 
 from atlas.platform.catalogue.config import CatalogueConfig
+from atlas.platform.catalogue.bulk import (
+    BulkCatalogueAction,
+    BulkCommitFile,
+    BulkCommitOperation,
+    DuckBasinBulkClient,
+)
 from atlas.platform.catalogue.duckbasin import (
     DuckBasinClientMinter,
     DuckBasinCredentialRejectedError,
@@ -55,6 +62,8 @@ class Catalogue:
         self._connection_generation = 1
         self._remint_count = 0
         self._remote_transaction_active = False
+        self._connection_remint_required = False
+        self._bulk_client: DuckBasinBulkClient | None = None
         self._connection_proxy = _ResilientDuckDBConnection(self)
         if minted.catalogue_alias != config.alias:
             raise ValueError(
@@ -107,6 +116,7 @@ class Catalogue:
             try:
                 self.trusted_remote_execute("ROLLBACK")
             except BaseException as rollback_error:
+                self._connection_remint_required = True
                 operation_error.add_note(
                     "The remote transaction rollback also failed: "
                     f"{type(rollback_error).__name__}: {rollback_error}"
@@ -122,6 +132,12 @@ class Catalogue:
         else:
             try:
                 self.trusted_remote_execute("COMMIT")
+            except BaseException:
+                # A failed or unacknowledged COMMIT can leave the Quack
+                # session inside the old transaction. Never retry BEGIN on
+                # that session: close/remint it before the next operation.
+                self._connection_remint_required = True
+                raise
             finally:
                 self._remote_transaction_active = False
 
@@ -291,53 +307,49 @@ class Catalogue:
             raise CatalogueSchemaError("; ".join(errors))
         validate_public_catalogue(self)
 
-    def create_materialization_generation(
+    def create_materialization_generations(
         self,
-        relation_name: RelationName,
-        generation_table: str,
+        generations: Mapping[RelationName, str],
+        *,
+        generation_id: str,
     ) -> None:
-        """Create one empty, fully typed rebuild destination."""
+        """Atomically create empty, fully typed rebuild destinations."""
 
-        if relation_name.schema != MATERIAL_SCHEMA:
-            raise ValueError("only material tables can have rebuild generations")
-        if not _INTERNAL_TABLE_NAME.fullmatch(generation_table):
-            raise ValueError("invalid internal generation table name")
-        columns = expected_columns()[relation_name]
-        relation = _qualified(
-            self.config.alias,
-            relation_name.schema,
-            generation_table,
-        )
-        definitions = ", ".join(
-            f"{_quote_identifier(name)} {_column_type(column)}"
-            + ("" if column.nullable else " NOT NULL")
-            for name, column in columns.items()
-        )
-        with self.remote_transaction():
-            self.trusted_remote_execute(
-                f"CREATE TABLE IF NOT EXISTS {relation} ({definitions})"
+        if not generations:
+            raise ValueError("at least one generation is required")
+        suffix = re.sub(r"[^a-z0-9]", "", generation_id.lower())[:32]
+        if not suffix:
+            raise ValueError("generation_id must contain letters or digits")
+        for relation_name, generation_table in generations.items():
+            if relation_name.schema != MATERIAL_SCHEMA:
+                raise ValueError(
+                    "only material tables can have rebuild generations"
+                )
+            if not _INTERNAL_TABLE_NAME.fullmatch(generation_table):
+                raise ValueError("invalid internal generation table name")
+        entries = tuple(
+            {
+                "schema": relation_name.schema,
+                "source_table": relation_name.table,
+                "target_table": generation_table,
+            }
+            for relation_name, generation_table in sorted(
+                generations.items(),
+                key=lambda item: item[0].qualified,
             )
-            layout = TABLE_LAYOUTS[relation_name]
-            if layout.partition_by:
-                self.trusted_remote_execute(
-                    f"ALTER TABLE {relation} SET PARTITIONED BY "
-                    f"({', '.join(layout.partition_by)})"
-                )
-            if layout.sort_by:
-                self.trusted_remote_execute(
-                    f"ALTER TABLE {relation} SET SORTED BY "
-                    f"({', '.join(layout.sort_by)})"
-                )
-            self.trusted_remote_execute(
-                f"COMMENT ON TABLE {relation} IS "
-                f"{_quote_literal(TABLE_COMMENTS[relation_name])}"
-            )
-            for column_name, comment in COLUMN_COMMENTS[relation_name].items():
-                self.trusted_remote_execute(
-                    f"COMMENT ON COLUMN {relation}."
-                    f"{_quote_identifier(column_name)} IS "
-                    f"{_quote_literal(comment)}"
-                )
+        )
+        self.commit_catalogue_actions(
+            (
+                BulkCatalogueAction(
+                    action_id="clone-generations",
+                    kind="clone_tables",
+                    entries=entries,
+                ),
+            ),
+            idempotency_key=(
+                f"atlas:generation:clone:v1:{suffix}"
+            ),
+        )
 
     def activate_materialization_generations(
         self,
@@ -357,64 +369,33 @@ class Catalogue:
                 raise ValueError("only material tables can be activated")
             if not _INTERNAL_TABLE_NAME.fullmatch(generation_table):
                 raise ValueError("invalid internal generation table name")
-        pending: dict[RelationName, str] = {}
-        for relation_name, generation_table in generations.items():
-            retired_table = (
-                f"_atlas_retired_{relation_name.table}_{suffix}"
-            )
-            rows = self.trusted_remote_rows(
-                "SELECT table_name "
-                "FROM duckdb_tables() "
-                f"WHERE database_name = {_quote_literal(self.config.alias)} "
-                f"AND schema_name = {_quote_literal(relation_name.schema)} "
-                "AND table_name IN "
-                f"({_quote_literal(relation_name.table)}, "
-                f"{_quote_literal(generation_table)}, "
-                f"{_quote_literal(retired_table)})"
-            )
-            existing = {str(row[0]) for row in rows}
-            if generation_table in existing:
-                pending[relation_name] = generation_table
-                continue
-            if (
-                relation_name.table in existing
-                and retired_table in existing
-            ):
-                continue
-            raise RuntimeError(
-                "materialization generation is missing and the public "
-                f"table was not activated by {activation_id}: "
-                f"{relation_name.schema}.{generation_table}"
-            )
-        if not pending:
-            return
-        if len(pending) != len(generations):
-            raise RuntimeError(
-                "materialization activation is partially applied"
-            )
-        with self.remote_transaction():
-            for relation_name, generation_table in pending.items():
-                retired_table = (
+        entries = tuple(
+            {
+                "schema": relation_name.schema,
+                "current_table": relation_name.table,
+                "generation_table": generation_table,
+                "retired_table": (
                     f"_atlas_retired_{relation_name.table}_{suffix}"
-                )
-                current = _qualified(
-                    self.config.alias,
-                    relation_name.schema,
-                    relation_name.table,
-                )
-                generation = _qualified(
-                    self.config.alias,
-                    relation_name.schema,
-                    generation_table,
-                )
-                self.trusted_remote_execute(
-                    f"ALTER TABLE {current} RENAME TO "
-                    f"{_quote_identifier(retired_table)}"
-                )
-                self.trusted_remote_execute(
-                    f"ALTER TABLE {generation} RENAME TO "
-                    f"{_quote_identifier(relation_name.table)}"
-                )
+                ),
+            }
+            for relation_name, generation_table in sorted(
+                generations.items(),
+                key=lambda item: item[0].qualified,
+            )
+        )
+        self.commit_catalogue_actions(
+            (
+                BulkCatalogueAction(
+                    action_id="activate-generations",
+                    kind="swap_tables",
+                    entries=entries,
+                ),
+            ),
+            idempotency_key=(
+                f"atlas:generation:activate:v1:{activation_id}"
+            ),
+        )
+
     def finalize_materialization_activation(
         self,
         relations,
@@ -429,23 +410,32 @@ class Catalogue:
         selected = tuple(relations)
         if not selected:
             return
-        with self.remote_transaction():
-            for relation_name in selected:
-                if relation_name.schema != MATERIAL_SCHEMA:
-                    raise ValueError(
-                        "only material tables can be finalized"
-                    )
-                retired_table = (
-                    f"_atlas_retired_{relation_name.table}_{suffix}"
+        entries = []
+        for relation_name in selected:
+            if relation_name.schema != MATERIAL_SCHEMA:
+                raise ValueError(
+                    "only material tables can be finalized"
                 )
-                self.trusted_remote_execute(
-                    "DROP TABLE IF EXISTS "
-                    f"{_qualified(
-                        self.config.alias,
-                        relation_name.schema,
-                        retired_table,
-                    )}"
-                )
+            entries.append(
+                {
+                    "schema": relation_name.schema,
+                    "table": (
+                        f"_atlas_retired_{relation_name.table}_{suffix}"
+                    ),
+                }
+            )
+        self.commit_catalogue_actions(
+            (
+                BulkCatalogueAction(
+                    action_id="drop-retired-generations",
+                    kind="drop_tables",
+                    entries=tuple(entries),
+                ),
+            ),
+            idempotency_key=(
+                f"atlas:generation:finalize:v1:{activation_id}"
+            ),
+        )
 
     def drop_materialization_generations(
         self,
@@ -459,12 +449,27 @@ class Catalogue:
                 raise ValueError("invalid internal generation table name")
         if not tables:
             return
-        with self.remote_transaction():
-            for table in tables:
-                self.trusted_remote_execute(
-                    "DROP TABLE IF EXISTS "
-                    f"{_qualified(self.config.alias, MATERIAL_SCHEMA, table)}"
-                )
+        digest = hashlib.sha256(
+            "\n".join(sorted(tables)).encode()
+        ).hexdigest()
+        self.commit_catalogue_actions(
+            (
+                BulkCatalogueAction(
+                    action_id="drop-failed-generations",
+                    kind="drop_tables",
+                    entries=tuple(
+                        {
+                            "schema": MATERIAL_SCHEMA,
+                            "table": table,
+                        }
+                        for table in sorted(tables)
+                    ),
+                ),
+            ),
+            idempotency_key=(
+                f"atlas:generation:drop:v1:{digest}"
+            ),
+        )
 
     def latest_snapshot(self) -> int | None:
         rows = self.trusted_remote_rows(
@@ -572,11 +577,53 @@ class Catalogue:
         finally:
             self.trusted_connection.unregister(registration)
 
+    def commit_bulk_files(
+        self,
+        files: Sequence[BulkCommitFile],
+        *,
+        idempotency_key: str,
+    ) -> BulkCommitOperation:
+        """Commit local Parquet files through Basin rather than Quack."""
+
+        if self._bulk_client is None:
+            self._bulk_client = DuckBasinBulkClient(
+                self._minter.config,
+                self._minter.target(),
+                self._minter.tokens,
+            )
+        return self._bulk_client.commit(
+            files,
+            idempotency_key=idempotency_key,
+        )
+
+    def commit_catalogue_actions(
+        self,
+        actions: Sequence[BulkCatalogueAction],
+        *,
+        idempotency_key: str,
+    ) -> BulkCommitOperation:
+        """Commit replay-safe catalogue actions through Basin."""
+
+        if self._bulk_client is None:
+            self._bulk_client = DuckBasinBulkClient(
+                self._minter.config,
+                self._minter.target(),
+                self._minter.tokens,
+            )
+        return self._bulk_client.commit(
+            idempotency_key=idempotency_key,
+            actions=actions,
+        )
+
     def close(self) -> None:
         try:
-            self._minted.close()
+            if self._bulk_client is not None:
+                self._bulk_client.close()
         finally:
-            self._minter.close()
+            try:
+                self._minted.close()
+            finally:
+                self._minter.close()
 
     def refresh_metadata(self) -> None:
         """Mint a fresh session after Atlas creates internal rebuild tables."""
@@ -589,13 +636,14 @@ class Catalogue:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def _use_schema_if_available(self) -> None:
+    def _use_schema_if_available(self, connection=None) -> None:
+        active_connection = connection or self.trusted_connection
         namespace = _qualified(self.config.alias, INGEST_SCHEMA)
         try:
-            self.trusted_connection.execute(f"USE {namespace}")
+            active_connection.execute(f"USE {namespace}")
         except Exception:
             # A newly provisioned lake has no Atlas schema until bootstrap.
-            self.trusted_connection.execute(
+            active_connection.execute(
                 f"USE {_quote_identifier(self.config.alias)}"
             )
 
@@ -606,7 +654,10 @@ class Catalogue:
         failed_minted = self._minted
         if (
             not self._remote_transaction_active
-            and self._minter.connection_credentials_stale(failed_minted)
+            and (
+                self._connection_remint_required
+                or self._minter.connection_credentials_stale(failed_minted)
+            )
         ):
             self._remint_connection(failed_minted)
 
@@ -662,7 +713,10 @@ class Catalogue:
                 )
             self._minted = replacement
             try:
-                self._use_schema_if_available()
+                # Configure the replacement directly. Going through the
+                # resilient facade here would observe the pending remint flag
+                # and recursively try to acquire _remint_lock.
+                self._use_schema_if_available(replacement.connection)
             except BaseException:
                 self._minted = failed
                 replacement.close()
@@ -676,6 +730,7 @@ class Catalogue:
                 )
             self._connection_generation += 1
             self._remint_count += 1
+            self._connection_remint_required = False
 
 
 class _ResilientDuckDBConnection:

@@ -13,6 +13,7 @@ from atlas.platform.catalogue.schema import expected_columns
 from atlas.platform.catalogue.public import (
     PUBLIC_CATALOGUE_VERSION,
     PUBLIC_OBJECTS,
+    installed_public_objects,
     install_public_catalogue,
     validate_public_catalogue,
 )
@@ -20,6 +21,22 @@ from atlas.query.http import _public_metadata, metadata
 
 
 class PublicCatalogueTests(unittest.TestCase):
+    def test_selector_capability_requires_native_functions_and_macros(
+        self,
+    ) -> None:
+        catalogue = _SelectorCapabilityCatalogue()
+
+        objects = installed_public_objects(catalogue)
+
+        self.assertIn(
+            ("dom", "query_selector"),
+            {(item.schema, item.name) for item in objects},
+        )
+        self.assertIn(
+            ("dom", "query_selector_all"),
+            {(item.schema, item.name) for item in objects},
+        )
+
     def setUp(self) -> None:
         self.catalogue = _LocalCatalogue()
         for schema in ("ingest", "material"):
@@ -72,6 +89,12 @@ class PublicCatalogueTests(unittest.TestCase):
             """
         )
         self.catalogue.connection.execute(
+            """
+            CREATE MACRO dom.query_selector_all(content_id, selector) AS TABLE
+            SELECT content_id, selector
+            """
+        )
+        self.catalogue.connection.execute(
             "CREATE VIEW web.retired_html AS SELECT 1 AS element_index"
         )
         self.catalogue.connection.execute(
@@ -103,6 +126,7 @@ class PublicCatalogueTests(unittest.TestCase):
         self.assertNotIn(("web", "html"), object_names)
         self.assertNotIn(("web", "attribute"), object_names)
         self.assertNotIn(("web", "text_content"), object_names)
+        self.assertNotIn(("dom", "query_selector_all"), object_names)
 
     def test_text_content_preserves_dom_text_order(self) -> None:
         install_public_catalogue(self.catalogue)
@@ -144,50 +168,43 @@ class PublicCatalogueTests(unittest.TestCase):
         self.assertNotIn("text_tail", plan)
         self.assertNotIn("HASH_GROUP_BY", plan)
 
-    def test_dom_documents_exposes_costing_statistics_not_physical_nodes(
+    def test_dom_storage_is_flat_and_nested_document_api_is_absent(
         self,
     ) -> None:
         install_public_catalogue(self.catalogue)
         self.catalogue.connection.execute(
             """
-            INSERT INTO material.html_documents VALUES (
-                'hash',
-                4,
-                2,
-                []::STRUCT(
-                    element_index INTEGER,
-                    parent_index INTEGER,
-                    subtree_end_index INTEGER,
-                    depth INTEGER,
-                    child_index INTEGER,
-                    tag VARCHAR,
-                    namespace VARCHAR,
-                    attributes MAP(VARCHAR, VARCHAR),
-                    text_direct VARCHAR,
-                    text_tail VARCHAR
-                )[]
-            )
+            INSERT INTO material.content_stats
+            VALUES ('hash', 100, 4, 2)
             """
         )
 
-        description = self.catalogue.connection.execute(
-            "DESCRIBE dom.documents"
-        ).fetchall()
-        row = self.catalogue.connection.execute(
-            "SELECT * FROM dom.documents"
-        ).fetchone()
-
         self.assertEqual(
-            [column[0] for column in description],
-            ["content_id", "node_count", "max_depth"],
+            [
+                column[0]
+                for column in self.catalogue.connection.execute(
+                    "DESCRIBE material.content_stats"
+                ).fetchall()
+            ],
+            [
+                "content_sha256",
+                "content_bytes",
+                "dom_element_count",
+                "dom_max_depth",
+            ],
         )
-        self.assertEqual(row, ("hash", 4, 2))
-
-        keyed = self.catalogue.connection.execute(
-            "SELECT content_id, node_count, len(nodes) "
-            "FROM dom.document('hash')"
-        ).fetchone()
-        self.assertEqual(keyed, ("hash", 4, 0))
+        public_names = {
+            (row[0], row[1])
+            for row in self.catalogue.connection.execute(
+                """
+                SELECT schema_name, view_name FROM duckdb_views()
+                UNION ALL
+                SELECT schema_name, function_name FROM duckdb_functions()
+                """
+            ).fetchall()
+        }
+        self.assertNotIn(("dom", "documents"), public_names)
+        self.assertNotIn(("dom", "document"), public_names)
 
     def test_text_content_keeps_lateral_key_selection_bounded(self) -> None:
         install_public_catalogue(self.catalogue)
@@ -212,143 +229,87 @@ class PublicCatalogueTests(unittest.TestCase):
         self.assertIn("WINDOW", plan)
         self.assertIn("ROW_NUMBER()", plan)
 
-    def test_page_stats_reduces_observations_and_unique_link_pairs(
+    def test_visit_includes_latest_failure_and_document_statistics(
         self,
     ) -> None:
         install_public_catalogue(self.catalogue)
         self.catalogue.connection.execute(
             """
             INSERT INTO material.pages (
-                page_id,
-                normalized_url,
-                scheme,
-                hostname,
-                path
-            )
-            VALUES
-                ('00000000-0000-0000-0000-000000000001',
-                 'https://example.com/a',
-                 'https',
-                 'example.com',
-                 '/a'),
-                ('00000000-0000-0000-0000-000000000002',
-                 'https://example.com/b',
-                 'https',
-                 'example.com',
-                 '/b'),
-                ('00000000-0000-0000-0000-000000000003',
-                 'https://example.com/c',
-                 'https',
-                 'example.com',
-                 '/c');
+                page_id, normalized_url, scheme, hostname, path
+            ) VALUES (
+                '00000000-0000-0000-0000-000000000001',
+                'https://example.com/', 'https', 'example.com', '/'
+            );
 
-            INSERT INTO material.page_observations
-                (page_id, visit_id, document_id, observed_at)
-            VALUES
-                ('00000000-0000-0000-0000-000000000001',
-                 '10000000-0000-0000-0000-000000000001',
-                 '20000000-0000-0000-0000-000000000001',
-                 '2026-01-01T00:00:00Z'),
-                ('00000000-0000-0000-0000-000000000001',
-                 '10000000-0000-0000-0000-000000000002',
-                 '20000000-0000-0000-0000-000000000002',
-                 '2026-01-02T00:00:00Z'),
-                ('00000000-0000-0000-0000-000000000001',
-                 '10000000-0000-0000-0000-000000000003',
-                 '20000000-0000-0000-0000-000000000003',
-                 '2026-01-03T00:00:00Z'),
-                ('00000000-0000-0000-0000-000000000002',
-                 '10000000-0000-0000-0000-000000000004',
-                 NULL,
-                 '2026-01-04T00:00:00Z');
+            INSERT INTO ingest.visits (
+                visit_id, crawl_id, requested_url, effective_url,
+                admitted_at, observed_at, finished_at, outcome,
+                status_code, document_id, provenance
+            ) VALUES
+                (
+                    '10000000-0000-0000-0000-000000000001',
+                    '90000000-0000-0000-0000-000000000001',
+                    'https://example.com/', 'https://example.com/',
+                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z',
+                    '2026-01-01T00:00:02Z', 'success', 200,
+                    '20000000-0000-0000-0000-000000000001',
+                    {'kind': 'native', 'system': 'atlas',
+                     'dataset': NULL, 'source_record_id': NULL}
+                ),
+                (
+                    '10000000-0000-0000-0000-000000000002',
+                    '90000000-0000-0000-0000-000000000001',
+                    'https://example.com/', 'https://example.com/',
+                    '2026-01-02T00:00:00Z', NULL,
+                    '2026-01-02T00:00:02Z', 'failed', NULL, NULL,
+                    {'kind': 'native', 'system': 'atlas',
+                     'dataset': NULL, 'source_record_id': NULL}
+                );
 
             INSERT INTO ingest.documents (
-                document_id,
-                visit_id,
-                observed_at,
-                representation,
-                detected_media_type,
-                content_sha256,
-                content_bytes,
-                object_key,
-                storage_encoding,
-                stored_bytes
-            )
-            VALUES
-                ('20000000-0000-0000-0000-000000000001',
-                 '10000000-0000-0000-0000-000000000001',
-                 '2026-01-01T00:00:00Z',
-                 'rendered_html',
-                 'text/html',
-                 'content-a',
-                 1,
-                 'objects/a',
-                 'identity',
-                 1),
-                ('20000000-0000-0000-0000-000000000002',
-                 '10000000-0000-0000-0000-000000000002',
-                 '2026-01-02T00:00:00Z',
-                 'rendered_html',
-                 'text/html',
-                 'content-a',
-                 1,
-                 'objects/a',
-                 'identity',
-                 1),
-                ('20000000-0000-0000-0000-000000000003',
-                 '10000000-0000-0000-0000-000000000003',
-                 '2026-01-03T00:00:00Z',
-                 'rendered_html',
-                 'text/html',
-                 'content-b',
-                 1,
-                 'objects/b',
-                 'identity',
-                 1);
+                document_id, visit_id, observed_at, representation,
+                detected_media_type, content_sha256, content_bytes,
+                object_key, storage_encoding, stored_bytes
+            ) VALUES (
+                '20000000-0000-0000-0000-000000000001',
+                '10000000-0000-0000-0000-000000000001',
+                '2026-01-01T00:00:01Z', 'rendered_html', 'text/html',
+                'content-a', 100, 'objects/a', 'identity', 100
+            );
 
-            INSERT INTO material.links (
-                link_id,
-                source_page_id,
-                target_page_id,
-                source_url,
-                target_url,
-                relation_scope
-            )
-            VALUES
-                ('30000000-0000-0000-0000-000000000001',
-                 '00000000-0000-0000-0000-000000000001',
-                 '00000000-0000-0000-0000-000000000001',
-                 'https://example.com/a',
-                 'https://example.com/a',
-                 'self'),
-                ('30000000-0000-0000-0000-000000000002',
-                 '00000000-0000-0000-0000-000000000001',
-                 '00000000-0000-0000-0000-000000000002',
-                 'https://example.com/a',
-                 'https://example.com/b',
-                 'same_origin'),
-                ('30000000-0000-0000-0000-000000000003',
-                 '00000000-0000-0000-0000-000000000002',
-                 '00000000-0000-0000-0000-000000000001',
-                 'https://example.com/b',
-                 'https://example.com/a',
-                 'same_origin');
+            INSERT INTO material.content_stats
+            VALUES ('content-a', 100, 12, 3);
+
+            INSERT INTO material.page_observations VALUES
+                (
+                    '00000000-0000-0000-0000-000000000001',
+                    '10000000-0000-0000-0000-000000000001',
+                    '20000000-0000-0000-0000-000000000001',
+                    '2026-01-01T00:00:02Z'
+                ),
+                (
+                    '00000000-0000-0000-0000-000000000001',
+                    '10000000-0000-0000-0000-000000000002',
+                    NULL,
+                    '2026-01-02T00:00:02Z'
+                );
+
+            INSERT INTO material.page_heads VALUES (
+                '00000000-0000-0000-0000-000000000001',
+                '10000000-0000-0000-0000-000000000002',
+                '2026-01-02T00:00:02Z'
+            );
             """
         )
 
         rows = self.catalogue.connection.execute(
             """
-            SELECT
-                page_id::VARCHAR,
-                visit_count,
-                document_count,
-                distinct_content_count,
-                first_observed_at,
-                last_observed_at,
-                inbound_link_count,
-                outbound_link_count
-            FROM web.page_stats
-            ORDER BY page_id
+            SELECT visit_id::VARCHAR, is_latest, outcome,
+                   content_id, dom_projection_complete,
+                   dom_element_count, dom_max_depth
+            FROM web.visit
+            ORDER BY visit_id
             """
         ).fetchall()
 
@@ -356,34 +317,22 @@ class PublicCatalogueTests(unittest.TestCase):
             rows,
             [
                 (
-                    "00000000-0000-0000-0000-000000000001",
+                    "10000000-0000-0000-0000-000000000001",
+                    False,
+                    "success",
+                    "content-a",
+                    True,
+                    12,
                     3,
-                    3,
-                    2,
-                    datetime(2026, 1, 1, tzinfo=timezone.utc),
-                    datetime(2026, 1, 3, tzinfo=timezone.utc),
-                    2,
-                    2,
                 ),
                 (
-                    "00000000-0000-0000-0000-000000000002",
-                    1,
-                    0,
-                    0,
-                    datetime(2026, 1, 4, tzinfo=timezone.utc),
-                    datetime(2026, 1, 4, tzinfo=timezone.utc),
-                    1,
-                    1,
-                ),
-                (
-                    "00000000-0000-0000-0000-000000000003",
-                    0,
-                    0,
-                    0,
+                    "10000000-0000-0000-0000-000000000002",
+                    True,
+                    "failed",
+                    None,
+                    False,
                     None,
                     None,
-                    0,
-                    0,
                 ),
             ],
         )
@@ -409,7 +358,7 @@ class PublicCatalogueTests(unittest.TestCase):
             SELECT comment
             FROM duckdb_views()
             WHERE schema_name = 'web'
-              AND view_name = 'page_stats'
+              AND view_name = 'visit'
             """
         ).fetchone()[0]
         dom_comment = self.catalogue.connection.execute(
@@ -423,24 +372,24 @@ class PublicCatalogueTests(unittest.TestCase):
 
         self.assertEqual(
             view_comment,
-            "Observation and directed-link evidence summarized by page.",
+            "Acquisition history with page, document, and DOM evidence.",
         )
         self.assertEqual(
             dom_comment,
-            "Structural elements projected from immutable HTML content.",
+            "Structural DOM elements keyed by immutable content.",
         )
 
     def test_validation_rejects_stale_public_comments(self) -> None:
         install_public_catalogue(self.catalogue)
         self.catalogue.connection.execute(
-            "COMMENT ON VIEW web.pages IS 'stale'"
+            "COMMENT ON VIEW web.page IS 'stale'"
         )
 
         with self.assertRaises(CatalogueSchemaError) as raised:
             validate_public_catalogue(self.catalogue)
 
         self.assertIn(
-            "web.pages: missing or stale view comment",
+            "web.page: missing or stale view comment",
             str(raised.exception),
         )
 
@@ -453,8 +402,8 @@ class PublicCatalogueTests(unittest.TestCase):
         self.assertIn(
             (
                 "web",
-                "pages",
-                "Normalized page identities observed through visits.",
+                "page",
+                "Canonical normalized URL identities observed through visits.",
                 "page_id",
                 "UUID",
                 True,
@@ -466,32 +415,17 @@ class PublicCatalogueTests(unittest.TestCase):
             (
                 "dom",
                 "elements",
-                "Structural elements projected from immutable HTML content.",
+                "Structural DOM elements keyed by immutable content.",
                 "content_id",
                 "VARCHAR",
                 True,
-                "Identity of the projected immutable HTML bytes.",
+                "Immutable HTML content identity.",
             ),
             rows,
         )
-        self.assertEqual(
-            [row[0] for row in macro_rows[("web", "page_history")]],
-            list(
-                next(
-                    item.columns
-                    for item in PUBLIC_OBJECTS
-                    if item.schema == "web" and item.name == "page_history"
-                )
-            ),
-        )
-        self.assertEqual(
-            next(
-                item.parameters
-                for item in PUBLIC_OBJECTS
-                if item.schema == "web" and item.name == "link_history"
-            ),
-            (("selected_link_id", "UUID"),),
-        )
+        self.assertNotIn(("web", "page_history"), macro_rows)
+        self.assertNotIn(("web", "link_history"), macro_rows)
+        self.assertIn(("dom", "text_content"), macro_rows)
 
     def test_shell_metadata_response_separates_views_and_macros(self) -> None:
         install_public_catalogue(self.catalogue)
@@ -506,14 +440,14 @@ class PublicCatalogueTests(unittest.TestCase):
             (item.schema_name, item.name): item
             for item in response.relations
         }
-        self.assertIn(("web", "pages"), relations)
+        self.assertIn(("web", "page"), relations)
         self.assertIn(("dom", "elements"), relations)
         self.assertEqual(
-            relations[("web", "pages")].description,
-            "Normalized page identities observed through visits.",
+            relations[("web", "page")].description,
+            "Canonical normalized URL identities observed through visits.",
         )
         self.assertEqual(
-            relations[("web", "pages")].columns[0].description,
+            relations[("web", "page")].columns[0].description,
             "Deterministic identity derived from the normalized URL.",
         )
         macros = {
@@ -529,20 +463,13 @@ class PublicCatalogueTests(unittest.TestCase):
             "MAP(VARCHAR, VARCHAR)",
         )
         self.assertEqual(
-            macros[("web", "page_history")].kind,
-            "table_macro",
-        )
-        self.assertEqual(
             macros[("dom", "text_content")].kind,
             "table_macro",
         )
-        self.assertIn(
-            "content_id",
-            {
-                column.name
-                for column in macros[("web", "page_history")].columns
-            },
-        )
+        self.assertNotIn(("web", "page_history"), macros)
+        self.assertNotIn(("web", "link_history"), macros)
+        self.assertNotIn(("dom", "query_selector"), macros)
+        self.assertNotIn(("dom", "query_selector_all"), macros)
 
 
 class _LocalCatalogue:
@@ -566,6 +493,21 @@ class _LocalCatalogue:
 
     def trusted_remote_rows(self, sql: str) -> list[tuple]:
         return self.connection.execute(sql).fetchall()
+
+
+class _SelectorCapabilityCatalogue:
+    def trusted_remote_rows(self, sql: str) -> list[tuple]:
+        if "DISTINCT function_name" in sql:
+            return [
+                ("atlas_dom_select_first",),
+                ("atlas_dom_select_all",),
+            ]
+        if "function_type = 'table_macro'" in sql:
+            return [
+                ("dom", "query_selector"),
+                ("dom", "query_selector_all"),
+            ]
+        raise AssertionError(sql)
 
 
 class _LocalCatalogueControl:

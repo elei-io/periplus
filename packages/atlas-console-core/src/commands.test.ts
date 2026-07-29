@@ -9,9 +9,9 @@ const metadata: SqlMetadata = {
   relations: [
     {
       schema_name: "web",
-      name: "pages",
+      name: "page",
       kind: "view",
-      description: "Normalized page identities observed through visits.",
+      description: "Canonical normalized URL identities observed through visits.",
       columns: [
         {
           name: "page_id",
@@ -50,15 +50,18 @@ const metadata: SqlMetadata = {
   ],
   macros: [
     {
-      schema_name: "web",
-      name: "page_history",
+      schema_name: "dom",
+      name: "query_selector_all",
       kind: "table_macro",
-      parameters: [{ name: "selected_page_id", data_type: "UUID" }],
+      parameters: [
+        { name: "selected_content_id", data_type: "VARCHAR" },
+        { name: "css_selector", data_type: "VARCHAR" },
+      ],
       return_type: null,
       columns: [
         {
-          name: "page_id",
-          data_type: "UUID",
+          name: "content_id",
+          data_type: "VARCHAR",
           nullable: false,
           description: null,
         },
@@ -92,7 +95,7 @@ const metadata: SqlMetadata = {
 }
 
 const context: CommandContext = {
-  history: ["SELECT * FROM web.pages;"],
+  history: ["SELECT * FROM web.page;"],
   async metadata() {
     return metadata
   },
@@ -162,13 +165,13 @@ test("commands and arguments autocomplete from metadata", async () => {
     (await commands.complete(".describe web.p", 15, context)).map(
       (item) => item.value,
     ),
-    ["web.pages", "web.page_history"],
+    ["web.page"],
   )
   assert.deepEqual(
     (await commands.complete(".describe dom.", 14, context)).map(
       (item) => item.value,
     ),
-    ["dom.elements", "dom.text_content"],
+    ["dom.elements", "dom.query_selector_all", "dom.text_content"],
   )
 })
 
@@ -177,12 +180,12 @@ test("tables includes views and table macro signatures", async () => {
 
   assert.equal(result.kind, "table")
   if (result.kind === "table") {
-    assert(result.rows.some((row) => row[0] === "web.pages"))
+    assert(result.rows.some((row) => row[0] === "web.page"))
     assert(
       result.rows.some(
         (row) =>
-          row[0] === "web.pages" &&
-          row[3] === "Normalized page identities observed through visits.",
+          row[0] === "web.page" &&
+          row[3] === "Canonical normalized URL identities observed through visits.",
       ),
     )
     assert(result.rows.some((row) => row[0] === "dom.elements"))
@@ -190,8 +193,8 @@ test("tables includes views and table macro signatures", async () => {
     assert(
       result.rows.some(
         (row) =>
-          row[0] === "web.page_history" &&
-          String(row[2]).includes("selected_page_id UUID"),
+          row[0] === "dom.query_selector_all" &&
+          String(row[2]).includes("css_selector VARCHAR"),
       ),
     )
   }
@@ -234,14 +237,14 @@ test("macros distinguishes table and scalar macros", async () => {
     )
     assert(
       result.rows.some(
-        (row) => row[0] === "web.page_history" && row[1] === "table",
+        (row) => row[0] === "dom.query_selector_all" && row[1] === "table",
       ),
     )
   }
 })
 
 test("describe renders public metadata", async () => {
-  const result = await commands.execute(".describe web.pages", context)
+  const result = await commands.execute(".describe web.page", context)
 
   assert.equal(result.kind, "table")
   if (result.kind === "table") {
@@ -253,7 +256,7 @@ test("describe renders public metadata", async () => {
     ])
     assert.equal(
       result.summary,
-      "web.pages · view · Normalized page identities observed through visits.",
+      "web.page · view · Canonical normalized URL identities observed through visits.",
     )
   }
 })
@@ -281,7 +284,7 @@ test("history uses the shared console history", async () => {
 
   assert.equal(result.kind, "table")
   if (result.kind === "table") {
-    assert.deepEqual(result.rows, [[1, "SELECT * FROM web.pages;"]])
+    assert.deepEqual(result.rows, [[1, "SELECT * FROM web.page;"]])
   }
 })
 

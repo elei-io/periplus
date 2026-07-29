@@ -65,7 +65,9 @@ to encode around one accidental optimizer plan.
   politeness and leases suppress duplicate durable execution. Do not hold a PostgreSQL advisory
   lock across a remote DuckLake operation.
 - DuckBasin owns DuckLake metadata, analytical Parquet layout, compaction, and lake storage. Atlas
-  uploads bounded local Arrow/Parquet batches through Quack and does not receive lake S3 credentials.
+  uploads bounded local Parquet batches through DuckBasin's durable bulk HTTP API and never
+  receives lake S3 credentials. Quack remains the managed SQL read path and is used for bounded
+  mutations only until an equivalent generic Basin primitive exists.
 - Acquisition workers connect to the configured standard CDP endpoint. Atlas owns content correctness,
   including when scrolling is required; the CDP service owns rendering and physical capacity.
 - API and CLI code validate and adapt. Graph execution belongs in runtime, acquisition belongs in
@@ -158,10 +160,11 @@ requirements.
 
 ## DuckBasin and Quack upstream
 
-Atlas runtime code intentionally uses only the official DuckDB Python package plus Quack for
-managed DuckLake access. Do not introduce a Basin SDK, `ducklake-client`, local DuckLake attachment
-configuration, lake object-store credentials, or Atlas-owned CDC cursors into application packages
-or deployed processes. The development-only direct client under `backend/scripts/`, documented in
+Atlas runtime code intentionally uses only the official DuckDB Python package, Quack, and
+DuckBasin's raw bulk HTTP contract for managed DuckLake access. Do not introduce a Basin SDK,
+`ducklake-client`, local DuckLake attachment configuration, lake object-store credentials, or
+Atlas-owned CDC cursors into application packages or deployed processes. The development-only
+direct client under `backend/scripts/`, documented in
 [docs/EXTENSION_DEVELOPMENT.md](docs/EXTENSION_DEVELOPMENT.md), is the sole local attachment
 boundary. When Atlas reveals a missing Quack or DuckBasin primitive, record actionable evidence in
 [UPSTREAM.md](UPSTREAM.md) and prefer a coherent upstream fix over an Atlas-only compatibility

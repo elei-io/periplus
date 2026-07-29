@@ -108,8 +108,12 @@ class DataStatusTests(unittest.IsolatedAsyncioTestCase):
             9,
         )
         self.assertIn(
-            "material.html_documents",
+            "material.content_stats",
             status.materialization.workloads[0].projections,
+        )
+        self.assertIn(
+            "material.page_heads",
+            status.materialization.workloads[1].projections,
         )
         self.assertIsNone(
             status.materialization.workloads[

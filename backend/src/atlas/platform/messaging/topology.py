@@ -61,7 +61,7 @@ async def validate_kv_contract(
 
 
 async def ensure_stream_contract(jetstream, expected) -> None:
-    """Create one stream race-safely, then validate its complete contract."""
+    """Create or reconcile one stream, then validate its complete contract."""
 
     try:
         info = await jetstream.stream_info(expected.name)
@@ -73,7 +73,24 @@ async def ensure_stream_contract(jetstream, expected) -> None:
         else:
             return
 
-    actual = info.config
+    mismatches = _stream_contract_mismatches(info.config, expected)
+    if mismatches:
+        try:
+            await jetstream.update_stream(config=expected)
+        except BadRequestError as exc:
+            raise RuntimeError(
+                f"JetStream {expected.name} cannot reconcile "
+                + ", ".join(mismatches)
+            ) from exc
+        info = await jetstream.stream_info(expected.name)
+        mismatches = _stream_contract_mismatches(info.config, expected)
+    if mismatches:
+        raise RuntimeError(
+            f"JetStream {expected.name} must use " + ", ".join(mismatches)
+        )
+
+
+def _stream_contract_mismatches(actual, expected) -> list[str]:
     mismatches: list[str] = []
     if set(actual.subjects) != set(expected.subjects):
         mismatches.append(f"subjects={list(expected.subjects)}")
@@ -89,7 +106,4 @@ async def ensure_stream_contract(jetstream, expected) -> None:
         mismatches.append(f"max_bytes={expected.max_bytes}")
     if actual.discard != expected.discard:
         mismatches.append(f"discard={expected.discard.value}")
-    if mismatches:
-        raise RuntimeError(
-            f"JetStream {expected.name} must use " + ", ".join(mismatches)
-        )
+    return mismatches

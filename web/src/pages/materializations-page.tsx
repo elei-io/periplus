@@ -35,10 +35,10 @@ type ProjectionDefinition = {
 
 const projections: ProjectionDefinition[] = [
   {
-    value: "html_documents",
-    label: "HTML documents",
+    value: "content_stats",
+    label: "Content statistics",
     description:
-      "One selector-ready structural DOM and costing summary per HTML body.",
+      "Typed byte and DOM costing statistics per immutable content body.",
     source: "ingest.documents",
   },
   {
@@ -60,9 +60,9 @@ const projections: ProjectionDefinition[] = [
     source: "ingest.documents",
   },
   {
-    value: "link_observations",
-    label: "Link observations",
-    description: "Document-owned evidence for each observed anchor element.",
+    value: "link_occurrences",
+    label: "Link occurrences",
+    description: "Visit- and document-owned evidence for every anchor element.",
     source: "ingest.documents",
   },
   {
@@ -75,6 +75,13 @@ const projections: ProjectionDefinition[] = [
     value: "page_observations",
     label: "Page observations",
     description: "Visit-owned page, document, and observation-time evidence.",
+    source: "ingest.visits",
+  },
+  {
+    value: "page_heads",
+    label: "Page heads",
+    description:
+      "One deterministic pointer to the latest retained visit per page.",
     source: "ingest.visits",
   },
 ]

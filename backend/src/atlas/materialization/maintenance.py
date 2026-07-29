@@ -28,11 +28,17 @@ from atlas.materialization.lanes import MaterializationLanePool
 from atlas.materialization.pipeline import StageSelection, execute_bounded_stage
 from atlas.materialization.sql import sql_string, sql_string_list
 from atlas.materialization.visit_workload import (
+    merge_page_head_rows,
     merge_page_observation_rows,
     merge_page_rows,
+    page_head_row,
     page_observation_row,
     page_row,
+    rebuild_page_heads,
 )
+
+_LINK_ROLLUP_CURSOR_PREFIX = "link-rollups:"
+_LINK_ROLLUP_SOURCE_BUDGET = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,11 +59,17 @@ def prepare_rebuild(
     run_id: UUID,
     stages: tuple[ProjectionName, ...],
 ) -> dict[ProjectionName, str]:
-    destinations: dict[ProjectionName, str] = {}
-    for stage in stages:
-        table = generation_table(stage, run_id)
-        catalogue.create_materialization_generation(RELATIONS[stage], table)
-        destinations[stage] = table
+    destinations = {
+        stage: generation_table(stage, run_id)
+        for stage in stages
+    }
+    catalogue.create_materialization_generations(
+        {
+            RELATIONS[stage]: table
+            for stage, table in destinations.items()
+        },
+        generation_id=run_id.hex,
+    )
     return destinations
 
 
@@ -105,6 +117,11 @@ async def materialize_document_batch(
     )
     if not enabled:
         raise ValueError("document batch requires a document projection")
+    links_table = (
+        destinations["links"]
+        if {"links", "link_occurrences"}.issubset(enabled)
+        else None
+    )
     if after_snapshot is None:
         selector = lambda catalogue: _select_document_scan(
             catalogue,
@@ -112,6 +129,7 @@ async def materialize_document_batch(
             after_cursor=after_cursor,
             item_budget=item_budget,
             byte_budget=byte_budget,
+            links_table=links_table,
         )
     else:
         if through_snapshot is None:
@@ -123,6 +141,7 @@ async def materialize_document_batch(
             after_cursor=after_cursor,
             item_budget=item_budget,
             byte_budget=byte_budget,
+            links_table=links_table,
         )
     result = await execute_bounded_stage(
         leases,
@@ -177,6 +196,20 @@ def materialize_visit_batch(
             item_budget=item_budget,
         )
     output_rows = 0
+    old_page_ids: set[str] = set()
+    if (
+        "page_observations" in enabled
+        and replaced_visit_ids
+    ):
+        old_page_ids = {
+            str(page_id)
+            for (page_id,) in catalogue.trusted_remote_rows(
+                "SELECT DISTINCT page_id::VARCHAR FROM material."
+                f"{destinations.get('page_observations', 'page_observations')} "
+                "WHERE visit_id IN "
+                f"({sql_string_list(set(replaced_visit_ids))})"
+            )
+        }
     if "pages" in enabled:
         by_url = {
             (url := normalize_url(str(row[2]))): page_row(url)
@@ -203,6 +236,27 @@ def materialize_visit_batch(
             replaced_visit_ids=replaced_visit_ids,
         )
         output_rows += len(observations)
+    if "page_heads" in enabled:
+        heads = [page_head_row(*row[:4]) for row in rows]
+        heads_table = destinations.get("page_heads", "page_heads")
+        merge_page_head_rows(
+            catalogue,
+            heads,
+            table_name=heads_table,
+        )
+        affected_page_ids = old_page_ids | {
+            str(row["page_id"]) for row in heads
+        }
+        if old_page_ids and "page_observations" in enabled:
+            rebuild_page_heads(
+                catalogue,
+                affected_page_ids,
+                observations_table=destinations.get(
+                    "page_observations", "page_observations"
+                ),
+                heads_table=heads_table,
+            )
+        output_rows += len(heads)
     return BatchResult(
         cursor=(
             max(replaced_visit_ids)
@@ -223,7 +277,14 @@ def _select_document_scan(
     after_cursor: str | None,
     item_budget: int,
     byte_budget: int,
+    links_table: str | None = None,
 ) -> StageSelection[DocumentProjectionSource, DocumentProjectionOutput]:
+    if _is_link_rollup_cursor(after_cursor):
+        return _select_link_rollup_batch(
+            catalogue,
+            links_table=links_table,
+            after_cursor=after_cursor,
+        )
     document_ids = _document_ids_at_snapshot(
         catalogue,
         snapshot=snapshot,
@@ -233,11 +294,18 @@ def _select_document_scan(
     rows = document_observation_rows(
         catalogue, document_ids, snapshot=snapshot
     )
-    selected = _within_byte_budget(rows, byte_budget, size_index=4)
+    selected = _within_byte_budget(rows, byte_budget, size_index=5)
+    if not document_ids:
+        return _select_link_rollup_batch(
+            catalogue,
+            links_table=links_table,
+            after_cursor=None,
+        )
     return StageSelection(
         items=_projection_sources(catalogue, selected, snapshot=snapshot),
+        initial_outputs=(),
         cursor=str(selected[-1][0]) if selected else None,
-        done=not document_ids,
+        done=False,
     )
 
 
@@ -249,7 +317,14 @@ def _select_document_catchup(
     after_cursor: str | None,
     item_budget: int,
     byte_budget: int,
+    links_table: str | None = None,
 ) -> StageSelection[DocumentProjectionSource, DocumentProjectionOutput]:
+    if _is_link_rollup_cursor(after_cursor):
+        return _select_link_rollup_batch(
+            catalogue,
+            links_table=links_table,
+            after_cursor=after_cursor,
+        )
     document_ids = _changed_document_ids(
         catalogue,
         after_snapshot=after_snapshot,
@@ -262,7 +337,13 @@ def _select_document_catchup(
         document_ids,
         snapshot=through_snapshot,
     )
-    selected = _within_byte_budget(rows, byte_budget, size_index=4)
+    selected = _within_byte_budget(rows, byte_budget, size_index=5)
+    if not document_ids:
+        return _select_link_rollup_batch(
+            catalogue,
+            links_table=links_table,
+            after_cursor=None,
+        )
     selected_ids = frozenset(str(row[0]) for row in selected)
     affected_hashes = _changed_hashes_for_documents(
         catalogue,
@@ -276,11 +357,15 @@ def _select_document_catchup(
         snapshot=through_snapshot,
     )
     corrections = (
-        DocumentProjectionOutput(
-            removed_hashes=frozenset(affected_hashes - live_hashes),
-            replaced_document_ids=selected_ids,
-        ),
-    ) if selected_ids or affected_hashes - live_hashes else ()
+        (
+            DocumentProjectionOutput(
+                removed_hashes=frozenset(affected_hashes - live_hashes),
+                replaced_document_ids=selected_ids,
+            ),
+        )
+        if selected_ids or affected_hashes - live_hashes
+        else ()
+    )
     return StageSelection(
         items=_projection_sources(
             catalogue,
@@ -289,7 +374,65 @@ def _select_document_catchup(
         ),
         initial_outputs=corrections,
         cursor=str(selected[-1][0]) if selected else None,
-        done=not document_ids,
+        done=False,
+    )
+
+
+def _is_link_rollup_cursor(cursor: str | None) -> bool:
+    return bool(cursor and cursor.startswith(_LINK_ROLLUP_CURSOR_PREFIX))
+
+
+def _select_link_rollup_batch(
+    catalogue: Catalogue,
+    *,
+    links_table: str | None,
+    after_cursor: str | None,
+) -> StageSelection[DocumentProjectionSource, DocumentProjectionOutput]:
+    if links_table is None:
+        return StageSelection(items=(), initial_outputs=(), done=True)
+    after_source_page_id = (
+        after_cursor.removeprefix(_LINK_ROLLUP_CURSOR_PREFIX)
+        if _is_link_rollup_cursor(after_cursor)
+        else None
+    )
+    predicate = (
+        f"WHERE source_page_id::VARCHAR > "
+        f"{sql_string(after_source_page_id)}"
+        if after_source_page_id
+        else ""
+    )
+    rows = catalogue.trusted_remote_rows(
+        f"""
+        SELECT DISTINCT source_page_id::VARCHAR
+        FROM material.{links_table}
+        {predicate}
+        ORDER BY source_page_id::VARCHAR
+        LIMIT {_LINK_ROLLUP_SOURCE_BUDGET + 1}
+        """
+    )
+    source_page_ids = tuple(
+        str(row[0]) for row in rows[:_LINK_ROLLUP_SOURCE_BUDGET]
+    )
+    done = len(rows) <= _LINK_ROLLUP_SOURCE_BUDGET
+    cursor = (
+        f"{_LINK_ROLLUP_CURSOR_PREFIX}{source_page_ids[-1]}"
+        if source_page_ids
+        else after_cursor
+    )
+    outputs = (
+        (
+            DocumentProjectionOutput(
+                finalize_link_source_page_ids=frozenset(source_page_ids)
+            ),
+        )
+        if source_page_ids
+        else ()
+    )
+    return StageSelection(
+        items=(),
+        initial_outputs=outputs,
+        cursor=cursor,
+        done=done,
     )
 
 
@@ -403,7 +546,14 @@ def _projection_sources(
 ) -> tuple[DocumentProjectionSource, ...]:
     observations: dict[str, list[DocumentObservation]] = {}
     sizes: dict[str, int] = {}
-    for document_id, content_hash, raw_url, observed_at, content_bytes in rows:
+    for (
+        document_id,
+        visit_id,
+        content_hash,
+        raw_url,
+        observed_at,
+        content_bytes,
+    ) in rows:
         if content_hash is None:
             continue
         value = str(content_hash)
@@ -411,6 +561,7 @@ def _projection_sources(
         if raw_url is not None and observed_at is not None:
             observations.setdefault(value, []).append(
                 DocumentObservation(
+                    visit_id=str(visit_id),
                     document_id=str(document_id),
                     source_url=normalize_url(str(raw_url)),
                     observed_at=observed_at,
@@ -469,9 +620,10 @@ def _visit_scan(
     return catalogue.trusted_remote_rows(
         f"""
         SELECT visit_id::VARCHAR, document_id,
-               coalesce(effective_url, requested_url), observed_at
+               coalesce(effective_url, requested_url),
+               coalesce(finished_at, observed_at, started_at, admitted_at)
         FROM ingest.visits AT (VERSION => {snapshot})
-        WHERE observed_at IS NOT NULL
+        WHERE coalesce(effective_url, requested_url) IS NOT NULL
           {cursor}
         ORDER BY visit_id
         LIMIT {item_budget}
@@ -510,10 +662,11 @@ def _visit_catchup(
     rows = catalogue.trusted_remote_rows(
         f"""
         SELECT visit_id::VARCHAR, document_id,
-               coalesce(effective_url, requested_url), observed_at
+               coalesce(effective_url, requested_url),
+               coalesce(finished_at, observed_at, started_at, admitted_at)
         FROM ingest.visits AT (VERSION => {through_snapshot})
         WHERE visit_id IN ({sql_string_list(set(visit_ids))})
-          AND observed_at IS NOT NULL
+          AND coalesce(effective_url, requested_url) IS NOT NULL
         ORDER BY visit_id
         """
     )

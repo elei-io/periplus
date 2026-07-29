@@ -8,6 +8,7 @@ from atlas.crawl.api import (
     content_policies,
     domain_policies,
     graphs,
+    materialization,
     runs,
     schedules,
 )
@@ -113,5 +114,6 @@ app.include_router(schedules.resource_router)
 app.include_router(runs.trigger_router)
 app.include_router(runs.crawl_router)
 app.include_router(runs.router)
+app.include_router(materialization.router)
 app.include_router(content_policies.router)
 app.include_router(domain_policies.router)

@@ -21,6 +21,7 @@ relations remain Atlas implementation details.
 The TypeScript workspace keeps its distributable clients under `packages/`:
 `atlas-console-core`, `atlas-web-shell`, and `atlas-terminal-shell`. The deployable React
 application lives under `web/` and consumes `atlas-web-shell`.
+The locally installable Python SDK lives under `packages/atlas-python-sdk/`.
 
 The backend is one `atlas` Python package organized by capability under `backend/src/atlas/`.
 API, acquisition, ingestion, CDC, materialization, and housekeeping remain independently runnable
@@ -52,7 +53,7 @@ This preserves DuckLake, repository objects, and local NATS state.
 Run one query from the terminal:
 
 ```sh
-npm run atlas -- 'SELECT count(*) FROM web.visits'
+npm run atlas -- 'SELECT count(*) FROM web.visit'
 ```
 
 Run `npm run atlas` without SQL to open the interactive terminal. Set `ATLAS_API_URL` when the API

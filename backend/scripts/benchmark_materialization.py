@@ -50,9 +50,9 @@ async def run(*, documents: int, keep: bool) -> None:
         if snapshot is None:
             raise RuntimeError("catalogue has no committed snapshot")
         await pool.call(
-            lambda catalogue: catalogue.create_materialization_generation(
-                HTML_ELEMENTS,
-                shadow,
+            lambda catalogue: catalogue.create_materialization_generations(
+                {HTML_ELEMENTS: shadow},
+                generation_id=shadow,
             )
         )
         created = True

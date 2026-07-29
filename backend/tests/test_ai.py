@@ -58,19 +58,19 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
         catalogue = _Catalogue([[index] for index in range(202)])
         tools = CatalogueAssistantTools(_Control(catalogue))
 
-        result = await tools.query("SELECT page_id FROM web.pages")
+        result = await tools.query("SELECT page_id FROM web.page")
 
         self.assertIn("LIMIT 201", catalogue.sql[0])
         self.assertEqual(len(result["rows"]), 200)
         self.assertEqual(result["row_count"], 200)
         self.assertTrue(result["truncated"])
-        self.assertEqual(result["sql"], "SELECT page_id FROM web.pages;")
+        self.assertEqual(result["sql"], "SELECT page_id FROM web.page;")
         self.assertEqual(
             result["display_sql"],
-            "SELECT\n  page_id\nFROM web.pages;",
+            "SELECT\n  page_id\nFROM web.page;",
         )
         with self.assertRaisesRegex(ValueError, "read-only"):
-            await tools.query("DELETE FROM web.pages")
+            await tools.query("DELETE FROM web.page")
 
     async def test_suggestion_is_bound_and_normalized_before_handoff(self) -> None:
         catalogue = _Catalogue()
@@ -79,17 +79,17 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
         suggestion = await tools.prepare_suggestion(
             title="Recent pages",
             description="Inspect recently observed pages.",
-            sql="select * from web.pages limit 10;",
+            sql="select * from web.page limit 10;",
         )
 
-        self.assertEqual(suggestion.sql, "SELECT * FROM web.pages LIMIT 10;")
+        self.assertEqual(suggestion.sql, "SELECT * FROM web.page LIMIT 10;")
         self.assertEqual(
             suggestion.display_sql,
-            "SELECT\n  *\nFROM web.pages\nLIMIT 10;",
+            "SELECT\n  *\nFROM web.page\nLIMIT 10;",
         )
         self.assertEqual(
             catalogue.sql,
-            ["EXPLAIN SELECT * FROM web.pages LIMIT 10"],
+            ["EXPLAIN SELECT * FROM web.page LIMIT 10"],
         )
         with self.assertRaisesRegex(ValueError, "web"):
             await tools.prepare_suggestion(
@@ -117,7 +117,7 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
         result = await query_catalogue(
             context,
             "Count retained domains",
-            "select count(*) from web.pages",
+            "select count(*) from web.page",
         )
 
         self.assertEqual(result["row_count"], 1)
@@ -129,10 +129,10 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             all(event.purpose == "Count retained domains" for event in events)
         )
-        self.assertEqual(events[-1].sql, "SELECT COUNT(*) FROM web.pages;")
+        self.assertEqual(events[-1].sql, "SELECT COUNT(*) FROM web.page;")
         self.assertEqual(
             events[-1].display_sql,
-            "SELECT\n  COUNT(*)\nFROM web.pages;",
+            "SELECT\n  COUNT(*)\nFROM web.page;",
         )
         self.assertEqual(events[-1].row_count, 1)
 

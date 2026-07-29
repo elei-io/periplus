@@ -38,6 +38,10 @@ from atlas.materialization.store import (
     AsyncMaterializationRunStore,
     MaterializationRun,
 )
+from atlas.platform.catalogue.operations import (
+    is_retryable_catalogue_transaction_conflict,
+    is_retryable_catalogue_unavailability,
+)
 
 MAINTENANCE_DURABLE = "atlas-materialization-maintenance-v1"
 
@@ -125,6 +129,18 @@ async def run_maintenance(
                 await message.nak(delay=1)
                 continue
             except Exception as exc:
+                if (
+                    is_retryable_catalogue_unavailability(exc)
+                    or is_retryable_catalogue_transaction_conflict(exc)
+                ):
+                    logging.warning(
+                        "materialization maintenance batch failed "
+                        "transiently; preserving run progress and rebuild "
+                        "destinations for retry",
+                        exc_info=True,
+                    )
+                    await message.nak(delay=1)
+                    continue
                 logging.exception(
                     "materialization maintenance run failed permanently"
                 )
@@ -377,14 +393,14 @@ def _source_highwater(catalogue, run: MaterializationRun) -> int:
     tables: list[str] = []
     stages = set(run.stages)
     if stages & {
-        "html_documents",
+        "content_stats",
         "html_elements",
         "jsonld_values",
         "links",
-        "link_observations",
+        "link_occurrences",
     }:
         tables.append("documents")
-    if stages & {"pages", "page_observations"}:
+    if stages & {"pages", "page_observations", "page_heads"}:
         tables.append("visits")
     maxima = [run.catchup_snapshot]
     alias = "'" + catalogue.config.alias.replace("'", "''") + "'"

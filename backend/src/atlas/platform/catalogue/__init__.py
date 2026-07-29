@@ -1,6 +1,14 @@
 """DuckLake catalogue behind the repository boundary."""
 
 from atlas.platform.catalogue.client import Catalogue
+from atlas.platform.catalogue.bulk import (
+    BulkCatalogueAction,
+    BulkCommitFile,
+    BulkCommitOperation,
+    BulkPartitionValue,
+    DuckBasinBulkClient,
+    DuckBasinBulkCommitError,
+)
 from atlas.platform.catalogue.config import CatalogueConfig, catalogue_config_from_env
 from atlas.platform.catalogue.duckbasin import (
     DuckBasinAuthenticationError,
@@ -32,6 +40,7 @@ from atlas.platform.catalogue.records import (
     attempt_id_for,
     document_id_for,
     link_id_for,
+    link_occurrence_id_for,
     page_id_for,
 )
 from atlas.platform.catalogue.service import CatalogueService
@@ -72,6 +81,10 @@ def catalogue_from_env(
 
 __all__ = [
     "Catalogue",
+    "BulkCatalogueAction",
+    "BulkCommitFile",
+    "BulkCommitOperation",
+    "BulkPartitionValue",
     "AttemptRecord",
     "AtlasProvenance",
     "CatalogueConfig",
@@ -79,6 +92,8 @@ __all__ = [
     "CatalogueConflictError",
     "CatalogueError",
     "DuckBasinAuthenticationError",
+    "DuckBasinBulkClient",
+    "DuckBasinBulkCommitError",
     "DuckBasinCredentialRejectedError",
     "DuckBasinError",
     "DuckBasinProtocolError",
@@ -98,6 +113,7 @@ __all__ = [
     "attempt_id_for",
     "document_id_for",
     "link_id_for",
+    "link_occurrence_id_for",
     "page_id_for",
     "catalogue_config_from_env",
     "catalogue_from_env",

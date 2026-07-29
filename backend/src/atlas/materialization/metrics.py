@@ -29,6 +29,11 @@ _phase_duration = Histogram(
     "Fixed materialization workload phase duration.",
     ("workload", "phase"),
 )
+_target_write_duration = Histogram(
+    "atlas_materialization_target_write_duration_seconds",
+    "Remote write duration for one fixed materialization target.",
+    ("workload", "target", "operation", "outcome"),
+)
 
 
 def stage(
@@ -54,3 +59,19 @@ def stage(
         ("total", elapsed_seconds),
     ):
         _phase_duration.labels(workload, phase).observe(max(0.0, seconds))
+
+
+def target_write(
+    *,
+    workload: str,
+    target: str,
+    operation: str,
+    outcome: str,
+    seconds: float,
+) -> None:
+    _target_write_duration.labels(
+        workload,
+        target,
+        operation,
+        outcome,
+    ).observe(max(0.0, seconds))

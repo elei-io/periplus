@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-CATALOGUE_SCHEMA_VERSION = "2.4.0"
+CATALOGUE_SCHEMA_VERSION = "3.0.0"
 INGEST_SCHEMA = "ingest"
 MATERIAL_SCHEMA = "material"
 PARTITION_BUCKETS = 64

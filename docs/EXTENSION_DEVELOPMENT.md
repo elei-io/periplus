@@ -87,7 +87,7 @@ To execute one statement without entering the terminal:
 
 ```sh
 ./ducklake.sh --sql \
-  "SELECT web._catalogue_version(), count(*) FROM web.pages"
+  "SELECT web._catalogue_version(), count(*) FROM web.page"
 ```
 
 All arguments accepted by `backend/scripts/direct_ducklake.py` pass through the wrapper. For
@@ -96,7 +96,7 @@ example:
 ```sh
 ./ducklake.sh \
   --lake atlas_test \
-  --sql "EXPLAIN SELECT * FROM web.pages LIMIT 10"
+  --sql "EXPLAIN SELECT * FROM web.page LIMIT 10"
 ```
 
 The `web.*` and `dom.*` objects are persistent DuckLake catalogue definitions installed by
@@ -146,19 +146,21 @@ Before implementing an optimizer rule, record the performance-triage classificat
 any required schema or catalogue correction. A warning or boundedness error may be the correct
 compiler action when execution should not be rewritten.
 
-Every optimizer rewrite needs evidence for both semantics and activation:
+Every optimizer rewrite or native public capability needs evidence for both semantics and
+activation:
 
 - A differential correctness test must compare the portable and optimized result bags.
 - An `EXPLAIN` assertion or another positive signal must prove the intended rule fired.
 - Tests must cover empty and `NULL` inputs, duplicate preservation, relevant limit/order
   behavior, and aliases or projections affected by the rewrite.
-- The same public query must remain correct when the Atlas extension is absent.
+- Base portable queries must remain correct when the Atlas extension is absent. An explicitly
+  extension-backed capability must instead be absent from installation and metadata.
 
-The selector optimizer preserves keyed DuckLake pruning by increasing DuckDB's dynamic hash-join
-`IN` filter threshold only for plans that contain Atlas DOM selector functions. Explicit user
-settings take precedence. Native selectors consume the one-row value returned by
-`dom.document(content_id)` so plans never need to aggregate the complete element relation into
-scope-wide nested lists.
+Native selectors are table-in/table-out operators. Public selector macros supply a keyed
+`dom.elements` slice followed by a typed end-of-document sentinel. The native operator buffers and
+reconstructs only that document, matches with Lexbor, and returns complete element rows. Tests must
+prove that content predicates prune before the operator, input spanning multiple DuckDB vectors is
+not truncated, and lateral calls do not combine documents.
 
 Optimizer actions and diagnostics share `AtlasPlanAnalyzer` and the ordered Atlas policy registry.
 A new rule must be based on reusable plan facts such as relation grain, capability, cardinality,

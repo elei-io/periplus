@@ -16,12 +16,13 @@ from atlas.platform.catalogue.physical.ingest import (
     VISITS,
 )
 from atlas.platform.catalogue.physical.material import (
-    HTML_DOCUMENTS,
+    CONTENT_STATS,
     HTML_ELEMENTS,
     JSONLD_VALUES,
     LINKS,
-    LINK_OBSERVATIONS,
+    LINK_OCCURRENCES,
     PAGES,
+    PAGE_HEADS,
     PAGE_OBSERVATIONS,
 )
 
@@ -30,14 +31,15 @@ __all__ = [
     "CATALOGUE_SCHEMA_VERSION",
     "CRAWLS",
     "DOCUMENTS",
-    "HTML_DOCUMENTS",
+    "CONTENT_STATS",
     "HTML_ELEMENTS",
     "INGEST_SCHEMA",
     "JSONLD_VALUES",
     "LINKS",
-    "LINK_OBSERVATIONS",
+    "LINK_OCCURRENCES",
     "MATERIAL_SCHEMA",
     "PAGES",
+    "PAGE_HEADS",
     "PAGE_OBSERVATIONS",
     "PARTITION_BUCKETS",
     "RelationName",

@@ -7,6 +7,7 @@ sync:
 check:
 	cd backend && uv run python -m compileall src/atlas
 	cd backend && uv run python -m unittest discover -s tests
+	cd backend && PYTHONPATH=../packages/atlas-python-sdk/src uv run python -m unittest discover -s ../packages/atlas-python-sdk/tests
 	npm run check:packages
 	npm run test:packages
 	npm run check:web

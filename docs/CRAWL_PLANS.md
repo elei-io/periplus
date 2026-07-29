@@ -87,11 +87,11 @@ user-facing mode.
 The SDK lifecycle is:
 
 ```python
-await crawl.complete()
+await crawl.completed()
 await crawl.materialized()
 ```
 
-`complete()` waits for terminal acquisition-plan execution.
+`completed()` waits for terminal acquisition-plan execution.
 `materialized()` additionally waits until all visit and document evidence for
 the crawl has crossed ingestion and the fixed materialization workloads. The
 SDK may return immediately from `materialized()` when that barrier was

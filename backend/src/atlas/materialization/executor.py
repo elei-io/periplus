@@ -42,12 +42,14 @@ from atlas.materialization.contracts import ProjectionName
 from atlas.materialization.document_workload import document_stage_plan
 from atlas.materialization.lanes import MaterializationLane, MaterializationLanePool
 from atlas.materialization.pipeline import execute_bounded_stage
+from atlas.materialization.sql import sql_string_list
 from atlas.materialization.visit_workload import (
     changed_visit_rows,
     merge_page_observation_rows,
     merge_page_rows,
     page_observation_row,
     page_row,
+    rebuild_page_heads,
 )
 
 WorkloadName = Literal["documents", "visits"]
@@ -76,18 +78,18 @@ def workloads() -> tuple[Workload, ...]:
             "ingest",
             "documents",
             (
-                "html_documents",
+                "content_stats",
                 "html_elements",
                 "jsonld_values",
                 "links",
-                "link_observations",
+                "link_occurrences",
             ),
         ),
         Workload(
             "visits",
             "ingest",
             "visits",
-            ("pages", "page_observations"),
+            ("pages", "page_observations", "page_heads"),
         ),
     )
 
@@ -342,6 +344,27 @@ async def _run_stage(
         )
 
 
+async def _run_stage_group(
+    leases,
+    lane_pool: MaterializationLanePool,
+    targets: tuple[ProjectionName, ...],
+    operation,
+    *args,
+):
+    async with operation_leases(
+        leases,
+        tuple(f"material.{target}" for target in targets),
+        phase="materialization",
+        acquire_timeout=0,
+    ):
+        return await lane_pool.call(
+            _run_stage_with_retry,
+            targets[0],
+            operation,
+            args,
+        )
+
+
 def _run_stage_with_retry(
     catalogue: Catalogue,
     target: ProjectionName,
@@ -404,11 +427,11 @@ async def _refresh_visits(
             html_repository,
             ticks,
         ),
-        _run_stage(
+        _run_stage_group(
             leases,
             lane_pool,
-            "page_observations",
-            _refresh_page_observations_incremental,
+            ("page_observations", "page_heads"),
+            _refresh_page_observations_and_heads_incremental,
             html_repository,
             ticks,
         ),
@@ -471,7 +494,7 @@ def _refresh_pages_incremental(
     )
 
 
-def _refresh_page_observations_incremental(
+def _refresh_page_observations_and_heads_incremental(
     catalogue: Catalogue,
     _html_repository: RawHtmlRepository,
     ticks: tuple[DMLTick, ...],
@@ -483,6 +506,15 @@ def _refresh_page_observations_incremental(
         end_snapshot=end_snapshot,
     )
     rows_by_identity: dict[str, dict[str, object]] = {}
+    old_page_ids = {
+        str(page_id)
+        for (page_id,) in catalogue.trusted_remote_rows(
+            "SELECT DISTINCT page_id::VARCHAR "
+            "FROM material.page_observations "
+            "WHERE visit_id IN "
+            f"({sql_string_list(set(changed_visit_ids))})"
+        )
+    } if changed_visit_ids else set()
     for values in changed:
         row = page_observation_row(*values)
         rows_by_identity[str(row["visit_id"])] = row
@@ -490,16 +522,25 @@ def _refresh_page_observations_incremental(
         rows_by_identity[identity]
         for identity in sorted(rows_by_identity)
     ]
+    affected_page_ids = old_page_ids | {
+        str(row["page_id"]) for row in rows
+    }
     merge_page_observation_rows(
         catalogue,
         rows,
         replaced_visit_ids=changed_visit_ids,
     )
+    rebuild_page_heads(
+        catalogue,
+        affected_page_ids,
+    )
     logging.info(
-        "incremental page_observations snapshots %s-%s observations=%s",
+        "incremental page evidence snapshots %s-%s "
+        "observations=%s affected_page_heads=%s",
         start_snapshot,
         end_snapshot,
         len(rows),
+        len(affected_page_ids),
     )
 
 

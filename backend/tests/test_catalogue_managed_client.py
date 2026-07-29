@@ -149,7 +149,7 @@ class ManagedCatalogueClientTests(unittest.TestCase):
     def test_remote_transaction_preserves_work_error_when_rollback_fails(
         self,
     ) -> None:
-        catalogue, _connection, _minter = _catalogue()
+        catalogue, connection, minter = _catalogue()
         operation_error = RuntimeError("work failed")
 
         def execute(sql: str) -> None:
@@ -169,6 +169,46 @@ class ManagedCatalogueClientTests(unittest.TestCase):
             "\n".join(getattr(operation_error, "__notes__", ())),
         )
         self.assertFalse(catalogue._remote_transaction_active)
+
+        catalogue.trusted_remote_rows("SELECT 1")
+
+        self.assertTrue(connection.closed)
+        self.assertEqual(len(minter.minted), 1)
+
+    def test_failed_commit_remints_before_retrying_a_transaction(self) -> None:
+        catalogue, connection, minter = _catalogue()
+        original_execute = connection.execute
+
+        def execute(sql: str, parameters=None) -> _Cursor:
+            if parameters == ["COMMIT"]:
+                connection.calls.append((sql, parameters))
+                raise duckdb.TransactionException(
+                    "Transaction conflict - another transaction compacted it"
+                )
+            return original_execute(sql, parameters)
+
+        connection.execute = execute  # type: ignore[method-assign]
+
+        with self.assertRaises(duckdb.TransactionException):
+            with catalogue.remote_transaction():
+                pass
+
+        self.assertFalse(catalogue._remote_transaction_active)
+        self.assertFalse(connection.closed)
+
+        with catalogue.remote_transaction():
+            pass
+
+        self.assertTrue(connection.closed)
+        self.assertEqual(len(minter.minted), 1)
+        self.assertEqual(
+            [
+                parameters
+                for _sql, parameters in minter.minted[0].connection.calls
+                if parameters in (["BEGIN TRANSACTION"], ["COMMIT"])
+            ],
+            [["BEGIN TRANSACTION"], ["COMMIT"]],
+        )
 
     def test_remote_rows_rejects_parameters_before_execution(self) -> None:
         catalogue, connection, _minter = _catalogue()
@@ -320,15 +360,11 @@ class ManagedCatalogueClientTests(unittest.TestCase):
             ),
         )
 
-    def test_materialization_activation_replay_detects_public_generation(
+    def test_materialization_activation_uses_one_basin_swap_operation(
         self,
     ) -> None:
         catalogue = MagicMock()
         catalogue.config.alias = "atlas"
-        catalogue.trusted_remote_rows.return_value = [
-            ("html_elements",),
-            ("_atlas_retired_html_elements_run123",),
-        ]
 
         Catalogue.activate_materialization_generations(
             catalogue,
@@ -336,24 +372,37 @@ class ManagedCatalogueClientTests(unittest.TestCase):
             activation_id="run-123",
         )
 
-        catalogue.remote_transaction.assert_not_called()
+        catalogue.commit_catalogue_actions.assert_called_once()
+        action = catalogue.commit_catalogue_actions.call_args.args[0][0]
+        self.assertEqual(action.kind, "swap_tables")
+        self.assertEqual(
+            action.entries[0],
+            {
+                "schema": "material",
+                "current_table": "html_elements",
+                "generation_table":
+                    "_atlas_rebuild_html_elements_run123",
+                "retired_table":
+                    "_atlas_retired_html_elements_run123",
+            },
+        )
+        self.assertEqual(
+            catalogue.commit_catalogue_actions.call_args.kwargs[
+                "idempotency_key"
+            ],
+            "atlas:generation:activate:v1:run-123",
+        )
 
-    def test_materialization_activation_rejects_missing_generation(
+    def test_materialization_activation_rejects_invalid_generation_name(
         self,
     ) -> None:
         catalogue = MagicMock()
         catalogue.config.alias = "atlas"
-        catalogue.trusted_remote_rows.return_value = [
-            ("html_elements",)
-        ]
 
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "generation is missing",
-        ):
+        with self.assertRaisesRegex(ValueError, "invalid internal"):
             Catalogue.activate_materialization_generations(
                 catalogue,
-                {HTML_ELEMENTS: "_atlas_rebuild_html_elements_run123"},
+                {HTML_ELEMENTS: "user_table"},
                 activation_id="run-123",
             )
 

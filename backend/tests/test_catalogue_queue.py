@@ -20,6 +20,7 @@ from atlas.platform.messaging.catalogue_queue import (
 class FakeJetStream:
     def __init__(self) -> None:
         self.streams = {}
+        self.updates = 0
 
     async def stream_info(self, name: str):
         if name not in self.streams:
@@ -27,6 +28,10 @@ class FakeJetStream:
         return SimpleNamespace(config=self.streams[name])
 
     async def add_stream(self, *, config) -> None:
+        self.streams[config.name] = config
+
+    async def update_stream(self, *, config) -> None:
+        self.updates += 1
         self.streams[config.name] = config
 
 
@@ -57,6 +62,27 @@ class CatalogueQueueTests(unittest.IsolatedAsyncioTestCase):
         dead = jetstream.streams[DEAD_LETTER_STREAM]
         self.assertEqual(set(dead.subjects), set(DEAD_LETTER_SUBJECTS))
         self.assertEqual(dead.max_age, 3600.0)
+
+    async def test_existing_stream_adopts_the_current_subject_set(self) -> None:
+        jetstream = FakeJetStream()
+        with patch(
+            "atlas.platform.messaging.catalogue_queue.get_int",
+            side_effect=lambda name: {
+                "ATLAS_CATALOGUE_WORK_STREAM_REPLICAS": 1,
+                "ATLAS_CATALOGUE_WORK_MAX_BYTES": 1024,
+            }[name],
+        ):
+            await ensure_catalogue_work_stream(jetstream)
+            jetstream.streams[WORK_STREAM].subjects = [
+                "atlas.catalogue.ingest"
+            ]
+            await ensure_catalogue_work_stream(jetstream)
+
+        self.assertEqual(jetstream.updates, 1)
+        self.assertEqual(
+            set(jetstream.streams[WORK_STREAM].subjects),
+            set(WORK_SUBJECTS),
+        )
 
 
 if __name__ == "__main__":

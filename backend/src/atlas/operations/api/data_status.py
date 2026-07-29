@@ -130,18 +130,22 @@ _MATERIALIZATION_WORKLOADS = (
         "documents",
         "ingest.documents",
         (
-            "material.html_documents",
+            "material.content_stats",
             "material.html_elements",
             "material.jsonld_values",
             "material.links",
-            "material.link_observations",
+            "material.link_occurrences",
         ),
         "atlas-material-documents-v1",
     ),
     (
         "visits",
         "ingest.visits",
-        ("material.pages", "material.page_observations"),
+        (
+            "material.pages",
+            "material.page_observations",
+            "material.page_heads",
+        ),
         "atlas-material-visits-v1",
     ),
 )

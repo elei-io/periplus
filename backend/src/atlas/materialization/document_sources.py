@@ -13,7 +13,7 @@ from atlas.materialization.sql import (
 )
 
 
-def html_documents(
+def html_content_sources(
     catalogue: Catalogue,
     *,
     snapshot: int,
@@ -77,7 +77,16 @@ def document_observation_rows(
     document_ids: list[str],
     *,
     snapshot: int,
-) -> list[tuple[str, str | None, str | None, datetime | None, int]]:
+) -> list[
+    tuple[
+        str,
+        str | None,
+        str | None,
+        str | None,
+        datetime | None,
+        int,
+    ]
+]:
     if not document_ids:
         return []
     documents: dict[str, tuple[str, str, int]] = {}
@@ -116,17 +125,25 @@ def document_observation_rows(
                 observed_at,
             )
     rows: list[
-        tuple[str, str | None, str | None, datetime | None, int]
+        tuple[
+            str,
+            str | None,
+            str | None,
+            str | None,
+            datetime | None,
+            int,
+        ]
     ] = []
     for document_id in document_ids:
         document = documents.get(document_id)
         if document is None:
-            rows.append((document_id, None, None, None, 0))
+            rows.append((document_id, None, None, None, None, 0))
             continue
         visit = visits.get(document[0])
         rows.append(
             (
                 document_id,
+                document[0],
                 document[1],
                 visit[0] if visit is not None else None,
                 visit[1] if visit is not None else None,

@@ -49,10 +49,10 @@ test("collects multiline SQL until a terminating semicolon", async () => {
 
   terminal.send("SELECT page_id")
   terminal.send("\r")
-  terminal.send("FROM web.pages;")
+  terminal.send("FROM web.page;")
   terminal.send("\r")
 
-  assert.equal(await result, "SELECT page_id\nFROM web.pages;")
+  assert.equal(await result, "SELECT page_id\nFROM web.page;")
   assert.match(terminal.output, /\.\.\.> /)
 })
 
@@ -72,7 +72,7 @@ test("renders the top completion as ghost text and accepts it with tab", async (
     terminal,
     async () => [
       {
-        value: "web.content",
+        value: "web.link",
         replaceStart: "SELECT * FROM ".length,
         replaceEnd: "SELECT * FROM web.".length,
         kind: "relation",
@@ -90,21 +90,21 @@ test("renders the top completion as ghost text and accepts it with tab", async (
   const result = editor.readLine("atlas> ", "SELECT * FROM web.")
 
   await new Promise((resolve) => setTimeout(resolve, 5))
-  assert.match(terminal.output, /\u001b\[2mcontent\u001b\[0m/)
+  assert.match(terminal.output, /\u001b\[2mlink\u001b\[0m/)
   assert.doesNotMatch(terminal.output, /web\.crawls/)
 
   terminal.send("\t")
   terminal.send(";")
   terminal.send("\r")
 
-  assert.equal(await result, "SELECT * FROM web.content;")
+  assert.equal(await result, "SELECT * FROM web.link;")
 })
 
 test("keeps a long loaded draft inside a single-line viewport", async () => {
   const terminal = new TestTerminal()
   const draft =
-    "SELECT p.hostname, COUNT(*) AS visit_count FROM web.pages AS p " +
-    "JOIN web.visits AS v ON v.effective_url = p.url " +
+    "SELECT p.hostname, COUNT(*) AS visit_count FROM web.page AS p " +
+    "JOIN web.visit AS v USING (page_id) " +
     "GROUP BY p.hostname ORDER BY visit_count DESC;"
   const editor = new GhostTextEditor(terminal, async () => [])
   const result = editor.readLine("atlas> ", draft)

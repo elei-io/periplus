@@ -52,9 +52,10 @@ A materialization workload defines:
 
 ```text
 ingest.documents CDC -> one-pass document projection
-                     -> HTML elements + JSON-LD + links + link observations
+                     -> content stats + HTML elements + JSON-LD
+                     -> links + link occurrences
 ingest.visits CDC    -> one visit projection
-                     -> pages + page observations
+                     -> pages + page observations + page heads
 ```
 
 Each source workload owns one consumer and ACKs only after every enabled target commits. A replay
@@ -71,13 +72,23 @@ counters. Any table can be selected independently; selected tables from the same
 scan and projection pass. Backfills fill missing live slices. Rebuilds target shadows, catch up
 post-snapshot changes, and activate idempotently only after a source high-water recheck under the
 ordinary target leases.
+Document shadow batches stage at most one deterministic Parquet file per selected table and upload
+the complete manifest through DuckBasin's durable bulk API. Basin copies those files through the
+typed targets, applies their partition layout, and exposes every selected table in one marked
+DuckLake snapshot. Atlas advances the rebuild cursor only after the committed snapshot is
+acknowledged; replay uses the identical manifest identity and cannot duplicate rows. Live document
+batches use the same five-table commit after bounded coverage reads, and document correction
+tombstones use Basin's delete-by-key action.
+Document rebuild completion refreshes link rollups in durable, idempotent 100-source-page slices.
+The rollup cursor advances only after each slice commits, so finalization never collapses the
+bounded scan into one whole-table mutation.
 
 ## 3. Materialization
 
 Atlas decodes documents into rebuildable structural relations:
 
 ```text
-HTML -> material.html_documents
+HTML -> material.content_stats
 HTML -> material.html_elements
 HTML -> material.jsonld_values
 ```
@@ -87,27 +98,35 @@ Generic JSON, XML, PDF, DOCX, CSV, and other format projections are deferred.
 Atlas also maintains compact semantic indexes:
 
 ```text
-ingest.documents CDC -> material.html_documents
+ingest.documents CDC -> material.content_stats
                      -> material.html_elements
                      -> material.jsonld_values
                      -> material.links
-                     -> material.link_observations
+                     -> material.link_occurrences
 ingest.visits CDC    -> material.pages
                      -> material.page_observations
+                     -> material.page_heads
 ```
 
 The document workload derives links directly from the same locally parsed elements used for the
 HTML and JSON-LD outputs. Links never wait for or read another materialized target.
 
 `material.page_observations` connects each normalized page identity to its visit, optional document,
-and observation time. `material.links` deduplicates normalized source and target URL pairs and
-classifies their deterministic site relationship. `material.link_observations` retains the
-document, content hash, element index, raw href, and observation time for every anchor occurrence.
+and terminal ordering time. `material.page_heads` stores the deterministically latest visit pointer,
+including failures. `material.links` deduplicates normalized source and target URL pairs, classifies
+their deterministic site relationship, and stores exact occurrence-derived rollups.
+`material.link_occurrences` retains the visit, document, content hash, element index, raw href, and
+observation time for every anchor occurrence.
 Its source and target page identities are deterministic even when the target has never been
 visited; it does not create page rows for unvisited targets.
 
 Materialization failure never changes the committed ingestion record. Work can be replayed from
 CDC or rebuilt from upstream relations.
+Prometheus exposes selection, projection, and write phase durations plus per-target remote
+transaction, deduplication lookup, and Arrow upload durations by outcome. Shadow link identity and
+occurrence writes share one transaction and are reported as the `link_bundle` target. The nested
+timings distinguish local parsing, idempotency reads, uploads, and managed commit or compaction
+latency.
 
 ## 4. Query
 
@@ -115,7 +134,8 @@ Users query the public `web.*` and `dom.*` catalogue, not the physical plan.
 
 Atlas initialization installs and versions both public namespaces as persistent DuckLake views
 and macros over the physical evidence and materialization schemas. Expensive recurring
-computations become fixed materializations. A later native optimizer may accelerate measured plan
-gaps without defining query semantics. See [`QUERY.md`](QUERY.md).
+computations become fixed materializations. The optional native extension supplies standards-shaped
+DOM selectors and shared query diagnostics; base catalogue semantics do not depend on it. See
+[`QUERY.md`](QUERY.md).
 
 Users persist their own interpretations under `data.*`.
