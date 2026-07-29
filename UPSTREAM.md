@@ -127,17 +127,27 @@ DuckBasin, and Basin-published JetStream CDC.
   compacted the internal shadow tables, but its fixed-tier passes ran about once per table per
   minute and processed only 8--15 files into four while the next document batch added roughly
   50--64 files per populated target. Projection throughput remained flat at this corpus size, so
-  this is accumulated physical debt rather than a current write stall.
+  this is accumulated physical debt rather than a current write stall. Near the end of the
+  14,338-observation rebuild, the five document shadow tables peaked at 1,020--2,024 active files
+  each. Basin revision `af07de9` replaced the fixed four-output limit with tier-specific bounds of
+  32, 16, 8, and 4 compacted output groups, and kept a table immediately runnable after productive
+  maintenance until a fresh inspection found no remaining debt. Revision `459a285` added the
+  database default and explicit raw-write initialization required for that durable drain state.
+  After deployment, individual T0 passes processed 545--977 files into 32 outputs. All five tables
+  reached a healthy 64/97/64/80/68-file layout in about 2.5 minutes, with roughly 3.5 CPU cores and
+  452 MiB observed at the sidecar. During subsequent 128 MiB Atlas batches, active file counts
+  remained bounded at roughly 64--155 instead of returning to the thousand-file backlog.
 - **Needed upstream contract:** bulk ingestion and automatic maintenance must expose and enforce a
   bounded debt envelope. Compaction admission and worker throughput should scale with files and
   bytes created by bulk operations, including generation tables, and provide an observable
   completion barrier suitable before generation activation. The mechanism must remain generic:
   Atlas should not know DuckLake file paths, run lake maintenance SQL, or special-case Basin's
   compaction tiers.
-- **Atlas status:** Atlas keeps source and output work bounded and records file fan-out as an
-  upstream physical-maintenance concern. A 12,410-content live rebuild is validating that debt can
-  be drained after writes quiesce. Million-document readiness remains unproven until Basin can
-  demonstrate that its compactor catches up from the resulting bulk debt within a bounded time.
+- **Atlas status:** fixed upstream in Basin revisions `af07de9` and `459a285`; Atlas retains its
+  64-bucket production layouts. The 14,338-observation live rebuild proved both bounded catch-up
+  after a large backlog and bounded steady-state debt while writes continued. Million-document
+  readiness still requires the planned larger rebuild benchmark, but no schema or partition
+  removal is required for the observed failure mode.
 
 ## Public Quack remote SQL can resolve the Basin control catalogue
 
