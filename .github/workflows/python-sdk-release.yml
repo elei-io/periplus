@@ -1,0 +1,137 @@
+name: Release Python SDK
+
+on:
+  push:
+    tags:
+      - "atlas-python-sdk-v*"
+
+concurrency:
+  group: python-sdk-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test release (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.14"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: packages/atlas-python-sdk/pyproject.toml
+
+      - name: Install SDK
+        run: python -m pip install ./packages/atlas-python-sdk
+
+      - name: Run unit tests against installed SDK
+        run: >-
+          python -m unittest discover
+          -s packages/atlas-python-sdk/tests
+
+  build:
+    name: Build and verify release
+    needs: test
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: packages/atlas-python-sdk/pyproject.toml
+
+      - name: Match tag to package version
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import tomllib
+
+          metadata = tomllib.loads(
+              Path("packages/atlas-python-sdk/pyproject.toml").read_text()
+          )
+          version = metadata["project"]["version"]
+          expected_tag = f"atlas-python-sdk-v{version}"
+          actual_tag = os.environ["GITHUB_REF_NAME"]
+          if actual_tag != expected_tag:
+              raise SystemExit(
+                  f"release tag {actual_tag!r} does not match {expected_tag!r}"
+              )
+
+      - name: Install packaging tools
+        run: python -m pip install build twine
+
+      - name: Build wheel and source distribution
+        run: >-
+          python -m build
+          --outdir dist
+          packages/atlas-python-sdk
+
+      - name: Check distribution metadata
+        run: python -m twine check dist/*
+
+      - name: Check wheel namespace
+        shell: python
+        run: |
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheels = list(Path("dist").glob("*.whl"))
+          archives = list(Path("dist").glob("*.tar.gz"))
+          if len(wheels) != 1 or len(archives) != 1:
+              raise SystemExit(
+                  "release must contain exactly one wheel and one source distribution"
+              )
+          with ZipFile(wheels[0]) as archive:
+              roots = {name.partition("/")[0] for name in archive.namelist()}
+          if "atlas_sdk" not in roots:
+              raise SystemExit("wheel does not contain atlas_sdk")
+          if "atlas" in roots:
+              raise SystemExit("wheel unexpectedly contains the backend atlas package")
+
+      - name: Verify clean wheel installation
+        run: |
+          python -m venv "${RUNNER_TEMP}/atlas-sdk-verify"
+          "${RUNNER_TEMP}/atlas-sdk-verify/bin/python" -m pip install dist/*.whl
+          cd "${RUNNER_TEMP}"
+          "${RUNNER_TEMP}/atlas-sdk-verify/bin/python" -c \
+            "import atlas_sdk; assert atlas_sdk.__file__ is not None"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-python-sdk-${{ github.ref_name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: pypi
+      url: https://pypi.org/p/atlas-python-sdk
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-python-sdk-${{ github.ref_name }}
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

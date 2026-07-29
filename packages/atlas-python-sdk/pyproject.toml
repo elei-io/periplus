@@ -1,0 +1,26 @@
+[project]
+name = "atlas-python-sdk"
+version = "0.1.0"
+description = "Python connections and crawl lifecycle client for Atlas"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb==1.5.5",
+    "httpx>=0.28",
+    "psycopg[binary]>=3.2",
+    "python-dotenv>=1.2",
+]
+
+[project.urls]
+Repository = "https://github.com/ekkuleivonen/atlas"
+Issues = "https://github.com/ekkuleivonen/atlas/issues"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+atlas_sdk = ["py.typed"]
