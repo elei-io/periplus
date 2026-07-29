@@ -103,7 +103,13 @@ DuckBasin, and Basin-published JetStream CDC.
   operation then committed content stats, HTML elements, JSON-LD, links, and link occurrences,
   preserved `VARIANT`, and replayed without duplicate rows. A 100-document production projection
   completed in 25.6 seconds with exact registration and 31.8 seconds with Basin-owned copy/layout,
-  compared with roughly 190 seconds spent in the former Quack streamed-write phase.
+  compared with roughly 190 seconds spent in the former Quack streamed-write phase. After the
+  complete materialization and compaction fixes, an 800-document HTML-elements benchmark projected
+  711,539 rows (175.7 MB of Arrow data) and completed in 100.9 seconds. DOM projection used 81.2
+  seconds, while the Basin upload and atomic commit used 17.4 seconds and left exactly 64 active
+  files containing 34.4 MB. The committed and acknowledged row counts matched, and Basin removed
+  the disposable generation through the same bulk lifecycle path. At this size the local DOM
+  projector, not lake upload, is the dominant cost.
 - **Needed upstream contract:** keep `register` for exact append files and `copy` for logical types
   and Basin-owned layout. Basin revision `c74ac9f` now provides restricted append,
   replace-by-key, and delete-by-key actions over uploaded Parquet sources, with validated
@@ -136,18 +142,54 @@ DuckBasin, and Basin-published JetStream CDC.
   After deployment, individual T0 passes processed 545--977 files into 32 outputs. All five tables
   reached a healthy 64/97/64/80/68-file layout in about 2.5 minutes, with roughly 3.5 CPU cores and
   452 MiB observed at the sidecar. During subsequent 128 MiB Atlas batches, active file counts
-  remained bounded at roughly 64--155 instead of returning to the thousand-file backlog.
+  remained bounded at roughly 64--155 instead of returning to the thousand-file backlog. Basin
+  revision `0ced105` then made maintenance admission honor the live cgroup CPU and memory envelope,
+  reserved up to 2 GiB per independent compaction connection, and converted transient allocation
+  failures into bounded retries. Revision `134175e` made the controller add replacement Quack
+  replicas before retiring the serving generation, so maintenance-sidecar and Quack upgrades no
+  longer rotate every session at once.
+
+  A later keyed-write overlap probe exposed two further physical-maintenance failures. Before
+  revision `5eb14a8`, a Basin bulk replace-by-key operation and automatic compaction could mutate
+  the same DuckLake table concurrently. The completed Atlas shadow therefore contained duplicate
+  `pages` and inconsistent `page_heads` even though every bulk operation was individually
+  idempotent. Basin now shares a sorted per-lake/per-table PostgreSQL advisory-lock contract across
+  compaction, bulk file mutations, and table lifecycle actions. A 20-batch live stress test retained
+  the real 64-bucket layout, overlapped compaction with 300-row writes and 100-row key replacement,
+  and ended with 4,100 rows for 4,100 distinct keys after every intermediate invariant check.
+  Contended commit latency rose from 11.9 to 41.5 seconds rather than allowing silent corruption;
+  unrelated tables remained concurrent. A subsequent page-only shadow repair processed all 14,338
+  visits and 42,829 output rows in 759 seconds while compaction continued, then atomically replaced
+  all three page relations. The activated `pages`, `page_heads`, and `page_observations` tables
+  contained 12,505/12,505, 12,505/12,505, and 14,338/14,338 rows/distinct keys respectively.
+
+  That same probe ended with 1,039 active files containing only 1.6 MiB. DuckLake had stored 1,900
+  small deletions in its per-table inline-delete relation. `ducklake_merge_adjacent_files` excludes
+  every file with physical or inlined deletions, while Basin's inspector counted only physical
+  delete files; repeated maintenance calls therefore reported `0 files into 0` and incorrectly
+  cleared the table as healthy. Basin revisions `bbc60fd` and `9623f37` detect both delete forms,
+  expose them as table debt, and schedule a threshold-zero rewrite before tier merging. In the live
+  64-bucket canary, Basin rewrote 975 marked files into 64 in 41.7 seconds, drained two bounded merge
+  passes in another 12.5 seconds, and finished with 64 files, zero delete blockers, and the unchanged
+  4,100-row/4,100-key invariant.
 - **Needed upstream contract:** bulk ingestion and automatic maintenance must expose and enforce a
   bounded debt envelope. Compaction admission and worker throughput should scale with files and
   bytes created by bulk operations, including generation tables, and provide an observable
   completion barrier suitable before generation activation. The mechanism must remain generic:
   Atlas should not know DuckLake file paths, run lake maintenance SQL, or special-case Basin's
-  compaction tiers.
+  compaction tiers. DuckLake's rewrite operation also needs a bounded file, partition, or input-byte
+  limit. Today Basin can safely automate threshold-zero blocker rewrites only when the table's full
+  active data-file footprint fits one maintenance connection's memory budget; an arbitrarily large
+  mutable table can otherwise remain visible as deferred debt even when only a bounded subset of
+  files contains deletions.
 - **Atlas status:** fixed upstream in Basin revisions `af07de9` and `459a285`; Atlas retains its
-  64-bucket production layouts. The 14,338-observation live rebuild proved both bounded catch-up
+  `64`-bucket production layouts. Revisions `0ced105`, `5eb14a8`, `bbc60fd`, and `9623f37` close
+  resource-admission, write/maintenance serialization, and inline-delete planning gaps without an
+  Atlas-specific maintenance path. The 14,338-observation live rebuild proved both bounded catch-up
   after a large backlog and bounded steady-state debt while writes continued. Million-document
-  readiness still requires the planned larger rebuild benchmark, but no schema or partition
-  removal is required for the observed failure mode.
+  readiness still requires the planned larger rebuild benchmark, and huge mutable tables still
+  need the bounded DuckLake rewrite primitive, but no schema or partition removal is required for
+  the observed failure modes.
 
 ## Public Quack remote SQL can resolve the Basin control catalogue
 
@@ -157,6 +199,26 @@ DuckBasin, and Basin-published JetStream CDC.
   relations or another lake's metadata.
 - **Atlas status:** Quack remains private, credentials remain server-side, and Atlas accepts no
   user-authored remote SQL.
+
+## Managed Quack has no generic product-extension loading contract
+
+- **Atlas caller:** the standards-shaped `dom.query_selector` and `dom.query_selector_all`
+  wrappers backed by the Atlas DuckDB extension.
+- **Evidence:** the pinned native extension passes 108 release assertions and its streaming
+  selector returned the expected Common Crawl links from the live lake in 6.0 seconds through the
+  direct read-only development attachment. The managed Quack sessions do not load that extension,
+  so Atlas setup correctly leaves both wrappers absent rather than publishing functions that every
+  managed query would fail to bind. Loading the extension only in a downstream client is too late:
+  the persistent wrappers are installed by the server-side setup connection, and the direct lake
+  boundary is intentionally read-only.
+- **Needed upstream contract:** let an operator configure an allowlisted, checksummed set of
+  DuckDB extension artifacts for managed runtimes; validate each artifact against the pinned DuckDB
+  ABI, load it before readiness and session minting, expose the loaded name/version fingerprint,
+  and roll replicas safely when the set changes. This must be a generic Quack capability rather
+  than an Atlas-specific image fork.
+- **Atlas status:** portable `web.*`, `dom.elements`, `dom.get_attribute`, and `dom.text_content`
+  remain available. Native selector execution is proven against the lake, but the public
+  standards-shaped selector surface is not production-ready until managed extension loading exists.
 
 ## DuckLake rejects column comments on views
 

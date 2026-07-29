@@ -201,8 +201,8 @@ async def run(*, documents: int, keep: bool) -> None:
                         )
                         stats_lane = cleanup_lane
                 await cleanup_lane.call(
-                    lambda catalogue: catalogue.trusted_remote_execute(
-                        f"DROP TABLE IF EXISTS material.{shadow}"
+                    lambda catalogue: catalogue.drop_materialization_generations(
+                        (shadow,)
                     )
                 )
             except Exception:
