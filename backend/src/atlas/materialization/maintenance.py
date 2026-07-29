@@ -38,7 +38,8 @@ from atlas.materialization.visit_workload import (
 )
 
 _LINK_ROLLUP_CURSOR_PREFIX = "link-rollups:"
-_LINK_ROLLUP_SOURCE_BUDGET = 100
+_LINK_ROLLUP_SOURCE_BUDGET = 1_000
+_LINK_ROLLUP_ROW_BUDGET = 100_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,17 +404,29 @@ def _select_link_rollup_batch(
     )
     rows = catalogue.trusted_remote_rows(
         f"""
-        SELECT DISTINCT source_page_id::VARCHAR
+        SELECT source_page_id::VARCHAR, count(*)
         FROM material.{links_table}
         {predicate}
+        GROUP BY source_page_id::VARCHAR
         ORDER BY source_page_id::VARCHAR
         LIMIT {_LINK_ROLLUP_SOURCE_BUDGET + 1}
         """
     )
-    source_page_ids = tuple(
-        str(row[0]) for row in rows[:_LINK_ROLLUP_SOURCE_BUDGET]
+    source_page_ids: list[str] = []
+    selected_link_rows = 0
+    for source_page_id, link_rows in rows[:_LINK_ROLLUP_SOURCE_BUDGET]:
+        link_rows = int(link_rows)
+        if (
+            source_page_ids
+            and selected_link_rows + link_rows > _LINK_ROLLUP_ROW_BUDGET
+        ):
+            break
+        source_page_ids.append(str(source_page_id))
+        selected_link_rows += link_rows
+    done = (
+        len(rows) <= _LINK_ROLLUP_SOURCE_BUDGET
+        and len(source_page_ids) == len(rows)
     )
-    done = len(rows) <= _LINK_ROLLUP_SOURCE_BUDGET
     cursor = (
         f"{_LINK_ROLLUP_CURSOR_PREFIX}{source_page_ids[-1]}"
         if source_page_ids
@@ -422,7 +435,7 @@ def _select_link_rollup_batch(
     outputs = (
         (
             DocumentProjectionOutput(
-                finalize_link_source_page_ids=frozenset(source_page_ids)
+                finalize_link_source_page_ids=frozenset(source_page_ids),
             ),
         )
         if source_page_ids

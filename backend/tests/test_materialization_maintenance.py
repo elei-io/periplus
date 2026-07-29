@@ -10,6 +10,7 @@ from atlas.materialization.contracts import (
 )
 from atlas.materialization.maintenance import (
     _select_document_scan,
+    _select_link_rollup_batch,
     _within_byte_budget,
     generation_table,
     materialize_visit_batch,
@@ -99,8 +100,8 @@ class MaterializationMaintenanceTests(unittest.TestCase):
     ) -> None:
         catalogue = MagicMock()
         source_page_ids = [
-            (f"00000000-0000-0000-0000-{index:012d}",)
-            for index in range(101)
+            (f"00000000-0000-0000-0000-{index:012d}", 1)
+            for index in range(1001)
         ]
         catalogue.trusted_remote_rows.side_effect = [
             [],
@@ -125,11 +126,11 @@ class MaterializationMaintenanceTests(unittest.TestCase):
                     0
                 ].finalize_link_source_page_ids
             ),
-            100,
+            1000,
         )
         self.assertEqual(
             selection.cursor,
-            "link-rollups:00000000-0000-0000-0000-000000000099",
+            "link-rollups:00000000-0000-0000-0000-000000000999",
         )
 
         catalogue.trusted_remote_rows.side_effect = [
@@ -146,12 +147,35 @@ class MaterializationMaintenanceTests(unittest.TestCase):
         self.assertTrue(final.done)
         self.assertEqual(
             final.initial_outputs[0].finalize_link_source_page_ids,
-            frozenset({"00000000-0000-0000-0000-000000000100"}),
+            frozenset({"00000000-0000-0000-0000-000000001000"}),
         )
         self.assertIn(
             "source_page_id::VARCHAR > "
-            "'00000000-0000-0000-0000-000000000099'",
+            "'00000000-0000-0000-0000-000000000999'",
             catalogue.trusted_remote_rows.call_args.args[0],
+        )
+
+    def test_document_rollup_slice_is_also_bounded_by_link_rows(self) -> None:
+        catalogue = MagicMock()
+        catalogue.trusted_remote_rows.return_value = [
+            ("00000000-0000-0000-0000-000000000001", 75_000),
+            ("00000000-0000-0000-0000-000000000002", 30_000),
+        ]
+
+        selection = _select_link_rollup_batch(
+            catalogue,
+            links_table="_atlas_rebuild_links_run",
+            after_cursor=None,
+        )
+
+        self.assertFalse(selection.done)
+        self.assertEqual(
+            selection.cursor,
+            "link-rollups:00000000-0000-0000-0000-000000000001",
+        )
+        self.assertEqual(
+            selection.initial_outputs[0].finalize_link_source_page_ids,
+            frozenset({"00000000-0000-0000-0000-000000000001"}),
         )
 
     def test_visit_catchup_replaces_deleted_and_corrected_visits(self) -> None:
