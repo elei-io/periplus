@@ -49,7 +49,7 @@ from atlas.urls import normalize_url
 
 _PARTITION_ITEMS = 64
 _PARTITION_BYTES = 16 * 1024 * 1024
-_WRITE_TARGET_BYTES = 32 * 1024 * 1024
+_WRITE_TARGET_BYTES = 128 * 1024 * 1024
 _LINK_SHARD_LOCKS = tuple(
     threading.Lock() for _ in range(PARTITION_BUCKETS)
 )

@@ -117,7 +117,7 @@ async def run(*, documents: int, keep: bool) -> None:
             enabled_targets=frozenset({"html_elements"}),
             item_budget=10_000,
             byte_budget=1024 * 1024 * 1024,
-            write_target_bytes=32 * 1024 * 1024,
+            write_target_bytes=128 * 1024 * 1024,
         )
         result = await execute_bounded_stage(
             leases,
