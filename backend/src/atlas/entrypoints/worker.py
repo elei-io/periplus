@@ -15,7 +15,6 @@ from atlas.platform.config import get_str
 WorkerRole = Literal[
     "acquisition",
     "ingestion",
-    "cdc",
     "materialization",
     "housekeeping",
 ]
@@ -23,7 +22,6 @@ WorkerRole = Literal[
 WORKER_MODULES: dict[WorkerRole, str] = {
     "acquisition": "atlas.crawl.worker",
     "ingestion": "atlas.ingestion.worker",
-    "cdc": "atlas.materialization.cdc.worker",
     "materialization": "atlas.materialization.worker",
     "housekeeping": "atlas.operations.housekeeping",
 }

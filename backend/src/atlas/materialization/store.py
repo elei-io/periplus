@@ -1,4 +1,4 @@
-"""Transactional control state for fixed materialization maintenance."""
+"""Transactional rebuild coordination; JetStream remains delivery only."""
 
 from __future__ import annotations
 
@@ -8,101 +8,91 @@ from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
 
-from atlas.platform.postgres.session import session_scope
-from sqlalchemy import select
-
-from atlas.materialization.contracts import (
-    PROJECTOR_VERSIONS,
-    ProjectionName,
-    ordered_projections,
+from atlas.materialization.models import (
+    MaterializationBatchRecord,
+    MaterializationRunRecord,
 )
-from atlas.materialization.models import MaterializationRunRecord
+from atlas.platform.postgres.session import session_scope
+from sqlalchemy import select, text
 
-RunStatus = Literal["queued", "running", "completed", "failed"]
-RunMode = Literal["backfill", "rebuild"]
+RunStatus = Literal[
+    "queued",
+    "planning",
+    "running",
+    "activating",
+    "completed",
+    "failed",
+]
+
+
+class MaterializationRunActive(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class MaterializationRun:
     id: UUID
-    mode: RunMode
     status: RunStatus
-    requested_stages: tuple[ProjectionName, ...]
-    stages: tuple[ProjectionName, ...]
-    projector_versions: dict[str, int]
     source_snapshot: int
-    catchup_snapshot: int
-    catchup_target_snapshot: int | None
-    catchup_stage: int
-    catchup_cursors: dict[str, str | None]
-    current_stage: int
-    cursors: dict[str, str | None]
-    destinations: dict[str, str]
-    item_budget: int
-    byte_budget: int
+    covered_snapshot: int
+    activation_snapshot: int | None
+    generation_tables: dict[str, str]
+    batch_size: int
+    total_batches: int
+    completed_batches: int
     source_items: int
     source_bytes: int
     output_rows: int
+    output_bytes: int
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
     error: str | None
 
-    @property
-    def active_stage(self) -> ProjectionName | None:
-        return (
-            self.stages[self.current_stage]
-            if self.current_stage < len(self.stages)
-            else None
-        )
 
-    @property
-    def active_catchup_stage(self) -> ProjectionName | None:
-        return (
-            self.stages[self.catchup_stage]
-            if (
-                self.catchup_target_snapshot is not None
-                and self.catchup_stage < len(self.stages)
-            )
-            else None
-        )
+@dataclass(frozen=True, slots=True)
+class MaterializationBatch:
+    id: UUID
+    run_id: UUID
+    ordinal: int
+    snapshot: int
+    visit_ids: tuple[str, ...]
+    status: str
+    attempts: int
 
 
 class MaterializationRunStore:
     def create(
         self,
         *,
-        mode: RunMode,
-        requested_stages: set[ProjectionName],
         source_snapshot: int,
-        item_budget: int,
-        byte_budget: int,
+        batch_size: int,
     ) -> MaterializationRun:
-        stages = ordered_projections(requested_stages)
-        if not stages:
-            raise ValueError("at least one materialization stage is required")
         with session_scope() as session:
+            session.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('atlas-materialization-rebuild'))"
+                )
+            )
+            active = session.scalar(
+                select(MaterializationRunRecord.id)
+                .where(
+                    MaterializationRunRecord.status.in_(
+                        ("queued", "planning", "running", "activating")
+                    )
+                )
+                .limit(1)
+            )
+            if active is not None:
+                raise MaterializationRunActive(
+                    f"materialization rebuild {active} is already active"
+                )
             record = MaterializationRunRecord(
-                mode=mode,
                 status="queued",
-                requested_stages=sorted(requested_stages),
-                stages=list(stages),
-                projector_versions={
-                    stage: PROJECTOR_VERSIONS[stage] for stage in stages
-                },
                 source_snapshot=source_snapshot,
-                catchup_snapshot=source_snapshot,
-                catchup_target_snapshot=None,
-                catchup_stage=0,
-                catchup_cursors={},
-                current_stage=0,
-                cursors={stage: None for stage in stages},
-                destinations={},
-                item_budget=item_budget,
-                byte_budget=byte_budget,
-                source_items=0,
-                source_bytes=0,
-                output_rows=0,
+                covered_snapshot=source_snapshot,
+                batch_size=batch_size,
             )
             session.add(record)
             session.flush()
@@ -122,133 +112,189 @@ class MaterializationRunStore:
             ).all()
             return [_run(record) for record in records]
 
-    def start(self, run_id: UUID) -> MaterializationRun:
+    def claim_plan(self, run_id: UUID) -> MaterializationRun | None:
         with session_scope() as session:
-            record = _required(session, run_id)
+            record = session.scalar(
+                select(MaterializationRunRecord)
+                .where(MaterializationRunRecord.id == run_id)
+                .with_for_update()
+            )
+            if record is None or record.status not in {"queued", "planning"}:
+                return _run(record) if record is not None else None
             if record.status == "queued":
-                record.status = "running"
+                record.status = "planning"
                 record.started_at = datetime.now(timezone.utc)
             return _run(record)
 
-    def set_destinations(
-        self,
-        run_id: UUID,
-        destinations: dict[ProjectionName, str],
-    ) -> MaterializationRun:
+    def mark_plan_published(self, run_id: UUID) -> None:
         with session_scope() as session:
-            record = _required(session, run_id)
-            if record.status != "running":
-                raise RuntimeError("only a running rebuild can set destinations")
-            if record.destinations and record.destinations != destinations:
-                raise RuntimeError("rebuild destinations are immutable")
-            record.destinations = dict(destinations)
-            return _run(record)
+            record = _required_run(session, run_id, lock=True)
+            if record.plan_published_at is None:
+                record.plan_published_at = datetime.now(timezone.utc)
 
-    def advance(
+    def finish_plan(
         self,
         run_id: UUID,
         *,
-        stages: tuple[ProjectionName, ...],
-        cursor: str | None,
-        done: bool,
-        source_items: int,
-        source_bytes: int,
-        output_rows: int,
-    ) -> MaterializationRun:
+        generation_tables: dict[str, str],
+        batches: list[tuple[int, list[str]]],
+    ) -> tuple[MaterializationRun, tuple[MaterializationBatch, ...]]:
         with session_scope() as session:
-            record = _required(session, run_id)
-            if record.status != "running":
-                raise RuntimeError("only a running run can advance")
-            expected = record.stages[
-                record.current_stage : record.current_stage + len(stages)
-            ]
-            if tuple(expected) != stages:
-                raise RuntimeError("materialization workload progress is stale")
-            cursors = dict(record.cursors)
-            if cursor is not None:
-                for stage in stages:
-                    cursors[stage] = cursor
-            record.cursors = cursors
-            record.source_items += source_items
-            record.source_bytes += source_bytes
-            record.output_rows += output_rows
-            if done:
-                record.current_stage += len(stages)
-            return _run(record)
-
-    def begin_catchup(
-        self,
-        run_id: UUID,
-        *,
-        target_snapshot: int,
-    ) -> MaterializationRun:
-        with session_scope() as session:
-            record = _required(session, run_id)
-            if target_snapshot <= record.catchup_snapshot:
-                raise ValueError("catch-up target must advance the snapshot")
-            if record.catchup_target_snapshot is not None:
-                if record.catchup_target_snapshot != target_snapshot:
-                    raise RuntimeError("catch-up target is already fixed")
-                return _run(record)
-            record.catchup_target_snapshot = target_snapshot
-            record.catchup_stage = 0
-            record.catchup_cursors = {
-                stage: None for stage in record.stages
-            }
-            return _run(record)
-
-    def advance_catchup(
-        self,
-        run_id: UUID,
-        *,
-        stages: tuple[ProjectionName, ...],
-        cursor: str | None,
-        done: bool,
-        source_items: int,
-        source_bytes: int,
-        output_rows: int,
-    ) -> MaterializationRun:
-        with session_scope() as session:
-            record = _required(session, run_id)
-            expected = record.stages[
-                record.catchup_stage : record.catchup_stage + len(stages)
-            ]
-            if (
-                record.catchup_target_snapshot is None
-                or tuple(expected) != stages
-            ):
-                raise RuntimeError(
-                    "materialization catch-up workload progress is stale"
+            record = _required_run(session, run_id, lock=True)
+            if record.status != "planning":
+                return _run(record), ()
+            if record.generation_tables:
+                raise RuntimeError("rebuild generations were already planned")
+            records = [
+                MaterializationBatchRecord(
+                    run_id=run_id,
+                    ordinal=index,
+                    snapshot=snapshot,
+                    visit_ids=visit_ids,
                 )
-            cursors = dict(record.catchup_cursors)
-            if cursor is not None:
-                for stage in stages:
-                    cursors[stage] = cursor
-            record.catchup_cursors = cursors
-            record.source_items += source_items
-            record.source_bytes += source_bytes
-            record.output_rows += output_rows
-            if done:
-                record.catchup_stage += len(stages)
-            if record.catchup_stage == len(record.stages):
-                record.catchup_snapshot = record.catchup_target_snapshot
-                record.catchup_target_snapshot = None
-                record.catchup_stage = 0
-                record.catchup_cursors = {}
+                for index, (snapshot, visit_ids) in enumerate(batches)
+            ]
+            session.add_all(records)
+            record.generation_tables = generation_tables
+            record.total_batches = len(records)
+            record.status = "running"
+            session.flush()
+            return _run(record), tuple(_batch(item) for item in records)
+
+    def get_batch(self, batch_id: UUID) -> MaterializationBatch | None:
+        with session_scope() as session:
+            record = session.get(MaterializationBatchRecord, batch_id)
+            return _batch(record) if record is not None else None
+
+    def mark_batch_published(self, batch_id: UUID) -> None:
+        with session_scope() as session:
+            record = session.scalar(
+                select(MaterializationBatchRecord)
+                .where(MaterializationBatchRecord.id == batch_id)
+                .with_for_update()
+            )
+            if record is None:
+                raise KeyError(batch_id)
+            if record.published_at is None:
+                record.published_at = datetime.now(timezone.utc)
+
+    def start_batch(self, batch_id: UUID) -> MaterializationBatch | None:
+        with session_scope() as session:
+            record = session.scalar(
+                select(MaterializationBatchRecord)
+                .where(MaterializationBatchRecord.id == batch_id)
+                .with_for_update()
+            )
+            if record is None or record.status == "completed":
+                return _batch(record) if record is not None else None
+            record.status = "running"
+            record.attempts += 1
+            record.started_at = datetime.now(timezone.utc)
+            return _batch(record)
+
+    def complete_batch(
+        self,
+        batch_id: UUID,
+        *,
+        source_items: int,
+        source_bytes: int,
+        output_rows: int,
+        output_bytes: int,
+    ) -> MaterializationRun:
+        with session_scope() as session:
+            batch = session.scalar(
+                select(MaterializationBatchRecord)
+                .where(MaterializationBatchRecord.id == batch_id)
+                .with_for_update()
+            )
+            if batch is None:
+                raise KeyError(batch_id)
+            run = _required_run(session, batch.run_id, lock=True)
+            if batch.status != "completed":
+                batch.status = "completed"
+                batch.completed_at = datetime.now(timezone.utc)
+                batch.source_items = source_items
+                batch.source_bytes = source_bytes
+                batch.output_rows = output_rows
+                batch.output_bytes = output_bytes
+                run.completed_batches += 1
+                run.source_items += source_items
+                run.source_bytes += source_bytes
+                run.output_rows += output_rows
+                run.output_bytes += output_bytes
+            return _run(run)
+
+    def claim_activation(self, run_id: UUID) -> MaterializationRun | None:
+        with session_scope() as session:
+            record = _required_run(session, run_id, lock=True)
+            if record.status == "activating":
+                return _run(record)
+            if (
+                record.status != "running"
+                or record.completed_batches != record.total_batches
+            ):
+                return None
+            record.status = "activating"
             return _run(record)
 
-    def complete(self, run_id: UUID) -> MaterializationRun:
+    def mark_activation_published(
+        self,
+        run_id: UUID,
+        *,
+        completed_batches: int,
+    ) -> None:
         with session_scope() as session:
-            record = _required(session, run_id)
-            if record.current_stage != len(record.stages):
-                raise RuntimeError("cannot complete before every stage is done")
+            record = _required_run(session, run_id, lock=True)
+            if (
+                record.status in {"running", "activating"}
+                and record.completed_batches == completed_batches
+                and record.total_batches == completed_batches
+                and record.activation_published_at is None
+            ):
+                record.activation_published_at = datetime.now(timezone.utc)
+
+    def add_catchup(
+        self,
+        run_id: UUID,
+        *,
+        through_snapshot: int,
+        visit_id_batches: list[list[str]],
+    ) -> tuple[MaterializationBatch, ...]:
+        with session_scope() as session:
+            run = _required_run(session, run_id, lock=True)
+            if run.status != "activating":
+                raise RuntimeError("catch-up requires an activating rebuild")
+            start = run.total_batches
+            records = [
+                MaterializationBatchRecord(
+                    run_id=run_id,
+                    ordinal=start + index,
+                    snapshot=through_snapshot,
+                    visit_ids=visit_ids,
+                )
+                for index, visit_ids in enumerate(visit_id_batches)
+            ]
+            session.add_all(records)
+            run.total_batches += len(records)
+            run.covered_snapshot = through_snapshot
+            run.status = "running"
+            run.activation_published_at = None
+            session.flush()
+            return tuple(_batch(item) for item in records)
+
+    def complete(self, run_id: UUID, *, activation_snapshot: int) -> MaterializationRun:
+        with session_scope() as session:
+            record = _required_run(session, run_id, lock=True)
+            if record.status != "activating":
+                raise RuntimeError("only an activating rebuild can complete")
             record.status = "completed"
+            record.activation_snapshot = activation_snapshot
             record.completed_at = datetime.now(timezone.utc)
             return _run(record)
 
     def fail(self, run_id: UUID, error: BaseException) -> MaterializationRun:
         with session_scope() as session:
-            record = _required(session, run_id)
+            record = _required_run(session, run_id, lock=True)
             if record.status == "completed":
                 return _run(record)
             record.status = "failed"
@@ -256,52 +302,102 @@ class MaterializationRunStore:
             record.error = f"{type(error).__name__}: {error}"[:4000]
             return _run(record)
 
+    def mark_cleanup_completed(self, run_id: UUID) -> None:
+        with session_scope() as session:
+            record = _required_run(session, run_id, lock=True)
+            if record.status != "failed":
+                raise RuntimeError("only failed rebuilds can be cleaned up")
+            if record.cleanup_completed_at is None:
+                record.cleanup_completed_at = datetime.now(timezone.utc)
+
+    def recoverable(
+        self,
+    ) -> tuple[
+        list[UUID],
+        list[UUID],
+        list[tuple[UUID, int]],
+        list[MaterializationRun],
+    ]:
+        with session_scope() as session:
+            plans = list(
+                session.scalars(
+                    select(MaterializationRunRecord.id).where(
+                        MaterializationRunRecord.status.in_(("queued", "planning")),
+                        MaterializationRunRecord.plan_published_at.is_(None),
+                    )
+                )
+            )
+            batches = list(
+                session.scalars(
+                    select(MaterializationBatchRecord.id)
+                    .join(
+                        MaterializationRunRecord,
+                        MaterializationRunRecord.id
+                        == MaterializationBatchRecord.run_id,
+                    )
+                    .where(
+                        MaterializationBatchRecord.status.in_(("queued", "running")),
+                        MaterializationBatchRecord.published_at.is_(None),
+                        MaterializationRunRecord.status.in_(("running", "activating")),
+                    )
+                )
+            )
+            activations = list(
+                session.execute(
+                    select(
+                        MaterializationRunRecord.id,
+                        MaterializationRunRecord.completed_batches,
+                    ).where(
+                        MaterializationRunRecord.activation_published_at.is_(
+                            None
+                        ),
+                        (
+                            MaterializationRunRecord.status == "activating"
+                        )
+                        | (
+                            (
+                                MaterializationRunRecord.status == "running"
+                            )
+                            & (
+                                MaterializationRunRecord.completed_batches
+                                == MaterializationRunRecord.total_batches
+                            )
+                        )
+                    )
+                ).tuples()
+            )
+            cleanups = [
+                _run(record)
+                for record in session.scalars(
+                    select(MaterializationRunRecord).where(
+                        MaterializationRunRecord.status == "failed",
+                        MaterializationRunRecord.cleanup_completed_at.is_(None),
+                    )
+                )
+            ]
+            return plans, batches, activations, cleanups
+
 
 class AsyncMaterializationRunStore:
     def __init__(self, store: MaterializationRunStore | None = None) -> None:
         self._store = store or MaterializationRunStore()
 
-    async def create(self, **kwargs) -> MaterializationRun:
-        return await asyncio.to_thread(self._store.create, **kwargs)
+    def __getattr__(self, name: str):
+        method = getattr(self._store, name)
 
-    async def get(self, run_id: UUID) -> MaterializationRun | None:
-        return await asyncio.to_thread(self._store.get, run_id)
+        async def call(*args, **kwargs):
+            return await asyncio.to_thread(method, *args, **kwargs)
 
-    async def list(self, *, limit: int = 100) -> list[MaterializationRun]:
-        return await asyncio.to_thread(self._store.list, limit=limit)
-
-    async def start(self, run_id: UUID) -> MaterializationRun:
-        return await asyncio.to_thread(self._store.start, run_id)
-
-    async def set_destinations(self, run_id: UUID, destinations):
-        return await asyncio.to_thread(
-            self._store.set_destinations, run_id, destinations
-        )
-
-    async def advance(self, run_id: UUID, **kwargs) -> MaterializationRun:
-        return await asyncio.to_thread(self._store.advance, run_id, **kwargs)
-
-    async def begin_catchup(self, run_id: UUID, **kwargs):
-        return await asyncio.to_thread(
-            self._store.begin_catchup, run_id, **kwargs
-        )
-
-    async def advance_catchup(self, run_id: UUID, **kwargs):
-        return await asyncio.to_thread(
-            self._store.advance_catchup, run_id, **kwargs
-        )
-
-    async def complete(self, run_id: UUID) -> MaterializationRun:
-        return await asyncio.to_thread(self._store.complete, run_id)
-
-    async def fail(
-        self, run_id: UUID, error: BaseException
-    ) -> MaterializationRun:
-        return await asyncio.to_thread(self._store.fail, run_id, error)
+        return call
 
 
-def _required(session, run_id: UUID) -> MaterializationRunRecord:
-    record = session.get(MaterializationRunRecord, run_id)
+def _required_run(session, run_id: UUID, *, lock: bool) -> MaterializationRunRecord:
+    statement = select(MaterializationRunRecord).where(
+        MaterializationRunRecord.id == run_id
+    )
+    if lock:
+        statement = statement.with_for_update()
+    record = session.scalar(statement)
     if record is None:
         raise KeyError(run_id)
     return record
@@ -310,26 +406,32 @@ def _required(session, run_id: UUID) -> MaterializationRunRecord:
 def _run(record: MaterializationRunRecord) -> MaterializationRun:
     return MaterializationRun(
         id=record.id,
-        mode=record.mode,
         status=record.status,
-        requested_stages=tuple(record.requested_stages),
-        stages=tuple(record.stages),
-        projector_versions=dict(record.projector_versions),
         source_snapshot=record.source_snapshot,
-        catchup_snapshot=record.catchup_snapshot,
-        catchup_target_snapshot=record.catchup_target_snapshot,
-        catchup_stage=record.catchup_stage,
-        catchup_cursors=dict(record.catchup_cursors),
-        current_stage=record.current_stage,
-        cursors=dict(record.cursors),
-        destinations=dict(record.destinations),
-        item_budget=record.item_budget,
-        byte_budget=record.byte_budget,
+        covered_snapshot=record.covered_snapshot,
+        activation_snapshot=record.activation_snapshot,
+        generation_tables=dict(record.generation_tables),
+        batch_size=record.batch_size,
+        total_batches=record.total_batches,
+        completed_batches=record.completed_batches,
         source_items=record.source_items,
         source_bytes=record.source_bytes,
         output_rows=record.output_rows,
+        output_bytes=record.output_bytes,
         created_at=record.created_at,
         started_at=record.started_at,
         completed_at=record.completed_at,
         error=record.error,
+    )
+
+
+def _batch(record: MaterializationBatchRecord) -> MaterializationBatch:
+    return MaterializationBatch(
+        id=record.id,
+        run_id=record.run_id,
+        ordinal=record.ordinal,
+        snapshot=record.snapshot,
+        visit_ids=tuple(record.visit_ids),
+        status=record.status,
+        attempts=record.attempts,
     )

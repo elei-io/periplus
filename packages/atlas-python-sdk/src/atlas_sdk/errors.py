@@ -16,7 +16,7 @@ class AtlasConnectionError(AtlasError):
 
 
 class AuthenticationError(AtlasConnectionError):
-    """Atlas or DuckBasin rejected the supplied credentials."""
+    """Atlas rejected the supplied credentials."""
 
 
 class ApiError(AtlasError):
@@ -45,10 +45,6 @@ class WaitTimeout(AtlasError, TimeoutError):
 
 class CrawlFailed(AtlasError):
     """A crawl reached an unsuccessful terminal state."""
-
-
-class MaterializationFailed(AtlasError):
-    """Committed crawl evidence cannot finish materialization."""
 
 
 class CatalogueVersionError(AtlasConnectionError):

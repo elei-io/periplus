@@ -26,7 +26,7 @@ to encode around one accidental optimizer plan.
 - Postgres owns editable control state and current graph execution: crawl plans, runs, requests,
   edge evaluations, admission deduplication, progress counters, schedules, policies, matches,
   schemas, catalogue definitions, and the transactional graph outbox.
-- NATS JetStream/KV owns graph work delivery, worker presence, CDC events, operation leases,
+- NATS JetStream/KV owns graph and materialization work delivery, worker presence, operation leases,
   and per-domain crawl pacing/concurrency. It is not authoritative graph state.
 - Crawl history belongs only in DuckLake; never reintroduce it into control-plane Postgres.
 - Raw HTML is immutable, content-addressed, and stored through
@@ -42,30 +42,22 @@ to encode around one accidental optimizer plan.
   service owns transport choice, browser-farm capacity, profiles, and acquisition strategy.
 - Ingestion workers own base crawl evidence writes. They are independently observable
   `critical` catalogue work, never settle graph traversal, and never wait for user materialization.
-- The CDC ingress consumes Basin-owned global DML/DDL JetStream streams, publishes per-table
-  DML ticks and global DDL changes into Atlas JetStream, and ACKs Basin only after Atlas PubAcks.
-  Two source-owned workloads consume `ingest.documents` and `ingest.visits`, coalesce ticks, and
-  commit their fixed projection stages before ACK. The document workload owns HTML elements,
-  JSON-LD, and links; the visit workload owns pages and page observations. Fixed projections use
-  DuckLake snapshot changes to compute only affected content hashes, visit URLs, or document
-  observations. Backfills and rebuilds use the same bounded stage logic. Rebuilds scan a pinned
-  source snapshot into shadow tables, catch up in persisted bounded batches, and atomically swap
-  only after reaching the source high-water mark. There is no target-to-target CDC chain, scope
-  queue, coverage table, revision fence, fan-out ledger, or separate commit queue.
-- An ingestion process owns four independent session-affine DuckBasin clients; a materialization
-  process owns a shared pool of eight. Every client is serialized, while independent fixed
-  projection stages and maintenance batches borrow different clients and run concurrently.
-  Bounded client pools provide the normal executor capacity; horizontal replicas are an
-  availability and post-saturation scaling control.
+- Complete materialization rebuilds use one visit-scoped workload. A visit always produces page
+  work and may also produce document work. A planner pins a source snapshot and publishes bounded
+  visit-ID batches to JetStream. Horizontally scalable workers project locally, register final
+  bucketed Parquet for large outputs, MERGE narrow keyed outputs, record the applied batch in the
+  same DuckLake transaction, and ACK only after commit. All material tables belong to one hidden
+  generation, catch up inserted visits to a source high-water mark, and activate atomically.
+  Incremental post-activation maintenance is a separate future concern.
 - Crawl-plan edges use bounded standalone DuckDB connections over the current
   page's navigation package. Historical catalogue joins are not a plan-edge capability.
-- DuckBasin owns compaction, old-file cleanup, and physical lake maintenance. Atlas housekeeping
+- LakeDucktor owns compaction, old-file cleanup, and physical lake maintenance. Atlas housekeeping
   only reclaims Atlas-owned staging and navigation objects.
 - Per-domain crawl permits and operation leases are distinct. Domain permits enforce website
   politeness and leases suppress duplicate durable execution. Do not hold a PostgreSQL advisory
   lock across a remote DuckLake operation.
-- DuckBasin owns DuckLake metadata, analytical Parquet layout, compaction, and lake storage. Atlas
-  uploads bounded local Arrow/Parquet batches through Quack and does not receive lake S3 credentials.
+- Atlas attaches its own DuckLake directly through the official DuckDB extensions and owns logical
+  table layout and generation transactions. LakeDucktor owns physical lake maintenance.
 - Acquisition workers connect to the configured standard CDP endpoint. Atlas owns content correctness,
   including when scrolling is required; the CDP service owns rendering and physical capacity.
 - API and CLI code validate and adapt. Graph execution belongs in runtime, acquisition belongs in
@@ -88,13 +80,11 @@ to encode around one accidental optimizer plan.
   health, and recovery.
 - `backend/src/atlas/materialization/` — fixed document and visit projections, maintenance, and
   materialization process composition.
-- `backend/src/atlas/materialization/cdc/` — Basin CDC connections, contracts, ingress, metrics,
-  and process composition.
 - `backend/src/atlas/materialization/dom/` — versioned structural DOM projection.
 - `backend/src/atlas/query/` — bounded physical SQL inspection.
 - `backend/src/atlas/operations/` — status, dead-letter operations, and housekeeping.
 - `backend/src/atlas/platform/` — configuration, worker health/lifecycle, and Postgres, NATS, and
-  DuckBasin adapters; business workflows do not belong here.
+  DuckLake adapters; business workflows do not belong here.
 - `backend/src/atlas/entrypoints/` — thin API, worker CLI, and setup composition roots.
 - `packages/atlas-web-shell/` — distributable browser SQL shell built on `atlas-console-core`.
 - `web/` — React frontend application; it consumes `atlas-web-shell`.
@@ -149,23 +139,19 @@ cd ../atlas
 ./ducklake.sh
 ```
 
-`./ducklake.sh` opens the native DuckDB terminal with `atlas_test` attached read-only. Pass
-`--sql "..."` to execute one statement and exit. The direct connection is development-only:
-credentials stay in the root `.env.extra`, and production Atlas continues to use Quack without
-lake metadata or object-store credentials. See
+`./ducklake.sh` opens the native DuckDB terminal with the configured Atlas DuckLake attached
+read-only. Pass `--sql "..."` to execute one statement and exit. It uses the same
+`ATLAS_DUCKLAKE_*` attachment contract as Atlas. See
 [docs/EXTENSION_DEVELOPMENT.md](docs/EXTENSION_DEVELOPMENT.md) for the full loop and testing
 requirements.
 
-## DuckBasin and Quack upstream
+## DuckLake upstream
 
-Atlas runtime code intentionally uses only the official DuckDB Python package plus Quack for
-managed DuckLake access. Do not introduce a Basin SDK, `ducklake-client`, local DuckLake attachment
-configuration, lake object-store credentials, or Atlas-owned CDC cursors into application packages
-or deployed processes. The development-only direct client under `backend/scripts/`, documented in
-[docs/EXTENSION_DEVELOPMENT.md](docs/EXTENSION_DEVELOPMENT.md), is the sole local attachment
-boundary. When Atlas reveals a missing Quack or DuckBasin primitive, record actionable evidence in
-[UPSTREAM.md](UPSTREAM.md) and prefer a coherent upstream fix over an Atlas-only compatibility
-layer.
+Atlas runtime code intentionally uses only the official DuckDB `ducklake` and metadata-store
+extensions. Do not introduce a Basin SDK, Quack transport, compatibility attachment, or
+Atlas-owned incremental cursor without an active design. When Atlas reveals a missing DuckLake
+primitive, record actionable evidence in [UPSTREAM.md](UPSTREAM.md) and prefer a coherent upstream
+fix over an Atlas-only compatibility layer.
 
 ## Implementation rules
 

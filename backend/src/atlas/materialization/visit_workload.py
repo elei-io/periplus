@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+from functools import lru_cache
 from urllib.parse import urlsplit
 
 import tldextract
-from atlas.urls import normalize_url
 from atlas.platform.catalogue import Catalogue, page_id_for
 
 from atlas.materialization.sql import (
@@ -45,10 +46,10 @@ def changed_visit_rows(
     rows = catalogue.trusted_remote_rows(
         f"""
         SELECT visit_id::VARCHAR, document_id,
-               coalesce(effective_url, requested_url), observed_at
+               coalesce(effective_url, requested_url),
+               coalesce(finished_at, observed_at, started_at, admitted_at)
         FROM ingest.visits AT (VERSION => {end_snapshot})
         WHERE visit_id IN ({sql_string_list(set(visit_ids))})
-          AND observed_at IS NOT NULL
         ORDER BY visit_id
         """
     )
@@ -57,7 +58,6 @@ def changed_visit_rows(
 
 def page_row(normalized_url: str) -> dict[str, object]:
     parsed = urlsplit(normalized_url)
-    result = _TLD_EXTRACT(parsed.hostname or "")
     return {
         "page_id": str(page_id_for(normalized_url)),
         "normalized_url": normalized_url,
@@ -66,26 +66,40 @@ def page_row(normalized_url: str) -> dict[str, object]:
         "port": parsed.port,
         "path": parsed.path,
         "query": parsed.query or None,
-        "registrable_domain": (
-            result.top_domain_under_public_suffix or None
-        ),
+        "registrable_domain": _registrable_domain(parsed.hostname or ""),
     }
+
+
+@lru_cache(maxsize=4_096)
+def _registrable_domain(hostname: str) -> str | None:
+    return _TLD_EXTRACT(hostname).top_domain_under_public_suffix or None
 
 
 def page_observation_row(
     visit_id: object,
     document_id: object,
-    raw_url: object,
-    observed_at: object,
+    page_id: object,
+    visit_at: object,
 ) -> dict[str, object]:
-    normalized_url = normalize_url(str(raw_url))
     return {
-        "page_id": str(page_id_for(normalized_url)),
+        "page_id": str(page_id),
         "visit_id": str(visit_id),
         "document_id": (
             str(document_id) if document_id is not None else None
         ),
-        "observed_at": observed_at,
+        "visit_at": visit_at,
+    }
+
+
+def page_head_row(
+    visit_id: object,
+    page_id: object,
+    visit_at: object,
+) -> dict[str, object]:
+    return {
+        "page_id": str(page_id),
+        "visit_id": str(visit_id),
+        "visit_at": visit_at,
     }
 
 
@@ -94,10 +108,15 @@ def merge_page_rows(
     rows: list[dict[str, object]],
     *,
     table_name: str = "pages",
+    transaction: bool = True,
 ) -> None:
     if not rows:
         return
-    with catalogue.remote_transaction():
+    with (
+        catalogue.remote_transaction()
+        if transaction
+        else nullcontext()
+    ):
         for batch in row_batches(rows):
             values = ", ".join(
                 "("
@@ -136,10 +155,15 @@ def merge_page_observation_rows(
     *,
     table_name: str = "page_observations",
     replaced_visit_ids: frozenset[str] = frozenset(),
+    transaction: bool = True,
 ) -> None:
     if not rows and not replaced_visit_ids:
         return
-    with catalogue.remote_transaction():
+    with (
+        catalogue.remote_transaction()
+        if transaction
+        else nullcontext()
+    ):
         if replaced_visit_ids:
             catalogue.trusted_remote_execute(
                 f"DELETE FROM material.{table_name} "
@@ -158,7 +182,7 @@ def merge_page_observation_rows(
                             if row["document_id"] is None
                             else f"UUID {sql_string(str(row['document_id']))}"
                         ),
-                        sql_timestamp(row["observed_at"]),
+                        sql_timestamp(row["visit_at"]),
                     )
                 )
                 + ")"
@@ -168,13 +192,105 @@ def merge_page_observation_rows(
                 f"""
                 MERGE INTO material.{table_name} AS target
                 USING (VALUES {values}) AS delta(
-                  page_id, visit_id, document_id, observed_at
+                  page_id, visit_id, document_id, visit_at
                 )
                   ON target.visit_id = delta.visit_id
                 WHEN MATCHED THEN UPDATE SET
                   page_id = delta.page_id,
                   document_id = delta.document_id,
-                  observed_at = delta.observed_at
+                  visit_at = delta.visit_at
                 WHEN NOT MATCHED THEN INSERT
                 """
             )
+
+
+def merge_page_head_rows(
+    catalogue: Catalogue,
+    rows: list[dict[str, object]],
+    *,
+    table_name: str = "page_heads",
+    transaction: bool = True,
+) -> None:
+    if not rows:
+        return
+    newest: dict[str, dict[str, object]] = {}
+    for row in rows:
+        page_id = str(row["page_id"])
+        current = newest.get(page_id)
+        candidate = (row["visit_at"], str(row["visit_id"]))
+        if current is None or candidate > (
+            current["visit_at"],
+            str(current["visit_id"]),
+        ):
+            newest[page_id] = row
+    with (
+        catalogue.remote_transaction()
+        if transaction
+        else nullcontext()
+    ):
+        for batch in row_batches(list(newest.values())):
+            values = ", ".join(
+                "("
+                + ", ".join(
+                    (
+                        f"UUID {sql_string(str(row['page_id']))}",
+                        f"UUID {sql_string(str(row['visit_id']))}",
+                        sql_timestamp(row["visit_at"]),
+                    )
+                )
+                + ")"
+                for row in batch
+            )
+            catalogue.trusted_remote_execute(
+                f"""
+                MERGE INTO material.{table_name} AS target
+                USING (VALUES {values}) AS delta(
+                  page_id, visit_id, visit_at
+                )
+                  ON target.page_id = delta.page_id
+                WHEN MATCHED AND (
+                  delta.visit_at > target.visit_at
+                  OR (
+                    delta.visit_at = target.visit_at
+                    AND delta.visit_id > target.visit_id
+                  )
+                ) THEN UPDATE SET
+                  visit_id = delta.visit_id,
+                  visit_at = delta.visit_at
+                WHEN NOT MATCHED THEN INSERT
+                """
+            )
+
+
+def rebuild_page_heads(
+    catalogue: Catalogue,
+    page_ids: set[str],
+    *,
+    observations_table: str = "page_observations",
+    heads_table: str = "page_heads",
+    transaction: bool = True,
+) -> None:
+    if not page_ids:
+        return
+    identifiers = sql_string_list(page_ids)
+    with (
+        catalogue.remote_transaction()
+        if transaction
+        else nullcontext()
+    ):
+        catalogue.trusted_remote_execute(
+            f"DELETE FROM material.{heads_table} "
+            f"WHERE page_id IN ({identifiers})"
+        )
+        catalogue.trusted_remote_execute(
+            f"""
+            INSERT INTO material.{heads_table}
+        SELECT page_id, visit_id, visit_at
+            FROM material.{observations_table}
+            WHERE page_id IN ({identifiers})
+            QUALIFY row_number() OVER (
+              PARTITION BY page_id
+              ORDER BY visit_at DESC, visit_id DESC
+            ) = 1
+            """
+        )

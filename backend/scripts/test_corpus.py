@@ -1,4 +1,4 @@
-"""Reconcile a deterministic Common Crawl corpus into a disposable Atlas lake."""
+"""Append deterministic Common Crawl samples to a disposable Atlas lake."""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ class Targets:
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Reconcile a deterministic Common Crawl sample through Atlas's "
+            "Append a deterministic Common Crawl sample through Atlas's "
             "external HTML ingestion API."
         )
     )
@@ -90,7 +90,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         dest="known",
         type=non_negative_int,
         default=0,
-        help="number of HTTP 200 pages selected from known domains",
+        help="number of new HTTP 200 pages to add from known domains",
     )
     parser.add_argument(
         "--noise",
@@ -98,7 +98,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         dest="noise",
         type=non_negative_int,
         default=0,
-        help="number of arbitrary internet pages, including the failure share",
+        help="number of new arbitrary pages to add, including the failure share",
     )
     parser.add_argument(
         "--fail",
@@ -287,7 +287,7 @@ def query_existing(api_url: str, dataset: str) -> dict[Tier, set[int]]:
                        ) AS BIGINT
                    )
                ) AS ordinals
-        FROM ingest.visits
+        FROM web.visit
         WHERE provenance.kind::VARCHAR = 'external'
           AND provenance.system::VARCHAR = 'common-crawl'
           AND provenance.dataset::VARCHAR = {quoted}
@@ -311,6 +311,53 @@ def query_existing(api_url: str, dataset: str) -> dict[Tier, set[int]]:
                 int(ordinal) for ordinal in ordinals if ordinal is not None
             }
     return existing
+
+
+def addition_bounds(
+    existing: dict[Tier, set[int]],
+    additions: Targets,
+) -> dict[Tier, tuple[int, int]]:
+    bounds: dict[Tier, tuple[int, int]] = {}
+    for tier in ("known", "noise", "failure"):
+        start = max(existing[tier], default=-1) + 1
+        bounds[tier] = (start, start + additions.for_tier(tier))
+    return bounds
+
+
+def wait_for_ingestion(
+    api_url: str,
+    dataset: str,
+    selected: list[Capture],
+    *,
+    timeout_seconds: float = 900,
+    poll_seconds: float = 1,
+) -> None:
+    expected: dict[Tier, set[int]] = {
+        "known": set(),
+        "noise": set(),
+        "failure": set(),
+    }
+    for capture in selected:
+        expected[capture.tier].add(capture.ordinal)
+    deadline = time.monotonic() + timeout_seconds
+    previous_remaining: int | None = None
+    while True:
+        existing = query_existing(api_url, dataset)
+        remaining = sum(
+            len(expected[tier] - existing[tier])
+            for tier in ("known", "noise", "failure")
+        )
+        if remaining != previous_remaining:
+            report(f"phase=ingestion remaining={remaining}")
+            previous_remaining = remaining
+        if remaining == 0:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"timed out waiting for {remaining} corpus observations "
+                "to finish ingestion"
+            )
+        time.sleep(poll_seconds)
 
 
 def sql_string(value: str) -> str:
@@ -776,96 +823,6 @@ def stable_key(seed: int, *values: str) -> bytes:
     return digest.digest()
 
 
-def delete_excess(dataset: str, targets: Targets) -> int:
-    """Delete only excess evidence owned by this exact disposable corpus."""
-    from atlas.platform.catalogue import catalogue_from_env
-    from atlas.ingestion.objects.config import object_store_from_env
-
-    predicate = corpus_predicate(dataset)
-    excess = excess_predicate(targets)
-    with catalogue_from_env(threads=1) as catalogue:
-        doomed = catalogue.trusted_remote_rows(
-            """
-            SELECT documents.object_key
-            FROM ingest.visits AS visits
-            JOIN ingest.documents AS documents USING (visit_id)
-            WHERE """
-            + predicate
-            + " AND ("
-            + excess
-            + ")"
-        )
-        if not doomed:
-            return 0
-        with catalogue.remote_transaction():
-            catalogue.trusted_remote_execute(
-                """
-                DELETE FROM ingest.documents
-                WHERE visit_id IN (
-                    SELECT visit_id FROM ingest.visits
-                    WHERE """
-                + predicate
-                + " AND ("
-                + excess
-                + "))"
-            )
-            catalogue.trusted_remote_execute(
-                "DELETE FROM ingest.crawls WHERE crawl_id IN "
-                "(SELECT crawl_id FROM ingest.visits WHERE "
-                + predicate
-                + " AND ("
-                + excess
-                + "))"
-            )
-            catalogue.trusted_remote_execute(
-                "DELETE FROM ingest.visits WHERE "
-                + predicate
-                + " AND ("
-                + excess
-                + ")"
-            )
-        candidates = tuple(dict.fromkeys(str(row[0]) for row in doomed))
-        unreferenced: list[str] = []
-        for batch in chunked(candidates, 500):
-            values = ", ".join(sql_string(value) for value in batch)
-            retained = {
-                str(row[0])
-                for row in catalogue.trusted_remote_rows(
-                    "SELECT DISTINCT object_key FROM ingest.documents "
-                    f"WHERE object_key IN ({values})"
-                )
-            }
-            unreferenced.extend(value for value in batch if value not in retained)
-    object_store_from_env().delete_many(tuple(unreferenced))
-    return len(doomed)
-
-
-def corpus_predicate(dataset: str) -> str:
-    return (
-        "provenance.kind::VARCHAR = 'external' "
-        "AND provenance.system::VARCHAR = 'common-crawl' "
-        f"AND provenance.dataset::VARCHAR = {sql_string(dataset)}"
-    )
-
-
-def excess_predicate(targets: Targets) -> str:
-    clauses = []
-    for tier in ("known", "noise", "failure"):
-        target = targets.for_tier(tier)
-        clauses.append(
-            f"(split_part(provenance.source_record_id::VARCHAR, ':', 1) = "
-            f"{sql_string(tier)} AND "
-            "try_cast(split_part(provenance.source_record_id::VARCHAR, ':', 2) "
-            f"AS BIGINT) >= {target})"
-        )
-    return " OR ".join(clauses)
-
-
-def chunked(values: tuple[str, ...], size: int) -> Iterable[tuple[str, ...]]:
-    for index in range(0, len(values), size):
-        yield values[index : index + size]
-
-
 def ingest_capture(
     capture: Capture,
     *,
@@ -939,7 +896,7 @@ def extract_html(compressed_record: bytes) -> tuple[bytes, str | None, str | Non
 
 
 def reconcile(arguments: argparse.Namespace) -> int:
-    targets = targets_for(
+    additions = targets_for(
         arguments.known,
         arguments.noise,
         arguments.failure_rate,
@@ -955,10 +912,16 @@ def reconcile(arguments: argparse.Namespace) -> int:
         if arguments.dry_run
         else query_existing(arguments.api_url, dataset)
     )
+    bounds = addition_bounds(existing, additions)
+    selection_targets = Targets(
+        known=bounds["known"][1],
+        noise=bounds["noise"][1],
+        failure=bounds["failure"][1],
+    )
     report(
-        f"dataset={dataset} desired={targets.total} "
-        f"(known={targets.known}, noise={targets.noise}, "
-        f"failure={targets.failure})"
+        f"dataset={dataset} add={additions.total} "
+        f"(known={additions.known}, noise={additions.noise}, "
+        f"failure={additions.failure})"
     )
     report(
         "existing="
@@ -977,31 +940,31 @@ def reconcile(arguments: argparse.Namespace) -> int:
             crawl=arguments.crawl,
             seed=arguments.seed,
             status_filter="status:200",
-            minimum_candidates=targets.known,
+            minimum_candidates=selection_targets.known,
             minimum_domains=min(3, len(known_domains)),
         )
-        if len(grouped["known"]) < targets.known
+        if len(grouped["known"]) < selection_targets.known
         else []
     )
     excluded: set[tuple[str, int, int]] = set()
     extend_from_candidates(
         grouped["known"],
         tier="known",
-        target=targets.known,
+        target=selection_targets.known,
         candidates=known_candidates,
         excluded=excluded,
     )
     if (
-        len(grouped["noise"]) < targets.noise
-        or len(grouped["failure"]) < targets.failure
+        len(grouped["noise"]) < selection_targets.noise
+        or len(grouped["failure"]) < selection_targets.failure
     ):
         noise_candidates, failure_candidates = query_noise_index_candidates(
             crawl=arguments.crawl,
             seed=arguments.seed,
             cache_dir=arguments.cache_dir.resolve(),
             known_domains=known_domains,
-            noise_target=targets.noise,
-            failure_target=targets.failure,
+            noise_target=selection_targets.noise,
+            failure_target=selection_targets.failure,
             shard_limit=arguments.noise_index_shards,
         )
     else:
@@ -1009,14 +972,14 @@ def reconcile(arguments: argparse.Namespace) -> int:
     extend_from_candidates(
         grouped["noise"],
         tier="noise",
-        target=targets.noise,
+        target=selection_targets.noise,
         candidates=noise_candidates,
         excluded=excluded,
     )
     extend_from_candidates(
         grouped["failure"],
         tier="failure",
-        target=targets.failure,
+        target=selection_targets.failure,
         candidates=failure_candidates,
         excluded=excluded,
     )
@@ -1034,26 +997,20 @@ def reconcile(arguments: argparse.Namespace) -> int:
         )
         return 0
 
-    report("phase=reconciliation")
-    removed = delete_excess(dataset, targets)
-    if removed:
-        report(f"removed={removed} excess corpus observations")
-        existing = query_existing(arguments.api_url, dataset)
-
-    missing = [
+    report("phase=submission")
+    selected = [
         capture
         for tier in ("known", "noise", "failure")
-        for capture in grouped[tier][: targets.for_tier(tier)]
-        if capture.ordinal not in existing[tier]
+        for capture in grouped[tier][bounds[tier][0] : bounds[tier][1]]
     ]
-    if missing:
+    if selected:
         report(
-            f"phase=submission missing={len(missing)} "
+            f"adding={len(selected)} "
             f"concurrency={arguments.jobs}"
         )
         completed = 0
         dispositions: dict[str, int] = {}
-        interval = progress_interval(len(missing))
+        interval = progress_interval(len(selected))
 
         limits = httpx.Limits(
             max_connections=arguments.jobs,
@@ -1076,7 +1033,7 @@ def reconcile(arguments: argparse.Namespace) -> int:
             with ThreadPoolExecutor(max_workers=arguments.jobs) as executor:
                 dispositions_iter = executor.map(
                     ingest_one,
-                    missing,
+                    selected,
                     buffersize=arguments.jobs * 2,
                 )
                 for disposition in dispositions_iter:
@@ -1084,20 +1041,18 @@ def reconcile(arguments: argparse.Namespace) -> int:
                         dispositions.get(disposition, 0) + 1
                     )
                     completed += 1
-                    if completed % interval == 0 or completed == len(missing):
-                        report(f"submitted={completed}/{len(missing)}")
+                    if completed % interval == 0 or completed == len(selected):
+                        report(f"submitted={completed}/{len(selected)}")
         report(
             "submission="
             + ", ".join(
                 f"{name}:{count}" for name, count in sorted(dispositions.items())
             )
         )
+        wait_for_ingestion(arguments.api_url, dataset, selected)
     else:
-        report("already reconciled")
-    report(
-        "Atlas accepted all requested evidence; ingestion and materialization "
-        "continue asynchronously."
-    )
+        report("nothing requested")
+    report("Atlas committed the requested new evidence.")
     return 0
 
 

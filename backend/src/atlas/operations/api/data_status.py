@@ -12,7 +12,6 @@ from nats.js.errors import NotFoundError
 from pydantic import BaseModel, ConfigDict
 
 from atlas.crawl.api_runtime import ApiGraphRuntime, get_graph_runtime
-from atlas.materialization.cdc.events import EVENT_STREAM
 from atlas.ingestion.queue import DURABLE as INGESTION_DURABLE
 from atlas.platform.messaging.catalogue_queue import (
     DEAD_LETTER_STREAM,
@@ -28,7 +27,7 @@ from atlas.platform.messaging.catalogue_workers import (
 router = APIRouter(prefix="/operations", tags=["operations"])
 
 DataStatus = Literal["current", "processing", "attention", "unavailable"]
-QueueUnit = Literal["ingestion_jobs", "cdc_messages"]
+QueueUnit = Literal["ingestion_jobs", "materialization_batches"]
 
 
 class SourceRecordLag(BaseModel):
@@ -74,8 +73,8 @@ class IngestionStatus(BaseModel):
 class MaterializationWorkloadStatus(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    name: Literal["documents", "visits"]
-    source: Literal["ingest.documents", "ingest.visits"]
+    name: Literal["visits"]
+    source: Literal["ingest.visits"]
     projections: tuple[str, ...]
     queue: QueueStatus
 
@@ -89,14 +88,20 @@ class MaterializationStatus(BaseModel):
     workers: WorkerCapacity
 
 
-class MaintenanceRunStatus(BaseModel):
+class MaterializationRunStatus(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: UUID
-    mode: Literal["backfill", "rebuild"]
-    status: Literal["queued", "running", "completed", "failed"]
-    stages: tuple[str, ...]
-    active_stage: str | None
+    status: Literal[
+        "queued",
+        "planning",
+        "running",
+        "activating",
+        "completed",
+        "failed",
+    ]
+    total_batches: int
+    completed_batches: int
     source_items: int
     source_bytes: int
     output_rows: int
@@ -114,35 +119,31 @@ class DataOperationalStatus(BaseModel):
     source_record_lag: SourceRecordLag
     ingestion: IngestionStatus
     materialization: MaterializationStatus
-    maintenance_runs: tuple[MaintenanceRunStatus, ...]
+    materialization_runs: tuple[MaterializationRunStatus, ...]
 
 
 _SOURCE_RECORD_LAG = SourceRecordLag(
     reason=(
-        "Atlas currently exposes durable queue work, not an exact count of "
-        "distinct source records between each acknowledged snapshot and the "
-        "source high-water mark."
+        "Atlas currently exposes durable rebuild work, not an exact count of "
+        "visits inserted since the active generation's source high-water mark."
     )
 )
 
 _MATERIALIZATION_WORKLOADS = (
     (
-        "documents",
-        "ingest.documents",
+        "visits",
+        "ingest.visits",
         (
-            "material.html_documents",
+            "material.content_stats",
             "material.html_elements",
             "material.jsonld_values",
             "material.links",
-            "material.link_observations",
+            "material.link_occurrences",
+            "material.pages",
+            "material.page_observations",
+            "material.page_heads",
         ),
-        "atlas-material-documents-v1",
-    ),
-    (
-        "visits",
-        "ingest.visits",
-        ("material.pages", "material.page_observations"),
-        "atlas-material-visits-v1",
+        "atlas-materialization-batch-v1",
     ),
 )
 
@@ -167,9 +168,9 @@ async def data_status(
         name: asyncio.create_task(
             _queue_status(
                 runtime.jetstream,
-                stream=EVENT_STREAM,
+                stream=WORK_STREAM,
                 durable=durable,
-                unit="cdc_messages",
+                unit="materialization_batches",
             )
         )
         for name, _source, _projections, durable in _MATERIALIZATION_WORKLOADS
@@ -177,7 +178,9 @@ async def data_status(
     dead_letters_task = asyncio.create_task(
         _ingestion_dead_letter_count(runtime.jetstream)
     )
-    maintenance_runs_task = asyncio.create_task(_maintenance_runs(request))
+    materialization_runs_task = asyncio.create_task(
+        _materialization_runs(request)
+    )
 
     worker_states = await worker_states_task
     ingestion_workers = _worker_capacity(worker_states, "ingestion")
@@ -186,7 +189,7 @@ async def data_status(
     )
     ingestion_queue = await ingestion_queue_task
     dead_letters = await dead_letters_task
-    maintenance_runs = await maintenance_runs_task
+    materialization_runs = await materialization_runs_task
     materialization_queues = await asyncio.gather(
         *(
             materialization_queue_tasks[name]
@@ -233,7 +236,7 @@ async def data_status(
         source_record_lag=_SOURCE_RECORD_LAG,
         ingestion=ingestion,
         materialization=materialization,
-        maintenance_runs=maintenance_runs,
+        materialization_runs=materialization_runs,
     )
 
 
@@ -348,26 +351,22 @@ def _overall_status(
     raise AssertionError("unreachable data status")
 
 
-async def _maintenance_runs(
+async def _materialization_runs(
     request: Request,
-) -> tuple[MaintenanceRunStatus, ...]:
+) -> tuple[MaterializationRunStatus, ...]:
     store = getattr(request.app.state, "materialization_runs", None)
     if store is None:
         return ()
     runs = await store.list(limit=10)
-    return tuple(_maintenance_run_status(run) for run in runs)
+    return tuple(_materialization_run_status(run) for run in runs)
 
 
-def _maintenance_run_status(run) -> MaintenanceRunStatus:
-    active_stage = getattr(run, "active_catchup_stage", None)
-    if active_stage is None:
-        active_stage = getattr(run, "active_stage", None)
-    return MaintenanceRunStatus(
+def _materialization_run_status(run) -> MaterializationRunStatus:
+    return MaterializationRunStatus(
         id=run.id,
-        mode=run.mode,
         status=run.status,
-        stages=tuple(run.stages),
-        active_stage=active_stage,
+        total_batches=run.total_batches,
+        completed_batches=run.completed_batches,
         source_items=run.source_items,
         source_bytes=run.source_bytes,
         output_rows=run.output_rows,

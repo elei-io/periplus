@@ -1,29 +1,29 @@
 export type DataStatusState =
   "current" | "processing" | "attention" | "unavailable"
 
-export type MaterializationProjection =
-  | "html_documents"
-  | "html_elements"
-  | "jsonld_values"
-  | "links"
-  | "link_observations"
-  | "pages"
-  | "page_observations"
-
 export type MaterializationRun = {
   id: string
-  mode: "backfill" | "rebuild"
-  status: "queued" | "running" | "completed" | "failed"
-  requested_stages: MaterializationProjection[]
-  stages: MaterializationProjection[]
+  status:
+    | "queued"
+    | "planning"
+    | "running"
+    | "activating"
+    | "completed"
+    | "failed"
   source_snapshot: number
-  catchup_snapshot: number
-  catchup_target_snapshot: number | null
-  current_stage: number
+  covered_snapshot: number
+  activation_snapshot: number | null
+  batch_size: number
+  total_batches: number
+  completed_batches: number
   source_items: number
   source_bytes: number
   output_rows: number
+  output_bytes: number
+  progress: number
   created_at: string
+  started_at: string | null
+  completed_at: string | null
   error: string | null
 }
 
@@ -36,7 +36,7 @@ export type SourceRecordLag = {
 
 export type DeliveryQueue = {
   available: boolean
-  unit: "ingestion_jobs" | "cdc_messages"
+  unit: "ingestion_jobs" | "materialization_batches"
   pending: number | null
   ack_pending: number | null
   redelivered: number | null
@@ -53,18 +53,23 @@ export type WorkerCapacity = {
 }
 
 export type MaterializationWorkload = {
-  name: "documents" | "visits"
-  source: "ingest.documents" | "ingest.visits"
+  name: "visits"
+  source: "ingest.visits"
   projections: string[]
   queue: DeliveryQueue
 }
 
-export type MaintenanceRunSummary = {
+export type MaterializationRunSummary = {
   id: string
-  mode: "backfill" | "rebuild"
-  status: "queued" | "running" | "completed" | "failed"
-  stages: string[]
-  active_stage: string | null
+  status:
+    | "queued"
+    | "planning"
+    | "running"
+    | "activating"
+    | "completed"
+    | "failed"
+  total_batches: number
+  completed_batches: number
   source_items: number
   source_bytes: number
   output_rows: number
@@ -90,5 +95,5 @@ export type DataStatus = {
     workloads: MaterializationWorkload[]
     workers: WorkerCapacity
   }
-  maintenance_runs: MaintenanceRunSummary[]
+  materialization_runs: MaterializationRunSummary[]
 }

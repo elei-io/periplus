@@ -1,4 +1,4 @@
-"""Postgres authority for bounded materialization maintenance runs."""
+"""Postgres control state for complete materialization rebuilds."""
 
 from __future__ import annotations
 
@@ -7,7 +7,15 @@ from uuid import UUID, uuid4
 
 from atlas.platform.postgres import Base
 from atlas.platform.postgres.types import json_type, utc_now
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, Integer, Text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,19 +24,22 @@ class MaterializationRunRecord(Base):
     __tablename__ = "materialization_runs"
     __table_args__ = (
         CheckConstraint(
-            "mode IN ('backfill', 'rebuild')",
-            name="ck_materialization_runs_mode",
-        ),
-        CheckConstraint(
-            "status IN ('queued', 'running', 'completed', 'failed')",
+            "status IN ('queued', 'planning', 'running', 'activating', "
+            "'completed', 'failed')",
             name="ck_materialization_runs_status",
         ),
         CheckConstraint(
-            "item_budget >= 1 AND byte_budget >= 1",
-            name="ck_materialization_runs_budgets",
+            "batch_size >= 1",
+            name="ck_materialization_runs_batch_size",
         ),
         CheckConstraint(
-            "source_items >= 0 AND source_bytes >= 0 AND output_rows >= 0",
+            "total_batches >= 0 AND completed_batches >= 0 "
+            "AND completed_batches <= total_batches",
+            name="ck_materialization_runs_batches",
+        ),
+        CheckConstraint(
+            "source_items >= 0 AND source_bytes >= 0 AND output_rows >= 0 "
+            "AND output_bytes >= 0",
             name="ck_materialization_runs_counts",
         ),
     )
@@ -36,34 +47,80 @@ class MaterializationRunRecord(Base):
     id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, default=uuid4
     )
-    mode: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, default="queued", index=True)
-    requested_stages: Mapped[list[str]] = mapped_column(json_type)
-    stages: Mapped[list[str]] = mapped_column(json_type)
-    projector_versions: Mapped[dict[str, int]] = mapped_column(json_type)
     source_snapshot: Mapped[int] = mapped_column(BigInteger)
-    catchup_snapshot: Mapped[int] = mapped_column(BigInteger)
-    catchup_target_snapshot: Mapped[int | None] = mapped_column(
+    covered_snapshot: Mapped[int] = mapped_column(BigInteger)
+    activation_snapshot: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True
     )
-    catchup_stage: Mapped[int] = mapped_column(Integer, default=0)
-    catchup_cursors: Mapped[dict[str, str | None]] = mapped_column(
+    generation_tables: Mapped[dict[str, str]] = mapped_column(
         json_type, default=dict
     )
-    current_stage: Mapped[int] = mapped_column(Integer, default=0)
-    cursors: Mapped[dict[str, str | None]] = mapped_column(
-        json_type, default=dict
-    )
-    destinations: Mapped[dict[str, str]] = mapped_column(
-        json_type, default=dict
-    )
-    item_budget: Mapped[int] = mapped_column(Integer)
-    byte_budget: Mapped[int] = mapped_column(BigInteger)
+    batch_size: Mapped[int] = mapped_column(Integer)
+    total_batches: Mapped[int] = mapped_column(Integer, default=0)
+    completed_batches: Mapped[int] = mapped_column(Integer, default=0)
     source_items: Mapped[int] = mapped_column(BigInteger, default=0)
     source_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     output_rows: Mapped[int] = mapped_column(BigInteger, default=0)
+    output_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    plan_published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    activation_published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cleanup_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class MaterializationBatchRecord(Base):
+    __tablename__ = "materialization_batches"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "ordinal",
+            name="uq_materialization_batches_run_ordinal",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed')",
+            name="ck_materialization_batches_status",
+        ),
+        CheckConstraint(
+            "ordinal >= 0 AND attempts >= 0",
+            name="ck_materialization_batches_counters",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("materialization_runs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    snapshot: Mapped[int] = mapped_column(BigInteger)
+    visit_ids: Mapped[list[str]] = mapped_column(json_type)
+    status: Mapped[str] = mapped_column(Text, default="queued", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    source_items: Mapped[int] = mapped_column(BigInteger, default=0)
+    source_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    output_rows: Mapped[int] = mapped_column(BigInteger, default=0)
+    output_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -71,4 +128,3 @@ class MaterializationRunRecord(Base):
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)

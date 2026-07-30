@@ -10,7 +10,7 @@ with the superseded schema.
 “Working end to end” in this milestone means:
 
 ```text
-crawl plan -> immutable bytes -> ingest.* -> CDC -> material.*
+crawl plan -> immutable bytes -> ingest.* -> material.*
 ```
 
 Externally acquired HTML may enter at the immutable-byte
@@ -27,15 +27,15 @@ Atlas can:
 
 1. Run a crawl plan and retain immutable document bytes.
 2. Commit terminal crawl, visit, attempt, step, and document evidence under `ingest.*`.
-3. Relay committed changes through CDC.
-4. Maintain the seven Atlas-owned `material.*` relations:
-   - `material.html_documents`
+3. Rebuild the eight Atlas-owned `material.*` relations from immutable visit evidence:
+   - `material.content_stats`
    - `material.html_elements`
    - `material.jsonld_values`
    - `material.pages`
    - `material.page_observations`
+   - `material.page_heads`
    - `material.links`
-   - `material.link_observations`
+   - `material.link_occurrences`
 5. Recover from redelivery, retries, worker restarts, and temporarily unavailable materialization
    dependencies without corrupting or losing committed evidence.
 6. Expose normal ingestion and materialization health, capacity, backlog, and failure signals.
@@ -48,7 +48,7 @@ evidence or graph execution state.
 
 This is a greenfield contract replacement, not a migration period.
 
-- The new schemas, identities, queue envelopes, CDC subjects, worker ownership, and repository
+- The new schemas, identities, queue envelopes, worker ownership, and repository
   boundaries replace their predecessors directly.
 - Development Postgres, DuckLake, NATS, and object-store state may be reset.
 - There are no compatibility views, aliases, dual reads or writes, legacy subjects, fallback
@@ -78,32 +78,23 @@ atomically.
 The materialization worker runs fixed Atlas-owned workloads rather than user-authored catalogue
 materializations.
 
-Two source workloads own the fixed projection stages:
+One visit-scoped workload owns the complete fixed projection:
 
 ```text
-ingest.documents CDC -> material.html_documents
-                     -> material.html_elements
-                     -> material.jsonld_values
-                     -> material.links
-                     -> material.link_observations
-ingest.visits CDC    -> material.pages
-                     -> material.page_observations
+ingest.visits -> material.pages + material.page_observations + material.page_heads
+              -> optional document
+              -> material.content_stats + material.html_elements
+              -> material.jsonld_values + material.links
+              -> material.link_occurrences
 ```
 
-A workload acknowledges source changes only after its selected targets commit. Replay and repeated
-delivery are idempotent. Local projection does not reserve a DuckBasin client; independent
-partition writers borrow from the shared eight-client pool.
+Workers acknowledge visit batches only after a single DuckLake transaction commits all output and
+its applied marker. Large projections are final bucketed Parquet registered through
+`ducklake_add_data_files`; narrow keyed projections use `MERGE INTO`.
 
-All fixed materializations are maintained from bounded CDC deltas. One pinned document selection
-reads and parses each affected HTML body once and emits HTML, JSON-LD, link-pair, and link-
-observation Arrow outputs. Enabled document outputs are grouped into at most eight stable writes
-targeting roughly 32 MiB each. One pinned visit selection maintains pages and replaces visit-owned
-observations exactly across inserts, corrections, and deletions.
-
-The operations API can run any selected fixed table as a bounded backfill or shadow rebuild.
-Tables are independently selectable, while selected tables owned by the same source share one
-scan and projection pass. Cursors and high-water catch-up progress are durable in Postgres;
-activation is a replay-safe atomic metadata swap.
+The operations API runs one complete shadow rebuild. It pins a source snapshot, catches up inserted
+visits in bounded batches, and atomically activates all material tables together. There are no
+independently selectable tables or partial generations.
 
 No generic keyed, append, or full user-view materialization framework remains at this cutoff.
 User-owned maintained extractions can be designed with the query layer later.
@@ -163,7 +154,7 @@ The cutoff is complete only when all of the following are true:
 - Repository-wide searches find no superseded table names, queue contracts,
   seeded definitions, management surfaces, projection repair, compatibility
   paths, compiler archive, or stale documentation.
-- Backend checks and targeted ingestion, CDC, materialization, recovery, and worker lifecycle tests
+- Backend checks and targeted ingestion, materialization, recovery, and worker lifecycle tests
   pass.
 - The old lake and disposable control state can be deleted without losing any behavior that Atlas
   still claims to support.

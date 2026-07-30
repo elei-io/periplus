@@ -15,7 +15,6 @@ class WorkerCliTests(unittest.TestCase):
             {
                 "acquisition": "atlas.crawl.worker",
                 "ingestion": "atlas.ingestion.worker",
-                "cdc": "atlas.materialization.cdc.worker",
                 "materialization": "atlas.materialization.worker",
                 "housekeeping": "atlas.operations.housekeeping",
             },

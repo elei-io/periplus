@@ -99,17 +99,98 @@ class TestCorpusTests(unittest.TestCase):
 
             self.assertEqual(test_corpus.load_manifest(path), [capture])
 
-    def test_excess_predicate_uses_each_tier_target(self):
-        predicate = test_corpus.excess_predicate(
-            test_corpus.Targets(known=10, noise=20, failure=3)
+    def test_addition_bounds_start_after_each_tier_high_water_mark(self):
+        bounds = test_corpus.addition_bounds(
+            {
+                "known": {0, 9, 10},
+                "noise": {0, 19, 20, 21},
+                "failure": {0, 3},
+            },
+            test_corpus.Targets(known=10, noise=20, failure=3),
         )
 
-        self.assertIn("= 'known'", predicate)
-        self.assertIn(">= 10", predicate)
-        self.assertIn("= 'noise'", predicate)
-        self.assertIn(">= 20", predicate)
-        self.assertIn("= 'failure'", predicate)
-        self.assertIn(">= 3", predicate)
+        self.assertEqual(
+            bounds,
+            {
+                "known": (11, 21),
+                "noise": (22, 42),
+                "failure": (4, 7),
+            },
+        )
+
+    def test_existing_corpus_query_uses_the_public_visit_contract(self):
+        response = mock.Mock()
+        response.json.return_value = {
+            "rows": [["known", [0, 2]], ["failure", [1]]]
+        }
+        client = mock.MagicMock()
+        client.__enter__.return_value = client
+        client.post.return_value = response
+
+        with mock.patch.object(
+            test_corpus.httpx,
+            "Client",
+            return_value=client,
+        ):
+            existing = test_corpus.query_existing(
+                "http://atlas.example",
+                "corpus-v1",
+            )
+
+        request = client.post.call_args
+        self.assertEqual(
+            request.args[0],
+            "http://atlas.example/sql/query",
+        )
+        self.assertIn("FROM web.visit", request.kwargs["json"]["sql"])
+        self.assertEqual(existing["known"], {0, 2})
+        self.assertEqual(existing["noise"], set())
+        self.assertEqual(existing["failure"], {1})
+
+    def test_ingestion_waits_until_every_selected_ordinal_is_visible(self):
+        selected = [
+            test_corpus.Capture(
+                tier="known",
+                ordinal=4,
+                url="https://example.com/4",
+                status=200,
+                observed_at="2026-01-01T00:00:00+00:00",
+                filename="crawl-data/example.warc.gz",
+                offset=4,
+                length=10,
+                declared_media_type="text/html",
+                charset=None,
+            ),
+            test_corpus.Capture(
+                tier="known",
+                ordinal=5,
+                url="https://example.com/5",
+                status=200,
+                observed_at="2026-01-01T00:00:00+00:00",
+                filename="crawl-data/example.warc.gz",
+                offset=5,
+                length=10,
+                declared_media_type="text/html",
+                charset=None,
+            ),
+        ]
+        empty = {"known": {4}, "noise": set(), "failure": set()}
+        complete = {"known": {4, 5}, "noise": set(), "failure": set()}
+
+        with mock.patch.object(
+            test_corpus,
+            "query_existing",
+            side_effect=[empty, complete],
+        ) as query:
+            test_corpus.wait_for_ingestion(
+                "http://atlas.example",
+                "corpus-v1",
+                selected,
+                timeout_seconds=1,
+                poll_seconds=0,
+            )
+
+        self.assertEqual(query.call_count, 2)
 
     def test_common_crawl_no_capture_404_is_an_empty_domain_result(self):
         response = httpx.Response(

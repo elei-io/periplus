@@ -32,52 +32,46 @@ navigation package. Selected URLs are normalized and deduplicated across the
 entire run before admission to the target node. Edge execution does not read
 the historical catalogue.
 
-## 2. CDC
+## 2. Rebuild scheduling
 
-Change data capture is the glue between committed evidence and derived relations.
-
-A committed `ingest.documents` change schedules projection work according to the document's
-detected media type.
-
-Projection identity includes the document content identity, projection type, and projector version.
-Partial projections never become queryable.
-
-The Basin DML event supplies the changed source table and DuckLake snapshot window. The document
-workload pins all source reads to the end of that window, reads and parses each affected HTML body
-once, and emits typed Arrow tables for every enabled document projection. The visit workload
-resolves changed visit identities at the same pinned snapshot and replaces corrected or deleted
-observation slices. Repeated delivery is idempotent, and no target-to-target CDC hop exists.
-
-A materialization workload defines:
+A rebuild pins one DuckLake snapshot and scans `ingest.visits` into bounded visit-ID batches. The
+visit is the only workload unit. When it references an HTML document, that same batch reads the
+immutable bytes once and emits every document projection:
 
 ```text
-ingest.documents CDC -> one-pass document projection
-                     -> HTML elements + JSON-LD + links + link observations
-ingest.visits CDC    -> one visit projection
-                     -> pages + page observations
+ingest.visits -> page projection
+              -> pages + page observations + page heads
+              -> optional one-pass document projection
+              -> content stats + HTML elements + JSON-LD
+              -> links + link occurrences
 ```
 
-Each source workload owns one consumer and ACKs only after every enabled target commits. A replay
-starts from the same source window and skips or merges completed output. Selection borrows one
-client, local projection uses a fixed CPU worker set, and independent partition writers borrow up
-to the process-wide eight-client pool. The shared `select -> local project -> write` contract
-provides source bounds, lake-bucket grouping, backpressure, and timing for CDC and maintenance.
-Document Arrow output is divided into no more than eight stable write partitions with a soft
-32 MiB target, so useful concurrency grows with output volume without producing 64 tiny writes.
+Workers project locally. Large outputs become final bucketed Parquet files and are registered with
+`ducklake_add_data_files`; pages, page heads, and link identities use `MERGE INTO`. The complete
+batch plus its applied marker commits in one DuckLake transaction. JetStream is delivery only and
+is ACKed after commit, so a restart between commit and ACK reads the marker and completes without
+duplicating logical output.
 
-Backfills and rebuilds invoke the same source-owned workload plans in bounded batches. Postgres
-stores the pinned source snapshot, workload cursor, projector versions, shadow destinations, and
-counters. Any table can be selected independently; selected tables from the same source share one
-scan and projection pass. Backfills fill missing live slices. Rebuilds target shadows, catch up
-post-snapshot changes, and activate idempotently only after a source high-water recheck under the
-ordinary target leases.
+Postgres durably records the run, hidden table names, batch IDs, progress, and failures. After the
+initial batches complete, Atlas detects inserted visits through DuckLake snapshot changes and
+repeats bounded catch-up until the source high-water mark is covered. One serialized activation
+consumer atomically swaps all material tables. Batch consumers remain horizontally scalable.
+Each plan, batch, and activation record also stores whether JetStream accepted its publication.
+Recovery publishes only records that were never accepted; JetStream redelivery owns published
+work that has not been ACKed.
+
+A deterministic projection or schema failure terminates the rebuild immediately. Atlas drops the
+failed hidden generation idempotently and removes only unregistered files owned by the failed
+batch. LakeDucktor reclaims files that had already been registered to the dropped generation.
+
+Incremental post-activation maintenance is deliberately outside this rebuild milestone.
 
 ## 3. Materialization
 
 Atlas decodes documents into rebuildable structural relations:
 
 ```text
-HTML -> material.html_documents
+HTML -> material.content_stats
 HTML -> material.html_elements
 HTML -> material.jsonld_values
 ```
@@ -87,27 +81,30 @@ Generic JSON, XML, PDF, DOCX, CSV, and other format projections are deferred.
 Atlas also maintains compact semantic indexes:
 
 ```text
-ingest.documents CDC -> material.html_documents
-                     -> material.html_elements
-                     -> material.jsonld_values
-                     -> material.links
-                     -> material.link_observations
-ingest.visits CDC    -> material.pages
-                     -> material.page_observations
+ingest.visits -> material.pages + material.page_observations + material.page_heads
+              -> optional document
+              -> material.content_stats + material.html_elements
+              -> material.jsonld_values + material.links
+              -> material.link_occurrences
 ```
 
-The document workload derives links directly from the same locally parsed elements used for the
-HTML and JSON-LD outputs. Links never wait for or read another materialized target.
+The document workload derives link occurrences and narrow link-identity sidecars from the same
+locally parsed elements used for the HTML and JSON-LD outputs. Once every occurrence batch is
+committed, finalization deduplicates the sidecars and computes `material.links` exactly once from
+the completed `material.link_occurrences` generation.
 
 `material.page_observations` connects each normalized page identity to its visit, optional document,
-and observation time. `material.links` deduplicates normalized source and target URL pairs and
-classifies their deterministic site relationship. `material.link_observations` retains the
-document, content hash, element index, raw href, and observation time for every anchor occurrence.
+and terminal ordering time. `material.page_heads` stores the deterministically latest visit pointer,
+including failures. `material.links` deduplicates normalized source and target URL pairs, classifies
+their deterministic site relationship, and stores exact occurrence-derived rollups.
+`material.link_occurrences` retains the visit, document, content hash, element index, raw href, and
+observation time for every anchor occurrence.
 Its source and target page identities are deterministic even when the target has never been
 visited; it does not create page rows for unvisited targets.
 
-Materialization failure never changes the committed ingestion record. Work can be replayed from
-CDC or rebuilt from upstream relations.
+Materialization failure never changes committed ingestion evidence. Prometheus and structured logs
+expose queue state, rebuild progress, projection/Parquet/commit duration, source and output
+throughput, conflicts, retries, and failures.
 
 ## 4. Query
 
@@ -115,7 +112,8 @@ Users query the public `web.*` and `dom.*` catalogue, not the physical plan.
 
 Atlas initialization installs and versions both public namespaces as persistent DuckLake views
 and macros over the physical evidence and materialization schemas. Expensive recurring
-computations become fixed materializations. A later native optimizer may accelerate measured plan
-gaps without defining query semantics. See [`QUERY.md`](QUERY.md).
+computations become fixed materializations. The optional native extension supplies standards-shaped
+DOM selectors and shared query diagnostics; base catalogue semantics do not depend on it. See
+[`QUERY.md`](QUERY.md).
 
 Users persist their own interpretations under `data.*`.

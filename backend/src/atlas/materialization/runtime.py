@@ -1,4 +1,4 @@
-"""Durable execution of bounded materialization maintenance batches."""
+"""JetStream delivery for complete, visit-scoped rebuilds."""
 
 from __future__ import annotations
 
@@ -6,271 +6,658 @@ import asyncio
 import logging
 from uuid import UUID
 
-from nats.errors import TimeoutError as NatsTimeoutError
-from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
-from pydantic import BaseModel, ConfigDict, ValidationError
 from atlas.ingestion.objects.html import RawHtmlRepository
+from atlas.materialization.batch import (
+    BatchResult,
+    commit_prepared_batch,
+    discard_batch_staging,
+    discard_run_link_staging,
+    link_identity_paths,
+    populate_final_links,
+    prepare_batch,
+)
+from atlas.materialization import metrics
+from atlas.materialization.contracts import PROJECTION_ORDER, RELATIONS
+from atlas.materialization.store import (
+    AsyncMaterializationRunStore,
+    MaterializationBatch,
+    MaterializationRun,
+)
+from atlas.materialization.sql import sql_string, sql_string_list
+from atlas.platform.catalogue import catalogue_from_env
+from atlas.platform.catalogue.config import catalogue_config_from_env
+from atlas.platform.catalogue.operations import (
+    is_retryable_catalogue_unavailability,
+    is_retryable_catalogue_transaction_conflict,
+    run_with_catalogue_retry,
+)
 from atlas.platform.messaging.catalogue_queue import (
-    MATERIALIZATION_MAINTENANCE_SUBJECT,
+    MATERIALIZATION_ACTIVATE_SUBJECT,
+    MATERIALIZATION_BATCH_SUBJECT,
+    MATERIALIZATION_PLAN_SUBJECT,
     WORK_STREAM,
     ensure_catalogue_work_stream,
 )
-from atlas.platform.messaging.leases import (
-    OperationLeaseLost,
-    OperationLeaseUnavailable,
-    operation_leases,
-)
+from nats.errors import TimeoutError as NatsTimeoutError
+from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from atlas.materialization.contracts import (
-    DOCUMENT_PROJECTIONS,
-    workload_projections,
-)
-from atlas.materialization.lanes import MaterializationLanePool
-from atlas.materialization.maintenance import (
-    BatchResult,
-    activate_rebuild,
-    finalize_rebuild,
-    materialize_document_batch,
-    materialize_visit_batch,
-    prepare_rebuild,
-)
-from atlas.materialization.store import (
-    AsyncMaterializationRunStore,
-    MaterializationRun,
-)
-
-MAINTENANCE_DURABLE = "atlas-materialization-maintenance-v1"
+_PLAN_DURABLE = "atlas-materialization-plan-v1"
+_BATCH_DURABLE = "atlas-materialization-batch-v1"
+_ACTIVATE_DURABLE = "atlas-materialization-activate-v1"
+_BATCH_MAX_ACK_PENDING = 1_024
 
 
-class MaintenanceWork(BaseModel):
+def generation_table(stage: str, run_id: UUID) -> str:
+    return f"_atlas_rebuild_{stage}_{run_id.hex[:16]}"
+
+
+class PlanWork(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
-
     run_id: UUID
 
 
-async def publish_run(jetstream, run_id: UUID) -> None:
-    work = MaintenanceWork(run_id=run_id)
+class BatchWork(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    batch_id: UUID
+
+
+class ActivationWork(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    run_id: UUID
+    completed_batches: int
+
+
+async def publish_plan(
+    jetstream,
+    store: AsyncMaterializationRunStore,
+    run_id: UUID,
+) -> None:
     await jetstream.publish(
-        MATERIALIZATION_MAINTENANCE_SUBJECT,
-        work.model_dump_json().encode(),
+        MATERIALIZATION_PLAN_SUBJECT,
+        PlanWork(run_id=run_id).model_dump_json().encode(),
         stream=WORK_STREAM,
-        headers={"Nats-Msg-Id": f"materialization:{run_id}"},
+        headers={"Nats-Msg-Id": f"materialization-plan:{run_id}"},
+    )
+    await store.mark_plan_published(run_id)
+
+
+async def publish_batch(
+    jetstream,
+    store: AsyncMaterializationRunStore,
+    batch_id: UUID,
+) -> None:
+    await jetstream.publish(
+        MATERIALIZATION_BATCH_SUBJECT,
+        BatchWork(batch_id=batch_id).model_dump_json().encode(),
+        stream=WORK_STREAM,
+        headers={"Nats-Msg-Id": f"materialization-batch:{batch_id}"},
+    )
+    await store.mark_batch_published(batch_id)
+
+
+async def publish_activation(
+    jetstream,
+    store: AsyncMaterializationRunStore,
+    run_id: UUID,
+    *,
+    completed_batches: int,
+) -> None:
+    await jetstream.publish(
+        MATERIALIZATION_ACTIVATE_SUBJECT,
+        ActivationWork(
+            run_id=run_id,
+            completed_batches=completed_batches,
+        ).model_dump_json().encode(),
+        stream=WORK_STREAM,
+    )
+    await store.mark_activation_published(
+        run_id,
+        completed_batches=completed_batches,
     )
 
 
-async def run_maintenance(
+async def run_materialization(
     jetstream,
-    leases,
-    lane_pool: MaterializationLanePool,
     html_repository: RawHtmlRepository,
     *,
     stop: asyncio.Event,
+    concurrency: int,
     store: AsyncMaterializationRunStore | None = None,
 ) -> None:
+    if concurrency < 1:
+        raise ValueError("materialization concurrency must be positive")
     runs = store or AsyncMaterializationRunStore()
     await ensure_catalogue_work_stream(jetstream)
-    subscription = await jetstream.pull_subscribe(
-        MATERIALIZATION_MAINTENANCE_SUBJECT,
-        durable=MAINTENANCE_DURABLE,
+    plan_subscription = await _subscribe(
+        jetstream,
+        MATERIALIZATION_PLAN_SUBJECT,
+        _PLAN_DURABLE,
+        max_ack_pending=1,
+    )
+    batch_subscription = await _subscribe(
+        jetstream,
+        MATERIALIZATION_BATCH_SUBJECT,
+        _BATCH_DURABLE,
+        # This is a shared durable across replicas. Local fetch size bounds
+        # each process; a deployment-wide cap must not pin total throughput
+        # to one replica's concurrency.
+        max_ack_pending=_BATCH_MAX_ACK_PENDING,
+    )
+    activation_subscription = await _subscribe(
+        jetstream,
+        MATERIALIZATION_ACTIVATE_SUBJECT,
+        _ACTIVATE_DURABLE,
+        max_ack_pending=1,
+    )
+    tasks = [
+        asyncio.create_task(
+            _plan_loop(plan_subscription, jetstream, runs, stop),
+            name="materialization-planner",
+        ),
+        asyncio.create_task(
+            _batch_loop(
+                batch_subscription,
+                jetstream,
+                runs,
+                html_repository,
+                stop,
+                concurrency,
+            ),
+            name="materialization-batches",
+        ),
+        asyncio.create_task(
+            _activation_loop(
+                activation_subscription,
+                jetstream,
+                runs,
+                stop,
+            ),
+            name="materialization-activation",
+        ),
+        asyncio.create_task(
+            _recover_loop(jetstream, runs, stop),
+            name="materialization-recovery-publisher",
+        ),
+    ]
+    await asyncio.gather(*tasks)
+
+
+async def _subscribe(
+    jetstream,
+    subject: str,
+    durable: str,
+    *,
+    max_ack_pending: int,
+):
+    return await jetstream.pull_subscribe(
+        subject,
+        durable=durable,
         stream=WORK_STREAM,
         config=ConsumerConfig(
-            durable_name=MAINTENANCE_DURABLE,
+            durable_name=durable,
             deliver_policy=DeliverPolicy.ALL,
             ack_policy=AckPolicy.EXPLICIT,
-            ack_wait=30,
-            max_ack_pending=1,
-            filter_subject=MATERIALIZATION_MAINTENANCE_SUBJECT,
+            ack_wait=120,
+            max_ack_pending=max_ack_pending,
+            filter_subject=subject,
         ),
     )
-    repair = asyncio.create_task(
-        _publish_queued_runs(jetstream, runs, stop=stop),
-        name="materialization-maintenance-publisher",
-    )
-    try:
-        while not stop.is_set():
-            try:
-                messages = await subscription.fetch(batch=1, timeout=1)
-            except (NatsTimeoutError, TimeoutError):
-                continue
-            if not messages:
-                continue
-            message = messages[0]
-            try:
-                work = MaintenanceWork.model_validate_json(message.data)
-            except ValidationError:
-                logging.exception(
-                    "discarding invalid materialization maintenance work"
-                )
-                await message.term()
-                continue
-            try:
-                done = await _with_ack_heartbeat(
-                    message,
-                    _process_one_batch(
-                        work.run_id,
-                        runs,
-                        leases,
-                        lane_pool,
-                        html_repository,
-                    ),
-                )
-            except asyncio.CancelledError:
-                raise
-            except (OperationLeaseLost, OperationLeaseUnavailable):
-                logging.info(
-                    "materialization maintenance lease is unavailable; "
-                    "retrying",
-                    exc_info=True,
-                )
-                await message.nak(delay=1)
-                continue
-            except Exception as exc:
-                logging.exception(
-                    "materialization maintenance run failed permanently"
-                )
-                try:
-                    run = await runs.fail(work.run_id, exc)
-                    if run.status == "completed":
-                        await message.nak(delay=1)
-                        continue
-                    if run.mode == "rebuild" and run.destinations:
-                        await lane_pool.call(
-                            _discard_rebuild,
-                            run.destinations,
-                        )
-                except Exception:
-                    logging.exception(
-                        "failed to record or clean up failed "
-                        "materialization run"
+
+
+async def _plan_loop(subscription, jetstream, store, stop) -> None:
+    while not stop.is_set():
+        message = await _fetch_one(subscription)
+        if message is None:
+            continue
+        try:
+            work = PlanWork.model_validate_json(message.data)
+            await store.mark_plan_published(work.run_id)
+            batches = await _with_heartbeat(
+                message,
+                asyncio.to_thread(_plan, store._store, work.run_id),
+            )
+            for batch in batches:
+                await publish_batch(jetstream, store, batch.id)
+            await message.ack()
+            if not batches:
+                run = await store.get(work.run_id)
+                if run is not None:
+                    await publish_activation(
+                        jetstream,
+                        store,
+                        run.id,
+                        completed_batches=run.completed_batches,
                     )
-                    await message.nak(delay=1)
-                    continue
-                await message.ack()
-                continue
-            if done:
-                await message.ack()
-            else:
-                await message.nak(delay=0.05)
-    finally:
-        repair.cancel()
-        await asyncio.gather(repair, return_exceptions=True)
+        except ValidationError:
+            logging.exception("discarding invalid materialization plan work")
+            await message.term()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("materialization planning failed; retrying")
+            await message.nak(delay=1)
 
 
-async def _process_one_batch(
-    run_id: UUID,
+def _plan(store, run_id: UUID) -> tuple[MaterializationBatch, ...]:
+    run = store.claim_plan(run_id)
+    if run is None or run.status not in {"planning", "running"}:
+        return ()
+    if run.status == "running":
+        return ()
+    with catalogue_from_env(threads=1, memory_limit="1GB") as catalogue:
+        destinations = {
+            stage: generation_table(stage, run.id)
+            for stage in PROJECTION_ORDER
+        }
+        for stage in PROJECTION_ORDER:
+            catalogue.create_materialization_generation(
+                RELATIONS[stage],
+                destinations[stage],
+            )
+        visit_ids = [
+            str(row[0])
+            for row in catalogue.trusted_remote_rows(
+                f"""
+                SELECT visit_id::VARCHAR
+                FROM ingest.visits AT (VERSION => {run.source_snapshot})
+                ORDER BY visit_id
+                """
+            )
+        ]
+    batches = [
+        (run.source_snapshot, visit_ids[index : index + run.batch_size])
+        for index in range(0, len(visit_ids), run.batch_size)
+    ]
+    _updated, records = store.finish_plan(
+        run.id,
+        generation_tables=destinations,
+        batches=batches,
+    )
+    return records
+
+
+async def _batch_loop(
+    subscription,
+    jetstream,
+    store,
+    html_repository,
+    stop,
+    concurrency,
+) -> None:
+    while not stop.is_set():
+        try:
+            messages = await subscription.fetch(
+                batch=concurrency,
+                timeout=1,
+            )
+        except (NatsTimeoutError, TimeoutError):
+            continue
+        await asyncio.gather(
+            *(
+                _handle_batch(
+                    message,
+                    jetstream,
+                    store,
+                    html_repository,
+                )
+                for message in messages
+            )
+        )
+
+
+async def _handle_batch(
+    message,
+    jetstream,
     store: AsyncMaterializationRunStore,
-    leases,
-    lane_pool: MaterializationLanePool,
     html_repository: RawHtmlRepository,
-) -> bool:
+) -> None:
     try:
-        run = await store.start(run_id)
-    except KeyError:
-        logging.warning(
-            "discarding materialization maintenance work for unknown run %s",
-            run_id,
-        )
-        return True
-    if run.status == "completed":
-        if run.mode == "rebuild":
-            await lane_pool.call(_finalize_run, run)
-        return True
-    if run.status == "failed":
-        if run.mode == "rebuild" and run.destinations:
-            await lane_pool.call(
-                _discard_rebuild,
-                run.destinations,
+        work = BatchWork.model_validate_json(message.data)
+        await store.mark_batch_published(work.batch_id)
+        batch = await store.start_batch(work.batch_id)
+        if batch is None:
+            await message.term()
+            return
+        if batch.status != "completed":
+            run = await store.get(batch.run_id)
+            if run is None or run.status == "failed":
+                await _discard_staging(batch)
+                await message.ack()
+                return
+            result = await _with_heartbeat(
+                message,
+                asyncio.to_thread(
+                    _execute_batch,
+                    html_repository,
+                    run,
+                    batch,
+                ),
             )
-        return True
-    if run.mode == "rebuild" and not run.destinations:
-        destinations = await lane_pool.call(
-            prepare_rebuild,
-            run.id,
-            run.stages,
-        )
-        await lane_pool.call_all(_refresh_metadata)
-        run = await store.set_destinations(run.id, destinations)
-    stage = run.active_stage
-    if stage is not None:
-        stages = workload_projections(run.stages, stage)
-        result = await _materialize_run_batch(
-            leases,
-            lane_pool,
-            html_repository,
-            run,
-            stages,
-        )
-        await store.advance(
-            run.id,
-            stages=stages,
-            cursor=result.cursor,
-            done=result.done,
-            source_items=result.source_items,
-            source_bytes=result.source_bytes,
-            output_rows=result.output_rows,
-        )
-        return False
-    if run.mode == "rebuild":
-        catchup_stage = run.active_catchup_stage
-        if catchup_stage is not None:
-            stages = workload_projections(run.stages, catchup_stage)
-            result = await _materialize_catchup_run_batch(
-                leases,
-                lane_pool,
-                html_repository,
-                run,
-                stages,
-            )
-            await store.advance_catchup(
-                run.id,
-                stages=stages,
-                cursor=result.cursor,
-                done=result.done,
+            metrics.batch(
                 source_items=result.source_items,
                 source_bytes=result.source_bytes,
                 output_rows=result.output_rows,
+                output_bytes=result.output_bytes,
+                project_seconds=result.project_seconds,
+                parquet_seconds=result.parquet_seconds,
+                commit_seconds=result.commit_seconds,
+                already_applied=result.already_applied,
             )
-            return False
-        latest_snapshot = await lane_pool.call(_source_highwater, run)
-        if latest_snapshot > run.catchup_snapshot:
-            await store.begin_catchup(
-                run.id,
-                target_snapshot=latest_snapshot,
+            run = await store.complete_batch(
+                batch.id,
+                source_items=result.source_items,
+                source_bytes=result.source_bytes,
+                output_rows=result.output_rows,
+                output_bytes=result.output_bytes,
             )
-            return False
-        async with operation_leases(
-            leases,
-            tuple(f"material.{stage}" for stage in run.stages),
-            phase="materialization",
-            acquire_timeout=0,
+            metrics.progress(
+                completed=run.completed_batches,
+                total=run.total_batches,
+            )
+        else:
+            run = await store.get(batch.run_id)
+        if (
+            run is not None
+            and run.status == "running"
+            and run.completed_batches == run.total_batches
         ):
-            latest_snapshot = await lane_pool.call(_source_highwater, run)
-            if latest_snapshot != run.catchup_snapshot:
-                await store.begin_catchup(
-                    run.id,
-                    target_snapshot=latest_snapshot,
+            await publish_activation(
+                jetstream,
+                store,
+                run.id,
+                completed_batches=run.completed_batches,
+            )
+        await message.ack()
+    except ValidationError:
+        logging.exception("discarding invalid materialization batch work")
+        await message.term()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        batch_id = getattr(locals().get("work"), "batch_id", None)
+        try:
+            if batch_id is None:
+                work = BatchWork.model_validate_json(message.data)
+                batch_id = work.batch_id
+            batch = await store.get_batch(batch_id)
+            retryable = _is_retryable_batch_failure(exc)
+            exhausted = batch is not None and batch.attempts >= 5
+            if batch is not None and (not retryable or exhausted):
+                logging.exception(
+                    "materialization batch failed permanently batch=%s",
+                    batch.id,
                 )
-                return False
-            await lane_pool.call(_activate_run, run)
-    run = await store.complete(run.id)
-    if run.mode == "rebuild":
-        await lane_pool.call(_finalize_run, run)
-    logging.info(
-        "completed %s materialization run %s stages=%s items=%s rows=%s",
-        run.mode,
-        run.id,
-        ",".join(run.stages),
-        run.source_items,
-        run.output_rows,
+                failure = RuntimeError(
+                    f"batch {batch.id} (ordinal {batch.ordinal}, "
+                    f"visits {batch.visit_ids[:3]}) failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                failed = await store.fail(batch.run_id, failure)
+                metrics.failure("batch")
+                await _discard_staging(batch)
+                await _try_cleanup_failed_run(store, failed)
+                await message.ack()
+                return
+        except Exception:
+            logging.exception("failed to record materialization failure")
+        logging.exception(
+            "materialization batch failed; retrying batch=%s",
+            batch_id or "unknown",
+        )
+        metrics.retry(type(exc).__name__)
+        if is_retryable_catalogue_transaction_conflict(exc):
+            metrics.conflict()
+        await message.nak(delay=1)
+
+
+def _execute_batch(html_repository, run, batch):
+    with catalogue_from_env(threads=2, memory_limit="2GB") as catalogue:
+        prepared = prepare_batch(catalogue, html_repository, run, batch)
+        if isinstance(prepared, BatchResult):
+            return prepared
+        return run_with_catalogue_retry(
+            lambda: commit_prepared_batch(
+                catalogue,
+                run,
+                batch,
+                prepared,
+            ),
+            description=f"materialization batch {batch.id}",
+            on_conflict=metrics.conflict,
+        )
+
+
+async def _activation_loop(subscription, jetstream, store, stop) -> None:
+    while not stop.is_set():
+        message = await _fetch_one(subscription)
+        if message is None:
+            continue
+        try:
+            work = ActivationWork.model_validate_json(message.data)
+            await store.mark_activation_published(
+                work.run_id,
+                completed_batches=work.completed_batches,
+            )
+            run = await store.claim_activation(work.run_id)
+            if run is not None:
+                result = await _with_heartbeat(
+                    message,
+                    asyncio.to_thread(_activate_or_catch_up, run),
+                )
+                if isinstance(result, int):
+                    completed = await store.complete(
+                        run.id,
+                        activation_snapshot=result,
+                    )
+                    logging.info(
+                        "materialization rebuild activated "
+                        "run=%s snapshot=%s rows=%s",
+                        completed.id,
+                        result,
+                        completed.output_rows,
+                    )
+                else:
+                    through_snapshot, batches = result
+                    records = await store.add_catchup(
+                        run.id,
+                        through_snapshot=through_snapshot,
+                        visit_id_batches=batches,
+                    )
+                    for record in records:
+                        await publish_batch(jetstream, store, record.id)
+                    if not records:
+                        refreshed = await store.get(run.id)
+                        if refreshed is not None:
+                            await publish_activation(
+                                jetstream,
+                                store,
+                                run.id,
+                                completed_batches=refreshed.completed_batches,
+                            )
+            await message.ack()
+        except ValidationError:
+            logging.exception("discarding invalid activation work")
+            await message.term()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("materialization activation failed; retrying")
+            metrics.retry("activation")
+            await message.nak(delay=1)
+
+
+def _activate_or_catch_up(
+    run: MaterializationRun,
+) -> int | tuple[int, list[list[str]]]:
+    with catalogue_from_env(threads=1, memory_limit="2GB") as catalogue:
+        with catalogue.remote_transaction():
+            latest = catalogue.latest_snapshot() or run.covered_snapshot
+            generation_exists = bool(
+                catalogue.trusted_remote_rows(
+                    "SELECT 1 FROM duckdb_tables() "
+                    f"WHERE database_name = {sql_string(catalogue.config.alias)} "
+                    "AND schema_name = 'material' AND table_name = "
+                    f"{sql_string(run.generation_tables['links'])}"
+                )
+            )
+            if not generation_exists:
+                catalogue.activate_materialization_generations(
+                    {
+                        RELATIONS[stage]: table
+                        for stage, table in run.generation_tables.items()
+                    },
+                    activation_id=run.id.hex,
+                    transaction=False,
+                )
+            else:
+                changed = (
+                    catalogue.trusted_remote_rows(
+                        f"""
+                        SELECT DISTINCT visit_id::VARCHAR
+                        FROM ducklake_table_changes(
+                          {sql_string(catalogue.config.alias)},
+                          'ingest', 'visits',
+                          {run.covered_snapshot + 1}, {latest}
+                        )
+                        WHERE visit_id IS NOT NULL
+                          AND change_type = 'insert'
+                        ORDER BY visit_id
+                        """
+                    )
+                    if latest > run.covered_snapshot
+                    else []
+                )
+                if changed:
+                    visit_ids = [str(row[0]) for row in changed]
+                    return (
+                        latest,
+                        [
+                            visit_ids[index : index + run.batch_size]
+                            for index in range(
+                                0,
+                                len(visit_ids),
+                                run.batch_size,
+                            )
+                        ],
+                    )
+                links = run.generation_tables["links"]
+                occurrences = run.generation_tables["link_occurrences"]
+                populate_final_links(
+                    catalogue,
+                    links_table=links,
+                    occurrences_table=occurrences,
+                    identities=link_identity_paths(
+                        catalogue.config.data_path,
+                        run_id=run.id,
+                    ),
+                )
+                catalogue.activate_materialization_generations(
+                    {
+                        RELATIONS[stage]: table
+                        for stage, table in run.generation_tables.items()
+                    },
+                    activation_id=run.id.hex,
+                    transaction=False,
+                )
+        activated = catalogue.last_committed_snapshot() or latest
+        discard_run_link_staging(
+            catalogue.config.data_path,
+            run_id=run.id,
+        )
+        return activated
+
+
+async def _recover_loop(jetstream, store, stop) -> None:
+    while not stop.is_set():
+        try:
+            plans, batches, activations, cleanups = await store.recoverable()
+            for run_id in plans:
+                await publish_plan(jetstream, store, run_id)
+            for batch_id in batches:
+                await publish_batch(jetstream, store, batch_id)
+            for run_id, completed_batches in activations:
+                await publish_activation(
+                    jetstream,
+                    store,
+                    run_id,
+                    completed_batches=completed_batches,
+                )
+            for run in cleanups:
+                await _try_cleanup_failed_run(store, run)
+            info = await jetstream.consumer_info(
+                WORK_STREAM,
+                _BATCH_DURABLE,
+            )
+            metrics.queue(
+                pending=info.num_pending,
+                ack_pending=info.num_ack_pending,
+                redelivered=info.num_redelivered,
+            )
+        except Exception:
+            logging.exception("materialization recovery publication failed")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=15)
+        except TimeoutError:
+            pass
+
+
+def _is_retryable_batch_failure(exc: BaseException) -> bool:
+    return (
+        is_retryable_catalogue_unavailability(exc)
+        or is_retryable_catalogue_transaction_conflict(exc)
     )
-    return True
 
 
-async def _with_ack_heartbeat(message, operation) -> bool:
+async def _discard_staging(batch: MaterializationBatch) -> None:
+    await asyncio.to_thread(
+        discard_batch_staging,
+        catalogue_config_from_env().data_path,
+        run_id=batch.run_id,
+        batch_id=batch.id,
+    )
+
+
+async def _try_cleanup_failed_run(
+    store: AsyncMaterializationRunStore,
+    run: MaterializationRun,
+) -> None:
+    try:
+        await asyncio.to_thread(_cleanup_failed_run, run)
+        await store.mark_cleanup_completed(run.id)
+    except Exception:
+        logging.exception(
+            "failed rebuild generation cleanup will retry run=%s",
+            run.id,
+        )
+
+
+def _cleanup_failed_run(run: MaterializationRun) -> None:
+    if not run.generation_tables:
+        return
+    with catalogue_from_env(threads=1, memory_limit="1GB") as catalogue:
+        catalogue.drop_materialization_generations(
+            run.generation_tables.values()
+        )
+        discard_run_link_staging(
+            catalogue.config.data_path,
+            run_id=run.id,
+        )
+
+
+async def _fetch_one(subscription):
+    try:
+        messages = await subscription.fetch(batch=1, timeout=1)
+    except (NatsTimeoutError, TimeoutError):
+        return None
+    return messages[0] if messages else None
+
+
+async def _with_heartbeat(message, operation):
     task = asyncio.create_task(operation)
     try:
         while True:
-            done, _ = await asyncio.wait({task}, timeout=10)
+            done, _ = await asyncio.wait({task}, timeout=30)
             if done:
                 return task.result()
             await message.in_progress()
@@ -278,166 +665,3 @@ async def _with_ack_heartbeat(message, operation) -> bool:
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-
-
-async def _materialize_run_batch(
-    leases,
-    lane_pool: MaterializationLanePool,
-    html_repository: RawHtmlRepository,
-    run: MaterializationRun,
-    stages,
-) -> BatchResult:
-    cursor = run.cursors.get(stages[0])
-    if stages[0] in DOCUMENT_PROJECTIONS:
-        return await materialize_document_batch(
-            leases,
-            lane_pool,
-            html_repository,
-            stages=stages,
-            source_snapshot=run.source_snapshot,
-            after_cursor=cursor,
-            item_budget=run.item_budget,
-            byte_budget=run.byte_budget,
-            destinations=run.destinations,
-        )
-    async with operation_leases(
-        leases,
-        tuple(f"material.{stage}" for stage in stages),
-        phase="materialization",
-        acquire_timeout=0,
-    ):
-        return await lane_pool.call(
-            _materialize_visit_on_lane,
-            {
-                "stages": stages,
-                "source_snapshot": run.source_snapshot,
-                "after_cursor": cursor,
-                "item_budget": run.item_budget,
-                "destinations": run.destinations,
-            },
-        )
-
-
-def _refresh_metadata(catalogue) -> None:
-    catalogue.refresh_metadata()
-
-
-async def _materialize_catchup_run_batch(
-    leases,
-    lane_pool: MaterializationLanePool,
-    html_repository: RawHtmlRepository,
-    run: MaterializationRun,
-    stages,
-) -> BatchResult:
-    if run.catchup_target_snapshot is None:
-        raise RuntimeError("catch-up target is not fixed")
-    cursor = run.catchup_cursors.get(stages[0])
-    if stages[0] in DOCUMENT_PROJECTIONS:
-        return await materialize_document_batch(
-            leases,
-            lane_pool,
-            html_repository,
-            stages=stages,
-            source_snapshot=run.source_snapshot,
-            after_snapshot=run.catchup_snapshot,
-            through_snapshot=run.catchup_target_snapshot,
-            after_cursor=cursor,
-            item_budget=run.item_budget,
-            byte_budget=run.byte_budget,
-            destinations=run.destinations,
-        )
-    async with operation_leases(
-        leases,
-        tuple(f"material.{stage}" for stage in stages),
-        phase="materialization",
-        acquire_timeout=0,
-    ):
-        return await lane_pool.call(
-            _materialize_visit_on_lane,
-            {
-                "stages": stages,
-                "source_snapshot": run.source_snapshot,
-                "after_snapshot": run.catchup_snapshot,
-                "through_snapshot": run.catchup_target_snapshot,
-                "after_cursor": cursor,
-                "item_budget": run.item_budget,
-                "destinations": run.destinations,
-            },
-        )
-
-
-def _materialize_visit_on_lane(catalogue, scope: dict) -> BatchResult:
-    return materialize_visit_batch(catalogue, **scope)
-
-
-def _source_highwater(catalogue, run: MaterializationRun) -> int:
-    latest = catalogue.latest_snapshot()
-    if latest is None or latest <= run.catchup_snapshot:
-        return run.catchup_snapshot
-    tables: list[str] = []
-    stages = set(run.stages)
-    if stages & {
-        "html_documents",
-        "html_elements",
-        "jsonld_values",
-        "links",
-        "link_observations",
-    }:
-        tables.append("documents")
-    if stages & {"pages", "page_observations"}:
-        tables.append("visits")
-    maxima = [run.catchup_snapshot]
-    alias = "'" + catalogue.config.alias.replace("'", "''") + "'"
-    for table in tables:
-        rows = catalogue.trusted_remote_rows(
-            f"""
-            SELECT max(snapshot_id)
-            FROM ducklake_table_changes(
-              {alias}, 'ingest', '{table}',
-              {run.catchup_snapshot + 1}, {latest}
-            )
-            """
-        )
-        value = rows[0][0] if rows else None
-        if value is not None:
-            maxima.append(int(value))
-    return max(maxima)
-
-
-def _activate_run(
-    catalogue,
-    run: MaterializationRun,
-) -> None:
-    activate_rebuild(catalogue, run.id, run.destinations)
-
-
-def _finalize_run(
-    catalogue,
-    run: MaterializationRun,
-) -> None:
-    finalize_rebuild(catalogue, run.id, run.destinations)
-
-
-def _discard_rebuild(catalogue, destinations: dict[str, str]) -> None:
-    catalogue.drop_materialization_generations(destinations.values())
-
-
-async def _publish_queued_runs(
-    jetstream,
-    store: AsyncMaterializationRunStore,
-    *,
-    stop: asyncio.Event,
-) -> None:
-    while not stop.is_set():
-        try:
-            for run in await store.list(limit=100):
-                if run.status == "queued":
-                    await publish_run(jetstream, run.id)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logging.exception("failed to reconcile queued materialization runs")
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=5)
-        except TimeoutError:
-            pass

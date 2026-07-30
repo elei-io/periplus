@@ -1,23 +1,16 @@
-"""Remote DuckLake connection and logical schema boundary."""
+"""Direct DuckLake connection and logical schema boundary."""
 
 from __future__ import annotations
 
-import logging
 import re
-import threading
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from pathlib import Path
 
 import duckdb
 import pyarrow as pa
 
 from atlas.platform.catalogue.config import CatalogueConfig
-from atlas.platform.catalogue.duckbasin import (
-    DuckBasinClientMinter,
-    DuckBasinCredentialRejectedError,
-    MintedDuckDB,
-    classify_quack_connection_error,
-)
 from atlas.platform.catalogue.exceptions import CatalogueSchemaError
 from atlas.platform.catalogue.schema import (
     COLUMN_COMMENTS,
@@ -34,73 +27,81 @@ from atlas.platform.catalogue.public import (
 )
 
 _INTERNAL_TABLE_NAME = re.compile(r"^_atlas_[a-z0-9_]+$")
+_REQUIRED_ATLAS_NATIVE_FUNCTIONS = frozenset(
+    {"atlas_dom_select_first", "atlas_dom_select_all"}
+)
 
 
 class Catalogue:
-    """One session-affine connection to a DuckBasin-managed DuckLake."""
+    """One process-local connection to Atlas's shared DuckLake."""
 
     def __init__(
         self,
         config: CatalogueConfig,
         *,
-        minted: MintedDuckDB,
-        minter: DuckBasinClientMinter,
         duckdb_config: Mapping[str, str] | None = None,
     ) -> None:
         self.config = config
-        self._minted = minted
-        self._minter = minter
-        self._duckdb_config = dict(duckdb_config or {})
-        self._remint_lock = threading.Lock()
-        self._connection_generation = 1
-        self._remint_count = 0
-        self._remote_transaction_active = False
-        self._connection_proxy = _ResilientDuckDBConnection(self)
-        if minted.catalogue_alias != config.alias:
-            raise ValueError(
-                "DuckBasin catalogue alias does not match Atlas configuration"
+        connection_config = dict(duckdb_config or {})
+        connection_config["allow_unsigned_extensions"] = "true"
+        self._connection = duckdb.connect(
+            ":memory:",
+            config=connection_config,
+        )
+        self._connection.execute("INSTALL ducklake")
+        self._connection.execute("LOAD ducklake")
+        if config.metadata_path.startswith("postgres:"):
+            self._connection.execute("INSTALL postgres")
+            self._connection.execute("LOAD postgres")
+        self._connection.load_extension(
+            str(config.resolved_extension_path())
+        )
+        native_functions = {
+            str(name)
+            for (name,) in self._connection.execute(
+                "SELECT DISTINCT function_name FROM duckdb_functions() "
+                "WHERE function_name IN "
+                "('atlas_dom_select_first', 'atlas_dom_select_all')"
+            ).fetchall()
+        }
+        if native_functions != _REQUIRED_ATLAS_NATIVE_FUNCTIONS:
+            missing = sorted(
+                _REQUIRED_ATLAS_NATIVE_FUNCTIONS - native_functions
             )
+            self._connection.close()
+            raise CatalogueSchemaError(
+                "Atlas DuckDB extension is missing required functions: "
+                + ", ".join(missing)
+            )
+        if "://" not in config.data_path:
+            Path(config.data_path).mkdir(parents=True, exist_ok=True)
+        attach = (
+            f"ATTACH {_quote_literal('ducklake:' + config.metadata_path)} "
+            f"AS {_quote_identifier(config.alias)} "
+            f"(DATA_PATH {_quote_literal(config.data_path)}, "
+            f"METADATA_SCHEMA {_quote_literal(config.metadata_schema)})"
+        )
+        self._connection.execute(attach)
         self._use_schema_if_available()
 
     @property
     def trusted_connection(self):
         """Return the raw local connection for trusted Atlas infrastructure SQL."""
 
-        return self._connection_proxy
-
-    @property
-    def session_id(self) -> str:
-        return self._minted.session_id
-
-    @property
-    def lake_slug(self) -> str:
-        return self._minted.lake_slug
-
-    @property
-    def connection_generation(self) -> int:
-        return self._connection_generation
-
-    @property
-    def remint_count(self) -> int:
-        return self._remint_count
-
-    @property
-    def token_status(self) -> tuple[str, int]:
-        return self._minter.token_status()
+        return self._connection
 
     @contextmanager
     def transaction(self) -> Iterator[Catalogue]:
-        """One Basin transaction shared by remote SQL and attached transfers."""
+        """One DuckLake transaction shared by all batch writes."""
 
         with self.remote_transaction():
             yield self
 
     @contextmanager
     def remote_transaction(self) -> Iterator[Catalogue]:
-        """Transaction executed by the session-affine Basin DuckDB process."""
+        """One direct DuckLake transaction."""
 
         self.trusted_remote_execute("BEGIN TRANSACTION")
-        self._remote_transaction_active = True
         try:
             yield self
         except BaseException as operation_error:
@@ -108,22 +109,12 @@ class Catalogue:
                 self.trusted_remote_execute("ROLLBACK")
             except BaseException as rollback_error:
                 operation_error.add_note(
-                    "The remote transaction rollback also failed: "
+                    "The DuckLake transaction rollback also failed: "
                     f"{type(rollback_error).__name__}: {rollback_error}"
                 )
-                logging.warning(
-                    "remote transaction rollback failed after %s",
-                    type(operation_error).__name__,
-                    exc_info=rollback_error,
-                )
-            finally:
-                self._remote_transaction_active = False
             raise
         else:
-            try:
-                self.trusted_remote_execute("COMMIT")
-            finally:
-                self._remote_transaction_active = False
+            self.trusted_remote_execute("COMMIT")
 
     def bootstrap(self) -> None:
         schemas = (INGEST_SCHEMA, MATERIAL_SCHEMA)
@@ -203,6 +194,14 @@ class Catalogue:
                             f"{_quote_identifier(column_name)} IS "
                             f"{_quote_literal(comment)}"
                         )
+            self.trusted_remote_execute(
+                "CREATE TABLE IF NOT EXISTS "
+                f"{_qualified(self.config.alias, MATERIAL_SCHEMA, '_atlas_applied_batches')} "
+                "(run_id UUID NOT NULL, batch_id UUID NOT NULL, "
+                "source_snapshot BIGINT NOT NULL, source_items BIGINT NOT NULL, "
+                "source_bytes BIGINT NOT NULL, output_rows BIGINT NOT NULL, "
+                "output_bytes BIGINT NOT NULL, committed_at TIMESTAMPTZ NOT NULL)"
+            )
         install_public_catalogue(self)
         self._use_schema_if_available()
         self.validate_schema()
@@ -344,6 +343,7 @@ class Catalogue:
         generations: Mapping[RelationName, str],
         *,
         activation_id: str,
+        transaction: bool = True,
     ) -> None:
         """Atomically replace selected public material tables."""
 
@@ -392,7 +392,11 @@ class Catalogue:
             raise RuntimeError(
                 "materialization activation is partially applied"
             )
-        with self.remote_transaction():
+        with (
+            self.remote_transaction()
+            if transaction
+            else _nullcontext()
+        ):
             for relation_name, generation_table in pending.items():
                 retired_table = (
                     f"_atlas_retired_{relation_name.table}_{suffix}"
@@ -493,10 +497,7 @@ class Catalogue:
             raise ValueError(
                 "trusted_remote_rows accepts already-bound server SQL only"
             )
-        cursor = self._execute_remote(
-            "FROM quack_query_by_name(current_catalog(), ?)",
-            sql,
-        )
+        cursor = self._connection.execute(sql)
         return cursor.fetchall()
 
     def trusted_remote_result(
@@ -505,21 +506,15 @@ class Catalogue:
     ) -> tuple[tuple[str, ...], tuple[str, ...], list[tuple]]:
         """Execute trusted remote SQL and retain its result-column metadata."""
 
-        cursor = self._execute_remote(
-            "FROM quack_query_by_name(current_catalog(), ?)",
-            sql,
-        )
+        cursor = self._connection.execute(sql)
         columns = tuple(str(item[0]) for item in cursor.description)
         types = tuple(str(item[1]) for item in cursor.description)
         return columns, types, cursor.fetchall()
 
     def trusted_remote_execute(self, sql: str) -> list[tuple]:
-        """Execute trusted Atlas SQL in the session-affine Basin process."""
+        """Execute trusted Atlas SQL directly against DuckLake."""
 
-        return self._execute_remote(
-            "CALL quack_query_by_name(current_catalog(), ?)",
-            sql,
-        ).fetchall()
+        return self._connection.execute(sql).fetchall()
 
     def append(
         self,
@@ -542,7 +537,7 @@ class Catalogue:
         table: pa.Table,
         *,
         schema_name: str,
-        variant_columns: frozenset[str] = frozenset(),
+        json_columns: frozenset[str] = frozenset(),
     ) -> None:
         """Stream one typed local Arrow relation into a managed table."""
 
@@ -557,9 +552,9 @@ class Catalogue:
             )
             projections = ", ".join(
                 (
-                    f"{_quote_identifier(name)}::JSON::VARIANT "
+                    f"{_quote_identifier(name)}::JSON "
                     f"AS {_quote_identifier(name)}"
-                    if name in variant_columns
+                    if name in json_columns
                     else _quote_identifier(name)
                 )
                 for name in table.column_names
@@ -573,15 +568,7 @@ class Catalogue:
             self.trusted_connection.unregister(registration)
 
     def close(self) -> None:
-        try:
-            self._minted.close()
-        finally:
-            self._minter.close()
-
-    def refresh_metadata(self) -> None:
-        """Mint a fresh session after Atlas creates internal rebuild tables."""
-
-        self._remint_connection(self._minted)
+        self._connection.close()
 
     def __enter__(self) -> Catalogue:
         return self
@@ -589,108 +576,16 @@ class Catalogue:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def _use_schema_if_available(self) -> None:
+    def _use_schema_if_available(self, connection=None) -> None:
+        active_connection = connection or self.trusted_connection
         namespace = _qualified(self.config.alias, INGEST_SCHEMA)
         try:
-            self.trusted_connection.execute(f"USE {namespace}")
+            active_connection.execute(f"USE {namespace}")
         except Exception:
             # A newly provisioned lake has no Atlas schema until bootstrap.
-            self.trusted_connection.execute(
+            active_connection.execute(
                 f"USE {_quote_identifier(self.config.alias)}"
             )
-
-    def _execute_remote(self, local_sql: str, remote_sql: str):
-        return self._execute_local(local_sql, [remote_sql])
-
-    def _ensure_fresh_connection(self) -> None:
-        failed_minted = self._minted
-        if (
-            not self._remote_transaction_active
-            and self._minter.connection_credentials_stale(failed_minted)
-        ):
-            self._remint_connection(failed_minted)
-
-    def _execute_local(self, sql: str, parameters=None):
-        self._ensure_fresh_connection()
-        failed_minted = self._minted
-        try:
-            return failed_minted.connection.execute(sql, parameters)
-        except duckdb.Error as exc:
-            classified = classify_quack_connection_error(exc)
-            if classified is None:
-                raise
-            if self._remote_transaction_active:
-                if isinstance(
-                    classified,
-                    DuckBasinCredentialRejectedError,
-                ):
-                    self._minter.invalidate_connection_credentials(
-                        failed_minted
-                    )
-                raise classified from exc
-            if isinstance(classified, DuckBasinCredentialRejectedError):
-                self._minter.invalidate_connection_credentials(failed_minted)
-        self._remint_connection(failed_minted)
-        try:
-            return self._minted.connection.execute(sql, parameters)
-        except duckdb.Error as exc:
-            classified = classify_quack_connection_error(exc)
-            if classified is not None:
-                if isinstance(
-                    classified,
-                    DuckBasinCredentialRejectedError,
-                ):
-                    self._minter.invalidate_connection_credentials(
-                        self._minted
-                    )
-                raise classified from exc
-            raise
-
-    def _remint_connection(self, failed: MintedDuckDB) -> None:
-        """Replace a Quack connection with stale routing or credentials."""
-
-        with self._remint_lock:
-            if self._minted is not failed:
-                return
-            replacement = self._minter.mint(
-                duckdb_config=self._duckdb_config or None
-            )
-            if replacement.catalogue_alias != self.config.alias:
-                replacement.close()
-                raise ValueError(
-                    "DuckBasin catalogue alias changed while reminting"
-                )
-            self._minted = replacement
-            try:
-                self._use_schema_if_available()
-            except BaseException:
-                self._minted = failed
-                replacement.close()
-                raise
-            try:
-                failed.close()
-            except Exception:
-                logging.warning(
-                    "failed to close expired DuckBasin connection",
-                    exc_info=True,
-                )
-            self._connection_generation += 1
-            self._remint_count += 1
-
-
-class _ResilientDuckDBConnection:
-    """Stable connection facade that remints after Basin scale-to-zero."""
-
-    def __init__(self, catalogue: Catalogue) -> None:
-        self._catalogue = catalogue
-
-    def execute(self, sql: str, parameters=None):
-        return self._catalogue._execute_local(sql, parameters)
-
-    def __getattr__(self, name: str):
-        self._catalogue._ensure_fresh_connection()
-        return getattr(self._catalogue._minted.connection, name)
-
 
 def _column_type(column) -> str:
     data_type = column.data_type
@@ -715,3 +610,8 @@ def _quote_identifier(value: str) -> str:
 
 def _qualified(*parts: str) -> str:
     return ".".join(_quote_identifier(part) for part in parts)
+
+
+@contextmanager
+def _nullcontext():
+    yield

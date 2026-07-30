@@ -29,20 +29,12 @@ def _assert_installed_sdk() -> None:
 async def main() -> None:
     _assert_installed_sdk()
     atlas_sdk.configure()
-    managed: duckdb.DuckDBPyConnection | None = None
-    direct: duckdb.DuckDBPyConnection | None = None
+    connection: duckdb.DuckDBPyConnection | None = None
     try:
-        managed = atlas_sdk.conn.quack()
-        direct = atlas_sdk.conn.duck()
-        if not isinstance(managed, duckdb.DuckDBPyConnection):
-            raise AssertionError("quack() did not return a DuckDB connection")
-        if not isinstance(direct, duckdb.DuckDBPyConnection):
+        connection = atlas_sdk.conn.duck()
+        if not isinstance(connection, duckdb.DuckDBPyConnection):
             raise AssertionError("duck() did not return a DuckDB connection")
-
-        managed_version = _version(managed)
-        direct_version = _version(direct)
-        if managed_version != direct_version:
-            raise AssertionError("connection modes expose different catalogues")
+        _version(connection)
 
         crawl = await atlas_sdk.crawls.run(
             os.getenv("ATLAS_SMOKE_URL", "https://example.com/"),
@@ -65,9 +57,8 @@ async def main() -> None:
         async with asyncio.timeout(timeout):
             await crawl.completed()
             crawl.raise_for_status()
-            await crawl.materialized()
 
-        row = managed.execute(
+        row = connection.execute(
             """
             SELECT count(*)
             FROM web.visit
@@ -77,13 +68,11 @@ async def main() -> None:
         ).fetchone()
         if row is None or row[0] < 1:
             raise AssertionError(
-                "materialized crawl is not visible in web.visit"
+                "ingested crawl is not visible in web.visit"
             )
     finally:
-        if managed is not None:
-            managed.close()
-        if direct is not None:
-            direct.close()
+        if connection is not None:
+            connection.close()
         await atlas_sdk.aclose()
 
     print("Atlas SDK smoke test passed")

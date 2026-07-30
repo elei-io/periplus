@@ -11,7 +11,6 @@ from atlas.platform.catalogue import (
     CrawlRecord,
     DocumentRecord,
     IngestionWriteResult,
-    ServiceAccountTokenProvider,
     VisitEvidence,
     catalogue_from_env,
 )
@@ -191,13 +190,10 @@ class RepositoryIngestor:
         self.close()
 
 
-def repository_ingestor_from_env(
-    *,
-    tokens: ServiceAccountTokenProvider | None = None,
-) -> RepositoryIngestor:
+def repository_ingestor_from_env() -> RepositoryIngestor:
     store = object_store_from_env()
     return RepositoryIngestor(
         html_repository=RawHtmlRepository(store),
         document_repository=ExactDocumentRepository(store),
-        catalogue=catalogue_from_env(tokens=tokens),
+        catalogue=catalogue_from_env(),
     )

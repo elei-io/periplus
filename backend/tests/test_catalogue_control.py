@@ -16,8 +16,7 @@ class _FakeCatalogue:
         self.closed = False
         self.validated = False
         self.validation_error: RuntimeError | None = None
-        self.lake_slug = "atlas_test"
-        self.config = SimpleNamespace(schema="main")
+        self.config = SimpleNamespace(alias="atlas_test")
 
     def validate_schema(self) -> None:
         self.validated = True

@@ -6,10 +6,6 @@ from unittest.mock import MagicMock, call, patch
 import duckdb
 import psycopg
 
-from atlas.platform.catalogue.duckbasin import (
-    DuckBasinAuthenticationError,
-    DuckBasinUnavailableError,
-)
 from atlas.platform.catalogue.operations import (
     is_retryable_catalogue_unavailability,
     run_with_catalogue_retry,
@@ -26,12 +22,7 @@ class CatalogueOperationRetryTests(unittest.TestCase):
         self.assertFalse(is_retryable_catalogue_unavailability(ValueError("bad row")))
         self.assertTrue(
             is_retryable_catalogue_unavailability(
-                DuckBasinUnavailableError("Quack timed out")
-            )
-        )
-        self.assertFalse(
-            is_retryable_catalogue_unavailability(
-                DuckBasinAuthenticationError("bad service account")
+                duckdb.IOException("metadata connection failed")
             )
         )
 
@@ -93,13 +84,13 @@ class CatalogueOperationRetryTests(unittest.TestCase):
         self.assertEqual(result, "committed")
         self.assertEqual(operation.call_count, 2)
 
-    def test_duckbasin_unavailability_stays_live_past_conflict_limit(
+    def test_io_unavailability_stays_live_past_conflict_limit(
         self,
     ) -> None:
         operation = MagicMock(
             side_effect=[
-                DuckBasinUnavailableError("Quack returned 503"),
-                DuckBasinUnavailableError("Quack still unavailable"),
+                duckdb.IOException("metadata unavailable"),
+                duckdb.IOException("metadata still unavailable"),
                 "committed",
             ]
         )

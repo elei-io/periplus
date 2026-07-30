@@ -17,7 +17,6 @@ from atlas.platform.health import HealthMonitor, start_health_server
 WorkerRole = Literal[
     "acquisition",
     "ingestion",
-    "cdc",
     "materialization",
     "housekeeping",
 ]

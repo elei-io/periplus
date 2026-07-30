@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 from atlas.platform.catalogue.exceptions import CatalogueSchemaError
 
 
-PUBLIC_CATALOGUE_VERSION = "2.1.0"
+PUBLIC_CATALOGUE_VERSION = "3.0.0"
 WEB_SCHEMA = "web"
 DOM_SCHEMA = "dom"
 PUBLIC_SCHEMAS = (WEB_SCHEMA, DOM_SCHEMA)
@@ -59,8 +59,8 @@ PUBLIC_OBJECTS = (
     ),
     CatalogueObject(
         "view",
-        "pages",
-        "views/001_pages.sql",
+        "page",
+        "views/001_page.sql",
         (
             "page_id",
             "url",
@@ -71,7 +71,7 @@ PUBLIC_OBJECTS = (
             "query",
             "registrable_domain",
         ),
-        comment="Normalized page identities observed through visits.",
+        comment="Canonical normalized URL identities observed through visits.",
         column_comments=(
             ("page_id", "Deterministic identity derived from the normalized URL."),
             ("url", "Unique normalized URL represented by this page."),
@@ -88,179 +88,13 @@ PUBLIC_OBJECTS = (
     ),
     CatalogueObject(
         "view",
-        "links",
-        "views/002_links.sql",
+        "visit",
+        "views/010_visit.sql",
         (
-            "link_id",
-            "source_page_id",
-            "target_page_id",
-            "source_url",
-            "target_url",
-            "relation_scope",
-        ),
-        comment=(
-            "Normalized directed page pairs positively observed in HTML."
-        ),
-        column_comments=(
-            (
-                "link_id",
-                "Deterministic identity of the directed normalized page pair.",
-            ),
-            (
-                "source_page_id",
-                "Deterministic identity of the normalized source URL.",
-            ),
-            (
-                "target_page_id",
-                "Deterministic identity of the normalized target URL.",
-            ),
-            (
-                "source_url",
-                "Normalized fragment-free URL where the link was observed.",
-            ),
-            (
-                "target_url",
-                "Normalized fragment-free URL resolved from the observed href.",
-            ),
-            (
-                "relation_scope",
-                "Most-specific deterministic source-target relationship.",
-            ),
-        ),
-    ),
-    CatalogueObject(
-        "view",
-        "content",
-        "views/003_content.sql",
-        ("content_id", "content_bytes"),
-        comment="Unique captured logical byte payload identities.",
-        column_comments=(
-            (
-                "content_id",
-                "SHA-256 identity of the uncompressed logical bytes.",
-            ),
-            (
-                "content_bytes",
-                "Size of the uncompressed logical bytes.",
-            ),
-        ),
-    ),
-    CatalogueObject(
-        "view",
-        "page_observations",
-        "views/010_page_observations.sql",
-        ("page_id", "visit_id", "document_id", "observed_at"),
-        comment="Page observations made by individual visits.",
-        column_comments=(
-            ("page_id", "Normalized page identity observed by the visit."),
-            ("visit_id", "Visit that made this page observation."),
-            (
-                "document_id",
-                "Retained document observation, null when none was produced.",
-            ),
-            (
-                "observed_at",
-                "Time the page representation was captured.",
-            ),
-        ),
-    ),
-    CatalogueObject(
-        "view",
-        "link_observations",
-        "views/011_link_observations.sql",
-        (
-            "link_id",
-            "document_id",
-            "content_id",
-            "element_index",
-            "raw_href",
-            "observed_at",
-        ),
-        comment="Anchor occurrences observed in retained HTML documents.",
-        column_comments=(
-            ("link_id", "Directed normalized page-pair identity."),
-            (
-                "document_id",
-                "Document observation containing the anchor.",
-            ),
-            (
-                "content_id",
-                "Immutable HTML content containing the anchor.",
-            ),
-            (
-                "element_index",
-                "Exact source anchor position in dom.elements.",
-            ),
-            (
-                "raw_href",
-                "Href value before URL resolution and normalization.",
-            ),
-            (
-                "observed_at",
-                "Time the document representation was captured.",
-            ),
-        ),
-    ),
-    CatalogueObject(
-        "view",
-        "documents",
-        "views/012_documents.sql",
-        (
-            "document_id",
             "visit_id",
             "page_id",
-            "content_id",
-            "observed_at",
-            "representation",
-            "declared_media_type",
-            "detected_media_type",
-            "charset",
-            "content_bytes",
-        ),
-        comment="Retained document representation observations.",
-        column_comments=(
-            ("document_id", "Unique identity of this document observation."),
-            ("visit_id", "Visit that produced this document."),
-            (
-                "page_id",
-                "Normalized effective page identity observed by the visit.",
-            ),
-            (
-                "content_id",
-                "Identity of the immutable logical bytes.",
-            ),
-            (
-                "observed_at",
-                "Time the document representation was captured.",
-            ),
-            (
-                "representation",
-                "Meaning of the retained representation.",
-            ),
-            (
-                "declared_media_type",
-                "Media type claimed by the source, null when unavailable.",
-            ),
-            (
-                "detected_media_type",
-                "Media type detected by Atlas.",
-            ),
-            (
-                "charset",
-                "Character encoding when meaningful, otherwise null.",
-            ),
-            (
-                "content_bytes",
-                "Size of the uncompressed logical bytes.",
-            ),
-        ),
-    ),
-    CatalogueObject(
-        "view",
-        "visits",
-        "views/013_visits.sql",
-        (
-            "visit_id",
+            "url",
+            "is_latest",
             "crawl_id",
             "requested_url",
             "effective_url",
@@ -271,46 +105,115 @@ PUBLIC_OBJECTS = (
             "outcome",
             "status_code",
             "document_id",
+            "content_id",
+            "content_bytes",
+            "representation",
+            "declared_media_type",
+            "detected_media_type",
+            "charset",
+            "dom_projection_complete",
+            "dom_element_count",
+            "dom_max_depth",
             "provenance",
         ),
-        comment="Destinations admitted and observed during crawls.",
+        comment="Acquisition history with page, document, and DOM evidence.",
         column_comments=(
-            ("visit_id", "Unique identity of this destination observation."),
-            ("crawl_id", "Crawl that produced this visit."),
+            ("visit_id", "Unique identity of this acquisition visit."),
+            ("page_id", "Canonical effective page identity for this visit."),
+            ("url", "Normalized effective page URL for this visit."),
+            ("is_latest", "Whether this is the deterministically latest page visit."),
+            ("crawl_id", "Crawl execution that produced this visit."),
+            ("requested_url", "Exact URL Atlas attempted to visit."),
+            ("effective_url", "Final URL after navigation or redirects."),
+            ("admitted_at", "Time the destination entered the crawl."),
+            ("started_at", "Time acquisition began."),
+            ("observed_at", "Time the retained representation was captured."),
+            ("finished_at", "Time the visit reached its terminal outcome."),
+            ("outcome", "Final logical visit result."),
+            ("status_code", "Final HTTP status when available."),
+            ("document_id", "Retained document observation, when one exists."),
+            ("content_id", "Immutable logical content identity."),
+            ("content_bytes", "Size of the uncompressed logical content."),
+            ("representation", "Meaning of the retained bytes."),
+            ("declared_media_type", "Media type claimed by the source."),
+            ("detected_media_type", "Media type detected by Atlas."),
+            ("charset", "Character encoding when meaningful."),
             (
-                "requested_url",
-                "Exact URL Atlas attempted to visit.",
+                "dom_projection_complete",
+                "Whether the content has a committed DOM projection.",
             ),
+            ("dom_element_count", "Projected DOM element count."),
+            ("dom_max_depth", "Maximum projected DOM element depth."),
+            ("provenance", "Typed origin of this visit evidence."),
+        ),
+    ),
+    CatalogueObject(
+        "view",
+        "link",
+        "views/002_link.sql",
+        (
+            "link_id",
+            "source_page_id",
+            "target_page_id",
+            "source_url",
+            "target_url",
+            "relation_scope",
+            "first_seen_at",
+            "last_seen_at",
+            "visit_count",
+            "distinct_content_count",
+            "occurrence_count",
+        ),
+        comment="Canonical directed page links with retained history rollups.",
+        column_comments=(
+            ("link_id", "Deterministic identity of the directed page pair."),
+            ("source_page_id", "Canonical normalized source page identity."),
+            ("target_page_id", "Canonical normalized target page identity."),
+            ("source_url", "Normalized source URL."),
+            ("target_url", "Normalized resolved target URL."),
+            ("relation_scope", "Most-specific source-target site relationship."),
+            ("first_seen_at", "Earliest retained occurrence time."),
+            ("last_seen_at", "Latest retained occurrence time."),
+            ("visit_count", "Visits containing this link."),
             (
-                "effective_url",
-                "Final URL after navigation or redirects, null if unresolved.",
+                "distinct_content_count",
+                "Distinct content identities containing this link.",
             ),
-            (
-                "admitted_at",
-                "Time the destination entered the crawl.",
-            ),
-            (
-                "started_at",
-                "Time acquisition began, null if it did not begin.",
-            ),
-            (
-                "observed_at",
-                "Time returned bytes were captured, null when none were.",
-            ),
-            (
-                "finished_at",
-                "Time the visit reached its terminal outcome.",
-            ),
-            ("outcome", "Final logical result of the visit."),
-            (
-                "status_code",
-                "Final HTTP status when available.",
-            ),
-            (
-                "document_id",
-                "Document produced by the visit, null when none was retained.",
-            ),
-            ("provenance", "Typed origin of this observation."),
+            ("occurrence_count", "Retained DOM occurrences of this link."),
+        ),
+    ),
+    CatalogueObject(
+        "view",
+        "link_occurrence",
+        "views/011_link_occurrence.sql",
+        (
+            "occurrence_id",
+            "link_id",
+            "visit_id",
+            "source_page_id",
+            "target_page_id",
+            "document_id",
+            "content_id",
+            "element_index",
+            "observed_at",
+            "raw_href",
+            "resolved_url",
+            "relation_scope",
+        ),
+        comment="Exact DOM occurrences supporting canonical page links.",
+        column_comments=(
+            ("occurrence_id", "Stable identity of this link occurrence."),
+            ("link_id", "Canonical directed link supported by this occurrence."),
+            ("visit_id", "Visit during which this occurrence was retained."),
+            ("source_page_id", "Canonical source page identity."),
+            ("target_page_id", "Canonical resolved target page identity."),
+            ("document_id", "Document observation containing the element."),
+            ("content_id", "Immutable content containing the element."),
+            ("element_index", "Exact source element in dom.elements."),
+            ("observed_at", "Time the containing representation was captured."),
+            ("raw_href", "Exact href before resolution and normalization."),
+            ("resolved_url", "Normalized target URL resolved in visit context."),
+            ("relation_scope", "Most-specific source-target site relationship."),
         ),
     ),
     CatalogueObject(
@@ -331,95 +234,27 @@ PUBLIC_OBJECTS = (
         comment="Terminal crawl execution evidence.",
         column_comments=(
             ("crawl_id", "Unique identity of this crawl execution."),
-            ("kind", "Whether Atlas acquired or imported the evidence."),
-            (
-                "graph_id",
-                "Stable crawl-plan identity, null for imports.",
-            ),
-            (
-                "graph_config_hash",
-                "Hash of the canonical frozen graph configuration.",
-            ),
-            (
-                "graph_config",
-                "Complete frozen graph configuration.",
-            ),
-            (
-                "root_url_count",
-                "Number of admitted roots represented by the crawl.",
-            ),
+            ("kind", "Native Atlas crawl or imported evidence."),
+            ("graph_id", "Stable crawl-plan identity for native crawls."),
+            ("graph_config_hash", "Hash of the frozen graph configuration."),
+            ("graph_config", "Complete frozen graph configuration."),
+            ("root_url_count", "Number of admitted crawl roots."),
             ("started_at", "Time crawl execution began."),
             ("finished_at", "Time crawl execution stopped."),
-            ("stop_reason", "Reason the crawl stopped."),
+            ("stop_reason", "Reason crawl execution stopped."),
         ),
     ),
     CatalogueObject(
         "view",
-        "page_stats",
-        "views/015_page_stats.sql",
-        (
-            "page_id",
-            "visit_count",
-            "document_count",
-            "distinct_content_count",
-            "first_observed_at",
-            "last_observed_at",
-            "inbound_link_count",
-            "outbound_link_count",
-        ),
-        comment=(
-            "Observation and directed-link evidence summarized by page."
-        ),
+        "jsonld",
+        "views/021_jsonld.sql",
+        ("content_id", "element_index", "type_terms", "value"),
+        comment="Parsed JSON-LD values embedded in immutable HTML content.",
         column_comments=(
-            ("page_id", "Page identity being summarized."),
-            ("visit_count", "Number of page observations."),
-            (
-                "document_count",
-                "Number of page observations with a retained document.",
-            ),
-            (
-                "distinct_content_count",
-                "Number of distinct immutable content identities observed.",
-            ),
-            (
-                "first_observed_at",
-                "Earliest page observation time.",
-            ),
-            (
-                "last_observed_at",
-                "Latest page observation time.",
-            ),
-            (
-                "inbound_link_count",
-                "Number of distinct normalized pairs targeting this page.",
-            ),
-            (
-                "outbound_link_count",
-                "Number of distinct normalized pairs sourced from this page.",
-            ),
-        ),
-    ),
-    CatalogueObject(
-        "view",
-        "documents",
-        "views/000_documents.sql",
-        (
-            "content_id",
-            "node_count",
-            "max_depth",
-        ),
-        schema=DOM_SCHEMA,
-        comment="Canonical HTML DOM identities and costing statistics.",
-        column_comments=(
-            (
-                "content_id",
-                "Identity of the projected immutable HTML bytes.",
-            ),
-            ("node_count", "Number of elements in the canonical DOM."),
-            (
-                "max_depth",
-                "Maximum element depth from the document root.",
-            ),
+            ("content_id", "Immutable HTML content identity."),
+            ("element_index", "Source script element in dom.elements."),
+            ("type_terms", "Distinct raw JSON-LD @type terms."),
+            ("value", "Complete parsed JSON-LD value."),
         ),
     ),
     CatalogueObject(
@@ -440,113 +275,20 @@ PUBLIC_OBJECTS = (
             "text_tail",
         ),
         schema=DOM_SCHEMA,
-        comment="Structural elements projected from immutable HTML content.",
+        comment="Structural DOM elements keyed by immutable content.",
         column_comments=(
-            (
-                "content_id",
-                "Identity of the projected immutable HTML bytes.",
-            ),
-            (
-                "element_index",
-                "Zero-based element position in document order.",
-            ),
-            (
-                "parent_index",
-                "Parent element index, null for the root.",
-            ),
-            (
-                "subtree_end_index",
-                "Exclusive end of this element subtree.",
-            ),
-            ("depth", "Element depth from the root."),
-            (
-                "child_index",
-                "Zero-based position among element siblings.",
-            ),
+            ("content_id", "Immutable HTML content identity."),
+            ("element_index", "Zero-based depth-first document position."),
+            ("parent_index", "Parent element index, null for the root."),
+            ("subtree_end_index", "Exclusive end of this element subtree."),
+            ("depth", "Element depth from the document root."),
+            ("child_index", "Zero-based position among element siblings."),
             ("tag", "Normalized local tag name."),
             ("namespace", "Normalized element namespace."),
             ("attributes", "Attribute names and string values."),
-            (
-                "text_direct",
-                "Text directly inside this element before child elements.",
-            ),
-            (
-                "text_tail",
-                "Text following this element within its parent.",
-            ),
+            ("text_direct", "Text directly inside this element."),
+            ("text_tail", "Text following this element within its parent."),
         ),
-    ),
-    CatalogueObject(
-        "view",
-        "jsonld",
-        "views/021_jsonld.sql",
-        ("content_id", "element_index", "type_terms", "value"),
-        comment="Parsed JSON-LD payloads embedded in immutable HTML content.",
-        column_comments=(
-            (
-                "content_id",
-                "Identity of the containing immutable HTML bytes.",
-            ),
-            (
-                "element_index",
-                "Source script element in dom.elements.",
-            ),
-            (
-                "type_terms",
-                "Distinct raw @type strings found in the payload.",
-            ),
-            ("value", "Complete parsed JSON-LD payload."),
-        ),
-    ),
-    CatalogueObject(
-        "table_macro",
-        "page_history",
-        "macros_table/100_page_history.sql",
-        (
-            "page_id",
-            "visit_id",
-            "document_id",
-            "content_id",
-            "observed_at",
-            "crawl_id",
-            "requested_url",
-            "effective_url",
-            "outcome",
-            "status_code",
-        ),
-        arguments_sql="NULL::UUID",
-        parameters=(("selected_page_id", "UUID"),),
-    ),
-    CatalogueObject(
-        "table_macro",
-        "link_history",
-        "macros_table/110_link_history.sql",
-        (
-            "link_id",
-            "source_page_id",
-            "target_page_id",
-            "document_id",
-            "content_id",
-            "element_index",
-            "raw_href",
-            "observed_at",
-        ),
-        arguments_sql="NULL::UUID",
-        parameters=(("selected_link_id", "UUID"),),
-    ),
-    CatalogueObject(
-        "table_macro",
-        "document",
-        "macros_table/090_document.sql",
-        (
-            "content_id",
-            "node_count",
-            "max_depth",
-            "nodes",
-        ),
-        arguments_sql="NULL::VARCHAR",
-        parameters=(("selected_content_id", "VARCHAR"),),
-        schema=DOM_SCHEMA,
     ),
     CatalogueObject(
         "table_macro",
@@ -562,10 +304,94 @@ PUBLIC_OBJECTS = (
     ),
 )
 
+_DOM_ELEMENT_COLUMNS = (
+    "content_id",
+    "element_index",
+    "parent_index",
+    "subtree_end_index",
+    "depth",
+    "child_index",
+    "tag",
+    "namespace",
+    "attributes",
+    "text_direct",
+    "text_tail",
+)
+DOM_SELECTOR_OBJECTS = (
+    CatalogueObject(
+        "table_macro",
+        "query_selector",
+        "macros_table/110_query_selector.sql",
+        _DOM_ELEMENT_COLUMNS,
+        arguments_sql="NULL::VARCHAR, 'a'::VARCHAR",
+        parameters=(
+            ("selected_content_id", "VARCHAR"),
+            ("css_selector", "VARCHAR"),
+        ),
+        schema=DOM_SCHEMA,
+    ),
+    CatalogueObject(
+        "table_macro",
+        "query_selector_all",
+        "macros_table/120_query_selector_all.sql",
+        _DOM_ELEMENT_COLUMNS,
+        arguments_sql="NULL::VARCHAR, 'a'::VARCHAR",
+        parameters=(
+            ("selected_content_id", "VARCHAR"),
+            ("css_selector", "VARCHAR"),
+        ),
+        schema=DOM_SCHEMA,
+    ),
+)
+KNOWN_PUBLIC_OBJECTS = (*PUBLIC_OBJECTS, *DOM_SELECTOR_OBJECTS)
+_DOM_SELECTOR_NATIVE_FUNCTIONS = frozenset(
+    {"atlas_dom_select_first", "atlas_dom_select_all"}
+)
+
+
+def dom_selector_extension_available(
+    catalogue: CatalogueConnection,
+) -> bool:
+    names = {
+        str(name)
+        for (name,) in catalogue.trusted_remote_rows(
+            "SELECT DISTINCT function_name FROM duckdb_functions() "
+            "WHERE function_name IN "
+            "('atlas_dom_select_first', 'atlas_dom_select_all')"
+        )
+    }
+    return names == _DOM_SELECTOR_NATIVE_FUNCTIONS
+
+
+def installed_public_objects(
+    catalogue: CatalogueConnection,
+) -> tuple[CatalogueObject, ...]:
+    if not dom_selector_extension_available(catalogue):
+        return PUBLIC_OBJECTS
+    installed = {
+        (str(schema), str(name))
+        for schema, name in catalogue.trusted_remote_rows(
+            "SELECT schema_name, function_name FROM duckdb_functions() "
+            "WHERE function_type = 'table_macro' "
+            "AND schema_name = 'dom' "
+            "AND function_name IN ('query_selector', 'query_selector_all')"
+        )
+    }
+    if installed == {
+        ("dom", "query_selector"),
+        ("dom", "query_selector_all"),
+    }:
+        return KNOWN_PUBLIC_OBJECTS
+    return PUBLIC_OBJECTS
+
 
 def install_public_catalogue(catalogue: CatalogueConnection) -> None:
     """Atomically replace the complete current public SQL contract."""
 
+    extension_available = dom_selector_extension_available(catalogue)
+    install_objects = (
+        KNOWN_PUBLIC_OBJECTS if extension_available else PUBLIC_OBJECTS
+    )
     for item in PUBLIC_OBJECTS:
         if item.kind == "view":
             _validated_view_comments(item)
@@ -577,7 +403,13 @@ def install_public_catalogue(catalogue: CatalogueConnection) -> None:
                 f"CREATE SCHEMA IF NOT EXISTS {schema}"
             )
             _drop_superseded_public_objects(catalogue, schema)
-        for item in PUBLIC_OBJECTS:
+        if not extension_available:
+            for item in DOM_SELECTOR_OBJECTS:
+                catalogue.trusted_remote_execute(
+                    f"DROP MACRO IF EXISTS {item.schema}."
+                    f"{_quote_identifier(item.name)}"
+                )
+        for item in install_objects:
             sql = root.joinpath(
                 item.schema, item.resource
             ).read_text(encoding="utf-8")
@@ -623,7 +455,7 @@ def _drop_superseded_public_objects(
 ) -> None:
     expected_views = {
         item.name
-        for item in PUBLIC_OBJECTS
+        for item in KNOWN_PUBLIC_OBJECTS
         if item.schema == schema and item.kind == "view"
     }
     existing_views = {
@@ -640,7 +472,7 @@ def _drop_superseded_public_objects(
 
     expected_macros = {
         (item.name, item.kind)
-        for item in PUBLIC_OBJECTS
+        for item in KNOWN_PUBLIC_OBJECTS
         if item.schema == schema
         and item.kind in {"macro", "table_macro"}
     }
@@ -670,6 +502,7 @@ def validate_public_catalogue(catalogue: CatalogueConnection) -> None:
     """Fail when the installed public catalogue differs from the manifest."""
 
     errors: list[str] = []
+    extension_available = dom_selector_extension_available(catalogue)
     for schema in PUBLIC_SCHEMAS:
         expected_views = {
             item.name
@@ -689,7 +522,7 @@ def validate_public_catalogue(catalogue: CatalogueConnection) -> None:
                 f"got {sorted(actual_views)}"
             )
 
-        expected_macros = {
+        required_macros = {
             (item.name, item.kind)
             for item in PUBLIC_OBJECTS
             if item.schema == schema
@@ -704,13 +537,44 @@ def validate_public_catalogue(catalogue: CatalogueConnection) -> None:
                 "AND function_type IN ('macro', 'table_macro')"
             )
         }
-        if actual_macros != expected_macros:
+        known_macros = {
+            (item.name, item.kind)
+            for item in KNOWN_PUBLIC_OBJECTS
+            if item.schema == schema
+            and item.kind in {"macro", "table_macro"}
+        }
+        selector_macros = {
+            (item.name, item.kind)
+            for item in DOM_SELECTOR_OBJECTS
+            if item.schema == schema
+        }
+        expected_macros = (
+            required_macros | selector_macros
+            if extension_available
+            else required_macros
+        )
+        optional_installed = actual_macros & selector_macros
+        if (
+            not required_macros.issubset(actual_macros)
+            or not actual_macros.issubset(known_macros)
+            or (
+                not extension_available
+                and optional_installed
+            )
+            or (
+                extension_available
+                and optional_installed != selector_macros
+            )
+        ):
             errors.append(
                 f"{schema} macros: expected {sorted(expected_macros)}, "
                 f"got {sorted(actual_macros)}"
             )
 
-    for item in PUBLIC_OBJECTS:
+    validate_objects = (
+        KNOWN_PUBLIC_OBJECTS if extension_available else PUBLIC_OBJECTS
+    )
+    for item in validate_objects:
         qualified = f"{item.schema}.{item.name}"
         if not item.columns:
             continue

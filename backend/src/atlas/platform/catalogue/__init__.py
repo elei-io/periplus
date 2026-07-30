@@ -2,15 +2,6 @@
 
 from atlas.platform.catalogue.client import Catalogue
 from atlas.platform.catalogue.config import CatalogueConfig, catalogue_config_from_env
-from atlas.platform.catalogue.duckbasin import (
-    DuckBasinAuthenticationError,
-    DuckBasinClientMinter,
-    DuckBasinCredentialRejectedError,
-    DuckBasinError,
-    DuckBasinProtocolError,
-    DuckBasinUnavailableError,
-    ServiceAccountTokenProvider,
-)
 from atlas.platform.catalogue.exceptions import (
     CatalogueConfigError,
     CatalogueConflictError,
@@ -32,6 +23,7 @@ from atlas.platform.catalogue.records import (
     attempt_id_for,
     document_id_for,
     link_id_for,
+    link_occurrence_id_for,
     page_id_for,
 )
 from atlas.platform.catalogue.service import CatalogueService
@@ -41,9 +33,8 @@ def catalogue_from_env(
     *,
     threads: int | None = None,
     memory_limit: str | None = None,
-    tokens: ServiceAccountTokenProvider | None = None,
 ):
-    """Mint one session-affine connection to Atlas's managed DuckLake."""
+    """Open one process-local DuckDB connection to Atlas's DuckLake."""
 
     if threads is not None and threads <= 0:
         raise ValueError("threads must be greater than zero")
@@ -52,22 +43,10 @@ def catalogue_from_env(
         duckdb_config["threads"] = str(threads)
     if memory_limit is not None:
         duckdb_config["memory_limit"] = memory_limit
-    minter = DuckBasinClientMinter(tokens=tokens)
-    minted = None
-    try:
-        minted = minter.mint(duckdb_config=duckdb_config or None)
-        config = catalogue_config_from_env(alias=minted.catalogue_alias)
-        return Catalogue(
-            config,
-            minted=minted,
-            minter=minter,
-            duckdb_config=duckdb_config,
-        )
-    except BaseException:
-        if minted is not None:
-            minted.close()
-        minter.close()
-        raise
+    return Catalogue(
+        catalogue_config_from_env(),
+        duckdb_config=duckdb_config,
+    )
 
 
 __all__ = [
@@ -78,11 +57,6 @@ __all__ = [
     "CatalogueConfigError",
     "CatalogueConflictError",
     "CatalogueError",
-    "DuckBasinAuthenticationError",
-    "DuckBasinCredentialRejectedError",
-    "DuckBasinError",
-    "DuckBasinProtocolError",
-    "DuckBasinUnavailableError",
     "CatalogueService",
     "CatalogueSchemaError",
     "CatalogueValidationError",
@@ -94,10 +68,10 @@ __all__ = [
     "StepRecord",
     "VisitEvidence",
     "VisitRecord",
-    "ServiceAccountTokenProvider",
     "attempt_id_for",
     "document_id_for",
     "link_id_for",
+    "link_occurrence_id_for",
     "page_id_for",
     "catalogue_config_from_env",
     "catalogue_from_env",

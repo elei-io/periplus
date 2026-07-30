@@ -9,7 +9,7 @@ const metadata: SqlMetadata = {
   relations: [
     {
       schema_name: "web",
-      name: "visits",
+      name: "visit",
       kind: "view",
       description: "Destinations admitted and observed during crawls.",
       columns: [
@@ -55,9 +55,9 @@ const metadata: SqlMetadata = {
     },
     {
       schema_name: "web",
-      name: "pages",
+      name: "page",
       kind: "view",
-      description: "Normalized page identities observed through visits.",
+      description: "Canonical normalized URL identities observed through visits.",
       columns: [
         {
           name: "page_id",
@@ -76,21 +76,24 @@ const metadata: SqlMetadata = {
   ],
   macros: [
     {
-      schema_name: "web",
-      name: "page_history",
+      schema_name: "dom",
+      name: "query_selector_all",
       kind: "table_macro",
-      parameters: [{ name: "selected_page_id", data_type: "UUID" }],
+      parameters: [
+        { name: "selected_content_id", data_type: "VARCHAR" },
+        { name: "css_selector", data_type: "VARCHAR" },
+      ],
       return_type: null,
       columns: [
         {
-          name: "page_id",
-          data_type: "UUID",
+          name: "content_id",
+          data_type: "VARCHAR",
           nullable: false,
           description: null,
         },
         {
-          name: "observed_at",
-          data_type: "TIMESTAMPTZ",
+          name: "element_index",
+          data_type: "INTEGER",
           nullable: false,
           description: null,
         },
@@ -146,26 +149,26 @@ const metadata: SqlMetadata = {
 test("completes qualified relations", async () => {
   const completer = new SqlCompleter(async () => metadata)
   const values = await completer.complete("SELECT * FROM web.p")
-  const pages = values.find((item) => item.value === "web.pages")
+  const pages = values.find((item) => item.value === "web.page")
 
   assert(pages)
-  assert.match(pages.description ?? "", /Normalized page identities/)
+  assert.match(pages.description ?? "", /Canonical normalized URL identities/)
   assert(!values.some((item) => item.value === "pages"))
 })
 
 test("completes public table macros with their call delimiter", async () => {
   const completer = new SqlCompleter(async () => metadata)
-  const values = await completer.complete("SELECT * FROM web.page_h")
-  const macro = values.find((item) => item.value === "web.page_history(")
+  const values = await completer.complete("SELECT * FROM dom.query_s")
+  const macro = values.find((item) => item.value === "dom.query_selector_all(")
 
   assert(macro)
-  assert.match(macro.description ?? "", /selected_page_id UUID/)
+  assert.match(macro.description ?? "", /css_selector VARCHAR/)
 })
 
 test("completes columns from aliased relations in scope", async () => {
   const completer = new SqlCompleter(async () => metadata)
   const values = await completer.complete(
-    "SELECT v.req FROM web.visits AS v",
+    "SELECT v.req FROM web.visit AS v",
     "SELECT v.req".length,
   )
   const requestedUrl = values.find(
@@ -188,8 +191,8 @@ test("completes public relations and table macros from the web namespace", async
   const completer = new SqlCompleter(async () => metadata)
   const values = await completer.complete("SELECT * FROM web.")
 
-  assert(values.some((item) => item.value === "web.pages"))
-  assert(values.some((item) => item.value === "web.page_history("))
+  assert(values.some((item) => item.value === "web.page"))
+  assert(!values.some((item) => item.value === "dom.query_selector_all("))
   assert(!values.some((item) => item.value === "dom.elements"))
 })
 
@@ -198,8 +201,9 @@ test("completes relations and table macros from the DOM namespace", async () => 
   const values = await completer.complete("SELECT * FROM dom.")
 
   assert(values.some((item) => item.value === "dom.elements"))
+  assert(values.some((item) => item.value === "dom.query_selector_all("))
   assert(values.some((item) => item.value === "dom.text_content("))
-  assert(!values.some((item) => item.value === "web.pages"))
+  assert(!values.some((item) => item.value === "web.page"))
   assert(!values.some((item) => item.value === "dom.get_attribute("))
 })
 

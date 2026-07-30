@@ -1,14 +1,11 @@
 # DuckDB extension development
 
 Atlas keeps portable query semantics in the persistent `web.*` and `dom.*` DuckLake catalogue.
-The optional C++ extension recognizes and accelerates those plans; it must not be required for
-correctness.
+The C++ extension supplies bounded selector operations and recognizes and accelerates eligible
+plans; portable base catalogue semantics do not require it.
 See [`QUERY.md`](QUERY.md) for the query boundary.
 
-This guide describes the local development loop. It deliberately connects directly to Basin's
-underlying DuckLake so an extension can be rebuilt and exercised without first installing it on a
-Quack server. Production Atlas still uses Quack and never receives lake metadata or object-store
-credentials.
+This guide describes the local development loop against Atlas's own DuckLake attachment.
 
 ## Layout and prerequisites
 
@@ -17,7 +14,7 @@ The repositories are siblings:
 ```text
 Code/
 ├── atlas/
-│   ├── .env.extra
+│   ├── .env
 │   ├── ducklake.sh
 │   └── backend/scripts/direct_ducklake.py
 └── atlas-duckdb-extension/
@@ -30,9 +27,14 @@ The extension repository comes from DuckDB's official C++ extension template. It
 submodule and Atlas's Python `duckdb` dependency must remain on the exact same version because
 loadable C++ extensions are version- and platform-specific.
 
-The root `.env.extra` contains the development-only Basin metadata and object-store connection
-details. It is ignored by Git and must never be committed, copied into Atlas runtime
-configuration, or used as a production fallback.
+Compose passes the sibling extension source as an additional build context. A cached Linux
+builder stage compiles the exact DuckDB and Lexbor versions, and the final Atlas image contains
+only `/opt/atlas/atlas.duckdb_extension`. `atlas-setup` loads that artifact before attaching
+DuckLake and installs the complete persistent catalogue.
+
+The shell reads the same `ATLAS_DUCKLAKE_ALIAS`, `ATLAS_DUCKLAKE_METADATA_PATH`,
+`ATLAS_DUCKLAKE_METADATA_SCHEMA`, and `ATLAS_DUCKLAKE_DATA_PATH` variables as Atlas. The configured
+data path must be reachable by the host-native DuckDB process.
 
 ## First build
 
@@ -80,24 +82,17 @@ connection uses the release build.
    ./ducklake.sh
    ```
 
-The shell defaults to the `atlas_test` lake and opens DuckDB's native interactive terminal. Useful
+The shell opens the configured lake in DuckDB's native interactive terminal. Useful
 terminal commands include `.tables`, `.schema`, `.help`, and `.quit`.
 
 To execute one statement without entering the terminal:
 
 ```sh
 ./ducklake.sh --sql \
-  "SELECT web._catalogue_version(), count(*) FROM web.pages"
+  "SELECT web._catalogue_version(), count(*) FROM web.page"
 ```
 
-All arguments accepted by `backend/scripts/direct_ducklake.py` pass through the wrapper. For
-example:
-
-```sh
-./ducklake.sh \
-  --lake atlas_test \
-  --sql "EXPLAIN SELECT * FROM web.pages LIMIT 10"
-```
+All arguments accepted by `backend/scripts/direct_ducklake.py` pass through the wrapper.
 
 The `web.*` and `dom.*` objects are persistent DuckLake catalogue definitions installed by
 `make setup` or,
@@ -128,13 +123,8 @@ The interactive CLI has the Atlas extension linked into its executable, so run `
 restart the terminal after every extension change. One-shot `--sql` execution loads the matching
 release extension into the pinned Python DuckDB process.
 
-The Python client:
-
-- resolves the requested lake from Basin metadata using a read-only PostgreSQL session;
-- creates DuckDB secrets for the metadata store and lake object storage;
-- attaches the DuckLake with `READ_ONLY`;
-- loads the local release extension for one-shot Python queries; and
-- starts the extension-enabled native DuckDB terminal when `--sql` is omitted.
+The Python launcher loads the release extension, attaches the configured DuckLake read-only, and
+starts the extension-enabled native DuckDB terminal.
 
 For an interactive session, credentials exist only in a mode-`0600` temporary initialization file.
 The file is held inside a private temporary directory and removed when the terminal exits.
@@ -146,19 +136,21 @@ Before implementing an optimizer rule, record the performance-triage classificat
 any required schema or catalogue correction. A warning or boundedness error may be the correct
 compiler action when execution should not be rewritten.
 
-Every optimizer rewrite needs evidence for both semantics and activation:
+Every optimizer rewrite or native public capability needs evidence for both semantics and
+activation:
 
 - A differential correctness test must compare the portable and optimized result bags.
 - An `EXPLAIN` assertion or another positive signal must prove the intended rule fired.
 - Tests must cover empty and `NULL` inputs, duplicate preservation, relevant limit/order
   behavior, and aliases or projections affected by the rewrite.
-- The same public query must remain correct when the Atlas extension is absent.
+- Base portable queries must remain correct when the Atlas extension is absent. An explicitly
+  extension-backed capability must instead be absent from installation and metadata.
 
-The selector optimizer preserves keyed DuckLake pruning by increasing DuckDB's dynamic hash-join
-`IN` filter threshold only for plans that contain Atlas DOM selector functions. Explicit user
-settings take precedence. Native selectors consume the one-row value returned by
-`dom.document(content_id)` so plans never need to aggregate the complete element relation into
-scope-wide nested lists.
+Native selectors are table-in/table-out operators. Public selector macros supply a keyed
+`dom.elements` slice followed by a typed end-of-document sentinel. The native operator buffers and
+reconstructs only that document, matches with Lexbor, and returns complete element rows. Tests must
+prove that content predicates prune before the operator, input spanning multiple DuckDB vectors is
+not truncated, and lateral calls do not combine documents.
 
 Optimizer actions and diagnostics share `AtlasPlanAnalyzer` and the ordered Atlas policy registry.
 A new rule must be based on reusable plan facts such as relation grain, capability, cardinality,
@@ -182,20 +174,11 @@ stable and machine-readable; shell and SDK presentation belongs outside the exte
 Use real `atlas_test` queries for plan and performance investigation, but keep deterministic
 correctness coverage in SQLLogicTests.
 
-## Local versus managed execution
+## Release validation
 
-This loop validates the extension against the real lake without involving Quack. It does not prove
-managed deployment compatibility.
-
-For managed execution, Basin must install the exact matching extension on the Quack server and
-load it into the server-side DuckDB process. The client-side extension is not shipped through a
-Quack connection, and installing it only on a Quack client cannot optimize a query executed by the
-server.
-
-Before publishing or requesting a Basin installation:
+Before publishing an extension build:
 
 1. run the debug and release SQLLogicTests;
 2. verify the release artifact against `atlas_test`;
-3. confirm the DuckDB ABI/version matches the managed Quack runtime; and
-4. repeat the representative query and plan checks through a Quack server with the extension
-   loaded server-side.
+3. confirm the DuckDB ABI/version matches Atlas's pinned DuckDB version; and
+4. repeat the representative query and plan checks against the configured DuckLake.

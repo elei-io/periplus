@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from atlas_sdk import crawls
-from atlas_sdk.errors import CrawlFailed, MaterializationFailed, WaitTimeout
+from atlas_sdk.errors import CrawlFailed, WaitTimeout
 
 
 def _crawl(*, status: crawls.CrawlStatus = "queued") -> crawls.Crawl:
@@ -71,38 +71,6 @@ class CrawlTests(unittest.IsolatedAsyncioTestCase):
 
         request.assert_not_awaited()
         self.assertEqual(crawl.status, "queued")
-
-    async def test_materialized_polls_crawl_specific_barrier(self) -> None:
-        crawl = _crawl(status="completed")
-        request = AsyncMock(
-            side_effect=[
-                {"status": "waiting_materialization"},
-                {"status": "materialized"},
-            ]
-        )
-        with patch("atlas_sdk.crawls.request", request):
-            result = await crawl.materialized(timeout=1)
-
-        self.assertIs(result, crawl)
-        self.assertEqual(request.await_count, 2)
-        request.assert_awaited_with(
-            "GET",
-            f"/graph-runs/{crawl.id}/materialization",
-        )
-
-    async def test_materialization_failure_is_typed(self) -> None:
-        crawl = _crawl(status="completed")
-        with patch(
-            "atlas_sdk.crawls.request",
-            AsyncMock(
-                return_value={
-                    "status": "failed",
-                    "error": "ingestion failed",
-                }
-            ),
-        ):
-            with self.assertRaises(MaterializationFailed):
-                await crawl.materialized(timeout=1)
 
     async def test_completed_with_errors_raises_for_status(self) -> None:
         crawl = _crawl(status="completed_with_errors")

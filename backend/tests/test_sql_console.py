@@ -9,26 +9,26 @@ class SqlConsoleValidationTests(unittest.TestCase):
             """
             WITH recent AS (
                 SELECT visit_id, requested_url
-                FROM web.visits
+                FROM web.visit
             )
             SELECT recent.requested_url, pages.hostname
             FROM recent
-            JOIN web.pages AS pages
+            JOIN web.page AS pages
               ON pages.url = recent.requested_url
             """
         )
 
         self.assertIn("LIMIT 10001", bounded)
-        self.assertIn("FROM web.visits", bounded)
+        self.assertIn("FROM web.visit", bounded)
 
     def test_rejects_mutation(self):
         with self.assertRaisesRegex(ValueError, "read-only query"):
-            _bounded_query("DELETE FROM web.visits")
+            _bounded_query("DELETE FROM web.visit")
 
     def test_rejects_multiple_statements(self):
         with self.assertRaisesRegex(ValueError, "exactly one"):
             _bounded_query(
-                "SELECT * FROM web.visits; SELECT * FROM web.pages"
+                "SELECT * FROM web.visit; SELECT * FROM web.page"
             )
 
     def test_requires_public_schema_qualification(self):
@@ -45,10 +45,10 @@ class SqlConsoleValidationTests(unittest.TestCase):
 
     def test_accepts_public_table_macro(self):
         bounded = _bounded_query(
-            "SELECT * FROM web.page_history(NULL::UUID)"
+            "SELECT * FROM dom.text_content(NULL::VARCHAR, NULL::INTEGER)"
         )
 
-        self.assertIn("web.page_history", bounded)
+        self.assertIn("dom.text_content", bounded)
 
     def test_accepts_dom_relation_and_table_macro(self):
         bounded = _bounded_query(
@@ -67,8 +67,8 @@ class SqlConsoleValidationTests(unittest.TestCase):
 
     def test_accepts_describe_for_public_relation(self):
         self.assertEqual(
-            _bounded_query("DESCRIBE web.pages;"),
-            "DESCRIBE web.pages",
+            _bounded_query("DESCRIBE web.page;"),
+            "DESCRIBE web.page",
         )
 
         self.assertEqual(
@@ -82,19 +82,19 @@ class SqlConsoleValidationTests(unittest.TestCase):
 
     def test_accepts_explain_for_public_query(self):
         self.assertEqual(
-            _bounded_query("EXPLAIN SELECT * FROM web.pages"),
-            "EXPLAIN SELECT * FROM web.pages",
+            _bounded_query("EXPLAIN SELECT * FROM web.page"),
+            "EXPLAIN SELECT * FROM web.page",
         )
 
     def test_accepts_explain_analyze_for_public_query(self):
         self.assertEqual(
-            _bounded_query("EXPLAIN ANALYZE SELECT * FROM web.pages"),
-            "EXPLAIN ANALYZE SELECT * FROM web.pages",
+            _bounded_query("EXPLAIN ANALYZE SELECT * FROM web.page"),
+            "EXPLAIN ANALYZE SELECT * FROM web.page",
         )
 
     def test_rejects_explain_for_mutation(self):
         with self.assertRaisesRegex(ValueError, "read-only query"):
-            _bounded_query("EXPLAIN DELETE FROM web.pages")
+            _bounded_query("EXPLAIN DELETE FROM web.page")
 
     def test_rejects_explain_for_physical_relation(self):
         with self.assertRaisesRegex(ValueError, "web"):
@@ -102,8 +102,8 @@ class SqlConsoleValidationTests(unittest.TestCase):
 
     def test_accepts_summarize_for_public_relation(self):
         self.assertEqual(
-            _bounded_query("SUMMARIZE web.pages"),
-            "SUMMARIZE web.pages",
+            _bounded_query("SUMMARIZE web.page"),
+            "SUMMARIZE web.page",
         )
 
         self.assertEqual(

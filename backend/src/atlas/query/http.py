@@ -13,9 +13,11 @@ from sqlglot.errors import ParseError
 
 from atlas.platform.catalogue.control import CatalogueControl, get_catalogue_control
 from atlas.platform.catalogue.public import (
+    KNOWN_PUBLIC_OBJECTS,
     PUBLIC_OBJECTS,
     PUBLIC_SCHEMAS,
     WEB_SCHEMA,
+    installed_public_objects,
 )
 
 
@@ -39,8 +41,6 @@ _FORBIDDEN_FUNCTIONS = frozenset(
         "postgres_scan",
         "query",
         "query_table",
-        "quack_query",
-        "quack_query_by_name",
         "read_blob",
         "read_csv",
         "read_csv_auto",
@@ -56,7 +56,6 @@ _FORBIDDEN_RELATION_PREFIXES = (
     "duckdb_",
     "pg_",
     "pragma_",
-    "quack_",
     "sqlite_",
 )
 
@@ -195,8 +194,13 @@ async def metadata(
                 for column in macro_rows.get((item.schema, item.name), ())
             ],
         )
-        for item in PUBLIC_OBJECTS
-        if item.kind in {"macro", "table_macro"} and item.exposed
+        for item in KNOWN_PUBLIC_OBJECTS
+        if item.kind in {"macro", "table_macro"}
+        and item.exposed
+        and (
+            item.kind == "macro"
+            or (item.schema, item.name) in macro_rows
+        )
     ]
     return SqlMetadataResponse(
         catalogue_version=version,
@@ -214,7 +218,7 @@ def _public_metadata(
     if len(version_rows) != 1:
         raise RuntimeError("public catalogue version query returned no value")
     macro_rows: dict[tuple[str, str], list[tuple]] = {}
-    for item in PUBLIC_OBJECTS:
+    for item in installed_public_objects(catalogue):
         if item.kind != "table_macro" or not item.exposed:
             continue
         if item.arguments_sql is None:

@@ -1,12 +1,16 @@
+name: atlas
+
 x-atlas-backend: &atlas-backend
-  build:
+  build: &atlas-backend-build
     context: .
     dockerfile: docker/atlas/Dockerfile
+    additional_contexts:
+      atlas-extension: ../atlas-duckdb-extension
   image: atlas-backend:local
   working_dir: /app/backend
 
-x-atlas-repository-volumes: &atlas-repository-volumes
-  - ./.atlas/repository:/app/.atlas/repository
+x-atlas-state-volumes: &atlas-state-volumes
+  - ./.atlas:/app/.atlas
 
 x-atlas-healthcheck: &atlas-healthcheck
   interval: 5s
@@ -21,26 +25,15 @@ x-atlas-nats-environment: &atlas-nats-environment
   ATLAS_NATS_URL: nats://atlas-test-nats:4222
   ATLAS_NATS_SEED: ""
 
-x-duckbasin-nats-environment: &duckbasin-nats-environment
-  DUCKBASIN_NATS_URL: ${DUCKBASIN_NATS_URL:?DUCKBASIN_NATS_URL is required}
-  DUCKBASIN_NATS_SEED: ${DUCKBASIN_NATS_SEED:?DUCKBASIN_NATS_SEED is required}
-
-x-duckbasin-environment: &duckbasin-environment
-  DUCKBASIN_URL: ${DUCKBASIN_URL:?DUCKBASIN_URL is required}
-  DUCKBASIN_LAKE: ${DUCKBASIN_LAKE:?DUCKBASIN_LAKE is required}
-  DUCKBASIN_TOKEN_ENDPOINT: ${DUCKBASIN_TOKEN_ENDPOINT:?DUCKBASIN_TOKEN_ENDPOINT is required}
-  DUCKBASIN_CLIENT_ID: ${DUCKBASIN_CLIENT_ID:?DUCKBASIN_CLIENT_ID is required}
-  DUCKBASIN_CLIENT_SECRET: ${DUCKBASIN_CLIENT_SECRET:?DUCKBASIN_CLIENT_SECRET is required}
+x-atlas-ducklake-environment: &atlas-ducklake-environment
+  ATLAS_DUCKLAKE_ALIAS: atlas
+  ATLAS_DUCKLAKE_METADATA_PATH: postgres:dbname=atlas_test host=atlas-test-postgres port=5432 user=atlas password=atlas_local
+  ATLAS_DUCKLAKE_METADATA_SCHEMA: ducklake
+  ATLAS_DUCKLAKE_DATA_PATH: /app/.atlas/lake/
 
 x-atlas-repository-environment: &atlas-repository-environment
-  ATLAS_REPOSITORY_STORAGE: s3
-  ATLAS_REPOSITORY_S3_BUCKET: ${ATLAS_REPOSITORY_S3_BUCKET:?ATLAS_REPOSITORY_S3_BUCKET is required}
-  ATLAS_REPOSITORY_S3_ENDPOINT: ${ATLAS_REPOSITORY_S3_ENDPOINT:?ATLAS_REPOSITORY_S3_ENDPOINT is required}
-  ATLAS_REPOSITORY_S3_REGION: ${ATLAS_REPOSITORY_S3_REGION:?ATLAS_REPOSITORY_S3_REGION is required}
-  ATLAS_REPOSITORY_S3_KEY_ID: ${ATLAS_REPOSITORY_S3_KEY_ID:?ATLAS_REPOSITORY_S3_KEY_ID is required}
-  ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY: ${ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY:?ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY is required}
-  ATLAS_REPOSITORY_S3_URL_STYLE: ${ATLAS_REPOSITORY_S3_URL_STYLE:-path}
-  ATLAS_REPOSITORY_S3_USE_SSL: ${ATLAS_REPOSITORY_S3_USE_SSL:-true}
+  ATLAS_REPOSITORY_STORAGE: disk
+  ATLAS_REPOSITORY_ROOT: /app/.atlas/repository
 
 x-atlas-graph-environment: &atlas-graph-environment
   ATLAS_GRAPH_MAX_RUN_SECONDS: ${ATLAS_GRAPH_MAX_RUN_SECONDS:-604800}
@@ -53,7 +46,7 @@ services:
       POSTGRES_USER: atlas
       POSTGRES_PASSWORD: atlas_local
     ports:
-      - "127.0.0.1:55432:5432"
+      - "127.0.0.1:${ATLAS_POSTGRES_PORT:-55432}:5432"
     volumes:
       - atlas-test-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -67,8 +60,8 @@ services:
     image: nats:2.11-alpine
     command: ["--jetstream", "--store_dir=/data", "--http_port=8222"]
     ports:
-      - "127.0.0.1:5422:4222"
-      - "127.0.0.1:5822:8222"
+      - "127.0.0.1:${ATLAS_NATS_PORT:-5422}:4222"
+      - "127.0.0.1:${ATLAS_NATS_MONITOR_PORT:-5822}:8222"
     volumes:
       - atlas-test-nats-data:/data
     healthcheck:
@@ -83,7 +76,6 @@ services:
       context: .
       dockerfile: docker/web/Dockerfile
     image: atlas-web:local
-    container_name: atlas-web
     ports:
       - "127.0.0.1:${ATLAS_WEB_PORT:-8080}:80"
     depends_on:
@@ -93,10 +85,10 @@ services:
 
   atlas-api:
     <<: *atlas-backend
-    container_name: atlas-api
     command: fastapi run src/atlas/entrypoints/api.py --host 0.0.0.0 --port 8000
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${ATLAS_API_PORT:-8000}:8000"
+    volumes: *atlas-state-volumes
     healthcheck:
       <<: *atlas-healthcheck
       test:
@@ -111,7 +103,7 @@ services:
         [
           *atlas-control-environment,
           *atlas-nats-environment,
-          *duckbasin-environment,
+          *atlas-ducklake-environment,
           *atlas-repository-environment,
           *atlas-graph-environment,
         ]
@@ -132,6 +124,7 @@ services:
     command: atlas-worker acquisition
     deploy:
       replicas: 1
+    volumes: *atlas-state-volumes
     expose:
       - "9090"
       - "9099"
@@ -149,7 +142,7 @@ services:
         [
           *atlas-control-environment,
           *atlas-nats-environment,
-          *duckbasin-environment,
+          *atlas-ducklake-environment,
           *atlas-repository-environment,
           *atlas-graph-environment,
         ]
@@ -166,7 +159,7 @@ services:
     command: atlas-worker ingestion
     deploy:
       replicas: 1
-    volumes: *atlas-repository-volumes
+    volumes: *atlas-state-volumes
     expose:
       - "9091"
       - "9092"
@@ -184,7 +177,7 @@ services:
         [
           *atlas-control-environment,
           *atlas-nats-environment,
-          *duckbasin-environment,
+          *atlas-ducklake-environment,
           *atlas-repository-environment,
         ]
       ATLAS_REPOSITORY_STAGING_ROOT: /app/.atlas/repository/staging
@@ -200,6 +193,7 @@ services:
     command: atlas-worker materialization
     deploy:
       replicas: 1
+    volumes: *atlas-state-volumes
     expose:
       - "9093"
       - "9096"
@@ -217,39 +211,8 @@ services:
         [
           *atlas-control-environment,
           *atlas-nats-environment,
-          *duckbasin-environment,
+          *atlas-ducklake-environment,
           *atlas-repository-environment,
-        ]
-    depends_on:
-      atlas-setup:
-        condition: service_completed_successfully
-      atlas-cdc:
-        condition: service_healthy
-      atlas-test-nats:
-        condition: service_healthy
-    restart: unless-stopped
-
-  atlas-cdc:
-    <<: *atlas-backend
-    command: atlas-worker cdc
-    expose:
-      - "9097"
-      - "9098"
-    healthcheck:
-      <<: *atlas-healthcheck
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9098/healthz', timeout=2).read()",
-        ]
-    environment:
-      <<:
-        [
-          *atlas-nats-environment,
-          *duckbasin-nats-environment,
-          *duckbasin-environment,
         ]
     depends_on:
       atlas-setup:
@@ -261,7 +224,7 @@ services:
   atlas-housekeeping-worker:
     <<: *atlas-backend
     command: atlas-worker housekeeping
-    volumes: *atlas-repository-volumes
+    volumes: *atlas-state-volumes
     expose:
       - "9094"
       - "9095"
@@ -293,13 +256,12 @@ services:
   atlas-setup:
     <<: *atlas-backend
     image: atlas-state-tools:local
-    build:
-      context: .
-      dockerfile: docker/atlas/Dockerfile
+    build: *atlas-backend-build
     # Run the image-time package so schema changes require an explicit rebuild.
     command: atlas-setup
+    volumes: *atlas-state-volumes
     environment:
-      <<: [*atlas-control-environment, *duckbasin-environment]
+      <<: [*atlas-control-environment, *atlas-ducklake-environment]
     depends_on:
       atlas-test-postgres:
         condition: service_healthy

@@ -11,35 +11,22 @@ from atlas.platform.catalogue.physical.base import (
 from atlas.platform.catalogue.schema_types import ColumnDef, MapType
 
 
-HTML_DOCUMENTS = RelationName(MATERIAL_SCHEMA, "html_documents")
+CONTENT_STATS = RelationName(MATERIAL_SCHEMA, "content_stats")
 HTML_ELEMENTS = RelationName(MATERIAL_SCHEMA, "html_elements")
 JSONLD_VALUES = RelationName(MATERIAL_SCHEMA, "jsonld_values")
 PAGES = RelationName(MATERIAL_SCHEMA, "pages")
 PAGE_OBSERVATIONS = RelationName(MATERIAL_SCHEMA, "page_observations")
+PAGE_HEADS = RelationName(MATERIAL_SCHEMA, "page_heads")
 LINKS = RelationName(MATERIAL_SCHEMA, "links")
-LINK_OBSERVATIONS = RelationName(MATERIAL_SCHEMA, "link_observations")
+LINK_OCCURRENCES = RelationName(MATERIAL_SCHEMA, "link_occurrences")
 
 
 TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
-    HTML_DOCUMENTS: {
+    CONTENT_STATS: {
         "content_sha256": ColumnDef("VARCHAR", nullable=False),
-        "node_count": ColumnDef("INTEGER", nullable=False),
-        "max_depth": ColumnDef("INTEGER", nullable=False),
-        "nodes": ColumnDef(
-            "STRUCT("
-            "element_index INTEGER, "
-            "parent_index INTEGER, "
-            "subtree_end_index INTEGER, "
-            "depth INTEGER, "
-            "child_index INTEGER, "
-            "tag VARCHAR, "
-            "namespace VARCHAR, "
-            "attributes MAP(VARCHAR, VARCHAR), "
-            "text_direct VARCHAR, "
-            "text_tail VARCHAR"
-            ")[]",
-            nullable=False,
-        ),
+        "content_bytes": ColumnDef("BIGINT", nullable=False),
+        "dom_element_count": ColumnDef("INTEGER"),
+        "dom_max_depth": ColumnDef("INTEGER"),
     },
     HTML_ELEMENTS: {
         "content_sha256": ColumnDef("VARCHAR", nullable=False),
@@ -58,7 +45,7 @@ TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
         "content_sha256": ColumnDef("VARCHAR", nullable=False),
         "element_index": ColumnDef("INTEGER", nullable=False),
         "type_terms": ColumnDef("VARCHAR[]", nullable=False),
-        "value": ColumnDef("VARIANT", nullable=False),
+        "value": ColumnDef("JSON", nullable=False),
     },
     PAGES: {
         "page_id": ColumnDef("UUID", nullable=False),
@@ -74,7 +61,12 @@ TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
         "page_id": ColumnDef("UUID", nullable=False),
         "visit_id": ColumnDef("UUID", nullable=False),
         "document_id": ColumnDef("UUID"),
-        "observed_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+        "visit_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+    },
+    PAGE_HEADS: {
+        "page_id": ColumnDef("UUID", nullable=False),
+        "visit_id": ColumnDef("UUID", nullable=False),
+        "visit_at": ColumnDef("TIMESTAMPTZ", nullable=False),
     },
     LINKS: {
         "link_id": ColumnDef("UUID", nullable=False),
@@ -83,9 +75,16 @@ TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
         "source_url": ColumnDef("VARCHAR", nullable=False),
         "target_url": ColumnDef("VARCHAR", nullable=False),
         "relation_scope": ColumnDef("VARCHAR", nullable=False),
+        "first_seen_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+        "last_seen_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+        "visit_count": ColumnDef("BIGINT", nullable=False),
+        "distinct_content_count": ColumnDef("BIGINT", nullable=False),
+        "occurrence_count": ColumnDef("BIGINT", nullable=False),
     },
-    LINK_OBSERVATIONS: {
+    LINK_OCCURRENCES: {
+        "occurrence_id": ColumnDef("UUID", nullable=False),
         "link_id": ColumnDef("UUID", nullable=False),
+        "visit_id": ColumnDef("UUID", nullable=False),
         "document_id": ColumnDef("UUID", nullable=False),
         "content_sha256": ColumnDef("VARCHAR", nullable=False),
         "element_index": ColumnDef("INTEGER", nullable=False),
@@ -96,7 +95,7 @@ TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
 
 
 TABLE_LAYOUTS = {
-    HTML_DOCUMENTS: TableLayout(
+    CONTENT_STATS: TableLayout(
         partition_by=(f"bucket({PARTITION_BUCKETS}, content_sha256)",),
         sort_by=("content_sha256 ASC",),
     ),
@@ -114,42 +113,51 @@ TABLE_LAYOUTS = {
     ),
     PAGE_OBSERVATIONS: TableLayout(
         partition_by=(f"bucket({PARTITION_BUCKETS}, page_id)",),
-        sort_by=("page_id ASC", "observed_at DESC", "visit_id ASC"),
+        sort_by=("page_id ASC", "visit_at DESC", "visit_id ASC"),
+    ),
+    PAGE_HEADS: TableLayout(
+        partition_by=(f"bucket({PARTITION_BUCKETS}, page_id)",),
+        sort_by=("page_id ASC",),
     ),
     LINKS: TableLayout(
         partition_by=(f"bucket({PARTITION_BUCKETS}, source_page_id)",),
         sort_by=("source_page_id ASC", "target_page_id ASC", "link_id ASC"),
     ),
-    LINK_OBSERVATIONS: TableLayout(
-        partition_by=(f"bucket({PARTITION_BUCKETS}, document_id)",),
-        sort_by=("document_id ASC", "element_index ASC", "link_id ASC"),
+    LINK_OCCURRENCES: TableLayout(
+        partition_by=(f"bucket({PARTITION_BUCKETS}, link_id)",),
+        sort_by=("link_id ASC", "document_id ASC", "element_index ASC"),
     ),
 }
 
 
 TABLE_COMMENTS = {
-    HTML_DOCUMENTS: (
-        "Canonical per-content HTML DOMs and costing statistics."
-    ),
+    CONTENT_STATS: "Typed compiler statistics for immutable content.",
     HTML_ELEMENTS: "Rebuildable structural projections of immutable HTML content.",
     JSONLD_VALUES: "Rebuildable parsed JSON-LD payloads embedded in HTML content.",
     PAGES: "Rebuildable identities for normalized URLs observed through visits.",
     PAGE_OBSERVATIONS: (
-        "Rebuildable page-to-visit evidence index for observed documents."
+        "Rebuildable page-to-visit evidence index for terminal visits."
     ),
-    LINKS: "Rebuildable normalized source-target pairs positively observed in HTML.",
-    LINK_OBSERVATIONS: (
+    PAGE_HEADS: "Latest terminal visit pointer for each normalized page.",
+    LINKS: (
+        "Rebuildable normalized source-target pairs with historical rollups."
+    ),
+    LINK_OCCURRENCES: (
         "Rebuildable document-owned evidence for observed HTML link occurrences."
     ),
 }
 
 
 COLUMN_COMMENTS = {
-    HTML_DOCUMENTS: {
-        "content_sha256": "Identity of projected immutable HTML bytes.",
-        "node_count": "Number of elements in the canonical DOM.",
-        "max_depth": "Maximum element depth from the document root.",
-        "nodes": "Canonical flattened DOM stored in document order.",
+    CONTENT_STATS: {
+        "content_sha256": "Identity of immutable logical content bytes.",
+        "content_bytes": "Size of the uncompressed logical content.",
+        "dom_element_count": (
+            "Number of projected DOM elements, null without a completed DOM."
+        ),
+        "dom_max_depth": (
+            "Maximum projected DOM depth, null without a completed DOM."
+        ),
     },
     HTML_ELEMENTS: {
         "content_sha256": "Identity of projected immutable HTML bytes.",
@@ -184,7 +192,12 @@ COLUMN_COMMENTS = {
         "page_id": "Deterministic normalized page identity observed by this visit.",
         "visit_id": "Visit supplying this page observation and its provenance.",
         "document_id": "Document produced by this visit, when one was retained.",
-        "observed_at": "Time the page representation was captured.",
+        "visit_at": "Terminal ordering time for this visit.",
+    },
+    PAGE_HEADS: {
+        "page_id": "Normalized page identity whose latest visit is selected.",
+        "visit_id": "Deterministically latest observed visit for the page.",
+        "visit_at": "Terminal ordering time used to select the latest visit.",
     },
     LINKS: {
         "link_id": (
@@ -195,9 +208,18 @@ COLUMN_COMMENTS = {
         "source_url": "Normalized fragment-free URL where the link was observed.",
         "target_url": "Normalized fragment-free URL resolved from the observed href.",
         "relation_scope": "Most-specific deterministic source-target relationship.",
+        "first_seen_at": "Earliest retained occurrence time for this link.",
+        "last_seen_at": "Latest retained occurrence time for this link.",
+        "visit_count": "Visits in which this link occurred at least once.",
+        "distinct_content_count": (
+            "Distinct immutable content identities containing this link."
+        ),
+        "occurrence_count": "Total retained DOM occurrences of this link.",
     },
-    LINK_OBSERVATIONS: {
+    LINK_OCCURRENCES: {
+        "occurrence_id": "Stable identity of this document element occurrence.",
         "link_id": "Stable link identity supported by this occurrence.",
+        "visit_id": "Visit during which this link occurrence was observed.",
         "document_id": "Document observation that owns this link occurrence.",
         "content_sha256": "Immutable HTML content containing the source anchor.",
         "element_index": "Source anchor position in material.html_elements.",

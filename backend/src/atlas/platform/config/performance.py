@@ -18,8 +18,7 @@ CRAWL_RUN_ACQUISITION_PENDING_LIMIT = CRAWL_DISPATCH_WINDOW
 # A denied nonblocking domain probe is retried soon, but not on every worker
 # loop iteration.
 CRAWL_DOMAIN_PERMIT_RETRY_SECONDS = 0.25
-INGESTION_QUACK_CLIENTS = 4
-MATERIALIZATION_QUACK_CLIENTS = 8
+INGESTION_CONNECTIONS = 4
 # Navigation retention is recovery cleanup, not a bulk-delete job. One bounded
 # batch per housekeeping sweep keeps object-store pressure predictable.
 NAVIGATION_CLEANUP_BATCH_SIZE = 500
@@ -40,7 +39,7 @@ MATERIALIZATION_CATALOGUE_HARD_TIMEOUT_SECONDS = 300.0
 # therefore apply backpressure instead of hoarding an arbitrary 1,024 jobs.
 GRAPH_CONSUMER_MAX_ACK_PENDING = 1024
 INGESTION_CONSUMER_MAX_ACK_PENDING = (
-    INGESTION_QUACK_CLIENTS * INGEST_BATCH_MAX_ITEMS
+    INGESTION_CONNECTIONS * INGEST_BATCH_MAX_ITEMS
 )
 GRAPH_ACK_WAIT_SECONDS = 60.0
 INGESTION_ACK_WAIT_SECONDS = 60.0
@@ -73,16 +72,16 @@ def duckdb_memory_limit() -> str:
     """Derive a conservative per-client DuckDB limit from its cgroup."""
 
     memory_bytes = _cgroup_memory_limit() or 8 * 1024**3
-    derived = memory_bytes // (INGESTION_QUACK_CLIENTS * 4)
+    derived = memory_bytes // (INGESTION_CONNECTIONS * 4)
     bounded = min(512 * 1024**2, max(128 * 1024**2, derived))
     return f"{bounded // (1024**2)}MB"
 
 
 def materialization_duckdb_memory_limit() -> str:
-    """Bound each client while leaving Basin responsible for analytical memory."""
+    """Bound each local materialization connection."""
 
     memory_bytes = _cgroup_memory_limit() or 8 * 1024**3
-    derived = memory_bytes // (MATERIALIZATION_QUACK_CLIENTS * 2)
+    derived = memory_bytes // 4
     bounded = min(1024 * 1024**2, max(256 * 1024**2, derived))
     return f"{bounded // (1024**2)}MB"
 

@@ -14,8 +14,12 @@ from atlas.platform.catalogue import (
     attempt_id_for,
     document_id_for,
 )
+from atlas.platform.catalogue.schema import CRAWLS, STEPS
 from atlas.platform.catalogue.records import canonical_json
-from atlas.platform.catalogue.service import _visit_values
+from atlas.platform.catalogue.service import (
+    _decode_json_columns,
+    _visit_values,
+)
 from atlas.ingestion.queue import (
     crawl_ingestion_job,
     visit_ingestion_job,
@@ -23,6 +27,22 @@ from atlas.ingestion.queue import (
 
 
 class IngestionEvidenceTests(unittest.TestCase):
+    def test_json_columns_decode_to_domain_values(self) -> None:
+        self.assertEqual(
+            _decode_json_columns(
+                CRAWLS,
+                {"graph_config": '{"edges":[],"nodes":[]}'},
+            ),
+            {"graph_config": {"edges": [], "nodes": []}},
+        )
+        self.assertEqual(
+            _decode_json_columns(
+                STEPS,
+                {"parameters": '[1,"x",{"enabled":true}]'},
+            ),
+            {"parameters": [1, "x", {"enabled": True}]},
+        )
+
     def test_crawl_job_has_stable_identity_and_canonical_hash(self) -> None:
         now = datetime.now(UTC)
         config = {"nodes": [], "edges": [], "version": 1}

@@ -1,736 +1,261 @@
 # Schema
 
-Atlas separates observed evidence, Atlas-maintained derivations, the public query interface, and
-user-owned data.
+Atlas separates immutable acquisition evidence, rebuildable projections, the public query
+contract, and user-owned data. Raw bytes stay in object storage.
 
 ## Type policy
 
-Atlas uses the narrowest native DuckDB type that faithfully represents a value:
-
-- Scalars, `STRUCT`, `LIST`, and `MAP` for known shapes.
-- `VARIANT` for heterogeneous or evolving semi-structured values.
-- `JSON` only when textual JSON is itself the required representation.
-
-Immutable source bytes remain in object storage rather than being copied into the catalogue.
+Use the narrowest native DuckDB type that preserves the value: typed scalars and nested types for
+known shapes, and `JSON` for open or heterogeneous structured values. Atlas does not use
+`VARIANT`; query helpers may provide typed access to JSON where measured workloads need it.
 
 ## `ingest.*`
 
-Append-only records committed by native acquisition or evidence import:
+These source-owned relations are append-oriented acquisition evidence:
 
-- `ingest.crawls` — bounded executions of crawl plans.
-- `ingest.visits` — destinations observed during a crawl.
-- `ingest.attempts` — acquisition attempts made for a visit.
-- `ingest.steps` — ordered content-completion executions within an attempt.
-- `ingest.documents` — references to immutable document bytes in object storage.
+- `ingest.crawls` — terminal crawl executions and their frozen graph configuration.
+- `ingest.visits` — one acquisition or observation of a URL.
+- `ingest.attempts` — ordered acquisition attempts for a visit.
+- `ingest.steps` — content-completion actions within an attempt.
+- `ingest.documents` — one optional immutable representation retained by a visit.
 
-### `ingest.crawls`
+`visit_id` identifies an acquisition. A visit contains the requested/effective URL, lifecycle
+times, outcome, status, optional `document_id`, and typed provenance. A document contains its
+`visit_id`, representation and media metadata, `content_sha256`, logical/stored sizes, encoding,
+and repository-relative immutable object key. Many document observations may reference the same
+content bytes.
 
-One row is written when a crawl reaches its terminal state. Current execution state is not part of
-the ingestion schema.
-
-```text
-crawl_id           # Unique identity of this crawl execution.
-kind               # atlas or import.
-graph_id           # Stable logical identity of the crawl plan; null for imports.
-graph_config_hash  # Hash of the canonical frozen graph configuration.
-graph_config       # Complete frozen graph configuration as VARIANT.
-root_url_count     # One for a native crawl whose root was admitted; zero otherwise.
-started_at         # Time at which crawl execution began.
-finished_at        # Time at which crawl execution stopped.
-stop_reason        # Reason the crawl stopped.
-```
-
-### `ingest.visits`
-
-```text
-visit_id          # Unique identity of this visit.
-crawl_id          # Crawl that produced the visit.
-
-requested_url     # Exact URL Atlas attempted to visit.
-effective_url     # Final URL after navigation or redirects; null if never resolved.
-
-admitted_at       # Time the destination entered the crawl.
-started_at        # Time acquisition began.
-observed_at       # Time the returned document was captured; null if none.
-finished_at       # Time the visit reached its terminal outcome.
-
-outcome           # Final logical result: succeeded, failed, cancelled, or another terminal state.
-status_code       # Final HTTP status when available.
-document_id       # Document produced by the visit; null if none.
-```
-
-Traversal and admission paths are operational state and are not retained here. The durable web
-graph is derived from observed document content into `material.links`.
-
-### `ingest.attempts`
-
-```text
-attempt_id       # Unique identity of this acquisition attempt.
-visit_id         # Visit this attempt belongs to.
-attempt_index    # Order of this attempt within the visit.
-
-started_at       # Time acquisition work began.
-finished_at      # Time the attempt reached its terminal outcome.
-
-effective_url    # Final URL reached by this attempt; null if unresolved.
-status_code      # HTTP status observed by this attempt; null if unavailable.
-
-outcome          # Terminal result: succeeded, failed, or cancelled.
-failure_stage    # Stage that failed; null on success.
-failure_code     # Stable machine-readable failure reason; null on success.
-failure_message  # Bounded diagnostic detail; null when unnecessary.
-```
-
-### `ingest.steps`
-
-```text
-attempt_id             # Attempt this step belongs to.
-step_index             # Execution order within the attempt.
-
-action                 # Controlled action name, such as wait_dynamic, wait_fixed, scroll, or expand.
-parameters             # Complete frozen parameters for this execution as VARIANT.
-
-started_at             # Time execution began.
-duration_ms            # Total execution duration in milliseconds.
-outcome                # Execution result: succeeded, failed, or cancelled.
-stopping_reason        # Why execution stopped; null when not applicable.
-
-error_code             # Stable machine-readable failure reason; null on success.
-error_message          # Bounded diagnostic detail; null when unnecessary.
-```
-
-### `ingest.documents`
-
-A visit produces zero or one authoritative document. A document belongs to exactly one visit.
-
-```text
-document_id      # Unique identity of this document observation.
-visit_id         # Visit that produced the document.
-attempt_id       # Successful attempt; null when an import did not retain one.
-
-observed_at      # Time the document representation was captured.
-representation   # Meaning of the bytes, such as response_body or rendered_html.
-
-declared_media_type # Media type claimed by the source; null when unavailable.
-detected_media_type # Media type determined by Atlas from the acquired representation.
-charset             # Character encoding when meaningful; otherwise null.
-
-content_sha256   # Hash of the uncompressed logical document bytes.
-content_bytes    # Size of the uncompressed logical document bytes.
-
-object_key       # Repository-relative pointer to the immutable bytes.
-storage_encoding # Encoding used for the stored bytes.
-stored_bytes     # Size of the stored object.
-```
-
-Imported visits retain typed provenance. Native observations use `atlas`; imports retain their
-source system, optional dataset, and source record identity. The physical column is a native
-`STRUCT(kind, system, dataset, source_record_id)`, not semi-structured JSON or `VARIANT`.
+Current crawl execution remains in Postgres. Crawl history exists only here.
 
 ## `material.*`
 
-Versioned, rebuildable relations maintained by Atlas:
-
-- `material.html_documents` — canonical per-content HTML DOMs and costing statistics.
-- `material.html_elements` — structural projections of HTML documents.
-- `material.jsonld_values` — structured data extracted from JSON-LD embedded in HTML documents.
-- `material.pages` — visits reduced to unique page identities.
-- `material.page_observations` — normalized pages connected to their visit and document evidence.
-- `material.links` — stable normalized source-target page pairs.
-- `material.link_observations` — document-owned anchor evidence for those pairs.
-
-Structural projections for generic JSON, XML, PDF, DOCX, CSV, and other formats are deferred. Their
-relation names and schemas are not yet part of the contract.
-
-### `material.html_documents`
-
-One row represents one canonical parsed HTML DOM for one immutable content identity:
-
-```text
-content_sha256 # Identity of the projected immutable HTML bytes.
-node_count     # Number of elements in the canonical DOM.
-max_depth      # Maximum element depth from the document root.
-nodes          # Canonical flattened elements in document order as LIST<STRUCT>.
-```
-
-The row identity is:
-
-```text
-UNIQUE(content_sha256)
-```
-
-`nodes` uses the same fields and semantics as `material.html_elements`. Both projections are
-emitted from the same parse. The document-grain copy exists for bounded native DOM operations;
-the element-grain relation remains the portable relational inspection and candidate-discovery
-surface.
-
-### `material.html_elements`
-
-```text
-content_sha256    # Identity of the projected immutable HTML bytes.
-element_index     # Zero-based element position in depth-first document order.
-
-parent_index      # Parent element index; null for the root.
-subtree_end_index # Exclusive end of this element's subtree in document order.
-depth             # Element depth from the root.
-child_index       # Zero-based position among element siblings.
-
-tag               # Normalized local tag name.
-namespace         # HTML, SVG, MathML, or another element namespace.
-attributes        # Attribute names and string values as MAP(VARCHAR, VARCHAR).
-
-text_direct       # Text directly inside this element before its child elements.
-text_tail         # Text following this element within its parent.
-```
-
-### `material.jsonld_values`
-
-One row represents one successfully parsed JSON-LD payload embedded in an HTML `<script>` element.
-
-```text
-content_sha256 # Identity of the containing immutable HTML bytes.
-element_index  # Source <script> in material.html_elements.
-type_terms     # Distinct raw @type strings found in the payload as VARCHAR[].
-value          # Complete parsed JSON-LD payload as VARIANT.
-```
-
-The row identity is:
-
-```text
-UNIQUE(content_sha256, element_index)
-```
-
-`type_terms` is a mechanical summary, not a semantic classification. It lets query plans scan a
-small typed column to find candidate payloads before reading `value`. The complete payload retains
-single objects, arrays, and `@graph` containers without flattening their nested values.
-
-Queries may plan in either direction:
-
-```text
-type terms -> documents -> visits -> pages
-pages -> visits -> documents -> JSON-LD payloads
-```
-
-Materialization does not fetch remote contexts, expand terms, resolve relative identifiers, or
-merge entities.
-
-### `material.pages`
-
-One row represents one unique normalized URL observed through visits.
-
-```text
-page_id            # Deterministic identity derived from normalized_url.
-normalized_url     # Unique normalized URL represented by this page.
-
-scheme             # Normalized URL scheme.
-hostname           # Normalized hostname.
-port               # Explicit non-default port; otherwise null.
-path               # Normalized path.
-query               # Preserved query string; null when absent.
-registrable_domain # Public-suffix-aware domain when derivable.
-```
-
-The row identity is:
-
-```text
-UNIQUE(normalized_url)
-```
-
-URL normalization and public-suffix data are versioned materialization metadata. Visit-derived
-counters, timestamps, and document pointers are not part of page identity and are omitted.
-
-### `material.page_observations`
-
-One row connects an observed normalized page to the immutable visit and document evidence that
-supports it.
-
-```text
-page_id      # Deterministic identity of the normalized observed URL.
-visit_id     # Visit that made this page observation.
-document_id  # Document produced by the visit; null when none was retained.
-observed_at  # Time the page representation was captured.
-```
-
-The row identity is:
-
-```text
-UNIQUE(visit_id)
-```
-
-This is the covering evidence index used for page-history, latest-document, and page-to-document
-plans. Raw requested and effective URLs remain only in `ingest.visits`.
-
-### `material.links`
-
-One row represents a normalized source-target URL pair positively observed in HTML evidence.
-
-```text
-link_id         # Deterministic identity of the directed normalized page pair.
-source_page_id  # Deterministic identity of source_url.
-target_page_id  # Deterministic identity of target_url, whether visited or not.
-source_url       # Normalized fragment-free URL where the link was observed.
-target_url       # Normalized fragment-free URL resolved from the observed href.
-relation_scope   # self, same_origin, same_host, same_site, or external.
-```
-
-The row identity is:
-
-```text
-UNIQUE(link_id)
-```
-
-`relation_scope` uses mutually exclusive precedence:
-
-```text
-self        # Source and target URL are equal.
-same_origin # Scheme, hostname, and effective port are equal.
-same_host   # Hostname is equal, but scheme or effective port differs.
-same_site   # Registrable domain is equal, but hostname differs.
-external    # Registrable domain differs.
-```
-
-Link materialization does not create rows in `material.pages`. A target may never have been
-visited, but its deterministic `target_page_id` is still non-null. Page resolution happens through
-an optional query-time join on page identity.
-
-### `material.link_observations`
-
-One row represents one anchor occurrence in one observed HTML document.
-
-```text
-link_id         # Pair identity in material.links.
-document_id     # Document observation that contained the anchor.
-content_sha256  # Identity of the immutable HTML bytes.
-element_index   # Source anchor in material.html_elements.
-raw_href        # Exact href attribute before URL resolution.
-observed_at     # Time the document representation was captured.
-```
-
-The row identity is:
-
-```text
-UNIQUE(document_id, element_index)
-```
-
-Incremental refresh replaces only changed document slices. New pair identities are streamed into
-`material.links`; no historical observations are scanned or merged. Earliest and latest positive
-observations are ordinary query-time `MIN(observed_at)` and `MAX(observed_at)` aggregates over this
-evidence table.
-
-URL normalization, public-suffix data, and relation-scope rules are versioned materialization
-metadata.
-
-## Public SQL catalogue
-
-`web.*` and `dom.*` form the stable SQL interface over Atlas evidence. Web identities,
-observations, history, and document-derived formats live in `web.*`. Structural DOM relations and
-operations live in `dom.*`. The catalogue is installed as versioned DuckLake views and macros and
-is organized around three kinds of relation:
-
-- identities: pages, directed links, and immutable content;
-- observations: the visit, document, page, link, and crawl evidence that establishes those
-  identities;
-- projections: queryable structure derived from immutable content.
-
-The base relations preserve their factual grain. They do not silently select the latest
-observation, collapse history, or infer that something is current. Reductions such as "latest",
-"first", "changed", or "currently present" must be requested explicitly.
-
-The public content key is `content_id`. It is the same content-addressed value stored physically as
-`content_sha256`, exposed under one semantic name throughout the public catalogue. It is not a
-second identity
-or a compatibility alias. A `document_id` identifies an observation of a representation; a
-`content_id` identifies its immutable logical bytes. Many documents may therefore refer to the
-same content.
-
-### Identity relations
-
-#### `web.pages`
-
-One row represents one normalized page identity observed through a visit.
-
-```text
-page_id            # Deterministic identity derived from url.
-url                # Unique normalized URL represented by this page.
-
-scheme             # Normalized URL scheme.
-hostname           # Normalized hostname.
-port               # Explicit non-default port; otherwise null.
-path               # Normalized path.
-query               # Preserved query string; null when absent.
-registrable_domain # Public-suffix-aware domain when derivable.
-```
-
-The row identity is:
-
-```text
-UNIQUE(page_id)
-UNIQUE(url)
-```
-
-`url` is the normalized logical URL. Exact requested and effective URLs remain observation
-evidence in `web.visits`. Link targets do not create page rows: a target may have a deterministic
-page identity in `web.links` without having been visited.
-
-#### `web.page_stats`
-
-One row summarizes retained observation and directed-link evidence for one visited page identity.
-
-```text
-page_id                # Page identity being summarized.
-visit_count            # Number of page observations.
-document_count         # Number of page observations with a retained document.
-distinct_content_count # Number of distinct immutable content identities across those documents.
-first_observed_at       # Earliest page observation time.
-last_observed_at        # Latest page observation time.
-inbound_link_count      # Number of distinct normalized source-target pairs targeting this page.
-outbound_link_count     # Number of distinct normalized source-target pairs sourced from this page.
-```
-
-The row identity is:
-
-```text
-UNIQUE(page_id)
-```
-
-Every `web.pages` row has one `web.page_stats` row. Counts are zero when no supporting evidence is
-present; observation timestamps are null when no page observation is present. Inbound and outbound
-counts reduce `web.links`, whose rows are already unique directed page pairs. They do not count
-repeated anchor occurrences from `web.link_observations`. A self-link contributes once to both the
-inbound and outbound counts for its page.
-
-#### `web.links`
-
-One row represents one normalized directed page pair that has been positively observed in HTML.
-
-```text
-link_id         # Deterministic identity of the directed normalized page pair.
-source_page_id  # Deterministic identity of source_url.
-target_page_id  # Deterministic identity of target_url, whether visited or not.
-source_url      # Normalized fragment-free URL where the link was observed.
-target_url      # Normalized fragment-free URL resolved from an observed href.
-relation_scope  # self, same_origin, same_host, same_site, or external.
-```
-
-The row identity is:
-
-```text
-UNIQUE(link_id)
-```
-
-This relation says that Atlas has evidence for the pair, not that the link is still present.
-Occurrence history and exact anchor evidence belong to `web.link_observations`. Source and target
-roles remain explicit instead of overloading a generic `page_id`.
-
-#### `web.content`
-
-One row represents one unique captured logical byte payload.
-
-```text
-content_id     # SHA-256 content identity of the uncompressed logical bytes.
-content_bytes  # Size of the uncompressed logical bytes.
-```
-
-The row identity is:
-
-```text
-UNIQUE(content_id)
-```
-
-This is a semantic identity projection over retained document evidence, not a second physical
-copy of the bytes. Immutable source bytes remain behind the object repository boundary. Their
-queryable projections are exposed through `dom.elements` and `web.jsonld`.
-
-### Observation and provenance relations
-
-#### `web.page_observations`
-
-One row records a page observation made by one visit.
-
-```text
-page_id      # Normalized page identity observed by the visit.
-visit_id     # Visit that made the observation.
-document_id  # Retained document observation; null when the visit produced none.
-observed_at  # Time the representation was captured.
-```
-
-The row identity is:
-
-```text
-UNIQUE(visit_id)
-```
-
-This is the lossless page-history relation. A page row can exist even when a particular
-observation retained no document.
-
-#### `web.link_observations`
-
-One row records one anchor occurrence in one observed HTML document.
-
-```text
-link_id       # Directed normalized page-pair identity.
-document_id   # Document observation containing the anchor.
-content_id    # Immutable HTML content containing the anchor.
-element_index # Exact source anchor in dom.elements.
-raw_href      # href value before URL resolution and normalization.
-observed_at   # Time the representation was captured.
-```
-
-The row identity is:
-
-```text
-UNIQUE(document_id, element_index)
-```
-
-`(content_id, element_index)` connects the occurrence to its exact `dom.elements` row.
-
-#### `web.documents`
-
-One row records one retained representation observation. A visit produces zero or one document.
-
-```text
-document_id        # Unique identity of this document observation.
-visit_id           # Visit that produced the document.
-page_id            # Normalized effective page identity observed by that visit.
-content_id         # Identity of the immutable logical bytes.
-observed_at        # Time the representation was captured.
-representation     # Meaning of the bytes, such as response_body or rendered_html.
-declared_media_type # Media type claimed by the source; null when unavailable.
-detected_media_type # Media type determined by Atlas.
-charset             # Character encoding when meaningful; otherwise null.
-content_bytes       # Size of the uncompressed logical bytes.
-```
-
-The row identity is:
-
-```text
-UNIQUE(document_id)
-```
-
-`page_id` is factual denormalization from the owning visit so common page-to-document history
-queries do not need an extra join. Storage keys, encodings, and stored-object sizes are physical
-repository details and are not part of the public catalogue.
-
-#### `web.visits`
-
-One row records one destination admitted during a crawl, including visits that produced no
-document.
-
-```text
-visit_id       # Unique identity of this visit.
-crawl_id       # Crawl that produced the visit.
-requested_url  # Exact URL Atlas attempted to visit.
-effective_url  # Final URL after navigation or redirects; null if unresolved.
-admitted_at    # Time the destination entered the crawl.
-started_at     # Time acquisition began.
-observed_at    # Time a returned document was captured; null if none.
-finished_at    # Time the visit reached its terminal outcome.
-outcome        # Final logical result.
-status_code    # Final HTTP status when available.
-document_id    # Document produced by the visit; null if none.
-provenance     # Typed origin of this observation.
-```
-
-The row identity is:
-
-```text
-UNIQUE(visit_id)
-```
-
-#### `web.crawls`
-
-One row records one terminal crawl execution.
-
-```text
-crawl_id           # Unique identity of this crawl execution.
-kind               # atlas or import.
-graph_id           # Stable crawl-plan identity; null for imports.
-graph_config_hash  # Hash of the canonical frozen graph configuration.
-graph_config       # Complete frozen graph configuration as VARIANT.
-root_url_count     # Number of admitted roots represented by the crawl.
-started_at         # Time crawl execution began.
-finished_at        # Time crawl execution stopped.
-stop_reason        # Reason the crawl stopped.
-```
-
-The row identity is:
-
-```text
-UNIQUE(crawl_id)
-```
+All material relations are Atlas-owned, versioned, and rebuildable from `ingest.*` plus immutable
+objects. They are implementation details, not public SQL.
 
 ### Content projections
 
-#### `dom.documents`
-
-One row represents one canonical HTML DOM:
+`material.content_stats` has one narrow row per immutable HTML content identity:
 
 ```text
-content_id # Identity of the projected immutable HTML bytes.
-node_count # Number of elements in the canonical DOM.
-max_depth  # Maximum element depth from the document root.
+content_sha256
+content_bytes
+dom_element_count
+dom_max_depth
 ```
 
-The keyed table macro:
+It is the compiler/cost lookup for content-centric work. It deliberately does not contain a nested
+DOM.
+
+`material.html_elements` has one row per projected element:
+
+```text
+content_sha256, element_index
+parent_index, subtree_end_index, depth, child_index
+tag, namespace, attributes
+text_direct, text_tail
+```
+
+Rows are in depth-first document order. `subtree_end_index` is exclusive. The table is bucketed by
+`content_sha256` and sorted by content then element index, so a keyed document slice can prune
+before DOM reconstruction.
+
+`material.jsonld_values` has one row per successfully parsed JSON-LD script:
+
+```text
+content_sha256, element_index, type_terms, value
+```
+
+### Page projections
+
+`material.pages` is the normalized URL dimension:
+
+```text
+page_id, normalized_url
+scheme, hostname, port, path, query, registrable_domain
+```
+
+`page_id` is deterministic from the normalized URL. Counters and “latest” state are not page
+identity.
+
+`material.page_observations` is the complete visit index:
+
+```text
+page_id, visit_id, document_id, visit_at
+```
+
+There is exactly one row per retained visit, including failures without documents. `visit_at` is
+the deterministic terminal ordering time:
+
+```text
+coalesce(finished_at, observed_at, started_at, admitted_at)
+```
+
+`material.page_heads` is the narrow current pointer:
+
+```text
+page_id, visit_id, visit_at
+```
+
+There is one row per page. The winner is ordered by `(visit_at DESC, visit_id DESC)`, so the latest
+visit can be a failure. Keeping this separate from history makes current-page joins cheap without
+duplicating mutable columns onto every observation. Corrections replace the affected observation
+slice and recompute its affected heads in the same transaction.
+
+### Link projections
+
+`material.links` is the canonical directed page pair plus exact rollups:
+
+```text
+link_id
+source_page_id, target_page_id
+source_url, target_url, relation_scope
+first_seen_at, last_seen_at
+visit_count, distinct_content_count, occurrence_count
+```
+
+`relation_scope` is one of `self`, `same_origin`, `same_host`, `same_site`, or `external`, in that
+precedence. A target page need not have been visited; its deterministic `target_page_id` still
+exists.
+
+`material.link_occurrences` is the link equivalent of visit history:
+
+```text
+occurrence_id, link_id
+visit_id, document_id, content_sha256, element_index
+raw_href, observed_at
+```
+
+One row is one anchor element in one document observation. Repeated anchors, repeated visits, and
+shared immutable content retain distinct evidence. `occurrence_id` is stable from
+`(document_id, element_index)`. The table is bucketed by `link_id`; link rollups are recomputed
+exactly from affected occurrence partitions during incremental refresh. A shadow rebuild appends
+its immutable evidence in bounded commits, computes all link rollups once at the generation
+boundary, and only then activates `links` and `link_occurrences` together.
+
+### Fixed-workload ownership
+
+The document workload parses each affected content body once and commits:
+
+```text
+content_stats, html_elements, jsonld_values, link_occurrences
+```
+
+It also stages narrow link identities. Generation finalization deduplicates those identities,
+derives their exact rollups from the completed `link_occurrences` generation, and writes `links`
+once before atomic activation.
+
+The visit workload commits:
+
+```text
+pages, page_observations, page_heads
+```
+
+Complete rebuilds scan a pinned `ingest.visits` snapshot, project optional documents in the same
+bounded visit batches, catch up inserted visits, then atomically activate all shadow tables.
+
+## Public SQL catalogue
+
+The stable contract consists only of `web.*` and `dom.*`. Public content keys are named
+`content_id`; this is the same content-addressed value stored physically as `content_sha256`, not a
+second identity.
+
+### `web.page`
+
+One canonical normalized URL identity:
+
+```text
+page_id, url
+scheme, hostname, port, path, query, registrable_domain
+```
+
+It does not silently carry “latest success” or history columns.
+
+### `web.visit`
+
+Complete page acquisition history:
+
+```text
+visit_id, page_id, url, is_latest
+crawl_id, requested_url, effective_url
+admitted_at, started_at, observed_at, finished_at
+outcome, status_code
+document_id, content_id, content_bytes
+representation, declared_media_type, detected_media_type, charset
+dom_projection_complete, dom_element_count, dom_max_depth
+provenance
+```
+
+`is_latest` is an exact join to `material.page_heads`; a failed terminal visit may be latest.
+Document and DOM fields are null/false when no retained representation exists.
+
+### `web.link`
+
+One canonical directed relationship with exact retained-history rollups:
+
+```text
+link_id, source_page_id, target_page_id
+source_url, target_url, relation_scope
+first_seen_at, last_seen_at
+visit_count, distinct_content_count, occurrence_count
+```
+
+### `web.link_occurrence`
+
+Exact historical evidence for a relationship:
+
+```text
+occurrence_id, link_id, visit_id
+source_page_id, target_page_id
+document_id, content_id, element_index, observed_at
+raw_href, resolved_url, relation_scope
+```
+
+The `(content_id, element_index)` pair joins directly to `dom.elements`; `visit_id` joins directly
+to `web.visit`.
+
+### Other public evidence
+
+- `web.crawls` exposes terminal crawl execution evidence.
+- `web.jsonld` exposes parsed JSON-LD values keyed by `(content_id, element_index)`.
+- `dom.elements` exposes the flat structural DOM.
+- `dom.get_attribute(attributes, name)` returns an exact attribute value.
+- `dom.text_content(content_id, element_index)` returns standards-shaped descendant text for one
+  keyed element.
+
+Atlas setup loads the matching Atlas extension and exposes:
 
 ```sql
-dom.document(content_id)
+dom.query_selector(content_id, css_selector)
+dom.query_selector_all(content_id, css_selector)
 ```
 
-returns the same identity and statistics plus its canonical `nodes` value for at most one content
-identity. Requiring the content key prevents an unbounded public projection of every nested DOM.
-The optional Atlas extension consumes this value for standards-based CSS selector matching.
-
-#### `dom.elements`
-
-One row represents one element in one unique immutable HTML payload.
-
-```text
-content_id       # Identity of the projected immutable HTML bytes.
-element_index    # Zero-based element position in depth-first document order.
-parent_index     # Parent element index; null for the root.
-subtree_end_index # Exclusive end of this element's subtree in document order.
-depth            # Element depth from the root.
-child_index      # Zero-based position among element siblings.
-tag              # Normalized local tag name.
-namespace        # HTML, SVG, MathML, or another element namespace.
-attributes       # Attribute names and string values as MAP(VARCHAR, VARCHAR).
-text_direct      # Text directly inside this element before its child elements.
-text_tail        # Text following this element within its parent.
-```
-
-The row identity is:
-
-```text
-UNIQUE(content_id, element_index)
-```
-
-The keyed table macro:
-
-```sql
-dom.text_content(content_id, element_index)
-```
-
-returns `content_id`, `element_index`, and `text_content` for at most one selected element.
-`text_content` concatenates stored text nodes inside that element's subtree in document order,
-preserves their stored whitespace, and excludes the selected element's own `text_tail`. It is DOM
-text-content reconstruction, not browser-layout `innerText`: it does not infer CSS visibility,
-generated content, line wrapping, or visual whitespace.
-
-Subtree reconstruction is deliberately absent from the `dom.elements` base view. Keeping it behind
-required content and element keys prevents an unbounded relation scan from expanding every
-ancestor-descendant pair before an outer projection or limit can take effect. The macro makes its
-one-row identity bound explicit so keyed lateral calls retain that bound when DuckDB decorrelates
-them.
-
-The name follows the standard DOM `Node.textContent` property. Atlas does not expose a generic
-`text` operation because the DOM defines no such property. `inner_text` would mean
-`HTMLElement.innerText`, whose rendered-text semantics require layout and computed CSS that the
-structural projection does not retain. `inner_html` and `outer_html` are also deferred: conforming
-DOM serialization requires node information, including comments, that `material.html_elements`
-does not retain. Those names must not be used for approximate or source-slice results.
-
-#### `web.jsonld`
-
-One row represents one successfully parsed JSON-LD payload embedded in one immutable HTML
-payload.
-
-```text
-content_id    # Identity of the containing immutable HTML bytes.
-element_index # Source <script> element in dom.elements.
-type_terms    # Distinct raw @type strings found in the payload as VARCHAR[].
-value         # Complete parsed JSON-LD payload as VARIANT.
-```
-
-The row identity is:
-
-```text
-UNIQUE(content_id, element_index)
-```
+Both are table functions returning complete `dom.elements` rows. `query_selector` returns at most
+the first match in document order. `query_selector_all` returns all matches in document order.
+They materialize only the keyed document slice, not a scope-wide nested DOM. A third-party
+connection that does not load the extension can still use the portable relational DOM and
+text/attribute operations, but cannot execute the selector macros.
 
 ### Join contract
 
-Stable keys express the public join graph:
-
 ```text
-web.crawls
-  -> crawl_id -> web.visits
-  -> visit_id -> web.page_observations
-  -> visit_id -> web.documents
+web.page.page_id
+  -> web.visit.page_id
+  -> web.link.source_page_id / target_page_id
 
-web.pages
-  -> page_id -> web.page_observations
-  -> page_id -> web.documents
-  -> page_id -> web.page_stats
+web.visit.visit_id
+  -> web.link_occurrence.visit_id
 
-web.links
-  -> link_id -> web.link_observations
-  -> source_page_id / target_page_id -> web.pages when that endpoint was visited
+web.visit.content_id
+  -> dom.elements.content_id
+  -> web.jsonld.content_id
 
-web.documents
-  -> document_id -> web.page_observations / web.link_observations
-  -> content_id -> web.content / dom.elements / web.jsonld
-
-web.link_observations
-  -> (content_id, element_index) -> dom.elements
+web.link.link_id
+  -> web.link_occurrence.link_id
 ```
 
-Same-named keys have the same meaning and may be joined with `USING`. Directional link endpoints
-remain explicit:
-
-```sql
-SELECT source.url, destination.url
-FROM web.links AS link
-LEFT JOIN web.pages AS source
-  ON source.page_id = link.source_page_id
-LEFT JOIN web.pages AS destination
-  ON destination.page_id = link.target_page_id;
-```
-
-The destination join is optional because a positively observed target need not have been visited.
-Its absence says only that Atlas has no visit-backed page identity for that URL; it says nothing
-about whether the page exists on the live web.
-
-### Convenience macros and explicit reductions
-
-The scalar macro:
-
-```text
-dom.get_attribute(element_attributes, attribute_name)
-```
-
-returns one attribute value from an HTML attribute map, or `NULL` when the name is absent. The
-name follows DOM `Element.getAttribute`; the macro is equivalent to DuckDB's
-`map_extract_value` and exists to keep common element queries concise.
-
-Two table macros provide filtered history without changing its grain:
-
-```text
-web.page_history(page_id)
-  # One row per page observation.
-  # Columns: page_id, visit_id, document_id, content_id, observed_at, crawl_id,
-  #          requested_url, effective_url, outcome, status_code.
-
-web.link_history(link_id)
-  # One row per anchor occurrence.
-  # Columns: link_id, source_page_id, target_page_id, document_id, content_id,
-  #          element_index, raw_href, observed_at.
-```
-
-Neither macro selects a latest row or guarantees result order. Callers use an explicit
-`ORDER BY observed_at` when order matters.
-
-The unqualified base relations never mean "latest".
-
-Portable catalogue definitions are authoritative. An optional native extension may recognize and
-accelerate the same valid SQL plans, but it does not define different query semantics. See
-[`QUERY.md`](QUERY.md).
-
-Interfaces for generic JSON, XML, PDF, DOCX, CSV, and other deferred formats are not yet part of
-the contract.
+There are no public `page_history`, `link_history`, document-list, nested-DOM, or `web.content`
+compatibility surfaces.
 
 ## `data.*`
 
-User-owned views, tables, and maintained extractions built primarily from the public catalogue.
-
-Tables are defined by the user.
+User-owned views, tables, and maintained extractions built from the public catalogue.

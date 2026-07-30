@@ -17,8 +17,6 @@ from atlas.platform.config.performance import INGESTION_CATALOGUE_HARD_TIMEOUT_S
 from atlas.ingestion import metrics as repository_metrics
 from atlas.platform.catalogue import (
     CatalogueConflictError,
-    DuckBasinUnavailableError,
-    ServiceAccountTokenProvider,
 )
 from atlas.platform.catalogue.operations import is_retryable_catalogue_unavailability
 from atlas.platform.health import HealthMonitor
@@ -40,7 +38,6 @@ from atlas.ingestion.queue import (
     record_ingestion_processing_failure,
     store_ingestion_response,
 )
-from atlas.ingestion.recovery import IngestionDependencyCircuit
 from atlas.ingestion.service import PreparedIngestion, repository_ingestor_from_env
 from atlas.platform.messaging.catalogue_workers import CatalogueLaneReporter
 from atlas.platform.messaging.client import connect_nats
@@ -83,11 +80,8 @@ async def run(
     monitor: HealthMonitor,
     lane: CatalogueLaneReporter | None = None,
     lane_index: int = 0,
-    circuit: IngestionDependencyCircuit | None = None,
-    tokens: ServiceAccountTokenProvider | None = None,
 ) -> None:
     lane = lane or CatalogueLaneReporter(lane_index=lane_index)
-    circuit = circuit or IngestionDependencyCircuit(1)
     lane.attach(lambda: monitor.status(include_liveness=False))
     metrics = repository_metrics.IngestionLaneMetrics(lane_index)
     config = IngestionWorkerConfig.defaults()
@@ -105,54 +99,19 @@ async def run(
             durable=DURABLE,
             stream=STREAM,
         )
-        admission = await circuit.admit(lane_index, stop=stop)
-        while ingestor is None and admission is not None and not stop.is_set():
-            try:
-                ingestor = await _catalogue_call(
-                    repository_ingestor_from_env,
-                    tokens=tokens,
-                    description="ingestion catalogue client creation",
-                )
-                await _catalogue_call(
-                    ingestor.validate,
-                    description="ingestion catalogue validation",
-                )
-            except DuckBasinUnavailableError as exc:
-                delay = await circuit.unavailable(exc, admission=admission)
-                monitor.dependencies_unavailable(str(exc) or type(exc).__name__)
-                metrics.circuit("open")
-                await _wait_or_stop(stop, delay)
-                admission = await circuit.admit(lane_index, stop=stop)
-        if ingestor is None or admission is None:
-            return
-        if admission.probe_required:
-            await circuit.recovered(admission, lane_index)
-        _refresh_lane_metrics(metrics, ingestor)
-        metrics.circuit(await circuit.state())
+        ingestor = await _catalogue_call(
+            repository_ingestor_from_env,
+            description="ingestion catalogue connection",
+        )
+        await _catalogue_call(
+            ingestor.validate,
+            description="ingestion catalogue validation",
+        )
         monitor.dependencies_ready()
         monitor.subsystem_ready("ingestion")
 
         while not stop.is_set():
             monitor.heartbeat()
-            admission = await circuit.admit(lane_index, stop=stop)
-            if admission is None:
-                break
-            if admission.probe_required:
-                try:
-                    await _catalogue_call(
-                        ingestor.probe,
-                        description="ingestion catalogue recovery probe",
-                    )
-                except DuckBasinUnavailableError as exc:
-                    await circuit.unavailable(exc, admission=admission)
-                    monitor.dependencies_unavailable(
-                        str(exc) or type(exc).__name__
-                    )
-                    metrics.circuit("open")
-                    continue
-                await circuit.recovered(admission, lane_index)
-                monitor.dependencies_ready()
-            metrics.circuit(await circuit.state())
             try:
                 messages = await subscription.fetch(
                     batch=config.max_items,
@@ -171,10 +130,7 @@ async def run(
                 messages=messages,
                 lane=lane,
                 metrics=metrics,
-                circuit=circuit,
-                admission=admission,
             )
-            _refresh_lane_metrics(metrics, ingestor)
             await _observe_queue(jetstream, monitor)
     finally:
         if ingestor is not None:
@@ -194,8 +150,6 @@ async def _process_messages(
     messages,
     lane: CatalogueLaneReporter,
     metrics: repository_metrics.IngestionLaneMetrics,
-    circuit: IngestionDependencyCircuit,
-    admission,
 ) -> None:
     heartbeat = asyncio.create_task(_heartbeat_messages(messages))
     try:
@@ -227,11 +181,6 @@ async def _process_messages(
         except (OperationLeaseUnavailable, OperationLeaseLost):
             for message in batch.messages:
                 await message.nak(delay=1)
-            return
-        except DuckBasinUnavailableError as exc:
-            delay = await circuit.unavailable(exc, admission=admission)
-            for message in batch.messages:
-                await message.nak(delay=delay)
             return
         except Exception as exc:
             repository_metrics.batch(
@@ -355,12 +304,7 @@ async def _retry_or_fail(
     exc: Exception,
 ) -> None:
     if is_retryable_catalogue_unavailability(exc):
-        delay = (
-            exc.retry_after_seconds
-            if isinstance(exc, DuckBasinUnavailableError)
-            else 1
-        )
-        await message.nak(delay=min(30, max(1, delay or 1)))
+        await message.nak(delay=1)
         return
     count = await record_ingestion_processing_failure(
         results_store,
@@ -444,18 +388,6 @@ async def _heartbeat_messages(messages) -> None:
         await asyncio.sleep(interval)
 
 
-def _refresh_lane_metrics(
-    metrics: repository_metrics.IngestionLaneMetrics,
-    ingestor,
-) -> None:
-    metrics.client(
-        generation=ingestor.catalogue.connection_generation,
-        remints=ingestor.catalogue.remint_count,
-    )
-    token_status, token_generation = ingestor.catalogue.token_status
-    metrics.token(status=token_status, generation=token_generation)
-
-
 def _exception_message(exc: BaseException) -> str:
     messages: list[str] = []
     current: BaseException | None = exc
@@ -465,13 +397,6 @@ def _exception_message(exc: BaseException) -> str:
             messages.append(message)
         current = current.__cause__
     return ": ".join(messages)
-
-
-async def _wait_or_stop(stop: asyncio.Event, delay: float) -> None:
-    try:
-        await asyncio.wait_for(stop.wait(), timeout=delay)
-    except TimeoutError:
-        pass
 
 
 class _CatalogueHardHangError(BaseException):

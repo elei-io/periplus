@@ -7,8 +7,15 @@ from atlas.platform.messaging.topology import ensure_stream_contract
 
 WORK_STREAM = "ATLAS_CATALOGUE_WORK"
 INGEST_SUBJECT = "atlas.catalogue.ingest"
-MATERIALIZATION_MAINTENANCE_SUBJECT = "atlas.catalogue.materialization"
-WORK_SUBJECTS = (INGEST_SUBJECT, MATERIALIZATION_MAINTENANCE_SUBJECT)
+MATERIALIZATION_PLAN_SUBJECT = "atlas.catalogue.materialization.plan"
+MATERIALIZATION_BATCH_SUBJECT = "atlas.catalogue.materialization.batch"
+MATERIALIZATION_ACTIVATE_SUBJECT = "atlas.catalogue.materialization.activate"
+WORK_SUBJECTS = (
+    INGEST_SUBJECT,
+    MATERIALIZATION_PLAN_SUBJECT,
+    MATERIALIZATION_BATCH_SUBJECT,
+    MATERIALIZATION_ACTIVATE_SUBJECT,
+)
 
 DEAD_LETTER_STREAM = "ATLAS_DEAD_LETTER"
 INGEST_DEAD_LETTER_SUBJECT = "atlas.dead_letter.ingest"

@@ -33,11 +33,12 @@ optimizer boundary; it does not restore the removed schema-dependent Python comp
 
 ## 1. Portable DuckLake catalogue
 
-Atlas initialization installs and versions the `web.*` and `dom.*` interface as persistent
-DuckLake views,
-scalar macros, and table macros over `ingest.*` and `material.*`. These catalogue objects define
-the complete public semantics and must remain correct without an Atlas SDK or native extension.
-They are changed only by Atlas catalogue upgrades, never by Quack replica startup.
+Atlas initialization installs and versions the base `web.*` and `dom.*` interface as persistent
+DuckLake views, scalar macros, and table macros over `ingest.*` and `material.*`. These catalogue
+objects define the portable public semantics and remain correct without an Atlas SDK or native
+extension. `atlas-setup` loads the exact-version Atlas extension and installs the complete
+catalogue, including extension-backed selector macros; setup fails rather than publishing a
+partial Atlas installation. The objects are changed only by Atlas catalogue upgrades.
 
 The authoritative one-object SQL definitions live under
 `backend/src/atlas/platform/catalogue/sql/web/` and
@@ -48,10 +49,12 @@ the typed physical schema, then validates object names, columns, macro kinds, vi
 manifest descriptions, and catalogue version. Ordinary processes validate this contract and
 never repair it at startup.
 
-`dom.documents` exposes per-content node counts and depth for costing. The keyed
-`dom.document(content_id)` table macro returns one canonical nested DOM and is the bounded input
-to optional native selector functions. Page-first selector plans reduce and deduplicate content
-identities before invoking that macro.
+`material.content_stats` is the narrow compiler lookup for content size, DOM element count, and
+maximum depth. It does not duplicate the DOM. Extension-backed
+`dom.query_selector(content_id, selector)` and `dom.query_selector_all(content_id, selector)` feed
+only the keyed, partition-prunable `dom.elements` slice into a streaming table-in/table-out native
+operator. The operator reconstructs at most one document at a time and returns complete element
+rows. Page-first plans should reduce and deduplicate content identities before invoking it.
 
 Every public view and view column has a concise description derived from the semantic contract in
 `SCHEMA.md`. Setup reapplies supported view comments after replacing each view. DuckLake does not
@@ -59,15 +62,14 @@ currently accept `COMMENT ON COLUMN` for view columns, so the authoritative mani
 column descriptions to the SQL metadata endpoint and both shells.
 
 Recurring expensive computations belong in Atlas-owned `material.*` relations maintained through
-the ordinary materialization lifecycle. Quack is an optional execution transport, not a dependency
-of the catalogue contract.
+the ordinary materialization lifecycle.
 
 The shared terminal and web shell accepts bounded read-only SQL over qualified `web.*` and
 `dom.*` relations only. It also accepts `DESCRIBE`, `EXPLAIN`, `EXPLAIN ANALYZE`, and `SUMMARIZE`
 when their target passes the same public-namespace validation, plus `SHOW TABLES FROM web` and
 `SHOW TABLES FROM dom`. Its metadata and autocomplete endpoints expose public views plus scalar
-and table macro signatures, including `dom.get_attribute`, `dom.text_content`,
-`web.page_history`, and `web.link_history`, but no `ingest.*` or `material.*` objects. The shared
+and table macro signatures, including `dom.get_attribute` and `dom.text_content`, and—when
+installed—the DOM selector functions, but no `ingest.*` or `material.*` objects. The shared
 shell uses that metadata for `.tables`, `.macros`,
 `.describe`, and context-aware completion; `.completion reload` refreshes it explicitly.
 
@@ -86,21 +88,23 @@ dismisses it. Enter loads a selected draft into the normal editable prompt witho
 ## 2. Python SDK
 
 `packages/atlas-python-sdk/` is the first client package. It wraps DuckDB connection setup and
-results, Atlas authentication, and control-plane operations such as crawl submission and run
+results and control-plane operations such as crawl submission and run
 tracking. It does not define public catalogue semantics or compile and rewrite user SQL.
+`atlas_sdk.conn.duck()` returns an ordinary `duckdb.DuckDBPyConnection` over the versioned public
+catalogue using the same `ATLAS_DUCKLAKE_*` attachment contract as Atlas.
 
 ## 3. Optional native optimization
 
 Only a measured compiler/optimizer gap that remains after performance triage justifies native
-code. If required, Atlas will ship one exact-version C++ DuckDB extension containing SQL rewrite
-rules and specialist functions. The extension may make portable public queries faster but must
-never be required for correctness.
+code. Atlas ships one exact-version C++ DuckDB extension containing plan policy and specialist
+functions. Base catalogue queries never require it. Standards-shaped CSS selectors are an
+explicit extension capability and are absent, rather than emulated poorly, when it is unavailable.
 
-Atlas will not maintain parallel stable-C and C++ production extensions or CI paths. With Quack,
-the matching extension is loaded on the server and the complete query executes there. Without
-Quack, a user may load the matching extension locally. In both cases the DuckLake catalogue remains
-the authoritative interface. The local build, direct DuckLake, and differential testing workflow is
-documented in [`EXTENSION_DEVELOPMENT.md`](EXTENSION_DEVELOPMENT.md).
+Atlas will not maintain parallel stable-C and C++ production extensions or CI paths. Atlas images
+compile and package the matching extension; the SDK and direct shell load a matching host artifact
+before attaching DuckLake. The DuckLake catalogue remains the authoritative interface. The local
+build, direct DuckLake, and differential testing workflow is documented in
+[`EXTENSION_DEVELOPMENT.md`](EXTENSION_DEVELOPMENT.md).
 
 ### Shared plan analysis and policy
 
@@ -113,9 +117,9 @@ rules, but it must not install an independent whole-plan visitor.
 
 The initial rules cover both DOM and non-DOM plans: unsafe collection of element-grain rows before
 document evaluation, large Cartesian products between Atlas relations, unexpectedly broad
-document operations, repeated DOM work, immediate selector-list expansion, and unbounded blocking
-state over large Atlas relations. The selector dynamic-filter adjustment is an optimizer action
-from this shared policy rather than a standalone selector patch.
+document operations, repeated DOM work, and unbounded blocking state over large Atlas relations.
+Future rewrites must be optimizer actions from this shared policy rather than standalone
+SQL-spelling patches.
 
 The internal native table function:
 
@@ -148,3 +152,71 @@ proxy derived from estimated rows and operator shape, not an exact peak-allocati
 Atlas shells continue to validate their public namespace boundary independently; exposing lint
 through those shells or the SDK does not make this internal function part of the portable `web.*`
 or `dom.*` contract.
+
+The interactive selector warning boundary is 1,000 content identities, based on the representative
+`atlas_test` lake crossing roughly 30 seconds between 1,000 and 1,500 page-scoped documents. It is
+a lint warning, not an execution ban. One individual document is hard-bounded at 1,000,000
+elements to prevent an adversarial page from defeating document-at-a-time memory bounds.
+
+### Selector query shapes
+
+For one known page, select the current visit first and pass its immutable content identity to the
+DOM operation:
+
+```sql
+SELECT *
+FROM dom.query_selector_all(
+    (
+        SELECT content_id
+        FROM web.visit
+        WHERE url = 'https://commoncrawl.org/'
+          AND is_latest
+          AND content_id IS NOT NULL
+    ),
+    'a[href]'
+);
+```
+
+For comparison or discovery across pages, make the page/content scope explicit, deduplicate shared
+content, and invoke the selector laterally:
+
+```sql
+WITH scope AS MATERIALIZED (
+    SELECT DISTINCT visit.content_id
+    FROM web.visit AS visit
+    JOIN web.page AS page USING (page_id)
+    WHERE page.hostname = 'example.com'
+      AND visit.is_latest
+      AND visit.content_id IS NOT NULL
+    LIMIT 100
+)
+SELECT scope.content_id, match.element_index, match.tag,
+       dom.get_attribute(match.attributes, 'href') AS href
+FROM scope
+JOIN LATERAL dom.query_selector_all(
+    scope.content_id,
+    'article a[href]'
+) AS match ON true;
+```
+
+Raise the scope limit through `100`, `500`, `1000`, then `1500` when measuring a new environment.
+The limit bounds documents, while the selector operator bounds memory to one document at a time.
+Lint the exact discovery query before executing it:
+
+```sql
+SELECT *
+FROM atlas_lint_query($query$
+    WITH scope AS MATERIALIZED (
+        SELECT DISTINCT visit.content_id
+        FROM web.visit AS visit
+        WHERE visit.is_latest AND visit.content_id IS NOT NULL
+        LIMIT 1500
+    )
+    SELECT match.*
+    FROM scope
+    JOIN LATERAL dom.query_selector_all(
+        scope.content_id,
+        'a[href]'
+    ) AS match ON true
+$query$);
+```

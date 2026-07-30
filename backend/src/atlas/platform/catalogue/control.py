@@ -1,4 +1,4 @@
-"""One serialized Basin catalogue session for mandatory API control work."""
+"""One serialized DuckLake connection for API catalogue work."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ CatalogueOperation = Callable[[Session, Catalogue], T]
 
 
 class CatalogueControl:
-    """Own one session-affine DuckDB client on one thread for the API lifetime."""
+    """Own one DuckDB connection on one thread for the API lifetime."""
 
     def __init__(
         self,
@@ -69,7 +69,7 @@ class CatalogueControl:
             "Atlas DuckLake binding ready: component=api lake=%s "
             "schemas=ingest,material,web,dom schema_version=%s "
             "public_catalogue_version=%s",
-            catalogue.lake_slug,
+            catalogue.config.alias,
             CATALOGUE_SCHEMA_VERSION,
             PUBLIC_CATALOGUE_VERSION,
         )

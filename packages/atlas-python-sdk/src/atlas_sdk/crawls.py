@@ -10,7 +10,7 @@ from typing import Any, AsyncIterator, Collection, Literal
 from uuid import UUID
 
 from ._http import request
-from .errors import CrawlFailed, MaterializationFailed, WaitTimeout
+from .errors import CrawlFailed, WaitTimeout
 
 CrawlStatus = Literal[
     "queued",
@@ -65,25 +65,6 @@ class Crawl:
             await asyncio.sleep(self._poll_seconds)
             await self.refresh()
         return self
-
-    async def materialized(self, *, timeout: float | None = None) -> Crawl:
-        started = time.monotonic()
-        if self.status not in _TERMINAL:
-            remaining = _remaining(started, timeout)
-            await self.completed(timeout=remaining)
-        while True:
-            _check_timeout(started, timeout, "crawl materialization")
-            payload = await request(
-                "GET", f"/graph-runs/{self.id}/materialization"
-            )
-            status = payload.get("status")
-            if status == "materialized":
-                return self
-            if status == "failed":
-                raise MaterializationFailed(
-                    str(payload.get("error") or "crawl ingestion failed")
-                )
-            await asyncio.sleep(self._poll_seconds)
 
     async def pause(self) -> Crawl:
         _apply(
@@ -260,9 +241,3 @@ def _check_timeout(
 ) -> None:
     if timeout is not None and time.monotonic() - started >= timeout:
         raise WaitTimeout(f"timed out waiting for {label}")
-
-
-def _remaining(started: float, timeout: float | None) -> float | None:
-    if timeout is None:
-        return None
-    return max(0, timeout - (time.monotonic() - started))

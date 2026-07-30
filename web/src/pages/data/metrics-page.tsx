@@ -25,7 +25,7 @@ import type {
   DataStatus,
   DataStatusState,
   DeliveryQueue,
-  MaintenanceRunSummary,
+  MaterializationRunSummary,
   MaterializationWorkload,
   WorkerCapacity,
 } from "@/types/operations"
@@ -55,20 +55,17 @@ export function DataMetricsPage() {
   }
 
   const status = statusQuery.data
-  const documents = status.materialization.workloads.find(
-    (workload) => workload.name === "documents"
-  )
   const visits = status.materialization.workloads.find(
     (workload) => workload.name === "visits"
   )
-  const maintenanceRuns = status.maintenance_runs.filter(
+  const materializationRuns = status.materialization_runs.filter(
     (run) => run.status !== "completed"
   )
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-4 pb-2">
       <DataVerdict status={status} />
-      <section className="grid gap-4 lg:grid-cols-3">
+      <section className="grid gap-4 lg:grid-cols-2">
         <PipelineCard
           title="Ingestion"
           description="Accepted evidence moving into DuckLake."
@@ -82,20 +79,14 @@ export function DataMetricsPage() {
           }
         />
         <MaterializationCard
-          title="Documents"
-          description="Document-owned projections from HTML evidence."
-          workload={documents}
-          status={status.materialization.status}
-        />
-        <MaterializationCard
-          title="Visits"
-          description="Page identity and visit-level observations."
+          title="Materialization"
+          description="Visit-scoped batches projecting the complete material schema."
           workload={visits}
           status={status.materialization.status}
         />
       </section>
-      {maintenanceRuns.length > 0 ? (
-        <MaintenanceStatus runs={maintenanceRuns} />
+      {materializationRuns.length > 0 ? (
+        <RebuildStatus runs={materializationRuns} />
       ) : null}
       <DataDiagnostics status={status} />
     </div>
@@ -247,16 +238,16 @@ function PipelineCard({
   )
 }
 
-function MaintenanceStatus({ runs }: { runs: MaintenanceRunSummary[] }) {
+function RebuildStatus({ runs }: { runs: MaterializationRunSummary[] }) {
   return (
     <Card>
       <CardHeader className="border-b">
         <CardTitle className="flex items-center gap-2">
           <WrenchIcon className="size-4 text-muted-foreground" />
-          Maintenance activity
+          Materialization rebuilds
         </CardTitle>
         <CardDescription>
-          Rebuilds and backfills use the same bounded projection pipeline.
+          Complete hidden generations are built from bounded visit batches.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
@@ -273,15 +264,13 @@ function MaintenanceStatus({ runs }: { runs: MaintenanceRunSummary[] }) {
                 >
                   {run.status}
                 </Badge>
-                <span className="font-medium capitalize">{run.mode}</span>
                 <code className="font-mono text-[0.6875rem] text-muted-foreground">
                   {run.id.slice(0, 8)}
                 </code>
               </div>
               <p className="mt-2 truncate text-xs text-muted-foreground">
-                {run.active_stage
-                  ? `Working on ${projectionLabel(run.active_stage)}`
-                  : run.stages.map(projectionLabel).join(" · ")}
+                {run.completed_batches.toLocaleString()} of{" "}
+                {run.total_batches.toLocaleString()} batches complete
               </p>
               {run.error ? (
                 <p className="mt-2 text-xs text-destructive">{run.error}</p>

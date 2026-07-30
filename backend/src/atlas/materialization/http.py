@@ -1,4 +1,4 @@
-"""Operations API for bounded fixed-projection maintenance."""
+"""Operations API for complete materialization rebuilds."""
 
 from __future__ import annotations
 
@@ -7,63 +7,53 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from atlas.materialization.contracts import ProjectionName
-from atlas.materialization.runtime import publish_run
+from atlas.materialization.runtime import publish_plan
 from atlas.materialization.store import (
     AsyncMaterializationRunStore,
     MaterializationRun,
-    RunMode,
+    MaterializationRunActive,
 )
-from pydantic import BaseModel, ConfigDict, Field
-
 from atlas.platform.catalogue.control import CatalogueControl, get_catalogue_control
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-router = APIRouter(
-    prefix="/operations/materializations",
-    tags=["operations"],
-)
+router = APIRouter(prefix="/operations/materializations", tags=["operations"])
 
 
 class CreateMaterializationRun(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    mode: RunMode
-    stages: set[ProjectionName] = Field(min_length=1)
-    item_budget: int = Field(default=100, ge=1, le=10_000)
-    byte_budget: int = Field(
-        default=64 * 1024 * 1024,
-        ge=1,
-        le=1024 * 1024 * 1024,
-    )
+    batch_size: int = Field(default=200, ge=1, le=10_000)
 
 
 class MaterializationRunResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    mode: RunMode
     status: str
-    requested_stages: tuple[ProjectionName, ...]
-    stages: tuple[ProjectionName, ...]
-    projector_versions: dict[str, int]
     source_snapshot: int
-    catchup_snapshot: int
-    catchup_target_snapshot: int | None
-    catchup_stage: int
-    catchup_cursors: dict[str, str | None]
-    current_stage: int
-    cursors: dict[str, str | None]
-    destinations: dict[str, str]
-    item_budget: int
-    byte_budget: int
+    covered_snapshot: int
+    activation_snapshot: int | None
+    batch_size: int
+    total_batches: int
+    completed_batches: int
     source_items: int
     source_bytes: int
     output_rows: int
+    output_bytes: int
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
     error: str | None
+
+    @computed_field
+    @property
+    def progress(self) -> float:
+        if self.status == "completed":
+            return 1.0
+        if self.total_batches == 0:
+            return 0.0
+        return self.completed_batches / self.total_batches
 
 
 @router.post("/runs", response_model=MaterializationRunResponse)
@@ -74,25 +64,23 @@ async def create_run(
 ) -> MaterializationRun:
     source_snapshot = await control.latest_snapshot()
     if source_snapshot is None:
-        raise HTTPException(
-            status_code=409,
-            detail="catalogue has no committed source snapshot",
-        )
+        raise HTTPException(409, "catalogue has no committed source snapshot")
     store = _store(request)
-    run = await store.create(
-        mode=payload.mode,
-        requested_stages=payload.stages,
-        source_snapshot=source_snapshot,
-        item_budget=payload.item_budget,
-        byte_budget=payload.byte_budget,
-    )
     try:
-        await publish_run(request.app.state.graph_runtime.jetstream, run.id)
-    except Exception:
-        logging.exception(
-            "materialization run %s is durable but awaiting publication",
+        run = await store.create(
+            source_snapshot=source_snapshot,
+            batch_size=payload.batch_size,
+        )
+    except MaterializationRunActive as exc:
+        raise HTTPException(409, str(exc)) from exc
+    try:
+        await publish_plan(
+            request.app.state.graph_runtime.jetstream,
+            store,
             run.id,
         )
+    except Exception:
+        logging.exception("rebuild %s awaits recovery publication", run.id)
     return run
 
 
@@ -104,20 +92,11 @@ async def list_runs(
     return await _store(request).list(limit=limit)
 
 
-@router.get(
-    "/runs/{run_id}",
-    response_model=MaterializationRunResponse,
-)
-async def get_run(
-    run_id: UUID,
-    request: Request,
-) -> MaterializationRun:
+@router.get("/runs/{run_id}", response_model=MaterializationRunResponse)
+async def get_run(run_id: UUID, request: Request) -> MaterializationRun:
     run = await _store(request).get(run_id)
     if run is None:
-        raise HTTPException(
-            status_code=404,
-            detail="materialization run was not found",
-        )
+        raise HTTPException(404, "materialization rebuild was not found")
     return run
 
 

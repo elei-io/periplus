@@ -1,4 +1,4 @@
-"""Atlas fixed CDC-driven materialization worker."""
+"""Atlas complete-rebuild materialization worker."""
 
 from __future__ import annotations
 
@@ -6,8 +6,7 @@ import asyncio
 from datetime import UTC, datetime
 import os
 
-from atlas.platform.config import get_float
-from atlas.platform.config.performance import MATERIALIZATION_QUACK_CLIENTS
+from atlas.platform.config import get_float, get_int
 from atlas.materialization.executor import run as run_materialization
 from atlas.platform.health import HealthMonitor
 from atlas.platform.messaging.catalogue_workers import (
@@ -25,10 +24,13 @@ async def run() -> None:
             "ATLAS_MATERIALIZATION_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
         )
     )
+    concurrency = get_int("ATLAS_MATERIALIZATION_CONCURRENCY")
     lanes = tuple(
         CatalogueLaneReporter(lane_index=index)
-        for index in range(MATERIALIZATION_QUACK_CLIENTS)
+        for index in range(concurrency)
     )
+    for reporter in lanes:
+        reporter.attach(lambda: (True, "ready"))
     await run_worker_process(
         role="materialization",
         monitor=monitor,
@@ -36,7 +38,7 @@ async def run() -> None:
             "fixed-materializations": run_materialization(
                 stop=stop,
                 monitor=monitor,
-                lanes=lanes,
+                concurrency=concurrency,
             ),
             "materialization-presence": run_catalogue_process_presence(
                 worker_id=(

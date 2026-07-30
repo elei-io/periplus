@@ -3,21 +3,21 @@
 Atlas delivers one evidence path:
 
 ```text
-crawl plan -> immutable bytes -> ingest.* -> CDC -> material.* -> web.* / dom.*
+crawl plan -> immutable bytes -> ingest.* -> material.* -> web.* / dom.*
 ```
 
 External HTML joins at the same immutable-byte boundary:
 
 ```text
-external evidence -> immutable bytes -> ingest.* -> CDC -> material.* -> web.* / dom.*
+external evidence -> immutable bytes -> ingest.* -> material.* -> web.* / dom.*
 ```
 
 ## Authorities
 
 - Postgres owns editable control state, current graph execution, admission, progress, schedules,
   policies, and the transactional graph outbox.
-- NATS JetStream and KV own work delivery, worker presence, operation leases, per-domain pacing,
-  and CDC events. They are not authoritative graph state.
+- NATS JetStream and KV own work delivery, worker presence, operation leases, and per-domain
+  pacing. They are not authoritative graph or materialization state.
 - The object repository owns immutable content-addressed source bytes.
 - DuckLake owns historical observed evidence, rebuildable Atlas materializations, and the portable
   public `web.*` and `dom.*` catalogue.
@@ -25,17 +25,50 @@ external evidence -> immutable bytes -> ingest.* -> CDC -> material.* -> web.* /
 Current graph execution never moves into DuckLake. Crawl history never moves into control-plane
 Postgres.
 
+## Installation and client lifecycle
+
+`atlas-setup` is the only catalogue installer. The Atlas image contains an exact-version native
+extension compiled in a builder stage. Setup loads that extension, attaches DuckLake, reconciles
+the physical schemas, and transactionally installs the complete persistent `web.*` and `dom.*`
+contract. Ordinary Atlas processes validate the installed contract and never repair it.
+
+The extension binary executes inside each DuckDB client and is not stored in DuckLake. The SDK and
+direct shell therefore load a matching host artifact before attaching the lake. Once attached,
+queries read the persistent catalogue and lake data directly; no running Atlas API is required.
+Atlas services are needed only to acquire, ingest, or materialize more data. Stopping those
+services leaves the complete analytical lake intact. Deleting control-plane Postgres separately
+would remove editable plans, schedules, and current execution state, but never the historical
+evidence already committed to DuckLake.
+
 ## Process ownership
 
 - Acquisition acquires one page, stores immutable bytes, publishes visit evidence, and advances
   graph work without waiting for catalogue ingestion.
 - Ingestion commits immutable crawl and visit evidence under `ingest.*`.
-- CDC carries committed DuckLake changes into bounded projection work.
-- Materialization maintains fixed rebuildable `material.*` relations.
+- Materialization scans a pinned `ingest.visits` snapshot into bounded visit batches and maintains
+  the complete fixed `material.*` generation.
 - Housekeeping removes only Atlas-owned transient navigation and runtime state.
 
-Ingestion does not wait for materialization. Every target derives from its ingestion source; there
-is no target-to-target materialization chain.
+Ingestion does not wait for materialization. A visit is the single unit of rebuild work; its
+optional document is projected in that same batch. There is no document lane, target-to-target
+chain, or authoritative queue ledger.
+
+## Materialization
+
+Postgres stores rebuild control state and bounded batch identities. JetStream delivers plan, visit
+batch, and serialized activation work; messages are ACKed only after their corresponding durable
+commit. Postgres records successful publication once; recovery publishes only unpublished work,
+while JetStream redelivers published work until ACK. Any worker replica can consume a visit batch.
+
+Large projected relations are written as final bucketed Parquet and registered with
+`ducklake_add_data_files`. Narrow identity and head relations use `MERGE INTO`. Those writes and
+the applied-batch marker commit in one DuckLake transaction, making commit-before-ACK redelivery a
+no-op.
+
+Every rebuild creates all eight hidden material tables, catches up visits inserted after the
+pinned source snapshot, and renames the complete generation atomically. Activation has a
+single-consumer delivery lane only to serialize the metadata swap; projection throughput remains
+horizontally scalable.
 
 ## Crawl-plan boundary
 

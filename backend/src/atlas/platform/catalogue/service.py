@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+import json
 from typing import Any
 from uuid import UUID
 
@@ -65,7 +66,7 @@ class CatalogueService:
             self._append(
                 CRAWLS,
                 [_crawl_values(record) for record in missing],
-                variant_columns=("graph_config",),
+                json_columns=("graph_config",),
             )
         snapshot = self._result_snapshot(changed=bool(missing))
         return [
@@ -121,7 +122,7 @@ class CatalogueService:
                     for entry in missing
                     for step in entry.steps
                 ],
-                variant_columns=("parameters",),
+                json_columns=("parameters",),
             )
             self._append(
                 DOCUMENTS,
@@ -244,52 +245,38 @@ class CatalogueService:
             f"WHERE {_quote_identifier(column)} IN ({sql_values})"
         )
         names = tuple(expected_columns()[relation])
-        return [dict(zip(names, row, strict=True)) for row in rows]
+        return [
+            _decode_json_columns(
+                relation,
+                dict(zip(names, row, strict=True)),
+            )
+            for row in rows
+        ]
 
     def _append(
         self,
         relation: RelationName,
         rows: list[dict[str, object]],
         *,
-        variant_columns: tuple[str, ...] = (),
+        json_columns: tuple[str, ...] = (),
     ) -> None:
         if not rows:
-            return
-        if not variant_columns:
-            self.catalogue.append(
-                relation.table,
-                rows,
-                schema_name=relation.schema,
-            )
             return
         encoded = [
             {
                 key: (
-                    canonical_json(value) if key in variant_columns else value
+                    canonical_json(value) if key in json_columns else value
                 )
                 for key, value in row.items()
             }
             for row in rows
         ]
-        registration = f"_atlas_upload_{id(rows):x}"
-        connection = self.catalogue.trusted_connection
-        connection.register(registration, pa.Table.from_pylist(encoded))
-        try:
-            projections = ", ".join(
-                (
-                    f"{_quote_identifier(column)}::JSON::VARIANT "
-                    f"AS {_quote_identifier(column)}"
-                    if column in variant_columns
-                    else _quote_identifier(column)
-                )
-                for column in rows[0]
-            )
-            connection.execute(
-                f"INSERT INTO {self._table(relation)} BY NAME "
-                f"SELECT {projections} FROM {_quote_identifier(registration)}"
-            )
-        finally:
-            connection.unregister(registration)
+        self.catalogue.append_arrow(
+            relation.table,
+            pa.Table.from_pylist(encoded),
+            schema_name=relation.schema,
+            json_columns=frozenset(json_columns),
+        )
 
     def _result_snapshot(self, *, changed: bool) -> int:
         snapshot = (
@@ -348,6 +335,22 @@ def _attempt_values(record: AttemptRecord) -> dict[str, object]:
 
 def _step_values(record: StepRecord) -> dict[str, object]:
     return record.model_dump(mode="python")
+
+
+def _decode_json_columns(
+    relation: RelationName,
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    columns = expected_columns()[relation]
+    return {
+        name: (
+            json.loads(value)
+            if columns[name].data_type == "JSON"
+            and isinstance(value, str)
+            else value
+        )
+        for name, value in values.items()
+    }
 
 
 def _document_values(record: DocumentRecord) -> dict[str, object]:

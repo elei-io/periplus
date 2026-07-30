@@ -5,47 +5,44 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from urllib.parse import urlsplit
+from uuid import UUID
 
 import pyarrow as pa
-import tldextract
-from atlas.urls import normalize_url
 from atlas.materialization.dom import (
     ElementRow,
     iter_html_byte_elements,
     iter_html_elements,
     links_from_elements,
 )
-from atlas.platform.catalogue import link_id_for, page_id_for
+from atlas.platform.catalogue import (
+    link_id_for,
+    link_occurrence_id_for,
+    page_id_for,
+)
 from atlas.ingestion.objects.document import ExactDocumentRepository
 from atlas.ingestion.objects.html import RawHtmlRepository
 
-_TLD_EXTRACT = tldextract.TLDExtract(suffix_list_urls=())
+_NAMESPACE_NAMES = {
+    None: "NONE",
+    "http://www.w3.org/1999/xhtml": "HTML",
+    "http://www.w3.org/2000/svg": "SVG",
+    "http://www.w3.org/1998/Math/MathML": "MATHML",
+}
+_RELATION_SCOPES = {
+    "same_url": "self",
+    "same_path": "same_origin",
+    "same_origin": "same_origin",
+    "same_host": "same_host",
+    "same_site": "same_site",
+    "external": "external",
+}
 
-HTML_NODE_TYPE = pa.struct(
-    [
-        pa.field("element_index", pa.int32(), nullable=False),
-        pa.field("parent_index", pa.int32()),
-        pa.field("subtree_end_index", pa.int32(), nullable=False),
-        pa.field("depth", pa.int32(), nullable=False),
-        pa.field("child_index", pa.int32(), nullable=False),
-        pa.field("tag", pa.string(), nullable=False),
-        pa.field("namespace", pa.string(), nullable=False),
-        pa.field(
-            "attributes",
-            pa.map_(pa.string(), pa.string()),
-            nullable=False,
-        ),
-        pa.field("text_direct", pa.string(), nullable=False),
-        pa.field("text_tail", pa.string(), nullable=False),
-    ]
-)
-HTML_DOCUMENT_SCHEMA = pa.schema(
+CONTENT_STATS_SCHEMA = pa.schema(
     [
         pa.field("content_sha256", pa.string(), nullable=False),
-        pa.field("node_count", pa.int32(), nullable=False),
-        pa.field("max_depth", pa.int32(), nullable=False),
-        pa.field("nodes", pa.list_(HTML_NODE_TYPE), nullable=False),
+        pa.field("content_bytes", pa.int64(), nullable=False),
+        pa.field("dom_element_count", pa.int32()),
+        pa.field("dom_max_depth", pa.int32()),
     ]
 )
 HTML_ELEMENT_SCHEMA = pa.schema(
@@ -72,7 +69,7 @@ JSONLD_SCHEMA = pa.schema(
         pa.field("content_sha256", pa.string(), nullable=False),
         pa.field("element_index", pa.int32(), nullable=False),
         pa.field("type_terms", pa.list_(pa.string()), nullable=False),
-        # The writer casts this canonical JSON string to JSON and then VARIANT.
+        # The writer validates this canonical string as DuckDB JSON.
         pa.field("value", pa.string(), nullable=False),
     ]
 )
@@ -84,11 +81,26 @@ LINK_SCHEMA = pa.schema(
         pa.field("source_url", pa.string(), nullable=False),
         pa.field("target_url", pa.string(), nullable=False),
         pa.field("relation_scope", pa.string(), nullable=False),
+        pa.field(
+            "first_seen_at",
+            pa.timestamp("us", tz="UTC"),
+            nullable=False,
+        ),
+        pa.field(
+            "last_seen_at",
+            pa.timestamp("us", tz="UTC"),
+            nullable=False,
+        ),
+        pa.field("visit_count", pa.int64(), nullable=False),
+        pa.field("distinct_content_count", pa.int64(), nullable=False),
+        pa.field("occurrence_count", pa.int64(), nullable=False),
     ]
 )
-LINK_OBSERVATION_SCHEMA = pa.schema(
+LINK_OCCURRENCE_SCHEMA = pa.schema(
     [
+        pa.field("occurrence_id", pa.string(), nullable=False),
         pa.field("link_id", pa.string(), nullable=False),
+        pa.field("visit_id", pa.string(), nullable=False),
         pa.field("document_id", pa.string(), nullable=False),
         pa.field("content_sha256", pa.string(), nullable=False),
         pa.field("element_index", pa.int32(), nullable=False),
@@ -104,6 +116,7 @@ LINK_OBSERVATION_SCHEMA = pa.schema(
 
 @dataclass(frozen=True, slots=True)
 class DocumentObservation:
+    visit_id: str
     document_id: str
     source_url: str
     observed_at: datetime
@@ -124,11 +137,11 @@ class DocumentProjection:
 
     content_hashes: frozenset[str]
     document_ids: frozenset[str]
-    html_documents: pa.Table
+    content_stats: pa.Table
     html_elements: pa.Table
     jsonld_values: pa.Table
     links: pa.Table
-    link_observations: pa.Table
+    link_occurrences: pa.Table
 
     def bytes_for(self, targets: frozenset[str]) -> int:
         return sum(
@@ -148,14 +161,19 @@ def ducklake_varchar_bucket(value: str, buckets: int) -> int:
 def project_documents(
     html_repository: RawHtmlRepository,
     sources: tuple[DocumentProjectionSource, ...],
+    *,
+    content_output_hashes: frozenset[str] | None = None,
 ) -> DocumentProjection:
     """Read and parse every distinct content body exactly once."""
 
     exact_repository = ExactDocumentRepository(html_repository.store)
-    html_document_rows: list[tuple[object, ...]] = []
+    content_stat_rows: list[tuple[object, ...]] = []
     html_columns: list[list[object]] = [[] for _ in HTML_ELEMENT_SCHEMA]
     jsonld_columns: list[list[object]] = [[] for _ in JSONLD_SCHEMA]
-    link_rows: dict[str, tuple[object, ...]] = {}
+    link_identities: dict[str, tuple[object, ...]] = {}
+    link_occurrence_stats: dict[
+        str, tuple[set[str], set[str], int, datetime, datetime]
+    ] = {}
     observation_rows: dict[tuple[str, int], tuple[object, ...]] = {}
     content_hashes: set[str] = set()
     document_ids: set[str] = set()
@@ -176,60 +194,94 @@ def project_documents(
             if isinstance(html, bytes)
             else iter_html_elements(html)
         )
-        html_document_rows.append(
-            (
-                source.content_sha256,
-                len(elements),
-                max((element.depth for element in elements), default=0),
-                [
-                    dict(
-                        zip(
-                            HTML_NODE_TYPE.names,
-                            _html_element_values(element),
-                            strict=True,
-                        )
-                    )
-                    for element in elements
-                ],
+        if (
+            content_output_hashes is None
+            or source.content_sha256 in content_output_hashes
+        ):
+            content_stat_rows.append(
+                (
+                    source.content_sha256,
+                    source.content_bytes,
+                    len(elements),
+                    max((element.depth for element in elements), default=0),
+                )
             )
-        )
-        _append_html_columns(
-            html_columns,
-            content_sha256=source.content_sha256,
-            elements=elements,
-        )
-        _append_jsonld_columns(
-            jsonld_columns,
-            content_sha256=source.content_sha256,
-            elements=elements,
-        )
+            _append_html_columns(
+                html_columns,
+                content_sha256=source.content_sha256,
+                elements=elements,
+            )
+            _append_jsonld_columns(
+                jsonld_columns,
+                content_sha256=source.content_sha256,
+                elements=elements,
+            )
+        links_by_source_url: dict[str, dict[str, list[dict[str, object]]]] = {}
+        page_ids: dict[str, UUID] = {}
         for observation in source.observations:
             document_ids.add(observation.document_id)
-            grouped = links_from_elements(
-                elements,
-                page_url=observation.source_url,
-            )
+            grouped = links_by_source_url.get(observation.source_url)
+            if grouped is None:
+                grouped = links_from_elements(
+                    elements,
+                    page_url=observation.source_url,
+                )
+                links_by_source_url[observation.source_url] = grouped
+            document_uuid = UUID(observation.document_id)
             for link in (*grouped["internal"], *grouped["external"]):
                 source_url = str(link["source_url"])
                 target_url = str(link["target_url"])
-                source_page_id = page_id_for(source_url)
-                target_page_id = page_id_for(target_url)
+                source_page_id = page_ids.get(source_url)
+                if source_page_id is None:
+                    source_page_id = page_id_for(source_url)
+                    page_ids[source_url] = source_page_id
+                target_page_id = page_ids.get(target_url)
+                if target_page_id is None:
+                    target_page_id = page_id_for(target_url)
+                    page_ids[target_url] = target_page_id
                 link_id = str(
                     link_id_for(source_page_id, target_page_id)
                 )
-                link_rows[link_id] = (
+                link_identities[link_id] = (
                     link_id,
                     str(source_page_id),
                     str(target_page_id),
                     source_url,
                     target_url,
-                    _relation_scope(source_url, target_url),
+                    _RELATION_SCOPES[str(link["relation_kind"])],
+                )
+                stats = link_occurrence_stats.get(link_id)
+                if stats is None:
+                    stats = (
+                        set(),
+                        set(),
+                        0,
+                        observation.observed_at,
+                        observation.observed_at,
+                    )
+                    link_occurrence_stats[link_id] = stats
+                document_ids_for_link, content_ids, count, first, last = stats
+                document_ids_for_link.add(observation.visit_id)
+                content_ids.add(source.content_sha256)
+                link_occurrence_stats[link_id] = (
+                    document_ids_for_link,
+                    content_ids,
+                    count + 1,
+                    min(first, observation.observed_at),
+                    max(last, observation.observed_at),
                 )
                 element_index = int(link["element_index"])
                 observation_rows[
                     (observation.document_id, element_index)
                 ] = (
+                    str(
+                        link_occurrence_id_for(
+                            document_uuid,
+                            element_index,
+                        )
+                    ),
                     link_id,
+                    observation.visit_id,
                     observation.document_id,
                     source.content_sha256,
                     element_index,
@@ -240,9 +292,9 @@ def project_documents(
     return DocumentProjection(
         content_hashes=frozenset(content_hashes),
         document_ids=frozenset(document_ids),
-        html_documents=_table_from_rows(
-            HTML_DOCUMENT_SCHEMA,
-            html_document_rows,
+        content_stats=_table_from_rows(
+            CONTENT_STATS_SCHEMA,
+            content_stat_rows,
         ),
         html_elements=_table_from_columns(
             HTML_ELEMENT_SCHEMA,
@@ -254,10 +306,20 @@ def project_documents(
         ),
         links=_table_from_rows(
             LINK_SCHEMA,
-            [link_rows[key] for key in sorted(link_rows)],
+            [
+                (
+                    *link_identities[key],
+                    link_occurrence_stats[key][3],
+                    link_occurrence_stats[key][4],
+                    len(link_occurrence_stats[key][0]),
+                    len(link_occurrence_stats[key][1]),
+                    link_occurrence_stats[key][2],
+                )
+                for key in sorted(link_identities)
+            ],
         ),
-        link_observations=_table_from_rows(
-            LINK_OBSERVATION_SCHEMA,
+        link_occurrences=_table_from_rows(
+            LINK_OCCURRENCE_SCHEMA,
             [
                 observation_rows[key]
                 for key in sorted(observation_rows)
@@ -354,12 +416,7 @@ def _table_from_rows(
 
 
 def _namespace_name(namespace_uri: str | None) -> str:
-    return {
-        None: "NONE",
-        "http://www.w3.org/1999/xhtml": "HTML",
-        "http://www.w3.org/2000/svg": "SVG",
-        "http://www.w3.org/1998/Math/MathML": "MATHML",
-    }.get(namespace_uri, namespace_uri or "NONE")
+    return _NAMESPACE_NAMES.get(namespace_uri, namespace_uri or "NONE")
 
 
 def _jsonld_type_terms(value: object) -> set[str]:
@@ -376,30 +433,6 @@ def _jsonld_type_terms(value: object) -> set[str]:
         for child in value:
             terms.update(_jsonld_type_terms(child))
     return terms
-
-
-def _relation_scope(source_url: str, target_url: str) -> str:
-    source = urlsplit(normalize_url(source_url))
-    target = urlsplit(normalize_url(target_url))
-    if source.geturl() == target.geturl():
-        return "self"
-    if (
-        source.scheme,
-        source.hostname,
-        source.port,
-    ) == (
-        target.scheme,
-        target.hostname,
-        target.port,
-    ):
-        return "same_origin"
-    if source.hostname == target.hostname:
-        return "same_host"
-    source_domain = _TLD_EXTRACT(source.hostname or "").top_domain_under_public_suffix
-    target_domain = _TLD_EXTRACT(target.hostname or "").top_domain_under_public_suffix
-    if source_domain and source_domain == target_domain:
-        return "same_site"
-    return "external"
 
 
 def _murmur3_x86_32(data: bytes, seed: int = 0) -> int:

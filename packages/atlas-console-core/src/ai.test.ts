@@ -36,14 +36,14 @@ const suggestions: AiSqlSuggestion[] = [
   {
     title: "Pages",
     description: "Inspect pages.",
-    sql: "SELECT * FROM web.pages LIMIT 10;",
-    display_sql: "SELECT *\nFROM web.pages\nLIMIT 10;",
+    sql: "SELECT * FROM web.page LIMIT 10;",
+    display_sql: "SELECT *\nFROM web.page\nLIMIT 10;",
   },
   {
     title: "Visits",
     description: "Inspect visits.",
-    sql: "SELECT * FROM web.visits LIMIT 10;",
-    display_sql: "SELECT *\nFROM web.visits\nLIMIT 10;",
+    sql: "SELECT * FROM web.visit LIMIT 10;",
+    display_sql: "SELECT *\nFROM web.visit\nLIMIT 10;",
   },
 ]
 
@@ -58,8 +58,8 @@ const completion = {
     {
       callId: "query-1",
       purpose: "Count retained pages",
-      sql: "SELECT COUNT(*) FROM web.pages;",
-      displaySql: "SELECT COUNT(*)\nFROM web.pages;",
+      sql: "SELECT COUNT(*) FROM web.page;",
+      displaySql: "SELECT COUNT(*)\nFROM web.page;",
       state: "completed" as const,
       durationMilliseconds: 30_100,
       rowCount: 1,
@@ -75,7 +75,7 @@ test("the review picker shows formatted drafts and loads compact SQL", async () 
 
   assert.match(terminal.output, /SQL draft 1\/2/)
   assert.match(terminal.output, /SELECT \*/)
-  assert.match(terminal.output, /FROM web\.pages/)
+  assert.match(terminal.output, /FROM web\.page/)
   terminal.send("\t")
   terminal.send("c")
   await new Promise((resolve) => setTimeout(resolve, 0))
@@ -95,7 +95,7 @@ test("the review picker exposes the exact query work behind the answer", async (
   assert.match(terminal.output, /Count retained pages/)
   assert.match(terminal.output, /30s/)
   assert.match(terminal.output, /1 row/)
-  assert.match(terminal.output, /FROM web\.pages/)
+  assert.match(terminal.output, /FROM web\.page/)
   terminal.send("\u001b")
 
   assert.equal(await selection, undefined)
@@ -120,8 +120,8 @@ test("AI events render concise answers and preserve a visible SQL ledger", async
       tool: "query catalogue",
       activity: "query",
       purpose: "Count retained domains",
-      sql: "SELECT COUNT(*) FROM web.pages;",
-      display_sql: "SELECT COUNT(*)\nFROM web.pages;",
+      sql: "SELECT COUNT(*) FROM web.page;",
+      display_sql: "SELECT COUNT(*)\nFROM web.page;",
       row_count: null,
       truncated: null,
       duration_ms: null,
@@ -136,8 +136,8 @@ test("AI events render concise answers and preserve a visible SQL ledger", async
       tool: "query catalogue",
       activity: "query",
       purpose: "Count retained domains",
-      sql: "SELECT COUNT(*) FROM web.pages;",
-      display_sql: "SELECT COUNT(*)\nFROM web.pages;",
+      sql: "SELECT COUNT(*) FROM web.page;",
+      display_sql: "SELECT COUNT(*)\nFROM web.page;",
       row_count: 1,
       truncated: false,
       duration_ms: 30_100,
@@ -170,7 +170,7 @@ test("AI events render concise answers and preserve a visible SQL ledger", async
   const result = await renderAiEvents(terminal, events())
 
   assert.equal(result.suggestions.length, 2)
-  assert.equal(result.work[0]?.displaySql, "SELECT COUNT(*)\nFROM web.pages;")
+  assert.equal(result.work[0]?.displaySql, "SELECT COUNT(*)\nFROM web.page;")
   assert.match(terminal.output, /Count retained domains/)
   assert.match(terminal.output, /30s/)
   assert.match(terminal.output, /1 row/)

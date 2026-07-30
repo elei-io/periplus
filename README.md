@@ -1,35 +1,39 @@
 # Atlas
 
 Atlas acquires web documents, retains immutable content-addressed bytes, records observed evidence
-in DuckLake, and maintains rebuildable structural and URL relations through CDC.
+in DuckLake, and maintains rebuildable structural and URL relations.
 
 The currently delivered path is:
 
 ```text
-crawl plan -> immutable bytes -> ingest.* -> CDC -> material.* -> web.* / dom.*
+crawl plan -> immutable bytes -> ingest.* -> material.* -> web.* / dom.*
 ```
 
 Acquisition-plan edges are page-local DuckDB queries and do not require a SQL
 compiler or historical catalogue connection.
 The public SQL interface is a portable, versioned set of DuckLake views and macros under `web.*`
 and `dom.*`. Web evidence and history remain in `web.*`; structural DOM relations and operations
-live in `dom.*`. One optional C++ extension may later optimize measured plan gaps without defining
-different semantics. The bounded read-only SQL console exposes only qualified public relations in
-both the web application and the `atlas` terminal client; physical `ingest.*` and `material.*`
-relations remain Atlas implementation details.
+live in `dom.*`. One exact-version C++ extension supplies bounded CSS selectors and may optimize
+measured plan gaps without defining different base semantics. The bounded read-only SQL console
+exposes only qualified public relations in both the web application and the `atlas` terminal
+client; physical `ingest.*` and `material.*` relations remain Atlas implementation details.
 
 The TypeScript workspace keeps its distributable clients under `packages/`:
 `atlas-console-core`, `atlas-web-shell`, and `atlas-terminal-shell`. The deployable React
 application lives under `web/` and consumes `atlas-web-shell`.
+The locally installable Python SDK lives under `packages/atlas-python-sdk/`.
 
 The backend is one `atlas` Python package organized by capability under `backend/src/atlas/`.
-API, acquisition, ingestion, CDC, materialization, and housekeeping remain independently runnable
+API, acquisition, ingestion, materialization, and housekeeping remain independently runnable
 process roles from the same package.
 
 ## Development
 
-Requirements are Python 3.14 with `uv`, Node.js 22 or newer, Docker Compose, DuckBasin credentials,
-Basin CDC NATS credentials, an S3-compatible raw-object repository, and a standard CDP endpoint.
+Requirements are Python 3.14 with `uv`, Node.js 22 or newer, Docker Compose, the sibling
+`atlas-duckdb-extension` checkout, and a standard CDP endpoint. The default Compose stack builds
+the matching Linux extension in a cached builder stage, then provisions Postgres-backed DuckLake
+metadata, shared local lake storage, an immutable object repository, and JetStream without
+external credentials.
 
 ```sh
 cp .env.example .env
@@ -37,6 +41,10 @@ make sync
 make check
 make compose-up
 ```
+
+The first image build compiles DuckDB and the Atlas extension. Later builds reuse that layer until
+the pinned DuckDB version or extension source changes. Runtime images contain only the compiled
+extension artifact, not the compiler toolchain.
 
 If a greenfield baseline replacement leaves local Postgres stamped at a
 revision that no longer exists, reset only the disposable control plane and
@@ -47,12 +55,13 @@ make compose-reset-control
 make compose-up
 ```
 
-This preserves DuckLake, repository objects, and local NATS state.
+This resets all disposable Compose state, including DuckLake metadata and files, repository
+objects, JetStream, and control-plane Postgres.
 
 Run one query from the terminal:
 
 ```sh
-npm run atlas -- 'SELECT count(*) FROM web.visits'
+npm run atlas -- 'SELECT count(*) FROM web.visit'
 ```
 
 Run `npm run atlas` without SQL to open the interactive terminal. Set `ATLAS_API_URL` when the API
@@ -71,7 +80,6 @@ make catalogue-check
 make api
 make acquisition-worker
 make ingestion-worker
-make cdc-worker
 make materialization-worker
 make housekeeping-worker
 ```

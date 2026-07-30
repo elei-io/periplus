@@ -15,7 +15,6 @@ from atlas.platform.config.performance import (
     CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS,
     CATALOGUE_OPERATION_RETRY_MAX_SECONDS,
 )
-from atlas.platform.catalogue.duckbasin import DuckBasinUnavailableError
 
 _T = TypeVar("_T")
 
@@ -25,7 +24,7 @@ def is_retryable_catalogue_unavailability(exc: BaseException) -> bool:
 
     return isinstance(
         exc,
-        (DuckBasinUnavailableError, psycopg.OperationalError),
+        (duckdb.IOException, psycopg.OperationalError),
     )
 
 
@@ -44,7 +43,10 @@ def is_retryable_catalogue_transaction_conflict(exc: BaseException) -> bool:
 
 
 def run_with_catalogue_retry(
-    operation: Callable[[], _T], *, description: str
+    operation: Callable[[], _T],
+    *,
+    description: str,
+    on_conflict: Callable[[], None] | None = None,
 ) -> _T:
     """Keep availability failures live; bound transaction conflict retries."""
 
@@ -95,6 +97,8 @@ def run_with_catalogue_retry(
                 raise
             if conflict_attempt >= maximum_attempts:
                 raise
+            if on_conflict is not None:
+                on_conflict()
             conflict_attempt += 1
             logging.warning(
                 "%s conflicted; retrying attempt %d/%d in %.3fs",

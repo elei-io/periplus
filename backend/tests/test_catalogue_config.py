@@ -1,0 +1,59 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
+from unittest.mock import patch
+
+from atlas.platform.catalogue.config import (
+    CatalogueConfig,
+    catalogue_config_from_env,
+)
+from atlas.platform.catalogue.exceptions import CatalogueConfigError
+
+
+class CatalogueConfigTests(unittest.TestCase):
+    def test_extension_path_is_required(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(
+                CatalogueConfigError,
+                "ATLAS_DUCKDB_EXTENSION_PATH",
+            ):
+                catalogue_config_from_env()
+
+    def test_extension_path_must_identify_a_file(self) -> None:
+        config = CatalogueConfig(
+            alias="atlas",
+            metadata_path="metadata.duckdb",
+            data_path="lake/",
+            metadata_schema="ducklake",
+            extension_path="/missing/atlas.duckdb_extension",
+        )
+
+        with self.assertRaisesRegex(
+            CatalogueConfigError,
+            "was not found",
+        ):
+            config.resolved_extension_path()
+
+    def test_extension_path_resolves_existing_file(self) -> None:
+        with TemporaryDirectory() as directory:
+            extension = Path(directory) / "atlas.duckdb_extension"
+            extension.touch()
+            config = CatalogueConfig(
+                alias="atlas",
+                metadata_path="metadata.duckdb",
+                data_path="lake/",
+                metadata_schema="ducklake",
+                extension_path=str(extension),
+            )
+
+            self.assertEqual(
+                config.resolved_extension_path(),
+                extension.resolve(),
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
