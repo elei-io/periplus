@@ -31,8 +31,6 @@ class RepositoryLimits:
 @dataclass(frozen=True, slots=True)
 class PreparedIngestion:
     job: IngestionJob
-    element_count: int = 0
-    staged_bytes: int = 0
 
 
 class RepositoryIngestor:
@@ -68,10 +66,7 @@ class RepositoryIngestor:
     def commit_prepared_batch(
         self,
         prepared: list[PreparedIngestion],
-        *,
-        cleanup_on_error: bool = True,
     ) -> list[IngestionWriteResult]:
-        del cleanup_on_error
         results: dict[str, IngestionWriteResult] = {}
         crawls = [
             value.job.crawl
@@ -138,10 +133,6 @@ class RepositoryIngestor:
             created=False,
             repository_snapshot=snapshot,
         )
-
-    @staticmethod
-    def discard_prepared(prepared: list[PreparedIngestion]) -> None:
-        del prepared
 
     def _verify_document(self, document: DocumentRecord) -> None:
         if document.content_bytes > self.limits.max_document_bytes:

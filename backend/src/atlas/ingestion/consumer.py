@@ -18,20 +18,18 @@ from atlas.ingestion import metrics as repository_metrics
 from atlas.platform.catalogue import (
     CatalogueConflictError,
 )
-from atlas.platform.catalogue.operations import is_retryable_catalogue_unavailability
+from atlas.platform.catalogue.operations import (
+    is_retryable_catalogue_unavailability,
+    run_with_catalogue_retry,
+)
 from atlas.platform.health import HealthMonitor
 from atlas.ingestion.pipeline import IngestionWorkerConfig
 from atlas.ingestion.queue import (
     DURABLE,
     STREAM,
-    SUBJECT,
     IngestionJob,
     ack_wait_seconds,
-    ensure_dead_letter_stream,
-    ensure_ingestion_results,
     ensure_pending_ingestion,
-    ensure_repository_consumer,
-    ensure_repository_stream,
     get_ingestion_state,
     max_delivery_attempts,
     publish_dead_letter,
@@ -40,11 +38,9 @@ from atlas.ingestion.queue import (
 )
 from atlas.ingestion.service import PreparedIngestion, repository_ingestor_from_env
 from atlas.platform.messaging.catalogue_workers import CatalogueLaneReporter
-from atlas.platform.messaging.client import connect_nats
 from atlas.platform.messaging.leases import (
     OperationLeaseLost,
     OperationLeaseUnavailable,
-    ensure_operation_lease_storage,
     operation_leases,
 )
 
@@ -78,6 +74,10 @@ async def run(
     *,
     stop: asyncio.Event,
     monitor: HealthMonitor,
+    jetstream,
+    results_store,
+    leases,
+    subscription,
     lane: CatalogueLaneReporter | None = None,
     lane_index: int = 0,
 ) -> None:
@@ -85,20 +85,8 @@ async def run(
     lane.attach(lambda: monitor.status(include_liveness=False))
     metrics = repository_metrics.IngestionLaneMetrics(lane_index)
     config = IngestionWorkerConfig.defaults()
-    client = await connect_nats()
     ingestor = None
     try:
-        jetstream = client.jetstream()
-        await ensure_repository_stream(jetstream)
-        await ensure_dead_letter_stream(jetstream)
-        results_store = await ensure_ingestion_results(jetstream)
-        leases = await ensure_operation_lease_storage(jetstream)
-        await ensure_repository_consumer(jetstream)
-        subscription = await jetstream.pull_subscribe(
-            SUBJECT,
-            durable=DURABLE,
-            stream=STREAM,
-        )
         ingestor = await _catalogue_call(
             repository_ingestor_from_env,
             description="ingestion catalogue connection",
@@ -123,7 +111,7 @@ async def run(
             if not messages:
                 continue
             await _process_messages(
-                client=client,
+                jetstream=jetstream,
                 results_store=results_store,
                 ingestor=ingestor,
                 leases=leases,
@@ -138,12 +126,11 @@ async def run(
                 ingestor.close,
                 description="ingestion catalogue client close",
             )
-        await client.drain()
 
 
 async def _process_messages(
     *,
-    client,
+    jetstream,
     results_store,
     ingestor,
     leases,
@@ -154,7 +141,7 @@ async def _process_messages(
     heartbeat = asyncio.create_task(_heartbeat_messages(messages))
     try:
         batch = await _prepare_batch(
-            client=client,
+            jetstream=jetstream,
             results_store=results_store,
             ingestor=ingestor,
             messages=messages,
@@ -174,8 +161,10 @@ async def _process_messages(
                 acquire_timeout=0,
             ):
                 results = await _catalogue_call(
-                    ingestor.commit_prepared_batch,
+                    _commit_prepared_batch,
+                    ingestor,
                     batch.evidence,
+                    metrics,
                     description="ingestion evidence commit",
                 )
         except (OperationLeaseUnavailable, OperationLeaseLost):
@@ -187,8 +176,6 @@ async def _process_messages(
                 outcome="failed",
                 duration_seconds=time.perf_counter() - started,
                 items=len(batch.evidence),
-                element_rows=0,
-                staged_bytes=0,
             )
             for message, job in zip(
                 batch.messages,
@@ -196,7 +183,7 @@ async def _process_messages(
                 strict=True,
             ):
                 await _retry_or_fail(
-                    client,
+                    jetstream,
                     results_store,
                     ingestor,
                     message,
@@ -211,8 +198,6 @@ async def _process_messages(
             outcome="succeeded",
             duration_seconds=time.perf_counter() - started,
             items=len(batch.evidence),
-            element_rows=0,
-            staged_bytes=0,
         )
         metrics.commit_succeeded()
         for message, job, result in zip(
@@ -245,7 +230,7 @@ async def _process_messages(
 
 async def _prepare_batch(
     *,
-    client,
+    jetstream,
     results_store,
     ingestor,
     messages,
@@ -281,7 +266,7 @@ async def _prepare_batch(
                 duration_seconds=0,
             )
             await _retry_or_fail(
-                client,
+                jetstream,
                 results_store,
                 ingestor,
                 message,
@@ -296,7 +281,7 @@ async def _prepare_batch(
 
 
 async def _retry_or_fail(
-    client,
+    jetstream,
     results_store,
     ingestor,
     message,
@@ -341,7 +326,7 @@ async def _retry_or_fail(
         return
     try:
         await publish_dead_letter(
-            client.jetstream(),
+            jetstream,
             job=job,
             error=state.error or _exception_message(exc),
             processing_failure_count=state.processing_failure_count,
@@ -351,6 +336,18 @@ async def _retry_or_fail(
         await message.nak(delay=30)
     else:
         await message.term()
+
+
+def _commit_prepared_batch(
+    ingestor,
+    evidence: list[PreparedIngestion],
+    metrics: repository_metrics.IngestionLaneMetrics,
+):
+    return run_with_catalogue_retry(
+        lambda: ingestor.commit_prepared_batch(evidence),
+        description="ingestion evidence commit",
+        on_conflict=lambda: metrics.recovery("commit_conflict"),
+    )
 
 
 async def _observe_queue(jetstream, monitor: HealthMonitor) -> None:

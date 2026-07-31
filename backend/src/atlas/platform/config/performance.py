@@ -18,7 +18,9 @@ CRAWL_RUN_ACQUISITION_PENDING_LIMIT = CRAWL_DISPATCH_WINDOW
 # A denied nonblocking domain probe is retried soon, but not on every worker
 # loop iteration.
 CRAWL_DOMAIN_PERMIT_RETRY_SECONDS = 0.25
-INGESTION_CONNECTIONS = 4
+# Each ingestion lane owns one DuckLake connection. Replicas are the preferred
+# scaling unit; this ceiling keeps one process's memory use predictable.
+INGESTION_MAX_LOCAL_CONCURRENCY = 4
 # Navigation retention is recovery cleanup, not a bulk-delete job. One bounded
 # batch per housekeeping sweep keeps object-store pressure predictable.
 NAVIGATION_CLEANUP_BATCH_SIZE = 500
@@ -27,20 +29,17 @@ NAVIGATION_CLEANUP_BATCH_SIZE = 500
 # first, keeping latency bounded for small deployments and amortising commits
 # automatically when replicas are busy.
 INGEST_BATCH_MAX_ITEMS = 100
-INGEST_BATCH_MAX_BYTES = 256 * 1024 * 1024
 INGEST_BATCH_MAX_WAIT_SECONDS = 10.0
 # Native DuckDB calls cannot be cancelled safely after entering C++.
 INGESTION_CATALOGUE_HARD_TIMEOUT_SECONDS = 300.0
 MATERIALIZATION_CATALOGUE_HARD_TIMEOUT_SECONDS = 300.0
 
 # Durable consumers cap unacknowledged delivery at bounded executor capacity.
-# Ingestion may hold at most one full batch per client lane; acquisition uses
-# the fixed hostname look-ahead above. Replicas share the durable ceiling and
-# therefore apply backpressure instead of hoarding an arbitrary 1,024 jobs.
+# Ingestion replicas share this code-owned cluster ceiling. It is deliberately
+# independent of local lane count so adding replicas adds useful executors
+# without mutating the durable consumer contract.
 GRAPH_CONSUMER_MAX_ACK_PENDING = 1024
-INGESTION_CONSUMER_MAX_ACK_PENDING = (
-    INGESTION_CONNECTIONS * INGEST_BATCH_MAX_ITEMS
-)
+INGESTION_CONSUMER_MAX_ACK_PENDING = 1024
 GRAPH_ACK_WAIT_SECONDS = 60.0
 INGESTION_ACK_WAIT_SECONDS = 60.0
 
@@ -72,7 +71,7 @@ def duckdb_memory_limit() -> str:
     """Derive a conservative per-client DuckDB limit from its cgroup."""
 
     memory_bytes = _cgroup_memory_limit() or 8 * 1024**3
-    derived = memory_bytes // (INGESTION_CONNECTIONS * 4)
+    derived = memory_bytes // (INGESTION_MAX_LOCAL_CONCURRENCY * 4)
     bounded = min(512 * 1024**2, max(128 * 1024**2, derived))
     return f"{bounded // (1024**2)}MB"
 

@@ -7,7 +7,7 @@ from atlas.platform.config.performance import (
     GRAPH_CONSUMER_MAX_ACK_PENDING,
     INGEST_BATCH_MAX_ITEMS,
     INGESTION_CONSUMER_MAX_ACK_PENDING,
-    INGESTION_CONNECTIONS,
+    INGESTION_MAX_LOCAL_CONCURRENCY,
     duckdb_memory_limit,
     duckdb_threads,
     materialization_duckdb_memory_limit,
@@ -16,14 +16,15 @@ from atlas.platform.config.performance import (
 
 class PerformanceConfigTests(unittest.TestCase):
     def test_local_sizing_uses_bounded_managed_clients(self) -> None:
-        self.assertEqual(INGESTION_CONNECTIONS, 4)
+        self.assertEqual(INGESTION_MAX_LOCAL_CONCURRENCY, 4)
         with patch("atlas.platform.config.performance.os.process_cpu_count", return_value=32):
             self.assertEqual(duckdb_threads(), 2)
 
         self.assertGreater(GRAPH_CONSUMER_MAX_ACK_PENDING, 1)
-        self.assertEqual(
+        self.assertEqual(INGESTION_CONSUMER_MAX_ACK_PENDING, 1024)
+        self.assertGreater(
             INGESTION_CONSUMER_MAX_ACK_PENDING,
-            INGESTION_CONNECTIONS * INGEST_BATCH_MAX_ITEMS,
+            INGESTION_MAX_LOCAL_CONCURRENCY * INGEST_BATCH_MAX_ITEMS,
         )
 
     def test_duckdb_memory_is_derived_with_safe_bounds(self) -> None:

@@ -17,14 +17,6 @@ _raw_bytes = Histogram(
     "Raw logical and stored bytes per repository write.",
     ("representation",),
 )
-_batch_element_rows = Histogram(
-    "atlas_repository_ingestion_batch_element_rows",
-    "DOM element rows per repository batch.",
-)
-_batch_staged_bytes = Histogram(
-    "atlas_repository_ingestion_batch_staged_bytes",
-    "Arrow or Parquet bytes staged per repository batch.",
-)
 _pending = Gauge("atlas_repository_ingestion_jobs_pending", "Repository jobs waiting in JetStream.")
 _ack_pending = Gauge("atlas_repository_ingestion_jobs_ack_pending", "Delivered repository jobs awaiting acknowledgement.")
 _redelivered = Gauge("atlas_repository_ingestion_jobs_redelivered", "Redelivered repository jobs.")
@@ -75,12 +67,10 @@ def preparation(*, outcome: str, duration_seconds: float) -> None:
     _duration.labels("preparation", outcome).observe(max(0.0, duration_seconds))
 
 
-def batch(*, outcome: str, duration_seconds: float, items: int, element_rows: int, staged_bytes: int) -> None:
+def batch(*, outcome: str, duration_seconds: float, items: int) -> None:
     _batches.labels(outcome).inc()
     _duration.labels("commit", outcome).observe(max(0.0, duration_seconds))
     _batch_items.observe(items)
-    _batch_element_rows.observe(max(0, element_rows))
-    _batch_staged_bytes.observe(max(0, staged_bytes))
 
 
 def queue_state(

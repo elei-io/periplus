@@ -16,8 +16,9 @@ external evidence -> immutable bytes -> ingest.* -> material.* -> web.* / dom.*
 
 - Postgres owns editable control state, current graph execution, admission, progress, schedules,
   policies, and the transactional graph outbox.
-- NATS JetStream and KV own work delivery, worker presence, operation leases, and per-domain
-  pacing. They are not authoritative graph or materialization state.
+- NATS JetStream and KV own graph, ingestion, and materialization work delivery, worker presence,
+  operation leases, and per-domain pacing. They are not authoritative graph or materialization
+  state.
 - The object repository owns immutable content-addressed source bytes.
 - DuckLake owns historical observed evidence, rebuildable Atlas materializations, and the portable
   public `web.*` and `dom.*` catalogue.
@@ -48,7 +49,9 @@ evidence already committed to DuckLake.
 
 - Acquisition acquires one page, stores immutable bytes, publishes visit evidence, and advances
   graph work without waiting for catalogue ingestion.
-- Ingestion commits immutable crawl and visit evidence under `ingest.*`.
+- Ingestion replicas consume one shared durable lane without a leader. Each process owns one NATS
+  session and a configurable bounded set of DuckLake writer lanes; each lane has its own catalogue
+  connection.
 - Materialization scans a pinned `ingest.visits` snapshot into bounded visit batches and maintains
   the complete fixed `material.*` generation, then follows inserted visits through DuckLake CDC.
 - Housekeeping removes only Atlas-owned transient navigation and runtime state.
@@ -56,6 +59,12 @@ evidence already committed to DuckLake.
 Ingestion does not wait for materialization. A visit is the single unit of rebuild work; its
 optional document is projected in that same batch. There is no document lane, target-to-target
 chain, or authoritative queue ledger.
+
+The ingestion durable consumer has a code-owned global delivery ceiling independent of replica
+or lane count. This keeps cluster backpressure stable while allowing replicas to add useful write
+capacity. Transaction conflicts are retried locally with the same frozen evidence under the same
+request-scoped operation lease. A replica failure leaves the durable delivery unacknowledged, so
+another symmetric replica resumes it.
 
 ## Materialization
 

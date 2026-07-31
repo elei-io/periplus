@@ -26,8 +26,8 @@ to encode around one accidental optimizer plan.
 - Postgres owns editable control state and current graph execution: crawl plans, runs, requests,
   edge evaluations, admission deduplication, progress counters, schedules, policies, matches,
   schemas, catalogue definitions, and the transactional graph outbox.
-- NATS JetStream/KV owns graph and materialization work delivery, worker presence, operation leases,
-  and per-domain crawl pacing/concurrency. It is not authoritative graph state.
+- NATS JetStream/KV owns graph, ingestion, and materialization work delivery, worker presence,
+  operation leases, and per-domain crawl pacing/concurrency. It is not authoritative graph state.
 - Crawl history belongs only in DuckLake; never reintroduce it into control-plane Postgres.
 - Raw HTML is immutable, content-addressed, and stored through
   `backend/src/atlas/ingestion/objects/`.
@@ -40,8 +40,10 @@ to encode around one accidental optimizer plan.
   bounded by their owning process.
 - A standard CDP endpoint is the sole acquisition boundary. Atlas has one crawl queue; the CDP
   service owns transport choice, browser-farm capacity, profiles, and acquisition strategy.
-- Ingestion workers own base crawl evidence writes. They are independently observable
-  `critical` catalogue work, never settle graph traversal, and never wait for user materialization.
+- Ingestion workers own base crawl evidence writes. Replicas are symmetric consumers of one
+  durable lane: each process owns one NATS session and bounded configurable writer lanes, each
+  with an independent DuckLake connection. They are independently observable `critical`
+  catalogue work, never settle graph traversal, and never wait for user materialization.
 - Complete materialization rebuilds use one visit-scoped workload. Every non-private module under
   `materialization/projections/` is one self-contained, auto-discovered projection declaration;
   adding, editing, or deleting a materialization touches only that file before redeploy and rebuild.

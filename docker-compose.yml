@@ -216,7 +216,7 @@ services:
           *atlas-ducklake-environment,
           *atlas-repository-environment,
         ]
-      ATLAS_REPOSITORY_STAGING_ROOT: /app/.atlas/repository/staging
+      ATLAS_INGESTION_CONCURRENCY: ${ATLAS_INGESTION_CONCURRENCY:-4}
     depends_on:
       atlas-setup:
         condition: service_completed_successfully

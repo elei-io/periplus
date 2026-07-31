@@ -12,6 +12,20 @@ boundary.
 The five `ingest.*` relations are the complete rebuild authority. Identity replay with the same
 evidence is a no-op; conflicting evidence fails. Materialization consumes inserted visits only.
 
+Every ingestion replica is symmetric; there is no ingestion coordinator or elected owner. At
+process startup a replica opens one NATS session, validates the shared stream, durable consumer,
+result store, and operation-lease contracts once, then creates one pull handle per local lane.
+`ATLAS_INGESTION_CONCURRENCY` selects one to four lanes per replica. Each lane owns one independent
+DuckLake connection, while all lanes reuse the process-owned queue session and handles.
+
+Replicas compete on the same durable consumer. Its fixed global unacknowledged-delivery ceiling is
+independent of local concurrency, so horizontal replicas increase active writers until that
+cluster safety bound is reached. A lane holds renewable request-scoped leases while committing a
+batch and heartbeats its deliveries. Bounded local retries replay the same frozen evidence after
+DuckLake transaction conflicts. ACK happens only after the append and durable result state
+succeed; a process failure therefore causes another replica to receive and idempotently reconcile
+the work.
+
 ## Registry-driven projection
 
 The fixed registry is discovered from `materialization/projections/*.py`. Each non-private file is
