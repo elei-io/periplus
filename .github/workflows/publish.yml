@@ -1,0 +1,200 @@
+name: Publish images and chart
+
+on:
+  push:
+    branches:
+      - main
+      # Bootstrap the workflow before it lands on the default branch. Remove
+      # this branch after the first successful publication run.
+      - compiler
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  BACKEND_IMAGE: ghcr.io/ekkuleivonen/atlas-backend
+  WEB_IMAGE: ghcr.io/ekkuleivonen/atlas-web
+  CHART_REGISTRY: oci://ghcr.io/ekkuleivonen/atlas-charts
+
+jobs:
+  metadata:
+    name: Release metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      image_tags: ${{ steps.release.outputs.image_tags }}
+      chart_version: ${{ steps.release.outputs.chart_version }}
+      app_version: ${{ steps.release.outputs.app_version }}
+      atlas_extension_repository: ${{ steps.extensions.outputs.atlas_repository }}
+      atlas_extension_ref: ${{ steps.extensions.outputs.atlas_ref }}
+      cdc_extension_repository: ${{ steps.extensions.outputs.cdc_repository }}
+      cdc_extension_ref: ${{ steps.extensions.outputs.cdc_ref }}
+      duckdb_version: ${{ steps.extensions.outputs.duckdb_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: release
+        name: Resolve immutable versions
+        shell: bash
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          app_version="sha-${short_sha}"
+          chart_version="0.1.0-dev.${short_sha}"
+          image_tags="sha-${short_sha}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "Unsupported release tag: ${GITHUB_REF_NAME}" >&2
+              exit 1
+            fi
+            app_version="${version}"
+            chart_version="${version}"
+            image_tags="${version},sha-${short_sha}"
+          fi
+          {
+            echo "image_tags=${image_tags}"
+            echo "chart_version=${chart_version}"
+            echo "app_version=${app_version}"
+          } >> "${GITHUB_OUTPUT}"
+      - id: extensions
+        name: Read pinned extension sources
+        shell: bash
+        run: |
+          set -a
+          source .github/extension-sources.env
+          set +a
+          {
+            echo "atlas_repository=${ATLAS_EXTENSION_REPOSITORY}"
+            echo "atlas_ref=${ATLAS_EXTENSION_REF}"
+            echo "cdc_repository=${DUCKLAKE_CDC_EXTENSION_REPOSITORY}"
+            echo "cdc_ref=${DUCKLAKE_CDC_EXTENSION_REF}"
+            echo "duckdb_version=${DUCKDB_VERSION}"
+          } >> "${GITHUB_OUTPUT}"
+
+  backend:
+    name: Backend image
+    needs: metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out Atlas DuckDB extension
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.metadata.outputs.atlas_extension_repository }}
+          ref: ${{ needs.metadata.outputs.atlas_extension_ref }}
+          ssh-key: ${{ secrets.ATLAS_EXTENSION_DEPLOY_KEY }}
+          persist-credentials: false
+          path: .extension-sources/atlas
+      - name: Check out DuckLake CDC extension
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.metadata.outputs.cdc_extension_repository }}
+          ref: ${{ needs.metadata.outputs.cdc_extension_ref }}
+          path: .extension-sources/ducklake-cdc
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: tags
+        name: Build image tags
+        shell: bash
+        run: |
+          IFS=',' read -ra versions <<< "${{ needs.metadata.outputs.image_tags }}"
+          for version in "${versions[@]}"; do
+            echo "${BACKEND_IMAGE}:${version}"
+          done > /tmp/tags
+          {
+            echo "value<<EOF"
+            cat /tmp/tags
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/atlas/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.value }}
+          build-args: |
+            DUCKDB_VERSION=${{ needs.metadata.outputs.duckdb_version }}
+          build-contexts: |
+            atlas-extension=${{ github.workspace }}/.extension-sources/atlas
+            ducklake-cdc-extension=${{ github.workspace }}/.extension-sources/ducklake-cdc
+          cache-from: type=gha,scope=atlas-backend
+          cache-to: type=gha,mode=max,scope=atlas-backend
+          provenance: mode=max
+          sbom: true
+
+  web:
+    name: Web image
+    needs: metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: tags
+        name: Build image tags
+        shell: bash
+        run: |
+          IFS=',' read -ra versions <<< "${{ needs.metadata.outputs.image_tags }}"
+          for version in "${versions[@]}"; do
+            echo "${WEB_IMAGE}:${version}"
+          done > /tmp/tags
+          {
+            echo "value<<EOF"
+            cat /tmp/tags
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/web/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.value }}
+          cache-from: type=gha,scope=atlas-web
+          cache-to: type=gha,mode=max,scope=atlas-web
+          provenance: mode=max
+          sbom: true
+
+  chart:
+    name: Helm chart
+    needs:
+      - metadata
+      - backend
+      - web
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.6
+      - run: helm lint charts/atlas
+      - name: Package chart
+        run: >-
+          helm package charts/atlas
+          --destination dist
+          --version "${{ needs.metadata.outputs.chart_version }}"
+          --app-version "${{ needs.metadata.outputs.app_version }}"
+      - name: Log in to GHCR
+        run: >-
+          echo "${{ secrets.GITHUB_TOKEN }}" |
+          helm registry login ghcr.io
+          --username "${{ github.actor }}"
+          --password-stdin
+      - name: Publish chart
+        run: helm push dist/atlas-*.tgz "${CHART_REGISTRY}"

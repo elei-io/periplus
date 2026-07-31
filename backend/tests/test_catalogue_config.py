@@ -51,6 +51,44 @@ class CatalogueConfigTests(unittest.TestCase):
             ):
                 catalogue_config_from_env()
 
+    def test_standard_postgres_metadata_url_is_normalized_for_ducklake(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ATLAS_DUCKLAKE_METADATA_PATH": (
+                    "postgresql://atlas:secret@postgres.example.test/atlas_lake"
+                ),
+                "ATLAS_DUCKLAKE_DATA_PATH": "/srv/lake",
+                "ATLAS_DUCKDB_EXTENSION_PATH": "/opt/atlas/extension",
+            },
+            clear=True,
+        ):
+            config = catalogue_config_from_env()
+
+        self.assertEqual(
+            config.metadata_path,
+            "postgres:postgresql://atlas:secret@postgres.example.test/atlas_lake",
+        )
+
+    def test_ducklake_postgres_metadata_path_is_not_double_prefixed(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ATLAS_DUCKLAKE_METADATA_PATH": (
+                    "postgres:dbname=atlas_lake host=postgres.example.test"
+                ),
+                "ATLAS_DUCKLAKE_DATA_PATH": "/srv/lake",
+                "ATLAS_DUCKDB_EXTENSION_PATH": "/opt/atlas/extension",
+            },
+            clear=True,
+        ):
+            config = catalogue_config_from_env()
+
+        self.assertEqual(
+            config.metadata_path,
+            "postgres:dbname=atlas_lake host=postgres.example.test",
+        )
+
     def test_extension_path_must_identify_a_file(self) -> None:
         config = CatalogueConfig(
             alias="atlas",

@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-24.04
+    env:
+      # Unit-test imports construct the lazy SQLAlchemy session factory but do
+      # not connect. Keep this URL isolated from any real database.
+      ATLAS_CONTROL_DATABASE_URL: postgresql://atlas:atlas@127.0.0.1:55432/atlas_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Install Python 3.14
+        run: uv python install 3.14
+      - name: Install backend
+        working-directory: backend
+        run: uv sync --frozen
+      - name: Compile backend
+        working-directory: backend
+        run: uv run python -m compileall src/atlas
+      - name: Test backend
+        working-directory: backend
+        run: uv run python -m unittest discover -s tests
+      - name: Test Python SDK
+        working-directory: backend
+        run: >-
+          env PYTHONPATH=../packages/atlas-python-sdk/src
+          uv run python -m unittest discover
+          -s ../packages/atlas-python-sdk/tests
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check:packages
+      - run: npm run test:packages
+      - run: npm run check:web
+      - run: npm run build:web
+
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.6
+      - run: helm lint charts/atlas
+      - name: Render homelab topology
+        run: helm template atlas charts/atlas --namespace atlas > /tmp/atlas.yaml

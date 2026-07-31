@@ -35,6 +35,9 @@ container names. This means one local Atlas Compose project may run on a Docker 
 `ATLAS_CONTROL_DATABASE_URL` always identifies Atlas Postgres.
 `ATLAS_DUCKLAKE_METADATA_PATH` independently identifies the DuckLake metadata store. They must
 never target the same database in the maintained Compose deployment.
+For platform integration, `ATLAS_DUCKLAKE_METADATA_PATH` accepts either DuckLake's native
+`postgres:...` attach form or a standard `postgresql://...`/`postgres://...` URL. Atlas normalizes
+standard URLs to the native DuckLake form at its configuration boundary.
 
 Deleting `atlas-postgres-data` loses editable plans, schedules, policies, and current execution
 state without deleting lake history. Deleting `lake-postgres-data` loses the DuckLake catalogue;
@@ -63,6 +66,45 @@ credentials such as `AWS_*` remain valid where the selected protocol supports th
 The Compose build still compiles the Atlas and DuckLake CDC extensions together against the pinned
 DuckDB version. `ATLAS_DUCKDB_EXTENSION_REPO` and `ATLAS_DUCKLAKE_CDC_EXTENSION_REPO` only relocate
 the two additional build contexts; they do not change the extension build.
+
+## Production artifacts
+
+GitHub Actions publishes three immutable artifacts for each main-branch revision:
+
+- `ghcr.io/ekkuleivonen/atlas-backend:sha-<commit>` contains the API, every worker role,
+  `atlas-setup`, the Atlas DuckDB extension, and the DuckLake CDC extension;
+- `ghcr.io/ekkuleivonen/atlas-web:sha-<commit>` contains the static console and its nginx API
+  proxy; and
+- `oci://ghcr.io/ekkuleivonen/atlas-charts/atlas:0.1.0-dev.<commit>` deploys the two images.
+
+Release tags `vX.Y.Z` additionally publish matching `X.Y.Z` image and chart versions. Production
+GitOps must pin the explicit chart version and both explicit image tags; it must not consume a
+mutable `latest` tag.
+
+The production extension sources and DuckDB version are pinned in
+`.github/extension-sources.env`. The Atlas extension repository is private, so the Atlas GitHub
+repository uses an `ATLAS_EXTENSION_DEPLOY_KEY` Actions secret whose public half is a read-only
+deploy key on that repository; DuckLake CDC is public. BuildKit receives clean checkouts of both
+exact revisions as named build contexts. The backend Dockerfile compiles both native artifacts
+against the pinned DuckDB source and embeds them under `/opt/atlas`; extensions are never
+downloaded or mounted at runtime.
+
+## Kubernetes topology
+
+The chart under `charts/atlas` owns only Atlas processes. PostgreSQL, NATS JetStream, S3-compatible
+storage, the standard CDP endpoint, secret projection, ingress, and metrics storage remain external
+platform authorities. The chart supports one API, one janitor, scalable crawler/ingestor/
+materializer deployments, and scalable stateless web replicas.
+
+`atlas-setup` is a blocking Helm pre-install and pre-upgrade hook. A failed migration or catalogue
+bootstrap prevents the new runtime image from rolling out. All backend workloads in one release
+must use the same immutable image tag, keeping Python code, the DuckDB runtime, catalogue schema,
+and both native extensions on one release identity.
+
+Control state and DuckLake metadata still require distinct PostgreSQL databases in Kubernetes.
+The same S3 bucket may back raw repository objects and DuckLake data when the repository prefix and
+DuckLake data path do not overlap. Annotated API and worker Services expose all built-in Prometheus
+endpoints for platform discovery.
 
 ## Process entrypoints
 

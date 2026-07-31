@@ -18,7 +18,12 @@ RUN find web/dist/assets -name '*.wasm' -exec gzip -9 -k '{}' ';'
 
 FROM nginx:1.27-alpine
 
-COPY docker/web/nginx.conf /etc/nginx/conf.d/default.conf
+ENV ATLAS_API_HOST=atlas-api \
+    ATLAS_API_PORT=8000
+
+# The stock nginx entrypoint renders templates with envsubst at container start.
+# This keeps the web image portable across Compose and Helm release names.
+COPY docker/web/nginx.conf /etc/nginx/templates/default.conf.template
 COPY --from=build /app/web/dist/ /usr/share/nginx/html/
 
 EXPOSE 80

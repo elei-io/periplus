@@ -1,6 +1,7 @@
 .git
 .env
 .atlas
+.extension-sources
 **/.DS_Store
 **/.venv
 **/__pycache__

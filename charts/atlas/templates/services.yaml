@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "atlas.fullname" . }}-api
+  labels:
+    {{- include "atlas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  {{- with .Values.api.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.api.service.type }}
+  selector:
+    {{- include "atlas.componentSelectorLabels" (dict "root" . "component" "api") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.api.service.port }}
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "atlas.fullname" . }}-web
+  labels:
+    {{- include "atlas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+  {{- with .Values.web.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.web.service.type }}
+  selector:
+    {{- include "atlas.componentSelectorLabels" (dict "root" . "component" "web") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.web.service.port }}
+      targetPort: http
+{{- $root := . }}
+{{- range $worker := list (dict "name" "crawler" "port" 9090) (dict "name" "ingestor" "port" 9091) (dict "name" "materializer" "port" 9093) (dict "name" "janitor" "port" 9094) }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "atlas.fullname" $root }}-{{ $worker.name }}-metrics
+  labels:
+    {{- include "atlas.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $worker.name }}
+  annotations:
+    {{- toYaml $root.Values.metricsService.annotations | nindent 4 }}
+    prometheus.io/port: {{ $worker.port | quote }}
+spec:
+  selector:
+    {{- include "atlas.componentSelectorLabels" (dict "root" $root "component" $worker.name) | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ $worker.port }}
+      targetPort: metrics
+{{- end }}

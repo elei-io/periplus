@@ -95,7 +95,7 @@ def catalogue_config_from_env() -> CatalogueConfig:
     data_path = _required("ATLAS_DUCKLAKE_DATA_PATH")
     return CatalogueConfig(
         alias=os.environ.get("ATLAS_DUCKLAKE_ALIAS", "atlas"),
-        metadata_path=_required("ATLAS_DUCKLAKE_METADATA_PATH"),
+        metadata_path=_metadata_path(),
         data_path=data_path,
         metadata_schema=os.environ.get(
             "ATLAS_DUCKLAKE_METADATA_SCHEMA",
@@ -111,6 +111,13 @@ def catalogue_config_from_env() -> CatalogueConfig:
         ),
         s3=_s3_storage_config(data_path),
     )
+
+
+def _metadata_path() -> str:
+    value = _required("ATLAS_DUCKLAKE_METADATA_PATH")
+    if value.startswith(("postgresql://", "postgres://")):
+        return "postgres:" + value
+    return value
 
 
 def _validate_name(label: str, value: str) -> None:

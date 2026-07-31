@@ -1,0 +1,10 @@
+apiVersion: v2
+name: atlas
+description: Atlas web acquisition and SQL catalogue services
+type: application
+version: 0.1.0
+appVersion: main
+kubeVersion: ">=1.30.0-0"
+home: https://github.com/ekkuleivonen/atlas
+sources:
+  - https://github.com/ekkuleivonen/atlas
