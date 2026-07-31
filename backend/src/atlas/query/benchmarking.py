@@ -6,6 +6,7 @@ the Atlas DuckDB extension and the public catalogue.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -289,7 +290,11 @@ def measure_case(case: QueryCase, scale: int | None, *, warm_runs: int) -> Measu
             within_time_budget=warm_median <= case.max_warm_ms,
         )
     finally:
-        connection.execute("ROLLBACK")
+        # A DuckDB internal error invalidates the connection. Preserve the
+        # original benchmark failure instead of replacing it with ROLLBACK's
+        # secondary error during cleanup.
+        with suppress(duckdb.Error):
+            connection.execute("ROLLBACK")
         connection.close()
 
 

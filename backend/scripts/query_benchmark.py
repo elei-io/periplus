@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -20,6 +21,11 @@ def main() -> None:
     parser.add_argument("--warm-runs", type=int, default=2)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--baseline", type=Path)
+    parser.add_argument(
+        "--sql-override",
+        type=Path,
+        help="research-only SQL for one case; production acceptance still uses query.sql",
+    )
     arguments = parser.parse_args()
     if arguments.warm_runs < 1:
         parser.error("--warm-runs must be positive")
@@ -29,9 +35,16 @@ def main() -> None:
     missing = sorted(set(requested) - set(discovered))
     if missing:
         parser.error("unknown cases: " + ", ".join(missing))
+    if arguments.sql_override and len(requested) != 1:
+        parser.error("--sql-override requires exactly one --case")
     selected = []
     for identifier in requested:
         case = discovered[identifier]
+        if arguments.sql_override:
+            case = replace(
+                case,
+                sql=arguments.sql_override.read_text(encoding="utf-8").strip(),
+            )
         if arguments.scales:
             invalid = sorted(set(arguments.scales) - set(case.scales))
             if invalid:
@@ -39,21 +52,16 @@ def main() -> None:
                     f"case {identifier} does not define scales: "
                     + ", ".join(str(item) for item in invalid)
                 )
-            case = case.__class__(
-                identifier=case.identifier,
-                title=case.title,
-                use_case=case.use_case,
-                classification=case.classification,
-                ordered=case.ordered,
+            case = replace(
+                case,
                 scales=tuple(arguments.scales),
-                memory_limit=case.memory_limit,
-                max_warm_ms=case.max_warm_ms,
-                sql=case.sql,
-                directory=case.directory,
             )
         selected.append(case)
 
     payload = report_payload(selected, warm_runs=arguments.warm_runs)
+    payload["sql_override"] = (
+        str(arguments.sql_override.resolve()) if arguments.sql_override else None
+    )
     failures = [
         f"time budget exceeded for {item['case']} scale={item.get('scale')}"
         for item in payload["measurements"]

@@ -20,6 +20,11 @@ To compare a candidate with an earlier artifact, add `--baseline PATH`. The comm
 column contract, row count, result multiplicity, values, or specified ordering differs. Performance
 ratios are recorded but do not become noisy local correctness failures.
 
+During a measured implementation spike, `--sql-override PATH` may run one checked-in research SQL
+variant under the same case identity and compare it to the public-query baseline. The report records
+the override path and SQL. A result is accepted only after the unchanged `query.sql` receives the
+optimization through the native extension.
+
 Commit baselines only for a pinned DuckLake snapshot and matching DuckDB, extension, and catalogue
 versions. Ad-hoc reports belong in `.artifacts/query-benchmarks/`. The JSON report records the
 snapshot and versions needed to interpret a result.
