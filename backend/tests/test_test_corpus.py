@@ -1,11 +1,10 @@
+from datetime import UTC, datetime
 import importlib.util
 from pathlib import Path
 import sys
 import tempfile
 import unittest
 from unittest import mock
-
-import httpx
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "test_corpus.py"
@@ -18,271 +17,177 @@ SPEC.loader.exec_module(test_corpus)
 
 class TestCorpusTests(unittest.TestCase):
     @staticmethod
-    def candidate(
-        *,
-        url: str,
-        status: int,
-        offset: int,
-    ) -> dict[str, object]:
-        return {
-            "url": url,
-            "hostname": url.split("/", 3)[2],
-            "registered_domain": url.split("/", 3)[2],
-            "status": status,
-            "timestamp": "20260101000000",
-            "filename": "crawl-data/example.warc.gz",
-            "offset": str(offset),
-            "length": "10",
-            "mime": "text/html",
-            "encoding": "UTF-8",
-        }
-
-    def test_failure_rate_is_taken_from_noise_without_growing_total(self):
-        targets = test_corpus.targets_for(known=1_000, noise=100_000, rate=0.02)
-
-        self.assertEqual(targets.known, 1_000)
-        self.assertEqual(targets.noise, 97_980)
-        self.assertEqual(targets.failure, 2_020)
-        self.assertEqual(targets.total, 101_000)
-
-    def test_dataset_identity_pins_version_crawl_and_seed(self):
-        self.assertEqual(
-            test_corpus.dataset_name("CC-MAIN-2026-25", 42),
-            "atlas-test-corpus/v3/CC-MAIN-2026-25/42",
-        )
-
-    def test_known_domain_exclusion_includes_subdomains(self):
-        domains = ["example.com", "docs.python.org"]
-
-        self.assertTrue(test_corpus.domain_is_known("example.com", domains))
-        self.assertTrue(test_corpus.domain_is_known("www.example.com", domains))
-        self.assertTrue(
-            test_corpus.domain_is_known("docs.python.org", domains)
-        )
-        self.assertFalse(
-            test_corpus.domain_is_known("packages.python.org", domains)
-        )
-
-    def test_manifest_requires_contiguous_ordinals_per_tier(self):
-        capture = test_corpus.Capture(
-            tier="known",
-            ordinal=1,
-            url="https://example.com/",
+    def capture(*, ordinal: int, url: str | None = None) -> object:
+        return test_corpus.Capture(
+            ordinal=ordinal,
+            url=url or f"https://example.com/{ordinal}",
             status=200,
             observed_at="2026-01-01T00:00:00+00:00",
             filename="crawl-data/example.warc.gz",
-            offset=1,
-            length=2,
+            offset=ordinal,
+            length=10,
             declared_media_type="text/html",
             charset="UTF-8",
         )
 
-        with self.assertRaisesRegex(ValueError, "non-contiguous known"):
-            test_corpus.validate_manifest([capture])
+    @staticmethod
+    def candidate(*, url: str, offset: int) -> dict[str, object]:
+        return {
+            "url": url,
+            "fetch_time": datetime(2026, 1, 1, tzinfo=UTC),
+            "status": 200,
+            "mime": "text/html",
+            "encoding": "UTF-8",
+            "filename": "crawl-data/example.warc.gz",
+            "offset": offset,
+            "length": 10,
+        }
+
+    def test_cli_is_only_a_page_count(self):
+        arguments = test_corpus.parse_arguments(["15000"])
+
+        self.assertEqual(arguments.pages, 15_000)
+        self.assertFalse(hasattr(arguments, "known"))
+        self.assertFalse(hasattr(arguments, "noise"))
+        self.assertFalse(hasattr(arguments, "failure_rate"))
+
+    def test_dataset_identity_pins_version_crawl_and_seed(self):
+        self.assertEqual(
+            test_corpus.dataset_name("CC-MAIN-2026-25", 42),
+            "atlas-test-corpus/v4/CC-MAIN-2026-25/42",
+        )
 
     def test_manifest_round_trip_preserves_capture(self):
-        capture = test_corpus.Capture(
-            tier="noise",
-            ordinal=0,
-            url="https://example.com/",
-            status=200,
-            observed_at="2026-01-01T00:00:00+00:00",
-            filename="crawl-data/example.warc.gz",
-            offset=1,
-            length=2,
-            declared_media_type="text/html",
-            charset=None,
-        )
+        capture = self.capture(ordinal=3)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "manifest.jsonl"
             test_corpus.save_manifest(path, [capture])
 
             self.assertEqual(test_corpus.load_manifest(path), [capture])
 
-    def test_addition_bounds_start_after_each_tier_high_water_mark(self):
-        bounds = test_corpus.addition_bounds(
-            {
-                "known": {0, 9, 10},
-                "noise": {0, 19, 20, 21},
-                "failure": {0, 3},
-            },
-            test_corpus.Targets(known=10, noise=20, failure=3),
-        )
+    def test_manifest_rejects_duplicate_normalized_urls(self):
+        captures = [
+            self.capture(ordinal=0, url="HTTPS://EXAMPLE.COM"),
+            self.capture(ordinal=1, url="https://example.com/"),
+        ]
 
-        self.assertEqual(
-            bounds,
-            {
-                "known": (11, 21),
-                "noise": (22, 42),
-                "failure": (4, 7),
-            },
-        )
+        with self.assertRaisesRegex(ValueError, "duplicate manifest URL"):
+            test_corpus.validate_manifest(captures)
 
-    def test_existing_corpus_query_uses_the_public_visit_contract(self):
-        response = mock.Mock()
-        response.json.return_value = {
-            "rows": [["known", [0, 2]], ["failure", [1]]]
-        }
-        client = mock.MagicMock()
-        client.__enter__.return_value = client
-        client.post.return_value = response
-
+    def test_existing_query_uses_single_page_identity(self):
         with mock.patch.object(
-            test_corpus.httpx,
-            "Client",
-            return_value=client,
-        ):
-            existing = test_corpus.query_existing(
+            test_corpus,
+            "query_atlas",
+            return_value={"rows": [[None]]},
+        ) as query:
+            empty = test_corpus.query_existing(
                 "http://atlas.example",
-                "corpus-v1",
+                "corpus-v4",
             )
 
-        request = client.post.call_args
-        self.assertEqual(
-            request.args[0],
-            "http://atlas.example/sql/query",
-        )
-        self.assertIn("FROM web.page_visit", request.kwargs["json"]["sql"])
-        self.assertEqual(existing["known"], {0, 2})
-        self.assertEqual(existing["noise"], set())
-        self.assertEqual(existing["failure"], {1})
-
-    def test_ingestion_waits_until_every_selected_ordinal_is_visible(self):
-        selected = [
-            test_corpus.Capture(
-                tier="known",
-                ordinal=4,
-                url="https://example.com/4",
-                status=200,
-                observed_at="2026-01-01T00:00:00+00:00",
-                filename="crawl-data/example.warc.gz",
-                offset=4,
-                length=10,
-                declared_media_type="text/html",
-                charset=None,
-            ),
-            test_corpus.Capture(
-                tier="known",
-                ordinal=5,
-                url="https://example.com/5",
-                status=200,
-                observed_at="2026-01-01T00:00:00+00:00",
-                filename="crawl-data/example.warc.gz",
-                offset=5,
-                length=10,
-                declared_media_type="text/html",
-                charset=None,
-            ),
-        ]
-        empty = {"known": {4}, "noise": set(), "failure": set()}
-        complete = {"known": {4, 5}, "noise": set(), "failure": set()}
+        self.assertEqual(empty, set())
+        sql = query.call_args.args[1]
+        self.assertIn("FROM web.page_visit", sql)
+        self.assertIn("starts_with(source_record_id, 'page:')", sql)
 
         with mock.patch.object(
             test_corpus,
-            "query_existing",
-            side_effect=[empty, complete],
-        ) as query:
-            test_corpus.wait_for_ingestion(
+            "query_atlas",
+            return_value={"rows": [[[0, 2, 9]]]},
+        ):
+            existing = test_corpus.query_existing(
                 "http://atlas.example",
-                "corpus-v1",
-                selected,
-                timeout_seconds=1,
-                poll_seconds=0,
+                "corpus-v4",
+            )
+        self.assertEqual(existing, {0, 2, 9})
+
+    def test_lake_url_scan_is_bounded_and_paginated(self):
+        with mock.patch.object(
+            test_corpus,
+            "query_atlas",
+            side_effect=[
+                {"rows": [["https://a.example/"], ["https://b.example/"]]},
+                {"rows": [["https://c.example/"]]},
+            ],
+        ) as query:
+            urls = test_corpus.query_lake_urls(
+                "http://atlas.example",
+                page_size=2,
             )
 
-        self.assertEqual(query.call_count, 2)
-
-    def test_common_crawl_no_capture_404_is_an_empty_domain_result(self):
-        response = httpx.Response(
-            404,
-            json={"message": "No Captures found for: example.invalid/*"},
-        )
-
-        self.assertTrue(test_corpus.is_empty_cdx_result(response))
-        self.assertFalse(
-            test_corpus.is_empty_cdx_result(
-                httpx.Response(404, json={"message": "missing collection"})
-            )
-        )
-
-    def test_candidate_tiers_do_not_reuse_the_same_capture(self):
-        candidates = [
+        self.assertEqual(
+            urls,
             {
-                "url": f"https://example.com/{ordinal}",
-                "status": "200",
-                "timestamp": "20260101000000",
-                "filename": "crawl-data/example.warc.gz",
-                "offset": str(ordinal),
-                "length": "10",
-                "mime": "text/html",
-            }
-            for ordinal in range(3)
+                "https://a.example/",
+                "https://b.example/",
+                "https://c.example/",
+            },
+        )
+        self.assertIn("LIMIT 2 OFFSET 0", query.call_args_list[0].args[1])
+        self.assertIn("LIMIT 2 OFFSET 2", query.call_args_list[1].args[1])
+
+    def test_pending_pages_retry_manifest_gaps_before_adding_more(self):
+        captures = [self.capture(ordinal=ordinal) for ordinal in range(5)]
+
+        selected = test_corpus.pending_captures(captures, {0, 2, 4}, 2)
+
+        self.assertEqual([capture.ordinal for capture in selected], [1, 3])
+
+    def test_pending_pages_skip_urls_already_in_the_lake(self):
+        captures = [self.capture(ordinal=0), self.capture(ordinal=1)]
+
+        selected = test_corpus.pending_captures(
+            captures,
+            set(),
+            2,
+            existing_urls={"https://example.com/0"},
+        )
+
+        self.assertEqual([capture.ordinal for capture in selected], [1])
+
+    def test_selection_avoids_lake_and_manifest_url_duplicates(self):
+        captures = [self.capture(ordinal=0, url="https://cached.example/")]
+        candidates = [
+            self.candidate(url="https://cached.example/", offset=10),
+            self.candidate(url="https://lake.example/", offset=11),
+            self.candidate(url="HTTPS://NEW.EXAMPLE", offset=12),
         ]
-        known = []
-        noise = []
-        excluded = set()
+        with (
+            mock.patch.object(
+                test_corpus,
+                "load_index_paths",
+                return_value=["crawl=x/subset=warc/part.parquet"],
+            ),
+            mock.patch.object(
+                test_corpus,
+                "download_index_shard",
+                return_value=Path("part.parquet"),
+            ),
+            mock.patch.object(
+                test_corpus,
+                "sample_index_shard",
+                return_value=candidates,
+            ),
+        ):
+            result = test_corpus.select_captures(
+                captures=captures,
+                existing_ordinals={0},
+                existing_urls={"https://lake.example/"},
+                count=1,
+                crawl="CC-MAIN-test",
+                seed=1,
+                cache_dir=Path("cache"),
+            )
 
-        test_corpus.extend_from_candidates(
-            known,
-            tier="known",
-            target=2,
-            candidates=candidates,
-            excluded=excluded,
-        )
-        test_corpus.extend_from_candidates(
-            noise,
-            tier="noise",
-            target=1,
-            candidates=candidates,
-            excluded=excluded,
-        )
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[-1].ordinal, 1)
+        self.assertEqual(result[-1].url, "https://new.example/")
 
-        self.assertEqual([capture.offset for capture in known], [0, 1])
-        self.assertEqual([capture.offset for capture in noise], [2])
-
-    def test_shortage_advice_names_the_owning_domain_pool(self):
-        self.assertEqual(
-            test_corpus.shortage_advice("known"),
-            "add known domains or reduce --known",
-        )
-        self.assertEqual(
-            test_corpus.shortage_advice("noise"),
-            "increase --noise-index-shards or reduce --noise",
-        )
-        self.assertEqual(
-            test_corpus.shortage_advice("failure"),
-            "increase --noise-index-shards or reduce --fail",
-        )
-
-    def test_dry_run_selects_and_caches_without_querying_atlas(self):
-        known = self.candidate(
-            url="https://known.example/page",
-            status=200,
-            offset=1,
-        )
-        noise = self.candidate(
-            url="https://noise.example/page",
-            status=200,
-            offset=2,
-        )
-        failure = self.candidate(
-            url="https://failure.example/missing",
-            status=404,
-            offset=3,
-        )
+    def test_dry_run_does_not_query_or_mutate_atlas(self):
+        candidate = self.candidate(url="https://new.example/", offset=1)
         with tempfile.TemporaryDirectory() as directory:
             arguments = test_corpus.parse_arguments(
-                [
-                    "--known",
-                    "1",
-                    "--noise",
-                    "2",
-                    "--fail",
-                    str(1 / 3),
-                    "--cache-dir",
-                    directory,
-                    "--dry-run",
-                ]
+                ["1", "--cache-dir", directory, "--dry-run"]
             )
             with (
                 mock.patch.object(
@@ -292,13 +197,28 @@ class TestCorpusTests(unittest.TestCase):
                 ),
                 mock.patch.object(
                     test_corpus,
-                    "query_domain_candidates",
-                    return_value=[known],
+                    "query_lake_urls",
+                    side_effect=AssertionError("Atlas must not be queried"),
                 ),
                 mock.patch.object(
                     test_corpus,
-                    "query_noise_index_candidates",
-                    return_value=([noise], [failure]),
+                    "load_index_paths",
+                    return_value=["crawl=x/subset=warc/part.parquet"],
+                ),
+                mock.patch.object(
+                    test_corpus,
+                    "download_index_shard",
+                    return_value=Path("part.parquet"),
+                ),
+                mock.patch.object(
+                    test_corpus,
+                    "sample_index_shard",
+                    return_value=[candidate],
+                ),
+                mock.patch.object(
+                    test_corpus,
+                    "ingest_capture",
+                    side_effect=AssertionError("Atlas must not be changed"),
                 ),
             ):
                 result = test_corpus.reconcile(arguments)
@@ -312,10 +232,24 @@ class TestCorpusTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        self.assertEqual(
-            [capture.tier for capture in manifest],
-            ["known", "noise", "failure"],
-        )
+        self.assertEqual(len(manifest), 1)
+
+    def test_ingestion_waits_for_all_selected_ordinals(self):
+        selected = [self.capture(ordinal=4), self.capture(ordinal=5)]
+        with mock.patch.object(
+            test_corpus,
+            "query_existing",
+            side_effect=[{4}, {4, 5}],
+        ) as query:
+            test_corpus.wait_for_ingestion(
+                "http://atlas.example",
+                "corpus-v4",
+                selected,
+                timeout_seconds=1,
+                poll_seconds=0,
+            )
+
+        self.assertEqual(query.call_count, 2)
 
 
 if __name__ == "__main__":

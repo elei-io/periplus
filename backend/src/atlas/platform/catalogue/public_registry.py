@@ -159,7 +159,7 @@ PUBLIC_OBJECTS = (
             ("css_selector", "VARCHAR"),
         ),
         schema="dom", requires_relations=_HTML,
-        requires_functions=frozenset({"atlas_dom_select_first"}),
+        requires_functions=frozenset({"atlas_dom_select_first_keyed"}),
     ),
     CatalogueObject(
         "table_macro", "query_selector_all",
@@ -170,7 +170,7 @@ PUBLIC_OBJECTS = (
             ("css_selector", "VARCHAR"),
         ),
         schema="dom", requires_relations=_HTML,
-        requires_functions=frozenset({"atlas_dom_select_all"}),
+        requires_functions=frozenset({"atlas_dom_select_all_keyed"}),
     ),
     CatalogueObject(
         "view", "jsonld", "views/021_jsonld.sql",

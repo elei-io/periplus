@@ -14,32 +14,7 @@ SELECT
     attributes,
     text_direct AS direct_text,
     text_tail AS tail_text
-FROM atlas_dom_select_first(
-    (
-        SELECT
-            element.content_id,
-            element.element_index,
-            element.parent_element_index AS parent_index,
-            element.subtree_end_index,
-            element.depth,
-            element.sibling_index AS child_index,
-            element.tag_name AS tag,
-            element.namespace,
-            element.attributes,
-            element.direct_text AS text_direct,
-            element.tail_text AS text_tail,
-            false AS _atlas_document_end
-        FROM dom.element AS element
-        JOIN (SELECT selected_content_id AS content_id)
-             AS selected USING (content_id)
-        UNION ALL
-        SELECT
-            selected_content_id,
-            NULL::INTEGER, NULL::INTEGER, NULL::INTEGER, NULL::INTEGER,
-            NULL::INTEGER, NULL::VARCHAR, NULL::VARCHAR,
-            NULL::MAP(VARCHAR, VARCHAR), NULL::VARCHAR, NULL::VARCHAR,
-            true
-        ORDER BY content_id, _atlas_document_end, element_index
-    ),
+FROM atlas_dom_select_first_keyed(
+    (SELECT selected_content_id AS content_id),
     css_selector
 );

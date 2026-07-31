@@ -1,50 +1,41 @@
-"""Append deterministic Common Crawl samples to a disposable Atlas lake."""
+"""Append random Common Crawl HTML pages to a disposable Atlas lake."""
 
 from __future__ import annotations
 
 import argparse
 from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 import gzip
 import hashlib
 import io
 import json
-import math
 import os
 from pathlib import Path
 import sys
 import time
-from typing import Any, Literal
+from typing import Any
 
 from dotenv import load_dotenv
 import httpx
 
+from atlas.urls import normalize_url
+
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_KNOWN_DOMAINS = (
-    ROOT / "backend" / "tests" / "corpus" / "known_domains.txt"
-)
 DEFAULT_CACHE = ROOT / ".atlas" / "test-corpus"
 DEFAULT_API_URL = "http://127.0.0.1:8000"
 DEFAULT_CRAWL = "CC-MAIN-2026-25"
 DEFAULT_SEED = 20260727
-DATASET_VERSION = "v3"
+DATASET_VERSION = "v4"
 COMMON_CRAWL_DATA = "https://data.commoncrawl.org"
-COMMON_CRAWL_INDEX = "https://index.commoncrawl.org"
-KNOWN_CAPTURES_PER_DOMAIN = 1_000
-DEFAULT_NOISE_INDEX_SHARDS = 3
-MINIMUM_NOISE_SAMPLE_ROWS = 50_000
-NOISE_SAMPLE_MULTIPLIER = 5
-NOISE_CAPTURES_PER_DOMAIN = 20
-
-Tier = Literal["known", "noise", "failure"]
+MINIMUM_SAMPLE_ROWS = 10_000
+SAMPLE_MULTIPLIER = 3
 
 
 @dataclass(frozen=True, slots=True)
 class Capture:
-    tier: Tier
     ordinal: int
     url: str
     status: int
@@ -58,58 +49,22 @@ class Capture:
     @property
     def source_record_id(self) -> str:
         return (
-            f"{self.tier}:{self.ordinal}:{self.filename}:"
+            f"page:{self.ordinal}:{self.filename}:"
             f"{self.offset}:{self.length}"
         )
-
-
-@dataclass(frozen=True, slots=True)
-class Targets:
-    known: int
-    noise: int
-    failure: int
-
-    def for_tier(self, tier: Tier) -> int:
-        return int(getattr(self, tier))
-
-    @property
-    def total(self) -> int:
-        return self.known + self.noise + self.failure
 
 
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Append a deterministic Common Crawl sample through Atlas's "
-            "external HTML ingestion API."
+            "Append random successful HTML pages from Common Crawl through "
+            "Atlas's external ingestion API."
         )
     )
     parser.add_argument(
-        "--known",
-        "--known-pages",
-        dest="known",
-        type=non_negative_int,
-        default=0,
-        help="number of new HTTP 200 pages to add from known domains",
-    )
-    parser.add_argument(
-        "--noise",
-        "--noise-pages",
-        dest="noise",
-        type=non_negative_int,
-        default=0,
-        help="number of new arbitrary pages to add, including the failure share",
-    )
-    parser.add_argument(
-        "--fail",
-        "--failure-rate",
-        dest="failure_rate",
-        type=failure_rate,
-        default=0.0,
-        help=(
-            "share of the combined corpus whose stored HTTP status is not 200; "
-            "failure pages are drawn from --noise"
-        ),
+        "pages",
+        type=positive_int,
+        help="number of pages to add (for example: ./test_corpus 15000)",
     )
     parser.add_argument(
         "--crawl",
@@ -120,7 +75,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--seed",
         type=int,
         default=DEFAULT_SEED,
-        help=f"deterministic sampling seed (default: {DEFAULT_SEED})",
+        help=f"sampling seed (default: {DEFAULT_SEED})",
     )
     parser.add_argument(
         "--api-url",
@@ -128,25 +83,10 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"Atlas API base URL (default: {DEFAULT_API_URL})",
     )
     parser.add_argument(
-        "--known-domains",
-        type=Path,
-        default=DEFAULT_KNOWN_DOMAINS,
-        help="newline-delimited known-domain list",
-    )
-    parser.add_argument(
-        "--noise-index-shards",
-        type=positive_int,
-        default=DEFAULT_NOISE_INDEX_SHARDS,
-        help=(
-            "maximum deterministic Common Crawl Parquet shards to sample "
-            f"(default: {DEFAULT_NOISE_INDEX_SHARDS})"
-        ),
-    )
-    parser.add_argument(
         "--cache-dir",
         type=Path,
         default=DEFAULT_CACHE,
-        help="local directory holding the stable selection manifest",
+        help="local directory holding downloaded index shards and selections",
     )
     parser.add_argument(
         "--jobs",
@@ -158,25 +98,11 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help=(
-            "select and cache the complete manifest without changing Atlas or "
-            "downloading WARC records"
+            "select and cache pages without querying Atlas, downloading WARC "
+            "records, or changing the lake"
         ),
     )
-    arguments = parser.parse_args(argv)
-    if arguments.failure_rate > 0 and arguments.noise == 0:
-        parser.error("--fail requires --noise to be greater than zero")
-    try:
-        targets_for(arguments.known, arguments.noise, arguments.failure_rate)
-    except ValueError as exc:
-        parser.error(str(exc))
-    return arguments
-
-
-def non_negative_int(value: str) -> int:
-    parsed = int(value)
-    if parsed < 0:
-        raise argparse.ArgumentTypeError("must be zero or greater")
-    return parsed
+    return parser.parse_args(argv)
 
 
 def positive_int(value: str) -> int:
@@ -186,37 +112,12 @@ def positive_int(value: str) -> int:
     return parsed
 
 
-def failure_rate(value: str) -> float:
-    parsed = float(value)
-    if not 0 <= parsed <= 1:
-        raise argparse.ArgumentTypeError("must be between 0 and 1")
-    return parsed
-
-
-def targets_for(known: int, noise: int, rate: float) -> Targets:
-    failed = math.floor((known + noise) * rate + 0.5)
-    if failed > noise:
-        raise ValueError(
-            "--fail is too large to draw entirely from the --noise pages"
-        )
-    return Targets(known=known, noise=noise - failed, failure=failed)
-
-
 def dataset_name(crawl: str, seed: int) -> str:
     return f"atlas-test-corpus/{DATASET_VERSION}/{crawl}/{seed}"
 
 
-def load_domains(path: Path) -> list[str]:
-    domains = [
-        line.strip().lower()
-        for line in path.read_text().splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    if not domains:
-        raise ValueError(f"domain list is empty: {path}")
-    if any("/" in domain or ":" in domain for domain in domains):
-        raise ValueError("domain entries must be bare domain names")
-    return list(dict.fromkeys(domains))
+def manifest_path(cache_dir: Path, crawl: str, seed: int) -> Path:
+    return cache_dir / f"{DATASET_VERSION}-{crawl}-{seed}.jsonl"
 
 
 def load_manifest(path: Path) -> list[Capture]:
@@ -241,44 +142,26 @@ def save_manifest(path: Path, captures: Iterable[Capture]) -> None:
 
 
 def validate_manifest(captures: list[Capture]) -> None:
-    seen: set[tuple[Tier, int]] = set()
-    next_ordinal: dict[Tier, int] = {"known": 0, "noise": 0, "failure": 0}
+    ordinals = [capture.ordinal for capture in captures]
+    if ordinals != sorted(set(ordinals)):
+        raise ValueError("manifest ordinals must be unique and increasing")
+    urls: set[str] = set()
+    identities: set[tuple[str, int, int]] = set()
     for capture in captures:
-        key = (capture.tier, capture.ordinal)
-        if key in seen:
-            raise ValueError(f"duplicate manifest identity: {key}")
-        if capture.ordinal != next_ordinal[capture.tier]:
-            raise ValueError(
-                f"non-contiguous {capture.tier} manifest ordinal "
-                f"{capture.ordinal}; expected {next_ordinal[capture.tier]}"
-            )
-        seen.add(key)
-        next_ordinal[capture.tier] += 1
+        normalized = normalize_url(capture.url)
+        identity = capture_identity(capture)
+        if normalized in urls:
+            raise ValueError(f"duplicate manifest URL: {normalized}")
+        if identity in identities:
+            raise ValueError(f"duplicate manifest capture: {identity}")
+        urls.add(normalized)
+        identities.add(identity)
 
 
-def captures_by_tier(captures: list[Capture]) -> dict[Tier, list[Capture]]:
-    grouped: dict[Tier, list[Capture]] = {
-        "known": [],
-        "noise": [],
-        "failure": [],
-    }
-    for capture in captures:
-        grouped[capture.tier].append(capture)
-    return grouped
-
-
-def manifest_path(cache_dir: Path, crawl: str, seed: int) -> Path:
-    return cache_dir / f"{DATASET_VERSION}-{crawl}-{seed}.jsonl"
-
-
-def query_existing(api_url: str, dataset: str) -> dict[Tier, set[int]]:
-    quoted = sql_string(dataset)
+def query_existing(api_url: str, dataset: str) -> set[int]:
     sql = f"""
-        SELECT split_part(source_record_id, ':', 1) AS tier,
-               list(
-                   try_cast(
-                       split_part(source_record_id, ':', 2) AS BIGINT
-                   )
+        SELECT list(
+                   try_cast(split_part(source_record_id, ':', 2) AS BIGINT)
                    ORDER BY try_cast(
                        split_part(source_record_id, ':', 2) AS BIGINT
                    )
@@ -286,38 +169,59 @@ def query_existing(api_url: str, dataset: str) -> dict[Tier, set[int]]:
         FROM web.page_visit
         WHERE source_kind = 'external'
           AND source_system = 'common-crawl'
-          AND source_dataset = {quoted}
-        GROUP BY tier
+          AND source_dataset = {sql_string(dataset)}
+          AND starts_with(source_record_id, 'page:')
     """
-    with httpx.Client(timeout=30) as client:
+    payload = query_atlas(api_url, sql)
+    ordinals = payload["rows"][0][0] if payload["rows"] else None
+    return {
+        int(ordinal)
+        for ordinal in (ordinals or [])
+        if ordinal is not None
+    }
+
+
+def query_lake_urls(api_url: str, *, page_size: int = 10_000) -> set[str]:
+    """Read existing normalized URLs in bounded pages for best-effort dedupe."""
+    existing: set[str] = set()
+    offset = 0
+    while True:
+        rows = query_atlas(
+            api_url,
+            "SELECT url FROM web.page "
+            f"ORDER BY url LIMIT {page_size} OFFSET {offset}",
+        )["rows"]
+        existing.update(str(row[0]) for row in rows)
+        if len(rows) < page_size:
+            return existing
+        offset += page_size
+
+
+def query_atlas(api_url: str, sql: str) -> dict[str, Any]:
+    with httpx.Client(timeout=60) as client:
         response = client.post(
             f"{api_url.rstrip('/')}/sql/query",
             json={"sql": sql},
         )
         response.raise_for_status()
-        payload = response.json()
-    existing: dict[Tier, set[int]] = {
-        "known": set(),
-        "noise": set(),
-        "failure": set(),
-    }
-    for tier, ordinals in payload["rows"]:
-        if tier in existing:
-            existing[tier] = {
-                int(ordinal) for ordinal in ordinals if ordinal is not None
-            }
-    return existing
+        payload: dict[str, Any] = response.json()
+        return payload
 
 
-def addition_bounds(
-    existing: dict[Tier, set[int]],
-    additions: Targets,
-) -> dict[Tier, tuple[int, int]]:
-    bounds: dict[Tier, tuple[int, int]] = {}
-    for tier in ("known", "noise", "failure"):
-        start = max(existing[tier], default=-1) + 1
-        bounds[tier] = (start, start + additions.for_tier(tier))
-    return bounds
+def pending_captures(
+    captures: list[Capture],
+    existing_ordinals: set[int],
+    count: int,
+    *,
+    existing_urls: set[str] | None = None,
+) -> list[Capture]:
+    duplicate_urls = existing_urls or set()
+    return [
+        capture
+        for capture in captures
+        if capture.ordinal not in existing_ordinals
+        and normalize_url(capture.url) not in duplicate_urls
+    ][:count]
 
 
 def wait_for_ingestion(
@@ -328,21 +232,11 @@ def wait_for_ingestion(
     timeout_seconds: float = 900,
     poll_seconds: float = 1,
 ) -> None:
-    expected: dict[Tier, set[int]] = {
-        "known": set(),
-        "noise": set(),
-        "failure": set(),
-    }
-    for capture in selected:
-        expected[capture.tier].add(capture.ordinal)
+    expected = {capture.ordinal for capture in selected}
     deadline = time.monotonic() + timeout_seconds
     previous_remaining: int | None = None
     while True:
-        existing = query_existing(api_url, dataset)
-        remaining = sum(
-            len(expected[tier] - existing[tier])
-            for tier in ("known", "noise", "failure")
-        )
+        remaining = len(expected - query_existing(api_url, dataset))
         if remaining != previous_remaining:
             report(f"phase=ingestion remaining={remaining}")
             previous_remaining = remaining
@@ -356,261 +250,137 @@ def wait_for_ingestion(
         time.sleep(poll_seconds)
 
 
-def sql_string(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
-def report(message: str) -> None:
-    print(message, flush=True)
-
-
-def progress_interval(total: int) -> int:
-    """Emit about twenty progress updates, including small corpora."""
-    return max(1, total // 20)
-
-
-def query_domain_candidates(
+def select_captures(
     *,
-    label: str,
-    domains: list[str],
+    captures: list[Capture],
+    existing_ordinals: set[int],
+    existing_urls: set[str],
+    count: int,
     crawl: str,
     seed: int,
-    status_filter: str,
-    minimum_candidates: int,
-    minimum_domains: int,
-) -> list[dict[str, Any]]:
-    report(f"select {label}: querying {len(domains)} domain indexes")
-    candidates: dict[tuple[str, str, int], dict[str, Any]] = {}
-    with httpx.Client(timeout=60, follow_redirects=True) as client:
-        for domain_number, domain in enumerate(domains, start=1):
-            report(
-                f"select {label}: domain {domain_number}/{len(domains)} "
-                f"{domain}; candidates={len(candidates)}"
+    cache_dir: Path,
+) -> list[Capture]:
+    pending = pending_captures(
+        captures,
+        existing_ordinals,
+        count,
+        existing_urls=existing_urls,
+    )
+    if len(pending) == count:
+        report(f"select pages: {count}/{count} cached")
+        return captures
+    selected_count = len(pending)
+
+    excluded_urls = set(existing_urls)
+    excluded_urls.update(normalize_url(capture.url) for capture in captures)
+    excluded_captures = {capture_identity(capture) for capture in captures}
+    next_ordinal = max(
+        existing_ordinals | {capture.ordinal for capture in captures},
+        default=-1,
+    ) + 1
+    paths = sorted(
+        load_index_paths(crawl=crawl, cache_dir=cache_dir),
+        key=lambda path: stable_key(seed, path),
+    )
+    for shard_number, remote_path in enumerate(paths, start=1):
+        missing = count - selected_count
+        if missing <= 0:
+            report(f"select pages: {count}/{count} complete")
+            return captures
+        report(
+            f"select pages: shard {shard_number}/{len(paths)}; "
+            f"remaining={missing}"
+        )
+        local_path = download_index_shard(
+            remote_path=remote_path,
+            cache_dir=cache_dir,
+        )
+        candidates = sample_index_shard(
+            path=local_path,
+            seed=seed + shard_number - 1,
+            sample_rows=max(MINIMUM_SAMPLE_ROWS, missing * SAMPLE_MULTIPLIER),
+        )
+        candidates.sort(
+            key=lambda item: stable_key(
+                seed,
+                str(item["url"]),
+                str(item["filename"]),
+                str(item["offset"]),
             )
+        )
+        for item in candidates:
             try:
-                response = get_cdx_response(
-                    client,
-                    crawl=crawl,
-                    domain=domain,
-                    status_filter=status_filter,
-                )
-            except httpx.HTTPError as exc:
-                report(
-                    f"select {label}: skipping {domain} after retries: {exc}"
-                )
+                url = normalize_url(str(item["url"]))
+                identity = candidate_identity(item)
+            except (TypeError, ValueError):
                 continue
-            if is_empty_cdx_result(response):
+            if url in excluded_urls or identity in excluded_captures:
                 continue
-            response.raise_for_status()
-            for line in response.text.splitlines():
-                if not line.strip():
-                    continue
-                item = json.loads(line)
-                key = (
-                    str(item["filename"]),
-                    str(item["offset"]),
-                    int(item["length"]),
-                )
-                candidates[key] = item
-            if (
-                domain_number >= minimum_domains
-                and len(candidates) >= minimum_candidates
-            ):
-                report(
-                    f"select {label}: enough candidates after "
-                    f"{domain_number}/{len(domains)} domains; "
-                    f"candidates={len(candidates)}"
-                )
-                break
-    return sorted(
-        candidates.values(),
-        key=lambda item: stable_key(
-            seed,
-            str(item["url"]),
-            str(item["filename"]),
-            str(item["offset"]),
-        ),
+            captures.append(capture_from_index(next_ordinal, item, url=url))
+            next_ordinal += 1
+            selected_count += 1
+            excluded_urls.add(url)
+            excluded_captures.add(identity)
+            if selected_count == count:
+                report(f"select pages: {count}/{count} complete")
+                return captures
+    raise RuntimeError(
+        f"Common Crawl's HTML index yielded fewer than {count} new URLs"
     )
 
 
-def query_noise_index_candidates(
-    *,
-    crawl: str,
-    seed: int,
-    cache_dir: Path,
-    known_domains: list[str],
-    noise_target: int,
-    failure_target: int,
-    shard_limit: int,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    noise_paths = load_noise_index_paths(
-        crawl=crawl,
-        cache_dir=cache_dir,
-        subset="warc",
-    )
-    failure_paths = load_noise_index_paths(
-        crawl=crawl,
-        cache_dir=cache_dir,
-        subset="crawldiagnostics",
-    )
-    selected_noise_paths = sorted(
-        noise_paths,
-        key=lambda path: stable_key(seed, path),
-    )[:shard_limit]
-    selected_failure_paths = sorted(
-        failure_paths,
-        key=lambda path: stable_key(seed, path),
-    )[:shard_limit]
-    sample_rows = max(
-        MINIMUM_NOISE_SAMPLE_ROWS,
-        (noise_target + failure_target) * NOISE_SAMPLE_MULTIPLIER,
-    )
-    noise: dict[tuple[str, str, int], dict[str, Any]] = {}
-    failure: dict[tuple[str, str, int], dict[str, Any]] = {}
-    noise_domain_counts: dict[str, int] = {}
-    failure_domain_counts: dict[str, int] = {}
-    for shard_number, remote_path in enumerate(selected_noise_paths, start=1):
-        report(
-            f"select noise index: success shard {shard_number}/{shard_limit}; "
-            f"noise={len(noise)}/{noise_target}"
-        )
-        local_path = download_noise_index_shard(
-            remote_path=remote_path,
-            cache_dir=cache_dir,
-        )
-        for item in sample_noise_index_shard(
-            path=local_path,
-            seed=seed + shard_number - 1,
-            sample_rows=sample_rows,
-        ):
-            hostname = str(item["hostname"]).lower()
-            if domain_is_known(hostname, known_domains):
-                continue
-            registered_domain = str(item["registered_domain"] or hostname)
-            if (
-                noise_domain_counts.get(registered_domain, 0)
-                >= NOISE_CAPTURES_PER_DOMAIN
-            ):
-                continue
-            if int(item["status"]) != 200:
-                continue
-            key = (
-                str(item["filename"]),
-                str(item["offset"]),
-                int(item["length"]),
-            )
-            if key in noise:
-                continue
-            noise[key] = item
-            noise_domain_counts[registered_domain] = (
-                noise_domain_counts.get(registered_domain, 0) + 1
-            )
-        if len(noise) >= noise_target:
-            break
-    for shard_number, remote_path in enumerate(
-        selected_failure_paths,
-        start=1,
-    ):
-        report(
-            f"select noise index: failure shard {shard_number}/{shard_limit}; "
-            f"failure={len(failure)}/{failure_target}"
-        )
-        local_path = download_noise_index_shard(
-            remote_path=remote_path,
-            cache_dir=cache_dir,
-        )
-        for item in sample_noise_index_shard(
-            path=local_path,
-            seed=seed + shard_number - 1,
-            sample_rows=sample_rows,
-        ):
-            hostname = str(item["hostname"]).lower()
-            if domain_is_known(hostname, known_domains):
-                continue
-            registered_domain = str(item["registered_domain"] or hostname)
-            if (
-                failure_domain_counts.get(registered_domain, 0)
-                >= NOISE_CAPTURES_PER_DOMAIN
-            ):
-                continue
-            if int(item["status"]) == 200:
-                continue
-            key = (
-                str(item["filename"]),
-                str(item["offset"]),
-                int(item["length"]),
-            )
-            if key in failure:
-                continue
-            failure[key] = item
-            failure_domain_counts[registered_domain] = (
-                failure_domain_counts.get(registered_domain, 0) + 1
-            )
-        if len(failure) >= failure_target:
-            break
-    return (
-        sorted(
-            noise.values(),
-            key=lambda item: stable_key(
-                seed,
-                str(item["url"]),
-                str(item["filename"]),
-                str(item["offset"]),
-            ),
-        ),
-        sorted(
-            failure.values(),
-            key=lambda item: stable_key(
-                seed,
-                str(item["url"]),
-                str(item["filename"]),
-                str(item["offset"]),
-            ),
-        ),
-    )
-
-
-def load_noise_index_paths(
-    *,
-    crawl: str,
-    cache_dir: Path,
-    subset: str,
-) -> list[str]:
+def load_index_paths(*, crawl: str, cache_dir: Path) -> list[str]:
     index_dir = cache_dir / "index" / crawl
     path = index_dir / "cc-index-table.paths"
     if not path.exists():
-        report("select noise index: downloading shard list")
-        response = httpx.get(
+        report("select pages: downloading index shard list")
+        compressed = download_bytes(
             f"{COMMON_CRAWL_DATA}/crawl-data/{crawl}/"
-            "cc-index-table.paths.gz",
-            timeout=120,
+            "cc-index-table.paths.gz"
         )
-        response.raise_for_status()
         index_dir.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(gzip.decompress(response.content))
+        temporary = path.with_suffix(".tmp")
+        temporary.write_bytes(gzip.decompress(compressed))
+        temporary.replace(path)
     paths = [
         line.strip()
         for line in path.read_text().splitlines()
-        if f"/subset={subset}/" in line
+        if "/subset=warc/" in line
     ]
     if not paths:
         raise RuntimeError(
-            f"Common Crawl published no {subset} URL-index shards for {crawl}"
+            f"Common Crawl published no WARC URL-index shards for {crawl}"
         )
     return paths
 
 
-def download_noise_index_shard(*, remote_path: str, cache_dir: Path) -> Path:
+def download_bytes(url: str, *, timeout: float = 120) -> bytes:
+    last_error: Exception | None = None
+    for attempt in range(5):
+        try:
+            response = httpx.get(url, timeout=timeout, follow_redirects=True)
+            response.raise_for_status()
+            return response.content
+        except (httpx.HTTPError, OSError) as exc:
+            last_error = exc
+            if attempt == 4:
+                break
+            delay = 0.5 * (2**attempt)
+            report(f"download failed; retrying in {delay:g}s")
+            time.sleep(delay)
+    raise RuntimeError(f"failed to download {url}") from last_error
+
+
+def download_index_shard(*, remote_path: str, cache_dir: Path) -> Path:
     crawl = remote_path.split("/crawl=", 1)[1].split("/", 1)[0]
-    subset = remote_path.split("/subset=", 1)[1].split("/", 1)[0]
-    local_dir = cache_dir / "index" / crawl / subset
+    local_dir = cache_dir / "index" / crawl / "warc"
     local_path = local_dir / Path(remote_path).name
     if local_path.exists():
-        report(f"select noise index: cached {local_path.name}")
+        report(f"select pages: cached {local_path.name}")
         return local_path
     local_dir.mkdir(parents=True, exist_ok=True)
     temporary = local_path.with_suffix(local_path.suffix + ".partial")
-    report(f"select noise index: downloading {local_path.name}")
+    report(f"select pages: downloading {local_path.name}")
     last_error: Exception | None = None
     for attempt in range(5):
         try:
@@ -618,6 +388,7 @@ def download_noise_index_shard(*, remote_path: str, cache_dir: Path) -> Path:
                 "GET",
                 f"{COMMON_CRAWL_DATA}/{remote_path}",
                 timeout=120,
+                follow_redirects=True,
             ) as response:
                 response.raise_for_status()
                 with temporary.open("wb") as output:
@@ -629,13 +400,15 @@ def download_noise_index_shard(*, remote_path: str, cache_dir: Path) -> Path:
             last_error = exc
             if attempt == 4:
                 break
-            time.sleep(0.5 * (2**attempt))
+            delay = 0.5 * (2**attempt)
+            report(f"index shard download failed; retrying in {delay:g}s")
+            time.sleep(delay)
     raise RuntimeError(f"failed to download URL-index shard {remote_path}") from (
         last_error
     )
 
 
-def sample_noise_index_shard(
+def sample_index_shard(
     *,
     path: Path,
     seed: int,
@@ -645,8 +418,6 @@ def sample_noise_index_shard(
 
     sql = f"""
         SELECT url,
-               url_host_name AS hostname,
-               url_host_registered_domain AS registered_domain,
                fetch_time,
                fetch_status AS status,
                content_mime_type AS mime,
@@ -655,119 +426,43 @@ def sample_noise_index_shard(
                warc_record_offset AS offset,
                warc_record_length AS length
         FROM read_parquet(?)
-        WHERE content_mime_detected = 'text/html'
-          AND fetch_status IS NOT NULL
+        WHERE fetch_status = 200
+          AND content_mime_detected = 'text/html'
+          AND url_protocol IN ('http', 'https')
+          AND length(url) <= 2048
           AND warc_filename IS NOT NULL
           AND warc_record_offset IS NOT NULL
           AND warc_record_length IS NOT NULL
-        USING SAMPLE reservoir ({sample_rows} ROWS) REPEATABLE ({seed})
+        USING SAMPLE 10 PERCENT (system, {seed})
+        LIMIT {sample_rows}
     """
     with duckdb.connect() as connection:
-        columns = [
-            description[0]
-            for description in connection.execute(sql, [str(path)]).description
-        ]
-        rows = connection.fetchall()
-    return [
-        noise_index_row(dict(zip(columns, row, strict=True)))
-        for row in rows
-    ]
+        result = connection.execute(sql, [str(path)])
+        columns = [description[0] for description in result.description]
+        rows = result.fetchall()
+    return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
-def noise_index_row(row: dict[str, Any]) -> dict[str, Any]:
-    observed_at = row.pop("fetch_time")
-    assert isinstance(observed_at, datetime)
-    row["timestamp"] = observed_at.astimezone(UTC).strftime("%Y%m%d%H%M%S")
-    return row
-
-
-def domain_is_known(hostname: str, known_domains: list[str]) -> bool:
-    return any(
-        hostname == domain or hostname.endswith(f".{domain}")
-        for domain in known_domains
-    )
-
-
-def get_cdx_response(
-    client: httpx.Client,
+def capture_from_index(
+    ordinal: int,
+    item: dict[str, Any],
     *,
-    crawl: str,
-    domain: str,
-    status_filter: str,
-) -> httpx.Response:
-    last_error: httpx.HTTPError | None = None
-    for attempt in range(5):
-        try:
-            response = client.get(
-                f"{COMMON_CRAWL_INDEX}/{crawl}-index",
-                params={
-                    "url": f"{domain}/*",
-                    "output": "json",
-                    "matchType": "domain",
-                    "filter": [
-                        status_filter,
-                        "mime-detected:text/html",
-                    ],
-                    "collapse": "urlkey",
-                    "limit": KNOWN_CAPTURES_PER_DOMAIN,
-                },
-            )
-            if is_empty_cdx_result(response):
-                return response
-            response.raise_for_status()
-            return response
-        except httpx.HTTPError as exc:
-            last_error = exc
-            if attempt == 4:
-                break
-            delay = 0.5 * (2**attempt)
-            report(
-                f"select index: {domain} request failed; "
-                f"retrying in {delay:g}s"
-            )
-            time.sleep(delay)
-    assert last_error is not None
-    raise last_error
-
-
-def extend_from_candidates(
-    captures: list[Capture],
-    *,
-    tier: Tier,
-    target: int,
-    candidates: list[dict[str, Any]],
-    excluded: set[tuple[str, int, int]],
-) -> None:
-    if len(captures) >= target:
-        report(f"select {tier}: {target}/{target} (cached)")
-        excluded.update(capture_identity(capture) for capture in captures[:target])
-        return
-    used = {
-        capture_identity(capture)
-        for capture in captures
-    }
-    for item in candidates:
-        key = candidate_identity(item)
-        if key in used or key in excluded:
-            continue
-        captures.append(capture_from_cdx(tier, len(captures), item))
-        used.add(key)
-        if len(captures) == target:
-            excluded.update(used)
-            report(f"select {tier}: {len(captures)}/{target} complete")
-            return
-    raise RuntimeError(
-        f"domain queries yielded only {len(captures)} unique {tier} pages; "
-        + shortage_advice(tier)
+    url: str,
+) -> Capture:
+    observed_at = item["fetch_time"]
+    if not isinstance(observed_at, datetime):
+        raise ValueError("Common Crawl fetch_time is not a timestamp")
+    return Capture(
+        ordinal=ordinal,
+        url=url,
+        status=int(item["status"]),
+        observed_at=observed_at.astimezone(UTC).isoformat(),
+        filename=str(item["filename"]),
+        offset=int(item["offset"]),
+        length=int(item["length"]),
+        declared_media_type=(str(item["mime"]) if item.get("mime") else None),
+        charset=str(item["encoding"]) if item.get("encoding") else None,
     )
-
-
-def shortage_advice(tier: Tier) -> str:
-    if tier == "known":
-        return "add known domains or reduce --known"
-    if tier == "noise":
-        return "increase --noise-index-shards or reduce --noise"
-    return "increase --noise-index-shards or reduce --fail"
 
 
 def candidate_identity(item: dict[str, Any]) -> tuple[str, int, int]:
@@ -780,34 +475,6 @@ def candidate_identity(item: dict[str, Any]) -> tuple[str, int, int]:
 
 def capture_identity(capture: Capture) -> tuple[str, int, int]:
     return (capture.filename, capture.offset, capture.length)
-
-
-def is_empty_cdx_result(response: httpx.Response) -> bool:
-    if response.status_code != 404:
-        return False
-    try:
-        message = str(response.json().get("message", ""))
-    except ValueError:
-        return False
-    return message.startswith("No Captures found for:")
-
-
-def capture_from_cdx(tier: Tier, ordinal: int, item: dict[str, Any]) -> Capture:
-    timestamp = datetime.strptime(
-        str(item["timestamp"]), "%Y%m%d%H%M%S"
-    ).replace(tzinfo=UTC)
-    return Capture(
-        tier=tier,
-        ordinal=ordinal,
-        url=str(item["url"]),
-        status=int(item["status"]),
-        observed_at=timestamp.isoformat(),
-        filename=str(item["filename"]),
-        offset=int(item["offset"]),
-        length=int(item["length"]),
-        declared_media_type=item.get("mime"),
-        charset=item.get("encoding"),
-    )
 
 
 def stable_key(seed: int, *values: str) -> bytes:
@@ -828,7 +495,7 @@ def ingest_capture(
 ) -> str:
     end = capture.offset + capture.length - 1
     headers = {"Range": f"bytes={capture.offset}-{end}"}
-    last_error: BaseException | None = None
+    last_error: Exception | None = None
     for attempt in range(5):
         try:
             response = client.get(
@@ -837,6 +504,8 @@ def ingest_capture(
             )
             response.raise_for_status()
             content, media_type, charset = extract_html(response.content)
+            if not content:
+                raise ValueError("WARC response contained an empty body")
             metadata = {
                 "source_record_id": capture.source_record_id,
                 "system": "common-crawl",
@@ -865,7 +534,7 @@ def ingest_capture(
                 break
             time.sleep(0.5 * (2**attempt))
     raise RuntimeError(
-        f"failed to ingest {capture.tier}:{capture.ordinal} {capture.url}"
+        f"failed to ingest page:{capture.ordinal} {capture.url}"
     ) from last_error
 
 
@@ -891,164 +560,127 @@ def extract_html(compressed_record: bytes) -> tuple[bytes, str | None, str | Non
     return record.content_stream().read(), media_type, charset
 
 
+def report(message: str) -> None:
+    print(message, flush=True)
+
+
+def sql_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def progress_interval(total: int) -> int:
+    return max(1, total // 20)
+
+
 def reconcile(arguments: argparse.Namespace) -> int:
-    additions = targets_for(
-        arguments.known,
-        arguments.noise,
-        arguments.failure_rate,
-    )
     dataset = dataset_name(arguments.crawl, arguments.seed)
     path = manifest_path(
         arguments.cache_dir.resolve(),
         arguments.crawl,
         arguments.seed,
     )
-    existing = (
-        {"known": set(), "noise": set(), "failure": set()}
-        if arguments.dry_run
-        else query_existing(arguments.api_url, dataset)
-    )
-    bounds = addition_bounds(existing, additions)
-    selection_targets = Targets(
-        known=bounds["known"][1],
-        noise=bounds["noise"][1],
-        failure=bounds["failure"][1],
-    )
-    report(
-        f"dataset={dataset} add={additions.total} "
-        f"(known={additions.known}, noise={additions.noise}, "
-        f"failure={additions.failure})"
-    )
-    report(
-        "existing="
-        f"{sum(len(ordinals) for ordinals in existing.values())} "
-        f"(known={len(existing['known'])}, noise={len(existing['noise'])}, "
-        f"failure={len(existing['failure'])})"
-    )
     captures = load_manifest(path)
-    grouped = captures_by_tier(captures)
-    known_domains = load_domains(arguments.known_domains)
-    report("phase=selection")
-    known_candidates = (
-        query_domain_candidates(
-            label="known pages",
-            domains=known_domains,
-            crawl=arguments.crawl,
-            seed=arguments.seed,
-            status_filter="status:200",
-            minimum_candidates=selection_targets.known,
-            minimum_domains=min(3, len(known_domains)),
-        )
-        if len(grouped["known"]) < selection_targets.known
-        else []
-    )
-    excluded: set[tuple[str, int, int]] = set()
-    extend_from_candidates(
-        grouped["known"],
-        tier="known",
-        target=selection_targets.known,
-        candidates=known_candidates,
-        excluded=excluded,
-    )
-    if (
-        len(grouped["noise"]) < selection_targets.noise
-        or len(grouped["failure"]) < selection_targets.failure
-    ):
-        noise_candidates, failure_candidates = query_noise_index_candidates(
-            crawl=arguments.crawl,
-            seed=arguments.seed,
-            cache_dir=arguments.cache_dir.resolve(),
-            known_domains=known_domains,
-            noise_target=selection_targets.noise,
-            failure_target=selection_targets.failure,
-            shard_limit=arguments.noise_index_shards,
-        )
-    else:
-        noise_candidates, failure_candidates = [], []
-    extend_from_candidates(
-        grouped["noise"],
-        tier="noise",
-        target=selection_targets.noise,
-        candidates=noise_candidates,
-        excluded=excluded,
-    )
-    extend_from_candidates(
-        grouped["failure"],
-        tier="failure",
-        target=selection_targets.failure,
-        candidates=failure_candidates,
-        excluded=excluded,
-    )
-    all_captures = [
-        capture
-        for tier in ("known", "noise", "failure")
-        for capture in grouped[tier]
-    ]
-    save_manifest(path, all_captures)
-    report(f"selection complete: {len(all_captures)} captures")
     if arguments.dry_run:
-        print(
-            f"dry-run: manifest cached at {path}; "
-            "no WARC records downloaded and no Atlas data changed"
+        existing_ordinals: set[int] = set()
+        existing_urls: set[str] = set()
+        report(f"dataset={dataset} add={arguments.pages} lake-dedupe=skipped")
+    else:
+        report("phase=lake-scan")
+        existing_ordinals = query_existing(arguments.api_url, dataset)
+        existing_urls = query_lake_urls(arguments.api_url)
+        report(
+            f"dataset={dataset} add={arguments.pages} "
+            f"existing-pages={len(existing_urls)}"
+        )
+
+    report("phase=selection")
+    captures = select_captures(
+        captures=captures,
+        existing_ordinals=existing_ordinals,
+        existing_urls=existing_urls,
+        count=arguments.pages,
+        crawl=arguments.crawl,
+        seed=arguments.seed,
+        cache_dir=arguments.cache_dir.resolve(),
+    )
+    save_manifest(path, captures)
+    selected = pending_captures(
+        captures,
+        existing_ordinals,
+        arguments.pages,
+        existing_urls=existing_urls,
+    )
+    report(f"selection complete: selected={len(selected)} cached={len(captures)}")
+    if arguments.dry_run:
+        report(
+            f"dry-run: manifest cached at {path}; no Atlas data changed"
         )
         return 0
 
-    report("phase=submission")
-    selected = [
-        capture
-        for tier in ("known", "noise", "failure")
-        for capture in grouped[tier][bounds[tier][0] : bounds[tier][1]]
-    ]
-    if selected:
-        report(
-            f"adding={len(selected)} "
-            f"concurrency={arguments.jobs}"
-        )
-        completed = 0
-        dispositions: dict[str, int] = {}
-        interval = progress_interval(len(selected))
-
-        limits = httpx.Limits(
-            max_connections=arguments.jobs,
-            max_keepalive_connections=arguments.jobs,
-        )
-        with httpx.Client(
-            timeout=120,
-            follow_redirects=True,
-            limits=limits,
-        ) as client:
-
-            def ingest_one(capture: Capture) -> str:
-                return ingest_capture(
+    report(f"phase=submission pages={len(selected)} concurrency={arguments.jobs}")
+    completed = 0
+    dispositions: dict[str, int] = {}
+    failures: list[tuple[Capture, Exception]] = []
+    successful: list[Capture] = []
+    interval = progress_interval(len(selected))
+    limits = httpx.Limits(
+        max_connections=arguments.jobs,
+        max_keepalive_connections=arguments.jobs,
+    )
+    with httpx.Client(
+        timeout=120,
+        follow_redirects=True,
+        limits=limits,
+    ) as client:
+        with ThreadPoolExecutor(max_workers=arguments.jobs) as executor:
+            futures = {
+                executor.submit(
+                    ingest_capture,
                     capture,
                     api_url=arguments.api_url,
                     dataset=dataset,
                     client=client,
-                )
-
-            with ThreadPoolExecutor(max_workers=arguments.jobs) as executor:
-                dispositions_iter = executor.map(
-                    ingest_one,
-                    selected,
-                    buffersize=arguments.jobs * 2,
-                )
-                for disposition in dispositions_iter:
+                ): capture
+                for capture in selected
+            }
+            for future in as_completed(futures):
+                capture = futures[future]
+                try:
+                    disposition = future.result()
+                except Exception as exc:
+                    failures.append((capture, exc))
+                else:
                     dispositions[disposition] = (
                         dispositions.get(disposition, 0) + 1
                     )
-                    completed += 1
-                    if completed % interval == 0 or completed == len(selected):
-                        report(f"submitted={completed}/{len(selected)}")
+                    successful.append(capture)
+                completed += 1
+                if completed % interval == 0 or completed == len(selected):
+                    report(
+                        f"submitted={completed}/{len(selected)} "
+                        f"failed={len(failures)}"
+                    )
+    if dispositions:
         report(
             "submission="
             + ", ".join(
-                f"{name}:{count}" for name, count in sorted(dispositions.items())
+                f"{name}:{count}"
+                for name, count in sorted(dispositions.items())
             )
         )
-        wait_for_ingestion(arguments.api_url, dataset, selected)
-    else:
-        report("nothing requested")
-    report("Atlas committed the requested new evidence.")
+    if successful:
+        wait_for_ingestion(arguments.api_url, dataset, successful)
+    if failures:
+        for capture, error in failures[:20]:
+            report(f"failed page:{capture.ordinal} {capture.url}: {error}")
+        if len(failures) > 20:
+            report(f"failed: {len(failures) - 20} more pages omitted")
+        report(
+            f"Atlas committed {len(successful)} pages; rerun the command to "
+            f"retry the {len(failures)} failures."
+        )
+        return 1
+    report(f"Atlas committed {len(successful)} new pages.")
     return 0
 
 

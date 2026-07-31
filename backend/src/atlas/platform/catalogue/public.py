@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 
 from atlas.platform.catalogue.exceptions import CatalogueSchemaError
 
-PUBLIC_CATALOGUE_VERSION = "5.0.0"
+PUBLIC_CATALOGUE_VERSION = "5.0.1"
 WEB_SCHEMA = "web"
 DOM_SCHEMA = "dom"
 PUBLIC_SCHEMAS = (WEB_SCHEMA, DOM_SCHEMA)
@@ -86,7 +86,7 @@ def dom_selector_extension_available(
     catalogue: CatalogueConnection,
 ) -> bool:
     required = frozenset(
-        {"atlas_dom_select_first", "atlas_dom_select_all"}
+        {"atlas_dom_select_first_keyed", "atlas_dom_select_all_keyed"}
     )
     return required.issubset(_available_required_functions(catalogue))
 

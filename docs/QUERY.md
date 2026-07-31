@@ -52,9 +52,13 @@ never repair it at startup.
 `dom.content_stats` calculates DOM element count and maximum depth explicitly from the structural element
 projection. Those statistics are not attached to every visit. Extension-backed
 `dom.query_selector(content_id, selector)` and `dom.query_selector_all(content_id, selector)` feed
-only the keyed, partition-prunable `dom.element` slice into a streaming table-in/table-out native
-operator. The operator reconstructs at most one document at a time and returns complete element
-rows. Page-first plans should reduce and deduplicate content identities before invoking it.
+runtime content identities to a keyed table-in/table-out native operator. For each identity, that
+operator applies an exact equality filter to the bound DuckLake element scan, reconstructs at most
+one immutable document, and returns complete element rows. It runs inside the caller's ordinary
+DuckDB connection and transaction, so the optimization is available to the SDK, direct shell, API,
+and every other client that loads the extension. Fully qualified `atlas.dom.*` selector calls also
+resolve the attached Atlas physical table when another database is current. Page-first plans
+should still reduce and deduplicate content identities before invoking it.
 
 Every public view and view column has a concise description derived from the semantic contract in
 `SCHEMA.md`. Setup reapplies supported view comments after replacing each view. DuckLake does not

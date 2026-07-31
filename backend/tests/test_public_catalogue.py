@@ -578,8 +578,8 @@ class _SelectorCapabilityCatalogue:
     def trusted_remote_rows(self, sql: str) -> list[tuple]:
         if "DISTINCT function_name" in sql:
             return [
-                ("atlas_dom_select_first",),
-                ("atlas_dom_select_all",),
+                ("atlas_dom_select_first_keyed",),
+                ("atlas_dom_select_all_keyed",),
             ]
         if "function_type = 'table_macro'" in sql:
             return [
