@@ -1,0 +1,8 @@
+id = "mdn-main-link-extraction"
+title = "Extract links from current MDN content"
+use_case = "Export the navigable main-content links from a bounded set of current MDN pages."
+classification = "optimizer"
+ordered = true
+scales = [100, 500, 1000]
+memory_limit = "512MB"
+max_warm_ms = 60000

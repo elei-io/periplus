@@ -52,8 +52,11 @@ the lateral selector into a broad element scan and reduced it only at a later ha
 - `bounded_selector_stage`: feed the same exact-probe batches directly into the existing native
   selector and retain only matched rows for the final relational query.
 
-All temporary state was connection-local. The benchmark did not alter DuckLake. The executable
-harness is [`backend/scripts/benchmark_bounded_dom_hydration.py`](../backend/scripts/benchmark_bounded_dom_hydration.py).
+All temporary state was connection-local. The benchmark did not alter DuckLake. The historical
+strategy-comparison harness is
+[`backend/scripts/benchmark_bounded_dom_hydration.py`](../backend/scripts/benchmark_bounded_dom_hydration.py).
+Ongoing public-SQL regression coverage is the `mdn-main-link-extraction` case in the unified
+[`benchmarks/query/`](../benchmarks/query/) suite.
 
 The staging strategies were research controls only. Production public SQL now uses
 `native_keyed_selector` internally and requires no client-side staging.

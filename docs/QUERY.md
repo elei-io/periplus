@@ -129,6 +129,26 @@ used above its complete identity join. It relies only on Atlas's one-document-pe
 selecting or filtering a document value retains the join. Future rewrites must be optimizer actions
 from this shared policy rather than standalone SQL-spelling patches.
 
+### Optimization development and regression loop
+
+Checked-in real-user scenarios under [`benchmarks/query/`](../benchmarks/query/) are the unit of
+performance work. Each case contains public SQL plus its user story, classification, scale ladder,
+memory limit, ordering semantics, and completion budget. The shared runner executes the SQL
+normally once and then through warm JSON `EXPLAIN ANALYZE`, recording the DuckLake snapshot, exact
+result digest, scan work, peak buffer and temporary storage, and input/output cardinality around
+every blocking operator.
+
+Candidate and baseline reports may be compared only at the same DuckLake snapshot. Column names
+and types, row count, bag multiplicity, values, and requested ordering must match exactly before a
+performance result is accepted. The runner is benchmark orchestration only: it does not rewrite
+SQL or participate in production query execution. Production benefits must remain in the public
+catalogue and native extension.
+
+Every optimization is tested on two growth axes: increasing the selected scope and increasing
+unrelated background corpus data while holding that scope fixed. The second axis detects plans
+whose cost still grows with the whole lake. Use `make query-benchmark ARGS="..."` for the complete
+local protocol.
+
 The internal native table function:
 
 ```sql

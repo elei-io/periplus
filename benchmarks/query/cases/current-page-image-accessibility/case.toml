@@ -1,0 +1,8 @@
+id = "current-page-image-accessibility"
+title = "Image accessibility across current documentation"
+use_case = "Audit missing and empty alternative text across a bounded sample of current documentation pages."
+classification = "optimizer"
+ordered = true
+scales = [50, 100, 250]
+memory_limit = "1GB"
+max_warm_ms = 60000
