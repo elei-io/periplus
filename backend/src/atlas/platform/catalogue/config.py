@@ -22,6 +22,7 @@ class CatalogueConfig:
     data_path: str
     metadata_schema: str
     extension_path: str
+    cdc_extension_path: str
 
     def __post_init__(self) -> None:
         _validate_name("alias", self.alias)
@@ -36,16 +37,40 @@ class CatalogueConfig:
             )
 
     def resolved_extension_path(self) -> Path:
+        return self._resolved_extension_path(
+            self.extension_path,
+            variable="ATLAS_DUCKDB_EXTENSION_PATH",
+            label="Atlas DuckDB extension",
+        )
+
+    def resolved_cdc_extension_path(self) -> Path:
+        if not self.cdc_extension_path.strip():
+            raise CatalogueConfigError(
+                "ATLAS_DUCKLAKE_CDC_EXTENSION_PATH must identify the "
+                "DuckLake CDC extension"
+            )
+        return self._resolved_extension_path(
+            self.cdc_extension_path,
+            variable="ATLAS_DUCKLAKE_CDC_EXTENSION_PATH",
+            label="DuckLake CDC extension",
+        )
+
+    @staticmethod
+    def _resolved_extension_path(
+        value: str,
+        *,
+        variable: str,
+        label: str,
+    ) -> Path:
         try:
-            path = Path(self.extension_path).expanduser().resolve(strict=True)
+            path = Path(value).expanduser().resolve(strict=True)
         except OSError as exc:
             raise CatalogueConfigError(
-                "Atlas DuckDB extension was not found at "
-                "ATLAS_DUCKDB_EXTENSION_PATH"
+                f"{label} was not found at {variable}"
             ) from exc
         if not path.is_file():
             raise CatalogueConfigError(
-                "ATLAS_DUCKDB_EXTENSION_PATH must identify a file"
+                f"{variable} must identify a file"
             )
         return path
 
@@ -67,6 +92,10 @@ def catalogue_config_from_env() -> CatalogueConfig:
         ),
         extension_path=os.environ.get(
             "ATLAS_DUCKDB_EXTENSION_PATH",
+            "",
+        ),
+        cdc_extension_path=os.environ.get(
+            "ATLAS_DUCKLAKE_CDC_EXTENSION_PATH",
             "",
         ),
     )

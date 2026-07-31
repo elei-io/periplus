@@ -192,7 +192,7 @@ def upgrade() -> None:
     sa.Column('ends_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('maximum_run_count', sa.Integer(), nullable=True),
     sa.Column('max_crawls', sa.Integer(), nullable=False),
-    sa.Column('root_url', sa.Text(), nullable=False),
+    sa.Column('urls', sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), 'postgresql'), nullable=False),
     sa.Column('overlap_policy', sa.Text(), nullable=False),
     sa.Column('misfire_policy', sa.Text(), nullable=False),
     sa.Column('run_count', sa.Integer(), nullable=False),

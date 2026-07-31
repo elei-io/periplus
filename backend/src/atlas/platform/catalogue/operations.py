@@ -19,10 +19,38 @@ from atlas.platform.config.performance import (
 _T = TypeVar("_T")
 
 
+def is_catalogue_data_corruption(exc: BaseException) -> bool:
+    """Return whether DuckDB found durable data that cannot be read."""
+
+    if not isinstance(exc, duckdb.Error):
+        return False
+    message = str(exc).lower()
+    parquet = ".parquet" in message or "parquet" in message
+    missing = any(
+        marker in message
+        for marker in (
+            "no such file or directory",
+            "file does not exist",
+            "http 404",
+        )
+    )
+    invalid = any(
+        marker in message
+        for marker in (
+            "checksum mismatch",
+            "corrupt",
+            "invalid parquet",
+            "not a parquet file",
+            "parquet magic bytes not found",
+        )
+    )
+    return parquet and (missing or invalid)
+
+
 def is_retryable_catalogue_unavailability(exc: BaseException) -> bool:
     """Return whether durable work must remain live across this failure."""
 
-    return isinstance(
+    return not is_catalogue_data_corruption(exc) and isinstance(
         exc,
         (duckdb.IOException, psycopg.OperationalError),
     )
@@ -48,7 +76,7 @@ def run_with_catalogue_retry(
     description: str,
     on_conflict: Callable[[], None] | None = None,
 ) -> _T:
-    """Keep availability failures live; bound transaction conflict retries."""
+    """Bound local retries so durable delivery can resume after failure."""
 
     maximum_attempts = CATALOGUE_OPERATION_MAX_ATTEMPTS
     delay = CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS
@@ -75,6 +103,8 @@ def run_with_catalogue_retry(
         except Exception as exc:
             if is_retryable_catalogue_unavailability(exc):
                 unavailability_failures += 1
+                if unavailability_failures >= maximum_attempts:
+                    raise
                 if (
                     unavailability_failures == 1
                     or unavailability_failures % 10 == 0

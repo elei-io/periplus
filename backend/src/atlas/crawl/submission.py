@@ -22,15 +22,16 @@ async def submit_graph_run(
     *,
     runtime: ApiGraphRuntime,
     graph_id: UUID,
-    url: str,
+    urls: list[str],
     trigger_kind: str = "manual",
     trigger_schedule_id: UUID | None = None,
     max_crawls: int = DEFAULT_GRAPH_RUN_MAX_CRAWLS,
     max_run_seconds: int | None = None,
 ) -> GraphRun:
     snapshot = freeze_graph(session, graph_id)
-    normalized_url = normalize_request_url(url)
-    normalized_urls = [normalized_url]
+    normalized_urls = list(
+        dict.fromkeys(normalize_request_url(url) for url in urls)
+    )
     policies = resolve_policy_snapshots(session, normalized_urls)
     session.commit()
     return await create_graph_run(

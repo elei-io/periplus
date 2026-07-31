@@ -31,6 +31,8 @@ export interface SqlMacro {
 
 export interface SqlMetadata {
   catalogue_version: string
+  duckdb_version: string
+  catalogue_bytes: number
   relations: SqlRelation[]
   macros: SqlMacro[]
 }
@@ -40,51 +42,6 @@ export interface SqlResult {
   types: string[]
   rows: unknown[][]
   truncated: boolean
-}
-
-export interface AiMessage {
-  role: "user" | "assistant"
-  content: string
-}
-
-export interface AiSqlSuggestion {
-  title: string
-  description: string
-  sql: string
-  display_sql: string
-}
-
-export interface AiAnswer {
-  conclusion: string
-  evidence: string[]
-  recommendation: string | null
-}
-
-export interface AiEvent {
-  type:
-    | "tool.started"
-    | "tool.completed"
-    | "tool.failed"
-    | "response.completed"
-    | "response.failed"
-  run_id: string
-  call_id: string | null
-  tool: string | null
-  activity: "catalogue" | "query" | "draft" | null
-  purpose: string | null
-  sql: string | null
-  display_sql: string | null
-  row_count: number | null
-  truncated: boolean | null
-  duration_ms: number | null
-  message: string | null
-  response: AiAnswer | null
-  suggestions: AiSqlSuggestion[]
-}
-
-export interface AiStreamResult {
-  kind: "ai"
-  events: AsyncIterable<AiEvent>
 }
 
 export interface Completion {
@@ -121,6 +78,5 @@ export type CommandResult =
   | { kind: "exit" }
   | { kind: "message"; text: string }
   | TableResult
-  | AiStreamResult
 
 export type ConsoleResult = QueryResult | CommandResult

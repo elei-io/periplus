@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from typing import Literal
+from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict
 from atlas.platform.catalogue.schema import (
     CONTENT_STATS,
     HTML_ELEMENTS,
@@ -51,3 +53,16 @@ RELATIONS: dict[ProjectionName, RelationName] = {
     "page_observations": PAGE_OBSERVATIONS,
     "page_heads": PAGE_HEADS,
 }
+
+
+class LiveBatchWork(BaseModel):
+    """One frozen, replayable active-generation visit batch."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: Literal["live"] = "live"
+    batch_id: UUID
+    generation_id: UUID
+    ordinal: int
+    snapshot: int
+    visit_ids: tuple[str, ...]

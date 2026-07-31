@@ -1,5 +1,4 @@
 import type {
-  AiStreamResult,
   CommandResult,
   Completion,
   SqlMacro,
@@ -10,7 +9,6 @@ import type {
 export interface CommandContext {
   history: readonly string[]
   metadata(force?: boolean): Promise<SqlMetadata>
-  ai(prompt: string, fresh: boolean): AiStreamResult
 }
 
 export interface CommandDefinition {
@@ -18,13 +16,16 @@ export interface CommandDefinition {
   summary: string
   usage: string
   examples: readonly string[]
-  execute(args: readonly string[], context: CommandContext): Promise<CommandResult>
+  execute(
+    args: readonly string[],
+    context: CommandContext
+  ): Promise<CommandResult>
   complete?(
     args: readonly string[],
     prefix: string,
     replaceStart: number,
     cursor: number,
-    context: CommandContext,
+    context: CommandContext
   ): Promise<Completion[]>
 }
 
@@ -46,7 +47,10 @@ export class CommandRegistry {
     return [...this.commands.values()]
   }
 
-  async execute(input: string, context: CommandContext): Promise<CommandResult> {
+  async execute(
+    input: string,
+    context: CommandContext
+  ): Promise<CommandResult> {
     const tokens = tokenize(input.slice(1))
     const name = tokens.shift()?.toLowerCase() ?? ""
     const command = this.commands.get(name)
@@ -57,7 +61,7 @@ export class CommandRegistry {
   async complete(
     input: string,
     cursor: number,
-    context: CommandContext,
+    context: CommandContext
   ): Promise<Completion[]> {
     const beforeCursor = input.slice(1, cursor)
     const commandMatch = beforeCursor.match(/^(\S*)/)
@@ -85,7 +89,7 @@ export class CommandRegistry {
       prefix,
       cursor - prefix.length,
       cursor,
-      context,
+      context
     )
   }
 }
@@ -98,21 +102,6 @@ commands = new CommandRegistry([
   })),
   defineLocal("exit", "Exit the console.", ".exit", () => ({ kind: "exit" })),
   {
-    name: "ai",
-    summary: "Ask Atlas AI about the public catalogue.",
-    usage: ".ai [--fresh] <question>",
-    examples: [
-      ".ai Which pages changed most often?",
-      ".ai --fresh Compare response status by hostname",
-    ],
-    async execute(args, context) {
-      const fresh = args[0]?.toLowerCase() === "--fresh"
-      const prompt = args.slice(fresh ? 1 : 0).join(" ").trim()
-      if (!prompt) throw usageError(".ai [--fresh] <question>")
-      return context.ai(prompt, fresh)
-    },
-  },
-  {
     name: "help",
     summary: "Show commands or detailed help.",
     usage: ".help [command]",
@@ -121,9 +110,7 @@ commands = new CommandRegistry([
       if (args.length > 1) throw usageError(".help [command]")
       const requested = args[0]?.replace(/^\./, "").toLowerCase()
       if (requested) {
-        const command = commands
-          .all()
-          .find((item) => item.name === requested)
+        const command = commands.all().find((item) => item.name === requested)
         if (!command) throw new Error(`Unknown command: .${requested}`)
         return {
           kind: "message",
@@ -139,9 +126,7 @@ commands = new CommandRegistry([
       return {
         kind: "table",
         columns: ["Command", "Description"],
-        rows: commands
-          .all()
-          .map((command) => [command.usage, command.summary]),
+        rows: commands.all().map((command) => [command.usage, command.summary]),
         summary:
           "Enter read-only SQL against web.* and dom.*. Press Tab to complete.",
       }
@@ -226,7 +211,7 @@ commands = new CommandRegistry([
             signature(macro),
           ])
           .sort((left, right) =>
-            String(left[0]).localeCompare(String(right[0])),
+            String(left[0]).localeCompare(String(right[0]))
           ),
         summary: `${metadata.macros.length} public macro${
           metadata.macros.length === 1 ? "" : "s"
@@ -325,7 +310,7 @@ function defineLocal(
   name: string,
   summary: string,
   usage: string,
-  execute: () => CommandResult,
+  execute: () => CommandResult
 ): CommandDefinition {
   return {
     name,
@@ -365,13 +350,13 @@ function tokenize(input: string): string[] {
 
 function resolveObject(
   requested: string,
-  metadata: SqlMetadata,
+  metadata: SqlMetadata
 ): SqlRelation | SqlMacro {
   const normalized = requested.toLowerCase()
   const matches = [...metadata.relations, ...metadata.macros].filter(
     (item) =>
       item.name.toLowerCase() === normalized ||
-      qualified(item).toLowerCase() === normalized,
+      qualified(item).toLowerCase() === normalized
   )
   if (!matches.length) throw new Error(`Public object not found: ${requested}`)
   if (matches.length > 1) {

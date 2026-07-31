@@ -41,6 +41,25 @@ RUN git clone --depth 1 --branch "${DUCKDB_VERSION}" \
         --parallel 2
 
 
+FROM atlas-extension-builder AS ducklake-cdc-extension-builder
+
+WORKDIR /build/ducklake-cdc-extension
+
+COPY --from=ducklake-cdc-extension CMakeLists.txt ./
+COPY --from=ducklake-cdc-extension src/ src/
+COPY docker/atlas/ducklake_cdc_extension_config.cmake ./extension_config.cmake
+
+RUN DISABLE_EXTENSIONS_FOR_TEST=1 cmake \
+        -G Ninja \
+        -DDUCKDB_EXTENSION_CONFIGS=/build/ducklake-cdc-extension/extension_config.cmake \
+        -DCMAKE_BUILD_TYPE=Release \
+        -S /build/atlas-extension/duckdb \
+        -B /build/atlas-extension/build/release \
+    && cmake --build /build/atlas-extension/build/release \
+        --target ducklake_cdc_loadable_extension \
+        --parallel 2
+
+
 FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim AS dependencies
 
 RUN apt-get update \
@@ -70,11 +89,15 @@ COPY backend/ ./
 COPY --from=atlas-extension-builder \
     /build/atlas-extension/build/release/extension/atlas/atlas.duckdb_extension \
     /opt/atlas/atlas.duckdb_extension
+COPY --from=ducklake-cdc-extension-builder \
+    /build/atlas-extension/build/release/extension/ducklake_cdc/ducklake_cdc.duckdb_extension \
+    /opt/atlas/ducklake_cdc.duckdb_extension
 
 # Install Atlas itself as a regular package. The resulting image must not depend on
 # a source bind mount, editable-package path, or the build context at runtime.
 RUN UV_PROJECT_ENVIRONMENT=/opt/atlas-venv uv sync --frozen --no-editable --no-dev
 
 ENV ATLAS_DUCKDB_EXTENSION_PATH=/opt/atlas/atlas.duckdb_extension
+ENV ATLAS_DUCKLAKE_CDC_EXTENSION_PATH=/opt/atlas/ducklake_cdc.duckdb_extension
 
 FROM base AS final

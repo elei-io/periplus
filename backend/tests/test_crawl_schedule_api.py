@@ -85,7 +85,10 @@ class CrawlScheduleApiTests(unittest.TestCase):
             json={
                 "name": "Hourly",
                 "timing": {"kind": "interval", "seconds": 3600},
-                "root_url": "https://example.com/",
+                "urls": [
+                    "https://example.com/",
+                    "https://example.org/",
+                ],
                 "overlap_policy": "skip",
                 "misfire_policy": "skip",
             },
@@ -103,6 +106,10 @@ class CrawlScheduleApiTests(unittest.TestCase):
         self.assertEqual(resources.json()["items"][0]["id"], schedule_id)
         self.assertEqual(
             resources.json()["items"][0]["plan_slug"], "scheduled"
+        )
+        self.assertEqual(
+            resources.json()["items"][0]["urls"],
+            ["https://example.com/", "https://example.org/"],
         )
 
         resource = self.client.get(f"/crawl-schedules/{schedule_id}")
@@ -147,7 +154,7 @@ class CrawlScheduleApiTests(unittest.TestCase):
             json={
                 "name": "Invalid",
                 "timing": {"kind": "interval", "seconds": 3600},
-                "root_url": "file:///tmp/page.html",
+                "urls": ["file:///tmp/page.html"],
             },
         )
 

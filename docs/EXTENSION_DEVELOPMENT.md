@@ -17,20 +17,24 @@ Code/
 │   ├── .env
 │   ├── ducklake.sh
 │   └── backend/scripts/direct_ducklake.py
-└── atlas-duckdb-extension/
+├── atlas-duckdb-extension/
     ├── duckdb/
     ├── src/atlas_extension.cpp
     └── test/sql/
+└── quack/
+    └── ducklake-cdc-extension-1.5.5/
 ```
 
 The extension repository comes from DuckDB's official C++ extension template. Its DuckDB
 submodule and Atlas's Python `duckdb` dependency must remain on the exact same version because
 loadable C++ extensions are version- and platform-specific.
 
-Compose passes the sibling extension source as an additional build context. A cached Linux
-builder stage compiles the exact DuckDB and Lexbor versions, and the final Atlas image contains
-only `/opt/atlas/atlas.duckdb_extension`. `atlas-setup` loads that artifact before attaching
-DuckLake and installs the complete persistent catalogue.
+Compose passes both extension sources as additional build contexts. Cached Linux builder stages
+compile both against DuckDB 1.5.5, and the final Atlas image contains only
+`/opt/atlas/atlas.duckdb_extension` and
+`/opt/atlas/ducklake_cdc.duckdb_extension`. `atlas-setup` installs the persistent catalogue and
+bootstraps CDC state. Ordinary catalogue connections load only the Atlas extension; the dedicated
+live-materialization connection loads and prewarms the CDC extension before attaching DuckLake.
 
 The shell reads the same `ATLAS_DUCKLAKE_ALIAS`, `ATLAS_DUCKLAKE_METADATA_PATH`,
 `ATLAS_DUCKLAKE_METADATA_SCHEMA`, and `ATLAS_DUCKLAKE_DATA_PATH` variables as Atlas. The configured

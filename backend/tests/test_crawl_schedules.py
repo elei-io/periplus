@@ -67,7 +67,9 @@ class CrawlScheduleTests(unittest.TestCase):
         self.session.close()
         self.engine.dispose()
 
-    def test_interval_schedule_normalizes_root_url(self) -> None:
+    def test_interval_schedule_normalizes_and_deduplicates_start_urls(
+        self,
+    ) -> None:
         now = datetime(2026, 7, 17, 12, tzinfo=UTC)
         schedule = create_schedule(
             self.session,
@@ -76,12 +78,19 @@ class CrawlScheduleTests(unittest.TestCase):
                 name="Hourly",
                 timing=IntervalTiming(kind="interval", seconds=3600),
                 max_crawls=250,
-                root_url="HTTPS://Example.com",
+                urls=[
+                    "HTTPS://Example.com",
+                    "https://example.com/",
+                    "https://example.org/start",
+                ],
             ),
             now=now,
         )
 
-        self.assertEqual(schedule.root_url, "https://example.com/")
+        self.assertEqual(
+            schedule.urls,
+            ["https://example.com/", "https://example.org/start"],
+        )
         self.assertEqual(schedule.max_crawls, 250)
         self.assertEqual(schedule.next_run_at, now + timedelta(hours=1))
         self.assertEqual(schedule.status, "active")
@@ -96,7 +105,7 @@ class CrawlScheduleTests(unittest.TestCase):
                 name="Windowed",
                 timing=IntervalTiming(kind="interval", seconds=3600),
                 starts_at=starts_at,
-                root_url="https://example.com/",
+                urls=["https://example.com/"],
             ),
             now=now,
         )
@@ -112,7 +121,7 @@ class CrawlScheduleTests(unittest.TestCase):
                 name="Paused",
                 enabled=False,
                 timing=IntervalTiming(kind="interval", seconds=3600),
-                root_url="https://example.com/",
+                urls=["https://example.com/"],
             ),
         )
 
@@ -160,7 +169,7 @@ class CrawlScheduleTests(unittest.TestCase):
                 name="Once",
                 timing=IntervalTiming(kind="interval", seconds=60),
                 maximum_run_count=1,
-                root_url="https://example.com/",
+                urls=["https://example.com/"],
             ),
         )
         model = self.session.get(CrawlSchedule, schedule.id)

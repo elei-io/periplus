@@ -61,6 +61,7 @@ class BatchResult:
     parquet_seconds: float
     commit_seconds: float
     already_applied: bool = False
+    superseded: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +77,7 @@ class PreparedBatch:
     pages: tuple[dict[str, object], ...]
     heads: tuple[dict[str, object], ...]
     files: dict[str, tuple[Path, ...]]
+    link_identities: Path | None
 
 
 def discard_batch_staging(
@@ -84,11 +86,12 @@ def discard_batch_staging(
     run_id: UUID,
     batch_id: UUID,
 ) -> None:
-    """Remove only files owned by one batch that did not commit."""
+    """Remove only transient sidecars owned by one batch."""
 
     directory = (
         Path(data_path)
-        / "_atlas_rebuild"
+        / "material"
+        / "staging"
         / run_id.hex
         / batch_id.hex
     )
@@ -99,7 +102,7 @@ def discard_batch_staging(
 def discard_run_link_staging(data_path: str, *, run_id: UUID) -> None:
     """Remove link identity sidecars after activation or failed-run cleanup."""
 
-    root = Path(data_path) / "_atlas_rebuild" / run_id.hex
+    root = Path(data_path) / "material" / "staging" / run_id.hex
     if not root.is_dir():
         return
     for directory in root.glob("*/link_identities"):
@@ -107,8 +110,26 @@ def discard_run_link_staging(data_path: str, *, run_id: UUID) -> None:
             shutil.rmtree(directory)
 
 
+def discard_batch_link_staging(
+    data_path: str,
+    *,
+    run_id: UUID,
+    batch_id: UUID,
+) -> None:
+    directory = (
+        Path(data_path)
+        / "material"
+        / "staging"
+        / run_id.hex
+        / batch_id.hex
+        / "link_identities"
+    )
+    if directory.is_dir():
+        shutil.rmtree(directory)
+
+
 def link_identity_paths(data_path: str, *, run_id: UUID) -> tuple[Path, ...]:
-    root = Path(data_path) / "_atlas_rebuild" / run_id.hex
+    root = Path(data_path) / "material" / "staging" / run_id.hex
     return tuple(sorted(root.glob("*/link_identities/data.parquet")))
 
 
@@ -181,7 +202,7 @@ def prepare_batch(
         )
         files[table_name] = paths
         output_bytes += sum(path.stat().st_size for path in paths)
-    _write_link_identity_parquet(
+    link_identities = _write_link_identity_parquet(
         catalogue,
         projection.links,
         run_id=run.id,
@@ -205,6 +226,7 @@ def prepare_batch(
         pages=tuple(pages.values()),
         heads=tuple(heads),
         files=files,
+        link_identities=link_identities,
     )
 
 
@@ -213,9 +235,22 @@ def commit_prepared_batch(
     run: MaterializationRun,
     batch: MaterializationBatch,
     prepared: PreparedBatch,
+    *,
+    active_generation: bool = False,
 ) -> BatchResult:
     commit_started = time.perf_counter()
     with catalogue.remote_transaction():
+        if active_generation and not _is_active_generation(catalogue, run.id):
+            return BatchResult(
+                source_items=prepared.source_items,
+                source_bytes=prepared.source_bytes,
+                output_rows=prepared.output_rows,
+                output_bytes=prepared.output_bytes,
+                project_seconds=prepared.project_seconds,
+                parquet_seconds=prepared.parquet_seconds,
+                commit_seconds=time.perf_counter() - commit_started,
+                superseded=True,
+            )
         if _is_applied(catalogue, batch.id):
             return BatchResult(
                 source_items=prepared.source_items,
@@ -247,6 +282,13 @@ def commit_prepared_batch(
             table_name=run.generation_tables["page_heads"],
             transaction=False,
         )
+        if active_generation and prepared.link_identities is not None:
+            merge_live_links(
+                catalogue,
+                links_table=run.generation_tables["links"],
+                occurrences_table=run.generation_tables["link_occurrences"],
+                identities=prepared.link_identities,
+            )
         catalogue.trusted_remote_execute(
             "INSERT INTO material._atlas_applied_batches VALUES ("
             f"UUID {sql_string(str(run.id))}, "
@@ -427,10 +469,11 @@ def _write_partitioned_parquet(
         return ()
     root = (
         Path(catalogue.config.data_path)
-        / "_atlas_rebuild"
+        / "material"
+        / "data"
         / run_id.hex
-        / batch_id.hex
         / table_name
+        / batch_id.hex
     )
     root.mkdir(parents=True, exist_ok=True)
     registration = f"_atlas_batch_{batch_id.hex}"
@@ -483,7 +526,8 @@ def _write_link_identity_parquet(
         return None
     directory = (
         Path(catalogue.config.data_path)
-        / "_atlas_rebuild"
+        / "material"
+        / "staging"
         / run_id.hex
         / batch_id.hex
         / "link_identities"
@@ -553,6 +597,66 @@ def populate_final_links(
     )
 
 
+def merge_live_links(
+    catalogue: Catalogue,
+    *,
+    links_table: str,
+    occurrences_table: str,
+    identities: Path,
+) -> None:
+    """Upsert exact rollups for links touched by one committed live batch."""
+
+    path = sql_string(str(identities))
+    catalogue.trusted_remote_execute(
+        f"""
+        MERGE INTO material.{links_table} AS target
+        USING (
+          WITH identities AS (
+            SELECT DISTINCT
+                   link_id::UUID AS link_id,
+                   source_page_id::UUID AS source_page_id,
+                   target_page_id::UUID AS target_page_id,
+                   source_url, target_url, relation_scope
+            FROM read_parquet({path})
+          ),
+          rollup AS (
+            SELECT occurrence.link_id,
+                   min(occurrence.observed_at) AS first_seen_at,
+                   max(occurrence.observed_at) AS last_seen_at,
+                   count(DISTINCT occurrence.visit_id) AS visit_count,
+                   count(DISTINCT occurrence.content_sha256)
+                     AS distinct_content_count,
+                   count(*) AS occurrence_count
+            FROM material.{occurrences_table} AS occurrence
+            JOIN identities USING (link_id)
+            GROUP BY occurrence.link_id
+          )
+          SELECT identity.link_id, identity.source_page_id,
+                 identity.target_page_id, identity.source_url,
+                 identity.target_url, identity.relation_scope,
+                 rollup.first_seen_at, rollup.last_seen_at,
+                 rollup.visit_count, rollup.distinct_content_count,
+                 rollup.occurrence_count
+          FROM identities AS identity
+          JOIN rollup USING (link_id)
+        ) AS delta
+          ON target.link_id = delta.link_id
+        WHEN MATCHED THEN UPDATE SET
+          source_page_id = delta.source_page_id,
+          target_page_id = delta.target_page_id,
+          source_url = delta.source_url,
+          target_url = delta.target_url,
+          relation_scope = delta.relation_scope,
+          first_seen_at = delta.first_seen_at,
+          last_seen_at = delta.last_seen_at,
+          visit_count = delta.visit_count,
+          distinct_content_count = delta.distinct_content_count,
+          occurrence_count = delta.occurrence_count
+        WHEN NOT MATCHED THEN INSERT
+        """
+    )
+
+
 def _cast_projection(name: str, target_type: str) -> str:
     quoted = f'"{name}"'
     return f"{quoted}::{target_type} AS {quoted}"
@@ -568,6 +672,16 @@ def _is_applied(catalogue: Catalogue, batch_id: UUID) -> bool:
         catalogue.trusted_remote_rows(
             "SELECT 1 FROM material._atlas_applied_batches "
             f"WHERE batch_id = UUID {sql_string(str(batch_id))} LIMIT 1"
+        )
+    )
+
+
+def _is_active_generation(catalogue: Catalogue, generation_id: UUID) -> bool:
+    return bool(
+        catalogue.trusted_remote_rows(
+            "SELECT 1 FROM material._atlas_materialization_state "
+            f"WHERE generation_id = UUID {sql_string(str(generation_id))} "
+            "LIMIT 1"
         )
     )
 

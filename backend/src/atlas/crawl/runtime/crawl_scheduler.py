@@ -145,8 +145,8 @@ async def _process_due_schedule(
             return
 
         snapshot = freeze_graph(session, schedule.graph_id)
-        url = schedule.root_url
-        policies = resolve_policy_snapshots(session, [url])
+        urls = schedule.urls
+        policies = resolve_policy_snapshots(session, urls)
         schedule_snapshot = schedule
         session.commit()
 
@@ -157,7 +157,7 @@ async def _process_due_schedule(
                 progress=progress,
                 jetstream=jetstream,
                 snapshot=snapshot,
-                urls=[url],
+                urls=urls,
                 policy_resolver=policies.__getitem__,
                 trigger_kind="schedule",
                 run_id=run_id,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
@@ -9,6 +10,7 @@ from atlas.query.ai import (
     AiAnswer,
     AiRequest,
     CatalogueAssistantTools,
+    _INSTRUCTIONS,
     query_catalogue,
 )
 
@@ -32,6 +34,13 @@ class _Control:
 
 
 class AiContractTests(unittest.IsolatedAsyncioTestCase):
+    def test_instructions_prioritize_notebook_ready_research_sql(self) -> None:
+        instructions = " ".join(_INSTRUCTIONS.split())
+        self.assertIn("turn a research goal into SQL", instructions)
+        self.assertIn("take your suggested SQL into a notebook", instructions)
+        self.assertIn("register at least one and at most three", instructions)
+        self.assertIn("exploratory probes", instructions)
+
     def test_request_context_is_small_and_strict(self) -> None:
         request = AiRequest.model_validate(
             {
@@ -53,6 +62,39 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
                     ],
                 }
             )
+
+    async def test_catalogue_metadata_uses_the_current_five_value_contract(
+        self,
+    ) -> None:
+        tools = CatalogueAssistantTools(_Control(_Catalogue()))
+        with patch(
+            "atlas.query.ai._public_metadata",
+            return_value=(
+                "catalogue-v1",
+                "duckdb-v1",
+                128,
+                [
+                    (
+                        "web",
+                        "page",
+                        "Captured pages.",
+                        "page_id",
+                        "UUID",
+                        False,
+                        "Stable page identity.",
+                    )
+                ],
+                {},
+            ),
+        ):
+            result = await tools.list_objects()
+
+        self.assertEqual(result["catalogue_version"], "catalogue-v1")
+        self.assertEqual(result["relations"][0]["name"], "web.page")
+        self.assertEqual(
+            result["relations"][0]["columns"][0]["name"],
+            "page_id",
+        )
 
     async def test_ai_query_is_read_only_and_bounded(self) -> None:
         catalogue = _Catalogue([[index] for index in range(202)])
@@ -135,22 +177,25 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
             "SELECT\n  COUNT(*)\nFROM web.page;",
         )
         self.assertEqual(events[-1].row_count, 1)
+        self.assertEqual(events[-1].columns, ["value"])
+        self.assertEqual(events[-1].types, ["INTEGER"])
+        self.assertEqual(events[-1].rows, [[4413]])
 
-    def test_answer_contract_is_compact_and_structured(self) -> None:
+    def test_answer_contract_is_compact_markdown(self) -> None:
         answer = AiAnswer.model_validate(
             {
-                "conclusion": "There are 4,413 domains.",
-                "evidence": ["Counted distinct non-null domains."],
-                "recommendation": None,
+                "markdown": (
+                    "There are **4,413 domains**.\n\n"
+                    "- Counted distinct non-null domains."
+                ),
             }
         )
 
-        self.assertEqual(answer.conclusion, "There are 4,413 domains.")
+        self.assertIn("**4,413 domains**", answer.markdown)
         with self.assertRaises(ValidationError):
             AiAnswer.model_validate(
                 {
-                    "conclusion": "Too much evidence.",
-                    "evidence": [str(index) for index in range(4)],
+                    "markdown": "x" * 4_001,
                 }
             )
 

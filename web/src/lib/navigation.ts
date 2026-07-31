@@ -92,8 +92,18 @@ export const navigationGroups: NavigationGroup[] = [
 ]
 
 export const defaultNavigationItem = navigationGroups[0].items[0]
+export const homeNavigationItem = {
+  name: "Home",
+  href: "/",
+  icon: DatabaseZapIcon,
+  title: "Atlas",
+  description: "Turn the web into queryable evidence.",
+}
 
 export function findNavigationItem(pathname: string) {
+  if (pathname === "/") {
+    return homeNavigationItem
+  }
   if (pathname.startsWith("/crawls/plans/")) {
     return navigationGroups
       .flatMap((group) => group.items)

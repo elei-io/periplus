@@ -40,6 +40,7 @@ class Catalogue:
         config: CatalogueConfig,
         *,
         duckdb_config: Mapping[str, str] | None = None,
+        load_cdc: bool = False,
     ) -> None:
         self.config = config
         connection_config = dict(duckdb_config or {})
@@ -56,6 +57,12 @@ class Catalogue:
         self._connection.load_extension(
             str(config.resolved_extension_path())
         )
+        if load_cdc:
+            self._connection.load_extension(
+                str(config.resolved_cdc_extension_path())
+            )
+            # Prewarm this handle before it touches an attached catalog.
+            self._connection.execute("SELECT cdc_version()").fetchone()
         native_functions = {
             str(name)
             for (name,) in self._connection.execute(
@@ -201,6 +208,13 @@ class Catalogue:
                 "source_snapshot BIGINT NOT NULL, source_items BIGINT NOT NULL, "
                 "source_bytes BIGINT NOT NULL, output_rows BIGINT NOT NULL, "
                 "output_bytes BIGINT NOT NULL, committed_at TIMESTAMPTZ NOT NULL)"
+            )
+            self.trusted_remote_execute(
+                "CREATE TABLE IF NOT EXISTS "
+                f"{_qualified(self.config.alias, MATERIAL_SCHEMA, '_atlas_materialization_state')} "
+                "(generation_id UUID NOT NULL, covered_snapshot BIGINT NOT NULL, "
+                "batch_size INTEGER NOT NULL, "
+                "activated_at TIMESTAMPTZ NOT NULL)"
             )
         install_public_catalogue(self)
         self._use_schema_if_available()

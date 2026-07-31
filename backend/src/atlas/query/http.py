@@ -104,6 +104,8 @@ class SqlMacro(BaseModel):
 
 class SqlMetadataResponse(BaseModel):
     catalogue_version: str
+    duckdb_version: str
+    catalogue_bytes: int = Field(ge=0)
     relations: list[SqlRelation]
     macros: list[SqlMacro]
 
@@ -134,9 +136,13 @@ async def query(
 async def metadata(
     control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
 ) -> SqlMetadataResponse:
-    version, rows, macro_rows = await control.run(
-        lambda _session, catalogue: _public_metadata(catalogue)
-    )
+    (
+        version,
+        duckdb_version,
+        catalogue_bytes,
+        rows,
+        macro_rows,
+    ) = await control.run(lambda _session, catalogue: _public_metadata(catalogue))
     relations: dict[tuple[str, str], SqlRelation] = {}
     for (
         schema_name,
@@ -204,6 +210,8 @@ async def metadata(
     ]
     return SqlMetadataResponse(
         catalogue_version=version,
+        duckdb_version=duckdb_version,
+        catalogue_bytes=catalogue_bytes,
         relations=list(relations.values()),
         macros=macros,
     )
@@ -211,12 +219,35 @@ async def metadata(
 
 def _public_metadata(
     catalogue,
-) -> tuple[str, list[tuple], dict[tuple[str, str], list[tuple]]]:
+) -> tuple[
+    str,
+    str,
+    int,
+    list[tuple],
+    dict[tuple[str, str], list[tuple]],
+]:
     version_rows = catalogue.trusted_remote_rows(
         f"SELECT {WEB_SCHEMA}._catalogue_version()"
     )
     if len(version_rows) != 1:
         raise RuntimeError("public catalogue version query returned no value")
+    alias = "'" + catalogue.config.alias.replace("'", "''") + "'"
+    runtime_rows = catalogue.trusted_remote_rows(
+        f"""
+        SELECT version(),
+               coalesce(
+                   sum(
+                       coalesce(file_size_bytes, 0)
+                       + coalesce(delete_file_size_bytes, 0)
+                   ),
+                   0
+               )::BIGINT
+        FROM ducklake_table_info({alias})
+        """
+    )
+    if len(runtime_rows) != 1:
+        raise RuntimeError("catalogue runtime metadata query returned no value")
+    duckdb_version, catalogue_bytes = runtime_rows[0]
     macro_rows: dict[tuple[str, str], list[tuple]] = {}
     for item in installed_public_objects(catalogue):
         if item.kind != "table_macro" or not item.exposed:
@@ -229,7 +260,13 @@ def _public_metadata(
             f"DESCRIBE SELECT * FROM {item.schema}.{item.name}"
             f"({item.arguments_sql})"
         )
-    return str(version_rows[0][0]), _public_metadata_rows(catalogue), macro_rows
+    return (
+        str(version_rows[0][0]),
+        str(duckdb_version),
+        int(catalogue_bytes),
+        _public_metadata_rows(catalogue),
+        macro_rows,
+    )
 
 
 def _public_metadata_rows(catalogue) -> list[tuple]:

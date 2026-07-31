@@ -3,11 +3,20 @@ from __future__ import annotations
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 from nats.js.api import ConsumerConfig, KeyValueConfig, StorageType, StreamConfig
 from nats.js.errors import NotFoundError
 
-from atlas.crawl.runtime.graph_queue import _bucket, _ensure_consumer
+from atlas.crawl.control.crawl_graphs.schemas import (
+    FrozenGraphNode,
+    FrozenGraphSnapshot,
+)
+from atlas.crawl.runtime.graph_queue import (
+    _bucket,
+    _ensure_consumer,
+    new_graph_run,
+)
 
 
 class FakeBucket:
@@ -114,6 +123,42 @@ class GraphQueueStorageTests(unittest.IsolatedAsyncioTestCase):
         assert jetstream.updated is not None
         self.assertEqual(jetstream.updated.max_age, 60)
         self.assertEqual(jetstream.updated.max_bytes, 512)
+
+
+class GraphRunAdmissionTests(unittest.TestCase):
+    def test_run_normalizes_and_deduplicates_multiple_start_urls(self) -> None:
+        run = new_graph_run(
+            _snapshot(),
+            [
+                "HTTPS://Example.com",
+                "https://example.com/",
+                "https://example.org/start",
+            ],
+            max_crawls=2,
+        )
+
+        self.assertEqual(
+            run.trigger_urls,
+            ("https://example.com/", "https://example.org/start"),
+        )
+
+    def test_run_budget_must_cover_every_start_url(self) -> None:
+        with self.assertRaisesRegex(ValueError, "distinct start URLs"):
+            new_graph_run(
+                _snapshot(),
+                ["https://example.com/", "https://example.org/"],
+                max_crawls=1,
+            )
+
+
+def _snapshot() -> FrozenGraphSnapshot:
+    root = FrozenGraphNode(id=uuid4(), name="root")
+    return FrozenGraphSnapshot(
+        graph_id=uuid4(),
+        root_node_id=root.id,
+        nodes=[root],
+        edges=[],
+    )
 
 
 if __name__ == "__main__":

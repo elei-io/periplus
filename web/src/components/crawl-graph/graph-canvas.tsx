@@ -302,7 +302,7 @@ function GraphCanvasContent({
   const addStartNode = useCallback(() => {
     createNode.mutate({
       name: "Start",
-      description: "Receives the crawl root URL.",
+      description: "Receives the crawl start URLs.",
     })
   }, [createNode])
 

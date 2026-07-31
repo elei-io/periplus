@@ -19,6 +19,8 @@ from atlas.crawl.control.crawl_graphs.models import CrawlGraph
 from atlas.crawl.control.crawl_graphs.schemas import (
     DEFAULT_GRAPH_RUN_MAX_CRAWLS,
     MAX_GRAPH_RUN_CRAWLS,
+    MAX_GRAPH_RUN_START_URLS,
+    CrawlStartUrl,
     FrozenGraphEdge,
     FrozenGraphNode,
     FrozenGraphSnapshot,
@@ -61,7 +63,9 @@ class CrawlRelationScope(StrEnum):
 class CrawlCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    url: str = Field(min_length=1, max_length=8_192)
+    urls: list[CrawlStartUrl] = Field(
+        min_length=1, max_length=MAX_GRAPH_RUN_START_URLS
+    )
     depth: int | None = Field(default=None, ge=0, le=32)
     relation_scope: CrawlRelationScope | None = None
     plan: str | None = Field(
@@ -93,7 +97,9 @@ class CrawlCreate(BaseModel):
 class GraphRunTrigger(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    url: str = Field(min_length=1, max_length=8_192)
+    urls: list[CrawlStartUrl] = Field(
+        min_length=1, max_length=MAX_GRAPH_RUN_START_URLS
+    )
     max_crawls: int = Field(
         default=DEFAULT_GRAPH_RUN_MAX_CRAWLS,
         ge=1,
@@ -127,7 +133,7 @@ class GraphRunSummary(BaseModel):
     ]
     trigger_kind: Literal["manual", "schedule"]
     trigger_schedule_id: UUID | None
-    url: str
+    trigger_urls: tuple[str, ...]
     max_crawls: int
     crawl_limit_reached: bool
     request_count: int
@@ -267,7 +273,7 @@ async def _run_summaries(
             ),
             plan_id=run.graph_id,
             plan_slug=slugs.get(run.graph_id),
-            url=run.trigger_urls[0],
+            trigger_urls=run.trigger_urls,
             queued_request_count=counts[0],
             fetching_request_count=counts[1],
             navigating_request_count=counts[2],
@@ -335,7 +341,7 @@ async def crawl(
                 session,
                 runtime=runtime,
                 graph_id=plan_id,
-                url=payload.url,
+                urls=payload.urls,
                 max_crawls=payload.max_crawls,
                 max_run_seconds=payload.max_run_seconds,
             )
@@ -349,8 +355,12 @@ async def crawl(
     )
     snapshot = _builtin_plan_snapshot(depth, relation_scope)
     try:
-        normalized_url = normalize_request_url(payload.url)
-        policies = resolve_policy_snapshots(session, [normalized_url])
+        normalized_urls = list(
+            dict.fromkeys(
+                normalize_request_url(url) for url in payload.urls
+            )
+        )
+        policies = resolve_policy_snapshots(session, normalized_urls)
         session.commit()
         run = await create_graph_run(
             runs=runtime.runs,
@@ -358,7 +368,7 @@ async def crawl(
             progress=runtime.runs,
             jetstream=runtime.jetstream,
             snapshot=snapshot,
-            urls=[normalized_url],
+            urls=normalized_urls,
             policy_resolver=policies.__getitem__,
             max_crawls=payload.max_crawls,
             max_run_seconds=payload.max_run_seconds,
@@ -382,7 +392,7 @@ async def trigger(
             session,
             runtime=runtime,
             graph_id=graph_id,
-            url=payload.url,
+            urls=payload.urls,
             max_crawls=payload.max_crawls,
             max_run_seconds=payload.max_run_seconds,
         )

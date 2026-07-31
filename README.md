@@ -30,10 +30,11 @@ process roles from the same package.
 ## Development
 
 Requirements are Python 3.14 with `uv`, Node.js 22 or newer, Docker Compose, the sibling
-`atlas-duckdb-extension` checkout, and a standard CDP endpoint. The default Compose stack builds
-the matching Linux extension in a cached builder stage, then provisions Postgres-backed DuckLake
-metadata, shared local lake storage, an immutable object repository, and JetStream without
-external credentials.
+`atlas-duckdb-extension` checkout, the pinned
+`quack/ducklake-cdc-extension-1.5.5` checkout, and a standard CDP endpoint. The default Compose
+stack builds both matching Linux extensions in cached builder stages, then provisions
+Postgres-backed DuckLake metadata, shared local lake storage, an immutable object repository, and
+JetStream without external credentials.
 
 ```sh
 cp .env.example .env
@@ -42,9 +43,9 @@ make check
 make compose-up
 ```
 
-The first image build compiles DuckDB and the Atlas extension. Later builds reuse that layer until
+The first image build compiles DuckDB and both extensions. Later builds reuse those layers until
 the pinned DuckDB version or extension source changes. Runtime images contain only the compiled
-extension artifact, not the compiler toolchain.
+extension artifacts, not the compiler toolchain.
 
 If a greenfield baseline replacement leaves local Postgres stamped at a
 revision that no longer exists, reset only the disposable control plane and
@@ -67,10 +68,9 @@ npm run atlas -- 'SELECT count(*) FROM web.visit'
 Run `npm run atlas` without SQL to open the interactive terminal. Set `ATLAS_API_URL` when the API
 is not available at `http://127.0.0.1:8000`. Inside either shell, `.tables` lists the public
 catalogue, `.describe dom.elements` shows an object's columns, `.history` shows recent input, and
-`.macros` shows scalar and table macro signatures. `.ai <question>` investigates the public
-catalogue, shows concise query purposes and timings, and offers validated formatted SQL drafts for
-review. Press `W` after an answer to inspect the exact SQL work behind it; use
-`.ai --fresh <question>` to omit recent assistant context. `.help` lists all local commands.
+`.macros` shows scalar and table macro signatures. `.help` lists all local commands. The Atlas web
+home page provides catalogue assistance with Markdown answers, result tables, and validated SQL
+drafts that can be copied or run directly in the conversation.
 
 Useful commands:
 

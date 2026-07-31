@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from types import SimpleNamespace
 import unittest
 
 import duckdb
@@ -417,9 +418,13 @@ class PublicCatalogueTests(unittest.TestCase):
     def test_shell_metadata_includes_public_macro_signatures(self) -> None:
         install_public_catalogue(self.catalogue)
 
-        version, rows, macro_rows = _public_metadata(self.catalogue)
+        version, duckdb_version, catalogue_bytes, rows, macro_rows = (
+            _public_metadata(self.catalogue)
+        )
 
         self.assertEqual(version, PUBLIC_CATALOGUE_VERSION)
+        self.assertEqual(duckdb_version, "v-test")
+        self.assertEqual(catalogue_bytes, 12_345)
         self.assertIn(
             (
                 "web",
@@ -457,6 +462,8 @@ class PublicCatalogueTests(unittest.TestCase):
             response.catalogue_version,
             PUBLIC_CATALOGUE_VERSION,
         )
+        self.assertEqual(response.duckdb_version, "v-test")
+        self.assertEqual(response.catalogue_bytes, 12_345)
         relations = {
             (item.schema_name, item.name): item
             for item in response.relations
@@ -496,6 +503,7 @@ class PublicCatalogueTests(unittest.TestCase):
 class _LocalCatalogue:
     def __init__(self) -> None:
         self.connection = duckdb.connect()
+        self.config = SimpleNamespace(alias="atlas")
 
     @contextmanager
     def remote_transaction(self):
@@ -513,6 +521,8 @@ class _LocalCatalogue:
         return []
 
     def trusted_remote_rows(self, sql: str) -> list[tuple]:
+        if "ducklake_table_info" in sql:
+            return [("v-test", 12_345)]
         return self.connection.execute(sql).fetchall()
 
 

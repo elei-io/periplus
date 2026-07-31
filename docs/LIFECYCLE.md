@@ -46,25 +46,46 @@ ingest.visits -> page projection
               -> links + link occurrences
 ```
 
-Workers project locally. Large outputs become final bucketed Parquet files and are registered with
-`ducklake_add_data_files`; pages, page heads, and link identities use `MERGE INTO`. The complete
-batch plus its applied marker commits in one DuckLake transaction. JetStream is delivery only and
-is ACKed after commit, so a restart between commit and ACK reads the marker and completes without
-duplicating logical output.
+Workers project locally. Large outputs become final bucketed Parquet files under the permanent
+`material/data` namespace and are registered with `ducklake_add_data_files`; pages, page heads, and
+link identities use `MERGE INTO`. The complete batch plus its applied marker commits in one
+DuckLake transaction. JetStream is delivery only and is ACKed after commit, so a restart between
+commit and ACK reads the marker and completes without duplicating logical output.
 
 Postgres durably records the run, hidden table names, batch IDs, progress, and failures. After the
 initial batches complete, Atlas detects inserted visits through DuckLake snapshot changes and
 repeats bounded catch-up until the source high-water mark is covered. One serialized activation
 consumer atomically swaps all material tables. Batch consumers remain horizontally scalable.
+The swap retains the superseded tables as activation replay markers until Postgres records the run
+as completed. Atlas then drops those retired tables before acknowledging the activation delivery;
+a completed-run redelivery retries that idempotent finalization. LakeDucktor can reclaim the
+resulting unreferenced physical files.
 Each plan, batch, and activation record also stores whether JetStream accepted its publication.
 Recovery publishes only records that were never accepted; JetStream redelivery owns published
 work that has not been ACKed.
 
 A deterministic projection or schema failure terminates the rebuild immediately. Atlas drops the
-failed hidden generation idempotently and removes only unregistered files owned by the failed
-batch. LakeDucktor reclaims files that had already been registered to the dropped generation.
+failed hidden generation idempotently and removes only transient sidecars owned by the failed
+batch. LakeDucktor reclaims registered and unreferenced final files.
 
-Incremental post-activation maintenance is deliberately outside this rebuild milestone.
+After activation, a dedicated connection holds one insert-only DuckLake CDC consumer for
+`ingest.visits`. It opens one bounded snapshot window, divides its visit IDs into deterministic
+batches, and publishes them to the existing JetStream batch subject. The same horizontally
+scalable workers project and commit those batches against the active generation. The coordinator
+advances the CDC cursor only after every applied-batch marker is visible. A crash before cursor
+commit replays the same deterministic batch IDs and is therefore a no-op after commit.
+
+Activation records the active generation, covered source snapshot, and batch size in DuckLake.
+That single row fences superseded work and is enough to recover live maintenance; Postgres does
+not contain a live-work ledger. A new rebuild catches up through its activation high-water mark
+before atomically replacing that row and all material tables.
+
+If live maintenance finds a missing or unreadable registered Parquet file, the entire material
+generation is corrupt. Before ACKing that poisoned delivery, Atlas durably ensures one complete
+rebuild exists in Postgres and deletes the matching active-generation row. The CDC coordinator
+therefore abandons its uncommitted window, while the rebuild recovers every affected visit from
+immutable `ingest.*`. Activation installs a fresh generation and a fresh generation-scoped CDC
+consumer. Atlas never attempts per-table or per-file material repair.
 
 ## 3. Materialization
 

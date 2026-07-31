@@ -29,6 +29,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Textarea } from "@/components/ui/textarea"
 import {
   useCreateCrawlGraph,
   useCreateCrawlGraphNode,
@@ -537,19 +538,32 @@ function RunPlanBar({
   onStarted: (runId: string) => void
 }) {
   const trigger = useTriggerCrawlGraph(graph.id)
-  const [url, setUrl] = useState("")
+  const [urls, setUrls] = useState("")
   const [maxCrawls, setMaxCrawls] = useState("1000")
   const [maxRunDays, setMaxRunDays] = useState("7")
 
   const run = () => {
-    const rootUrl = url.trim()
-    if (!rootUrl) {
-      toast.error("Enter a root URL.")
+    const startUrls = Array.from(
+      new Set(
+        urls
+          .split(/\r?\n/)
+          .map((url) => url.trim())
+          .filter(Boolean)
+      )
+    )
+    if (startUrls.length === 0) {
+      toast.error("Enter at least one start URL.")
       return
     }
     const crawlBudget = Number(maxCrawls)
     if (!Number.isInteger(crawlBudget) || crawlBudget < 1) {
       toast.error("Maximum crawls must be at least one.")
+      return
+    }
+    if (crawlBudget < startUrls.length) {
+      toast.error(
+        `Maximum crawls must cover all ${startUrls.length.toLocaleString()} start URLs.`
+      )
       return
     }
     const runDays = Number(maxRunDays)
@@ -559,7 +573,7 @@ function RunPlanBar({
     }
     trigger.mutate(
       {
-        url: rootUrl,
+        urls: startUrls,
         max_crawls: crawlBudget,
         max_run_seconds: runDays * 24 * 60 * 60,
       },
@@ -567,7 +581,7 @@ function RunPlanBar({
         onSuccess: (submission) => {
           toast.success(`Crawl run ${submission.run_id} queued.`)
           onStarted(submission.run_id)
-          setUrl("")
+          setUrls("")
         },
       }
     )
@@ -575,7 +589,7 @@ function RunPlanBar({
 
   return (
     <form
-      className="grid gap-2 rounded-lg border bg-card/50 p-2 shadow-sm md:grid-cols-[minmax(20rem,1fr)_9rem_8rem_auto]"
+      className="grid items-stretch gap-2 rounded-lg border bg-card/50 p-2 shadow-sm md:grid-cols-[minmax(20rem,1fr)_9rem_8rem_auto]"
       onSubmit={(event) => {
         event.preventDefault()
         run()
@@ -583,14 +597,14 @@ function RunPlanBar({
     >
       <div className="relative min-w-0">
         <span className="pointer-events-none absolute top-1.5 left-3 z-10 text-[0.625rem] font-medium tracking-wide text-muted-foreground uppercase">
-          Root URL
+          Start URLs · one per line
         </span>
-        <Input
-          className="h-12 pt-5 font-mono text-xs"
-          value={url}
-          placeholder="https://example.com/"
-          aria-label="Root URL"
-          onChange={(event) => setUrl(event.target.value)}
+        <Textarea
+          className="min-h-12 resize-y pt-5 font-mono text-xs"
+          value={urls}
+          placeholder={"https://example.com/\nhttps://example.org/"}
+          aria-label="Start URLs, one per line"
+          onChange={(event) => setUrls(event.target.value)}
         />
       </div>
       <RunSettingField
@@ -610,7 +624,7 @@ function RunPlanBar({
       <Button
         className="h-12 px-5"
         type="submit"
-        disabled={!graph.root_node_id || !url.trim() || trigger.isPending}
+        disabled={!graph.root_node_id || !urls.trim() || trigger.isPending}
       >
         {trigger.isPending ? (
           <LoaderCircleIcon className="animate-spin" />

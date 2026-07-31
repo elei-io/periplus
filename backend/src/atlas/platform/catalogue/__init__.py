@@ -33,6 +33,7 @@ def catalogue_from_env(
     *,
     threads: int | None = None,
     memory_limit: str | None = None,
+    load_cdc: bool = False,
 ):
     """Open one process-local DuckDB connection to Atlas's DuckLake."""
 
@@ -46,6 +47,7 @@ def catalogue_from_env(
     return Catalogue(
         catalogue_config_from_env(),
         duckdb_config=duckdb_config,
+        load_cdc=load_cdc,
     )
 
 

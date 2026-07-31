@@ -70,7 +70,7 @@ export type CrawlScheduleInput = {
   ends_at: string | null
   maximum_run_count: number | null
   max_crawls: number
-  root_url: string
+  urls: string[]
   overlap_policy: "skip" | "allow"
   misfire_policy: "skip" | "run_once"
 }
@@ -113,7 +113,7 @@ export type GraphRunSubmission = {
 }
 
 export type GraphRunTrigger = {
-  url: string
+  urls: string[]
   max_crawls: number
   max_run_seconds?: number
 }
@@ -134,7 +134,7 @@ export type GraphRunRecord = {
   status: GraphRunStatus
   trigger_kind: "manual" | "schedule"
   trigger_schedule_id: string | null
-  url: string
+  trigger_urls: string[]
   max_crawls: number
   crawl_limit_reached: boolean
   request_count: number
@@ -144,6 +144,31 @@ export type GraphRunRecord = {
   queued_request_count: number
   fetching_request_count: number
   navigating_request_count: number
+  created_at: string
+  started_at: string | null
+  last_progress_at: string | null
+  completed_at: string | null
+  paused_at: string | null
+  not_before: string | null
+  deadline_at: string | null
+  cancel_requested_at: string | null
+  error: string | null
+}
+
+export type GraphRunDetail = {
+  id: string
+  graph_id: string
+  status: GraphRunStatus
+  trigger_kind: "manual" | "schedule"
+  trigger_schedule_id: string | null
+  trigger_urls: string[]
+  max_crawls: number
+  crawl_limit_reached: boolean
+  request_count: number
+  pending_request_count: number
+  acquisition_pending_count: number
+  failed_request_count: number
+  error_count: number
   created_at: string
   started_at: string | null
   last_progress_at: string | null

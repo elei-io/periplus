@@ -223,7 +223,7 @@ def new_graph_run(
     if max_crawls < len(normalized):
         raise ValueError(
             "A graph run maximum crawl budget cannot be smaller than its number "
-            f"of distinct root URLs ({len(normalized)})."
+            f"of distinct start URLs ({len(normalized)})."
         )
     return GraphRun(
         id=run_id or uuid4(),

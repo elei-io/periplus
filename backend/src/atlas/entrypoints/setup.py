@@ -11,6 +11,7 @@ from atlas.crawl.control.content_policies.service import ensure_default_content_
 from atlas.crawl.control.domain_policies.service import ensure_default_domain_policy
 from atlas.platform.postgres.session import session_scope
 from atlas.platform.catalogue import catalogue_from_env
+from atlas.materialization.live import bootstrap_live_cdc
 
 _ATLAS_ROOT = Path(__file__).resolve().parents[1]
 
@@ -40,6 +41,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     migrate_control_database()
     seed_system_control_plane()
     bootstrap_catalogue()
+    bootstrap_live_cdc()
     print("Atlas setup complete.")
 
 

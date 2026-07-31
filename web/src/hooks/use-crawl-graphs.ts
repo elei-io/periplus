@@ -13,7 +13,7 @@ import type {
   GraphRunSubmission,
   GraphRunTrigger,
   GraphRunListResponse,
-  GraphRunRecord,
+  GraphRunDetail,
   GraphRunFailureSummary,
   CrawlSchedule,
   CrawlScheduleInput,
@@ -306,13 +306,13 @@ export function useGraphRun(runId: string | null) {
     queryKey: ["graph-runs", runId],
     enabled: runId !== null,
     refetchInterval: (query) => {
-      const status = (query.state.data as GraphRunRecord | undefined)?.status
+      const status = (query.state.data as GraphRunDetail | undefined)?.status
       return status === "queued" || status === "running" || status === "paused"
         ? 2_000
         : false
     },
     queryFn: async () =>
-      jsonResponse<GraphRunRecord>(await fetch(apiUrl(`/graph-runs/${runId}`))),
+      jsonResponse<GraphRunDetail>(await fetch(apiUrl(`/graph-runs/${runId}`))),
   })
 }
 
@@ -332,7 +332,7 @@ function useGraphRunControl(action: "cancel" | "pause" | "resume") {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (runId: string) =>
-      jsonResponse<GraphRunRecord>(
+      jsonResponse<GraphRunDetail>(
         await fetch(apiUrl(`/graph-runs/${runId}/${action}`), {
           method: "POST",
         })

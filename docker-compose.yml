@@ -6,6 +6,7 @@ x-atlas-backend: &atlas-backend
     dockerfile: docker/atlas/Dockerfile
     additional_contexts:
       atlas-extension: ../atlas-duckdb-extension
+      ducklake-cdc-extension: ../quack/ducklake-cdc-extension-1.5.5
   image: atlas-backend:local
   working_dir: /app/backend
 
@@ -30,6 +31,7 @@ x-atlas-ducklake-environment: &atlas-ducklake-environment
   ATLAS_DUCKLAKE_METADATA_PATH: postgres:dbname=atlas_test host=atlas-test-postgres port=5432 user=atlas password=atlas_local
   ATLAS_DUCKLAKE_METADATA_SCHEMA: ducklake
   ATLAS_DUCKLAKE_DATA_PATH: /app/.atlas/lake/
+  ATLAS_DUCKLAKE_CDC_EXTENSION_PATH: /opt/atlas/ducklake_cdc.duckdb_extension
 
 x-atlas-repository-environment: &atlas-repository-environment
   ATLAS_REPOSITORY_STORAGE: disk

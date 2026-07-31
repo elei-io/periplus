@@ -75,7 +75,7 @@ class CrawlSchedule(Base):
         Integer, nullable=True
     )
     max_crawls: Mapped[int] = mapped_column(Integer, default=1_000)
-    root_url: Mapped[str] = mapped_column(Text)
+    urls: Mapped[list[str]] = mapped_column(json_type)
     overlap_policy: Mapped[str] = mapped_column(Text, default="skip")
     misfire_policy: Mapped[str] = mapped_column(Text, default="skip")
     run_count: Mapped[int] = mapped_column(Integer, default=0)

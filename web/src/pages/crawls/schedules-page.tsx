@@ -58,8 +58,7 @@ export function CrawlSchedulesPage({
   const [planId, setPlanId] = useState("")
   const [creatingForPlan, setCreatingForPlan] = useState<string | null>(null)
   const schedules = schedulesQuery.data?.items ?? []
-  const plans =
-    plansQuery.data?.items.filter((plan) => plan.root_node_id) ?? []
+  const plans = plansQuery.data?.items.filter((plan) => plan.root_node_id) ?? []
 
   return (
     <div className="flex min-h-0 w-full flex-col gap-4">
@@ -105,7 +104,8 @@ export function CrawlSchedulesPage({
               <TableCell>
                 <span className="font-medium">{schedule.name}</span>
                 <span className="block text-xs text-muted-foreground">
-                  {schedule.root_url}
+                  {schedule.urls.length.toLocaleString()}{" "}
+                  {schedule.urls.length === 1 ? "start URL" : "start URLs"}
                 </span>
               </TableCell>
               <TableCell className="font-mono text-xs">
@@ -136,7 +136,7 @@ export function CrawlSchedulesPage({
           <DialogHeader>
             <DialogTitle>Choose a crawl plan</DialogTitle>
             <DialogDescription>
-              The schedule will offer one URL to this plan’s root node.
+              Each scheduled run offers its start URLs to this plan’s root node.
             </DialogDescription>
           </DialogHeader>
           <Select
@@ -381,12 +381,17 @@ function ScheduleDetail({
 
       <Card>
         <CardHeader>
-          <CardTitle>Root URL</CardTitle>
+          <CardTitle>Start URLs</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          <div className="rounded-md border bg-muted/20 px-3 py-2 font-mono text-xs">
-            {schedule.root_url}
-          </div>
+          {schedule.urls.map((url) => (
+            <div
+              key={url}
+              className="rounded-md border bg-muted/20 px-3 py-2 font-mono text-xs break-all"
+            >
+              {url}
+            </div>
+          ))}
         </CardContent>
       </Card>
 

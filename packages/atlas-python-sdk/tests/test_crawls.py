@@ -13,7 +13,7 @@ from atlas_sdk.errors import CrawlFailed, WaitTimeout
 def _crawl(*, status: crawls.CrawlStatus = "queued") -> crawls.Crawl:
     return crawls.Crawl(
         id=uuid4(),
-        url="https://example.com/",
+        urls=("https://example.com/", "https://example.org/"),
         plan_id=uuid4(),
         status=status,
         created_at=datetime.now(UTC),
@@ -25,7 +25,7 @@ def _payload(crawl: crawls.Crawl, *, status: str) -> dict:
     return {
         "id": str(crawl.id),
         "graph_id": str(crawl.plan_id),
-        "trigger_urls": [crawl.url],
+        "trigger_urls": list(crawl.urls),
         "status": status,
         "created_at": crawl.created_at.isoformat(),
     }
@@ -92,18 +92,18 @@ class CrawlTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch("atlas_sdk.crawls.request", request):
             created = await crawls.run(
-                crawl.url,
+                crawl.urls,
                 depth=0,
-                max_crawls=1,
+                max_crawls=2,
             )
 
         self.assertEqual(created.id, crawl.id)
         self.assertEqual(
             request.await_args_list[0].kwargs["json"],
             {
-                "url": crawl.url,
+                "urls": list(crawl.urls),
                 "depth": 0,
-                "max_crawls": 1,
+                "max_crawls": 2,
             },
         )
 

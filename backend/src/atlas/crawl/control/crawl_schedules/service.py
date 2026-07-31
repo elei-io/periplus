@@ -131,13 +131,18 @@ def preview_occurrences(
     return values
 
 
-def _normalized_url(value: str) -> str:
+def _normalized_urls(values: list[str]) -> list[str]:
     try:
-        return normalize_url(value)
+        urls = list(dict.fromkeys(normalize_url(value) for value in values))
     except ValueError as exc:
         raise CrawlScheduleValidationError(
-            f"Schedule URL must be absolute HTTP(S): {value}"
+            "Schedule URLs must be absolute HTTP(S)."
         ) from exc
+    if not urls:
+        raise CrawlScheduleValidationError(
+            "A crawl schedule requires at least one start URL."
+        )
+    return urls
 
 
 def schedule_status(
@@ -171,7 +176,7 @@ def record(
         ends_at=schedule.ends_at,
         maximum_run_count=schedule.maximum_run_count,
         max_crawls=schedule.max_crawls,
-        root_url=schedule.root_url,
+        urls=schedule.urls,
         overlap_policy=schedule.overlap_policy,  # type: ignore[arg-type]
         misfire_policy=schedule.misfire_policy,  # type: ignore[arg-type]
         status=schedule_status(schedule, now=now),
@@ -258,7 +263,12 @@ def create_schedule(
         )
     validate_timing(request.timing)
     now = _utc(now or datetime.now(UTC))
-    root_url = _normalized_url(request.root_url)
+    urls = _normalized_urls(request.urls)
+    if request.max_crawls < len(urls):
+        raise CrawlScheduleValidationError(
+            "Maximum crawls cannot be smaller than the number of distinct "
+            f"start URLs ({len(urls)})."
+        )
     schedule = CrawlSchedule(
         graph_id=graph_id,
         name=_clean_name(request.name),
@@ -268,7 +278,7 @@ def create_schedule(
         ends_at=request.ends_at,
         maximum_run_count=request.maximum_run_count,
         max_crawls=request.max_crawls,
-        root_url=root_url,
+        urls=urls,
         overlap_policy=request.overlap_policy,
         misfire_policy=request.misfire_policy,
         next_run_at=(
@@ -301,7 +311,12 @@ def update_schedule(
     schedule = get_schedule(session, graph_id, schedule_id, lock=True)
     validate_timing(request.timing)
     now = _utc(now or datetime.now(UTC))
-    root_url = _normalized_url(request.root_url)
+    urls = _normalized_urls(request.urls)
+    if request.max_crawls < len(urls):
+        raise CrawlScheduleValidationError(
+            "Maximum crawls cannot be smaller than the number of distinct "
+            f"start URLs ({len(urls)})."
+        )
     schedule.name = _clean_name(request.name)
     schedule.enabled = request.enabled
     schedule.timing = request.timing.model_dump(mode="json")
@@ -309,7 +324,7 @@ def update_schedule(
     schedule.ends_at = request.ends_at
     schedule.maximum_run_count = request.maximum_run_count
     schedule.max_crawls = request.max_crawls
-    schedule.root_url = root_url
+    schedule.urls = urls
     schedule.overlap_policy = request.overlap_policy
     schedule.misfire_policy = request.misfire_policy
     schedule.next_run_at = (

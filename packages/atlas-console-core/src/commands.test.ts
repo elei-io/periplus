@@ -6,12 +6,15 @@ import type { SqlMetadata } from "./types.js"
 
 const metadata: SqlMetadata = {
   catalogue_version: "2.0.0",
+  duckdb_version: "v1.5.5",
+  catalogue_bytes: 12_345,
   relations: [
     {
       schema_name: "web",
       name: "page",
       kind: "view",
-      description: "Canonical normalized URL identities observed through visits.",
+      description:
+        "Canonical normalized URL identities observed through visits.",
       columns: [
         {
           name: "page_id",
@@ -99,12 +102,6 @@ const context: CommandContext = {
   async metadata() {
     return metadata
   },
-  ai() {
-    return {
-      kind: "ai",
-      events: (async function* () {})(),
-    }
-  },
 }
 
 test("the shell exposes the local inspection commands", () => {
@@ -113,37 +110,14 @@ test("the shell exposes the local inspection commands", () => {
     [
       "clear",
       "exit",
-      "ai",
       "help",
       "history",
       "tables",
       "macros",
       "describe",
       "completion",
-    ],
+    ]
   )
-})
-
-test("ai accepts an unquoted prompt and supports a fresh turn", async () => {
-  let received: [string, boolean] | undefined
-  const aiContext: CommandContext = {
-    ...context,
-    ai(prompt, fresh) {
-      received = [prompt, fresh]
-      return {
-        kind: "ai",
-        events: (async function* () {})(),
-      }
-    },
-  }
-
-  const result = await commands.execute(
-    ".ai --fresh compare status codes by hostname",
-    aiContext,
-  )
-
-  assert.equal(result.kind, "ai")
-  assert.deepEqual(received, ["compare status codes by hostname", true])
 })
 
 test("help is generated from the command registry", async () => {
@@ -159,19 +133,19 @@ test("help is generated from the command registry", async () => {
 test("commands and arguments autocomplete from metadata", async () => {
   assert.deepEqual(
     (await commands.complete(".cl", 3, context)).map((item) => item.value),
-    [".clear"],
+    [".clear"]
   )
   assert.deepEqual(
     (await commands.complete(".describe web.p", 15, context)).map(
-      (item) => item.value,
+      (item) => item.value
     ),
-    ["web.page"],
+    ["web.page"]
   )
   assert.deepEqual(
     (await commands.complete(".describe dom.", 14, context)).map(
-      (item) => item.value,
+      (item) => item.value
     ),
-    ["dom.elements", "dom.query_selector_all", "dom.text_content"],
+    ["dom.elements", "dom.query_selector_all", "dom.text_content"]
   )
 })
 
@@ -185,8 +159,9 @@ test("tables includes views and table macro signatures", async () => {
       result.rows.some(
         (row) =>
           row[0] === "web.page" &&
-          row[3] === "Canonical normalized URL identities observed through visits.",
-      ),
+          row[3] ===
+            "Canonical normalized URL identities observed through visits."
+      )
     )
     assert(result.rows.some((row) => row[0] === "dom.elements"))
     assert(result.rows.some((row) => row[0] === "dom.text_content"))
@@ -194,8 +169,8 @@ test("tables includes views and table macro signatures", async () => {
       result.rows.some(
         (row) =>
           row[0] === "dom.query_selector_all" &&
-          String(row[2]).includes("css_selector VARCHAR"),
-      ),
+          String(row[2]).includes("css_selector VARCHAR")
+      )
     )
   }
 })
@@ -232,13 +207,13 @@ test("macros distinguishes table and scalar macros", async () => {
   if (result.kind === "table") {
     assert(
       result.rows.some(
-        (row) => row[0] === "dom.get_attribute" && row[1] === "scalar",
-      ),
+        (row) => row[0] === "dom.get_attribute" && row[1] === "scalar"
+      )
     )
     assert(
       result.rows.some(
-        (row) => row[0] === "dom.query_selector_all" && row[1] === "table",
-      ),
+        (row) => row[0] === "dom.query_selector_all" && row[1] === "table"
+      )
     )
   }
 })
@@ -256,7 +231,7 @@ test("describe renders public metadata", async () => {
     ])
     assert.equal(
       result.summary,
-      "web.page · view · Canonical normalized URL identities observed through visits.",
+      "web.page · view · Canonical normalized URL identities observed through visits."
     )
   }
 })
@@ -274,7 +249,7 @@ test("describe renders DOM metadata", async () => {
     ])
     assert.equal(
       result.summary,
-      "dom.elements · view · Structural elements projected from immutable HTML content.",
+      "dom.elements · view · Structural elements projected from immutable HTML content."
     )
   }
 })

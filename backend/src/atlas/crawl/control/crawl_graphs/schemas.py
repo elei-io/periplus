@@ -1,10 +1,13 @@
 from datetime import datetime
+from typing import Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 DEFAULT_GRAPH_RUN_MAX_CRAWLS = 1_000
 MAX_GRAPH_RUN_CRAWLS = 1_000_000
+MAX_GRAPH_RUN_START_URLS = 10_000
+CrawlStartUrl = Annotated[str, Field(min_length=1, max_length=8_192)]
 
 
 class CrawlGraphCreate(BaseModel):

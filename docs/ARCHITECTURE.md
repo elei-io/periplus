@@ -46,7 +46,7 @@ evidence already committed to DuckLake.
   graph work without waiting for catalogue ingestion.
 - Ingestion commits immutable crawl and visit evidence under `ingest.*`.
 - Materialization scans a pinned `ingest.visits` snapshot into bounded visit batches and maintains
-  the complete fixed `material.*` generation.
+  the complete fixed `material.*` generation, then follows inserted visits through DuckLake CDC.
 - Housekeeping removes only Atlas-owned transient navigation and runtime state.
 
 Ingestion does not wait for materialization. A visit is the single unit of rebuild work; its
@@ -60,22 +60,36 @@ batch, and serialized activation work; messages are ACKed only after their corre
 commit. Postgres records successful publication once; recovery publishes only unpublished work,
 while JetStream redelivers published work until ACK. Any worker replica can consume a visit batch.
 
-Large projected relations are written as final bucketed Parquet and registered with
-`ducklake_add_data_files`. Narrow identity and head relations use `MERGE INTO`. Those writes and
-the applied-batch marker commit in one DuckLake transaction, making commit-before-ACK redelivery a
-no-op.
+Large projected relations are written under the permanent `material/data` object namespace and
+registered with `ducklake_add_data_files`. Registered files never occupy the transient rebuild
+namespace under `material/staging`, and Atlas never deletes them; LakeDucktor alone reclaims
+unreferenced physical data.
+Narrow identity and head relations use `MERGE INTO`. Those writes and the applied-batch marker
+commit in one DuckLake transaction, making commit-before-ACK redelivery a no-op.
 
 Every rebuild creates all eight hidden material tables, catches up visits inserted after the
 pinned source snapshot, and renames the complete generation atomically. Activation has a
 single-consumer delivery lane only to serialize the metadata swap; projection throughput remains
 horizontally scalable.
 
+After activation, one insert-only DuckLake CDC consumer follows `ingest.visits`. It publishes
+deterministic visit batches to the same JetStream subject used by rebuild workers. Workers apply
+each batch directly to the active generation and record the same applied-batch marker in the
+material transaction. The coordinator advances the CDC cursor only after every marker is visible.
+There is one outstanding CDC window and no Postgres live-work ledger.
+
+An unreadable registered material file invalidates the complete active generation. The worker
+durably reuses or creates one Postgres rebuild, removes the active-generation marker to stop CDC,
+and ACKs the poisoned delivery because immutable `ingest.*` evidence is the rebuild authority.
+The hidden rebuild then replaces all material tables atomically. Local retries are bounded so one
+bad delivery cannot occupy a worker lane indefinitely.
+
 ## Crawl-plan boundary
 
 Crawl plans are editable Postgres definitions. A run freezes its complete plan configuration
-before admitting one root URL into durable crawl requests. Current run, request, and edge-evaluation
-state remains in Postgres. A terminal run schedules its immutable `ingest.crawls` evidence through
-the transactional graph outbox and ordinary ingestion path.
+before admitting one or more start URLs into durable crawl requests. Current run, request, and
+edge-evaluation state remains in Postgres. A terminal run schedules its immutable `ingest.crawls`
+evidence through the transactional graph outbox and ordinary ingestion path.
 
 Plan edges select URLs only from the navigation package derived from the page
 that just completed acquisition. Historical catalogue joins are not an

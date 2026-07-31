@@ -10,9 +10,9 @@ atlas_sdk.configure(api_url="http://localhost:8000")
 connection = atlas_sdk.conn.duck()
 
 crawl = await atlas_sdk.crawls.run(
-    "https://example.com/",
+    ["https://example.com/", "https://example.org/"],
     depth=0,
-    max_crawls=1,
+    max_crawls=2,
 )
 await crawl.completed()
 crawl.raise_for_status()

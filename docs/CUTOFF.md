@@ -37,7 +37,8 @@ Atlas can:
    - `material.links`
    - `material.link_occurrences`
 5. Recover from redelivery, retries, worker restarts, and temporarily unavailable materialization
-   dependencies without corrupting or losing committed evidence.
+   dependencies without corrupting or losing committed evidence, and replace an unreadable active
+   material generation through one complete rebuild.
 6. Expose normal ingestion and materialization health, capacity, backlog, and failure signals.
 7. Accept exact external HTML without bypassing ingestion or materialization.
 
@@ -90,11 +91,17 @@ ingest.visits -> material.pages + material.page_observations + material.page_hea
 
 Workers acknowledge visit batches only after a single DuckLake transaction commits all output and
 its applied marker. Large projections are final bucketed Parquet registered through
-`ducklake_add_data_files`; narrow keyed projections use `MERGE INTO`.
+`ducklake_add_data_files`; those immutable files live under a permanent data namespace and are
+never Atlas staging. Narrow keyed projections use `MERGE INTO`.
 
 The operations API runs one complete shadow rebuild. It pins a source snapshot, catches up inserted
 visits in bounded batches, and atomically activates all material tables together. There are no
 independently selectable tables or partial generations.
+
+After activation, one insert-only DuckLake CDC consumer publishes deterministic visit batches to
+the same JetStream lane. Horizontally scalable materialization workers apply them to the active
+generation, and the CDC cursor advances only after all applied markers are durable. Live
+maintenance adds no Postgres queue or cursor.
 
 No generic keyed, append, or full user-view materialization framework remains at this cutoff.
 User-owned maintained extractions can be designed with the query layer later.
@@ -147,6 +154,8 @@ The cutoff is complete only when all of the following are true:
   aggregates.
 - Worker restart and redelivery tests pass before commit, after commit but before acknowledgement,
   and while waiting for a dependency.
+- Deleting one registered material file fences that generation, releases the poisoned delivery,
+  starts exactly one rebuild, and restores all material tables from unchanged `ingest.*`.
 - Ingestion and materialization health, capacity, backlog, retry, and failure reporting work in the
   normal API and operational surfaces.
 - The terminal and web consoles execute bounded read-only SQL against `ingest.*` and `material.*`,

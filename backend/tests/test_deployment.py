@@ -5,16 +5,18 @@ from atlas.entrypoints import setup
 
 
 class DeploymentTests(TestCase):
+    @patch("atlas.entrypoints.setup.bootstrap_live_cdc")
     @patch("atlas.entrypoints.setup.bootstrap_catalogue")
     @patch("atlas.entrypoints.setup.seed_system_control_plane")
     @patch("atlas.entrypoints.setup.migrate_control_database")
     def test_setup_order(
-        self, migrate, seed_control, bootstrap
+        self, migrate, seed_control, bootstrap, bootstrap_cdc
     ) -> None:
         manager = MagicMock()
         manager.attach_mock(migrate, "migrate")
         manager.attach_mock(bootstrap, "bootstrap")
         manager.attach_mock(seed_control, "seed_control")
+        manager.attach_mock(bootstrap_cdc, "bootstrap_cdc")
 
         setup.main([])
 
@@ -24,6 +26,7 @@ class DeploymentTests(TestCase):
                 call.migrate(),
                 call.seed_control(),
                 call.bootstrap(),
+                call.bootstrap_cdc(),
             ],
         )
 

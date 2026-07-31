@@ -48,7 +48,8 @@ to encode around one accidental optimizer plan.
   bucketed Parquet for large outputs, MERGE narrow keyed outputs, record the applied batch in the
   same DuckLake transaction, and ACK only after commit. All material tables belong to one hidden
   generation, catch up inserted visits to a source high-water mark, and activate atomically.
-  Incremental post-activation maintenance is a separate future concern.
+  After activation, one insert-only DuckLake CDC consumer publishes deterministic visit batches
+  to the same JetStream lane. The CDC cursor advances only after all applied markers are durable.
 - Crawl-plan edges use bounded standalone DuckDB connections over the current
   page's navigation package. Historical catalogue joins are not a plan-edge capability.
 - LakeDucktor owns compaction, old-file cleanup, and physical lake maintenance. Atlas housekeeping
@@ -147,11 +148,13 @@ requirements.
 
 ## DuckLake upstream
 
-Atlas runtime code intentionally uses only the official DuckDB `ducklake` and metadata-store
-extensions. Do not introduce a Basin SDK, Quack transport, compatibility attachment, or
-Atlas-owned incremental cursor without an active design. When Atlas reveals a missing DuckLake
-primitive, record actionable evidence in [UPSTREAM.md](UPSTREAM.md) and prefer a coherent upstream
-fix over an Atlas-only compatibility layer.
+Atlas runtime code uses the official DuckDB `ducklake` and metadata-store extensions directly.
+The pinned DuckLake CDC extension is loaded only by the dedicated live-materialization connection;
+it owns the durable `ingest.visits` cursor while JetStream remains delivery only. Do not introduce
+a Basin SDK, Quack transport, compatibility attachment, or second Atlas-owned incremental cursor.
+When Atlas reveals a missing DuckLake primitive, record actionable evidence in
+[UPSTREAM.md](UPSTREAM.md) and prefer a coherent upstream fix over an Atlas-only compatibility
+layer.
 
 ## Implementation rules
 

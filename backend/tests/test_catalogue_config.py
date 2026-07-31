@@ -29,6 +29,7 @@ class CatalogueConfigTests(unittest.TestCase):
             data_path="lake/",
             metadata_schema="ducklake",
             extension_path="/missing/atlas.duckdb_extension",
+            cdc_extension_path="/missing/ducklake_cdc.duckdb_extension",
         )
 
         with self.assertRaisesRegex(
@@ -47,12 +48,29 @@ class CatalogueConfigTests(unittest.TestCase):
                 data_path="lake/",
                 metadata_schema="ducklake",
                 extension_path=str(extension),
+                cdc_extension_path=str(extension),
             )
 
             self.assertEqual(
                 config.resolved_extension_path(),
                 extension.resolve(),
             )
+
+    def test_cdc_extension_path_is_required_when_loaded(self) -> None:
+        config = CatalogueConfig(
+            alias="atlas",
+            metadata_path="metadata.duckdb",
+            data_path="lake/",
+            metadata_schema="ducklake",
+            extension_path="/missing/atlas.duckdb_extension",
+            cdc_extension_path="",
+        )
+
+        with self.assertRaisesRegex(
+            CatalogueConfigError,
+            "ATLAS_DUCKLAKE_CDC_EXTENSION_PATH",
+        ):
+            config.resolved_cdc_extension_path()
 
 
 if __name__ == "__main__":

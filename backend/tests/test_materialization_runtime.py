@@ -19,13 +19,18 @@ from atlas.materialization.batch import (
     _write_partitioned_parquet,
     discard_batch_staging,
     discard_run_link_staging,
+    merge_live_links,
     populate_final_links,
 )
+from atlas.materialization.contracts import LiveBatchWork
 from atlas.materialization.document_projection import LINK_SCHEMA
 from atlas.materialization.http import CreateMaterializationRun
+from atlas.materialization.live import ChangeWindow, _window_batches
 from atlas.materialization.runtime import (
+    ActivationWork,
     BatchWork,
     _execute_batch,
+    _handle_activation,
     _handle_batch,
     _is_retryable_batch_failure,
     publish_activation,
@@ -41,6 +46,250 @@ from atlas.platform.messaging.catalogue_queue import (
 
 
 class MaterializationDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    @patch("atlas.materialization.runtime._finalize_activation")
+    @patch(
+        "atlas.materialization.runtime._activate_or_catch_up",
+        return_value=42,
+    )
+    async def test_activation_finalizes_retired_tables_before_ack(
+        self,
+        activate,
+        finalize,
+    ) -> None:
+        run_id = uuid4()
+        activating = SimpleNamespace(id=run_id, status="activating")
+        completed = SimpleNamespace(
+            id=run_id,
+            status="completed",
+            output_rows=100,
+        )
+        store = AsyncMock()
+        store.claim_activation.return_value = activating
+        store.complete.return_value = completed
+
+        def finalize_after_completion(run):
+            self.assertEqual(store.complete.await_count, 1)
+            self.assertIs(run, completed)
+
+        finalize.side_effect = finalize_after_completion
+        message = SimpleNamespace(
+            data=ActivationWork(
+                run_id=run_id,
+                completed_batches=3,
+            ).model_dump_json().encode(),
+            in_progress=AsyncMock(),
+            ack=AsyncMock(),
+            nak=AsyncMock(),
+            term=AsyncMock(),
+        )
+
+        await _handle_activation(message, AsyncMock(), store)
+
+        activate.assert_called_once_with(activating)
+        store.complete.assert_awaited_once_with(
+            run_id,
+            activation_snapshot=42,
+        )
+        finalize.assert_called_once_with(completed)
+        message.ack.assert_awaited_once()
+        message.nak.assert_not_awaited()
+
+    @patch("atlas.materialization.runtime._finalize_activation")
+    @patch("atlas.materialization.runtime._activate_or_catch_up")
+    async def test_completed_activation_redelivery_retries_finalization(
+        self,
+        activate,
+        finalize,
+    ) -> None:
+        run_id = uuid4()
+        completed = SimpleNamespace(id=run_id, status="completed")
+        store = AsyncMock()
+        store.claim_activation.return_value = None
+        store.get.return_value = completed
+        message = SimpleNamespace(
+            data=ActivationWork(
+                run_id=run_id,
+                completed_batches=3,
+            ).model_dump_json().encode(),
+            in_progress=AsyncMock(),
+            ack=AsyncMock(),
+            nak=AsyncMock(),
+            term=AsyncMock(),
+        )
+
+        await _handle_activation(message, AsyncMock(), store)
+
+        activate.assert_not_called()
+        finalize.assert_called_once_with(completed)
+        message.ack.assert_awaited_once()
+        message.nak.assert_not_awaited()
+
+    @patch(
+        "atlas.materialization.runtime._finalize_activation",
+        side_effect=RuntimeError("catalogue unavailable"),
+    )
+    @patch("atlas.materialization.runtime._activate_or_catch_up")
+    async def test_completed_activation_is_not_acked_until_finalized(
+        self,
+        activate,
+        _finalize,
+    ) -> None:
+        run_id = uuid4()
+        store = AsyncMock()
+        store.claim_activation.return_value = None
+        store.get.return_value = SimpleNamespace(
+            id=run_id,
+            status="completed",
+        )
+        message = SimpleNamespace(
+            data=ActivationWork(
+                run_id=run_id,
+                completed_batches=3,
+            ).model_dump_json().encode(),
+            in_progress=AsyncMock(),
+            ack=AsyncMock(),
+            nak=AsyncMock(),
+            term=AsyncMock(),
+        )
+
+        await _handle_activation(message, AsyncMock(), store)
+
+        activate.assert_not_called()
+        message.ack.assert_not_awaited()
+        message.nak.assert_awaited_once_with(delay=1)
+
+    def test_live_window_batches_are_deterministic_and_bounded(self) -> None:
+        generation_id = uuid4()
+        window = ChangeWindow(
+            start_snapshot=10,
+            end_snapshot=14,
+            visit_ids=("a", "b", "c"),
+        )
+
+        first = _window_batches(generation_id, window, batch_size=2)
+        second = _window_batches(generation_id, window, batch_size=2)
+
+        self.assertEqual(first, second)
+        self.assertEqual([batch.visit_ids for batch in first], [("a", "b"), ("c",)])
+        self.assertEqual({batch.snapshot for batch in first}, {14})
+        self.assertEqual({batch.generation_id for batch in first}, {generation_id})
+
+    @patch("atlas.materialization.runtime.discard_batch_link_staging")
+    @patch("atlas.materialization.runtime.catalogue_config_from_env")
+    @patch("atlas.materialization.runtime._execute_live_batch")
+    async def test_live_work_uses_the_existing_batch_consumer(
+        self,
+        execute,
+        config,
+        discard_links,
+    ) -> None:
+        work = LiveBatchWork(
+            batch_id=uuid4(),
+            generation_id=uuid4(),
+            ordinal=0,
+            snapshot=12,
+            visit_ids=("visit-one",),
+        )
+        execute.return_value = BatchResult(
+            source_items=1,
+            source_bytes=10,
+            output_rows=4,
+            output_bytes=20,
+            project_seconds=0.1,
+            parquet_seconds=0.1,
+            commit_seconds=0.1,
+        )
+        config.return_value = SimpleNamespace(data_path="/lake")
+        message = SimpleNamespace(
+            data=work.model_dump_json().encode(),
+            in_progress=AsyncMock(),
+            ack=AsyncMock(),
+            nak=AsyncMock(),
+            term=AsyncMock(),
+        )
+        store = AsyncMock()
+
+        await _handle_batch(message, AsyncMock(), store, AsyncMock())
+
+        execute.assert_called_once()
+        discard_links.assert_called_once_with(
+            "/lake",
+            run_id=work.generation_id,
+            batch_id=work.batch_id,
+        )
+        store.start_batch.assert_not_awaited()
+        message.ack.assert_awaited_once()
+        message.nak.assert_not_awaited()
+
+    @patch("atlas.materialization.runtime.discard_batch_staging")
+    @patch("atlas.materialization.runtime.catalogue_config_from_env")
+    @patch("atlas.materialization.runtime._invalidate_generation")
+    @patch(
+        "atlas.materialization.runtime._generation_recovery_context",
+        return_value=(120, 200),
+    )
+    @patch(
+        "atlas.materialization.runtime._execute_live_batch",
+        side_effect=duckdb.IOException(
+            'IO Error: Cannot open file "/lake/material/data/missing.parquet": '
+            "No such file or directory"
+        ),
+    )
+    async def test_corrupt_live_generation_starts_rebuild_and_releases_delivery(
+        self,
+        _execute,
+        recovery_context,
+        invalidate,
+        config,
+        discard,
+    ) -> None:
+        work = LiveBatchWork(
+            batch_id=uuid4(),
+            generation_id=uuid4(),
+            ordinal=0,
+            snapshot=121,
+            visit_ids=("visit-one",),
+        )
+        rebuild = SimpleNamespace(id=uuid4())
+        store = AsyncMock()
+        store.ensure_rebuild.return_value = (rebuild, True)
+        def invalidate_after_rebuild(_generation_id):
+            self.assertEqual(store.ensure_rebuild.await_count, 1)
+            return True
+
+        invalidate.side_effect = invalidate_after_rebuild
+        jetstream = AsyncMock()
+        config.return_value = SimpleNamespace(data_path="/lake")
+        message = SimpleNamespace(
+            data=work.model_dump_json().encode(),
+            in_progress=AsyncMock(),
+            ack=AsyncMock(),
+            nak=AsyncMock(),
+            term=AsyncMock(),
+        )
+
+        await _handle_batch(message, jetstream, store, AsyncMock())
+
+        recovery_context.assert_called_once_with(work.generation_id)
+        store.ensure_rebuild.assert_awaited_once_with(
+            source_snapshot=120,
+            batch_size=200,
+        )
+        invalidate.assert_called_once_with(work.generation_id)
+        jetstream.publish.assert_awaited_once()
+        self.assertEqual(
+            jetstream.publish.await_args.args[0],
+            MATERIALIZATION_PLAN_SUBJECT,
+        )
+        store.mark_plan_published.assert_awaited_once_with(rebuild.id)
+        discard.assert_called_once_with(
+            "/lake",
+            run_id=work.generation_id,
+            batch_id=work.batch_id,
+        )
+        message.ack.assert_awaited_once()
+        message.nak.assert_not_awaited()
+
     async def test_work_messages_have_stable_deduplication_ids(self) -> None:
         jetstream = AsyncMock()
         store = AsyncMock()
@@ -186,7 +435,8 @@ class MaterializationParquetTests(unittest.TestCase):
             sibling_id = uuid4()
             batch_path = (
                 Path(directory)
-                / "_atlas_rebuild"
+                / "material"
+                / "staging"
                 / run_id.hex
                 / batch_id.hex
             )
@@ -209,11 +459,20 @@ class MaterializationParquetTests(unittest.TestCase):
             batch_id = uuid4()
             batch_path = (
                 Path(directory)
-                / "_atlas_rebuild"
+                / "material"
+                / "staging"
                 / run_id.hex
                 / batch_id.hex
             )
-            registered = batch_path / "html_elements" / "data.parquet"
+            registered = (
+                Path(directory)
+                / "material"
+                / "data"
+                / run_id.hex
+                / "html_elements"
+                / batch_id.hex
+                / "data.parquet"
+            )
             sidecar = batch_path / "link_identities" / "data.parquet"
             registered.parent.mkdir(parents=True)
             sidecar.parent.mkdir(parents=True)
@@ -254,6 +513,8 @@ class MaterializationParquetTests(unittest.TestCase):
             )
 
             self.assertEqual(len(paths), 1)
+            self.assertIn("/material/data/", str(paths[0]))
+            self.assertNotIn("/material/staging/", str(paths[0]))
             self.assertRegex(str(paths[0]), r"/bucket=\d+/data\.parquet$")
             types = {
                 row[0]: row[1]
@@ -403,6 +664,32 @@ class MaterializationParquetTests(unittest.TestCase):
             self.assertEqual(rows[0], 1)
             self.assertEqual(rows[3:], (2, 2, 3))
 
+            connection.execute(
+                "INSERT INTO material.final_occurrences VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    uuid4(),
+                    link_id,
+                    uuid4(),
+                    uuid4(),
+                    "c" * 64,
+                    3,
+                    "/next",
+                    "2026-01-04T00:00:00Z",
+                ],
+            )
+            merge_live_links(
+                catalogue,
+                links_table="final_links",
+                occurrences_table="final_occurrences",
+                identities=first_path,
+            )
+            live_row = connection.execute(
+                "SELECT visit_count, distinct_content_count, occurrence_count "
+                "FROM material.final_links"
+            ).fetchone()
+            self.assertEqual(live_row, (3, 3, 4))
+
     def test_ducklake_marker_makes_commit_redelivery_a_noop(self) -> None:
         batch_id = uuid4()
 
@@ -428,6 +715,14 @@ class MaterializationParquetTests(unittest.TestCase):
         )
         self.assertTrue(
             _is_retryable_batch_failure(duckdb.IOException("unavailable"))
+        )
+        self.assertFalse(
+            _is_retryable_batch_failure(
+                duckdb.IOException(
+                    'Cannot open file "/lake/material/data/file.parquet": '
+                    "No such file or directory"
+                )
+            )
         )
         self.assertFalse(
             _is_retryable_batch_failure(
@@ -458,6 +753,7 @@ class MaterializationParquetTests(unittest.TestCase):
             pages=(),
             heads=(),
             files={},
+            link_identities=None,
         )
         expected = BatchResult(
             source_items=2,

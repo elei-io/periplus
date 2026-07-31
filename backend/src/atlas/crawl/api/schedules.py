@@ -220,7 +220,7 @@ async def run_now(
             session,
             runtime=runtime,
             graph_id=graph_id,
-            url=schedule.root_url,
+            urls=schedule.urls,
             trigger_kind="manual",
             trigger_schedule_id=schedule.id,
             max_crawls=schedule.max_crawls,

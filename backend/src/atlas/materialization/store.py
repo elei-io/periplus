@@ -98,6 +98,42 @@ class MaterializationRunStore:
             session.flush()
             return _run(record)
 
+    def ensure_rebuild(
+        self,
+        *,
+        source_snapshot: int,
+        batch_size: int,
+    ) -> tuple[MaterializationRun, bool]:
+        """Return the active rebuild or durably create one."""
+
+        with session_scope() as session:
+            session.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('atlas-materialization-rebuild'))"
+                )
+            )
+            active = session.scalar(
+                select(MaterializationRunRecord)
+                .where(
+                    MaterializationRunRecord.status.in_(
+                        ("queued", "planning", "running", "activating")
+                    )
+                )
+                .limit(1)
+            )
+            if active is not None:
+                return _run(active), False
+            record = MaterializationRunRecord(
+                status="queued",
+                source_snapshot=source_snapshot,
+                covered_snapshot=source_snapshot,
+                batch_size=batch_size,
+            )
+            session.add(record)
+            session.flush()
+            return _run(record), True
+
     def get(self, run_id: UUID) -> MaterializationRun | None:
         with session_scope() as session:
             record = session.get(MaterializationRunRecord, run_id)

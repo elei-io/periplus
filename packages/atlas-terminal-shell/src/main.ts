@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 
 import {
-  AiReviewPicker,
   GhostTextEditor,
-  renderAiEvents,
   sanitizeTerminalText,
   SqlApi,
   SqlConsole,
@@ -13,8 +11,7 @@ import {
 } from "atlas-console-core"
 import { renderConsoleResult, startProgress } from "./render.js"
 
-const apiUrl =
-  process.env.ATLAS_API_URL?.trim() || "http://127.0.0.1:8000"
+const apiUrl = process.env.ATLAS_API_URL?.trim() || "http://127.0.0.1:8000"
 const sqlConsole = new SqlConsole(new SqlApi(apiUrl))
 
 async function interactive(): Promise<void> {
@@ -26,16 +23,14 @@ async function interactive(): Promise<void> {
     terminal,
     (input, cursor) => sqlConsole.complete(input, cursor),
     75,
-    sqlConsole.history,
+    sqlConsole.history
   )
   process.stdin.setRawMode(true)
   process.stdin.resume()
   terminal.writeRaw(`\u001b[2J\u001b[H${WELCOME}\r\n\r\n`)
   try {
-    let initialInput = ""
     while (true) {
-      const line = await editor.readLine("atlas> ", initialInput)
-      initialInput = ""
+      const line = await editor.readLine("atlas> ")
       const input = line.trim()
       if (!input) continue
       const interrupt = terminal.onData((data) => {
@@ -44,9 +39,8 @@ async function interactive(): Promise<void> {
         }
       })
       try {
-        const outcome = await execute(input, terminal)
+        const outcome = await execute(input)
         if (outcome.exit) return
-        initialInput = outcome.draft ?? ""
       } finally {
         interrupt.dispose()
       }
@@ -58,45 +52,24 @@ async function interactive(): Promise<void> {
   }
 }
 
-async function execute(
-  sql: string,
-  terminal?: StdioTerminal,
-): Promise<{ exit: boolean; draft?: string }> {
-  const progress = sql.startsWith(".") ? undefined : startProgress("Running query…")
+async function execute(sql: string): Promise<{ exit: boolean }> {
+  const progress = sql.startsWith(".")
+    ? undefined
+    : startProgress("Running query…")
   try {
     const result = await sqlConsole.run(sql)
     progress?.stop()
     if (result?.kind === "exit") return { exit: true }
-    if (result?.kind === "ai") {
-      const output = terminal ?? {
-        writeRaw: (value: string) => process.stdout.write(value),
-        onData: () => ({ dispose() {} }),
-        columns: () => process.stdout.columns ?? 100,
-      }
-      const completion = await renderAiEvents(output, result.events)
-      if (terminal) {
-        return {
-          exit: false,
-          draft: await new AiReviewPicker(terminal).choose(completion),
-        }
-      }
-      for (const suggestion of completion.suggestions) {
-        process.stdout.write(
-          `${suggestion.title}\n${suggestion.description}\n${suggestion.display_sql}\n\n`,
-        )
-      }
-    } else if (result) {
+    if (result) {
       process.stdout.write(renderConsoleResult(result))
     }
   } catch (error) {
     progress?.stop()
     const message = `Error: ${sanitizeTerminalText(
-      error instanceof Error ? error.message : String(error),
+      error instanceof Error ? error.message : String(error)
     )}`
     process.stderr.write(
-      process.stderr.isTTY
-        ? `\u001b[31m${message}\u001b[0m\n`
-        : `${message}\n`,
+      process.stderr.isTTY ? `\u001b[31m${message}\u001b[0m\n` : `${message}\n`
     )
   } finally {
     progress?.stop()
@@ -130,7 +103,9 @@ class StdioTerminal implements InteractiveTerminal {
   }
 
   async copyText(value: string): Promise<void> {
-    process.stdout.write(`\u001b]52;c;${Buffer.from(value).toString("base64")}\u0007`)
+    process.stdout.write(
+      `\u001b]52;c;${Buffer.from(value).toString("base64")}\u0007`
+    )
   }
 
   dispose(): void {

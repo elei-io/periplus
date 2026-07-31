@@ -73,17 +73,17 @@ installed—the DOM selector functions, but no `ingest.*` or `material.*` object
 shell uses that metadata for `.tables`, `.macros`,
 `.describe`, and context-aware completion; `.completion reload` refreshes it explicitly.
 
-`.ai <question>` adds a request-scoped assistant over the same public query boundary. The server
-may inspect public metadata and run row-bounded, read-only queries; it cannot access physical or
-control-plane schemas. SQL drafts are accepted only after Atlas validates the statement and binds
-it with `EXPLAIN`. The shell keeps a small recent conversation context locally, while the server
-stores no assistant session state. During a turn, each SQL operation exposes its purpose, elapsed
-time, row count, and final status without dumping the full query into the transcript. A completed
-turn renders a compact conclusion, evidence, and optional recommendation followed by a transient
-review panel. In the panel, `W` toggles between validated drafts and the exact SQL work ledger,
-Tab and Shift-Tab cycle entries, Up and Down page through formatted SQL, `C` copies it, and Escape
-dismisses it. Enter loads a selected draft into the normal editable prompt without executing it.
-`.ai --fresh <question>` begins without prior assistant context.
+The Atlas web home page provides a request-scoped assistant over the same public query boundary.
+The server may inspect public metadata and run row-bounded, read-only queries; it cannot access
+physical or control-plane schemas. SQL drafts are accepted only after Atlas validates the
+statement and binds it with `EXPLAIN`. The browser keeps a small recent conversation context
+locally, while the server stores no assistant session state. During a turn, each SQL operation
+exposes its purpose, elapsed time, final status, bounded rows, columns, and types. A completed turn
+renders a compact Markdown answer, result tables, and validated SQL drafts. A draft can be copied
+or run directly in the conversation, where its bounded result table is rendered in place. Result
+tables stay within the conversation, scroll horizontally, support resizable columns and cell
+copying, and can be copied or downloaded as CSV or JSON. Catalogue assistance is not a terminal
+command.
 
 ## 2. Python SDK
 

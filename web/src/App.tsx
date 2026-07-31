@@ -19,6 +19,11 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 
+const HomePage = lazy(() =>
+  import("@/pages/home-page").then((module) => ({
+    default: module.HomePage,
+  }))
+)
 const SqlConsolePage = lazy(() =>
   import("@/pages/sql-console-page").then((module) => ({
     default: module.SqlConsolePage,
@@ -132,7 +137,7 @@ export function App() {
 
   const page = (() => {
     if (pathname === "/") {
-      return <SqlConsolePage />
+      return <HomePage />
     }
 
     if (activeItem.href === "/sql") {
@@ -229,15 +234,25 @@ export function App() {
           className={
             activeItem.href === "/sql"
               ? "relative min-h-0 min-w-0 flex-1 overflow-hidden"
-              : "app-surface relative min-h-0 min-w-0 flex-1 [scrollbar-gutter:stable] overflow-auto overscroll-contain p-4 lg:p-6"
+              : activeItem.href === "/"
+                ? "app-surface relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain"
+                : "app-surface relative min-h-0 min-w-0 flex-1 [scrollbar-gutter:stable] overflow-auto overscroll-contain p-4 lg:p-6"
           }
         >
-          <div className="app-surface-grain pointer-events-none absolute inset-0" />
+          <div
+            className={
+              activeItem.href === "/"
+                ? "app-surface-grain atlas-home-grain pointer-events-none absolute inset-0"
+                : "app-surface-grain pointer-events-none absolute inset-0"
+            }
+          />
           <div
             className={
               activeItem.href === "/sql"
                 ? "relative z-10 flex h-full min-h-0 min-w-0"
-                : "relative z-10 flex min-h-full min-w-0 pb-10"
+                : activeItem.href === "/"
+                  ? "relative z-10 flex min-h-full min-w-0"
+                  : "relative z-10 flex min-h-full min-w-0 pb-10"
             }
           >
             <Suspense fallback={<PageFallback />}>{page}</Suspense>

@@ -15,6 +15,8 @@ from pydantic import (
 from atlas.crawl.control.crawl_graphs.schemas import (
     DEFAULT_GRAPH_RUN_MAX_CRAWLS,
     MAX_GRAPH_RUN_CRAWLS,
+    MAX_GRAPH_RUN_START_URLS,
+    CrawlStartUrl,
 )
 
 
@@ -82,7 +84,9 @@ class CrawlScheduleInput(ScheduleWindow):
         ge=1,
         le=MAX_GRAPH_RUN_CRAWLS,
     )
-    root_url: str = Field(min_length=1, max_length=8_192)
+    urls: list[CrawlStartUrl] = Field(
+        min_length=1, max_length=MAX_GRAPH_RUN_START_URLS
+    )
     overlap_policy: OverlapPolicy = "skip"
     misfire_policy: MisfirePolicy = "skip"
 

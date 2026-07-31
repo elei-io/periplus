@@ -1,11 +1,15 @@
 # Crawl plans
 
-Atlas begins every native crawl with exactly one URL. The caller chooses one
-of two traversal strategies:
+Atlas begins every native crawl with one or more URLs. Every start URL enters
+the frozen plan's root node, and run-wide URL deduplication applies across all
+roots and derived links. The caller chooses one of two traversal strategies:
 
 ```python
 crawl = atlas.crawl(
-    "https://en.wikipedia.org/wiki/Sauli_Niinist%C3%B6",
+    [
+        "https://en.wikipedia.org/wiki/Sauli_Niinist%C3%B6",
+        "https://en.wikipedia.org/wiki/Tarja_Halonen",
+    ],
     depth=2,
     relation_scope="same_origin",
 )
@@ -15,7 +19,10 @@ or:
 
 ```python
 crawl = atlas.crawl(
-    "https://en.wikipedia.org/wiki/Sauli_Niinist%C3%B6",
+    [
+        "https://en.wikipedia.org/wiki/Sauli_Niinist%C3%B6",
+        "https://en.wikipedia.org/wiki/Tarja_Halonen",
+    ],
     plan="my-custom-plan",
 )
 ```
@@ -25,9 +32,9 @@ crawl = atlas.crawl(
 ## Built-in finite-depth plan
 
 Atlas represents `depth=N` as a frozen linear plan with `N + 1` acquisition
-nodes and `N` edges. The root URL enters depth zero. An edge from depth `i` to
-depth `i + 1` selects links from the page acquired at depth `i`. This makes the
-depth limit durable and exact even across retries and worker restarts.
+nodes and `N` edges. Every start URL enters depth zero. An edge from depth `i`
+to depth `i + 1` selects links from the page acquired at depth `i`. This makes
+the depth limit durable and exact even across retries and worker restarts.
 
 `relation_scope` is an inclusive navigation boundary:
 
@@ -36,14 +43,17 @@ depth limit durable and exact even across retries and worker restarts.
 - `same_site` additionally includes `same_site`.
 - `external` permits every scope, including `external`.
 
-If neither a stored plan nor a depth is supplied, Atlas acquires only the root
-URL.
+If neither a stored plan nor a depth is supplied, Atlas acquires only the
+submitted start URLs.
 
 ## Stored plans
 
 Users create stored plans in the UI. A plan contains acquisition nodes, one
 root node, and directed navigation edges. Every run freezes the saved plan
-before admitting its root URL.
+before admitting its start URLs.
+
+Manual runs and schedules use the same start-URL list contract. Each scheduled
+occurrence admits the schedule's complete list as one graph run.
 
 An edge is one DuckDB `SELECT` query over the current page's ephemeral
 `nav.links` relation. It must return a column named `url`.

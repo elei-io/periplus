@@ -38,7 +38,7 @@ _TERMINAL = {
 @dataclass(slots=True)
 class Crawl:
     id: UUID
-    url: str
+    urls: tuple[str, ...]
     plan_id: UUID
     status: CrawlStatus
     plan_slug: str | None = None
@@ -127,7 +127,7 @@ class CrawlPage:
 
 
 async def run(
-    url: str,
+    urls: str | Collection[str],
     *,
     depth: int | None = None,
     relation_scope: RelationScope | None = None,
@@ -135,8 +135,11 @@ async def run(
     max_crawls: int = 1_000,
     max_run_seconds: int | None = None,
 ) -> Crawl:
+    start_urls = [urls] if isinstance(urls, str) else [url for url in urls]
+    if not start_urls:
+        raise ValueError("at least one crawl start URL is required")
     payload: dict[str, Any] = {
-        "url": url,
+        "urls": start_urls,
         "max_crawls": max_crawls,
     }
     if depth is not None:
@@ -202,10 +205,9 @@ async def list(
 
 def _crawl(payload: dict[str, Any]) -> Crawl:
     trigger_urls = payload.get("trigger_urls") or ()
-    url = payload.get("url") or (trigger_urls[0] if trigger_urls else "")
     return Crawl(
         id=UUID(str(payload["id"])),
-        url=str(url),
+        urls=tuple(str(url) for url in trigger_urls),
         plan_id=UUID(str(payload.get("plan_id") or payload["graph_id"])),
         plan_slug=payload.get("plan_slug"),
         status=payload["status"],

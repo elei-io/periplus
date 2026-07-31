@@ -1,7 +1,6 @@
 import {
-  AiReviewPicker,
+  formatDuration,
   GhostTextEditor,
-  renderAiEvents,
   sanitizeTerminalText,
   SqlApi,
   SqlConsole,
@@ -20,7 +19,9 @@ const DEFAULT_HISTORY_KEY = "atlas.sql.history"
 
 interface ShellStatus {
   connection: "connecting" | "connected" | "disconnected"
-  catalogueVersion?: string
+  duckdbVersion?: string
+  catalogueBytes?: number
+  apiLatencyMilliseconds?: number
   error?: string
 }
 
@@ -44,14 +45,14 @@ export function AtlasWebShell({
   const [session] = useState(() => {
     const sqlConsole = new SqlConsole(
       new SqlApi(new URL(apiBaseUrl, window.location.origin).toString()),
-      { history: loadHistory(historyKey) },
+      { history: loadHistory(historyKey) }
     )
     return new BrowserSqlSession(
       terminal,
       sqlConsole,
       historyKey,
       initialSql,
-      setStatus,
+      setStatus
     )
   })
 
@@ -76,8 +77,8 @@ export function AtlasWebShell({
         onError={(error) =>
           terminal.writeRaw(
             `\r\n\u001b[31mError: ${sanitizeTerminalText(
-              error instanceof Error ? error.message : String(error),
-            )}\u001b[0m\r\n`,
+              error instanceof Error ? error.message : String(error)
+            )}\u001b[0m\r\n`
           )
         }
       />
@@ -98,13 +99,13 @@ class BrowserSqlSession {
     private readonly sqlConsole: SqlConsole,
     private readonly historyKey: string,
     private readonly initialSql: string,
-    private readonly onStatus: (status: ShellStatus) => void,
+    private readonly onStatus: (status: ShellStatus) => void
   ) {
     this.editor = new GhostTextEditor(
       terminal,
       (input, cursor) => sqlConsole.complete(input, cursor),
       75,
-      sqlConsole.history,
+      sqlConsole.history
     )
   }
 
@@ -137,7 +138,7 @@ class BrowserSqlSession {
 
   private async run(): Promise<void> {
     this.terminal.writeRaw(
-      `\u001b[2J\u001b[H${WELCOME.replaceAll("\n", "\r\n")}\r\n\r\n`,
+      `\u001b[2J\u001b[H${WELCOME.replaceAll("\n", "\r\n")}\r\n\r\n`
     )
     await this.connect()
     let initialInput = this.initialSql
@@ -159,32 +160,24 @@ class BrowserSqlSession {
         if (result?.kind === "exit") {
           this.closed = true
           this.terminal.writeRaw(
-            "\u001b[2mSession closed. Reload to start again.\u001b[0m\r\n",
+            "\u001b[2mSession closed. Reload to start again.\u001b[0m\r\n"
           )
           return
         }
-        if (result?.kind === "ai") {
-          const completion = await renderAiEvents(
-            this.terminal,
-            result.events,
-          )
-          this.running = false
-          initialInput =
-            (await new AiReviewPicker(this.terminal).choose(completion)) ?? ""
-        } else if (result) {
+        if (result) {
           this.terminal.writeRaw(
-            renderConsoleResult(result, this.terminal.columns()),
+            renderConsoleResult(result, this.terminal.columns())
           )
         }
       } catch (error) {
         this.progress?.stop()
         if (isAbort(error)) {
           this.terminal.writeRaw(
-            "\u001b[2mQuery cancellation requested.\u001b[0m\r\n",
+            "\u001b[2mQuery cancellation requested.\u001b[0m\r\n"
           )
         } else {
           const message = sanitizeTerminalText(
-            error instanceof Error ? error.message : String(error),
+            error instanceof Error ? error.message : String(error)
           )
           this.terminal.writeRaw(`\u001b[31mError: ${message}\u001b[0m\r\n`)
         }
@@ -198,12 +191,15 @@ class BrowserSqlSession {
 
   private async connect(): Promise<void> {
     this.onStatus({ connection: "connecting" })
+    const startedAt = performance.now()
     try {
       const metadata = await this.sqlConsole.metadata()
       if (this.closed) return
       this.onStatus({
         connection: "connected",
-        catalogueVersion: metadata.catalogue_version,
+        duckdbVersion: metadata.duckdb_version,
+        catalogueBytes: metadata.catalogue_bytes,
+        apiLatencyMilliseconds: performance.now() - startedAt,
       })
     } catch (error) {
       if (this.closed) return
@@ -223,9 +219,9 @@ class BrowserProgress {
       ({ symbol, elapsedSeconds }) =>
         terminal.writeRaw(
           `\r\u001b[2K\u001b[1;34m${symbol}\u001b[0m ${message} ` +
-            `\u001b[2m${elapsedSeconds}s\u001b[0m`,
+            `\u001b[2m${elapsedSeconds}s\u001b[0m`
         ),
-      () => terminal.writeRaw("\r\u001b[2K"),
+      () => terminal.writeRaw("\r\u001b[2K")
     )
   }
 
@@ -235,21 +231,41 @@ class BrowserProgress {
 }
 
 function ShellFooter({ status }: { status: ShellStatus }) {
-  const connection =
-    status.connection === "connected"
-      ? "● connected"
-      : status.connection === "connecting"
-        ? "◌ connecting"
-        : "○ disconnected"
   return (
-    <footer className="atlas-web-shell-footer" title={status.error}>
-      <span data-state={status.connection}>{connection}</span>
-      <span>namespaces web.* · dom.*</span>
-      <span className="atlas-web-shell-footer-version">
-        catalogue {status.catalogueVersion ?? "—"}
+    <footer
+      className="atlas-web-shell-footer"
+      title={status.error}
+      aria-live="polite"
+    >
+      <span>DuckDB {status.duckdbVersion ?? "—"}</span>
+      <span>
+        catalogue{" "}
+        {status.catalogueBytes === undefined
+          ? "—"
+          : formatBytes(status.catalogueBytes)}
+      </span>
+      <span className="atlas-web-shell-footer-end">
+        API{" "}
+        {status.apiLatencyMilliseconds === undefined
+          ? status.connection === "disconnected"
+            ? "unavailable"
+            : "—"
+          : formatDuration(status.apiLatencyMilliseconds)}
       </span>
     </footer>
   )
+}
+
+function formatBytes(value: number): string {
+  if (value < 1_024) return `${value} B`
+  const units = ["KiB", "MiB", "GiB", "TiB", "PiB"]
+  let scaled = value
+  let unit = -1
+  do {
+    scaled /= 1_024
+    unit += 1
+  } while (scaled >= 1_024 && unit < units.length - 1)
+  return `${scaled.toFixed(scaled >= 10 ? 0 : 1)} ${units[unit]}`
 }
 
 function loadHistory(historyKey: string): string[] {

@@ -12,7 +12,6 @@ export function renderConsoleResult(
 ): string {
   if (output.kind === "clear") return "\u001b[2J\u001b[H"
   if (output.kind === "exit") return ""
-  if (output.kind === "ai") return ""
   if (output.kind === "message") {
     return surround(
       sanitizeTerminalText(output.text, true).replaceAll("\n", "\r\n")

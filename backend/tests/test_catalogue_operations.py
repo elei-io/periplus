@@ -7,6 +7,7 @@ import duckdb
 import psycopg
 
 from atlas.platform.catalogue.operations import (
+    is_catalogue_data_corruption,
     is_retryable_catalogue_unavailability,
     run_with_catalogue_retry,
 )
@@ -25,6 +26,12 @@ class CatalogueOperationRetryTests(unittest.TestCase):
                 duckdb.IOException("metadata connection failed")
             )
         )
+        missing = duckdb.IOException(
+            'Cannot open file "/lake/material/data/file.parquet": '
+            "No such file or directory"
+        )
+        self.assertTrue(is_catalogue_data_corruption(missing))
+        self.assertFalse(is_retryable_catalogue_unavailability(missing))
 
     def test_transaction_conflicts_retry_with_bounded_backoff(self) -> None:
         attempts = 0
@@ -84,20 +91,16 @@ class CatalogueOperationRetryTests(unittest.TestCase):
         self.assertEqual(result, "committed")
         self.assertEqual(operation.call_count, 2)
 
-    def test_io_unavailability_stays_live_past_conflict_limit(
+    def test_io_unavailability_is_bounded_for_durable_redelivery(
         self,
     ) -> None:
         operation = MagicMock(
-            side_effect=[
-                duckdb.IOException("metadata unavailable"),
-                duckdb.IOException("metadata still unavailable"),
-                "committed",
-            ]
+            side_effect=duckdb.IOException("metadata unavailable")
         )
         with (
             patch(
                 "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_MAX_ATTEMPTS",
-                1,
+                3,
             ),
             patch(
                 "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
@@ -108,12 +111,12 @@ class CatalogueOperationRetryTests(unittest.TestCase):
                 0.25,
             ),
             patch("atlas.platform.catalogue.operations.time.sleep") as sleep,
+            self.assertRaises(duckdb.IOException),
         ):
-            result = run_with_catalogue_retry(
+            run_with_catalogue_retry(
                 operation, description="materialization partition"
             )
 
-        self.assertEqual(result, "committed")
         self.assertEqual(operation.call_count, 3)
         self.assertEqual(sleep.call_args_list, [call(0.1), call(0.2)])
 
