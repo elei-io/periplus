@@ -276,7 +276,7 @@ async def wait_for_domain_interval(
     """Atomically reserve the next domain admission time, then wait for it.
 
     The reservation observes both the frozen policy interval and any adaptive
-    response backoff recorded by another acquisition worker.
+    response backoff recorded by another crawler.
     """
 
     interval_seconds = max(0.0, interval_seconds)

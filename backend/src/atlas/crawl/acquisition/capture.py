@@ -178,7 +178,9 @@ async def capture_page(
     try:
         async with asyncio.timeout(ACQUISITION_TIMEOUT_SECONDS):
             try:
-                browser = await playwright.chromium.connect_over_cdp(get_str("CDP_URL"))
+                browser = await playwright.chromium.connect_over_cdp(
+                    get_str("ATLAS_CDP_URL")
+                )
             except PlaywrightTimeoutError as exc:
                 return acquisition_failure(
                     url,

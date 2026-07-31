@@ -14,17 +14,19 @@ external evidence -> immutable bytes -> ingest.* -> material.* -> web.* / dom.*
 
 ## Authorities
 
-- Postgres owns editable control state, current graph execution, admission, progress, schedules,
-  policies, and the transactional graph outbox.
+- Atlas Postgres owns editable control state, current graph execution, admission, progress,
+  schedules, policies, and the transactional graph outbox.
 - NATS JetStream and KV own graph, ingestion, and materialization work delivery, worker presence,
   operation leases, and per-domain pacing. They are not authoritative graph or materialization
   state.
 - The object repository owns immutable content-addressed source bytes.
 - DuckLake owns historical observed evidence, rebuildable Atlas materializations, and the portable
-  public `web.*` and `dom.*` catalogue.
+  public `web.*` and `dom.*` catalogue. Its metadata store is a separate authority from Atlas
+  Postgres.
 
-Current graph execution never moves into DuckLake. Crawl history never moves into control-plane
-Postgres.
+Current graph execution never moves into DuckLake. Crawl history never moves into Atlas Postgres.
+The local `lake-postgres` service stores DuckLake metadata only; the local `atlas-postgres`
+service stores Atlas control state only.
 
 ## Installation and client lifecycle
 
@@ -41,20 +43,21 @@ attachment for every Atlas process. Filesystem and S3 are built-in protocols; ca
 protocol for another DuckDB-supported data URI without adding storage branches to catalogue or
 materialization workflows.
 Atlas services are needed only to acquire, ingest, or materialize more data. Stopping those
-services leaves the complete analytical lake intact. Deleting control-plane Postgres separately
-would remove editable plans, schedules, and current execution state, but never the historical
-evidence already committed to DuckLake.
+services leaves the complete analytical lake intact. Deleting Atlas Postgres removes editable
+plans, schedules, and current execution state, but never historical evidence already committed to
+DuckLake. Deleting the DuckLake metadata store destroys the catalogue even when its immutable S3
+objects remain.
 
 ## Process ownership
 
-- Acquisition acquires one page, stores immutable bytes, publishes visit evidence, and advances
+- The crawler acquires one page, stores immutable bytes, publishes visit evidence, and advances
   graph work without waiting for catalogue ingestion.
-- Ingestion replicas consume one shared durable lane without a leader. Each process owns one NATS
+- Ingestor replicas consume one shared durable lane without a leader. Each process owns one NATS
   session and a configurable bounded set of DuckLake writer lanes; each lane has its own catalogue
   connection.
-- Materialization scans a pinned `ingest.visits` snapshot into bounded visit batches and maintains
+- The materializer scans a pinned `ingest.visits` snapshot into bounded visit batches and maintains
   the complete fixed `material.*` generation, then follows inserted visits through DuckLake CDC.
-- Housekeeping removes only Atlas-owned transient navigation and runtime state.
+- The janitor removes only Atlas-owned transient navigation and runtime state.
 
 Ingestion does not wait for materialization. A visit is the single unit of rebuild work; its
 optional document is projected in that same batch. There is no document lane, target-to-target
@@ -68,9 +71,9 @@ another symmetric replica resumes it.
 
 ## Materialization
 
-Postgres stores rebuild control state and bounded batch identities. JetStream delivers plan, visit
+Atlas Postgres stores rebuild control state and bounded batch identities. JetStream delivers plan, visit
 batch, and serialized activation work; messages are ACKed only after their corresponding durable
-commit. Postgres records successful publication once; recovery publishes only unpublished work,
+commit. Atlas Postgres records successful publication once; recovery publishes only unpublished work,
 while JetStream redelivers published work until ACK. Any worker replica can consume a visit batch.
 
 Large projected relations are written under the permanent `material/data` object namespace and
@@ -98,10 +101,10 @@ after lease expiry without moving or resetting the DuckLake cursor. The elected 
 publishes deterministic visit batches to the same JetStream subject used by rebuild workers.
 Workers apply each batch directly to the active generation and record the same applied-batch
 marker in the material transaction. The coordinator advances the CDC cursor only after every
-marker is visible. There is one outstanding CDC window and no Postgres live-work ledger.
+marker is visible. There is one outstanding CDC window and no Atlas Postgres live-work ledger.
 
 An unreadable registered material file invalidates the complete active generation. The worker
-durably reuses or creates one Postgres rebuild, removes the active-generation marker to stop CDC,
+durably reuses or creates one Atlas Postgres rebuild, removes the active-generation marker to stop CDC,
 and ACKs the poisoned delivery because immutable `ingest.*` evidence is the rebuild authority.
 The hidden rebuild then replaces all discovered material tables atomically. Local retries are
 bounded so one bad delivery cannot occupy a worker lane indefinitely.
@@ -113,9 +116,9 @@ materialization declaration.
 
 ## Crawl-plan boundary
 
-Crawl plans are editable Postgres definitions. A run freezes its complete plan configuration
+Crawl plans are editable Atlas Postgres definitions. A run freezes its complete plan configuration
 before admitting one or more start URLs into durable crawl requests. Current run, request, and
-edge-evaluation state remains in Postgres. A terminal run schedules its immutable `ingest.crawls`
+edge-evaluation state remains in Atlas Postgres. A terminal run schedules its immutable `ingest.crawls`
 evidence through the transactional graph outbox and ordinary ingestion path.
 
 Plan edges select URLs only from the navigation package derived from the page

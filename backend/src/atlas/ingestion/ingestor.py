@@ -1,4 +1,4 @@
-"""Atlas catalogue-ingestion worker."""
+"""Atlas catalogue ingestor process."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ async def run() -> None:
     stop = asyncio.Event()
     monitor = HealthMonitor(
         heartbeat_timeout_seconds=get_float(
-            "ATLAS_INGESTION_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
+            "ATLAS_INGESTOR_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
         )
     )
     concurrency = _ingestion_concurrency()
@@ -62,7 +62,7 @@ async def run() -> None:
         ]
         monitor.dependencies_ready()
         await run_worker_process(
-            role="ingestion",
+            role="ingestor",
             monitor=monitor,
             tasks={
                 f"ingestion-writer-{lane}": run_ingestion(
@@ -80,7 +80,7 @@ async def run() -> None:
             | {
                 "ingestion-presence": run_catalogue_process_presence(
                     worker_id=(
-                        f"ingestion:{os.uname().nodename}:{os.getpid()}"
+                        f"ingestor:{os.uname().nodename}:{os.getpid()}"
                     ),
                     capability="ingestion",
                     started_at=datetime.now(UTC),
@@ -106,10 +106,10 @@ async def run() -> None:
 
 
 def _ingestion_concurrency() -> int:
-    concurrency = get_int("ATLAS_INGESTION_CONCURRENCY")
+    concurrency = get_int("ATLAS_INGESTOR_CONCURRENCY")
     if concurrency > INGESTION_MAX_LOCAL_CONCURRENCY:
         raise ConfigurationError(
-            "ATLAS_INGESTION_CONCURRENCY must be at most "
+            "ATLAS_INGESTOR_CONCURRENCY must be at most "
             f"{INGESTION_MAX_LOCAL_CONCURRENCY}; add replicas to scale further"
         )
     return concurrency

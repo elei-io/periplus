@@ -8,7 +8,7 @@ import duckdb
 
 from atlas.ingestion.consumer import _commit_prepared_batch
 from atlas.ingestion.service import PreparedIngestion
-from atlas.ingestion.worker import _ingestion_concurrency
+from atlas.ingestion.ingestor import _ingestion_concurrency
 from atlas.platform.config.environment import ConfigurationError
 
 
@@ -16,14 +16,14 @@ class IngestionConcurrencyTests(unittest.TestCase):
     def test_local_concurrency_is_configurable_within_process_bound(self) -> None:
         with patch.dict(
             os.environ,
-            {"ATLAS_INGESTION_CONCURRENCY": "1"},
+            {"ATLAS_INGESTOR_CONCURRENCY": "1"},
         ):
             self.assertEqual(_ingestion_concurrency(), 1)
 
     def test_scaling_beyond_process_bound_uses_replicas(self) -> None:
         with patch.dict(
             os.environ,
-            {"ATLAS_INGESTION_CONCURRENCY": "5"},
+            {"ATLAS_INGESTOR_CONCURRENCY": "5"},
         ):
             with self.assertRaisesRegex(
                 ConfigurationError,
@@ -59,17 +59,17 @@ class IngestionCommitRetryTests(unittest.TestCase):
 
 
 class IngestionProcessOwnershipTests(unittest.IsolatedAsyncioTestCase):
-    @patch("atlas.ingestion.worker.run_catalogue_process_presence")
-    @patch("atlas.ingestion.worker.monitor_catalogue_lanes")
-    @patch("atlas.ingestion.worker.run_ingestion")
-    @patch("atlas.ingestion.worker.run_worker_process")
-    @patch("atlas.ingestion.worker.ensure_repository_consumer")
-    @patch("atlas.ingestion.worker.ensure_operation_lease_storage")
-    @patch("atlas.ingestion.worker.ensure_ingestion_results")
-    @patch("atlas.ingestion.worker.ensure_dead_letter_stream")
-    @patch("atlas.ingestion.worker.ensure_repository_stream")
-    @patch("atlas.ingestion.worker.connect_nats")
-    @patch("atlas.ingestion.worker._ingestion_concurrency", return_value=3)
+    @patch("atlas.ingestion.ingestor.run_catalogue_process_presence")
+    @patch("atlas.ingestion.ingestor.monitor_catalogue_lanes")
+    @patch("atlas.ingestion.ingestor.run_ingestion")
+    @patch("atlas.ingestion.ingestor.run_worker_process")
+    @patch("atlas.ingestion.ingestor.ensure_repository_consumer")
+    @patch("atlas.ingestion.ingestor.ensure_operation_lease_storage")
+    @patch("atlas.ingestion.ingestor.ensure_ingestion_results")
+    @patch("atlas.ingestion.ingestor.ensure_dead_letter_stream")
+    @patch("atlas.ingestion.ingestor.ensure_repository_stream")
+    @patch("atlas.ingestion.ingestor.connect_nats")
+    @patch("atlas.ingestion.ingestor._ingestion_concurrency", return_value=3)
     async def test_one_nats_session_and_one_subscription_per_lane(
         self,
         _concurrency,
@@ -84,7 +84,7 @@ class IngestionProcessOwnershipTests(unittest.IsolatedAsyncioTestCase):
         monitor_lanes,
         process_presence,
     ) -> None:
-        from atlas.ingestion.worker import run
+        from atlas.ingestion.ingestor import run
 
         client = MagicMock()
         client.drain = AsyncMock()

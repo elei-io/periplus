@@ -1,4 +1,4 @@
-"""Atlas complete-rebuild materialization worker."""
+"""Atlas materializer process."""
 
 from __future__ import annotations
 
@@ -21,10 +21,10 @@ async def run() -> None:
     stop = asyncio.Event()
     monitor = HealthMonitor(
         heartbeat_timeout_seconds=get_float(
-            "ATLAS_MATERIALIZATION_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
+            "ATLAS_MATERIALIZER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
         )
     )
-    concurrency = get_int("ATLAS_MATERIALIZATION_CONCURRENCY")
+    concurrency = get_int("ATLAS_MATERIALIZER_CONCURRENCY")
     lanes = tuple(
         CatalogueLaneReporter(lane_index=index)
         for index in range(concurrency)
@@ -32,7 +32,7 @@ async def run() -> None:
     for reporter in lanes:
         reporter.attach(lambda: (True, "ready"))
     await run_worker_process(
-        role="materialization",
+        role="materializer",
         monitor=monitor,
         tasks={
             "fixed-materializations": run_materialization(
@@ -42,7 +42,7 @@ async def run() -> None:
             ),
             "materialization-presence": run_catalogue_process_presence(
                 worker_id=(
-                    f"materialization:{os.uname().nodename}:{os.getpid()}"
+                    f"materializer:{os.uname().nodename}:{os.getpid()}"
                 ),
                 capability="materialization",
                 started_at=datetime.now(UTC),

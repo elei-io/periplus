@@ -92,16 +92,10 @@ class CatalogueConfig:
 
 
 def catalogue_config_from_env() -> CatalogueConfig:
-    data_path = os.environ.get(
-        "ATLAS_DUCKLAKE_DATA_PATH",
-        "/app/.atlas/lake/",
-    )
+    data_path = _required("ATLAS_DUCKLAKE_DATA_PATH")
     return CatalogueConfig(
         alias=os.environ.get("ATLAS_DUCKLAKE_ALIAS", "atlas"),
-        metadata_path=os.environ.get(
-            "ATLAS_DUCKLAKE_METADATA_PATH",
-            "postgres:dbname=atlas host=postgres port=5432 user=atlas",
-        ),
+        metadata_path=_required("ATLAS_DUCKLAKE_METADATA_PATH"),
         data_path=data_path,
         metadata_schema=os.environ.get(
             "ATLAS_DUCKLAKE_METADATA_SCHEMA",
@@ -174,6 +168,13 @@ def _s3_storage_config(data_path: str) -> S3StorageConfig | None:
 
 def _first_optional(*names: str) -> str | None:
     return next((value for name in names if (value := _optional(name))), None)
+
+
+def _required(name: str) -> str:
+    value = _optional(name)
+    if value is None:
+        raise CatalogueConfigError(f"{name} is required")
+    return value
 
 
 def _optional(name: str) -> str | None:

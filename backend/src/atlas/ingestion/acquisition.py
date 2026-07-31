@@ -1,4 +1,4 @@
-"""Immutable-object and ingestion-queue boundary for acquisition workers."""
+"""Immutable-object and ingestion-queue boundary for crawlers."""
 
 from __future__ import annotations
 

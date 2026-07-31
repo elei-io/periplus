@@ -1,4 +1,4 @@
-"""Bounded ingestion worker configuration."""
+"""Bounded ingestor configuration."""
 
 from __future__ import annotations
 

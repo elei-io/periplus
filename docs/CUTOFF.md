@@ -53,7 +53,7 @@ registry owns runtime SQL and declares material dependencies separately.
 ## Current-lake transition
 
 Before activation Atlas records the ingestion snapshot/high-water mark, verifies referenced
-objects, stops the old materialization workers, and uses the registry digest to reject
+objects, stops the old materializer replicas, and uses the registry digest to reject
 incompatible live work. It rebuilds hidden relations solely from ingestion evidence, catches up
 inserted visits, validates counts, identities, joins, and representative public queries, then
 activates every discovered relation and the matching public catalogue together. Retired

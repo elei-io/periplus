@@ -12,10 +12,10 @@ boundary.
 The five `ingest.*` relations are the complete rebuild authority. Identity replay with the same
 evidence is a no-op; conflicting evidence fails. Materialization consumes inserted visits only.
 
-Every ingestion replica is symmetric; there is no ingestion coordinator or elected owner. At
+Every ingestor replica is symmetric; there is no ingestion coordinator or elected owner. At
 process startup a replica opens one NATS session, validates the shared stream, durable consumer,
 result store, and operation-lease contracts once, then creates one pull handle per local lane.
-`ATLAS_INGESTION_CONCURRENCY` selects one to four lanes per replica. Each lane owns one independent
+`ATLAS_INGESTOR_CONCURRENCY` selects one to four lanes per replica. Each lane owns one independent
 DuckLake connection, while all lanes reuse the process-owned queue session and handles.
 
 Replicas compete on the same durable consumer. Its fixed global unacknowledged-delivery ceiling is
@@ -72,7 +72,7 @@ URI. Materialization code does not branch by storage backend.
 
 ## Complete rebuild
 
-1. Postgres records the source snapshot, registry digest, and visit batch identities.
+1. Atlas Postgres records the source snapshot, registry digest, and visit batch identities.
 2. The planner creates every discovered hidden relation from the registry.
 3. Horizontally scalable workers append final files and applied markers.
 4. Activation checks the exact registry, validates every hidden relation, and catches up visits
@@ -86,7 +86,7 @@ digest. Partial activation and per-table repair do not exist.
 
 ## Live CDC and recovery
 
-One dedicated insert-only DuckLake CDC consumer follows `ingest.visits`. Every materialization
+One dedicated insert-only DuckLake CDC consumer follows `ingest.visits`. Every materializer
 replica is a symmetric coordinator candidate. A renewable NATS operation lease suppresses
 cross-replica connection contention; its current holder then acquires the DuckLake consumer's
 owner-token lease. Neither lease stores a cursor, and no replica is statically designated. If the

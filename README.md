@@ -24,17 +24,17 @@ application lives under `web/` and consumes `atlas-web-shell`.
 The locally installable Python SDK lives under `packages/atlas-python-sdk/`.
 
 The backend is one `atlas` Python package organized by capability under `backend/src/atlas/`.
-API, acquisition, ingestion, materialization, and housekeeping remain independently runnable
-process roles from the same package.
+The API, crawler, ingestor, materializer, and janitor are independently runnable process roles
+from the same package.
 
 ## Development
 
 Requirements are Python 3.14 with `uv`, Node.js 22 or newer, Docker Compose, the sibling
 `atlas-duckdb-extension` checkout, the pinned
 `quack/ducklake-cdc-extension-1.5.5` checkout, and a standard CDP endpoint. The default Compose
-stack builds both matching Linux extensions in cached builder stages, then provisions
-Postgres-backed DuckLake metadata, shared local lake storage, an immutable object repository, and
-JetStream without external credentials.
+stack builds both matching Linux extensions in cached builder stages, then provisions separate
+Postgres authorities for Atlas control state and DuckLake metadata, S3-compatible lake storage, an
+immutable object repository, and JetStream without external credentials.
 
 ```sh
 cp .env.example .env
@@ -47,17 +47,16 @@ The first image build compiles DuckDB and both extensions. Later builds reuse th
 the pinned DuckDB version or extension source changes. Runtime images contain only the compiled
 extension artifacts, not the compiler toolchain.
 
-If a greenfield baseline replacement leaves local Postgres stamped at a
-revision that no longer exists, reset only the disposable control plane and
-start again:
+If a greenfield baseline replacement leaves either local database or another disposable service
+with a superseded contract, reset the complete development state and start again:
 
 ```sh
-make compose-reset-control
+make compose-reset
 make compose-up
 ```
 
-This resets all disposable Compose state, including DuckLake metadata and files, repository
-objects, JetStream, and control-plane Postgres.
+This resets both Postgres authorities, lake objects and gateway metadata, the shared immutable
+repository, and JetStream.
 
 Run one query from the terminal:
 
@@ -78,15 +77,16 @@ Useful commands:
 make setup
 make catalogue-check
 make api
-make acquisition-worker
-make ingestion-worker
-make materialization-worker
-make housekeeping-worker
+make crawler
+make ingestor
+make materializer
+make janitor
 ```
 
 The canonical product and data contracts are:
 
 - [architecture](docs/ARCHITECTURE.md)
+- [deployment](docs/DEPLOYMENT.md)
 - [cutoff](docs/CUTOFF.md)
 - [schema](docs/SCHEMA.md)
 - [lifecycle](docs/LIFECYCLE.md)

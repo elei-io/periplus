@@ -22,7 +22,7 @@ CRAWL_DOMAIN_PERMIT_RETRY_SECONDS = 0.25
 # scaling unit; this ceiling keeps one process's memory use predictable.
 INGESTION_MAX_LOCAL_CONCURRENCY = 4
 # Navigation retention is recovery cleanup, not a bulk-delete job. One bounded
-# batch per housekeeping sweep keeps object-store pressure predictable.
+# batch per janitor sweep keeps object-store pressure predictable.
 NAVIGATION_CLEANUP_BATCH_SIZE = 500
 
 # Adaptive microbatch bounds. A batch flushes on whichever bound is reached

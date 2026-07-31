@@ -1,4 +1,4 @@
-.PHONY: sync check setup catalogue-check api acquisition-worker ingestion-worker materialization-worker housekeeping-worker db-revision compose-up compose-down compose-reset-control
+.PHONY: sync check setup catalogue-check api crawler ingestor materializer janitor db-revision compose-up compose-down compose-reset
 
 sync:
 	cd backend && uv sync
@@ -19,13 +19,13 @@ setup:
 catalogue-check:
 	cd backend && \
 	ATLAS_DUCKLAKE_ALIAS="$${ATLAS_DUCKLAKE_ALIAS:-atlas}" \
-	ATLAS_DUCKLAKE_METADATA_PATH="$${ATLAS_DUCKLAKE_METADATA_PATH:-postgres:dbname=atlas_test host=127.0.0.1 port=$${ATLAS_POSTGRES_PORT:-55432} user=atlas password=atlas_local}" \
+	ATLAS_DUCKLAKE_METADATA_PATH="$${ATLAS_DUCKLAKE_METADATA_PATH:-postgres:dbname=lake host=127.0.0.1 port=$${LAKE_POSTGRES_PORT:-55433} user=lake password=lake_local}" \
 	ATLAS_DUCKLAKE_METADATA_SCHEMA="$${ATLAS_DUCKLAKE_METADATA_SCHEMA:-ducklake}" \
-	ATLAS_DUCKLAKE_DATA_PATH="$${ATLAS_DUCKLAKE_DATA_PATH:-s3://atlas/}" \
-	ATLAS_DUCKLAKE_S3_ENDPOINT="$${ATLAS_DUCKLAKE_S3_ENDPOINT:-127.0.0.1:$${ATLAS_DUCKLAKE_S3_PORT:-7070}}" \
+	ATLAS_DUCKLAKE_DATA_PATH="$${ATLAS_DUCKLAKE_DATA_PATH:-s3://lake/}" \
+	ATLAS_DUCKLAKE_S3_ENDPOINT="$${ATLAS_DUCKLAKE_S3_ENDPOINT:-127.0.0.1:$${LAKE_S3_PORT:-7070}}" \
 	ATLAS_DUCKLAKE_S3_REGION="$${ATLAS_DUCKLAKE_S3_REGION:-us-east-1}" \
-	ATLAS_DUCKLAKE_S3_KEY_ID="$${ATLAS_DUCKLAKE_S3_KEY_ID:-atlas}" \
-	ATLAS_DUCKLAKE_S3_SECRET_ACCESS_KEY="$${ATLAS_DUCKLAKE_S3_SECRET_ACCESS_KEY:-atlas-secret}" \
+	ATLAS_DUCKLAKE_S3_KEY_ID="$${ATLAS_DUCKLAKE_S3_KEY_ID:-lake}" \
+	ATLAS_DUCKLAKE_S3_SECRET_ACCESS_KEY="$${ATLAS_DUCKLAKE_S3_SECRET_ACCESS_KEY:-lake-secret}" \
 	ATLAS_DUCKLAKE_S3_URL_STYLE="$${ATLAS_DUCKLAKE_S3_URL_STYLE:-path}" \
 	ATLAS_DUCKLAKE_S3_USE_SSL="$${ATLAS_DUCKLAKE_S3_USE_SSL:-false}" \
 	ATLAS_DUCKDB_EXTENSION_PATH="$${ATLAS_DUCKDB_EXTENSION_PATH:-$(CURDIR)/../atlas-duckdb-extension/build/release/extension/atlas/atlas.duckdb_extension}" \
@@ -34,17 +34,17 @@ catalogue-check:
 api:
 	cd backend && uv run fastapi dev src/atlas/entrypoints/api.py
 
-acquisition-worker:
-	cd backend && uv run atlas-worker acquisition
+crawler:
+	cd backend && uv run atlas-worker crawler
 
-ingestion-worker:
-	cd backend && uv run atlas-worker ingestion
+ingestor:
+	cd backend && uv run atlas-worker ingestor
 
-materialization-worker:
-	cd backend && uv run atlas-worker materialization
+materializer:
+	cd backend && uv run atlas-worker materializer
 
-housekeeping-worker:
-	cd backend && uv run atlas-worker housekeeping
+janitor:
+	cd backend && uv run atlas-worker janitor
 
 db-revision:
 	cd backend && uv run alembic -c src/atlas/platform/postgres/alembic.ini revision --autogenerate -m "$(m)"
@@ -56,5 +56,5 @@ compose-down:
 	docker compose down
 
 # Atlas is greenfield: reset the complete disposable local data plane.
-compose-reset-control:
+compose-reset:
 	docker compose down --volumes

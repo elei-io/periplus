@@ -15,10 +15,10 @@ from atlas.platform.health import HealthMonitor, start_health_server
 
 
 WorkerRole = Literal[
-    "acquisition",
-    "ingestion",
-    "materialization",
-    "housekeeping",
+    "crawler",
+    "ingestor",
+    "materializer",
+    "janitor",
 ]
 
 
@@ -34,7 +34,7 @@ class WorkerEndpointConfig:
 
     @classmethod
     def from_env(cls, role: WorkerRole) -> WorkerEndpointConfig:
-        prefix = f"ATLAS_{role.upper().replace('-', '_')}_WORKER"
+        prefix = f"ATLAS_{role.upper().replace('-', '_')}"
         metrics_enabled = get_bool("ATLAS_METRICS_ENABLED")
         return cls(
             health_address=get_str(f"{prefix}_HEALTH_HOST"),

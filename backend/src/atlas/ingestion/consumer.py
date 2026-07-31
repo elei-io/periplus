@@ -425,7 +425,7 @@ def _terminate_for_catalogue_hang(
     timeout_seconds: float,
 ) -> Never:
     logging.critical(
-        "%s remained stuck for %.3fs; terminating ingestion worker",
+        "%s remained stuck for %.3fs; terminating ingestor",
         description,
         timeout_seconds,
     )

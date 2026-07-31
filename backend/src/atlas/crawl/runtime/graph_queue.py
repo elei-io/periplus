@@ -339,9 +339,9 @@ async def ensure_graph_storage(jetstream):
         jetstream,
         KeyValueConfig(
             bucket=WORKERS_BUCKET,
-            description="Ephemeral Atlas acquisition-worker presence",
+            description="Ephemeral Atlas crawler presence",
             history=1,
-            ttl=get_float("ATLAS_ACQUISITION_WORKER_PRESENCE_TTL_SECONDS"),
+            ttl=get_float("ATLAS_CRAWLER_PRESENCE_TTL_SECONDS"),
             max_bytes=get_int("ATLAS_GRAPH_WORKER_MAX_BYTES"),
             storage=StorageType.FILE,
             replicas=replicas,

@@ -1,4 +1,4 @@
-"""Periodic cleanup for Atlas-owned transient object-store state."""
+"""Atlas janitor for owned transient object-store state."""
 
 from __future__ import annotations
 
@@ -146,7 +146,7 @@ async def _run(stop: asyncio.Event, monitor: HealthMonitor) -> None:
             try:
                 await asyncio.wait_for(
                     stop.wait(),
-                    timeout=get_float("ATLAS_HOUSEKEEPING_INTERVAL_SECONDS"),
+                    timeout=get_float("ATLAS_JANITOR_INTERVAL_SECONDS"),
                 )
             except TimeoutError:
                 pass
@@ -158,12 +158,12 @@ async def run() -> None:
     stop = asyncio.Event()
     monitor = HealthMonitor(
         heartbeat_timeout_seconds=get_float(
-            "ATLAS_HOUSEKEEPING_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
+            "ATLAS_JANITOR_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
         )
     )
     await run_worker_process(
-        role="housekeeping",
+        role="janitor",
         monitor=monitor,
-        tasks={"housekeeping": _run(stop, monitor)},
+        tasks={"janitor": _run(stop, monitor)},
         stop=stop,
     )

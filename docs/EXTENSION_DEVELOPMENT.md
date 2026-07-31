@@ -177,7 +177,7 @@ Add SQLLogicTests for:
 without executing it. Use it to assert structured warnings and would-be errors. Keep lint output
 stable and machine-readable; shell and SDK presentation belongs outside the extension.
 
-Use real `atlas_test` queries for plan and performance investigation, but keep deterministic
+Use real development-lake queries for plan and performance investigation, but keep deterministic
 correctness coverage in SQLLogicTests.
 
 ## Release validation
@@ -185,6 +185,6 @@ correctness coverage in SQLLogicTests.
 Before publishing an extension build:
 
 1. run the debug and release SQLLogicTests;
-2. verify the release artifact against `atlas_test`;
+2. verify the release artifact against the development lake;
 3. confirm the DuckDB ABI/version matches Atlas's pinned DuckDB version; and
 4. repeat the representative query and plan checks against the configured DuckLake.

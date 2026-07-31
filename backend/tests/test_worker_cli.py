@@ -13,10 +13,10 @@ class WorkerCliTests(unittest.TestCase):
         self.assertEqual(
             cli.WORKER_MODULES,
             {
-                "acquisition": "atlas.crawl.worker",
-                "ingestion": "atlas.ingestion.worker",
-                "materialization": "atlas.materialization.worker",
-                "housekeeping": "atlas.operations.housekeeping",
+                "crawler": "atlas.crawl.crawler",
+                "ingestor": "atlas.ingestion.ingestor",
+                "materializer": "atlas.materialization.materializer",
+                "janitor": "atlas.operations.janitor",
             },
         )
 
@@ -26,9 +26,9 @@ class WorkerCliTests(unittest.TestCase):
             "atlas.entrypoints.worker.import_module",
             return_value=SimpleNamespace(run=runner),
         ) as import_module:
-            asyncio.run(cli.run("materialization"))
+            asyncio.run(cli.run("materializer"))
 
-        import_module.assert_called_once_with("atlas.materialization.worker")
+        import_module.assert_called_once_with("atlas.materialization.materializer")
         runner.assert_awaited_once_with()
 
     def test_unknown_role_is_rejected_by_the_command(self) -> None:

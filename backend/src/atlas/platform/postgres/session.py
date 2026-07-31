@@ -10,7 +10,7 @@ from atlas.platform.config import get_float, get_int, get_str
 import atlas.platform.postgres.models  # noqa: F401 - register every mapped table before ORM statements compile
 
 def get_database_url() -> str:
-    url = get_str("DATABASE_URL")
+    url = get_str("ATLAS_CONTROL_DATABASE_URL")
     if url.startswith("postgresql://"):
         return url.replace("postgresql://", "postgresql+psycopg://", 1)
 
@@ -22,9 +22,9 @@ def get_engine() -> Engine:
     engine = create_engine(
         get_database_url(),
         pool_pre_ping=True,
-        pool_size=get_int("ATLAS_POSTGRES_POOL_SIZE"),
+        pool_size=get_int("ATLAS_CONTROL_POSTGRES_POOL_SIZE"),
         max_overflow=0,
-        pool_timeout=get_float("ATLAS_POSTGRES_POOL_TIMEOUT_SECONDS"),
+        pool_timeout=get_float("ATLAS_CONTROL_POSTGRES_POOL_TIMEOUT_SECONDS"),
     )
     from atlas.platform.postgres.metrics import instrument_postgres_pool
 

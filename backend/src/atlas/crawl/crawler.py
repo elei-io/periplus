@@ -1,4 +1,4 @@
-"""Standard-CDP Atlas acquisition worker runtime."""
+"""Standard-CDP Atlas crawler process."""
 
 from __future__ import annotations
 
@@ -952,11 +952,11 @@ async def run() -> None:
     stop = asyncio.Event()
     install_signal_handlers(stop)
 
-    worker_id = get_optional("ATLAS_ACQUISITION_WORKER_ID") or (
-        f"acquisition:{os.uname().nodename}:{os.getpid()}"
+    worker_id = get_optional("ATLAS_CRAWLER_ID") or (
+        f"crawler:{os.uname().nodename}:{os.getpid()}"
     )
     capacity = CRAWL_ACQUISITION_LANES
-    endpoints = WorkerEndpoints(WorkerEndpointConfig.from_env("acquisition"))
+    endpoints = WorkerEndpoints(WorkerEndpointConfig.from_env("crawler"))
     endpoints.start_metrics()
 
     client = await connect_nats()
@@ -987,11 +987,11 @@ async def run() -> None:
     started = datetime.now(UTC)
     monitor = HealthMonitor(
         heartbeat_timeout_seconds=get_float(
-            "ATLAS_ACQUISITION_WORKER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
+            "ATLAS_CRAWLER_HEALTH_HEARTBEAT_TIMEOUT_SECONDS"
         )
     )
     monitor.dependencies_ready()
-    monitor.subsystem_ready("acquisition")
+    monitor.subsystem_ready("crawler")
     monitor.subsystem_unavailable("presence", "starting")
     endpoints.start_health(monitor)
 
@@ -1078,7 +1078,7 @@ async def run() -> None:
             iteration=publish_presence,
             timeout_seconds=max(
                 1.0,
-                get_float("ATLAS_ACQUISITION_WORKER_PRESENCE_TTL_SECONDS") / 2,
+                get_float("ATLAS_CRAWLER_PRESENCE_TTL_SECONDS") / 2,
             ),
         ),
         name="acquisition-presence",
@@ -1190,7 +1190,7 @@ async def run() -> None:
                     "acquisition", str(exc) or type(exc).__name__
                 )
                 logger.critical(
-                    "local Playwright runtime was lost; exiting acquisition worker",
+                    "local Playwright runtime was lost; exiting crawler",
                     exc_info=(type(exc), exc, exc.__traceback__),
                 )
                 for task in active:

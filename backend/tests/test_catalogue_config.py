@@ -20,8 +20,31 @@ from atlas.platform.catalogue.storage import (
 
 
 class CatalogueConfigTests(unittest.TestCase):
+    def test_attachment_paths_are_required(self) -> None:
+        for missing, environment in (
+            (
+                "ATLAS_DUCKLAKE_METADATA_PATH",
+                {"ATLAS_DUCKLAKE_DATA_PATH": "/srv/lake"},
+            ),
+            (
+                "ATLAS_DUCKLAKE_DATA_PATH",
+                {"ATLAS_DUCKLAKE_METADATA_PATH": "metadata.sqlite"},
+            ),
+        ):
+            with self.subTest(missing=missing):
+                with patch.dict(os.environ, environment, clear=True):
+                    with self.assertRaisesRegex(CatalogueConfigError, missing):
+                        catalogue_config_from_env()
+
     def test_extension_path_is_required(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(
+            os.environ,
+            {
+                "ATLAS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
+                "ATLAS_DUCKLAKE_DATA_PATH": "/srv/lake",
+            },
+            clear=True,
+        ):
             with self.assertRaisesRegex(
                 CatalogueConfigError,
                 "ATLAS_DUCKDB_EXTENSION_PATH",
@@ -82,6 +105,7 @@ class CatalogueConfigTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
+                "ATLAS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
                 "ATLAS_DUCKLAKE_DATA_PATH": "s3://atlas/",
                 "ATLAS_DUCKLAKE_S3_ENDPOINT": "gateway:7070",
                 "ATLAS_DUCKLAKE_S3_KEY_ID": "key",
@@ -107,6 +131,7 @@ class CatalogueConfigTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
+                "ATLAS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
                 "ATLAS_DUCKLAKE_DATA_PATH": "/srv/atlas/lake/",
                 "ATLAS_DUCKDB_EXTENSION_PATH": "/opt/atlas/extension",
             },
@@ -123,6 +148,7 @@ class CatalogueConfigTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
+                "ATLAS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
                 "ATLAS_DUCKLAKE_DATA_PATH": "s3://atlas/",
                 "ATLAS_DUCKLAKE_S3_KEY_ID": "key",
                 "ATLAS_DUCKDB_EXTENSION_PATH": "/opt/atlas/extension",

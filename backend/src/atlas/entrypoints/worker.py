@@ -13,17 +13,17 @@ from atlas.platform.config import get_str
 
 
 WorkerRole = Literal[
-    "acquisition",
-    "ingestion",
-    "materialization",
-    "housekeeping",
+    "crawler",
+    "ingestor",
+    "materializer",
+    "janitor",
 ]
 
 WORKER_MODULES: dict[WorkerRole, str] = {
-    "acquisition": "atlas.crawl.worker",
-    "ingestion": "atlas.ingestion.worker",
-    "materialization": "atlas.materialization.worker",
-    "housekeeping": "atlas.operations.housekeeping",
+    "crawler": "atlas.crawl.crawler",
+    "ingestor": "atlas.ingestion.ingestor",
+    "materializer": "atlas.materialization.materializer",
+    "janitor": "atlas.operations.janitor",
 }
 
 

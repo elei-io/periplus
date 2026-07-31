@@ -156,7 +156,7 @@ through those shells or the SDK does not make this internal function part of the
 or `dom.*` contract.
 
 The interactive selector warning boundary is 1,000 content identities, based on the representative
-`atlas_test` lake crossing roughly 30 seconds between 1,000 and 1,500 page-scoped documents. It is
+development lake crossing roughly 30 seconds between 1,000 and 1,500 page-scoped documents. It is
 a lint warning, not an execution ban. One individual document is hard-bounded at 1,000,000
 elements to prevent an adversarial page from defeating document-at-a-time memory bounds.
 
