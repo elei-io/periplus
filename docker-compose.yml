@@ -216,6 +216,7 @@ services:
           *atlas-ducklake-environment,
           *atlas-repository-environment,
         ]
+      ATLAS_MATERIALIZATION_CONCURRENCY: ${ATLAS_MATERIALIZATION_CONCURRENCY:-2}
     depends_on:
       atlas-setup:
         condition: service_completed_successfully
@@ -263,7 +264,12 @@ services:
     command: atlas-setup
     volumes: *atlas-state-volumes
     environment:
-      <<: [*atlas-control-environment, *atlas-ducklake-environment]
+      <<:
+        [
+          *atlas-control-environment,
+          *atlas-ducklake-environment,
+          *atlas-repository-environment,
+        ]
     depends_on:
       atlas-test-postgres:
         condition: service_healthy

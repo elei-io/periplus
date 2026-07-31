@@ -64,25 +64,39 @@ Large projected relations are written under the permanent `material/data` object
 registered with `ducklake_add_data_files`. Registered files never occupy the transient rebuild
 namespace under `material/staging`, and Atlas never deletes them; LakeDucktor alone reclaims
 unreferenced physical data.
-Narrow identity and head relations use `MERGE INTO`. Those writes and the applied-batch marker
-commit in one DuckLake transaction, making commit-before-ACK redelivery a no-op.
 
-Every rebuild creates all eight hidden material tables, catches up visits inserted after the
-pinned source snapshot, and renames the complete generation atomically. Activation has a
+Every Python module under `materialization/projections/` is one complete fixed projection
+declaration. Discovery is the registry: adding, editing, or deleting a materialization means
+adding, editing, or deleting that one module, followed by redeployment and a complete rebuild.
+Workers build one shared parse context and append registry-validated files; there is no keyed
+replacement or target-specific commit path. File registration and the applied-batch marker commit
+in one DuckLake transaction, making commit-before-ACK redelivery a no-op.
+
+Every rebuild creates every discovered hidden material table, catches up visits inserted after the
+pinned source snapshot, validates the registry digest, and renames the complete generation
+atomically. Activation has a
 single-consumer delivery lane only to serialize the metadata swap; projection throughput remains
 horizontally scalable.
 
-After activation, one insert-only DuckLake CDC consumer follows `ingest.visits`. It publishes
-deterministic visit batches to the same JetStream subject used by rebuild workers. Workers apply
-each batch directly to the active generation and record the same applied-batch marker in the
-material transaction. The coordinator advances the CDC cursor only after every marker is visible.
-There is one outstanding CDC window and no Postgres live-work ledger.
+After activation, one insert-only DuckLake CDC consumer follows `ingest.visits`. Every worker
+replica is eligible to coordinate it; a renewable NATS operation lease elects one candidate, and
+that connection then holds the DuckLake consumer's owner-token lease. A failed holder is replaced
+after lease expiry without moving or resetting the DuckLake cursor. The elected coordinator
+publishes deterministic visit batches to the same JetStream subject used by rebuild workers.
+Workers apply each batch directly to the active generation and record the same applied-batch
+marker in the material transaction. The coordinator advances the CDC cursor only after every
+marker is visible. There is one outstanding CDC window and no Postgres live-work ledger.
 
 An unreadable registered material file invalidates the complete active generation. The worker
 durably reuses or creates one Postgres rebuild, removes the active-generation marker to stop CDC,
 and ACKs the poisoned delivery because immutable `ingest.*` evidence is the rebuild authority.
-The hidden rebuild then replaces all material tables atomically. Local retries are bounded so one
-bad delivery cannot occupy a worker lane indefinitely.
+The hidden rebuild then replaces all discovered material tables atomically. Local retries are
+bounded so one bad delivery cannot occupy a worker lane indefinitely.
+
+Runtime `web.*` and `dom.*` objects belong to a separate lightweight public-catalogue registry.
+Its entries reference SQL resources and declare required material relations. Missing projection
+dependencies disable and remove the corresponding public objects; runtime SQL is never part of a
+materialization declaration.
 
 ## Crawl-plan boundary
 

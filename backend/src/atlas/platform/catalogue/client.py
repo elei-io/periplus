@@ -41,6 +41,8 @@ class Catalogue:
         *,
         duckdb_config: Mapping[str, str] | None = None,
         load_cdc: bool = False,
+        read_only: bool = False,
+        override_data_path: bool = False,
     ) -> None:
         self.config = config
         connection_config = dict(duckdb_config or {})
@@ -82,11 +84,18 @@ class Catalogue:
             )
         if "://" not in config.data_path:
             Path(config.data_path).mkdir(parents=True, exist_ok=True)
+        attach_options = [
+            f"DATA_PATH {_quote_literal(config.data_path)}",
+            f"METADATA_SCHEMA {_quote_literal(config.metadata_schema)}",
+        ]
+        if override_data_path:
+            attach_options.append("OVERRIDE_DATA_PATH true")
+        if read_only:
+            attach_options.append("READ_ONLY")
         attach = (
             f"ATTACH {_quote_literal('ducklake:' + config.metadata_path)} "
             f"AS {_quote_identifier(config.alias)} "
-            f"(DATA_PATH {_quote_literal(config.data_path)}, "
-            f"METADATA_SCHEMA {_quote_literal(config.metadata_schema)})"
+            f"({', '.join(attach_options)})"
         )
         self._connection.execute(attach)
         self._use_schema_if_available()
@@ -126,6 +135,60 @@ class Catalogue:
     def bootstrap(self) -> None:
         schemas = (INGEST_SCHEMA, MATERIAL_SCHEMA)
         alias = _quote_literal(self.config.alias)
+        with self.remote_transaction():
+            for schema in schemas:
+                self.trusted_remote_execute(
+                    "CREATE SCHEMA IF NOT EXISTS "
+                    f"{_qualified(self.config.alias, schema)}"
+                )
+            self.trusted_remote_execute(
+                "CREATE TABLE IF NOT EXISTS "
+                f"{_qualified(self.config.alias, MATERIAL_SCHEMA, '_atlas_applied_batches')} "
+                "(run_id UUID NOT NULL, batch_id UUID NOT NULL, "
+                "source_snapshot BIGINT NOT NULL, source_items BIGINT NOT NULL, "
+                "source_bytes BIGINT NOT NULL, output_rows BIGINT NOT NULL, "
+                "output_bytes BIGINT NOT NULL, committed_at TIMESTAMPTZ NOT NULL)"
+            )
+            self.trusted_remote_execute(
+                "CREATE TABLE IF NOT EXISTS "
+                f"{_qualified(self.config.alias, MATERIAL_SCHEMA, '_atlas_materialization_state')} "
+                "(generation_id UUID NOT NULL, covered_snapshot BIGINT NOT NULL, "
+                "batch_size INTEGER NOT NULL, "
+                "registry_digest VARCHAR NOT NULL, "
+                "activated_at TIMESTAMPTZ NOT NULL)"
+            )
+        state_columns = {
+            str(row[0])
+            for row in self.trusted_remote_rows(
+                "DESCRIBE material._atlas_materialization_state"
+            )
+        }
+        if "registry_digest" not in state_columns:
+            with self.remote_transaction():
+                self.trusted_remote_execute(
+                    "ALTER TABLE material._atlas_materialization_state "
+                    "ADD COLUMN registry_digest VARCHAR"
+                )
+
+        from atlas.materialization.registry import REGISTRY_DIGEST
+
+        active_rows = self.trusted_remote_rows(
+            "SELECT registry_digest "
+            "FROM material._atlas_materialization_state "
+            "ORDER BY activated_at DESC LIMIT 1"
+        )
+        active_registry_matches = (
+            not active_rows
+            or str(active_rows[0][0] or "") == REGISTRY_DIGEST
+        )
+        existing_tables = {
+            (str(schema_name), str(table_name))
+            for schema_name, table_name in self.trusted_remote_rows(
+                "SELECT schema_name, table_name FROM duckdb_tables() "
+                f"WHERE database_name = {alias} "
+                f"AND schema_name IN ('{INGEST_SCHEMA}', '{MATERIAL_SCHEMA}')"
+            )
+        }
         existing_table_comments = {
             (str(schema_name), str(table_name)): comment
             for schema_name, table_name, comment in self.trusted_remote_rows(
@@ -145,12 +208,16 @@ class Catalogue:
             )
         }
         with self.remote_transaction():
-            for schema in schemas:
-                self.trusted_remote_execute(
-                    "CREATE SCHEMA IF NOT EXISTS "
-                    f"{_qualified(self.config.alias, schema)}"
-                )
             for relation_name, columns in expected_columns().items():
+                identity = (relation_name.schema, relation_name.table)
+                if (
+                    relation_name.schema == MATERIAL_SCHEMA
+                    and identity in existing_tables
+                    and not active_registry_matches
+                ):
+                    # Keep the old active relation readable while the new
+                    # registry builds its hidden replacement.
+                    continue
                 relation = _qualified(
                     self.config.alias,
                     relation_name.schema,
@@ -164,7 +231,6 @@ class Catalogue:
                 self.trusted_remote_execute(
                     f"CREATE TABLE IF NOT EXISTS {relation} ({definitions})"
                 )
-                identity = (relation_name.schema, relation_name.table)
                 if identity not in existing_table_comments:
                     layout = TABLE_LAYOUTS[relation_name]
                     if layout.partition_by:
@@ -201,28 +267,25 @@ class Catalogue:
                             f"{_quote_identifier(column_name)} IS "
                             f"{_quote_literal(comment)}"
                         )
-            self.trusted_remote_execute(
-                "CREATE TABLE IF NOT EXISTS "
-                f"{_qualified(self.config.alias, MATERIAL_SCHEMA, '_atlas_applied_batches')} "
-                "(run_id UUID NOT NULL, batch_id UUID NOT NULL, "
-                "source_snapshot BIGINT NOT NULL, source_items BIGINT NOT NULL, "
-                "source_bytes BIGINT NOT NULL, output_rows BIGINT NOT NULL, "
-                "output_bytes BIGINT NOT NULL, committed_at TIMESTAMPTZ NOT NULL)"
-            )
-            self.trusted_remote_execute(
-                "CREATE TABLE IF NOT EXISTS "
-                f"{_qualified(self.config.alias, MATERIAL_SCHEMA, '_atlas_materialization_state')} "
-                "(generation_id UUID NOT NULL, covered_snapshot BIGINT NOT NULL, "
-                "batch_size INTEGER NOT NULL, "
-                "activated_at TIMESTAMPTZ NOT NULL)"
-            )
-        install_public_catalogue(self)
+        if active_registry_matches:
+            install_public_catalogue(self)
         self._use_schema_if_available()
-        self.validate_schema()
+        self.validate_schema(include_material=active_registry_matches)
 
-    def validate_schema(self) -> None:
+    def validate_schema(
+        self,
+        *,
+        include_material: bool | None = None,
+    ) -> None:
+        if include_material is None:
+            include_material = self._active_registry_matches()
         errors: list[str] = []
         for relation_name, expected in expected_columns().items():
+            if (
+                relation_name.schema == MATERIAL_SCHEMA
+                and not include_material
+            ):
+                continue
             relation = _qualified(
                 self.config.alias,
                 relation_name.schema,
@@ -277,6 +340,11 @@ class Catalogue:
                 in column_comment_rows
             }
             for relation_name in expected_columns():
+                if (
+                    relation_name.schema == MATERIAL_SCHEMA
+                    and not include_material
+                ):
+                    continue
                 identity = (relation_name.schema, relation_name.table)
                 expected_table_comment = TABLE_COMMENTS[relation_name]
                 if actual_table_comments.get(identity) != expected_table_comment:
@@ -302,7 +370,33 @@ class Catalogue:
                         )
         if errors:
             raise CatalogueSchemaError("; ".join(errors))
-        validate_public_catalogue(self)
+        if include_material:
+            validate_public_catalogue(self)
+
+    def _active_registry_matches(self) -> bool:
+        """Return whether active material state belongs to this deployment."""
+
+        from atlas.materialization.registry import REGISTRY_DIGEST
+
+        try:
+            columns = {
+                str(row[0])
+                for row in self.trusted_remote_rows(
+                    "DESCRIBE material._atlas_materialization_state"
+                )
+            }
+            if "registry_digest" not in columns:
+                return False
+            rows = self.trusted_remote_rows(
+                "SELECT registry_digest "
+                "FROM material._atlas_materialization_state "
+                "ORDER BY activated_at DESC LIMIT 1"
+            )
+        except Exception:
+            # Setup owns reconciliation. Preserve strict validation for
+            # fresh/test catalogues that do not have generation state.
+            return True
+        return not rows or str(rows[0][0] or "") == REGISTRY_DIGEST
 
     def create_materialization_generation(
         self,

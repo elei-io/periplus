@@ -23,7 +23,7 @@ router = APIRouter(prefix="/operations/materializations", tags=["operations"])
 class CreateMaterializationRun(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    batch_size: int = Field(default=200, ge=1, le=10_000)
+    batch_size: int = Field(default=500, ge=1, le=10_000)
 
 
 class MaterializationRunResponse(BaseModel):
@@ -34,6 +34,7 @@ class MaterializationRunResponse(BaseModel):
     source_snapshot: int
     covered_snapshot: int
     activation_snapshot: int | None
+    registry_digest: str
     batch_size: int
     total_batches: int
     completed_batches: int

@@ -13,6 +13,7 @@ export type MaterializationRun = {
   source_snapshot: number
   covered_snapshot: number
   activation_snapshot: number | null
+  registry_digest: string
   batch_size: number
   total_batches: number
   completed_batches: number

@@ -1,140 +1,100 @@
 # Lifecycle
 
-Atlas keeps acquisition small and moves rebuildable work off the hot path.
+Atlas keeps acquisition small and every derived lake write append-only.
 
-## 1. Ingestion
+## Ingestion
 
-A native crawl or external load produces visits. A visit may require several attempts and may
-produce one document. External evidence may omit attempts it did not retain.
-The immutable `ingest.crawls` row is written once, when the crawl reaches its terminal state.
-Traversal and frontier state remain operational and are not copied into the ingestion schema.
+Acquisition stores immutable document bytes before publishing a frozen ingestion job. Ingestion
+then inserts the terminal crawl/visit evidence, ordered attempts and steps, and optional document
+reference. It never waits for materialization. External HTML enters at the same immutable-byte
+boundary.
 
-Acquisition:
+The five `ingest.*` relations are the complete rebuild authority. Identity replay with the same
+evidence is a no-op; conflicting evidence fails. Materialization consumes inserted visits only.
 
-1. Acquires the destination.
-2. Stores the document bytes immutably in object storage.
-3. Prepares the minimal navigation package required to continue the crawl.
-4. Atomically commits the visit, attempts, steps, and document reference.
-5. Moves on without waiting for document interpretation.
+## Registry-driven projection
 
-External loading:
+The fixed registry is discovered from `materialization/projections/*.py`. Each non-private file is
+one complete materialization: physical and Arrow columns, ownership grain, identity, validation,
+partition transforms, sorting, projector, and description. There is no central list or second
+physical-schema declaration. Add one file, edit one file, or delete one file; then redeploy and run
+a complete rebuild. The generation digest includes the complete source of every discovered
+projection file, so an implementation-only edit cannot silently reuse the previous generation.
 
-1. Accepts exact HTML response bytes and truthful source metadata.
-2. Stores the bytes immutably.
-3. Creates stable imported visit and document identities with typed provenance.
-4. Publishes the same ingestion work as acquisition.
-5. Moves on without waiting for materialization.
+The current files project structural HTML and JSON-LD at content grain and link occurrences at
+visit grain.
 
-A visible document reference must always point to durable bytes.
+A visit batch loads its visits and documents, groups unique HTML content sources, and builds one
+shared projection context. Each content body is read and parsed once in that batch. Element zero
+in the generation's HTML projection is the durable presence marker for a content identity. If the
+marker already exists, no later visit can emit DOM or JSON-LD rows for that content, even when its
+`document_id` sorts before the document that first projected it.
 
-For a branch node, each outgoing plan edge executes a bounded query over that
-navigation package. Selected URLs are normalized and deduplicated across the
-entire run before admission to the target node. Edge execution does not read
-the historical catalogue.
+For content without a presence marker, the batch containing the lexicographically minimum HTML
+`document_id` in the pinned ingestion snapshot owns the initial DOM and JSON-LD output. That
+decision is made before workers commit, so parallel batches for genuinely new content select one
+owner without racing on a uniqueness constraint. If the owning batch fails, its deterministic
+redelivery remains the owner. Every document observation still emits its own link occurrences.
 
-## 2. Rebuild scheduling
+Registry callbacks produce Arrow tables only. Generic lifecycle code validates their schemas,
+writes partitioned and sorted final Parquet, registers those files, records progress, and commits the
+applied-batch marker. Every preparation gets a fresh immutable file set, so a crash before commit
+leaves only unreferenced files; a redelivery after commit reads the marker and is a no-op.
 
-A rebuild pins one DuckLake snapshot and scans `ingest.visits` into bounded visit-ID batches. The
-visit is the only workload unit. When it references an HTML document, that same batch reads the
-immutable bytes once and emits every document projection:
+Partition transforms are declared per registry entry; there is no global material partition
+policy. Content-owned HTML and JSON-LD currently use eight content-hash buckets because exact
+content lookup is their dominant access path. Visit-owned link occurrences use
+`month(observed_at)` to keep chronological appends coherent without multiplying every batch into
+many small URL-bucket files; they are sorted by source URL, target URL, time, and occurrence
+identity. A projection may instead declare day, year, bucket, multiple transforms, or no
+partitioning. Rebuild visits are ordered chronologically so monthly files remain coherent. Rebuilds
+default to 500 visits per batch. LakeDucktor alone compacts and reclaims unreferenced files; Atlas
+never deletes registered material data.
 
-```text
-ingest.visits -> page projection
-              -> pages + page observations + page heads
-              -> optional one-pass document projection
-              -> content stats + HTML elements + JSON-LD
-              -> links + link occurrences
-```
+For filesystem lakes, registered file names are relative to the shared `backend/` working
+directory (for example `../.atlas/lake/material/data/...`). The bind-mounted container and direct
+host shell deliberately use that same relative layout, so metadata never records a container-only
+`/app/...` path.
 
-Workers project locally. Large outputs become final bucketed Parquet files under the permanent
-`material/data` namespace and are registered with `ducklake_add_data_files`; pages, page heads, and
-link identities use `MERGE INTO`. The complete batch plus its applied marker commits in one
-DuckLake transaction. JetStream is delivery only and is ACKed after commit, so a restart between
-commit and ACK reads the marker and completes without duplicating logical output.
+## Complete rebuild
 
-Postgres durably records the run, hidden table names, batch IDs, progress, and failures. After the
-initial batches complete, Atlas detects inserted visits through DuckLake snapshot changes and
-repeats bounded catch-up until the source high-water mark is covered. One serialized activation
-consumer atomically swaps all material tables. Batch consumers remain horizontally scalable.
-The swap retains the superseded tables as activation replay markers until Postgres records the run
-as completed. Atlas then drops those retired tables before acknowledging the activation delivery;
-a completed-run redelivery retries that idempotent finalization. LakeDucktor can reclaim the
-resulting unreferenced physical files.
-Each plan, batch, and activation record also stores whether JetStream accepted its publication.
-Recovery publishes only records that were never accepted; JetStream redelivery owns published
-work that has not been ACKed.
+1. Postgres records the source snapshot, registry digest, and visit batch identities.
+2. The planner creates every discovered hidden relation from the registry.
+3. Horizontally scalable workers append final files and applied markers.
+4. Activation checks the exact registry, validates every hidden relation, and catches up visits
+   inserted after the pinned snapshot.
+5. One DuckLake transaction swaps the complete discovered relation set and writes matching
+   generation state.
+6. Retired tables remain until completion is durably recorded and post-activation checks pass.
 
-A deterministic projection or schema failure terminates the rebuild immediately. Atlas drops the
-failed hidden generation idempotently and removes only transient sidecars owned by the failed
-batch. LakeDucktor reclaims registered and unreferenced final files.
+A registry/schema change cannot be applied to a running or active generation with a different
+digest. Partial activation and per-table repair do not exist.
 
-After activation, a dedicated connection holds one insert-only DuckLake CDC consumer for
-`ingest.visits`. It opens one bounded snapshot window, divides its visit IDs into deterministic
-batches, and publishes them to the existing JetStream batch subject. The same horizontally
-scalable workers project and commit those batches against the active generation. The coordinator
-advances the CDC cursor only after every applied-batch marker is visible. A crash before cursor
-commit replays the same deterministic batch IDs and is therefore a no-op after commit.
+## Live CDC and recovery
 
-Activation records the active generation, covered source snapshot, and batch size in DuckLake.
-That single row fences superseded work and is enough to recover live maintenance; Postgres does
-not contain a live-work ledger. A new rebuild catches up through its activation high-water mark
-before atomically replacing that row and all material tables.
+One dedicated insert-only DuckLake CDC consumer follows `ingest.visits`. Every materialization
+replica is a symmetric coordinator candidate. A renewable NATS operation lease suppresses
+cross-replica connection contention; its current holder then acquires the DuckLake consumer's
+owner-token lease. Neither lease stores a cursor, and no replica is statically designated. If the
+holder exits or loses either lease, another replica takes over after expiry and continues the same
+durable DuckLake consumer. Concurrent consumer creation remains idempotent.
 
-If live maintenance finds a missing or unreadable registered Parquet file, the entire material
-generation is corrupt. Before ACKing that poisoned delivery, Atlas durably ensures one complete
-rebuild exists in Postgres and deletes the matching active-generation row. The CDC coordinator
-therefore abandons its uncommitted window, while the rebuild recovers every affected visit from
-immutable `ingest.*`. Activation installs a fresh generation and a fresh generation-scoped CDC
-consumer. Atlas never attempts per-table or per-file material repair.
+The elected connection turns each snapshot window into deterministic visit batches on the same
+JetStream lane as rebuild work. The CDC cursor advances only after every applied marker is durable.
+Restarting or failing over before cursor commit replays the same batch identities.
 
-## 3. Materialization
+An unreadable registered file invalidates the complete generation. Atlas ensures a replacement
+rebuild exists, fences the active generation, and rebuilds every discovered relation from unchanged
+ingestion evidence and immutable objects. It never repairs one table or one file in place.
 
-Atlas decodes documents into rebuildable structural relations:
+## Query
 
-```text
-HTML -> material.content_stats
-HTML -> material.html_elements
-HTML -> material.jsonld_values
-```
+`web.visit` stays narrow. `web.page` performs runtime URL distinct/latest work.
+`web.link` aggregates immutable link occurrences. URL decomposition and DOM statistics are lazy
+public computations. A measured recurring query may justify a new fixed expensive projection,
+but it must enter as one projection file and use the same append-only lifecycle.
 
-Generic JSON, XML, PDF, DOCX, CSV, and other format projections are deferred.
-
-Atlas also maintains compact semantic indexes:
-
-```text
-ingest.visits -> material.pages + material.page_observations + material.page_heads
-              -> optional document
-              -> material.content_stats + material.html_elements
-              -> material.jsonld_values + material.links
-              -> material.link_occurrences
-```
-
-The document workload derives link occurrences and narrow link-identity sidecars from the same
-locally parsed elements used for the HTML and JSON-LD outputs. Once every occurrence batch is
-committed, finalization deduplicates the sidecars and computes `material.links` exactly once from
-the completed `material.link_occurrences` generation.
-
-`material.page_observations` connects each normalized page identity to its visit, optional document,
-and terminal ordering time. `material.page_heads` stores the deterministically latest visit pointer,
-including failures. `material.links` deduplicates normalized source and target URL pairs, classifies
-their deterministic site relationship, and stores exact occurrence-derived rollups.
-`material.link_occurrences` retains the visit, document, content hash, element index, raw href, and
-observation time for every anchor occurrence.
-Its source and target page identities are deterministic even when the target has never been
-visited; it does not create page rows for unvisited targets.
-
-Materialization failure never changes committed ingestion evidence. Prometheus and structured logs
-expose queue state, rebuild progress, projection/Parquet/commit duration, source and output
-throughput, conflicts, retries, and failures.
-
-## 4. Query
-
-Users query the public `web.*` and `dom.*` catalogue, not the physical plan.
-
-Atlas initialization installs and versions both public namespaces as persistent DuckLake views
-and macros over the physical evidence and materialization schemas. Expensive recurring
-computations become fixed materializations. The optional native extension supplies standards-shaped
-DOM selectors and shared query diagnostics; base catalogue semantics do not depend on it. See
-[`QUERY.md`](QUERY.md).
-
-Users persist their own interpretations under `data.*`.
+Views and macros do not belong to projection files. A separate lightweight public registry owns
+the `web.*` and `dom.*` SQL resources and declares any required material relations. This keeps the
+runtime API independently evolvable while automatically removing objects whose projection
+dependency is no longer discovered.

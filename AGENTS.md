@@ -42,14 +42,20 @@ to encode around one accidental optimizer plan.
   service owns transport choice, browser-farm capacity, profiles, and acquisition strategy.
 - Ingestion workers own base crawl evidence writes. They are independently observable
   `critical` catalogue work, never settle graph traversal, and never wait for user materialization.
-- Complete materialization rebuilds use one visit-scoped workload. A visit always produces page
-  work and may also produce document work. A planner pins a source snapshot and publishes bounded
-  visit-ID batches to JetStream. Horizontally scalable workers project locally, register final
-  bucketed Parquet for large outputs, MERGE narrow keyed outputs, record the applied batch in the
-  same DuckLake transaction, and ACK only after commit. All material tables belong to one hidden
-  generation, catch up inserted visits to a source high-water mark, and activate atomically.
-  After activation, one insert-only DuckLake CDC consumer publishes deterministic visit batches
-  to the same JetStream lane. The CDC cursor advances only after all applied markers are durable.
+- Complete materialization rebuilds use one visit-scoped workload. Every non-private module under
+  `materialization/projections/` is one self-contained, auto-discovered projection declaration;
+  adding, editing, or deleting a materialization touches only that file before redeploy and rebuild.
+  Public views and macros belong to the separate public-catalogue registry. A planner pins a source
+  snapshot and publishes bounded visit-ID batches to JetStream. Horizontally scalable workers
+  build one shared parse context, register final Parquet using each projection's partition policy,
+  record the applied batch in the same DuckLake transaction, and ACK only after commit. All
+  discovered relations belong to one
+  registry-digested hidden generation, catch up inserted visits to a source high-water mark, and
+  activate atomically. After activation, one insert-only DuckLake CDC consumer publishes
+  deterministic visit batches to the same JetStream lane. Every materialization replica is an
+  eligible coordinator; a NATS operation lease elects one connection, which then holds the
+  DuckLake consumer's owner-token lease. No worker is statically designated and the durable cursor
+  remains only in DuckLake. The CDC cursor advances only after all applied markers are durable.
 - Crawl-plan edges use bounded standalone DuckDB connections over the current
   page's navigation package. Historical catalogue joins are not a plan-edge capability.
 - LakeDucktor owns compaction, old-file cleanup, and physical lake maintenance. Atlas housekeeping

@@ -41,7 +41,7 @@ class SqlConsoleValidationTests(unittest.TestCase):
 
     def test_rejects_physical_schema(self):
         with self.assertRaisesRegex(ValueError, "web"):
-            _bounded_query("SELECT * FROM material.pages")
+            _bounded_query("SELECT * FROM material.html_elements")
 
     def test_accepts_public_table_macro(self):
         bounded = _bounded_query(
@@ -78,7 +78,7 @@ class SqlConsoleValidationTests(unittest.TestCase):
 
     def test_rejects_describe_for_physical_relation(self):
         with self.assertRaisesRegex(ValueError, "web"):
-            _bounded_query("DESCRIBE material.pages")
+            _bounded_query("DESCRIBE material.html_elements")
 
     def test_accepts_explain_for_public_query(self):
         self.assertEqual(

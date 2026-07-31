@@ -7,15 +7,31 @@ import logging
 from dataclasses import dataclass
 from uuid import UUID, uuid5
 
+import duckdb
+
 from atlas.materialization.contracts import LiveBatchWork
+from atlas.materialization.registry import REGISTRY_DIGEST
 from atlas.materialization.sql import sql_string, sql_string_list
 from atlas.platform.catalogue import catalogue_from_env
+from atlas.platform.messaging.leases import (
+    OperationLeaseGuard,
+    OperationLeaseLost,
+    OperationLeaseUnavailable,
+    ensure_operation_lease_storage,
+    operation_leases,
+)
 
 _CDC_STATE_SCHEMA = "atlas_ducklake_cdc"
 _CONSUMER_PREFIX = "atlas_live_visits_"
+_LEADER_PHASE = "materialization-cdc"
+_LEADER_IDENTITY = "ingest.visits"
 _WINDOW_SNAPSHOTS = 100
 _LISTEN_TIMEOUT_MS = 1_000
 _HEARTBEAT_SECONDS = 5.0
+
+
+class RegistryMismatch(RuntimeError):
+    """The active material generation belongs to another deployment."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +39,7 @@ class ActiveGeneration:
     id: UUID
     covered_snapshot: int
     batch_size: int
+    registry_digest: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,36 +79,54 @@ class LiveCdcConnection:
 
     def active_generation(self) -> ActiveGeneration | None:
         rows = self.catalogue.trusted_remote_rows(
-            "SELECT generation_id::VARCHAR, covered_snapshot, batch_size "
+            "SELECT generation_id::VARCHAR, covered_snapshot, batch_size, "
+            "registry_digest "
             "FROM material._atlas_materialization_state "
             "ORDER BY activated_at DESC LIMIT 1"
         )
         if not rows:
             return None
-        return ActiveGeneration(
+        generation = ActiveGeneration(
             UUID(str(rows[0][0])),
             int(rows[0][1]),
             int(rows[0][2]),
+            str(rows[0][3]),
         )
+        if generation.registry_digest != REGISTRY_DIGEST:
+            raise RegistryMismatch(
+                "active generation registry differs from this worker; "
+                "a complete rebuild is required"
+            )
+        return generation
 
     def ensure_consumer(self, generation: ActiveGeneration) -> str:
         name = _consumer_name(generation.id)
+        if self._consumer_exists(name):
+            return name
+        try:
+            self.connection.execute(
+                "SELECT * FROM cdc_dml_consumer_create("
+                f"{sql_string(self.catalogue.config.alias)}, "
+                f"{sql_string(name)}, "
+                "table_name := 'ingest.visits', "
+                f"start_at := {sql_string(str(generation.covered_snapshot))}, "
+                "change_types := ['insert'])"
+            ).fetchall()
+        except duckdb.ConstraintException:
+            # Horizontal replicas can observe absence together. Consumer
+            # creation is idempotent only when the expected generation
+            # consumer became visible after the losing create attempt.
+            if not self._consumer_exists(name):
+                raise
+        return name
+
+    def _consumer_exists(self, name: str) -> bool:
         rows = self.connection.execute(
             "SELECT consumer_name FROM cdc_list_consumers("
             f"{sql_string(self.catalogue.config.alias)}) "
             f"WHERE consumer_name = {sql_string(name)}"
         ).fetchall()
-        if rows:
-            return name
-        self.connection.execute(
-            "SELECT * FROM cdc_dml_consumer_create("
-            f"{sql_string(self.catalogue.config.alias)}, "
-            f"{sql_string(name)}, "
-            "table_name := 'ingest.visits', "
-            f"start_at := {sql_string(str(generation.covered_snapshot))}, "
-            "change_types := ['insert'])"
-        ).fetchall()
-        return name
+        return bool(rows)
 
     def listen(self, consumer: str) -> ChangeWindow | None:
         cursor = self.connection.execute(
@@ -176,6 +211,89 @@ def bootstrap_live_cdc() -> None:
         connection.close()
 
 
+async def run_elected_live_materialization(
+    jetstream,
+    *,
+    stop: asyncio.Event,
+    publish,
+) -> None:
+    """Elect one replaceable CDC coordinator from all worker replicas."""
+
+    leases = await ensure_operation_lease_storage(jetstream)
+    while not stop.is_set():
+        try:
+            async with operation_leases(
+                leases,
+                (_LEADER_IDENTITY,),
+                phase=_LEADER_PHASE,
+                acquire_timeout=0.0,
+            ) as guard:
+                logging.info("live materialization CDC leadership acquired")
+                await _run_live_owner(
+                    jetstream,
+                    stop=stop,
+                    guard=guard,
+                    publish=publish,
+                )
+        except asyncio.CancelledError:
+            raise
+        except OperationLeaseUnavailable:
+            await _wait(stop, 1)
+        except OperationLeaseLost:
+            logging.warning("live materialization CDC leadership lost")
+            await _wait(stop, 0.1)
+        except Exception:
+            logging.exception("live materialization CDC election failed")
+            await _wait(stop, 1)
+
+
+async def _run_live_owner(
+    jetstream,
+    *,
+    stop: asyncio.Event,
+    guard: OperationLeaseGuard,
+    publish,
+) -> None:
+    owner_stop = asyncio.Event()
+    watcher = asyncio.create_task(
+        _forward_owner_stop(stop, guard, owner_stop),
+        name="materialization-live-cdc-leadership",
+    )
+    try:
+        await run_live_materialization(
+            jetstream,
+            stop=owner_stop,
+            publish=publish,
+        )
+    finally:
+        owner_stop.set()
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
+
+
+async def _forward_owner_stop(
+    process_stop: asyncio.Event,
+    guard: OperationLeaseGuard,
+    owner_stop: asyncio.Event,
+) -> None:
+    process_wait = asyncio.create_task(process_stop.wait())
+    lease_wait = asyncio.create_task(guard.wait_lost())
+    try:
+        await asyncio.wait(
+            (process_wait, lease_wait),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        owner_stop.set()
+    finally:
+        for task in (process_wait, lease_wait):
+            task.cancel()
+        await asyncio.gather(
+            process_wait,
+            lease_wait,
+            return_exceptions=True,
+        )
+
+
 async def run_live_materialization(
     jetstream,
     *,
@@ -231,6 +349,8 @@ async def run_live_materialization(
                 )
             except asyncio.CancelledError:
                 raise
+            except RegistryMismatch:
+                await _wait(stop, 1)
             except Exception as exc:
                 if "CDC_BUSY" not in str(exc):
                     logging.exception("live materialization CDC loop failed")

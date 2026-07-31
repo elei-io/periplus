@@ -60,7 +60,11 @@ class ExternalIngestionTests(unittest.IsolatedAsyncioTestCase):
                     source_record_id="record-1",
                     system="test-archive",
                     dataset="fixture",
-                    requested_url="https://example.com/page",
+                    requested_url=" HTTP://EXAMPLE.COM:80/page#requested ",
+                    effective_url=(
+                        "HTTPS://WWW.EXAMPLE.COM:443/final?"
+                        "b=2&a=1#effective"
+                    ),
                     observed_at=datetime(2024, 1, 2, tzinfo=UTC),
                     status_code=200,
                     charset="windows-1252",
@@ -96,6 +100,14 @@ class ExternalIngestionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(evidence.visit.observed_at, metadata.observed_at)
         self.assertIsNone(evidence.visit.started_at)
+        self.assertEqual(
+            evidence.visit.requested_url,
+            "http://example.com/page",
+        )
+        self.assertEqual(
+            evidence.visit.effective_url,
+            "https://www.example.com/final?b=2&a=1",
+        )
         self.assertEqual(queue.crawls[0].kind, "import")
         self.assertIsNone(queue.crawls[0].graph_id)
 

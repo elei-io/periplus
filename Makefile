@@ -17,7 +17,13 @@ setup:
 	cd backend && uv run atlas-setup
 
 catalogue-check:
-	cd backend && uv run python -m atlas.platform.catalogue check
+	cd backend && \
+	ATLAS_DUCKLAKE_ALIAS="$${ATLAS_DUCKLAKE_ALIAS:-atlas}" \
+	ATLAS_DUCKLAKE_METADATA_PATH="$${ATLAS_DUCKLAKE_METADATA_PATH:-postgres:dbname=atlas_test host=127.0.0.1 port=$${ATLAS_POSTGRES_PORT:-55432} user=atlas password=atlas_local}" \
+	ATLAS_DUCKLAKE_METADATA_SCHEMA="$${ATLAS_DUCKLAKE_METADATA_SCHEMA:-ducklake}" \
+	ATLAS_DUCKLAKE_DATA_PATH="$${ATLAS_DUCKLAKE_DATA_PATH:-$(CURDIR)/.atlas/lake/}" \
+	ATLAS_DUCKDB_EXTENSION_PATH="$${ATLAS_DUCKDB_EXTENSION_PATH:-$(CURDIR)/../atlas-duckdb-extension/build/release/extension/atlas/atlas.duckdb_extension}" \
+	uv run python -m atlas.platform.catalogue check
 
 api:
 	cd backend && uv run fastapi dev src/atlas/entrypoints/api.py

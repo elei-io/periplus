@@ -1,67 +1,48 @@
-"""DuckLake catalogue behind the repository boundary."""
+"""DuckLake catalogue boundary with cycle-free lazy exports."""
 
-from atlas.platform.catalogue.client import Catalogue
-from atlas.platform.catalogue.config import CatalogueConfig, catalogue_config_from_env
-from atlas.platform.catalogue.exceptions import (
-    CatalogueConfigError,
-    CatalogueConflictError,
-    CatalogueError,
-    CatalogueSchemaError,
-    CatalogueValidationError,
-)
-from atlas.platform.catalogue.records import (
-    AtlasProvenance,
-    AttemptRecord,
-    CrawlRecord,
-    DocumentRecord,
-    EvidenceProvenance,
-    ExternalProvenance,
-    IngestionWriteResult,
-    StepRecord,
-    VisitEvidence,
-    VisitRecord,
-    attempt_id_for,
-    document_id_for,
-    link_id_for,
-    link_occurrence_id_for,
-    page_id_for,
-)
-from atlas.platform.catalogue.service import CatalogueService
+from __future__ import annotations
+
+from importlib import import_module
 
 
-def catalogue_from_env(
-    *,
-    threads: int | None = None,
-    memory_limit: str | None = None,
-    load_cdc: bool = False,
-):
-    """Open one process-local DuckDB connection to Atlas's DuckLake."""
-
-    if threads is not None and threads <= 0:
-        raise ValueError("threads must be greater than zero")
-    duckdb_config: dict[str, str] = {}
-    if threads is not None:
-        duckdb_config["threads"] = str(threads)
-    if memory_limit is not None:
-        duckdb_config["memory_limit"] = memory_limit
-    return Catalogue(
-        catalogue_config_from_env(),
-        duckdb_config=duckdb_config,
-        load_cdc=load_cdc,
-    )
-
-
-__all__ = [
-    "Catalogue",
-    "AttemptRecord",
+_EXPORTS = {
+    "Catalogue": ("atlas.platform.catalogue.client", "Catalogue"),
+    "CatalogueConfig": (
+        "atlas.platform.catalogue.config",
+        "CatalogueConfig",
+    ),
+    "catalogue_config_from_env": (
+        "atlas.platform.catalogue.config",
+        "catalogue_config_from_env",
+    ),
+    "CatalogueConfigError": (
+        "atlas.platform.catalogue.exceptions",
+        "CatalogueConfigError",
+    ),
+    "CatalogueConflictError": (
+        "atlas.platform.catalogue.exceptions",
+        "CatalogueConflictError",
+    ),
+    "CatalogueError": (
+        "atlas.platform.catalogue.exceptions",
+        "CatalogueError",
+    ),
+    "CatalogueSchemaError": (
+        "atlas.platform.catalogue.exceptions",
+        "CatalogueSchemaError",
+    ),
+    "CatalogueValidationError": (
+        "atlas.platform.catalogue.exceptions",
+        "CatalogueValidationError",
+    ),
+    "CatalogueService": (
+        "atlas.platform.catalogue.service",
+        "CatalogueService",
+    ),
+}
+for _name in (
     "AtlasProvenance",
-    "CatalogueConfig",
-    "CatalogueConfigError",
-    "CatalogueConflictError",
-    "CatalogueError",
-    "CatalogueService",
-    "CatalogueSchemaError",
-    "CatalogueValidationError",
+    "AttemptRecord",
     "CrawlRecord",
     "DocumentRecord",
     "EvidenceProvenance",
@@ -74,7 +55,46 @@ __all__ = [
     "document_id_for",
     "link_id_for",
     "link_occurrence_id_for",
-    "page_id_for",
-    "catalogue_config_from_env",
-    "catalogue_from_env",
-]
+):
+    _EXPORTS[_name] = ("atlas.platform.catalogue.records", _name)
+
+
+def __getattr__(name: str):
+    target = _EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(name)
+    value = getattr(import_module(target[0]), target[1])
+    globals()[name] = value
+    return value
+
+
+def catalogue_from_env(
+    *,
+    threads: int | None = None,
+    memory_limit: str | None = None,
+    load_cdc: bool = False,
+    read_only: bool = False,
+    override_data_path: bool = False,
+):
+    """Open one process-local DuckDB connection to Atlas's DuckLake."""
+
+    if threads is not None and threads <= 0:
+        raise ValueError("threads must be greater than zero")
+    from atlas.platform.catalogue.client import Catalogue
+    from atlas.platform.catalogue.config import catalogue_config_from_env
+
+    duckdb_config: dict[str, str] = {}
+    if threads is not None:
+        duckdb_config["threads"] = str(threads)
+    if memory_limit is not None:
+        duckdb_config["memory_limit"] = memory_limit
+    return Catalogue(
+        catalogue_config_from_env(),
+        duckdb_config=duckdb_config,
+        load_cdc=load_cdc,
+        read_only=read_only,
+        override_data_path=override_data_path,
+    )
+
+
+__all__ = [*_EXPORTS, "catalogue_from_env"]

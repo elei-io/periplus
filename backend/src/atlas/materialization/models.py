@@ -56,6 +56,7 @@ class MaterializationRunRecord(Base):
     generation_tables: Mapped[dict[str, str]] = mapped_column(
         json_type, default=dict
     )
+    registry_digest: Mapped[str] = mapped_column(Text)
     batch_size: Mapped[int] = mapped_column(Integer)
     total_batches: Mapped[int] = mapped_column(Integer, default=0)
     completed_batches: Mapped[int] = mapped_column(Integer, default=0)

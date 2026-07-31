@@ -13,7 +13,6 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 _ATTEMPT_NAMESPACE = UUID("feef76f0-a91d-58f8-9533-e30c90a784b2")
 _DOCUMENT_NAMESPACE = UUID("c33796c6-cb82-51bd-a666-2c9e495a90d9")
-_PAGE_NAMESPACE = UUID("48462520-afc9-577b-a950-077c17bbcd35")
 _LINK_NAMESPACE = UUID("64df434d-a150-56df-9593-f673c7cc9a61")
 _LINK_OCCURRENCE_NAMESPACE = UUID(
     "f48cf2ce-fdd6-5d20-a6ef-dddc3ac70419"
@@ -34,16 +33,15 @@ def document_id_for(visit_id: UUID) -> UUID:
     return uuid5(_DOCUMENT_NAMESPACE, str(visit_id))
 
 
-def page_id_for(normalized_url: str) -> UUID:
-    if not normalized_url:
-        raise ValueError("normalized_url must not be empty")
-    return uuid5(_PAGE_NAMESPACE, f"v1:{normalized_url}")
-
-
-def link_id_for(source_page_id: UUID, target_page_id: UUID) -> UUID:
+def link_id_for(source_url: str, target_url: str) -> UUID:
     """Return the versioned identity of one directed normalized page pair."""
 
-    return uuid5(_LINK_NAMESPACE, f"v1:{source_page_id}:{target_page_id}")
+    if not source_url or not target_url:
+        raise ValueError("link URLs must not be empty")
+    return uuid5(
+        _LINK_NAMESPACE,
+        "v1:" + canonical_json([source_url, target_url]),
+    )
 
 
 def link_occurrence_id_for(

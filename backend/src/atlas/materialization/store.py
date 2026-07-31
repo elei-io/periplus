@@ -12,6 +12,7 @@ from atlas.materialization.models import (
     MaterializationBatchRecord,
     MaterializationRunRecord,
 )
+from atlas.materialization.registry import REGISTRY_DIGEST
 from atlas.platform.postgres.session import session_scope
 from sqlalchemy import select, text
 
@@ -37,6 +38,7 @@ class MaterializationRun:
     covered_snapshot: int
     activation_snapshot: int | None
     generation_tables: dict[str, str]
+    registry_digest: str
     batch_size: int
     total_batches: int
     completed_batches: int
@@ -93,6 +95,7 @@ class MaterializationRunStore:
                 source_snapshot=source_snapshot,
                 covered_snapshot=source_snapshot,
                 batch_size=batch_size,
+                registry_digest=REGISTRY_DIGEST,
             )
             session.add(record)
             session.flush()
@@ -129,6 +132,7 @@ class MaterializationRunStore:
                 source_snapshot=source_snapshot,
                 covered_snapshot=source_snapshot,
                 batch_size=batch_size,
+                registry_digest=REGISTRY_DIGEST,
             )
             session.add(record)
             session.flush()
@@ -447,6 +451,7 @@ def _run(record: MaterializationRunRecord) -> MaterializationRun:
         covered_snapshot=record.covered_snapshot,
         activation_snapshot=record.activation_snapshot,
         generation_tables=dict(record.generation_tables),
+        registry_digest=record.registry_digest,
         batch_size=record.batch_size,
         total_batches=record.total_batches,
         completed_batches=record.completed_batches,

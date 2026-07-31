@@ -3,10 +3,7 @@ CREATE OR REPLACE MACRO dom.text_content(
     selected_element_index
 ) AS TABLE
 WITH selected_element AS (
-    SELECT
-        content_sha256,
-        element_index,
-        subtree_end_index
+    SELECT content_sha256, element_index, subtree_end_index
     FROM material.html_elements
     WHERE content_sha256 = selected_content_id
       AND element_index = selected_element_index
@@ -34,9 +31,7 @@ SELECT
                   selected_element.element_index
               AND descendant.element_index <
                   selected_element.subtree_end_index
-
             UNION ALL
-
             SELECT
                 descendant.subtree_end_index AS event_index,
                 0 AS event_kind,

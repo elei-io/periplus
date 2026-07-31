@@ -1,12 +1,14 @@
 from datetime import UTC, datetime, timedelta
 import hashlib
 import unittest
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 from pydantic import ValidationError
 
 from atlas.platform.catalogue import (
     AttemptRecord,
+    CatalogueConflictError,
     CrawlRecord,
     DocumentRecord,
     VisitEvidence,
@@ -17,6 +19,7 @@ from atlas.platform.catalogue import (
 from atlas.platform.catalogue.schema import CRAWLS, STEPS
 from atlas.platform.catalogue.records import canonical_json
 from atlas.platform.catalogue.service import (
+    CatalogueService,
     _decode_json_columns,
     _visit_values,
 )
@@ -143,6 +146,118 @@ class IngestionEvidenceTests(unittest.TestCase):
                 storage_encoding="identity",
                 stored_bytes=1,
             )
+
+
+class AppendOnlyIngestionServiceTests(unittest.TestCase):
+    def test_identical_visit_redelivery_is_a_noop(self) -> None:
+        evidence = _visit_evidence()
+        catalogue = MagicMock()
+        catalogue.transaction.return_value.__enter__.return_value = catalogue
+        catalogue.latest_snapshot.return_value = 42
+        service = CatalogueService(catalogue)
+        service.get_visit_evidence = MagicMock(
+            return_value={evidence.visit.visit_id: evidence}
+        )
+
+        result = service.record_visits([evidence])
+
+        self.assertFalse(result[0].created)
+        self.assertEqual(result[0].repository_snapshot, 42)
+        catalogue.append_arrow.assert_not_called()
+
+    def test_conflicting_visit_redelivery_fails_without_writes(self) -> None:
+        evidence = _visit_evidence()
+        conflicting = evidence.model_copy(
+            update={
+                "visit": evidence.visit.model_copy(
+                    update={"status_code": 201}
+                )
+            }
+        )
+        catalogue = MagicMock()
+        catalogue.transaction.return_value.__enter__.return_value = catalogue
+        service = CatalogueService(catalogue)
+        service.get_visit_evidence = MagicMock(
+            return_value={evidence.visit.visit_id: conflicting}
+        )
+
+        with self.assertRaisesRegex(
+            CatalogueConflictError,
+            "different durable evidence",
+        ):
+            service.record_visits([evidence])
+
+        catalogue.append_arrow.assert_not_called()
+
+    def test_conflicting_identity_inside_one_batch_fails_before_writes(
+        self,
+    ) -> None:
+        evidence = _visit_evidence()
+        conflicting = evidence.model_copy(
+            update={
+                "visit": evidence.visit.model_copy(
+                    update={"outcome": "failed"}
+                )
+            }
+        )
+        catalogue = MagicMock()
+        service = CatalogueService(catalogue)
+
+        with self.assertRaisesRegex(
+            CatalogueConflictError,
+            "batch contains conflicting evidence",
+        ):
+            service.record_visits([evidence, conflicting])
+
+        catalogue.transaction.assert_not_called()
+        catalogue.append_arrow.assert_not_called()
+
+
+def _visit_evidence() -> VisitEvidence:
+    now = datetime(2026, 1, 2, tzinfo=UTC)
+    visit_id = uuid4()
+    document_id = document_id_for(visit_id)
+    attempt_id = attempt_id_for(visit_id, 0)
+    return VisitEvidence(
+        visit=VisitRecord(
+            visit_id=visit_id,
+            crawl_id=uuid4(),
+            requested_url="https://example.com/",
+            effective_url="https://example.com/",
+            admitted_at=now,
+            started_at=now,
+            observed_at=now,
+            finished_at=now,
+            outcome="succeeded",
+            status_code=200,
+            document_id=document_id,
+        ),
+        attempts=(
+            AttemptRecord(
+                attempt_id=attempt_id,
+                visit_id=visit_id,
+                attempt_index=0,
+                started_at=now,
+                finished_at=now,
+                effective_url="https://example.com/",
+                status_code=200,
+                outcome="succeeded",
+            ),
+        ),
+        document=DocumentRecord(
+            document_id=document_id,
+            visit_id=visit_id,
+            attempt_id=attempt_id,
+            observed_at=now,
+            representation="rendered_html",
+            detected_media_type="text/html",
+            content_sha256="a" * 64,
+            content_bytes=10,
+            object_key="raw/html/sha256/aa/example.html.zst",
+            storage_encoding="zstd",
+            stored_bytes=8,
+        ),
+    )
 
 
 if __name__ == "__main__":

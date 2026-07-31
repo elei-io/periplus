@@ -17,10 +17,10 @@ const metadata: SqlMetadata = {
         "Canonical normalized URL identities observed through visits.",
       columns: [
         {
-          name: "page_id",
-          data_type: "UUID",
+          name: "url",
+          data_type: "VARCHAR",
           nullable: false,
-          description: "Deterministic page identity.",
+          description: "Normalized URL.",
         },
         {
           name: "hostname",

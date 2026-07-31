@@ -49,8 +49,8 @@ the typed physical schema, then validates object names, columns, macro kinds, vi
 manifest descriptions, and catalogue version. Ordinary processes validate this contract and
 never repair it at startup.
 
-`material.content_stats` is the narrow compiler lookup for content size, DOM element count, and
-maximum depth. It does not duplicate the DOM. Extension-backed
+`dom.stats` calculates DOM element count and maximum depth explicitly from the structural element
+projection. Those statistics are not attached to every visit. Extension-backed
 `dom.query_selector(content_id, selector)` and `dom.query_selector_all(content_id, selector)` feed
 only the keyed, partition-prunable `dom.elements` slice into a streaming table-in/table-out native
 operator. The operator reconstructs at most one document at a time and returns complete element
@@ -168,9 +168,10 @@ SELECT *
 FROM dom.query_selector_all(
     (
         SELECT content_id
-        FROM web.visit
-        WHERE url = 'https://commoncrawl.org/'
-          AND is_latest
+        FROM web.visit AS visit
+        JOIN web.page AS page
+          ON page.latest_visit_id = visit.visit_id
+        WHERE page.url = 'https://commoncrawl.org/'
           AND content_id IS NOT NULL
     ),
     'a[href]'
@@ -184,9 +185,9 @@ content, and invoke the selector laterally:
 WITH scope AS MATERIALIZED (
     SELECT DISTINCT visit.content_id
     FROM web.visit AS visit
-    JOIN web.page AS page USING (page_id)
+    JOIN web.page AS page
+      ON page.latest_visit_id = visit.visit_id
     WHERE page.hostname = 'example.com'
-      AND visit.is_latest
       AND visit.content_id IS NOT NULL
     LIMIT 100
 )
@@ -209,7 +210,9 @@ FROM atlas_lint_query($query$
     WITH scope AS MATERIALIZED (
         SELECT DISTINCT visit.content_id
         FROM web.visit AS visit
-        WHERE visit.is_latest AND visit.content_id IS NOT NULL
+        JOIN web.page AS page
+          ON page.latest_visit_id = visit.visit_id
+        WHERE visit.content_id IS NOT NULL
         LIMIT 1500
     )
     SELECT match.*

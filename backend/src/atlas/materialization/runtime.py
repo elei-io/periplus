@@ -13,20 +13,18 @@ from atlas.ingestion.objects.html import RawHtmlRepository
 from atlas.materialization.batch import (
     BatchResult,
     commit_prepared_batch,
-    discard_batch_link_staging,
-    discard_batch_staging,
-    discard_run_link_staging,
-    link_identity_paths,
-    populate_final_links,
     prepare_batch,
 )
 from atlas.materialization import metrics
 from atlas.materialization.contracts import (
     LiveBatchWork,
-    PROJECTION_ORDER,
+)
+from atlas.materialization.registry import (
+    PROJECTIONS,
+    REGISTRY_DIGEST,
     RELATIONS,
 )
-from atlas.materialization.live import run_live_materialization
+from atlas.materialization.live import run_elected_live_materialization
 from atlas.materialization.store import (
     AsyncMaterializationRunStore,
     MaterializationBatch,
@@ -34,7 +32,10 @@ from atlas.materialization.store import (
 )
 from atlas.materialization.sql import sql_string, sql_string_list
 from atlas.platform.catalogue import catalogue_from_env
-from atlas.platform.catalogue.config import catalogue_config_from_env
+from atlas.platform.catalogue.public import (
+    install_public_catalogue,
+    validate_public_catalogue,
+)
 from atlas.platform.catalogue.operations import (
     is_catalogue_data_corruption,
     is_retryable_catalogue_unavailability,
@@ -200,7 +201,7 @@ async def run_materialization(
             name="materialization-recovery-publisher",
         ),
         asyncio.create_task(
-            run_live_materialization(
+            run_elected_live_materialization(
                 jetstream,
                 stop=stop,
                 publish=publish_live_batch,
@@ -273,15 +274,20 @@ def _plan(store, run_id: UUID) -> tuple[MaterializationBatch, ...]:
         return ()
     if run.status == "running":
         return ()
+    if run.registry_digest != REGISTRY_DIGEST:
+        raise RuntimeError(
+            "materialization registry changed after rebuild creation; "
+            "start a complete rebuild"
+        )
     with catalogue_from_env(threads=1, memory_limit="1GB") as catalogue:
         destinations = {
-            stage: generation_table(stage, run.id)
-            for stage in PROJECTION_ORDER
+            spec.name: generation_table(spec.name, run.id)
+            for spec in PROJECTIONS
         }
-        for stage in PROJECTION_ORDER:
+        for spec in PROJECTIONS:
             catalogue.create_materialization_generation(
-                RELATIONS[stage],
-                destinations[stage],
+                spec.relation,
+                destinations[spec.name],
             )
         visit_ids = [
             str(row[0])
@@ -289,7 +295,7 @@ def _plan(store, run_id: UUID) -> tuple[MaterializationBatch, ...]:
                 f"""
                 SELECT visit_id::VARCHAR
                 FROM ingest.visits AT (VERSION => {run.source_snapshot})
-                ORDER BY visit_id
+                ORDER BY finished_at NULLS LAST, visit_id
                 """
             )
         ]
@@ -360,7 +366,6 @@ async def _handle_batch(
         if batch.status != "completed":
             run = await store.get(batch.run_id)
             if run is None or run.status == "failed":
-                await _discard_staging(batch)
                 await message.ack()
                 return
             result = await _with_heartbeat(
@@ -406,7 +411,10 @@ async def _handle_batch(
                 run.id,
                 completed_batches=run.completed_batches,
             )
-        await message.ack()
+        await _ack_after_durable_outcome(
+            message,
+            description=f"rebuild batch {batch.id}",
+        )
     except (json.JSONDecodeError, ValidationError):
         logging.exception("discarding invalid materialization batch work")
         await message.term()
@@ -437,9 +445,11 @@ async def _handle_batch(
                 )
                 failed = await store.fail(batch.run_id, failure)
                 metrics.failure("batch")
-                await _discard_staging(batch)
                 await _try_cleanup_failed_run(store, failed)
-                await message.ack()
+                await _ack_after_durable_outcome(
+                    message,
+                    description=f"failed rebuild batch {batch.id}",
+                )
                 return
         except Exception:
             logging.exception("failed to record materialization failure")
@@ -469,19 +479,6 @@ async def _handle_live_batch(
                 work,
             ),
         )
-        config = catalogue_config_from_env()
-        if result.superseded:
-            discard_batch_staging(
-                config.data_path,
-                run_id=work.generation_id,
-                batch_id=work.batch_id,
-            )
-        else:
-            discard_batch_link_staging(
-                config.data_path,
-                run_id=work.generation_id,
-                batch_id=work.batch_id,
-            )
         metrics.batch(
             source_items=result.source_items,
             source_bytes=result.source_bytes,
@@ -492,7 +489,10 @@ async def _handle_live_batch(
             commit_seconds=result.commit_seconds,
             already_applied=result.already_applied,
         )
-        await message.ack()
+        await _ack_after_durable_outcome(
+            message,
+            description=f"live batch {work.batch_id}",
+        )
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -556,12 +556,10 @@ async def _recover_corrupt_generation(
                     run.id,
                     error,
                 )
-        discard_batch_staging(
-            catalogue_config_from_env().data_path,
-            run_id=work.generation_id,
-            batch_id=work.batch_id,
+        await _ack_after_durable_outcome(
+            message,
+            description=f"corrupt generation {work.generation_id}",
         )
-        await message.ack()
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -578,13 +576,17 @@ def _generation_recovery_context(
 ) -> tuple[int, int] | None:
     with catalogue_from_env(threads=1, memory_limit="512MB") as catalogue:
         rows = catalogue.trusted_remote_rows(
-            "SELECT covered_snapshot, batch_size "
+            "SELECT covered_snapshot, batch_size, registry_digest "
             "FROM material._atlas_materialization_state "
             f"WHERE generation_id = UUID {sql_string(str(generation_id))} "
             "LIMIT 1"
         )
         if not rows:
             return None
+        if str(rows[0][2]) != REGISTRY_DIGEST:
+            raise RuntimeError(
+                "corrupt generation belongs to a different registry"
+            )
         latest = catalogue.latest_snapshot() or int(rows[0][0])
         return int(latest), int(rows[0][1])
 
@@ -592,12 +594,18 @@ def _generation_recovery_context(
 def _invalidate_generation(generation_id: UUID) -> bool:
     with catalogue_from_env(threads=1, memory_limit="512MB") as catalogue:
         with catalogue.remote_transaction():
-            rows = catalogue.trusted_remote_execute(
-                "DELETE FROM material._atlas_materialization_state "
+            rows = catalogue.trusted_remote_rows(
+                "SELECT 1 FROM material._atlas_materialization_state "
                 f"WHERE generation_id = UUID {sql_string(str(generation_id))} "
-                "RETURNING generation_id"
+                "LIMIT 1"
             )
-    return bool(rows)
+            if not rows:
+                return False
+            catalogue.trusted_remote_execute(
+                "DELETE FROM material._atlas_materialization_state "
+                f"WHERE generation_id = UUID {sql_string(str(generation_id))}"
+            )
+    return True
 
 
 def _execute_batch(html_repository, run, batch):
@@ -622,8 +630,8 @@ def _execute_live_batch(
     work: LiveBatchWork,
 ) -> BatchResult:
     tables = {
-        stage: relation.table
-        for stage, relation in RELATIONS.items()
+        spec.name: spec.relation.table
+        for spec in PROJECTIONS
     }
     now = datetime.now(UTC)
     run = MaterializationRun(
@@ -633,6 +641,7 @@ def _execute_live_batch(
         covered_snapshot=work.snapshot,
         activation_snapshot=work.snapshot,
         generation_tables=tables,
+        registry_digest=REGISTRY_DIGEST,
         batch_size=max(1, len(work.visit_ids)),
         total_batches=1,
         completed_batches=0,
@@ -733,7 +742,10 @@ async def _handle_activation(message, jetstream, store) -> None:
                             run.id,
                             completed_batches=refreshed.completed_batches,
                         )
-        await message.ack()
+        await _ack_after_durable_outcome(
+            message,
+            description=f"materialization activation {work.run_id}",
+        )
     except ValidationError:
         logging.exception("discarding invalid activation work")
         await message.term()
@@ -749,26 +761,23 @@ def _activate_or_catch_up(
     run: MaterializationRun,
 ) -> int | tuple[int, list[list[str]]]:
     with catalogue_from_env(threads=1, memory_limit="2GB") as catalogue:
+        if run.registry_digest != REGISTRY_DIGEST:
+            raise RuntimeError(
+                "rebuild registry digest no longer matches the running worker"
+            )
         with catalogue.remote_transaction():
             latest = catalogue.latest_snapshot() or run.covered_snapshot
-            generation_exists = bool(
+            hidden_generation_exists = not PROJECTIONS or bool(
                 catalogue.trusted_remote_rows(
                     "SELECT 1 FROM duckdb_tables() "
                     f"WHERE database_name = {sql_string(catalogue.config.alias)} "
                     "AND schema_name = 'material' AND table_name = "
-                    f"{sql_string(run.generation_tables['links'])}"
+                    f"{sql_string(
+                        run.generation_tables[PROJECTIONS[0].name]
+                    )}"
                 )
             )
-            if not generation_exists:
-                catalogue.activate_materialization_generations(
-                    {
-                        RELATIONS[stage]: table
-                        for stage, table in run.generation_tables.items()
-                    },
-                    activation_id=run.id.hex,
-                    transaction=False,
-                )
-            else:
+            if hidden_generation_exists:
                 changed = (
                     catalogue.trusted_remote_rows(
                         f"""
@@ -799,47 +808,39 @@ def _activate_or_catch_up(
                             )
                         ],
                     )
-                links = run.generation_tables["links"]
-                occurrences = run.generation_tables["link_occurrences"]
-                populate_final_links(
-                    catalogue,
-                    links_table=links,
-                    occurrences_table=occurrences,
-                    identities=link_identity_paths(
-                        catalogue.config.data_path,
-                        run_id=run.id,
-                    ),
-                )
-                catalogue.activate_materialization_generations(
-                    {
-                        RELATIONS[stage]: table
-                        for stage, table in run.generation_tables.items()
-                    },
-                    activation_id=run.id.hex,
-                    transaction=False,
-                )
+                _validate_generation(catalogue, run)
+                if PROJECTIONS:
+                    catalogue.activate_materialization_generations(
+                        {
+                            RELATIONS[stage]: table
+                            for stage, table in run.generation_tables.items()
+                        },
+                        activation_id=run.id.hex,
+                        transaction=False,
+                    )
+                install_public_catalogue(catalogue, transaction=False)
             catalogue.trusted_remote_execute(
                 "DELETE FROM material._atlas_materialization_state"
             )
             catalogue.trusted_remote_execute(
-                "INSERT INTO material._atlas_materialization_state VALUES ("
+                "INSERT INTO material._atlas_materialization_state "
+                "(generation_id, covered_snapshot, batch_size, "
+                "registry_digest, activated_at) VALUES ("
                 f"UUID {sql_string(str(run.id))}, {latest}, "
-                f"{run.batch_size}, now())"
+                f"{run.batch_size}, {sql_string(REGISTRY_DIGEST)}, now())"
             )
         activated = catalogue.last_committed_snapshot() or latest
-        discard_run_link_staging(
-            catalogue.config.data_path,
-            run_id=run.id,
-        )
         return activated
 
 
 def _finalize_activation(run: MaterializationRun) -> None:
     with catalogue_from_env(threads=1, memory_limit="2GB") as catalogue:
+        _verify_active_generation(catalogue, run)
         catalogue.finalize_materialization_activation(
-            RELATIONS.values(),
+            (spec.relation for spec in PROJECTIONS),
             activation_id=run.id.hex,
         )
+        _drop_unregistered_material_relations(catalogue)
 
 
 async def _recover_loop(jetstream, store, stop) -> None:
@@ -883,15 +884,6 @@ def _is_retryable_batch_failure(exc: BaseException) -> bool:
     )
 
 
-async def _discard_staging(batch: MaterializationBatch) -> None:
-    await asyncio.to_thread(
-        discard_batch_staging,
-        catalogue_config_from_env().data_path,
-        run_id=batch.run_id,
-        batch_id=batch.id,
-    )
-
-
 async def _try_cleanup_failed_run(
     store: AsyncMaterializationRunStore,
     run: MaterializationRun,
@@ -913,10 +905,81 @@ def _cleanup_failed_run(run: MaterializationRun) -> None:
         catalogue.drop_materialization_generations(
             run.generation_tables.values()
         )
-        discard_run_link_staging(
-            catalogue.config.data_path,
-            run_id=run.id,
+
+
+def _validate_generation(
+    catalogue,
+    run: MaterializationRun,
+) -> None:
+    if set(run.generation_tables) != set(RELATIONS):
+        raise RuntimeError(
+            "generation tables do not exactly match the active registry"
         )
+    for spec in PROJECTIONS:
+        table = run.generation_tables[spec.name]
+        rows = catalogue.trusted_remote_rows(
+            "SELECT 1 FROM duckdb_tables() "
+            f"WHERE database_name = {sql_string(catalogue.config.alias)} "
+            "AND schema_name = 'material' "
+            f"AND table_name = {sql_string(table)}"
+        )
+        if not rows:
+            raise RuntimeError(f"missing generation relation material.{table}")
+        catalogue.trusted_remote_rows(
+            f"SELECT * FROM material.{table} LIMIT 0"
+        )
+
+
+def _verify_active_generation(catalogue, run: MaterializationRun) -> None:
+    state = catalogue.trusted_remote_rows(
+        "SELECT registry_digest "
+        "FROM material._atlas_materialization_state "
+        f"WHERE generation_id = UUID {sql_string(str(run.id))}"
+    )
+    if state != [(REGISTRY_DIGEST,)]:
+        raise RuntimeError("active generation state does not match this registry")
+    validate_public_catalogue(catalogue)
+    for spec in PROJECTIONS:
+        identity = ", ".join(spec.identity_columns)
+        query = (
+            "SELECT count(*) - count(DISTINCT "
+            f"({identity})) FROM {spec.relation.qualified}"
+        )
+        duplicates = int(catalogue.trusted_remote_rows(query)[0][0])
+        if duplicates:
+            raise RuntimeError(
+                f"{spec.name} contains {duplicates} duplicate identities"
+            )
+        for validation_query in spec.validation_queries:
+            invalid = int(
+                catalogue.trusted_remote_rows(validation_query)[0][0]
+            )
+            if invalid:
+                raise RuntimeError(
+                    f"{spec.name} validation found {invalid} invalid rows"
+                )
+
+
+def _drop_unregistered_material_relations(catalogue) -> None:
+    registered = {spec.relation.table for spec in PROJECTIONS}
+    tables = [
+        str(row[0])
+        for row in catalogue.trusted_remote_rows(
+            "SELECT table_name FROM duckdb_tables() "
+            f"WHERE database_name = {sql_string(catalogue.config.alias)} "
+            "AND schema_name = 'material'"
+        )
+        if not str(row[0]).startswith("_atlas_")
+        and str(row[0]) not in registered
+    ]
+    if not tables:
+        return
+    with catalogue.remote_transaction():
+        for table in tables:
+            quoted = '"' + table.replace('"', '""') + '"'
+            catalogue.trusted_remote_execute(
+                f"DROP TABLE material.{quoted}"
+            )
 
 
 async def _fetch_one(subscription):
@@ -925,6 +988,21 @@ async def _fetch_one(subscription):
     except (NatsTimeoutError, TimeoutError):
         return None
     return messages[0] if messages else None
+
+
+async def _ack_after_durable_outcome(message, *, description: str) -> None:
+    """ACK only after commit; let JetStream redeliver when the ACK is lost."""
+
+    try:
+        await message.ack()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logging.exception(
+            "%s is durable but its acknowledgement failed; "
+            "redelivery will reconcile from durable state",
+            description,
+        )
 
 
 async def _with_heartbeat(message, operation):

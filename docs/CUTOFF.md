@@ -1,172 +1,76 @@
 # Cutoff
 
-This cutoff completes the transition from the current catalogue model to the schema and lifecycle
-defined in `docs/`.
-
-At the cutoff, Atlas has a working acquisition-to-materialization path. The query layer is
-explicitly outside this milestone. Nothing retained for that future layer may require compatibility
-with the superseded schema.
-
-“Working end to end” in this milestone means:
+This cutoff establishes one immutable lake contract:
 
 ```text
-crawl plan -> immutable bytes -> ingest.* -> material.*
+crawl plan -> immutable bytes -> ingest.* -> append-only material.* -> web.* / dom.*
 ```
-
-Externally acquired HTML may enter at the immutable-byte
-boundary and follows the same downstream path.
-
-It does not include compilation, the public SQL interface, agents, user-defined views, or
-maintained user extractions. A bounded read-only console may execute SQL directly against the
-physical `ingest.*` and `material.*` relations; this inspection surface does not compile, rewrite,
-persist, or manage SQL.
 
 ## Required outcome
 
-Atlas can:
+Atlas must:
 
-1. Run a crawl plan and retain immutable document bytes.
-2. Commit terminal crawl, visit, attempt, step, and document evidence under `ingest.*`.
-3. Rebuild the eight Atlas-owned `material.*` relations from immutable visit evidence:
-   - `material.content_stats`
+1. Preserve authoritative crawl, visit, attempt, step, and document evidence in insert-only
+   `ingest.*`.
+2. Verify every visible document object is readable and content-correct.
+3. Rebuild exactly three semantic projections:
    - `material.html_elements`
    - `material.jsonld_values`
-   - `material.pages`
-   - `material.page_observations`
-   - `material.page_heads`
-   - `material.links`
    - `material.link_occurrences`
-5. Recover from redelivery, retries, worker restarts, and temporarily unavailable materialization
-   dependencies without corrupting or losing committed evidence, and replace an unreadable active
-   material generation through one complete rebuild.
-6. Expose normal ingestion and materialization health, capacity, backlog, and failure signals.
-7. Accept exact external HTML without bypassing ingestion or materialization.
-
-Ingestion is complete without materialization. Materialization failure never changes ingestion
-evidence or graph execution state.
+4. Append only immutable final files and activate complete registry generations atomically.
+5. Recover from retries, restarts, catch-up ingestion, and unreadable material files without
+   changing authoritative evidence.
+6. Expose registry-derived rebuild, queue, worker, health, API, and UI status.
+7. Keep runtime page, latest, link-rollup, URL-component, and DOM-stat semantics in the public
+   query layer.
 
 ## Direct replacement
 
-This is a greenfield contract replacement, not a migration period.
-
-- The new schemas, identities, queue envelopes, worker ownership, and repository
-  boundaries replace their predecessors directly.
-- Development Postgres, DuckLake, NATS, and object-store state may be reset.
-- There are no compatibility views, aliases, dual reads or writes, legacy subjects, fallback
-  routes, deprecated fields, or translation layers.
-- Names are changed completely across code, tests, configuration, metrics, APIs, and documentation.
-- Superseded code is deleted in the same change that removes its last caller.
-
-## Ingestion boundary
-
-`ingest.*` contains only immutable observed evidence.
-
-- A crawl is a terminal graph execution.
-- A visit is one admitted destination and acquisition outcome.
-- Attempts and steps belong to visits.
-- A document is one visit-owned observation.
-- `document_id` identifies the observation; `content_sha256` identifies immutable logical bytes.
-- A visible document reference always points to durable repository bytes.
-- DOM generation, JSON-LD extraction, URL indexing, link derivation, projection repair, and other
-  rebuildable interpretation do not run in ingestion.
-
-Every graph-run terminal transition durably schedules its `ingest.crawls` record. Every visit
-ingestion transaction commits its visit, attempts, steps, and optional document reference
-atomically.
+Atlas is greenfield. Removed page dimensions, page observations, page heads, content statistics,
+and link aggregate tables have no aliases, dual reads, migration bridges, or fallback routes.
+Superseded builders, DML, tests, diagnostics, and documentation are deleted with their last caller.
 
 ## Materialization boundary
 
-The materialization worker runs fixed Atlas-owned workloads rather than user-authored catalogue
-materializations.
-
-One visit-scoped workload owns the complete fixed projection:
+One visit-scoped workload loads a shared parse context and invokes the auto-discovered fixed
+projection registry. Each arrow below is currently implemented by one self-contained file:
 
 ```text
-ingest.visits -> material.pages + material.page_observations + material.page_heads
-              -> optional document
-              -> material.content_stats + material.html_elements
-              -> material.jsonld_values + material.links
-              -> material.link_occurrences
+ingest.visits
+    -> optional immutable HTML document
+    -> material.html_elements
+    -> material.jsonld_values
+    -> material.link_occurrences
 ```
 
-Workers acknowledge visit batches only after a single DuckLake transaction commits all output and
-its applied marker. Large projections are final bucketed Parquet registered through
-`ducklake_add_data_files`; those immutable files live under a permanent data namespace and are
-never Atlas staging. Narrow keyed projections use `MERGE INTO`.
+Workers acknowledge only after final file registration and the applied marker commit together.
+Rebuild, live CDC, activation, recovery, status, and UI lifecycle iterate the registry; they do not
+branch by relation.
 
-The operations API runs one complete shadow rebuild. It pins a source snapshot, catches up inserted
-visits in bounded batches, and atomically activates all material tables together. There are no
-independently selectable tables or partial generations.
+Views and macros are excluded from materialization files. The lightweight public-catalogue
+registry owns runtime SQL and declares material dependencies separately.
 
-After activation, one insert-only DuckLake CDC consumer publishes deterministic visit batches to
-the same JetStream lane. Horizontally scalable materialization workers apply them to the active
-generation, and the CDC cursor advances only after all applied markers are durable. Live
-maintenance adds no Postgres queue or cursor.
+## Current-lake transition
 
-No generic keyed, append, or full user-view materialization framework remains at this cutoff.
-User-owned maintained extractions can be designed with the query layer later.
+Before activation Atlas records the ingestion snapshot/high-water mark, verifies referenced
+objects, stops the old materialization workers, and uses the registry digest to reject
+incompatible live work. It rebuilds hidden relations solely from ingestion evidence, catches up
+inserted visits, validates counts, identities, joins, and representative public queries, then
+activates every discovered relation and the matching public catalogue together. Retired
+relations remain until post-activation verification. No ingestion row or immutable object is
+deleted or rewritten.
 
-## Removed surfaces
-
-The cutoff deletes, rather than repairs, every superseded catalogue-definition feature:
-
-- Seeded views, table macros, scalar macros, materialized views, and their fixture loaders.
-- View, table-macro, scalar-macro, and materialization management APIs.
-- Their Postgres models, services, schemas, migrations where superseded, and controller state.
-- Their frontend pages, dialogs, hooks, types, navigation, and status presentation.
-- The generic catalogue materialization executor, lifecycle, bootstrap, refresh, and
-  dematerialization paths.
-- Old repository projection repair and ingestion-owned DOM paths.
-- Active old schema-specific query, agent, fixture, benchmark, synthetic-load, and inspection paths
-  that cannot operate on `ingest.*` and `material.*`.
-- Old table names, schema diagrams, documentation, tests, metrics, and configuration.
-
-No unavailable or knowingly broken endpoint remains registered. No dead model or abstraction is
-kept merely because the future query layer might need something similar.
-
-## Query boundary
-
-The query layer and public SQL interface are not delivered by this cutoff. No time is spent
-adapting, repairing, validating, or optimizing the Python compiler for the new ingestion and
-materialization schemas. Compiler-facing query, optimization, agent, and user-defined data
-workflows remain unavailable until the portable public catalogue is delivered. Direct read-only
-physical SQL and schema autocomplete are explicitly not public-catalogue behavior.
-
-The superseded Python compiler and its schema-dependent integrations are
-removed. Crawl-plan edges do not depend on the query layer: they execute only
-against the current page's bounded navigation package.
+Registered paths must be readable by the supported direct host shell and must not depend on a
+container-only `/app` path.
 
 ## Exit criteria
 
-The cutoff is complete only when all of the following are true:
-
-- A clean deployment bootstraps and validates only the new Atlas-owned
-  acquisition, ingestion, and materialization contract.
-- The normal setup path completes without importing, initializing, invoking,
-  or checking superseded compiler code or future query-layer code.
-- A low-depth crawl with low concurrency produces correct `ingest.*` evidence and all applicable
-  `material.*` results.
-- Repeated content produces distinct document observations while reusing content-addressed bytes
-  and projections correctly.
-- Successful, failed, retried, and cancelled acquisition outcomes are represented correctly.
-- Every terminal graph-run outcome produces exactly one terminal crawl record.
-- Materialization replay produces the same logical result without duplicate identities or damaged
-  aggregates.
-- Worker restart and redelivery tests pass before commit, after commit but before acknowledgement,
-  and while waiting for a dependency.
-- Deleting one registered material file fences that generation, releases the poisoned delivery,
-  starts exactly one rebuild, and restores all material tables from unchanged `ingest.*`.
-- Ingestion and materialization health, capacity, backlog, retry, and failure reporting work in the
-  normal API and operational surfaces.
-- The terminal and web consoles execute bounded read-only SQL against `ingest.*` and `material.*`,
-  and autocomplete their current schemas without loading query-layer code.
-- Repository-wide searches find no superseded table names, queue contracts,
-  seeded definitions, management surfaces, projection repair, compatibility
-  paths, compiler archive, or stale documentation.
-- Backend checks and targeted ingestion, materialization, recovery, and worker lifecycle tests
-  pass.
-- The old lake and disposable control state can be deleted without losing any behavior that Atlas
-  still claims to support.
-
-There is no partial cutoff. If Atlas still carries an old path, exposes a broken old surface, or
-requires a compatibility explanation, the cutoff has not been reached.
+- Repository checks and catalogue validation pass.
+- Static tests reject replacement DML against ingestion or semantic material relations.
+- Repeated content and parallel batches produce one DOM/JSON-LD projection and distinct
+  visit-owned link occurrences.
+- Rebuild and live incremental output are logically equal at the same snapshot.
+- A low-depth, low-concurrency crawl produces correct ingestion evidence and all applicable
+  projections.
+- Repository-wide search finds no removed material relation, hard-coded old table list, or
+  target-specific material commit branch.

@@ -17,7 +17,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     arguments = parser.parse_args(argv)
 
-    with catalogue_from_env() as catalogue:
+    checking = arguments.command == "check"
+    with catalogue_from_env(
+        read_only=checking,
+        override_data_path=checking,
+    ) as catalogue:
         if arguments.command == "bootstrap":
             catalogue.bootstrap()
             print("Atlas catalogue initialized and valid.")

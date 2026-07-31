@@ -62,8 +62,8 @@ export function MaterializationsPage() {
           <div>
             <h1 className="text-sm font-medium">Materialized catalogue</h1>
             <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
-              Rebuilds every material table into one hidden generation, catches
-              up new visits, and activates the generation atomically.
+              Rebuilds every discovered projection, catches up new visits, and
+              activates the complete registry atomically.
             </p>
           </div>
           <Button

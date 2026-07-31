@@ -13,11 +13,11 @@ from sqlglot.errors import ParseError
 
 from atlas.platform.catalogue.control import CatalogueControl, get_catalogue_control
 from atlas.platform.catalogue.public import (
-    KNOWN_PUBLIC_OBJECTS,
-    PUBLIC_OBJECTS,
     PUBLIC_SCHEMAS,
     WEB_SCHEMA,
     installed_public_objects,
+    known_public_objects,
+    public_objects,
 )
 
 
@@ -200,7 +200,7 @@ async def metadata(
                 for column in macro_rows.get((item.schema, item.name), ())
             ],
         )
-        for item in KNOWN_PUBLIC_OBJECTS
+        for item in known_public_objects()
         if item.kind in {"macro", "table_macro"}
         and item.exposed
         and (
@@ -292,7 +292,7 @@ def _public_metadata_rows(catalogue) -> list[tuple]:
     )
     descriptions = {
         (item.schema, item.name): dict(item.column_comments)
-        for item in PUBLIC_OBJECTS
+        for item in public_objects()
         if item.kind == "view"
     }
     return [

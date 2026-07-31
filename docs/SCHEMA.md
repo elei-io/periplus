@@ -1,52 +1,48 @@
 # Schema
 
-Atlas separates immutable acquisition evidence, rebuildable projections, the public query
-contract, and user-owned data. Raw bytes stay in object storage.
+Atlas has one evidence path:
 
-## Type policy
+```text
+immutable objects + ingest.*
+    -> append-only material.*
+    -> runtime web.* / dom.*
+```
 
-Use the narrowest native DuckDB type that preserves the value: typed scalars and nested types for
-known shapes, and `JSON` for open or heterogeneous structured values. Atlas does not use
-`VARIANT`; query helpers may provide typed access to JSON where measured workloads need it.
+Raw bytes and both physical schemas are immutable. Public views may change as the query API
+evolves.
 
 ## `ingest.*`
 
-These source-owned relations are append-oriented acquisition evidence:
+The authoritative relations are:
 
-- `ingest.crawls` — terminal crawl executions and their frozen graph configuration.
-- `ingest.visits` — one acquisition or observation of a URL.
+- `ingest.crawls` — terminal crawl executions and frozen graph configuration.
+- `ingest.visits` — one terminal acquisition or imported observation of a URL.
 - `ingest.attempts` — ordered acquisition attempts for a visit.
 - `ingest.steps` — content-completion actions within an attempt.
-- `ingest.documents` — one optional immutable representation retained by a visit.
+- `ingest.documents` — the optional immutable representation retained by a visit.
 
-`visit_id` identifies an acquisition. A visit contains the requested/effective URL, lifecycle
-times, outcome, status, optional `document_id`, and typed provenance. A document contains its
-`visit_id`, representation and media metadata, `content_sha256`, logical/stored sizes, encoding,
-and repository-relative immutable object key. Many document observations may reference the same
-content bytes.
+They contain observed evidence only. There is no page dimension, URL decomposition, latest-state
+pointer, or materialization hint in ingestion. Inserts are idempotent only when an existing
+identity has identical evidence; conflicting reuse fails. No update, correction, replacement, or
+deletion path exists.
 
-Current crawl execution remains in Postgres. Crawl history exists only here.
+Requested and effective URLs are normalized before their frozen ingestion job is produced:
+surrounding whitespace and fragments are removed, scheme and hostname are lower-cased, default
+ports are removed, an empty path becomes `/`, and the query string is retained byte-for-byte.
+Only absolute HTTP(S) URLs without credentials are accepted.
+
+A document records `document_id`, `visit_id`, representation and media metadata,
+`content_sha256`, logical/stored sizes, storage encoding, and a repository-relative object key.
+Every visible document reference must resolve to readable immutable bytes whose logical SHA-256
+matches `content_sha256`.
 
 ## `material.*`
 
-All material relations are Atlas-owned, versioned, and rebuildable from `ingest.*` plus immutable
-objects. They are implementation details, not public SQL.
+The fixed projection registry is authoritative. Exactly three semantic relations exist:
 
-### Content projections
+### `material.html_elements`
 
-`material.content_stats` has one narrow row per immutable HTML content identity:
-
-```text
-content_sha256
-content_bytes
-dom_element_count
-dom_max_depth
-```
-
-It is the compiler/cost lookup for content-centric work. It deliberately does not contain a nested
-DOM.
-
-`material.html_elements` has one row per projected element:
+One row per `(content_sha256, element_index)`:
 
 ```text
 content_sha256, element_index
@@ -55,207 +51,95 @@ tag, namespace, attributes
 text_direct, text_tail
 ```
 
-Rows are in depth-first document order. `subtree_end_index` is exclusive. The table is bucketed by
-`content_sha256` and sorted by content then element index, so a keyed document slice can prune
-before DOM reconstruction.
+Rows are depth-first. `subtree_end_index` is exclusive. Element zero is the content-projection
+presence marker; no content manifest or statistics row is maintained. That marker permanently
+prevents later visits from re-emitting content-grain HTML or JSON-LD rows, while a deterministic
+minimum document identity selects one owner when genuinely new content first appears in parallel
+batches.
 
-`material.jsonld_values` has one row per successfully parsed JSON-LD script:
+### `material.jsonld_values`
+
+One successfully parsed JSON-LD script per `(content_sha256, element_index)`:
 
 ```text
 content_sha256, element_index, type_terms, value
 ```
 
-### Page projections
+### `material.link_occurrences`
 
-`material.pages` is the normalized URL dimension:
-
-```text
-page_id, normalized_url
-scheme, hostname, port, path, query, registrable_domain
-```
-
-`page_id` is deterministic from the normalized URL. Counters and “latest” state are not page
-identity.
-
-`material.page_observations` is the complete visit index:
-
-```text
-page_id, visit_id, document_id, visit_at
-```
-
-There is exactly one row per retained visit, including failures without documents. `visit_at` is
-the deterministic terminal ordering time:
-
-```text
-coalesce(finished_at, observed_at, started_at, admitted_at)
-```
-
-`material.page_heads` is the narrow current pointer:
-
-```text
-page_id, visit_id, visit_at
-```
-
-There is one row per page. The winner is ordered by `(visit_at DESC, visit_id DESC)`, so the latest
-visit can be a failure. Keeping this separate from history makes current-page joins cheap without
-duplicating mutable columns onto every observation. Corrections replace the affected observation
-slice and recompute its affected heads in the same transaction.
-
-### Link projections
-
-`material.links` is the canonical directed page pair plus exact rollups:
-
-```text
-link_id
-source_page_id, target_page_id
-source_url, target_url, relation_scope
-first_seen_at, last_seen_at
-visit_count, distinct_content_count, occurrence_count
-```
-
-`relation_scope` is one of `self`, `same_origin`, `same_host`, `same_site`, or `external`, in that
-precedence. A target page need not have been visited; its deterministic `target_page_id` still
-exists.
-
-`material.link_occurrences` is the link equivalent of visit history:
+One visit-owned anchor observation per deterministic `occurrence_id`:
 
 ```text
 occurrence_id, link_id
 visit_id, document_id, content_sha256, element_index
-raw_href, observed_at
+observed_at, raw_href
+source_url, target_url, relation_scope
 ```
 
-One row is one anchor element in one document observation. Repeated anchors, repeated visits, and
-shared immutable content retain distinct evidence. `occurrence_id` is stable from
-`(document_id, element_index)`. The table is bucketed by `link_id`; link rollups are recomputed
-exactly from affected occurrence partitions during incremental refresh. A shadow rebuild appends
-its immutable evidence in bounded commits, computes all link rollups once at the generation
-boundary, and only then activates `links` and `link_occurrences` together.
+`occurrence_id` derives from `(document_id, element_index)`. `link_id` is a deterministic
+convenience for the normalized directed URL pair. It is not a mutable identity record.
+`relation_scope` is `self`, `same_origin`, `same_host`, `same_site`, or `external`.
 
-### Fixed-workload ownership
+Material relations accept immutable Parquet-file appends only. Rebuilds create the complete
+discovered hidden relation set and activate it together. Live batches register new final files. There is no
+`MERGE`, `UPDATE`, `DELETE`, keyed replacement, head table, or stored aggregate.
 
-The document workload parses each affected content body once and commits:
+Each file under `materialization/projections/` declares one relation's ownership grain, identity,
+Arrow and DuckLake schema, partitioning, sort order, projector, validation, and description. One
+content-grain projection also declares the predicate that serves as the shared content-presence
+marker. File discovery is the only material registry. Its digest is frozen into rebuild and
+active-generation state and includes each projection file's implementation source; any add, edit,
+or delete requires redeployment and a complete rebuild.
 
-```text
-content_stats, html_elements, jsonld_values, link_occurrences
-```
+## Public catalogue
 
-It also stages narrow link identities. Generation finalization deduplicates those identities,
-derives their exact rollups from the completed `link_occurrences` generation, and writes `links`
-once before atomic activation.
-
-The visit workload commits:
-
-```text
-pages, page_observations, page_heads
-```
-
-Complete rebuilds scan a pinned `ingest.visits` snapshot, project optional documents in the same
-bounded visit batches, catch up inserted visits, then atomically activate all shadow tables.
-
-## Public SQL catalogue
-
-The stable contract consists only of `web.*` and `dom.*`. Public content keys are named
-`content_id`; this is the same content-addressed value stored physically as `content_sha256`, not a
-second identity.
-
-### `web.page`
-
-One canonical normalized URL identity:
-
-```text
-page_id, url
-scheme, hostname, port, path, query, registrable_domain
-```
-
-It does not silently carry “latest success” or history columns.
+Only `web.*` and `dom.*` are public. Their views and macros use a separate lightweight registry;
+they are not materialization declarations.
 
 ### `web.visit`
 
-Complete page acquisition history:
+Plain visit and retained-document evidence:
 
 ```text
-visit_id, page_id, url, is_latest
-crawl_id, requested_url, effective_url
+visit_id, crawl_id
+requested_url, effective_url
 admitted_at, started_at, observed_at, finished_at
 outcome, status_code
 document_id, content_id, content_bytes
 representation, declared_media_type, detected_media_type, charset
-dom_projection_complete, dom_element_count, dom_max_depth
 provenance
 ```
 
-`is_latest` is an exact join to `material.page_heads`; a failed terminal visit may be latest.
-Document and DOM fields are null/false when no retained representation exists.
+It does not implicitly join page identity, latest state, or DOM statistics.
 
-### `web.link`
+### `web.page`
 
-One canonical directed relationship with exact retained-history rollups:
-
-```text
-link_id, source_page_id, target_page_id
-source_url, target_url, relation_scope
-first_seen_at, last_seen_at
-visit_count, distinct_content_count, occurrence_count
-```
-
-### `web.link_occurrence`
-
-Exact historical evidence for a relationship:
+One runtime-distinct normalized effective/requested URL:
 
 ```text
-occurrence_id, link_id, visit_id
-source_page_id, target_page_id
-document_id, content_id, element_index, observed_at
-raw_href, resolved_url, relation_scope
+url
+scheme, hostname, port, path, query
+latest_visit_id, latest_finished_at
 ```
 
-The `(content_id, element_index)` pair joins directly to `dom.elements`; `visit_id` joins directly
-to `web.visit`.
+URL components are parsed lazily. Latest selection is ordered by
+`(finished_at DESC NULLS LAST, visit_id DESC)`.
 
-### Other public evidence
+### Link and DOM views
 
-- `web.crawls` exposes terminal crawl execution evidence.
-- `web.jsonld` exposes parsed JSON-LD values keyed by `(content_id, element_index)`.
-- `dom.elements` exposes the flat structural DOM.
-- `dom.get_attribute(attributes, name)` returns an exact attribute value.
-- `dom.text_content(content_id, element_index)` returns standards-shaped descendant text for one
-  keyed element.
+- `web.link_occurrence` is a direct public naming layer over
+  `material.link_occurrences`.
+- `web.link` calculates exact first/last time and visit/content/occurrence counts at runtime.
+- `web.jsonld` reads `material.jsonld_values`.
+- `dom.elements` reads `material.html_elements`.
+- `dom.stats` explicitly groups elements into `element_count` and `max_depth`; it is not joined
+  onto every visit.
+- `dom.get_attribute`, `dom.text_content`, `dom.query_selector`, and
+  `dom.query_selector_all` operate on the keyed structural DOM.
 
-Atlas setup loads the matching Atlas extension and exposes:
-
-```sql
-dom.query_selector(content_id, css_selector)
-dom.query_selector_all(content_id, css_selector)
-```
-
-Both are table functions returning complete `dom.elements` rows. `query_selector` returns at most
-the first match in document order. `query_selector_all` returns all matches in document order.
-They materialize only the keyed document slice, not a scope-wide nested DOM. A third-party
-connection that does not load the extension can still use the portable relational DOM and
-text/attribute operations, but cannot execute the selector macros.
-
-### Join contract
-
-```text
-web.page.page_id
-  -> web.visit.page_id
-  -> web.link.source_page_id / target_page_id
-
-web.visit.visit_id
-  -> web.link_occurrence.visit_id
-
-web.visit.content_id
-  -> dom.elements.content_id
-  -> web.jsonld.content_id
-
-web.link.link_id
-  -> web.link_occurrence.link_id
-```
-
-There are no public `page_history`, `link_history`, document-list, nested-DOM, or `web.content`
-compatibility surfaces.
+Public content keys are named `content_id`; they are the same value stored physically as
+`content_sha256`.
 
 ## `data.*`
 
-User-owned views, tables, and maintained extractions built from the public catalogue.
+`data.*` is user-owned SQL built from the public catalogue.

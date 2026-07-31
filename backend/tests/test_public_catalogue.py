@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import duckdb
 
@@ -13,15 +14,33 @@ from atlas.platform.catalogue.exceptions import CatalogueSchemaError
 from atlas.platform.catalogue.schema import expected_columns
 from atlas.platform.catalogue.public import (
     PUBLIC_CATALOGUE_VERSION,
-    PUBLIC_OBJECTS,
     installed_public_objects,
     install_public_catalogue,
+    public_objects,
     validate_public_catalogue,
 )
+from atlas.materialization.registry import PROJECTIONS
 from atlas.query.http import _public_metadata, metadata
 
 
 class PublicCatalogueTests(unittest.TestCase):
+    def test_runtime_registry_filters_removed_material_dependencies(
+        self,
+    ) -> None:
+        without_html = tuple(
+            item for item in PROJECTIONS if item.name != "html_elements"
+        )
+        with patch(
+            "atlas.materialization.registry.PROJECTIONS",
+            without_html,
+        ):
+            names = {
+                (item.schema, item.name) for item in public_objects()
+            }
+        self.assertNotIn(("dom", "elements"), names)
+        self.assertNotIn(("dom", "stats"), names)
+        self.assertIn(("web", "page"), names)
+
     def test_catalogue_uses_json_for_every_open_structured_value(self) -> None:
         column_types = {
             (relation.qualified, name): _column_type(column)
@@ -29,17 +48,16 @@ class PublicCatalogueTests(unittest.TestCase):
             for name, column in columns.items()
         }
 
-        self.assertEqual(
-            {
-                key
-                for key, data_type in column_types.items()
-                if data_type == "JSON"
-            },
+        json_columns = {
+            key
+            for key, data_type in column_types.items()
+            if data_type == "JSON"
+        }
+        self.assertTrue(
             {
                 ("ingest.crawls", "graph_config"),
                 ("ingest.steps", "parameters"),
-                ("material.jsonld_values", "value"),
-            },
+            }.issubset(json_columns)
         )
         self.assertNotIn("VARIANT", column_types.values())
 
@@ -88,7 +106,7 @@ class PublicCatalogueTests(unittest.TestCase):
 
         expected_views = sorted(
             (item.schema, item.name)
-            for item in PUBLIC_OBJECTS
+            for item in public_objects()
             if item.kind == "view"
         )
         actual_views = [
@@ -194,26 +212,15 @@ class PublicCatalogueTests(unittest.TestCase):
         self,
     ) -> None:
         install_public_catalogue(self.catalogue)
-        self.catalogue.connection.execute(
-            """
-            INSERT INTO material.content_stats
-            VALUES ('hash', 100, 4, 2)
-            """
-        )
-
         self.assertEqual(
-            [
-                column[0]
-                for column in self.catalogue.connection.execute(
-                    "DESCRIBE material.content_stats"
+            {
+                row[0]
+                for row in self.catalogue.connection.execute(
+                    "SELECT table_name FROM duckdb_tables() "
+                    "WHERE schema_name = 'material'"
                 ).fetchall()
-            ],
-            [
-                "content_sha256",
-                "content_bytes",
-                "dom_element_count",
-                "dom_max_depth",
-            ],
+            },
+            {"html_elements", "jsonld_values", "link_occurrences"},
         )
         public_names = {
             (row[0], row[1])
@@ -251,19 +258,12 @@ class PublicCatalogueTests(unittest.TestCase):
         self.assertIn("WINDOW", plan)
         self.assertIn("ROW_NUMBER()", plan)
 
-    def test_visit_includes_latest_failure_and_document_statistics(
+    def test_visit_is_plain_evidence_and_page_latest_is_runtime(
         self,
     ) -> None:
         install_public_catalogue(self.catalogue)
         self.catalogue.connection.execute(
             """
-            INSERT INTO material.pages (
-                page_id, normalized_url, scheme, hostname, path
-            ) VALUES (
-                '00000000-0000-0000-0000-000000000001',
-                'https://example.com/', 'https', 'example.com', '/'
-            );
-
             INSERT INTO ingest.visits (
                 visit_id, crawl_id, requested_url, effective_url,
                 admitted_at, observed_at, finished_at, outcome,
@@ -300,63 +300,109 @@ class PublicCatalogueTests(unittest.TestCase):
                 'content-a', 100, 'objects/a', 'identity', 100
             );
 
-            INSERT INTO material.content_stats
-            VALUES ('content-a', 100, 12, 3);
+            INSERT INTO material.html_elements VALUES
+                ('content-a', 0, NULL, 5, 0, 0, 'html', 'HTML',
+                 MAP {}, '', ''),
+                ('content-a', 1, 0, 3, 1, 0, 'head', 'HTML',
+                 MAP {}, '', ''),
+                ('content-a', 2, 1, 3, 2, 0, 'script', 'HTML',
+                 MAP {'type': 'application/ld+json'},
+                 '{"@type":"Article"}', ''),
+                ('content-a', 3, 0, 5, 1, 1, 'body', 'HTML',
+                 MAP {}, '', ''),
+                ('content-a', 4, 3, 5, 2, 0, 'a', 'HTML',
+                 MAP {'href': '/next'}, 'Next', '');
 
-            INSERT INTO material.page_observations VALUES
-                (
-                    '00000000-0000-0000-0000-000000000001',
-                    '10000000-0000-0000-0000-000000000001',
-                    '20000000-0000-0000-0000-000000000001',
-                    '2026-01-01T00:00:02Z'
-                ),
-                (
-                    '00000000-0000-0000-0000-000000000001',
-                    '10000000-0000-0000-0000-000000000002',
-                    NULL,
-                    '2026-01-02T00:00:02Z'
-                );
+            INSERT INTO material.jsonld_values VALUES (
+                'content-a', 2, ['Article'], '{"@type":"Article"}'
+            );
 
-            INSERT INTO material.page_heads VALUES (
-                '00000000-0000-0000-0000-000000000001',
-                '10000000-0000-0000-0000-000000000002',
-                '2026-01-02T00:00:02Z'
+            INSERT INTO material.link_occurrences VALUES (
+                '30000000-0000-0000-0000-000000000001',
+                '40000000-0000-0000-0000-000000000001',
+                '10000000-0000-0000-0000-000000000001',
+                '20000000-0000-0000-0000-000000000001',
+                'content-a', 4, '2026-01-01T00:00:01Z', '/next',
+                'https://example.com/', 'https://example.com/next',
+                'same_origin'
             );
             """
         )
 
-        rows = self.catalogue.connection.execute(
+        visits = self.catalogue.connection.execute(
             """
-            SELECT visit_id::VARCHAR, is_latest, outcome,
-                   content_id, dom_projection_complete,
-                   dom_element_count, dom_max_depth
+            SELECT visit_id::VARCHAR, outcome, content_id
             FROM web.visit
             ORDER BY visit_id
             """
         ).fetchall()
-
         self.assertEqual(
-            rows,
+            visits,
             [
                 (
                     "10000000-0000-0000-0000-000000000001",
-                    False,
                     "success",
                     "content-a",
-                    True,
-                    12,
-                    3,
                 ),
                 (
                     "10000000-0000-0000-0000-000000000002",
-                    True,
                     "failed",
-                    None,
-                    False,
-                    None,
                     None,
                 ),
             ],
+        )
+        page = self.catalogue.connection.execute(
+            """
+            SELECT url, scheme, hostname, port, path, query,
+                   latest_visit_id::VARCHAR, latest_finished_at
+            FROM web.page
+            """
+        ).fetchone()
+        self.assertEqual(page[0], "https://example.com/")
+        self.assertEqual(page[1:6], ("https", "example.com", None, "/", None))
+        self.assertEqual(
+            page[6],
+            "10000000-0000-0000-0000-000000000002",
+        )
+        self.assertEqual(
+            self.catalogue.connection.execute(
+                "SELECT element_count, max_depth FROM dom.stats"
+            ).fetchone(),
+            (5, 2),
+        )
+        self.assertEqual(
+            self.catalogue.connection.execute(
+                "SELECT content_id, element_index, type_terms, value "
+                "FROM web.jsonld"
+            ).fetchone(),
+            (
+                "content-a",
+                2,
+                ["Article"],
+                '{"@type":"Article"}',
+            ),
+        )
+        self.assertEqual(
+            self.catalogue.connection.execute(
+                "SELECT visit_id::VARCHAR, document_id::VARCHAR, "
+                "content_id, element_index, source_url, target_url "
+                "FROM web.link_occurrence"
+            ).fetchone(),
+            (
+                "10000000-0000-0000-0000-000000000001",
+                "20000000-0000-0000-0000-000000000001",
+                "content-a",
+                4,
+                "https://example.com/",
+                "https://example.com/next",
+            ),
+        )
+        self.assertEqual(
+            self.catalogue.connection.execute(
+                "SELECT visit_count, distinct_content_count, "
+                "occurrence_count FROM web.link"
+            ).fetchone(),
+            (1, 1, 1),
         )
 
     def test_validation_rejects_unexpected_public_object(self) -> None:
@@ -394,7 +440,7 @@ class PublicCatalogueTests(unittest.TestCase):
 
         self.assertEqual(
             view_comment,
-            "Acquisition history with page, document, and DOM evidence.",
+            "Acquisition history with retained document evidence.",
         )
         self.assertEqual(
             dom_comment,
@@ -430,10 +476,10 @@ class PublicCatalogueTests(unittest.TestCase):
                 "web",
                 "page",
                 "Canonical normalized URL identities observed through visits.",
-                "page_id",
-                "UUID",
+                "url",
+                "VARCHAR",
                 True,
-                "Deterministic identity derived from the normalized URL.",
+                "Unique normalized URL represented by this page.",
             ),
             rows,
         )
@@ -476,7 +522,7 @@ class PublicCatalogueTests(unittest.TestCase):
         )
         self.assertEqual(
             relations[("web", "page")].columns[0].description,
-            "Deterministic identity derived from the normalized URL.",
+            "Unique normalized URL represented by this page.",
         )
         macros = {
             (item.schema_name, item.name): item

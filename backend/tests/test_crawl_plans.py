@@ -119,7 +119,7 @@ class CrawlPlanDefinitionTests(unittest.TestCase):
                     name="history",
                     source_node_id=self.root.id,
                     target_node_id=self.article.id,
-                    sql="SELECT normalized_url AS url FROM material.pages",
+                    sql="SELECT content_sha256 AS url FROM material.html_elements",
                 ),
             )
 

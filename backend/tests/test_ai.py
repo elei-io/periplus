@@ -78,10 +78,10 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
                         "web",
                         "page",
                         "Captured pages.",
-                        "page_id",
-                        "UUID",
+                        "url",
+                        "VARCHAR",
                         False,
-                        "Stable page identity.",
+                        "Normalized URL.",
                     )
                 ],
                 {},
@@ -93,23 +93,23 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["relations"][0]["name"], "web.page")
         self.assertEqual(
             result["relations"][0]["columns"][0]["name"],
-            "page_id",
+            "url",
         )
 
     async def test_ai_query_is_read_only_and_bounded(self) -> None:
         catalogue = _Catalogue([[index] for index in range(202)])
         tools = CatalogueAssistantTools(_Control(catalogue))
 
-        result = await tools.query("SELECT page_id FROM web.page")
+        result = await tools.query("SELECT url FROM web.page")
 
         self.assertIn("LIMIT 201", catalogue.sql[0])
         self.assertEqual(len(result["rows"]), 200)
         self.assertEqual(result["row_count"], 200)
         self.assertTrue(result["truncated"])
-        self.assertEqual(result["sql"], "SELECT page_id FROM web.page;")
+        self.assertEqual(result["sql"], "SELECT url FROM web.page;")
         self.assertEqual(
             result["display_sql"],
-            "SELECT\n  page_id\nFROM web.page;",
+            "SELECT\n  url\nFROM web.page;",
         )
         with self.assertRaisesRegex(ValueError, "read-only"):
             await tools.query("DELETE FROM web.page")
@@ -137,7 +137,7 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
             await tools.prepare_suggestion(
                 title="Internal",
                 description="Must be rejected.",
-                sql="SELECT * FROM material.pages",
+                sql="SELECT * FROM material.html_elements",
             )
 
     async def test_query_events_explain_and_preserve_agent_work(self) -> None:

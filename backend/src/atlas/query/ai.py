@@ -19,7 +19,7 @@ from pydantic_ai.usage import UsageLimits
 from sqlglot import exp
 
 from atlas.platform.catalogue.control import CatalogueControl, get_catalogue_control
-from atlas.platform.catalogue.public import KNOWN_PUBLIC_OBJECTS
+from atlas.platform.catalogue.public import known_public_objects
 from atlas.platform.config.environment import get_float, get_int, get_str
 from atlas.query.http import _bounded_query, _one_statement, _public_metadata
 
@@ -140,7 +140,7 @@ class CatalogueAssistantTools:
                     for row in macro_rows.get((item.schema, item.name), ())
                 ],
             }
-            for item in KNOWN_PUBLIC_OBJECTS
+            for item in known_public_objects()
             if item.exposed
             and item.kind in {"macro", "table_macro"}
             and (

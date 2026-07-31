@@ -47,12 +47,12 @@ test("collects multiline SQL until a terminating semicolon", async () => {
   const editor = new GhostTextEditor(terminal, async () => [])
   const result = editor.readLine("atlas> ")
 
-  terminal.send("SELECT page_id")
+  terminal.send("SELECT url")
   terminal.send("\r")
   terminal.send("FROM web.page;")
   terminal.send("\r")
 
-  assert.equal(await result, "SELECT page_id\nFROM web.page;")
+  assert.equal(await result, "SELECT url\nFROM web.page;")
   assert.match(terminal.output, /\.\.\.> /)
 })
 
@@ -104,7 +104,7 @@ test("keeps a long loaded draft inside a single-line viewport", async () => {
   const terminal = new TestTerminal()
   const draft =
     "SELECT p.hostname, COUNT(*) AS visit_count FROM web.page AS p " +
-    "JOIN web.visit AS v USING (page_id) " +
+    "JOIN web.visit AS v ON coalesce(v.effective_url, v.requested_url) = p.url " +
     "GROUP BY p.hostname ORDER BY visit_count DESC;"
   const editor = new GhostTextEditor(terminal, async () => [])
   const result = editor.readLine("atlas> ", draft)

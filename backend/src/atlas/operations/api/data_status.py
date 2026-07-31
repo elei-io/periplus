@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict
 
 from atlas.crawl.api_runtime import ApiGraphRuntime, get_graph_runtime
 from atlas.ingestion.queue import DURABLE as INGESTION_DURABLE
+from atlas.materialization.registry import PROJECTIONS
 from atlas.platform.messaging.catalogue_queue import (
     DEAD_LETTER_STREAM,
     INGEST_DEAD_LETTER_SUBJECT,
@@ -133,16 +134,7 @@ _MATERIALIZATION_WORKLOADS = (
     (
         "visits",
         "ingest.visits",
-        (
-            "material.content_stats",
-            "material.html_elements",
-            "material.jsonld_values",
-            "material.links",
-            "material.link_occurrences",
-            "material.pages",
-            "material.page_observations",
-            "material.page_heads",
-        ),
+        tuple(spec.relation.qualified for spec in PROJECTIONS),
         "atlas-materialization-batch-v1",
     ),
 )
