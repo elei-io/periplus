@@ -1,4 +1,4 @@
-CREATE OR REPLACE VIEW dom.stats AS
+CREATE OR REPLACE VIEW dom.content_stats AS
 SELECT
     content_sha256 AS content_id,
     count(*)::BIGINT AS element_count,

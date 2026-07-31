@@ -37,8 +37,8 @@ class PublicCatalogueTests(unittest.TestCase):
             names = {
                 (item.schema, item.name) for item in public_objects()
             }
-        self.assertNotIn(("dom", "elements"), names)
-        self.assertNotIn(("dom", "stats"), names)
+        self.assertNotIn(("dom", "element"), names)
+        self.assertNotIn(("dom", "content_stats"), names)
         self.assertIn(("web", "page"), names)
 
     def test_catalogue_uses_json_for_every_open_structured_value(self) -> None:
@@ -162,7 +162,7 @@ class PublicCatalogueTests(unittest.TestCase):
         self.assertNotIn(("web", "retired_html"), object_names)
         self.assertNotIn(("dom", "retired_elements"), object_names)
         self.assertIn(("dom", "text_content"), object_names)
-        self.assertIn(("dom", "elements"), object_names)
+        self.assertIn(("dom", "element"), object_names)
         self.assertNotIn(("web", "html"), object_names)
         self.assertNotIn(("web", "attribute"), object_names)
         self.assertNotIn(("web", "text_content"), object_names)
@@ -183,7 +183,7 @@ class PublicCatalogueTests(unittest.TestCase):
         rows = self.catalogue.connection.execute(
             """
             SELECT element.element_index, text.text_content
-            FROM dom.elements AS element
+            FROM dom.element AS element
             JOIN LATERAL dom.text_content(
                 element.content_id,
                 element.element_index
@@ -197,15 +197,15 @@ class PublicCatalogueTests(unittest.TestCase):
             [(0, "ABCDEFG"), (1, "B"), (2, "DEF"), (3, "E")],
         )
 
-    def test_dom_elements_does_not_plan_subtree_reconstruction(self) -> None:
+    def test_dom_element_does_not_plan_subtree_reconstruction(self) -> None:
         install_public_catalogue(self.catalogue)
 
         plan = self.catalogue.connection.execute(
-            "EXPLAIN SELECT content_id, tag FROM dom.elements LIMIT 1"
+            "EXPLAIN SELECT content_id, tag_name FROM dom.element LIMIT 1"
         ).fetchone()[1]
 
-        self.assertNotIn("text_direct", plan)
-        self.assertNotIn("text_tail", plan)
+        self.assertNotIn("direct_text", plan)
+        self.assertNotIn("tail_text", plan)
         self.assertNotIn("HASH_GROUP_BY", plan)
 
     def test_dom_storage_is_flat_and_nested_document_api_is_absent(
@@ -242,11 +242,11 @@ class PublicCatalogueTests(unittest.TestCase):
             """
             EXPLAIN
             WITH picked AS MATERIALIZED (
-                SELECT content_id, element_index, tag
-                FROM dom.elements
+                SELECT content_id, element_index, tag_name
+                FROM dom.element
                 LIMIT 1
             )
-            SELECT picked.content_id, picked.tag, text.text_content
+            SELECT picked.content_id, picked.tag_name, text.text_content
             FROM picked
             JOIN LATERAL dom.text_content(
                 picked.content_id,
@@ -331,9 +331,9 @@ class PublicCatalogueTests(unittest.TestCase):
 
         visits = self.catalogue.connection.execute(
             """
-            SELECT visit_id::VARCHAR, outcome, content_id
-            FROM web.visit
-            ORDER BY visit_id
+            SELECT page_visit_id::VARCHAR, outcome, content_id
+            FROM web.page_visit
+            ORDER BY page_visit_id
             """
         ).fetchall()
         self.assertEqual(
@@ -353,8 +353,8 @@ class PublicCatalogueTests(unittest.TestCase):
         )
         page = self.catalogue.connection.execute(
             """
-            SELECT url, scheme, hostname, port, path, query,
-                   latest_visit_id::VARCHAR, latest_finished_at
+            SELECT url, scheme, hostname, port, path, query_string,
+                   latest_page_visit_id::VARCHAR, last_visited_at
             FROM web.page
             """
         ).fetchone()
@@ -366,7 +366,7 @@ class PublicCatalogueTests(unittest.TestCase):
         )
         self.assertEqual(
             self.catalogue.connection.execute(
-                "SELECT element_count, max_depth FROM dom.stats"
+                "SELECT element_count, max_depth FROM dom.content_stats"
             ).fetchone(),
             (5, 2),
         )
@@ -384,8 +384,9 @@ class PublicCatalogueTests(unittest.TestCase):
         )
         self.assertEqual(
             self.catalogue.connection.execute(
-                "SELECT visit_id::VARCHAR, document_id::VARCHAR, "
-                "content_id, element_index, source_url, target_url "
+                "SELECT page_visit_id::VARCHAR, document_id::VARCHAR, "
+                "content_id, element_index, source_hostname, "
+                "target_hostname, relationship "
                 "FROM web.link_occurrence"
             ).fetchone(),
             (
@@ -393,13 +394,14 @@ class PublicCatalogueTests(unittest.TestCase):
                 "20000000-0000-0000-0000-000000000001",
                 "content-a",
                 4,
-                "https://example.com/",
-                "https://example.com/next",
+                "example.com",
+                "example.com",
+                "same_origin",
             ),
         )
         self.assertEqual(
             self.catalogue.connection.execute(
-                "SELECT visit_count, distinct_content_count, "
+                "SELECT page_visit_count, content_count, "
                 "occurrence_count FROM web.link"
             ).fetchone(),
             (1, 1, 1),
@@ -426,7 +428,7 @@ class PublicCatalogueTests(unittest.TestCase):
             SELECT comment
             FROM duckdb_views()
             WHERE schema_name = 'web'
-              AND view_name = 'visit'
+              AND view_name = 'page_visit'
             """
         ).fetchone()[0]
         dom_comment = self.catalogue.connection.execute(
@@ -434,13 +436,13 @@ class PublicCatalogueTests(unittest.TestCase):
             SELECT comment
             FROM duckdb_views()
             WHERE schema_name = 'dom'
-              AND view_name = 'elements'
+              AND view_name = 'element'
             """
         ).fetchone()[0]
 
         self.assertEqual(
             view_comment,
-            "Acquisition history with retained document evidence.",
+            "Page-visit history with retained document evidence.",
         )
         self.assertEqual(
             dom_comment,
@@ -475,7 +477,7 @@ class PublicCatalogueTests(unittest.TestCase):
             (
                 "web",
                 "page",
-                "Canonical normalized URL identities observed through visits.",
+                "Canonical normalized URL identities observed through page visits.",
                 "url",
                 "VARCHAR",
                 True,
@@ -486,7 +488,7 @@ class PublicCatalogueTests(unittest.TestCase):
         self.assertIn(
             (
                 "dom",
-                "elements",
+                "element",
                 "Structural DOM elements keyed by immutable content.",
                 "content_id",
                 "VARCHAR",
@@ -515,10 +517,10 @@ class PublicCatalogueTests(unittest.TestCase):
             for item in response.relations
         }
         self.assertIn(("web", "page"), relations)
-        self.assertIn(("dom", "elements"), relations)
+        self.assertIn(("dom", "element"), relations)
         self.assertEqual(
             relations[("web", "page")].description,
-            "Canonical normalized URL identities observed through visits.",
+            "Canonical normalized URL identities observed through page visits.",
         )
         self.assertEqual(
             relations[("web", "page")].columns[0].description,

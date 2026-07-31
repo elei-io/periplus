@@ -153,7 +153,7 @@ activation:
   extension-backed capability must instead be absent from installation and metadata.
 
 Native selectors are table-in/table-out operators. Public selector macros supply a keyed
-`dom.elements` slice followed by a typed end-of-document sentinel. The native operator buffers and
+`dom.element` slice followed by a typed end-of-document sentinel. The native operator buffers and
 reconstructs only that document, matches with Lexbor, and returns complete element rows. Tests must
 prove that content predicates prune before the operator, input spanning multiple DuckDB vectors is
 not truncated, and lateral calls do not combine documents.

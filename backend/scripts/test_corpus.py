@@ -274,23 +274,19 @@ def manifest_path(cache_dir: Path, crawl: str, seed: int) -> Path:
 def query_existing(api_url: str, dataset: str) -> dict[Tier, set[int]]:
     quoted = sql_string(dataset)
     sql = f"""
-        SELECT split_part(provenance.source_record_id::VARCHAR, ':', 1) AS tier,
+        SELECT split_part(source_record_id, ':', 1) AS tier,
                list(
                    try_cast(
-                       split_part(
-                           provenance.source_record_id::VARCHAR, ':', 2
-                       ) AS BIGINT
+                       split_part(source_record_id, ':', 2) AS BIGINT
                    )
                    ORDER BY try_cast(
-                       split_part(
-                           provenance.source_record_id::VARCHAR, ':', 2
-                       ) AS BIGINT
+                       split_part(source_record_id, ':', 2) AS BIGINT
                    )
                ) AS ordinals
-        FROM web.visit
-        WHERE provenance.kind::VARCHAR = 'external'
-          AND provenance.system::VARCHAR = 'common-crawl'
-          AND provenance.dataset::VARCHAR = {quoted}
+        FROM web.page_visit
+        WHERE source_kind = 'external'
+          AND source_system = 'common-crawl'
+          AND source_dataset = {quoted}
         GROUP BY tier
     """
     with httpx.Client(timeout=30) as client:

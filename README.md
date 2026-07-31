@@ -61,12 +61,12 @@ repository, and JetStream.
 Run one query from the terminal:
 
 ```sh
-npm run atlas -- 'SELECT count(*) FROM web.visit'
+npm run atlas -- 'SELECT count(*) FROM web.page_visit'
 ```
 
 Run `npm run atlas` without SQL to open the interactive terminal. Set `ATLAS_API_URL` when the API
 is not available at `http://127.0.0.1:8000`. Inside either shell, `.tables` lists the public
-catalogue, `.describe dom.elements` shows an object's columns, `.history` shows recent input, and
+catalogue, `.describe dom.element` shows an object's columns, `.history` shows recent input, and
 `.macros` shows scalar and table macro signatures. `.help` lists all local commands. The Atlas web
 home page provides catalogue assistance with Markdown answers, result tables, and validated SQL
 drafts that can be copied or run directly in the conversation.

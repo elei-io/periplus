@@ -8,8 +8,8 @@ class SqlConsoleValidationTests(unittest.TestCase):
         bounded = _bounded_query(
             """
             WITH recent AS (
-                SELECT visit_id, requested_url
-                FROM web.visit
+                SELECT page_visit_id, requested_url
+                FROM web.page_visit
             )
             SELECT recent.requested_url, pages.hostname
             FROM recent
@@ -19,16 +19,16 @@ class SqlConsoleValidationTests(unittest.TestCase):
         )
 
         self.assertIn("LIMIT 10001", bounded)
-        self.assertIn("FROM web.visit", bounded)
+        self.assertIn("FROM web.page_visit", bounded)
 
     def test_rejects_mutation(self):
         with self.assertRaisesRegex(ValueError, "read-only query"):
-            _bounded_query("DELETE FROM web.visit")
+            _bounded_query("DELETE FROM web.page_visit")
 
     def test_rejects_multiple_statements(self):
         with self.assertRaisesRegex(ValueError, "exactly one"):
             _bounded_query(
-                "SELECT * FROM web.visit; SELECT * FROM web.page"
+                "SELECT * FROM web.page_visit; SELECT * FROM web.page"
             )
 
     def test_requires_public_schema_qualification(self):
@@ -53,8 +53,8 @@ class SqlConsoleValidationTests(unittest.TestCase):
     def test_accepts_dom_relation_and_table_macro(self):
         bounded = _bounded_query(
             """
-            SELECT element.tag, text.text_content
-            FROM dom.elements AS element
+            SELECT element.tag_name, text.text_content
+            FROM dom.element AS element
             JOIN LATERAL dom.text_content(
                 element.content_id,
                 element.element_index
@@ -62,7 +62,7 @@ class SqlConsoleValidationTests(unittest.TestCase):
             """
         )
 
-        self.assertIn("FROM dom.elements", bounded)
+        self.assertIn("FROM dom.element", bounded)
         self.assertIn("dom.text_content", bounded)
 
     def test_accepts_describe_for_public_relation(self):
@@ -72,8 +72,8 @@ class SqlConsoleValidationTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            _bounded_query("DESCRIBE dom.elements;"),
-            "DESCRIBE dom.elements",
+            _bounded_query("DESCRIBE dom.element;"),
+            "DESCRIBE dom.element",
         )
 
     def test_rejects_describe_for_physical_relation(self):
@@ -107,8 +107,8 @@ class SqlConsoleValidationTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            _bounded_query("SUMMARIZE dom.elements"),
-            "SUMMARIZE dom.elements",
+            _bounded_query("SUMMARIZE dom.element"),
+            "SUMMARIZE dom.element",
         )
 
     def test_accepts_show_tables_for_public_schema(self):

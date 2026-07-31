@@ -61,14 +61,14 @@ async def main() -> None:
         row = connection.execute(
             """
             SELECT count(*)
-            FROM web.visit
+            FROM web.page_visit
             WHERE crawl_id = CAST(? AS UUID)
             """,
             [str(crawl.id)],
         ).fetchone()
         if row is None or row[0] < 1:
             raise AssertionError(
-                "ingested crawl is not visible in web.visit"
+                "ingested crawl is not visible in web.page_visit"
             )
     finally:
         if connection is not None:

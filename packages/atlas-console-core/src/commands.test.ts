@@ -5,7 +5,7 @@ import { commands, type CommandContext } from "./commands.js"
 import type { SqlMetadata } from "./types.js"
 
 const metadata: SqlMetadata = {
-  catalogue_version: "2.0.0",
+  catalogue_version: "5.0.0",
   duckdb_version: "v1.5.5",
   catalogue_bytes: 12_345,
   relations: [
@@ -14,7 +14,7 @@ const metadata: SqlMetadata = {
       name: "page",
       kind: "view",
       description:
-        "Canonical normalized URL identities observed through visits.",
+        "Canonical normalized URL identities observed through page visits.",
       columns: [
         {
           name: "url",
@@ -32,7 +32,7 @@ const metadata: SqlMetadata = {
     },
     {
       schema_name: "dom",
-      name: "elements",
+      name: "element",
       kind: "view",
       description: "Structural elements projected from immutable HTML content.",
       columns: [
@@ -43,7 +43,7 @@ const metadata: SqlMetadata = {
           description: "Immutable content identity.",
         },
         {
-          name: "tag",
+          name: "tag_name",
           data_type: "VARCHAR",
           nullable: false,
           description: "Normalized local tag name.",
@@ -145,7 +145,7 @@ test("commands and arguments autocomplete from metadata", async () => {
     (await commands.complete(".describe dom.", 14, context)).map(
       (item) => item.value
     ),
-    ["dom.elements", "dom.query_selector_all", "dom.text_content"]
+    ["dom.element", "dom.query_selector_all", "dom.text_content"]
   )
 })
 
@@ -160,10 +160,10 @@ test("tables includes views and table macro signatures", async () => {
         (row) =>
           row[0] === "web.page" &&
           row[3] ===
-            "Canonical normalized URL identities observed through visits."
+            "Canonical normalized URL identities observed through page visits."
       )
     )
-    assert(result.rows.some((row) => row[0] === "dom.elements"))
+    assert(result.rows.some((row) => row[0] === "dom.element"))
     assert(result.rows.some((row) => row[0] === "dom.text_content"))
     assert(
       result.rows.some(
@@ -231,25 +231,25 @@ test("describe renders public metadata", async () => {
     ])
     assert.equal(
       result.summary,
-      "web.page · view · Canonical normalized URL identities observed through visits."
+      "web.page · view · Canonical normalized URL identities observed through page visits."
     )
   }
 })
 
 test("describe renders DOM metadata", async () => {
-  const result = await commands.execute(".describe dom.elements", context)
+  const result = await commands.execute(".describe dom.element", context)
 
   assert.equal(result.kind, "table")
   if (result.kind === "table") {
     assert.deepEqual(result.rows[1], [
-      "tag",
+      "tag_name",
       "VARCHAR",
       "no",
       "Normalized local tag name.",
     ])
     assert.equal(
       result.summary,
-      "dom.elements · view · Structural elements projected from immutable HTML content."
+      "dom.element · view · Structural elements projected from immutable HTML content."
     )
   }
 })

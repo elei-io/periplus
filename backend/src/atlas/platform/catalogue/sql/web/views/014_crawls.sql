@@ -1,4 +1,4 @@
-CREATE OR REPLACE VIEW web.crawls AS
+CREATE OR REPLACE VIEW web.crawl AS
 SELECT
     crawl_id,
     kind,

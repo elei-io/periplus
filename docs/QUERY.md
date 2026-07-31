@@ -49,10 +49,10 @@ the typed physical schema, then validates object names, columns, macro kinds, vi
 manifest descriptions, and catalogue version. Ordinary processes validate this contract and
 never repair it at startup.
 
-`dom.stats` calculates DOM element count and maximum depth explicitly from the structural element
+`dom.content_stats` calculates DOM element count and maximum depth explicitly from the structural element
 projection. Those statistics are not attached to every visit. Extension-backed
 `dom.query_selector(content_id, selector)` and `dom.query_selector_all(content_id, selector)` feed
-only the keyed, partition-prunable `dom.elements` slice into a streaming table-in/table-out native
+only the keyed, partition-prunable `dom.element` slice into a streaming table-in/table-out native
 operator. The operator reconstructs at most one document at a time and returns complete element
 rows. Page-first plans should reduce and deduplicate content identities before invoking it.
 
@@ -170,9 +170,9 @@ SELECT *
 FROM dom.query_selector_all(
     (
         SELECT content_id
-        FROM web.visit AS visit
+        FROM web.page_visit AS visit
         JOIN web.page AS page
-          ON page.latest_visit_id = visit.visit_id
+          ON page.latest_page_visit_id = visit.page_visit_id
         WHERE page.url = 'https://commoncrawl.org/'
           AND content_id IS NOT NULL
     ),
@@ -186,14 +186,14 @@ content, and invoke the selector laterally:
 ```sql
 WITH scope AS MATERIALIZED (
     SELECT DISTINCT visit.content_id
-    FROM web.visit AS visit
+    FROM web.page_visit AS visit
     JOIN web.page AS page
-      ON page.latest_visit_id = visit.visit_id
+      ON page.latest_page_visit_id = visit.page_visit_id
     WHERE page.hostname = 'example.com'
       AND visit.content_id IS NOT NULL
     LIMIT 100
 )
-SELECT scope.content_id, match.element_index, match.tag,
+SELECT scope.content_id, match.element_index, match.tag_name,
        dom.get_attribute(match.attributes, 'href') AS href
 FROM scope
 JOIN LATERAL dom.query_selector_all(
@@ -211,9 +211,9 @@ SELECT *
 FROM atlas_lint_query($query$
     WITH scope AS MATERIALIZED (
         SELECT DISTINCT visit.content_id
-        FROM web.visit AS visit
+        FROM web.page_visit AS visit
         JOIN web.page AS page
-          ON page.latest_visit_id = visit.visit_id
+          ON page.latest_page_visit_id = visit.page_visit_id
         WHERE visit.content_id IS NOT NULL
         LIMIT 1500
     )

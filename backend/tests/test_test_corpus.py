@@ -142,7 +142,7 @@ class TestCorpusTests(unittest.TestCase):
             request.args[0],
             "http://atlas.example/sql/query",
         )
-        self.assertIn("FROM web.visit", request.kwargs["json"]["sql"])
+        self.assertIn("FROM web.page_visit", request.kwargs["json"]["sql"])
         self.assertEqual(existing["known"], {0, 2})
         self.assertEqual(existing["noise"], set())
         self.assertEqual(existing["failure"], {1})

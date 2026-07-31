@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 
 from atlas.platform.catalogue.exceptions import CatalogueSchemaError
 
-PUBLIC_CATALOGUE_VERSION = "4.0.0"
+PUBLIC_CATALOGUE_VERSION = "5.0.0"
 WEB_SCHEMA = "web"
 DOM_SCHEMA = "dom"
 PUBLIC_SCHEMAS = (WEB_SCHEMA, DOM_SCHEMA)

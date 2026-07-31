@@ -11,8 +11,8 @@ WITH ranked AS (
     FROM ingest.visits
 ),
 pages AS (
-    SELECT url, visit_id AS latest_visit_id,
-           finished_at AS latest_finished_at
+    SELECT url, visit_id AS latest_page_visit_id,
+           finished_at AS last_visited_at
     FROM ranked
     WHERE latest_rank = 1
 )
@@ -38,7 +38,7 @@ SELECT
         nullif(regexp_extract(url, '^https?://[^/]+(/[^?]*)', 1), ''),
         '/'
     ) AS path,
-    nullif(regexp_extract(url, '\?(.*)$', 1), '') AS query,
-    latest_visit_id,
-    latest_finished_at
+    nullif(regexp_extract(url, '\?(.*)$', 1), '') AS query_string,
+    latest_page_visit_id,
+    last_visited_at
 FROM pages;

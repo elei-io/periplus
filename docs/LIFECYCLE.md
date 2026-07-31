@@ -103,7 +103,7 @@ ingestion evidence and immutable objects. It never repairs one table or one file
 
 ## Query
 
-`web.visit` stays narrow. `web.page` performs runtime URL distinct/latest work.
+`web.page_visit` stays narrow. `web.page` performs runtime URL distinct/latest work.
 `web.link` aggregates immutable link occurrences. URL decomposition and DOM statistics are lazy
 public computations. A measured recurring query may justify a new fixed expensive projection,
 but it must enter as one projection file and use the same append-only lifecycle.

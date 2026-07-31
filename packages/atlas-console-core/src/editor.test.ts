@@ -79,7 +79,7 @@ test("renders the top completion as ghost text and accepts it with tab", async (
         description: "Unique captured content.",
       },
       {
-        value: "web.crawls",
+        value: "web.crawl",
         replaceStart: "SELECT * FROM ".length,
         replaceEnd: "SELECT * FROM web.".length,
         kind: "relation",
@@ -91,7 +91,7 @@ test("renders the top completion as ghost text and accepts it with tab", async (
 
   await new Promise((resolve) => setTimeout(resolve, 5))
   assert.match(terminal.output, /\u001b\[2mlink\u001b\[0m/)
-  assert.doesNotMatch(terminal.output, /web\.crawls/)
+  assert.doesNotMatch(terminal.output, /web\.crawl/)
 
   terminal.send("\t")
   terminal.send(";")
@@ -103,9 +103,9 @@ test("renders the top completion as ghost text and accepts it with tab", async (
 test("keeps a long loaded draft inside a single-line viewport", async () => {
   const terminal = new TestTerminal()
   const draft =
-    "SELECT p.hostname, COUNT(*) AS visit_count FROM web.page AS p " +
-    "JOIN web.visit AS v ON coalesce(v.effective_url, v.requested_url) = p.url " +
-    "GROUP BY p.hostname ORDER BY visit_count DESC;"
+    "SELECT p.hostname, COUNT(*) AS page_visit_count FROM web.page AS p " +
+    "JOIN web.page_visit AS v ON v.url = p.url " +
+    "GROUP BY p.hostname ORDER BY page_visit_count DESC;"
   const editor = new GhostTextEditor(terminal, async () => [])
   const result = editor.readLine("atlas> ", draft)
 

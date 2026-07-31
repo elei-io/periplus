@@ -96,18 +96,19 @@ or delete requires redeployment and a complete rebuild.
 Only `web.*` and `dom.*` are public. Their views and macros use a separate lightweight registry;
 they are not materialization declarations.
 
-### `web.visit`
+### `web.page_visit`
 
 Plain visit and retained-document evidence:
 
 ```text
-visit_id, crawl_id
-requested_url, effective_url
+page_visit_id, crawl_id
+url, requested_url, final_url
 admitted_at, started_at, observed_at, finished_at
-outcome, status_code
-document_id, content_id, content_bytes
-representation, declared_media_type, detected_media_type, charset
-provenance
+outcome, http_status_code
+document_id, content_id, content_size_bytes
+content_representation, declared_content_type, detected_content_type
+character_encoding
+source_kind, source_system, source_dataset, source_record_id
 ```
 
 It does not implicitly join page identity, latest state, or DOM statistics.
@@ -118,8 +119,8 @@ One runtime-distinct normalized effective/requested URL:
 
 ```text
 url
-scheme, hostname, port, path, query
-latest_visit_id, latest_finished_at
+scheme, hostname, port, path, query_string
+latest_page_visit_id, last_visited_at
 ```
 
 URL components are parsed lazily. Latest selection is ordered by
@@ -127,12 +128,12 @@ URL components are parsed lazily. Latest selection is ordered by
 
 ### Link and DOM views
 
-- `web.link_occurrence` is a direct public naming layer over
-  `material.link_occurrences`.
+- `web.link_occurrence` exposes one observed anchor with natural page-visit,
+  hostname, and relationship names over `material.link_occurrences`.
 - `web.link` calculates exact first/last time and visit/content/occurrence counts at runtime.
 - `web.jsonld` reads `material.jsonld_values`.
-- `dom.elements` reads `material.html_elements`.
-- `dom.stats` explicitly groups elements into `element_count` and `max_depth`; it is not joined
+- `dom.element` reads `material.html_elements` with public structural names.
+- `dom.content_stats` explicitly groups elements into `element_count` and `max_depth`; it is not joined
   onto every visit.
 - `dom.get_attribute`, `dom.text_content`, `dom.query_selector`, and
   `dom.query_selector_all` operate on the keyed structural DOM.

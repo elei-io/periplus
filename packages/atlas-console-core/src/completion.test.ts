@@ -5,21 +5,21 @@ import { SqlCompleter } from "./completion.js"
 import type { SqlMetadata } from "./types.js"
 
 const metadata: SqlMetadata = {
-  catalogue_version: "2.0.0",
+  catalogue_version: "5.0.0",
   duckdb_version: "v1.5.5",
   catalogue_bytes: 12_345,
   relations: [
     {
       schema_name: "web",
-      name: "visit",
+      name: "page_visit",
       kind: "view",
-      description: "Destinations admitted and observed during crawls.",
+      description: "Page visits admitted and observed during crawls.",
       columns: [
         {
-          name: "visit_id",
+          name: "page_visit_id",
           data_type: "UUID",
           nullable: false,
-          description: "Unique visit identity.",
+          description: "Unique page-visit identity.",
         },
         {
           name: "requested_url",
@@ -31,7 +31,7 @@ const metadata: SqlMetadata = {
     },
     {
       schema_name: "dom",
-      name: "elements",
+      name: "element",
       kind: "view",
       description: "Structural elements projected from immutable HTML content.",
       columns: [
@@ -48,7 +48,7 @@ const metadata: SqlMetadata = {
           description: "Element position.",
         },
         {
-          name: "tag",
+          name: "tag_name",
           data_type: "VARCHAR",
           nullable: false,
           description: "Normalized local tag name.",
@@ -59,7 +59,7 @@ const metadata: SqlMetadata = {
       schema_name: "web",
       name: "page",
       kind: "view",
-      description: "Canonical normalized URL identities observed through visits.",
+      description: "Canonical normalized URL identities observed through page visits.",
       columns: [
         {
           name: "url",
@@ -170,7 +170,7 @@ test("completes public table macros with their call delimiter", async () => {
 test("completes columns from aliased relations in scope", async () => {
   const completer = new SqlCompleter(async () => metadata)
   const values = await completer.complete(
-    "SELECT v.req FROM web.visit AS v",
+    "SELECT v.req FROM web.page_visit AS v",
     "SELECT v.req".length,
   )
   const requestedUrl = values.find(
@@ -195,14 +195,14 @@ test("completes public relations and table macros from the web namespace", async
 
   assert(values.some((item) => item.value === "web.page"))
   assert(!values.some((item) => item.value === "dom.query_selector_all("))
-  assert(!values.some((item) => item.value === "dom.elements"))
+  assert(!values.some((item) => item.value === "dom.element"))
 })
 
 test("completes relations and table macros from the DOM namespace", async () => {
   const completer = new SqlCompleter(async () => metadata)
   const values = await completer.complete("SELECT * FROM dom.")
 
-  assert(values.some((item) => item.value === "dom.elements"))
+  assert(values.some((item) => item.value === "dom.element"))
   assert(values.some((item) => item.value === "dom.query_selector_all("))
   assert(values.some((item) => item.value === "dom.text_content("))
   assert(!values.some((item) => item.value === "web.page"))
@@ -214,7 +214,7 @@ test("completes scalar macros from the DOM expression namespace", async () => {
   const values = await completer.complete("SELECT dom.")
 
   assert(values.some((item) => item.value === "dom.get_attribute("))
-  assert(!values.some((item) => item.value === "dom.elements"))
+  assert(!values.some((item) => item.value === "dom.element"))
 })
 
 test("completes both public schemas in relation position", async () => {
@@ -228,11 +228,11 @@ test("completes both public schemas in relation position", async () => {
 test("completes columns from aliased DOM relations in scope", async () => {
   const completer = new SqlCompleter(async () => metadata)
   const values = await completer.complete(
-    "SELECT e.ta FROM dom.elements AS e",
+    "SELECT e.ta FROM dom.element AS e",
     "SELECT e.ta".length,
   )
 
-  assert(values.some((item) => item.value === "e.tag"))
+  assert(values.some((item) => item.value === "e.tag_name"))
 })
 
 test("refreshes cached metadata on request", async () => {
