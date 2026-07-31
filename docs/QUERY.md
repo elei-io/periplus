@@ -91,7 +91,9 @@ command.
 results and control-plane operations such as crawl submission and run
 tracking. It does not define public catalogue semantics or compile and rewrite user SQL.
 `atlas_sdk.conn.duck()` returns an ordinary `duckdb.DuckDBPyConnection` over the versioned public
-catalogue using the same `ATLAS_DUCKLAKE_*` attachment contract as Atlas.
+catalogue using the same `ATLAS_DUCKLAKE_*` attachment contract as Atlas. Both runtime and SDK
+connections select one connection protocol at their factory boundary; filesystem, S3, and
+externally configured DuckDB URI storage do not create branches in query or materialization code.
 
 ## 3. Optional native optimization
 

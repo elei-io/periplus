@@ -8,7 +8,12 @@ from tempfile import TemporaryDirectory
 import duckdb
 
 from atlas_sdk.conn._common import load_atlas_extension, validate_catalogue
-from atlas_sdk.conn._direct import DuckConfig, duck
+from atlas_sdk.conn._direct import DuckConfig, S3Config, duck
+from atlas_sdk.conn._factory import DuckLakeConnectionFactory
+from atlas_sdk.conn._protocol import (
+    DuckLakeConnectionProtocol,
+    connection_protocol,
+)
 from atlas_sdk.errors import (
     AtlasConnectionError,
     ConfigurationError,
@@ -69,6 +74,40 @@ class ConnectionConfigurationTests(unittest.TestCase):
             config.extension_path,
             "/opt/atlas/atlas.duckdb_extension",
         )
+
+    def test_s3_config_selects_a_parameterized_protocol(self) -> None:
+        config = DuckConfig.from_values(
+            {
+                "ATLAS_DUCKLAKE_ALIAS": "atlas",
+                "ATLAS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
+                "ATLAS_DUCKLAKE_DATA_PATH": "s3://atlas/",
+                "ATLAS_DUCKLAKE_S3_ENDPOINT": "gateway:7070",
+                "ATLAS_DUCKLAKE_S3_KEY_ID": "key",
+                "ATLAS_DUCKLAKE_S3_SECRET_ACCESS_KEY": "secret-value",
+                "ATLAS_DUCKLAKE_S3_URL_STYLE": "path",
+                "ATLAS_DUCKLAKE_S3_USE_SSL": "false",
+            }
+        )
+        self.assertIsInstance(config.s3, S3Config)
+        connection = Mock()
+
+        connection_protocol(config).configure(connection)
+
+        secret_call = connection.execute.call_args
+        self.assertNotIn("secret-value", secret_call.args[0])
+        self.assertEqual(secret_call.args[1][-1], "s3://atlas/")
+
+    def test_connection_factory_accepts_an_injected_protocol(self) -> None:
+        config = DuckConfig(
+            alias="atlas",
+            metadata_path="metadata.ducklake",
+            data_path="/srv/lake",
+        )
+        protocol = Mock(spec=DuckLakeConnectionProtocol)
+
+        factory = DuckLakeConnectionFactory(config, protocol=protocol)
+
+        self.assertIs(factory.protocol, protocol)
 
     def test_direct_config_requires_a_valid_alias(self) -> None:
         with self.assertRaises(ConfigurationError):

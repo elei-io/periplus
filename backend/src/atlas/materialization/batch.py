@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +25,10 @@ from atlas.materialization.sql import sql_string, sql_string_list
 from atlas.materialization.store import MaterializationBatch, MaterializationRun
 from atlas.platform.catalogue import Catalogue
 from atlas.platform.catalogue.schema import expected_columns
+from atlas.platform.catalogue.storage import (
+    portable_registration_path,
+    storage_protocol,
+)
 from atlas.urls import normalize_url
 
 
@@ -43,6 +46,14 @@ class BatchResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedFile:
+    """One immutable Parquet object ready for DuckLake registration."""
+
+    path: str
+    size: int
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedBatch:
     """Reusable immutable files for one remote append transaction."""
 
@@ -52,7 +63,7 @@ class PreparedBatch:
     output_bytes: int
     project_seconds: float
     parquet_seconds: float
-    files: dict[str, tuple[Path, ...]]
+    files: dict[str, tuple[PreparedFile, ...]]
 
 
 def prepare_batch(
@@ -90,7 +101,7 @@ def prepare_batch(
 
     outputs = {spec.name: spec.rows(context) for spec in PROJECTIONS}
     parquet_started = time.perf_counter()
-    files: dict[str, tuple[Path, ...]] = {}
+    files: dict[str, tuple[PreparedFile, ...]] = {}
     file_set_id = uuid4().hex
     for spec in PROJECTIONS:
         files[spec.name] = _write_partitioned_parquet(
@@ -107,9 +118,9 @@ def prepare_batch(
         source_bytes=source_bytes,
         output_rows=sum(table.num_rows for table in outputs.values()),
         output_bytes=sum(
-            path.stat().st_size
+            file.size
             for relation_files in files.values()
-            for path in relation_files
+            for file in relation_files
         ),
         project_seconds=project_seconds,
         parquet_seconds=parquet_seconds,
@@ -128,18 +139,19 @@ def commit_prepared_batch(
     """Register final files and the replay marker in one DuckLake transaction."""
 
     commit_started = time.perf_counter()
+    storage = _catalogue_storage(catalogue)
     with catalogue.remote_transaction():
         if active_generation and not _is_active_generation(catalogue, run.id):
             return _result(prepared, commit_started, superseded=True)
         if _is_applied(catalogue, batch.id):
             return _result(prepared, commit_started, already_applied=True)
         for spec in PROJECTIONS:
-            for path in prepared.files[spec.name]:
+            for file in prepared.files[spec.name]:
                 catalogue.trusted_remote_execute(
                     "CALL ducklake_add_data_files("
                     f"{sql_string(catalogue.config.alias)}, "
                     f"{sql_string(run.generation_tables[spec.name])}, "
-                    f"{sql_string(_portable_registration_path(path))}, "
+                    f"{sql_string(storage.registration_path(file.path))}, "
                     "schema => 'material')"
                 )
         catalogue.trusted_remote_execute(
@@ -329,7 +341,7 @@ def _write_partitioned_parquet(
     batch_id: UUID,
     file_set_id: str | None = None,
     table_name: str,
-) -> tuple[Path, ...]:
+) -> tuple[PreparedFile, ...]:
     """Validate and write one immutable file per registry partition."""
 
     if table.num_rows == 0:
@@ -340,16 +352,8 @@ def _write_partitioned_parquet(
             f"{table_name} output schema {table.schema} "
             f"does not match registry {spec.arrow_schema}"
         )
-    root = (
-        Path(catalogue.config.data_path)
-        / "material"
-        / "data"
-        / run_id.hex
-        / table_name
-        / batch_id.hex
-        / (file_set_id or uuid4().hex)
-    )
-    root.mkdir(parents=True, exist_ok=True)
+    storage = _catalogue_storage(catalogue)
+    resolved_file_set_id = file_set_id or uuid4().hex
     registration = f"_atlas_batch_{batch_id.hex}_{table_name}"
     connection = catalogue.trusted_connection
     connection.register(registration, table)
@@ -373,7 +377,7 @@ def _write_partitioned_parquet(
             ).fetchall()
         else:
             partitions = [()]
-        paths: list[Path] = []
+        files: list[PreparedFile] = []
         for values in partitions:
             components = tuple(
                 f"{transform.kind}={value}"
@@ -383,9 +387,17 @@ def _write_partitioned_parquet(
                     strict=True,
                 )
             )
-            directory = root.joinpath(*(components or ("unpartitioned",)))
-            directory.mkdir(parents=True, exist_ok=True)
-            path = directory / "data.parquet"
+            path = storage.join(
+                "material",
+                "data",
+                run_id.hex,
+                table_name,
+                batch_id.hex,
+                resolved_file_set_id,
+                *(components or ("unpartitioned",)),
+                "data.parquet",
+            )
+            storage.prepare_parent(path)
             order_by = ", ".join(spec.sort_order)
             predicates = " AND ".join(
                 f"{expression} = {_partition_literal(value)}"
@@ -399,11 +411,12 @@ def _write_partitioned_parquet(
                 f"COPY (SELECT * FROM {typed} "
                 f"WHERE {predicates} "
                 f"ORDER BY {order_by}) "
-                f"TO {sql_string(str(path))} "
+                f"TO {sql_string(path)} "
                 "(FORMAT PARQUET, COMPRESSION ZSTD)"
             )
-            paths.append(path)
-        return tuple(paths)
+            size = storage.file_size(connection, path)
+            files.append(PreparedFile(path=path, size=size))
+        return tuple(files)
     finally:
         connection.unregister(registration)
 
@@ -423,13 +436,17 @@ def _partition_literal(value: object) -> str:
     return sql_string(str(value))
 
 
-def _portable_registration_path(path: Path) -> str:
-    """Store a workspace-relative path shared by host and container clients."""
+def _portable_registration_path(path: str | Path) -> str:
+    """Expose the shared protocol rule for focused path tests."""
 
-    relative = os.path.relpath(path.resolve(), Path.cwd().resolve())
-    if Path(relative).is_absolute():
-        raise ValueError("material registration path must be portable")
-    return relative
+    return portable_registration_path(str(path))
+
+
+def _catalogue_storage(catalogue):
+    try:
+        return catalogue.storage
+    except AttributeError:
+        return storage_protocol(catalogue.config)
 
 
 def _column_type(value) -> str:

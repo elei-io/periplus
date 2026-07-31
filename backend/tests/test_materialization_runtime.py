@@ -882,11 +882,11 @@ class MaterializationParquetTests(unittest.TestCase):
                     batch_id=uuid4(),
                     table_name=spec.name,
                 )
-                for path in paths:
+                for file in paths:
                     connection.execute(
                         "CALL ducklake_add_data_files("
                         "'lake', ?, ?, schema => 'material')",
-                        [spec.name, str(path)],
+                        [spec.name, file.path],
                     )
                 count = connection.execute(
                     f'SELECT count(*) FROM lake.material."{spec.name}"'
@@ -917,6 +917,12 @@ class MaterializationParquetTests(unittest.TestCase):
                 os.chdir(writer_working_directory)
                 relative = _portable_registration_path(data_file)
                 self.assertFalse(Path(relative).is_absolute())
+                self.assertEqual(
+                    _portable_registration_path(
+                        "s3://atlas/material/data/value.parquet"
+                    ),
+                    "s3://atlas/material/data/value.parquet",
+                )
                 writer = duckdb.connect()
                 writer.install_extension("ducklake")
                 writer.load_extension("ducklake")
@@ -984,9 +990,9 @@ class MaterializationParquetTests(unittest.TestCase):
                 table_name=spec.name,
             )
             self.assertEqual(len(paths), 1)
-            self.assertIn("bucket=", str(paths[0]))
+            self.assertIn("bucket=", paths[0].path)
             described = connection.execute(
-                f"DESCRIBE SELECT * FROM read_parquet('{paths[0]}')"
+                f"DESCRIBE SELECT * FROM read_parquet('{paths[0].path}')"
             ).fetchall()
             self.assertEqual(
                 [
@@ -1050,8 +1056,8 @@ class MaterializationParquetTests(unittest.TestCase):
             self.assertEqual(len(paths), 2)
             self.assertTrue(
                 all(
-                    f"{transform.kind}=" in str(path)
-                    for path in paths
+                    f"{transform.kind}=" in file.path
+                    for file in paths
                 )
             )
             connection.close()
@@ -1130,7 +1136,12 @@ class MaterializationParquetTests(unittest.TestCase):
             )
 
             self.assertNotEqual(abandoned, retry)
-            self.assertTrue(all(path.exists() for path in abandoned + retry))
+            self.assertTrue(
+                all(
+                    Path(file.path).exists()
+                    for file in abandoned + retry
+                )
+            )
             catalogue.trusted_connection.close()
 
     def test_applied_marker_makes_redelivery_a_noop(self) -> None:

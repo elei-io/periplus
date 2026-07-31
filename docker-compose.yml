@@ -11,7 +11,7 @@ x-atlas-backend: &atlas-backend
   working_dir: /app/backend
 
 x-atlas-state-volumes: &atlas-state-volumes
-  - ./.atlas:/app/.atlas
+  - ./.atlas/repository:/app/.atlas/repository
 
 x-atlas-healthcheck: &atlas-healthcheck
   interval: 5s
@@ -30,7 +30,13 @@ x-atlas-ducklake-environment: &atlas-ducklake-environment
   ATLAS_DUCKLAKE_ALIAS: atlas
   ATLAS_DUCKLAKE_METADATA_PATH: postgres:dbname=atlas_test host=atlas-test-postgres port=5432 user=atlas password=atlas_local
   ATLAS_DUCKLAKE_METADATA_SCHEMA: ducklake
-  ATLAS_DUCKLAKE_DATA_PATH: /app/.atlas/lake/
+  ATLAS_DUCKLAKE_DATA_PATH: s3://atlas/
+  ATLAS_DUCKLAKE_S3_ENDPOINT: atlas-ducklake-s3:7070
+  ATLAS_DUCKLAKE_S3_REGION: us-east-1
+  ATLAS_DUCKLAKE_S3_KEY_ID: ${ATLAS_DUCKLAKE_S3_KEY_ID:-atlas}
+  ATLAS_DUCKLAKE_S3_SECRET_ACCESS_KEY: ${ATLAS_DUCKLAKE_S3_SECRET_ACCESS_KEY:-atlas-secret}
+  ATLAS_DUCKLAKE_S3_URL_STYLE: path
+  ATLAS_DUCKLAKE_S3_USE_SSL: "false"
   ATLAS_DUCKLAKE_CDC_EXTENSION_PATH: /opt/atlas/ducklake_cdc.duckdb_extension
 
 x-atlas-repository-environment: &atlas-repository-environment
@@ -81,9 +87,9 @@ services:
         ":7070",
         "--health",
         "/healthz",
-        "--readonly",
         "posix",
-        "--nometa",
+        "--sidecar",
+        "/metadata",
         "/data",
       ]
     environment:
@@ -95,7 +101,7 @@ services:
       - type: bind
         source: ./.atlas/lake
         target: /data/atlas
-        read_only: true
+      - atlas-ducklake-s3-metadata:/metadata
     healthcheck:
       <<: *atlas-healthcheck
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:7070/healthz"]
@@ -301,8 +307,11 @@ services:
     depends_on:
       atlas-test-postgres:
         condition: service_healthy
+      atlas-ducklake-s3:
+        condition: service_healthy
     restart: "no"
 
 volumes:
   atlas-test-postgres-data:
   atlas-test-nats-data:
+  atlas-ducklake-s3-metadata:

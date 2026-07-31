@@ -9,14 +9,7 @@ import subprocess
 import tempfile
 
 from atlas.platform.catalogue.config import catalogue_config_from_env
-
-
-def _literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
-def _identifier(value: str) -> str:
-    return '"' + value.replace('"', '""') + '"'
+from atlas.platform.catalogue.connection import DuckLakeConnectionFactory
 
 
 def main() -> None:
@@ -25,26 +18,10 @@ def main() -> None:
     parser.add_argument("--sql")
     arguments = parser.parse_args()
     config = catalogue_config_from_env()
-    extension_path = config.resolved_extension_path()
-    init = "\n".join(
-        (
-            "INSTALL ducklake; LOAD ducklake;",
-            (
-                "INSTALL postgres; LOAD postgres;"
-                if config.metadata_path.startswith("postgres:")
-                else ""
-            ),
-            f"LOAD {_literal(str(extension_path))};",
-            (
-                f"ATTACH {_literal('ducklake:' + config.metadata_path)} "
-                f"AS {_identifier(config.alias)} "
-                f"(DATA_PATH {_literal(config.data_path)}, "
-                f"METADATA_SCHEMA {_literal(config.metadata_schema)}, "
-                "OVERRIDE_DATA_PATH true, "
-                "READ_ONLY);"
-            ),
-            f"USE {_identifier(config.alias)};",
-        )
+    factory = DuckLakeConnectionFactory(config)
+    init = factory.cli_init_sql(
+        read_only=True,
+        override_data_path=True,
     )
     with tempfile.TemporaryDirectory(prefix="atlas-duckdb-") as directory:
         init_path = Path(directory) / "init.sql"

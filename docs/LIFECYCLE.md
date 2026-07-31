@@ -51,10 +51,10 @@ partitioning. Rebuild visits are ordered chronologically so monthly files remain
 default to 500 visits per batch. LakeDucktor alone compacts and reclaims unreferenced files; Atlas
 never deletes registered material data.
 
-For filesystem lakes, registered file names are relative to the shared `backend/` working
-directory (for example `../.atlas/lake/material/data/...`). The bind-mounted container and direct
-host shell deliberately use that same relative layout, so metadata never records a container-only
-`/app/...` path.
+The process-owned DuckLake connection factory selects one storage protocol for attachment,
+material file writes, size inspection, and registration. Filesystem protocols register names
+relative to the shared working directory. URI protocols register the complete immutable object
+URI. Materialization code does not branch by storage backend.
 
 ## Complete rebuild
 

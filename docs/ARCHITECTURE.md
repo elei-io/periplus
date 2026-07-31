@@ -35,6 +35,10 @@ contract. Ordinary Atlas processes validate the installed contract and never rep
 The extension binary executes inside each DuckDB client and is not stored in DuckLake. The SDK and
 direct shell therefore load a matching host artifact before attaching the lake. Once attached,
 queries read the persistent catalogue and lake data directly; no running Atlas API is required.
+One DuckLake connection factory owns extension loading, storage-protocol configuration, and
+attachment for every Atlas process. Filesystem and S3 are built-in protocols; callers may inject a
+protocol for another DuckDB-supported data URI without adding storage branches to catalogue or
+materialization workflows.
 Atlas services are needed only to acquire, ingest, or materialize more data. Stopping those
 services leaves the complete analytical lake intact. Deleting control-plane Postgres separately
 would remove editable plans, schedules, and current execution state, but never the historical

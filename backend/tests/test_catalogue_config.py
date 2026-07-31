@@ -11,7 +11,12 @@ from atlas.platform.catalogue.config import (
     CatalogueConfig,
     catalogue_config_from_env,
 )
+from atlas.platform.catalogue.connection import DuckLakeConnectionFactory
 from atlas.platform.catalogue.exceptions import CatalogueConfigError
+from atlas.platform.catalogue.storage import (
+    DuckLakeStorageProtocol,
+    storage_protocol,
+)
 
 
 class CatalogueConfigTests(unittest.TestCase):
@@ -72,6 +77,78 @@ class CatalogueConfigTests(unittest.TestCase):
             "ATLAS_DUCKLAKE_CDC_EXTENSION_PATH",
         ):
             config.resolved_cdc_extension_path()
+
+    def test_s3_data_path_uses_scoped_parameterized_credentials(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ATLAS_DUCKLAKE_DATA_PATH": "s3://atlas/",
+                "ATLAS_DUCKLAKE_S3_ENDPOINT": "gateway:7070",
+                "ATLAS_DUCKLAKE_S3_KEY_ID": "key",
+                "ATLAS_DUCKLAKE_S3_SECRET_ACCESS_KEY": "secret-value",
+                "ATLAS_DUCKLAKE_S3_URL_STYLE": "path",
+                "ATLAS_DUCKLAKE_S3_USE_SSL": "false",
+                "ATLAS_DUCKDB_EXTENSION_PATH": "/opt/atlas/extension",
+            },
+            clear=True,
+        ):
+            config = catalogue_config_from_env()
+
+        self.assertIsNotNone(config.s3)
+        connection = MagicMock()
+        storage_protocol(config).configure_connection(connection)
+
+        secret_call = connection.execute.call_args_list[-1]
+        self.assertNotIn("secret-value", secret_call.args[0])
+        self.assertIn("SCOPE ?", secret_call.args[0])
+        self.assertEqual(secret_call.args[1][-1], "s3://atlas/")
+
+    def test_filesystem_data_path_needs_no_storage_secret(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ATLAS_DUCKLAKE_DATA_PATH": "/srv/atlas/lake/",
+                "ATLAS_DUCKDB_EXTENSION_PATH": "/opt/atlas/extension",
+            },
+            clear=True,
+        ):
+            config = catalogue_config_from_env()
+
+        self.assertIsNone(config.s3)
+        connection = MagicMock()
+        storage_protocol(config).configure_connection(connection)
+        connection.execute.assert_not_called()
+
+    def test_s3_static_credentials_must_be_complete(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ATLAS_DUCKLAKE_DATA_PATH": "s3://atlas/",
+                "ATLAS_DUCKLAKE_S3_KEY_ID": "key",
+                "ATLAS_DUCKDB_EXTENSION_PATH": "/opt/atlas/extension",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(
+                CatalogueConfigError,
+                "both a key ID and secret",
+            ):
+                catalogue_config_from_env()
+
+    def test_connection_factory_accepts_an_injected_protocol(self) -> None:
+        config = CatalogueConfig(
+            alias="atlas",
+            metadata_path="metadata.ducklake",
+            data_path="/srv/lake",
+            metadata_schema="ducklake",
+            extension_path="/opt/atlas/extension",
+            cdc_extension_path="",
+        )
+        protocol = MagicMock(spec=DuckLakeStorageProtocol)
+
+        factory = DuckLakeConnectionFactory(config, protocol=protocol)
+
+        self.assertIs(factory.storage, protocol)
 
     @patch("atlas.platform.catalogue.__main__.catalogue_from_env")
     def test_check_uses_a_read_only_portable_host_attachment(

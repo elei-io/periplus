@@ -11,6 +11,14 @@ _EXPORTS = {
         "atlas.platform.catalogue.config",
         "CatalogueConfig",
     ),
+    "DuckLakeConnectionFactory": (
+        "atlas.platform.catalogue.connection",
+        "DuckLakeConnectionFactory",
+    ),
+    "DuckLakeStorageProtocol": (
+        "atlas.platform.catalogue.storage",
+        "DuckLakeStorageProtocol",
+    ),
     "catalogue_config_from_env": (
         "atlas.platform.catalogue.config",
         "catalogue_config_from_env",
@@ -75,6 +83,7 @@ def catalogue_from_env(
     load_cdc: bool = False,
     read_only: bool = False,
     override_data_path: bool = False,
+    protocol=None,
 ):
     """Open one process-local DuckDB connection to Atlas's DuckLake."""
 
@@ -94,6 +103,7 @@ def catalogue_from_env(
         load_cdc=load_cdc,
         read_only=read_only,
         override_data_path=override_data_path,
+        protocol=protocol,
     )
 
 

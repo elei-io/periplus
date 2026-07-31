@@ -36,9 +36,11 @@ compile both against DuckDB 1.5.5, and the final Atlas image contains only
 bootstraps CDC state. Ordinary catalogue connections load only the Atlas extension; the dedicated
 live-materialization connection loads and prewarms the CDC extension before attaching DuckLake.
 
-The shell reads the same `ATLAS_DUCKLAKE_ALIAS`, `ATLAS_DUCKLAKE_METADATA_PATH`,
-`ATLAS_DUCKLAKE_METADATA_SCHEMA`, and `ATLAS_DUCKLAKE_DATA_PATH` variables as Atlas. The configured
-data path must be reachable by the host-native DuckDB process.
+The shell uses the same centralized DuckLake connection factory contract as Atlas:
+`ATLAS_DUCKLAKE_ALIAS`, `ATLAS_DUCKLAKE_METADATA_PATH`,
+`ATLAS_DUCKLAKE_METADATA_SCHEMA`, and `ATLAS_DUCKLAKE_DATA_PATH`, plus protocol-specific
+credentials such as `ATLAS_DUCKLAKE_S3_*`. The configured data path and endpoint must be reachable
+by the host-native DuckDB process.
 
 ## First build
 

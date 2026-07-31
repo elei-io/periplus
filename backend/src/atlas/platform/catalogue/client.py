@@ -5,12 +5,11 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from pathlib import Path
 
-import duckdb
 import pyarrow as pa
 
 from atlas.platform.catalogue.config import CatalogueConfig
+from atlas.platform.catalogue.connection import DuckLakeConnectionFactory
 from atlas.platform.catalogue.exceptions import CatalogueSchemaError
 from atlas.platform.catalogue.schema import (
     COLUMN_COMMENTS,
@@ -25,6 +24,7 @@ from atlas.platform.catalogue.public import (
     install_public_catalogue,
     validate_public_catalogue,
 )
+from atlas.platform.catalogue.storage import DuckLakeStorageProtocol
 
 _INTERNAL_TABLE_NAME = re.compile(r"^_atlas_[a-z0-9_]+$")
 _REQUIRED_ATLAS_NATIVE_FUNCTIONS = frozenset(
@@ -43,28 +43,20 @@ class Catalogue:
         load_cdc: bool = False,
         read_only: bool = False,
         override_data_path: bool = False,
+        protocol: DuckLakeStorageProtocol | None = None,
     ) -> None:
         self.config = config
-        connection_config = dict(duckdb_config or {})
-        connection_config["allow_unsigned_extensions"] = "true"
-        self._connection = duckdb.connect(
-            ":memory:",
-            config=connection_config,
+        factory = DuckLakeConnectionFactory(
+            config,
+            duckdb_config,
+            protocol=protocol,
         )
-        self._connection.execute("INSTALL ducklake")
-        self._connection.execute("LOAD ducklake")
-        if config.metadata_path.startswith("postgres:"):
-            self._connection.execute("INSTALL postgres")
-            self._connection.execute("LOAD postgres")
-        self._connection.load_extension(
-            str(config.resolved_extension_path())
+        self.storage = factory.storage
+        self._connection = factory.connect(
+            load_cdc=load_cdc,
+            read_only=read_only,
+            override_data_path=override_data_path,
         )
-        if load_cdc:
-            self._connection.load_extension(
-                str(config.resolved_cdc_extension_path())
-            )
-            # Prewarm this handle before it touches an attached catalog.
-            self._connection.execute("SELECT cdc_version()").fetchone()
         native_functions = {
             str(name)
             for (name,) in self._connection.execute(
@@ -82,22 +74,6 @@ class Catalogue:
                 "Atlas DuckDB extension is missing required functions: "
                 + ", ".join(missing)
             )
-        if "://" not in config.data_path:
-            Path(config.data_path).mkdir(parents=True, exist_ok=True)
-        attach_options = [
-            f"DATA_PATH {_quote_literal(config.data_path)}",
-            f"METADATA_SCHEMA {_quote_literal(config.metadata_schema)}",
-        ]
-        if override_data_path:
-            attach_options.append("OVERRIDE_DATA_PATH true")
-        if read_only:
-            attach_options.append("READ_ONLY")
-        attach = (
-            f"ATTACH {_quote_literal('ducklake:' + config.metadata_path)} "
-            f"AS {_quote_identifier(config.alias)} "
-            f"({', '.join(attach_options)})"
-        )
-        self._connection.execute(attach)
         self._use_schema_if_available()
 
     @property

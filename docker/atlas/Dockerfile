@@ -79,7 +79,7 @@ COPY backend/pyproject.toml backend/uv.lock ./
 RUN UV_PROJECT_ENVIRONMENT=/opt/atlas-venv uv sync --frozen --no-install-project --no-dev
 
 # Atlas computes locally and shares DuckLake metadata through PostgreSQL.
-ARG ATLAS_DUCKDB_EXTENSIONS=ducklake,postgres
+ARG ATLAS_DUCKDB_EXTENSIONS=ducklake,postgres,httpfs,aws
 RUN ATLAS_DUCKDB_EXTENSIONS="${ATLAS_DUCKDB_EXTENSIONS}" /opt/atlas-venv/bin/python -c "import os, duckdb; connection = duckdb.connect(); [connection.install_extension(name) for name in os.environ['ATLAS_DUCKDB_EXTENSIONS'].split(',') if name]; connection.close()"
 
 ENV PATH="/opt/atlas-venv/bin:${PATH}"

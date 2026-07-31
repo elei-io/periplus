@@ -48,6 +48,15 @@ The standalone end-to-end proof is `examples/smoke.py`. It uses
 `ATLAS_API_URL`, `ATLAS_DUCKDB_EXTENSION_PATH`, and the `ATLAS_DUCKLAKE_*`
 connection variables, or `ATLAS_DIRECT_ENV_FILE`.
 
+`atlas_sdk.conn.DuckLakeConnectionFactory` selects filesystem and S3 protocols centrally.
+`atlas_sdk.conn.duck()` accepts an injected `DuckLakeConnectionProtocol` for another
+DuckDB-supported data URI. S3-compatible endpoints use the
+`ATLAS_DUCKLAKE_S3_ENDPOINT`, `ATLAS_DUCKLAKE_S3_REGION`,
+`ATLAS_DUCKLAKE_S3_KEY_ID`, `ATLAS_DUCKLAKE_S3_SECRET_ACCESS_KEY`,
+`ATLAS_DUCKLAKE_S3_SESSION_TOKEN`, `ATLAS_DUCKLAKE_S3_URL_STYLE`, and
+`ATLAS_DUCKLAKE_S3_USE_SSL` settings; standard AWS credential variables are accepted when the
+Atlas-specific credential variables are absent.
+
 ## Releasing
 
 Repository CI publishes immutable releases from tags named

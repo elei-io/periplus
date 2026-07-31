@@ -60,8 +60,9 @@ activates every discovered relation and the matching public catalogue together. 
 relations remain until post-activation verification. No ingestion row or immutable object is
 deleted or rewritten.
 
-Registered paths must be readable by the supported direct host shell and must not depend on a
-container-only `/app` path.
+Registered paths must be readable by the configured connection protocol and the supported direct
+host shell. Filesystem registrations must not depend on a container-only `/app` path; URI
+registrations retain their complete immutable object URI.
 
 ## Exit criteria
 
