@@ -120,8 +120,10 @@ rules, but it must not install an independent whole-plan visitor.
 The initial rules cover both DOM and non-DOM plans: unsafe collection of element-grain rows before
 document evaluation, large Cartesian products between Atlas relations, unexpectedly broad
 document operations, repeated DOM work, and unbounded blocking state over large Atlas relations.
-Future rewrites must be optimizer actions from this shared policy rather than standalone
-SQL-spelling patches.
+The first rewrite removes the `ingest.documents` side of `web.page_visit` when no document value is
+used above its complete identity join. It relies only on Atlas's one-document-per-visit invariant;
+selecting or filtering a document value retains the join. Future rewrites must be optimizer actions
+from this shared policy rather than standalone SQL-spelling patches.
 
 The internal native table function:
 
