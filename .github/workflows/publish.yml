@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - main
-      # Bootstrap the workflow before it lands on the default branch. Remove
-      # this branch after the first successful publication run.
-      - compiler
     tags:
       - "v*.*.*"
   workflow_dispatch:
