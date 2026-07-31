@@ -73,6 +73,34 @@ services:
       retries: 30
     restart: unless-stopped
 
+  atlas-ducklake-s3:
+    image: ghcr.io/versity/versitygw:v1.4.1
+    command:
+      [
+        "--port",
+        ":7070",
+        "--health",
+        "/healthz",
+        "--readonly",
+        "posix",
+        "--nometa",
+        "/data",
+      ]
+    environment:
+      ROOT_ACCESS_KEY: ${ATLAS_DUCKLAKE_S3_KEY_ID:-atlas}
+      ROOT_SECRET_KEY: ${ATLAS_DUCKLAKE_S3_SECRET_ACCESS_KEY:-atlas-secret}
+    ports:
+      - "127.0.0.1:${ATLAS_DUCKLAKE_S3_PORT:-7070}:7070"
+    volumes:
+      - type: bind
+        source: ./.atlas/lake
+        target: /data/atlas
+        read_only: true
+    healthcheck:
+      <<: *atlas-healthcheck
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:7070/healthz"]
+    restart: unless-stopped
+
   atlas-web:
     build:
       context: .
