@@ -21,7 +21,7 @@ jobs:
     env:
       # Unit-test imports construct the lazy SQLAlchemy session factory but do
       # not connect. Keep this URL isolated from any real database.
-      ATLAS_CONTROL_DATABASE_URL: postgresql://atlas:atlas@127.0.0.1:55432/atlas_test
+      PERIPLUS_CONTROL_DATABASE_URL: postgresql://periplus:periplus@127.0.0.1:55432/periplus_test
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v7
@@ -35,16 +35,16 @@ jobs:
         run: uv sync --frozen
       - name: Compile backend
         working-directory: backend
-        run: uv run python -m compileall src/atlas
+        run: uv run python -m compileall src/periplus
       - name: Test backend
         working-directory: backend
         run: uv run python -m unittest discover -s tests
       - name: Test Python SDK
         working-directory: backend
         run: >-
-          env PYTHONPATH=../packages/atlas-python-sdk/src
+          env PYTHONPATH=../packages/periplus-python-sdk/src
           uv run python -m unittest discover
-          -s ../packages/atlas-python-sdk/tests
+          -s ../packages/periplus-python-sdk/tests
 
   frontend:
     name: Frontend
@@ -69,6 +69,6 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: v3.18.6
-      - run: helm lint charts/atlas
+      - run: helm lint charts/periplus
       - name: Render homelab topology
-        run: helm template atlas charts/atlas --namespace atlas > /tmp/atlas.yaml
+        run: helm template periplus charts/periplus --namespace periplus > /tmp/periplus.yaml

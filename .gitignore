@@ -16,7 +16,7 @@ wheels/
 
 .cache
 .artifacts
-.atlas/
+.periplus/
 
 
 # Logs

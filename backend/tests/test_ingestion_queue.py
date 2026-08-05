@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 from nats.js.errors import NotFoundError
 
-from atlas.ingestion.queue import (
+from periplus.ingestion.queue import (
     DURABLE,
     STREAM,
     ensure_repository_consumer,

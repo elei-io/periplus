@@ -1,10 +1,11 @@
 SELECT
-    page_visit_id,
-    url,
+    observation_id,
+    requested_url,
+    effective_url,
     outcome,
     http_status_code,
-    finished_at
-FROM web.page_visit
-WHERE source_dataset = 'atlas-test-corpus/v3/CC-MAIN-2026-25/20260727'
-ORDER BY finished_at DESC
+    observed_at
+FROM web.observation
+WHERE source_dataset = 'periplus-test-corpus/v4/CC-MAIN-2026-25/20260727'
+ORDER BY observed_at DESC NULLS LAST, observation_id DESC
 LIMIT 50;

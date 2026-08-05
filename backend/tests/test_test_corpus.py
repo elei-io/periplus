@@ -8,7 +8,7 @@ from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "test_corpus.py"
-SPEC = importlib.util.spec_from_file_location("atlas_test_corpus", SCRIPT)
+SPEC = importlib.util.spec_from_file_location("periplus_test_corpus", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 test_corpus = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = test_corpus
@@ -54,7 +54,7 @@ class TestCorpusTests(unittest.TestCase):
     def test_dataset_identity_pins_version_crawl_and_seed(self):
         self.assertEqual(
             test_corpus.dataset_name("CC-MAIN-2026-25", 42),
-            "atlas-test-corpus/v4/CC-MAIN-2026-25/42",
+            "periplus-test-corpus/v4/CC-MAIN-2026-25/42",
         )
 
     def test_manifest_round_trip_preserves_capture(self):
@@ -77,26 +77,26 @@ class TestCorpusTests(unittest.TestCase):
     def test_existing_query_uses_single_page_identity(self):
         with mock.patch.object(
             test_corpus,
-            "query_atlas",
+            "query_periplus",
             return_value={"rows": [[None]]},
         ) as query:
             empty = test_corpus.query_existing(
-                "http://atlas.example",
+                "http://periplus.example",
                 "corpus-v4",
             )
 
         self.assertEqual(empty, set())
         sql = query.call_args.args[1]
-        self.assertIn("FROM web.page_visit", sql)
+        self.assertIn("FROM web.observation", sql)
         self.assertIn("starts_with(source_record_id, 'page:')", sql)
 
         with mock.patch.object(
             test_corpus,
-            "query_atlas",
+            "query_periplus",
             return_value={"rows": [[[0, 2, 9]]]},
         ):
             existing = test_corpus.query_existing(
-                "http://atlas.example",
+                "http://periplus.example",
                 "corpus-v4",
             )
         self.assertEqual(existing, {0, 2, 9})
@@ -104,14 +104,14 @@ class TestCorpusTests(unittest.TestCase):
     def test_lake_url_scan_is_bounded_and_paginated(self):
         with mock.patch.object(
             test_corpus,
-            "query_atlas",
+            "query_periplus",
             side_effect=[
                 {"rows": [["https://a.example/"], ["https://b.example/"]]},
                 {"rows": [["https://c.example/"]]},
             ],
         ) as query:
             urls = test_corpus.query_lake_urls(
-                "http://atlas.example",
+                "http://periplus.example",
                 page_size=2,
             )
 
@@ -183,7 +183,7 @@ class TestCorpusTests(unittest.TestCase):
         self.assertEqual(result[-1].ordinal, 1)
         self.assertEqual(result[-1].url, "https://new.example/")
 
-    def test_dry_run_does_not_query_or_mutate_atlas(self):
+    def test_dry_run_does_not_query_or_mutate_periplus(self):
         candidate = self.candidate(url="https://new.example/", offset=1)
         with tempfile.TemporaryDirectory() as directory:
             arguments = test_corpus.parse_arguments(
@@ -193,12 +193,12 @@ class TestCorpusTests(unittest.TestCase):
                 mock.patch.object(
                     test_corpus,
                     "query_existing",
-                    side_effect=AssertionError("Atlas must not be queried"),
+                    side_effect=AssertionError("Periplus must not be queried"),
                 ),
                 mock.patch.object(
                     test_corpus,
                     "query_lake_urls",
-                    side_effect=AssertionError("Atlas must not be queried"),
+                    side_effect=AssertionError("Periplus must not be queried"),
                 ),
                 mock.patch.object(
                     test_corpus,
@@ -218,7 +218,7 @@ class TestCorpusTests(unittest.TestCase):
                 mock.patch.object(
                     test_corpus,
                     "ingest_capture",
-                    side_effect=AssertionError("Atlas must not be changed"),
+                    side_effect=AssertionError("Periplus must not be changed"),
                 ),
             ):
                 result = test_corpus.reconcile(arguments)
@@ -242,7 +242,7 @@ class TestCorpusTests(unittest.TestCase):
             side_effect=[{4}, {4, 5}],
         ) as query:
             test_corpus.wait_for_ingestion(
-                "http://atlas.example",
+                "http://periplus.example",
                 "corpus-v4",
                 selected,
                 timeout_seconds=1,

@@ -242,7 +242,7 @@ export function App() {
           <div
             className={
               activeItem.href === "/"
-                ? "app-surface-grain atlas-home-grain pointer-events-none absolute inset-0"
+                ? "app-surface-grain periplus-home-grain pointer-events-none absolute inset-0"
                 : "app-surface-grain pointer-events-none absolute inset-0"
             }
           />

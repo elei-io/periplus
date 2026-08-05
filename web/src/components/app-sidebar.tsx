@@ -1,5 +1,5 @@
-import atlasMark from "@/assets/atlas-mark.svg"
-import atlasWordmark from "@/assets/atlas-wordmark.svg"
+import periplusMark from "@/assets/periplus-mark.svg"
+import periplusWordmark from "@/assets/periplus-wordmark.svg"
 import { navigationGroups } from "@/lib/navigation"
 import {
   Sidebar,
@@ -26,7 +26,7 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
           <SidebarMenuItem>
             <SidebarMenuButton
               size="lg"
-              tooltip="Atlas"
+              tooltip="Periplus"
               render={
                 <a
                   href="/"
@@ -36,13 +36,13 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
                   }}
                 >
                   <img
-                    src={atlasWordmark}
-                    alt="Atlas"
+                    src={periplusWordmark}
+                    alt="Periplus"
                     className="h-5 w-auto group-data-[collapsible=icon]:hidden"
                   />
                   <img
-                    src={atlasMark}
-                    alt="Atlas"
+                    src={periplusMark}
+                    alt="Periplus"
                     className="hidden size-5 shrink-0 group-data-[collapsible=icon]:block"
                   />
                 </a>

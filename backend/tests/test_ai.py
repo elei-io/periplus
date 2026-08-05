@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from pydantic import ValidationError
 
-from atlas.query.ai import (
+from periplus.query.ai import (
     AiAnswer,
     AiRequest,
     CatalogueAssistantTools,
@@ -68,7 +68,7 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         tools = CatalogueAssistantTools(_Control(_Catalogue()))
         with patch(
-            "atlas.query.ai._public_metadata",
+            "periplus.query.ai._public_metadata",
             return_value=(
                 "catalogue-v1",
                 "duckdb-v1",
@@ -76,9 +76,9 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
                 [
                     (
                         "web",
-                        "page",
-                        "Captured pages.",
-                        "url",
+                        "observation",
+                        "Captured observations.",
+                        "requested_url",
                         "VARCHAR",
                         False,
                         "Normalized URL.",
@@ -90,29 +90,31 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
             result = await tools.list_objects()
 
         self.assertEqual(result["catalogue_version"], "catalogue-v1")
-        self.assertEqual(result["relations"][0]["name"], "web.page")
+        self.assertEqual(result["relations"][0]["name"], "web.observation")
         self.assertEqual(
             result["relations"][0]["columns"][0]["name"],
-            "url",
+            "requested_url",
         )
 
     async def test_ai_query_is_read_only_and_bounded(self) -> None:
         catalogue = _Catalogue([[index] for index in range(202)])
         tools = CatalogueAssistantTools(_Control(catalogue))
 
-        result = await tools.query("SELECT url FROM web.page")
+        result = await tools.query("SELECT requested_url FROM web.observation")
 
         self.assertIn("LIMIT 201", catalogue.sql[0])
         self.assertEqual(len(result["rows"]), 200)
         self.assertEqual(result["row_count"], 200)
         self.assertTrue(result["truncated"])
-        self.assertEqual(result["sql"], "SELECT url FROM web.page;")
+        self.assertEqual(
+            result["sql"], "SELECT requested_url FROM web.observation;"
+        )
         self.assertEqual(
             result["display_sql"],
-            "SELECT\n  url\nFROM web.page;",
+            "SELECT\n  requested_url\nFROM web.observation;",
         )
         with self.assertRaisesRegex(ValueError, "read-only"):
-            await tools.query("DELETE FROM web.page")
+            await tools.query("DELETE FROM web.observation")
 
     async def test_suggestion_is_bound_and_normalized_before_handoff(self) -> None:
         catalogue = _Catalogue()
@@ -121,17 +123,19 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
         suggestion = await tools.prepare_suggestion(
             title="Recent pages",
             description="Inspect recently observed pages.",
-            sql="select * from web.page limit 10;",
+            sql="select * from web.observation limit 10;",
         )
 
-        self.assertEqual(suggestion.sql, "SELECT * FROM web.page LIMIT 10;")
+        self.assertEqual(
+            suggestion.sql, "SELECT * FROM web.observation LIMIT 10;"
+        )
         self.assertEqual(
             suggestion.display_sql,
-            "SELECT\n  *\nFROM web.page\nLIMIT 10;",
+            "SELECT\n  *\nFROM web.observation\nLIMIT 10;",
         )
         self.assertEqual(
             catalogue.sql,
-            ["EXPLAIN SELECT * FROM web.page LIMIT 10"],
+            ["EXPLAIN SELECT * FROM web.observation LIMIT 10"],
         )
         with self.assertRaisesRegex(ValueError, "web"):
             await tools.prepare_suggestion(
@@ -159,7 +163,7 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
         result = await query_catalogue(
             context,
             "Count retained domains",
-            "select count(*) from web.page",
+            "select count(*) from web.observation",
         )
 
         self.assertEqual(result["row_count"], 1)
@@ -171,10 +175,12 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             all(event.purpose == "Count retained domains" for event in events)
         )
-        self.assertEqual(events[-1].sql, "SELECT COUNT(*) FROM web.page;")
+        self.assertEqual(
+            events[-1].sql, "SELECT COUNT(*) FROM web.observation;"
+        )
         self.assertEqual(
             events[-1].display_sql,
-            "SELECT\n  COUNT(*)\nFROM web.page;",
+            "SELECT\n  COUNT(*)\nFROM web.observation;",
         )
         self.assertEqual(events[-1].row_count, 1)
         self.assertEqual(events[-1].columns, ["value"])

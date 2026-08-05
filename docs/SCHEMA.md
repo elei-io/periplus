@@ -1,15 +1,18 @@
 # Schema
 
-Atlas has one evidence path:
+Periplus has one evidence path:
 
 ```text
 immutable objects + ingest.*
     -> append-only material.*
-    -> runtime web.* / dom.*
+    -> runtime web.* / content.*
 ```
 
-Raw bytes and both physical schemas are immutable. Public views may change as the query API
-evolves.
+Raw bytes and both physical schemas are immutable. The public catalogue exposes a deliberately
+small evidence kernel.
+
+Periplus owns observation faithfully. Interpretation begins outside Periplus. It does not publish a
+`data.*` schema or define domain entities such as companies, products, people, claims, or topics.
 
 ## `ingest.*`
 
@@ -19,7 +22,7 @@ The authoritative relations are:
 - `ingest.visits` — one terminal acquisition or imported observation of a URL.
 - `ingest.attempts` — ordered acquisition attempts for a visit.
 - `ingest.steps` — content-completion actions within an attempt.
-- `ingest.documents` — the optional immutable representation retained by a visit.
+- `ingest.documents` — the optional immutable content retained by a visit.
 
 They contain observed evidence only. There is no page dimension, URL decomposition, latest-state
 pointer, or materialization hint in ingestion. Inserts are idempotent only when an existing
@@ -31,10 +34,16 @@ surrounding whitespace and fragments are removed, scheme and hostname are lower-
 ports are removed, an empty path becomes `/`, and the query string is retained byte-for-byte.
 Only absolute HTTP(S) URLs without credentials are accepted.
 
-A document records `document_id`, `visit_id`, representation and media metadata,
-`content_sha256`, logical/stored sizes, storage encoding, and a repository-relative object key.
-Every visible document reference must resolve to readable immutable bytes whose logical SHA-256
-matches `content_sha256`.
+One visit retains zero or one content representation. Zero covers acquisition failures, empty
+responses, and responses Periplus deliberately does not retain. Otherwise the representation is the
+single result returned by that visit and may be HTML, JSON, PDF, an image, text, XML, or unsupported
+binary content. A visit never owns a collection of alternate renderings or derived artifacts.
+
+An ingestion document records its internal identity, visit identity, representation and media
+metadata, `content_sha256`, logical and stored sizes, storage encoding, and a repository-relative
+object key. Every visible document reference must resolve to readable immutable bytes whose
+logical SHA-256 matches `content_sha256`. Internal document identities and object keys are not part
+of the public SQL contract.
 
 ## `material.*`
 
@@ -81,8 +90,8 @@ convenience for the normalized directed URL pair. It is not a mutable identity r
 `relation_scope` is `self`, `same_origin`, `same_host`, `same_site`, or `external`.
 
 Material relations accept immutable Parquet-file appends only. Rebuilds create the complete
-discovered hidden relation set and activate it together. Live batches register new final files. There is no
-`MERGE`, `UPDATE`, `DELETE`, keyed replacement, head table, or stored aggregate.
+discovered hidden relation set and activate it together. Live batches register new final files.
+There is no `MERGE`, `UPDATE`, `DELETE`, keyed replacement, head table, or stored aggregate.
 
 Each file under `materialization/projections/` declares one relation's ownership grain, identity,
 Arrow and DuckLake schema, partitioning, sort order, projector, validation, and description. One
@@ -93,54 +102,98 @@ or delete requires redeployment and a complete rebuild.
 
 ## Public catalogue
 
-Only `web.*` and `dom.*` are public. Their views and macros use a separate lightweight registry;
-they are not materialization declarations.
-
-### `web.page_visit`
-
-Plain visit and retained-document evidence:
+The public catalogue contains exactly four relations:
 
 ```text
-page_visit_id, crawl_id
-url, requested_url, final_url
-admitted_at, started_at, observed_at, finished_at
-outcome, http_status_code
-document_id, content_id, content_size_bytes
-content_representation, declared_content_type, detected_content_type
-character_encoding
+web.observation
+web.link_occurrence
+content.object
+content.html_element
+```
+
+Only `web.*` and `content.*` are public. The `web` schema contains observation-contextual evidence;
+the `content` schema contains content-addressed objects and deterministic structures derived from
+their bytes. Their views use a separate lightweight registry and are not materialization
+declarations.
+
+The canonical fully qualified form uses the attached catalogue name:
+
+```text
+periplus.web.observation
+periplus.web.link_occurrence
+periplus.content.object
+periplus.content.html_element
+```
+
+When Periplus is the current catalogue, callers may use the shorter two-part names. Clients combining
+Periplus with their own attached databases should use the fully qualified form.
+
+### `web.observation`
+
+One terminal URL observation, including unsuccessful observations:
+
+```text
+observation_id, crawl_id
+requested_url, effective_url
+observed_at, outcome, http_status_code
+content_id
 source_kind, source_system, source_dataset, source_record_id
 ```
 
-It does not implicitly join page identity, latest state, or DOM statistics.
+`content_id` is nullable and identifies the one retained content object when present. The relation
+does not implicitly join URL components, current or latest state, acquisition attempts, content
+statistics, or parsed structures.
 
-### `web.page`
+### `content.object`
 
-One runtime-distinct normalized effective/requested URL:
+One immutable byte sequence retained by at least one observation:
 
 ```text
-url
-scheme, hostname, port, path, query_string
-latest_page_visit_id, last_visited_at
+content_id
+size_bytes
+detected_media_type
+detected_character_encoding
+content_format
 ```
 
-URL components are parsed lazily. Latest selection is ordered by
-`(finished_at DESC NULLS LAST, visit_id DESC)`.
+`content_format` is the detected representation class used to select deterministic format
+projections. A content object remains visible even when Periplus has no public structural projection
+for its format. The relation exposes neither repository keys nor physical storage paths.
 
-### Link and DOM views
-
-- `web.link_occurrence` exposes one observed anchor with natural page-visit,
-  hostname, and relationship names over `material.link_occurrences`.
-- `web.link` calculates exact first/last time and visit/content/occurrence counts at runtime.
-- `web.jsonld` reads `material.jsonld_values`.
-- `dom.element` reads `material.html_elements` with public structural names.
-- `dom.content_stats` explicitly groups elements into `element_count` and `max_depth`; it is not joined
-  onto every visit.
-- `dom.get_attribute`, `dom.text_content`, `dom.query_selector`, and
-  `dom.query_selector_all` operate on the keyed structural DOM.
-
-Public content keys are named `content_id`; they are the same value stored physically as
+Public `content_id` values are the same SHA-256 content identities stored physically as
 `content_sha256`.
 
-## `data.*`
+The same `content_id` may belong to observations of multiple URLs, crawls, sources, or times.
+Content-grain projections are therefore emitted once and reused through observation joins.
 
-`data.*` is user-owned SQL built from the public catalogue.
+### `content.html_element`
+
+One structural HTML element per `(content_id, element_index)`:
+
+```text
+content_id, element_index
+parent_index, subtree_end_index, depth, child_index
+tag, namespace, attributes
+text_direct, text_tail
+```
+
+It exposes the deterministic HTML5 projection of objects whose `content_format` is `html`.
+Document order, parentage, subtree bounds, attributes, and text placement are explicit. Objects of
+other formats have no rows in this relation.
+
+### `web.link_occurrence`
+
+One observed anchor occurrence in one observation:
+
+```text
+link_occurrence_id
+observation_id, content_id, element_index
+observed_at
+source_url, raw_href, target_url, relation_scope
+```
+
+The observation grain is required because resolving `raw_href` depends on the effective source URL
+even when identical content bytes appear at multiple URLs. `target_url` is the normalized resolved
+HTTP(S) target. `relation_scope` is `self`, `same_origin`, `same_host`, `same_site`, or `external`.
+
+No other relations or macros are public.

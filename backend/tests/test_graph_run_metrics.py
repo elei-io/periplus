@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 
-from atlas.crawl.api.runs import (
+from periplus.crawl.api.runs import (
     _run_stage_counts,
     capacity,
 )
@@ -36,7 +36,7 @@ class GraphRunStageMetricsTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "atlas.crawl.api.runs.list_worker_states",
+            "periplus.crawl.api.runs.list_worker_states",
             AsyncMock(return_value=workers),
         ):
             result = await capacity(runtime)

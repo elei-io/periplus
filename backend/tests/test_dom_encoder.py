@@ -4,7 +4,7 @@ from dataclasses import replace
 import unittest
 from xml.etree.ElementTree import Element, SubElement
 
-from atlas.materialization.dom import (
+from periplus.materialization.dom import (
     ElementRow,
     encode_html,
     iter_tree_elements,

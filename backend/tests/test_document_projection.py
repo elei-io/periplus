@@ -3,14 +3,14 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from atlas.materialization.batch import _document_sources
-from atlas.materialization.document_projection import (
+from periplus.materialization.batch import _document_sources
+from periplus.materialization.document_projection import (
     DocumentObservation,
     DocumentProjectionSource,
     build_visit_batch_context,
     ducklake_varchar_bucket,
 )
-from atlas.materialization.registry import PROJECTIONS
+from periplus.materialization.registry import PROJECTIONS
 
 
 class DocumentProjectionTests(unittest.TestCase):

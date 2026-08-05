@@ -4,8 +4,8 @@ import unittest
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
-from atlas.crawl.runtime.graph_outbox import publish_outbox_once
-from atlas.crawl.runtime.graph_store import OutboxDelivery
+from periplus.crawl.runtime.graph_outbox import publish_outbox_once
+from periplus.crawl.runtime.graph_store import OutboxDelivery
 
 
 class GraphOutboxTests(unittest.IsolatedAsyncioTestCase):
@@ -13,7 +13,7 @@ class GraphOutboxTests(unittest.IsolatedAsyncioTestCase):
         delivery = OutboxDelivery(
             id=uuid4(),
             message_id="crawl:one:g1",
-            subject="atlas.graph.crawl",
+            subject="periplus.graph.crawl",
             payload={"crawl_request_id": str(uuid4()), "generation": 1},
             claim_token=uuid4(),
         )
@@ -42,7 +42,7 @@ class GraphOutboxTests(unittest.IsolatedAsyncioTestCase):
         delivery = OutboxDelivery(
             id=uuid4(),
             message_id="crawl:one:g1",
-            subject="atlas.graph.crawl",
+            subject="periplus.graph.crawl",
             payload={"crawl_request_id": str(uuid4()), "generation": 1},
             claim_token=uuid4(),
         )

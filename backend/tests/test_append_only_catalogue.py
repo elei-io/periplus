@@ -2,14 +2,14 @@ from pathlib import Path
 import re
 import unittest
 
-from atlas.materialization.registry import PROJECTIONS
+from periplus.materialization.registry import PROJECTIONS
 
 
 class AppendOnlyCatalogueTests(unittest.TestCase):
     def test_source_contains_no_ingest_or_semantic_material_replacement_dml(
         self,
     ) -> None:
-        source_root = Path(__file__).parents[1] / "src" / "atlas"
+        source_root = Path(__file__).parents[1] / "src" / "periplus"
         material_tables = "|".join(
             re.escape(spec.name) for spec in PROJECTIONS
         )
@@ -36,7 +36,7 @@ class AppendOnlyCatalogueTests(unittest.TestCase):
 
     def test_materialization_never_deletes_parquet_files(self) -> None:
         materialization_root = (
-            Path(__file__).parents[1] / "src" / "atlas" / "materialization"
+            Path(__file__).parents[1] / "src" / "periplus" / "materialization"
         )
         violations: list[str] = []
         for path in sorted(materialization_root.rglob("*.py")):

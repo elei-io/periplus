@@ -1,11 +1,13 @@
 SELECT
-    target_hostname,
-    count(*) AS directed_links,
-    sum(occurrence_count) AS retained_occurrences,
-    sum(page_visit_count) AS supporting_page_visits
-FROM web.link
+    trim(
+        regexp_extract(target_url, '^https?://(\[[^]]+\]|[^/:]+)', 1),
+        '[]'
+    ) AS target_hostname,
+    count(*) AS retained_occurrences,
+    count(DISTINCT observation_id) AS supporting_observations
+FROM web.link_occurrence
 WHERE source_url LIKE 'https://docs.python.org/%'
-  AND relationship = 'external'
+  AND relation_scope = 'external'
 GROUP BY target_hostname
 ORDER BY retained_occurrences DESC
 LIMIT 30;

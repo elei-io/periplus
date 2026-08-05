@@ -3,12 +3,12 @@
 This cutoff establishes one immutable lake contract:
 
 ```text
-crawl plan -> immutable bytes -> ingest.* -> append-only material.* -> web.* / dom.*
+crawl plan -> immutable bytes -> ingest.* -> append-only material.* -> web.* / content.*
 ```
 
 ## Required outcome
 
-Atlas must:
+Periplus must:
 
 1. Preserve authoritative crawl, visit, attempt, step, and document evidence in insert-only
    `ingest.*`.
@@ -21,12 +21,11 @@ Atlas must:
 5. Recover from retries, restarts, catch-up ingestion, and unreadable material files without
    changing authoritative evidence.
 6. Expose registry-derived rebuild, queue, worker, health, API, and UI status.
-7. Keep runtime page, latest, link-rollup, URL-component, and DOM-stat semantics in the public
-   query layer.
+7. Install the complete public query contract defined in [`SCHEMA.md`](SCHEMA.md).
 
 ## Direct replacement
 
-Atlas is greenfield. Removed page dimensions, page observations, page heads, content statistics,
+Periplus is greenfield. Removed page dimensions, page observations, page heads, content statistics,
 and link aggregate tables have no aliases, dual reads, migration bridges, or fallback routes.
 Superseded builders, DML, tests, diagnostics, and documentation are deleted with their last caller.
 
@@ -52,7 +51,7 @@ registry owns runtime SQL and declares material dependencies separately.
 
 ## Current-lake transition
 
-Before activation Atlas records the ingestion snapshot/high-water mark, verifies referenced
+Before activation Periplus records the ingestion snapshot/high-water mark, verifies referenced
 objects, stops the old materializer replicas, and uses the registry digest to reject
 incompatible live work. It rebuilds hidden relations solely from ingestion evidence, catches up
 inserted visits, validates counts, identities, joins, and representative public queries, then

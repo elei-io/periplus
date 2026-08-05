@@ -1,14 +1,14 @@
 from unittest import TestCase
 from unittest.mock import MagicMock, call, patch
 
-from atlas.entrypoints import setup
+from periplus.entrypoints import setup
 
 
 class DeploymentTests(TestCase):
-    @patch("atlas.entrypoints.setup.bootstrap_live_cdc")
-    @patch("atlas.entrypoints.setup.bootstrap_catalogue")
-    @patch("atlas.entrypoints.setup.seed_system_control_plane")
-    @patch("atlas.entrypoints.setup.migrate_control_database")
+    @patch("periplus.entrypoints.setup.bootstrap_live_cdc")
+    @patch("periplus.entrypoints.setup.bootstrap_catalogue")
+    @patch("periplus.entrypoints.setup.seed_system_control_plane")
+    @patch("periplus.entrypoints.setup.migrate_control_database")
     def test_setup_order(
         self, migrate, seed_control, bootstrap, bootstrap_cdc
     ) -> None:
@@ -30,7 +30,7 @@ class DeploymentTests(TestCase):
             ],
         )
 
-    @patch("atlas.entrypoints.setup.command.upgrade")
+    @patch("periplus.entrypoints.setup.command.upgrade")
     def test_migrations_use_packaged_configuration(self, upgrade) -> None:
         setup.migrate_control_database()
 

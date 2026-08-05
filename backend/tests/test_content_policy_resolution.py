@@ -2,9 +2,9 @@ from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import MagicMock
 
-from atlas.crawl.api.content_policies import router
-from atlas.crawl.control.content_policies.models import ContentPolicy
-from atlas.crawl.control.content_policies.service import (
+from periplus.crawl.api.content_policies import router
+from periplus.crawl.control.content_policies.models import ContentPolicy
+from periplus.crawl.control.content_policies.service import (
     DEFAULT_POLICY_SLUG,
     _matches,
     default_content_policy,
@@ -13,7 +13,7 @@ from atlas.crawl.control.content_policies.service import (
     find_content_policies_for_urls,
     update_content_policy,
 )
-from atlas.crawl.control.content_policies.schemas import ContentPolicyCreateRequest
+from periplus.crawl.control.content_policies.schemas import ContentPolicyCreateRequest
 
 
 def policy(
@@ -86,14 +86,14 @@ class ContentPolicyResolutionTests(TestCase):
     def test_subdomain_wildcard_matches_subdomains_but_not_root_domain(self) -> None:
         wikipedia = policy(slug="wikipedia", host="*.wikipedia.org")
 
-        self.assertTrue(_matches("https://en.wikipedia.org/wiki/Atlas", wikipedia))
+        self.assertTrue(_matches("https://en.wikipedia.org/wiki/Periplus", wikipedia))
         self.assertTrue(
-            _matches("https://en.m.wikipedia.org/wiki/Atlas", wikipedia)
+            _matches("https://en.m.wikipedia.org/wiki/Periplus", wikipedia)
         )
         self.assertFalse(_matches("https://wikipedia.org/", wikipedia))
         self.assertFalse(_matches("https://notwikipedia.org/", wikipedia))
         self.assertTrue(
-            _matches("https://en.wikipedia.org:8443/wiki/Atlas", wikipedia)
+            _matches("https://en.wikipedia.org:8443/wiki/Periplus", wikipedia)
         )
 
     def test_exact_host_outranks_subdomain_wildcard(self) -> None:
@@ -104,13 +104,13 @@ class ContentPolicyResolutionTests(TestCase):
         resolved = find_content_policies_for_urls(
             session_with(default, wikipedia, english),
             urls=[
-                "https://en.wikipedia.org/wiki/Atlas",
-                "https://de.wikipedia.org/wiki/Atlas",
+                "https://en.wikipedia.org/wiki/Periplus",
+                "https://de.wikipedia.org/wiki/Periplus",
             ],
         )
 
-        self.assertIs(resolved["https://en.wikipedia.org/wiki/Atlas"], english)
-        self.assertIs(resolved["https://de.wikipedia.org/wiki/Atlas"], wikipedia)
+        self.assertIs(resolved["https://en.wikipedia.org/wiki/Periplus"], english)
+        self.assertIs(resolved["https://de.wikipedia.org/wiki/Periplus"], wikipedia)
 
     def test_more_specific_subdomain_wildcard_wins(self) -> None:
         default = policy(slug=DEFAULT_POLICY_SLUG)
@@ -119,10 +119,10 @@ class ContentPolicyResolutionTests(TestCase):
 
         resolved = find_content_policies_for_urls(
             session_with(default, org, wikipedia),
-            urls=["https://en.wikipedia.org/wiki/Atlas"],
+            urls=["https://en.wikipedia.org/wiki/Periplus"],
         )
 
-        self.assertIs(resolved["https://en.wikipedia.org/wiki/Atlas"], wikipedia)
+        self.assertIs(resolved["https://en.wikipedia.org/wiki/Periplus"], wikipedia)
 
     def test_request_accepts_only_supported_host_wildcards(self) -> None:
         request = ContentPolicyCreateRequest(

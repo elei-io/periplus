@@ -1,6 +1,6 @@
 # Query
 
-Atlas delivers its query interface in three layers, in this order.
+Periplus delivers its query interface in three layers, in this order.
 
 ## Performance triage
 
@@ -23,63 +23,48 @@ A compiler response is not automatically a SQL rewrite:
 
 - A warning explains a valid query whose cost is likely surprising or unintentionally unbounded.
 - An error rejects a query that violates an enforced boundedness or safety contract, or for which
-  Atlas cannot provide a safe execution path.
+  Periplus cannot provide a safe execution path.
 - A SQL or plan rewrite changes the physical form only when it preserves the portable public
   semantics and has differential correctness and activation tests.
 
 Compiler behavior must not conceal a poor public schema, and schema changes must not encode around
-one accidental optimizer plan. “Compiler” here means Atlas query analysis and the optional native
+one accidental optimizer plan. “Compiler” here means Periplus query analysis and the optional native
 optimizer boundary; it does not restore the removed schema-dependent Python compiler.
 
 ## 1. Portable DuckLake catalogue
 
-Atlas initialization installs and versions the base `web.*` and `dom.*` interface as persistent
-DuckLake views, scalar macros, and table macros over `ingest.*` and `material.*`. These catalogue
-objects define the portable public semantics and remain correct without an Atlas SDK or native
-extension. `atlas-setup` loads the exact-version Atlas extension and installs the complete
-catalogue, including extension-backed selector macros; setup fails rather than publishing a
-partial Atlas installation. The objects are changed only by Atlas catalogue upgrades.
+Periplus initialization installs and versions the complete public interface defined in
+[`SCHEMA.md`](SCHEMA.md) as persistent DuckLake views over `ingest.*` and `material.*`. These
+catalogue objects define the portable public semantics and remain correct without a Periplus SDK or
+native extension. `periplus-setup` installs the complete catalogue or fails rather than publishing a
+partial installation. The objects are changed only by Periplus catalogue upgrades.
 
 The authoritative one-object SQL definitions live under
-`backend/src/atlas/platform/catalogue/sql/web/` and
-`backend/src/atlas/platform/catalogue/sql/dom/`, split into `macros_scalar`, `views`, and
-`macros_table`. The explicit manifest in `atlas.platform.catalogue.public` installs them in
-dependency order. `atlas-setup` replaces the complete interface transactionally after reconciling
-the typed physical schema, then validates object names, columns, macro kinds, view comments,
-manifest descriptions, and catalogue version. Ordinary processes validate this contract and
-never repair it at startup.
-
-`dom.content_stats` calculates DOM element count and maximum depth explicitly from the structural element
-projection. Those statistics are not attached to every visit. Extension-backed
-`dom.query_selector(content_id, selector)` and `dom.query_selector_all(content_id, selector)` feed
-runtime content identities to a keyed table-in/table-out native operator. For each identity, that
-operator applies an exact equality filter to the bound DuckLake element scan, reconstructs at most
-one immutable document, and returns complete element rows. It runs inside the caller's ordinary
-DuckDB connection and transaction, so the optimization is available to the SDK, direct shell, API,
-and every other client that loads the extension. Fully qualified `atlas.dom.*` selector calls also
-resolve the attached Atlas physical table when another database is current. Page-first plans
-should still reduce and deduplicate content identities before invoking it.
+`backend/src/periplus/platform/catalogue/sql/web/` and
+`backend/src/periplus/platform/catalogue/sql/content/`. The explicit manifest in
+`periplus.platform.catalogue.public` installs them in dependency order. `periplus-setup` replaces the
+complete interface transactionally after reconciling the typed physical schema, then validates
+object names, columns, view comments, and manifest descriptions. Ordinary
+processes validate this contract and never repair it at startup.
 
 Every public view and view column has a concise description derived from the semantic contract in
 `SCHEMA.md`. Setup reapplies supported view comments after replacing each view. DuckLake does not
 currently accept `COMMENT ON COLUMN` for view columns, so the authoritative manifest supplies
 column descriptions to the SQL metadata endpoint and both shells.
 
-Recurring expensive computations belong in Atlas-owned `material.*` relations maintained through
+Recurring expensive computations belong in Periplus-owned `material.*` relations maintained through
 the ordinary materialization lifecycle.
 
-The shared terminal and web shell accepts bounded read-only SQL over qualified `web.*` and
-`dom.*` relations only. It also accepts `DESCRIBE`, `EXPLAIN`, `EXPLAIN ANALYZE`, and `SUMMARIZE`
-when their target passes the same public-namespace validation, plus `SHOW TABLES FROM web` and
-`SHOW TABLES FROM dom`. Its metadata and autocomplete endpoints expose public views plus scalar
-and table macro signatures, including `dom.get_attribute` and `dom.text_content`, and—when
-installed—the DOM selector functions, but no `ingest.*` or `material.*` objects. The shared
-shell uses that metadata for `.tables`, `.macros`,
-`.describe`, and context-aware completion; `.completion reload` refreshes it explicitly.
+The shared terminal and web shell accepts bounded read-only SQL over the qualified relations in
+the public registry only. It also accepts `DESCRIBE`, `EXPLAIN`, `EXPLAIN ANALYZE`, and `SUMMARIZE`
+when their target passes the same public-namespace validation, plus `SHOW TABLES` for each public
+schema. Its metadata and autocomplete endpoints expose the public views but no `ingest.*` or
+`material.*` objects. The shared shell uses that metadata for `.tables`, `.describe`, and
+context-aware completion; `.completion reload` refreshes it explicitly.
 
-The Atlas web home page provides a request-scoped assistant over the same public query boundary.
+The Periplus web home page provides a request-scoped assistant over the same public query boundary.
 The server may inspect public metadata and run row-bounded, read-only queries; it cannot access
-physical or control-plane schemas. SQL drafts are accepted only after Atlas validates the
+physical or control-plane schemas. SQL drafts are accepted only after Periplus validates the
 statement and binds it with `EXPLAIN`. The browser keeps a small recent conversation context
 locally, while the server stores no assistant session state. During a turn, each SQL operation
 exposes its purpose, elapsed time, final status, bounded rows, columns, and types. A completed turn
@@ -91,43 +76,41 @@ command.
 
 ## 2. Python SDK
 
-`packages/atlas-python-sdk/` is the first client package. It wraps DuckDB connection setup and
+`packages/periplus-python-sdk/` is the first client package. It wraps DuckDB connection setup and
 results and control-plane operations such as crawl submission and run
 tracking. It does not define public catalogue semantics or compile and rewrite user SQL.
-`atlas_sdk.conn.duck()` returns an ordinary `duckdb.DuckDBPyConnection` over the versioned public
-catalogue using the same `ATLAS_DUCKLAKE_*` attachment contract as Atlas. Both runtime and SDK
+`periplus_sdk.conn.duck()` returns an ordinary `duckdb.DuckDBPyConnection` over the versioned public
+catalogue using the same `PERIPLUS_DUCKLAKE_*` attachment contract as Periplus. Both runtime and SDK
 connections select one connection protocol at their factory boundary; filesystem, S3, and
 externally configured DuckDB URI storage do not create branches in query or materialization code.
 
 ## 3. Optional native optimization
 
 Only a measured compiler/optimizer gap that remains after performance triage justifies native
-code. Atlas ships one exact-version C++ DuckDB extension containing plan policy and specialist
-functions. Base catalogue queries never require it. Standards-shaped CSS selectors are an
-explicit extension capability and are absent, rather than emulated poorly, when it is unavailable.
+code. Periplus ships one exact-version C++ DuckDB extension containing plan policy and specialist
+internal functions. Base catalogue queries never require it, and extension functions do not
+expand the public SQL contract.
 
-Atlas will not maintain parallel stable-C and C++ production extensions or CI paths. Atlas images
-compile and package the matching extension; the SDK and direct shell load a matching host artifact
-before attaching DuckLake. The DuckLake catalogue remains the authoritative interface. The local
+Periplus will not maintain parallel stable-C and C++ production extensions or CI paths. Periplus images
+compile and package the matching extension for hosted policy. SDK and direct clients may load a
+matching host artifact, but do not require it before attaching DuckLake. The DuckLake catalogue
+remains the authoritative interface. The local
 build, direct DuckLake, and differential testing workflow is documented in
 [`EXTENSION_DEVELOPMENT.md`](EXTENSION_DEVELOPMENT.md).
 
 ### Shared plan analysis and policy
 
-The native extension has one Atlas plan-analysis boundary. It reduces DuckDB's optimized logical
-plan to reusable facts about physical Atlas relations and grain, native capabilities, estimated
+The native extension has one Periplus plan-analysis boundary. It reduces DuckDB's optimized logical
+plan to reusable facts about physical Periplus relations and grain, native capabilities, estimated
 cardinality, expansion boundaries, blocking state, and the operator path connecting a hazard to
 its consumer. An ordered policy registry consumes those facts and produces optimizer actions,
 structured diagnostics, or enforced errors. Feature-specific code may contribute capabilities and
 rules, but it must not install an independent whole-plan visitor.
 
-The initial rules cover both DOM and non-DOM plans: unsafe collection of element-grain rows before
-document evaluation, large Cartesian products between Atlas relations, unexpectedly broad
-document operations, repeated DOM work, and unbounded blocking state over large Atlas relations.
-The first rewrite removes the `ingest.documents` side of `web.page_visit` when no document value is
-used above its complete identity join. It relies only on Atlas's one-document-per-visit invariant;
-selecting or filtering a document value retains the join. Future rewrites must be optimizer actions
-from this shared policy rather than standalone SQL-spelling patches.
+The initial safety rules cover large Cartesian products and unbounded blocking state over Periplus
+relations. The first optimizer rule removes `web.observation`'s visit/document join when no
+document-derived value is used; selecting or filtering `content_id` retains it. Rewrites must be
+optimizer actions from this shared policy rather than standalone SQL-spelling patches.
 
 ### Optimization development and regression loop
 
@@ -152,7 +135,7 @@ local protocol.
 The internal native table function:
 
 ```sql
-atlas_lint_query(sql, profile := 'interactive')
+periplus_lint_query(sql, profile := 'interactive')
 ```
 
 accepts exactly one `SELECT` or `EXPLAIN`, binds and fully optimizes it without executing it, and
@@ -169,85 +152,14 @@ never throws, while `EXPLAIN ANALYZE` executes its child and remains subject to 
 session settings are:
 
 ```sql
-SET atlas_query_safety = 'enforce';      -- enforce, audit, or off
-SET atlas_query_profile = 'interactive'; -- interactive or batch
+SET periplus_query_safety = 'enforce';      -- enforce, audit, or off
+SET periplus_query_profile = 'interactive'; -- interactive or batch
 ```
 
 Profiles are versioned cardinality and state budgets, not wall-clock predictions. Interactive
 budgets protect request/console work; batch budgets permit deliberate larger work. Hard errors
 require a high-confidence unsafe shape and an exceeded budget. `estimated_bytes` is a working-state
 proxy derived from estimated rows and operator shape, not an exact peak-allocation prediction. The
-Atlas shells continue to validate their public namespace boundary independently; exposing lint
-through those shells or the SDK does not make this internal function part of the portable `web.*`
-or `dom.*` contract.
-
-The interactive selector warning boundary is 1,000 content identities, based on the representative
-development lake crossing roughly 30 seconds between 1,000 and 1,500 page-scoped documents. It is
-a lint warning, not an execution ban. One individual document is hard-bounded at 1,000,000
-elements to prevent an adversarial page from defeating document-at-a-time memory bounds.
-
-### Selector query shapes
-
-For one known page, select the current visit first and pass its immutable content identity to the
-DOM operation:
-
-```sql
-SELECT *
-FROM dom.query_selector_all(
-    (
-        SELECT content_id
-        FROM web.page_visit AS visit
-        JOIN web.page AS page
-          ON page.latest_page_visit_id = visit.page_visit_id
-        WHERE page.url = 'https://commoncrawl.org/'
-          AND content_id IS NOT NULL
-    ),
-    'a[href]'
-);
-```
-
-For comparison or discovery across pages, make the page/content scope explicit, deduplicate shared
-content, and invoke the selector laterally:
-
-```sql
-WITH scope AS MATERIALIZED (
-    SELECT DISTINCT visit.content_id
-    FROM web.page_visit AS visit
-    JOIN web.page AS page
-      ON page.latest_page_visit_id = visit.page_visit_id
-    WHERE page.hostname = 'example.com'
-      AND visit.content_id IS NOT NULL
-    LIMIT 100
-)
-SELECT scope.content_id, match.element_index, match.tag_name,
-       dom.get_attribute(match.attributes, 'href') AS href
-FROM scope
-JOIN LATERAL dom.query_selector_all(
-    scope.content_id,
-    'article a[href]'
-) AS match ON true;
-```
-
-Raise the scope limit through `100`, `500`, `1000`, then `1500` when measuring a new environment.
-The limit bounds documents, while the selector operator bounds memory to one document at a time.
-Lint the exact discovery query before executing it:
-
-```sql
-SELECT *
-FROM atlas_lint_query($query$
-    WITH scope AS MATERIALIZED (
-        SELECT DISTINCT visit.content_id
-        FROM web.page_visit AS visit
-        JOIN web.page AS page
-          ON page.latest_page_visit_id = visit.page_visit_id
-        WHERE visit.content_id IS NOT NULL
-        LIMIT 1500
-    )
-    SELECT match.*
-    FROM scope
-    JOIN LATERAL dom.query_selector_all(
-        scope.content_id,
-        'a[href]'
-    ) AS match ON true
-$query$);
-```
+Periplus shells continue to validate their public namespace boundary independently; exposing lint
+through those shells or the SDK does not make this internal function part of the portable public
+contract.

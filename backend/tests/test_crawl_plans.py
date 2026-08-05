@@ -9,18 +9,18 @@ from uuid import uuid4
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from atlas.crawl.control.crawl_graphs.models import (
+from periplus.crawl.control.crawl_graphs.models import (
     CrawlGraph,
     CrawlGraphEdge,
     CrawlGraphNode,
 )
-from atlas.crawl.control.crawl_graphs.schemas import (
+from periplus.crawl.control.crawl_graphs.schemas import (
     CrawlGraphCreate,
     CrawlGraphEdgeCreate,
     CrawlGraphNodeCreate,
     CrawlGraphUpdate,
 )
-from atlas.crawl.control.crawl_graphs.service import (
+from periplus.crawl.control.crawl_graphs.service import (
     CrawlGraphValidationError,
     create_edge,
     create_graph,
@@ -28,18 +28,18 @@ from atlas.crawl.control.crawl_graphs.service import (
     freeze_graph,
     update_graph,
 )
-from atlas.crawl.api.runs import (
+from periplus.crawl.api.runs import (
     CrawlRelationScope,
     _builtin_plan_snapshot,
 )
-from atlas.crawl.runtime.graph_navigation import EdgeUrlExecutor
-from atlas.crawl.runtime.graph_queue import request_identity
-from atlas.crawl.runtime.navigation import (
+from periplus.crawl.runtime.graph_navigation import EdgeUrlExecutor
+from periplus.crawl.runtime.graph_queue import request_identity
+from periplus.crawl.runtime.navigation import (
     build_navigation_package,
     put_navigation_package,
 )
-from atlas.ingestion.objects.store import FileObjectStore
-from atlas.platform.postgres import Base
+from periplus.ingestion.objects.store import FileObjectStore
+from periplus.platform.postgres import Base
 
 
 class CrawlPlanDefinitionTests(unittest.TestCase):

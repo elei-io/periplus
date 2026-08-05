@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from atlas.query.benchmarking import compare_reports, discover_cases, inspect_profile, result_digest
+from periplus.query.benchmarking import compare_reports, discover_cases, inspect_profile, result_digest
 
 
 class QueryBenchmarkingTests(unittest.TestCase):
@@ -28,7 +28,7 @@ max_warm_ms = 60000
                 encoding="utf-8",
             )
             (case / "query.sql").write_text(
-                "SELECT * FROM web.page LIMIT $scope", encoding="utf-8"
+                "SELECT * FROM web.observation LIMIT $scope", encoding="utf-8"
             )
 
             loaded = discover_cases(root)["example"]

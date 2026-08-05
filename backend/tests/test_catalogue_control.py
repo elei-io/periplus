@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from atlas.platform.catalogue.control import CatalogueControl
+from periplus.platform.catalogue.control import CatalogueControl
 
 
 class _FakeCatalogue:
@@ -16,7 +16,7 @@ class _FakeCatalogue:
         self.closed = False
         self.validated = False
         self.validation_error: RuntimeError | None = None
-        self.config = SimpleNamespace(alias="atlas_test")
+        self.config = SimpleNamespace(alias="periplus_test")
 
     def validate_schema(self) -> None:
         self.validated = True
@@ -67,7 +67,7 @@ class CatalogueControlTests(unittest.IsolatedAsyncioTestCase):
             active -= 1
 
         control = CatalogueControl(factory=factory)
-        with patch("atlas.platform.catalogue.control.session_scope", fake_session_scope):
+        with patch("periplus.platform.catalogue.control.session_scope", fake_session_scope):
             await control.start()
             await asyncio.gather(*(control.run(operation) for _ in range(8)))
             snapshot = await control.latest_snapshot()

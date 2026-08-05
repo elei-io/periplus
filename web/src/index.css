@@ -2,7 +2,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
-@import "atlas-web-shell/styles.css";
+@import "periplus-web-shell/styles.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -50,7 +50,7 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-.atlas-console-footer {
+.periplus-console-footer {
   border-color: rgb(255 255 255 / 10%);
   background: #1e1e1e;
   color: #808080;
@@ -171,21 +171,21 @@
   }
 
   .app-surface-grain {
-    --atlas-grain: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23noise)' opacity='0.34'/%3E%3C/svg%3E");
-    background-image: var(--atlas-grain);
+    --periplus-grain: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23noise)' opacity='0.34'/%3E%3C/svg%3E");
+    background-image: var(--periplus-grain);
     background-size: 180px 180px;
     mix-blend-mode: soft-light;
     opacity: 0.12;
   }
 
-  .atlas-home-grain {
+  .periplus-home-grain {
     background-image:
       radial-gradient(
         circle,
         oklch(from var(--foreground) l c h / 0.22) 0.45px,
         transparent 0.7px
       ),
-      var(--atlas-grain);
+      var(--periplus-grain);
     background-size:
       24px 24px,
       180px 180px;
@@ -269,31 +269,31 @@
     @apply border px-2 py-1.5 text-left;
   }
 
-  .atlas-home-intro {
-    view-transition-name: atlas-home-intro;
+  .periplus-home-intro {
+    view-transition-name: periplus-home-intro;
   }
 
-  .atlas-conversation-content {
-    view-transition-name: atlas-conversation-content;
+  .periplus-conversation-content {
+    view-transition-name: periplus-conversation-content;
   }
 
-  .atlas-question-bar {
-    view-transition-name: atlas-question-bar;
+  .periplus-question-bar {
+    view-transition-name: periplus-question-bar;
     transition:
       border-color 180ms ease,
       box-shadow 180ms ease;
   }
 
-  .atlas-question-bar:focus-within {
+  .periplus-question-bar:focus-within {
     border-color: var(--ring);
     box-shadow: 0 0 0 3px oklch(from var(--ring) l c h / 0.14);
   }
 
-  .atlas-tool-call {
-    animation: atlas-tool-call-in 240ms ease-out both;
+  .periplus-tool-call {
+    animation: periplus-tool-call-in 240ms ease-out both;
   }
 
-  .atlas-tool-call[data-state="running"] {
+  .periplus-tool-call[data-state="running"] {
     border-color: oklch(from var(--primary) l c h / 0.24);
   }
 
@@ -348,7 +348,7 @@
   }
 }
 
-@keyframes atlas-tool-call-in {
+@keyframes periplus-tool-call-in {
   from {
     opacity: 0;
     transform: translateY(4px);
@@ -359,7 +359,7 @@
   }
 }
 
-@keyframes atlas-conversation-in {
+@keyframes periplus-conversation-in {
   from {
     opacity: 0;
     transform: translateY(6px);
@@ -370,9 +370,9 @@
   }
 }
 
-@supports not (view-transition-name: atlas-question-bar) {
-  .atlas-conversation {
-    animation: atlas-conversation-in 220ms ease-out both;
+@supports not (view-transition-name: periplus-question-bar) {
+  .periplus-conversation {
+    animation: periplus-conversation-in 220ms ease-out both;
   }
 }
 
@@ -381,27 +381,27 @@
   animation: none;
 }
 
-::view-transition-group(atlas-question-bar) {
+::view-transition-group(periplus-question-bar) {
   z-index: 50;
   animation-duration: 420ms;
   animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-::view-transition-old(atlas-home-intro) {
-  animation: atlas-view-out 140ms ease-out both;
+::view-transition-old(periplus-home-intro) {
+  animation: periplus-view-out 140ms ease-out both;
 }
 
-::view-transition-new(atlas-conversation-content) {
-  animation: atlas-view-in 220ms 120ms ease-out both;
+::view-transition-new(periplus-conversation-content) {
+  animation: periplus-view-in 220ms 120ms ease-out both;
 }
 
-@keyframes atlas-view-out {
+@keyframes periplus-view-out {
   to {
     opacity: 0;
   }
 }
 
-@keyframes atlas-view-in {
+@keyframes periplus-view-in {
   from {
     opacity: 0;
     transform: translateY(6px);
@@ -409,11 +409,11 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .atlas-conversation {
+  .periplus-conversation {
     animation: none;
   }
 
-  .atlas-tool-call {
+  .periplus-tool-call {
     animation: none;
   }
 

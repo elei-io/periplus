@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from atlas.crawl.control.content_policies.schemas import (
+from periplus.crawl.control.content_policies.schemas import (
     ContentCompletion,
     ContentPolicyConfig,
     ContentPolicySnapshot,
@@ -13,9 +13,9 @@ from atlas.crawl.control.content_policies.schemas import (
     WaitDynamicCompletion,
     WaitFixedCompletion,
 )
-from atlas.crawl.control.content_policies.variance import vary_content_policy
-from atlas.crawl.control.domain_policies.schemas import DomainPolicySnapshot
-from atlas.crawl.runtime.graph_runs import resolve_policy_snapshot
+from periplus.crawl.control.content_policies.variance import vary_content_policy
+from periplus.crawl.control.domain_policies.schemas import DomainPolicySnapshot
+from periplus.crawl.runtime.graph_runs import resolve_policy_snapshot
 
 
 class IndexedRandom:
@@ -186,20 +186,20 @@ class ContentPolicyVarianceTests(unittest.TestCase):
 
         with (
             patch(
-                "atlas.crawl.runtime.graph_runs.find_content_policies_for_urls",
+                "periplus.crawl.runtime.graph_runs.find_content_policies_for_urls",
                 return_value={"https://example.com/": object()},
             ),
             patch(
-                "atlas.crawl.runtime.graph_runs.find_domain_policies_for_urls",
+                "periplus.crawl.runtime.graph_runs.find_domain_policies_for_urls",
                 return_value={"https://example.com/": object()},
             ),
             patch(
-                "atlas.crawl.runtime.graph_runs.content_policy_snapshot",
+                "periplus.crawl.runtime.graph_runs.content_policy_snapshot",
                 return_value=content_policy,
             ),
-            patch("atlas.crawl.runtime.graph_runs.domain_policy_snapshot", return_value=domain),
+            patch("periplus.crawl.runtime.graph_runs.domain_policy_snapshot", return_value=domain),
             patch(
-                "atlas.crawl.runtime.graph_runs.vary_content_policy",
+                "periplus.crawl.runtime.graph_runs.vary_content_policy",
                 return_value=(varied_content, assignment),
             ),
         ):

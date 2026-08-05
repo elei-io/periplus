@@ -30,7 +30,7 @@ export async function streamAssistantTurn(
     const event: unknown = JSON.parse(message.data)
 
     if (!isAssistantEvent(event)) {
-      throw new Error("Atlas returned an incompatible assistant event.")
+      throw new Error("Periplus returned an incompatible assistant event.")
     }
     onEvent(event)
   })

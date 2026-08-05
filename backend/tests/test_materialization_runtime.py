@@ -15,16 +15,16 @@ from uuid import uuid4
 import duckdb
 import pyarrow as pa
 
-from atlas.materialization.batch import (
+from periplus.materialization.batch import (
     BatchResult,
     PreparedBatch,
     _applied_result,
     _portable_registration_path,
     _write_partitioned_parquet,
 )
-from atlas.materialization.contracts import LiveBatchWork
-from atlas.materialization.http import CreateMaterializationRun
-from atlas.materialization.live import (
+from periplus.materialization.contracts import LiveBatchWork
+from periplus.materialization.http import CreateMaterializationRun
+from periplus.materialization.live import (
     ActiveGeneration,
     ChangeWindow,
     LiveCdcConnection,
@@ -34,7 +34,7 @@ from atlas.materialization.live import (
     _wait_until_applied,
     _window_batches,
 )
-from atlas.materialization.registry import (
+from periplus.materialization.registry import (
     PROJECTIONS,
     REGISTRY_DIGEST,
     RELATIONS,
@@ -42,7 +42,7 @@ from atlas.materialization.registry import (
     registry_digest,
     validate_registry,
 )
-from atlas.materialization.runtime import (
+from periplus.materialization.runtime import (
     ActivationWork,
     BatchWork,
     _activate_or_catch_up,
@@ -55,14 +55,14 @@ from atlas.materialization.runtime import (
     publish_batch,
     publish_plan,
 )
-from atlas.platform.messaging.catalogue_queue import (
+from periplus.platform.messaging.catalogue_queue import (
     MATERIALIZATION_ACTIVATE_SUBJECT,
     MATERIALIZATION_BATCH_SUBJECT,
     MATERIALIZATION_PLAN_SUBJECT,
     WORK_STREAM,
 )
-from atlas.platform.catalogue.client import Catalogue, _column_type
-from atlas.platform.catalogue.schema import expected_columns
+from periplus.platform.catalogue.client import Catalogue, _column_type
+from periplus.platform.catalogue.schema import expected_columns
 
 
 class MaterializationRegistryTests(unittest.TestCase):
@@ -87,7 +87,7 @@ class MaterializationRegistryTests(unittest.TestCase):
                 for path in (
                     Path(__file__).parents[1]
                     / "src"
-                    / "atlas"
+                    / "periplus"
                     / "materialization"
                     / "projections"
                 ).glob("*.py")
@@ -196,7 +196,7 @@ class MaterializationRegistryTests(unittest.TestCase):
             "\n".join(
                 (
                     "import pyarrow as pa",
-                    "from atlas.materialization.registry import "
+                    "from periplus.materialization.registry import "
                     "ProjectionColumn, ProjectionSpec",
                     f"# implementation: {implementation_marker}",
                     "def project(context):",
@@ -227,7 +227,7 @@ class MaterializationRegistryTests(unittest.TestCase):
         projection_root = (
             Path(__file__).parents[1]
             / "src"
-            / "atlas"
+            / "periplus"
             / "materialization"
             / "projections"
         )
@@ -248,7 +248,7 @@ class MaterializationRegistryTests(unittest.TestCase):
         source = (
             Path(__file__).parents[1]
             / "src"
-            / "atlas"
+            / "periplus"
             / "materialization"
             / "batch.py"
         ).read_text(encoding="utf-8").upper()
@@ -261,14 +261,14 @@ class MaterializationRegistryTests(unittest.TestCase):
         source = (
             Path(__file__).parents[1]
             / "src"
-            / "atlas"
+            / "periplus"
             / "materialization"
             / "runtime.py"
         ).read_text(encoding="utf-8")
         self.assertIn("(generation_id, covered_snapshot, batch_size, ", source)
         self.assertIn('"registry_digest, activated_at) VALUES ("', source)
 
-    @patch("atlas.materialization.runtime.catalogue_from_env")
+    @patch("periplus.materialization.runtime.catalogue_from_env")
     def test_rebuild_catches_up_visits_inserted_after_its_snapshot(
         self,
         catalogue_from_env,
@@ -297,9 +297,9 @@ class MaterializationRegistryTests(unittest.TestCase):
         catalogue.activate_materialization_generations.assert_not_called()
         catalogue.trusted_remote_execute.assert_not_called()
 
-    @patch("atlas.materialization.runtime.install_public_catalogue")
-    @patch("atlas.materialization.runtime._validate_generation")
-    @patch("atlas.materialization.runtime.catalogue_from_env")
+    @patch("periplus.materialization.runtime.install_public_catalogue")
+    @patch("periplus.materialization.runtime._validate_generation")
+    @patch("periplus.materialization.runtime.catalogue_from_env")
     def test_activation_swaps_every_relation_public_api_and_state_atomically(
         self,
         catalogue_from_env,
@@ -354,7 +354,7 @@ class MaterializationRegistryTests(unittest.TestCase):
         self.assertEqual(catalogue.trusted_remote_execute.call_count, 2)
         self.assertFalse(inside_transaction)
 
-    @patch("atlas.materialization.runtime.catalogue_from_env")
+    @patch("periplus.materialization.runtime.catalogue_from_env")
     def test_generation_fence_uses_supported_ducklake_delete(
         self,
         catalogue_from_env,
@@ -368,14 +368,14 @@ class MaterializationRegistryTests(unittest.TestCase):
         self.assertTrue(_invalidate_generation(generation_id))
 
         delete_sql = catalogue.trusted_remote_execute.call_args.args[0]
-        self.assertIn("DELETE FROM material._atlas_materialization_state", delete_sql)
+        self.assertIn("DELETE FROM material._periplus_materialization_state", delete_sql)
         self.assertNotIn("RETURNING", delete_sql.upper())
 
 
 class MaterializationDeliveryTests(unittest.IsolatedAsyncioTestCase):
-    @patch("atlas.materialization.runtime._finalize_activation")
+    @patch("periplus.materialization.runtime._finalize_activation")
     @patch(
-        "atlas.materialization.runtime._activate_or_catch_up",
+        "periplus.materialization.runtime._activate_or_catch_up",
         return_value=42,
     )
     async def test_activation_is_verified_and_finalized_before_ack(
@@ -417,8 +417,8 @@ class MaterializationDeliveryTests(unittest.IsolatedAsyncioTestCase):
         message.ack.assert_awaited_once()
         message.nak.assert_not_awaited()
 
-    @patch("atlas.materialization.runtime._finalize_activation")
-    @patch("atlas.materialization.runtime._activate_or_catch_up")
+    @patch("periplus.materialization.runtime._finalize_activation")
+    @patch("periplus.materialization.runtime._activate_or_catch_up")
     async def test_activation_redelivery_retries_post_swap_verification(
         self,
         activate,
@@ -443,10 +443,10 @@ class MaterializationDeliveryTests(unittest.IsolatedAsyncioTestCase):
         message.ack.assert_awaited_once()
 
     @patch(
-        "atlas.materialization.runtime._finalize_activation",
+        "periplus.materialization.runtime._finalize_activation",
         side_effect=RuntimeError("catalogue unavailable"),
     )
-    @patch("atlas.materialization.runtime._activate_or_catch_up")
+    @patch("periplus.materialization.runtime._activate_or_catch_up")
     async def test_activation_is_not_acked_before_verification_succeeds(
         self,
         activate,
@@ -488,7 +488,7 @@ class MaterializationDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({batch.snapshot for batch in first}, {14})
         self.assertEqual({batch.generation_id for batch in first}, {generation_id})
 
-    @patch("atlas.materialization.runtime._execute_batch")
+    @patch("periplus.materialization.runtime._execute_batch")
     async def test_lost_ack_after_commit_reconciles_as_a_noop(
         self,
         execute,
@@ -562,11 +562,11 @@ class MaterializationDeliveryTests(unittest.IsolatedAsyncioTestCase):
         redelivery.ack.assert_awaited_once()
 
     @patch(
-        "atlas.materialization.runtime._try_cleanup_failed_run",
+        "periplus.materialization.runtime._try_cleanup_failed_run",
         new_callable=AsyncMock,
     )
     @patch(
-        "atlas.materialization.runtime._execute_batch",
+        "periplus.materialization.runtime._execute_batch",
         side_effect=duckdb.InvalidInputException("invalid projection"),
     )
     async def test_failure_before_commit_fails_and_cleans_generation(
@@ -603,7 +603,7 @@ class MaterializationDeliveryTests(unittest.IsolatedAsyncioTestCase):
         message.nak.assert_not_awaited()
 
     @patch(
-        "atlas.materialization.runtime._execute_batch",
+        "periplus.materialization.runtime._execute_batch",
         side_effect=duckdb.TransactionException("transaction conflict"),
     )
     async def test_retryable_commit_conflict_leaves_batch_for_redelivery(
@@ -634,13 +634,13 @@ class MaterializationDeliveryTests(unittest.IsolatedAsyncioTestCase):
         message.ack.assert_not_awaited()
         message.nak.assert_awaited_once_with(delay=1)
 
-    @patch("atlas.materialization.runtime._invalidate_generation")
+    @patch("periplus.materialization.runtime._invalidate_generation")
     @patch(
-        "atlas.materialization.runtime._generation_recovery_context",
+        "periplus.materialization.runtime._generation_recovery_context",
         return_value=(120, 500),
     )
     @patch(
-        "atlas.materialization.runtime._execute_live_batch",
+        "periplus.materialization.runtime._execute_live_batch",
         side_effect=duckdb.IOException(
             'IO Error: Cannot open file "/lake/material/missing.parquet": '
             "No such file or directory"
@@ -678,7 +678,7 @@ class MaterializationDeliveryTests(unittest.IsolatedAsyncioTestCase):
         message.ack.assert_awaited_once()
         message.nak.assert_not_awaited()
 
-    @patch("atlas.materialization.live._wait", new_callable=AsyncMock)
+    @patch("periplus.materialization.live._wait", new_callable=AsyncMock)
     async def test_live_cdc_waits_for_every_applied_marker(
         self,
         wait,
@@ -715,7 +715,7 @@ class MaterializationDeliveryTests(unittest.IsolatedAsyncioTestCase):
         connection.execute.return_value.fetchall.side_effect = [[], []]
         cdc = LiveCdcConnection.__new__(LiveCdcConnection)
         cdc.catalogue = SimpleNamespace(
-            config=SimpleNamespace(alias="atlas"),
+            config=SimpleNamespace(alias="periplus"),
             trusted_connection=connection,
         )
 
@@ -742,7 +742,7 @@ class MaterializationDeliveryTests(unittest.IsolatedAsyncioTestCase):
         ]
         cdc = LiveCdcConnection.__new__(LiveCdcConnection)
         cdc.catalogue = SimpleNamespace(
-            config=SimpleNamespace(alias="atlas"),
+            config=SimpleNamespace(alias="periplus"),
             trusted_connection=connection,
         )
 
@@ -751,7 +751,7 @@ class MaterializationDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(consumer, _consumer_name(generation.id))
         self.assertEqual(connection.execute.call_count, 3)
 
-    @patch("atlas.materialization.live.run_live_materialization")
+    @patch("periplus.materialization.live.run_live_materialization")
     async def test_live_cdc_owner_stops_when_leadership_is_lost(
         self,
         run_live_materialization,
@@ -902,7 +902,7 @@ class MaterializationParquetTests(unittest.TestCase):
             root = Path(directory)
             writer_working_directory = root / "backend"
             host_working_directory = root / "host"
-            data_path = root / ".atlas" / "lake"
+            data_path = root / ".periplus" / "lake"
             writer_working_directory.mkdir()
             host_working_directory.mkdir()
             data_path.mkdir(parents=True)
@@ -919,9 +919,9 @@ class MaterializationParquetTests(unittest.TestCase):
                 self.assertFalse(Path(relative).is_absolute())
                 self.assertEqual(
                     _portable_registration_path(
-                        "s3://atlas/material/data/value.parquet"
+                        "s3://periplus/material/data/value.parquet"
                     ),
-                    "s3://atlas/material/data/value.parquet",
+                    "s3://periplus/material/data/value.parquet",
                 )
                 writer = duckdb.connect()
                 writer.install_extension("ducklake")
@@ -1157,10 +1157,10 @@ class MaterializationParquetTests(unittest.TestCase):
         self.assertTrue(result.already_applied)
         self.assertEqual(result.source_items, 3)
 
-    @patch("atlas.materialization.runtime.run_with_catalogue_retry")
-    @patch("atlas.materialization.runtime.commit_prepared_batch")
-    @patch("atlas.materialization.runtime.prepare_batch")
-    @patch("atlas.materialization.runtime.catalogue_from_env")
+    @patch("periplus.materialization.runtime.run_with_catalogue_retry")
+    @patch("periplus.materialization.runtime.commit_prepared_batch")
+    @patch("periplus.materialization.runtime.prepare_batch")
+    @patch("periplus.materialization.runtime.catalogue_from_env")
     def test_commit_retry_reuses_the_same_immutable_file_set(
         self,
         catalogue_from_env,
@@ -1214,7 +1214,7 @@ class MaterializationParquetTests(unittest.TestCase):
         )
 
     def test_registry_mismatch_fences_live_cdc(self) -> None:
-        from atlas.materialization.live import LiveCdcConnection
+        from periplus.materialization.live import LiveCdcConnection
 
         cdc = LiveCdcConnection.__new__(LiveCdcConnection)
         cdc.catalogue = SimpleNamespace(

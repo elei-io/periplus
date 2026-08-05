@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+from uuid import UUID, uuid4
+
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Index, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from periplus.platform.postgres import Base
+from periplus.platform.postgres.types import utc_now
+
+
+class ContentPolicy(Base):
+    """URL-matched Periplus content-completeness behavior.
+
+    The CDP service owns acquisition transport, provider selection, and capacity.
+    Periplus freezes only the behavior it applies while inspecting rendered HTML.
+    """
+
+    __tablename__ = "content_policies"
+    __table_args__ = (
+        CheckConstraint("scheme IN ('*', 'http', 'https')", name="ck_content_policies_scheme"),
+        CheckConstraint("path_mode IN ('exact', 'prefix')", name="ck_content_policies_path_mode"),
+        UniqueConstraint("scheme", "host", "path_prefix", "path_mode", name="uq_content_policies_match"),
+        Index("ix_content_policies_enabled", "enabled"),
+        Index("ix_content_policies_host", "host"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    slug: Mapped[str] = mapped_column(Text, unique=True, default=lambda: f"policy-{uuid4().hex[:12]}")
+    scheme: Mapped[str] = mapped_column(Text)
+    host: Mapped[str] = mapped_column(Text)
+    path_prefix: Mapped[str] = mapped_column(Text, default="/")
+    path_mode: Mapped[str] = mapped_column(Text, default="prefix")
+    content: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

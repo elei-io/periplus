@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import unittest
 from uuid import uuid4
 
-from atlas.ingestion.queue import IngestionJob
-from atlas.crawl.runtime.graph_store import _enqueue_terminal_crawl
+from periplus.ingestion.queue import IngestionJob
+from periplus.crawl.runtime.graph_store import _enqueue_terminal_crawl
 
 
 class _Session:
@@ -37,7 +37,7 @@ class TerminalCrawlOutboxTests(unittest.TestCase):
 
         self.assertEqual(len(session.added), 1)
         outbox = session.added[0]
-        self.assertEqual(outbox.subject, "atlas.catalogue.ingest")
+        self.assertEqual(outbox.subject, "periplus.catalogue.ingest")
         job = IngestionJob.model_validate(outbox.payload)
         self.assertEqual(job.kind, "crawl")
         self.assertEqual(job.identity, run_id)

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 128">
+  <g fill="none" stroke="#36b7df" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke-width="11" d="M28 112V18h55c28 0 45 14 45 35S111 88 83 88H28" />
+    <path stroke-width="7" d="M13 89c11 20 36 32 67 32 32 0 59-13 71-35" />
+    <path stroke-width="7" d="m140 88 13-6-2 14" />
+  </g>
+  <text
+    x="178"
+    y="91"
+    fill="#36b7df"
+    font-family="Geist, Inter, ui-sans-serif, system-ui, sans-serif"
+    font-size="70"
+    font-weight="700"
+    letter-spacing="5"
+  >PERIPLUS</text>
+</svg>

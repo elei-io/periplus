@@ -193,7 +193,7 @@ function NewPolicyDialog({
         <DialogHeader>
           <DialogTitle>New content policy</DialogTitle>
           <DialogDescription>
-            Patch Atlas’s maximum-correctness defaults for a known set of pages.
+            Patch Periplus’s maximum-correctness defaults for a known set of pages.
           </DialogDescription>
         </DialogHeader>
         {draft ? <PolicyForm draft={draft} onChange={setDraft} /> : null}

@@ -1,11 +1,11 @@
 from uuid import uuid4
 
-from atlas.crawl.control.crawl_graphs.schemas import (
+from periplus.crawl.control.crawl_graphs.schemas import (
     FrozenGraphEdge,
     FrozenGraphNode,
     FrozenGraphSnapshot,
 )
-from atlas.crawl.runtime.navigation_contract import NavigationPackage
+from periplus.crawl.runtime.navigation_contract import NavigationPackage
 
 
 def navigation_package() -> NavigationPackage:

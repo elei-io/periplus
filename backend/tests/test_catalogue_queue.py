@@ -7,7 +7,7 @@ from unittest.mock import patch
 from nats.js.errors import NotFoundError
 from nats.js.api import DiscardPolicy
 
-from atlas.platform.messaging.catalogue_queue import (
+from periplus.platform.messaging.catalogue_queue import (
     DEAD_LETTER_STREAM,
     DEAD_LETTER_SUBJECTS,
     WORK_STREAM,
@@ -35,14 +35,14 @@ class CatalogueQueueTests(unittest.IsolatedAsyncioTestCase):
         jetstream = FakeJetStream()
         with (
             patch(
-                "atlas.platform.messaging.catalogue_queue.get_int",
+                "periplus.platform.messaging.catalogue_queue.get_int",
                 side_effect=lambda name: {
-                    "ATLAS_CATALOGUE_WORK_STREAM_REPLICAS": 1,
-                    "ATLAS_CATALOGUE_WORK_MAX_BYTES": 1024,
-                    "ATLAS_DEAD_LETTER_MAX_BYTES": 2048,
+                    "PERIPLUS_CATALOGUE_WORK_STREAM_REPLICAS": 1,
+                    "PERIPLUS_CATALOGUE_WORK_MAX_BYTES": 1024,
+                    "PERIPLUS_DEAD_LETTER_MAX_BYTES": 2048,
                 }[name],
             ),
-            patch("atlas.platform.messaging.catalogue_queue.get_float", return_value=3600.0),
+            patch("periplus.platform.messaging.catalogue_queue.get_float", return_value=3600.0),
         ):
             await ensure_catalogue_work_stream(jetstream)
             await ensure_catalogue_work_stream(jetstream)

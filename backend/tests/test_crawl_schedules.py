@@ -6,31 +6,31 @@ import unittest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from atlas.crawl.control.crawl_graphs.models import CrawlGraph, CrawlGraphEdge, CrawlGraphNode
-from atlas.crawl.control.crawl_graphs.schemas import (
+from periplus.crawl.control.crawl_graphs.models import CrawlGraph, CrawlGraphEdge, CrawlGraphNode
+from periplus.crawl.control.crawl_graphs.schemas import (
     CrawlGraphCreate,
     CrawlGraphNodeCreate,
     CrawlGraphUpdate,
 )
-from atlas.crawl.control.crawl_graphs.service import (
+from periplus.crawl.control.crawl_graphs.service import (
     create_graph,
     create_node,
     update_graph,
 )
-from atlas.crawl.control.crawl_schedules.models import CrawlSchedule
-from atlas.crawl.control.crawl_schedules.schemas import (
+from periplus.crawl.control.crawl_schedules.models import CrawlSchedule
+from periplus.crawl.control.crawl_schedules.schemas import (
     CronTiming,
     CrawlScheduleCreate,
     IntervalTiming,
     SchedulePreviewRequest,
 )
-from atlas.crawl.control.crawl_schedules.service import (
+from periplus.crawl.control.crawl_schedules.service import (
     CrawlScheduleValidationError,
     create_schedule,
     preview_occurrences,
     set_schedule_enabled,
 )
-from atlas.platform.postgres import Base
+from periplus.platform.postgres import Base
 
 
 class CrawlScheduleTests(unittest.TestCase):

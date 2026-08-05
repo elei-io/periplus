@@ -6,14 +6,14 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import MagicMock, patch
 
-from atlas.platform.catalogue.__main__ import main as catalogue_main
-from atlas.platform.catalogue.config import (
+from periplus.platform.catalogue.__main__ import main as catalogue_main
+from periplus.platform.catalogue.config import (
     CatalogueConfig,
     catalogue_config_from_env,
 )
-from atlas.platform.catalogue.connection import DuckLakeConnectionFactory
-from atlas.platform.catalogue.exceptions import CatalogueConfigError
-from atlas.platform.catalogue.storage import (
+from periplus.platform.catalogue.connection import DuckLakeConnectionFactory
+from periplus.platform.catalogue.exceptions import CatalogueConfigError
+from periplus.platform.catalogue.storage import (
     DuckLakeStorageProtocol,
     storage_protocol,
 )
@@ -23,12 +23,12 @@ class CatalogueConfigTests(unittest.TestCase):
     def test_attachment_paths_are_required(self) -> None:
         for missing, environment in (
             (
-                "ATLAS_DUCKLAKE_METADATA_PATH",
-                {"ATLAS_DUCKLAKE_DATA_PATH": "/srv/lake"},
+                "PERIPLUS_DUCKLAKE_METADATA_PATH",
+                {"PERIPLUS_DUCKLAKE_DATA_PATH": "/srv/lake"},
             ),
             (
-                "ATLAS_DUCKLAKE_DATA_PATH",
-                {"ATLAS_DUCKLAKE_METADATA_PATH": "metadata.sqlite"},
+                "PERIPLUS_DUCKLAKE_DATA_PATH",
+                {"PERIPLUS_DUCKLAKE_METADATA_PATH": "metadata.sqlite"},
             ),
         ):
             with self.subTest(missing=missing):
@@ -40,14 +40,14 @@ class CatalogueConfigTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "ATLAS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
-                "ATLAS_DUCKLAKE_DATA_PATH": "/srv/lake",
+                "PERIPLUS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
+                "PERIPLUS_DUCKLAKE_DATA_PATH": "/srv/lake",
             },
             clear=True,
         ):
             with self.assertRaisesRegex(
                 CatalogueConfigError,
-                "ATLAS_DUCKDB_EXTENSION_PATH",
+                "PERIPLUS_DUCKDB_EXTENSION_PATH",
             ):
                 catalogue_config_from_env()
 
@@ -55,11 +55,11 @@ class CatalogueConfigTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "ATLAS_DUCKLAKE_METADATA_PATH": (
-                    "postgresql://atlas:secret@postgres.example.test/atlas_lake"
+                "PERIPLUS_DUCKLAKE_METADATA_PATH": (
+                    "postgresql://periplus:secret@postgres.example.test/periplus_lake"
                 ),
-                "ATLAS_DUCKLAKE_DATA_PATH": "/srv/lake",
-                "ATLAS_DUCKDB_EXTENSION_PATH": "/opt/atlas/extension",
+                "PERIPLUS_DUCKLAKE_DATA_PATH": "/srv/lake",
+                "PERIPLUS_DUCKDB_EXTENSION_PATH": "/opt/periplus/extension",
             },
             clear=True,
         ):
@@ -67,18 +67,18 @@ class CatalogueConfigTests(unittest.TestCase):
 
         self.assertEqual(
             config.metadata_path,
-            "postgres:postgresql://atlas:secret@postgres.example.test/atlas_lake",
+            "postgres:postgresql://periplus:secret@postgres.example.test/periplus_lake",
         )
 
     def test_ducklake_postgres_metadata_path_is_not_double_prefixed(self) -> None:
         with patch.dict(
             os.environ,
             {
-                "ATLAS_DUCKLAKE_METADATA_PATH": (
-                    "postgres:dbname=atlas_lake host=postgres.example.test"
+                "PERIPLUS_DUCKLAKE_METADATA_PATH": (
+                    "postgres:dbname=periplus_lake host=postgres.example.test"
                 ),
-                "ATLAS_DUCKLAKE_DATA_PATH": "/srv/lake",
-                "ATLAS_DUCKDB_EXTENSION_PATH": "/opt/atlas/extension",
+                "PERIPLUS_DUCKLAKE_DATA_PATH": "/srv/lake",
+                "PERIPLUS_DUCKDB_EXTENSION_PATH": "/opt/periplus/extension",
             },
             clear=True,
         ):
@@ -86,16 +86,16 @@ class CatalogueConfigTests(unittest.TestCase):
 
         self.assertEqual(
             config.metadata_path,
-            "postgres:dbname=atlas_lake host=postgres.example.test",
+            "postgres:dbname=periplus_lake host=postgres.example.test",
         )
 
     def test_extension_path_must_identify_a_file(self) -> None:
         config = CatalogueConfig(
-            alias="atlas",
+            alias="periplus",
             metadata_path="metadata.duckdb",
             data_path="lake/",
             metadata_schema="ducklake",
-            extension_path="/missing/atlas.duckdb_extension",
+            extension_path="/missing/periplus.duckdb_extension",
             cdc_extension_path="/missing/ducklake_cdc.duckdb_extension",
         )
 
@@ -107,10 +107,10 @@ class CatalogueConfigTests(unittest.TestCase):
 
     def test_extension_path_resolves_existing_file(self) -> None:
         with TemporaryDirectory() as directory:
-            extension = Path(directory) / "atlas.duckdb_extension"
+            extension = Path(directory) / "periplus.duckdb_extension"
             extension.touch()
             config = CatalogueConfig(
-                alias="atlas",
+                alias="periplus",
                 metadata_path="metadata.duckdb",
                 data_path="lake/",
                 metadata_schema="ducklake",
@@ -125,17 +125,17 @@ class CatalogueConfigTests(unittest.TestCase):
 
     def test_cdc_extension_path_is_required_when_loaded(self) -> None:
         config = CatalogueConfig(
-            alias="atlas",
+            alias="periplus",
             metadata_path="metadata.duckdb",
             data_path="lake/",
             metadata_schema="ducklake",
-            extension_path="/missing/atlas.duckdb_extension",
+            extension_path="/missing/periplus.duckdb_extension",
             cdc_extension_path="",
         )
 
         with self.assertRaisesRegex(
             CatalogueConfigError,
-            "ATLAS_DUCKLAKE_CDC_EXTENSION_PATH",
+            "PERIPLUS_DUCKLAKE_CDC_EXTENSION_PATH",
         ):
             config.resolved_cdc_extension_path()
 
@@ -143,14 +143,14 @@ class CatalogueConfigTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "ATLAS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
-                "ATLAS_DUCKLAKE_DATA_PATH": "s3://atlas/",
-                "ATLAS_DUCKLAKE_S3_ENDPOINT": "gateway:7070",
-                "ATLAS_DUCKLAKE_S3_KEY_ID": "key",
-                "ATLAS_DUCKLAKE_S3_SECRET_ACCESS_KEY": "secret-value",
-                "ATLAS_DUCKLAKE_S3_URL_STYLE": "path",
-                "ATLAS_DUCKLAKE_S3_USE_SSL": "false",
-                "ATLAS_DUCKDB_EXTENSION_PATH": "/opt/atlas/extension",
+                "PERIPLUS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
+                "PERIPLUS_DUCKLAKE_DATA_PATH": "s3://periplus/",
+                "PERIPLUS_DUCKLAKE_S3_ENDPOINT": "gateway:7070",
+                "PERIPLUS_DUCKLAKE_S3_KEY_ID": "key",
+                "PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY": "secret-value",
+                "PERIPLUS_DUCKLAKE_S3_URL_STYLE": "path",
+                "PERIPLUS_DUCKLAKE_S3_USE_SSL": "false",
+                "PERIPLUS_DUCKDB_EXTENSION_PATH": "/opt/periplus/extension",
             },
             clear=True,
         ):
@@ -163,15 +163,15 @@ class CatalogueConfigTests(unittest.TestCase):
         secret_call = connection.execute.call_args_list[-1]
         self.assertNotIn("secret-value", secret_call.args[0])
         self.assertIn("SCOPE ?", secret_call.args[0])
-        self.assertEqual(secret_call.args[1][-1], "s3://atlas/")
+        self.assertEqual(secret_call.args[1][-1], "s3://periplus/")
 
     def test_filesystem_data_path_needs_no_storage_secret(self) -> None:
         with patch.dict(
             os.environ,
             {
-                "ATLAS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
-                "ATLAS_DUCKLAKE_DATA_PATH": "/srv/atlas/lake/",
-                "ATLAS_DUCKDB_EXTENSION_PATH": "/opt/atlas/extension",
+                "PERIPLUS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
+                "PERIPLUS_DUCKLAKE_DATA_PATH": "/srv/periplus/lake/",
+                "PERIPLUS_DUCKDB_EXTENSION_PATH": "/opt/periplus/extension",
             },
             clear=True,
         ):
@@ -186,10 +186,10 @@ class CatalogueConfigTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "ATLAS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
-                "ATLAS_DUCKLAKE_DATA_PATH": "s3://atlas/",
-                "ATLAS_DUCKLAKE_S3_KEY_ID": "key",
-                "ATLAS_DUCKDB_EXTENSION_PATH": "/opt/atlas/extension",
+                "PERIPLUS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
+                "PERIPLUS_DUCKLAKE_DATA_PATH": "s3://periplus/",
+                "PERIPLUS_DUCKLAKE_S3_KEY_ID": "key",
+                "PERIPLUS_DUCKDB_EXTENSION_PATH": "/opt/periplus/extension",
             },
             clear=True,
         ):
@@ -201,11 +201,11 @@ class CatalogueConfigTests(unittest.TestCase):
 
     def test_connection_factory_accepts_an_injected_protocol(self) -> None:
         config = CatalogueConfig(
-            alias="atlas",
+            alias="periplus",
             metadata_path="metadata.ducklake",
             data_path="/srv/lake",
             metadata_schema="ducklake",
-            extension_path="/opt/atlas/extension",
+            extension_path="/opt/periplus/extension",
             cdc_extension_path="",
         )
         protocol = MagicMock(spec=DuckLakeStorageProtocol)
@@ -214,7 +214,7 @@ class CatalogueConfigTests(unittest.TestCase):
 
         self.assertIs(factory.storage, protocol)
 
-    @patch("atlas.platform.catalogue.__main__.catalogue_from_env")
+    @patch("periplus.platform.catalogue.__main__.catalogue_from_env")
     def test_check_uses_a_read_only_portable_host_attachment(
         self,
         catalogue_from_env,

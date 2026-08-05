@@ -43,7 +43,7 @@ export const navigationGroups: NavigationGroup[] = [
         href: "/materializations",
         icon: DatabaseZapIcon,
         title: "Materializations",
-        description: "Backfill or rebuild fixed Atlas projections.",
+        description: "Backfill or rebuild fixed Periplus projections.",
       },
     ],
   },
@@ -96,7 +96,7 @@ export const homeNavigationItem = {
   name: "Home",
   href: "/",
   icon: DatabaseZapIcon,
-  title: "Atlas",
+  title: "Periplus",
   description: "Turn the web into queryable evidence.",
 }
 

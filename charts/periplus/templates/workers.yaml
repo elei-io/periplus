@@ -1,0 +1,80 @@
+{{- $root := . -}}
+{{- $workers := list
+  (dict "name" "crawler" "replicas" .Values.crawler.replicas "healthPort" 9099 "metricsPort" 9090 "resources" .Values.crawler.resources)
+  (dict "name" "ingestor" "replicas" .Values.ingestor.replicas "healthPort" 9092 "metricsPort" 9091 "resources" .Values.ingestor.resources "concurrencyName" "PERIPLUS_INGESTOR_CONCURRENCY" "concurrency" .Values.ingestor.concurrency)
+  (dict "name" "materializer" "replicas" .Values.materializer.replicas "healthPort" 9096 "metricsPort" 9093 "resources" .Values.materializer.resources "concurrencyName" "PERIPLUS_MATERIALIZER_CONCURRENCY" "concurrency" .Values.materializer.concurrency)
+  (dict "name" "janitor" "replicas" 1 "healthPort" 9095 "metricsPort" 9094 "resources" .Values.janitor.resources)
+-}}
+{{- range $index, $worker := $workers }}
+{{- if $index }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "periplus.fullname" $root }}-{{ $worker.name }}
+  labels:
+    {{- include "periplus.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $worker.name }}
+spec:
+  replicas: {{ $worker.replicas }}
+  {{- if eq $worker.name "janitor" }}
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "periplus.componentSelectorLabels" (dict "root" $root "component" $worker.name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "periplus.componentSelectorLabels" (dict "root" $root "component" $worker.name) | nindent 8 }}
+        {{- with $root.Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with $root.Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "periplus.backendPodSpec" $root | nindent 6 }}
+      containers:
+        - name: {{ $worker.name }}
+          image: {{ include "periplus.backendImage" $root | quote }}
+          imagePullPolicy: {{ $root.Values.images.backend.pullPolicy }}
+          command: [periplus-worker, {{ $worker.name }}]
+          ports:
+            - name: health
+              containerPort: {{ $worker.healthPort }}
+            - name: metrics
+              containerPort: {{ $worker.metricsPort }}
+          {{- include "periplus.envFrom" $root | nindent 10 }}
+          env:
+            {{- include "periplus.backendEnv" $root | nindent 12 }}
+            {{- if eq $worker.name "crawler" }}
+            - name: PERIPLUS_CDP_URL
+              value: {{ $root.Values.config.cdpUrl | quote }}
+            {{- end }}
+            {{- with $worker.concurrencyName }}
+            - name: {{ . }}
+              value: {{ $worker.concurrency | quote }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 10
+          resources:
+            {{- toYaml $worker.resources | nindent 12 }}
+{{- end }}

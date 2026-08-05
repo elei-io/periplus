@@ -8,11 +8,11 @@ from uuid import uuid4
 from nats.js.api import ConsumerConfig, KeyValueConfig, StorageType, StreamConfig
 from nats.js.errors import NotFoundError
 
-from atlas.crawl.control.crawl_graphs.schemas import (
+from periplus.crawl.control.crawl_graphs.schemas import (
     FrozenGraphNode,
     FrozenGraphSnapshot,
 )
-from atlas.crawl.runtime.graph_queue import (
+from periplus.crawl.runtime.graph_queue import (
     _bucket,
     _ensure_consumer,
     new_graph_run,
@@ -54,7 +54,7 @@ class GraphQueueStorageTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(returned, existing)
         jetstream.consumer_info.assert_awaited_once_with(
-            "ATLAS_GRAPH_WORK",
+            "PERIPLUS_GRAPH_WORK",
             "existing",
         )
         jetstream.add_consumer.assert_not_awaited()
@@ -71,13 +71,13 @@ class GraphQueueStorageTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(returned, created)
         jetstream.add_consumer.assert_awaited_once_with(
-            "ATLAS_GRAPH_WORK",
+            "PERIPLUS_GRAPH_WORK",
             config=expected,
         )
 
     async def test_bucket_rejects_an_unbounded_contract(self) -> None:
         actual = StreamConfig(
-            name="KV_atlas_graph_workers",
+            name="KV_periplus_graph_workers",
             max_msgs_per_subject=1,
             storage=StorageType.FILE,
             num_replicas=1,
@@ -88,7 +88,7 @@ class GraphQueueStorageTests(unittest.IsolatedAsyncioTestCase):
             await _bucket(
                 jetstream,
                 KeyValueConfig(
-                    bucket="atlas_graph_workers",
+                    bucket="periplus_graph_workers",
                     history=1,
                     storage=StorageType.FILE,
                     replicas=1,
@@ -97,7 +97,7 @@ class GraphQueueStorageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_existing_bucket_adopts_bounded_retention(self) -> None:
         actual = StreamConfig(
-            name="KV_atlas_graph_workers",
+            name="KV_periplus_graph_workers",
             max_msgs_per_subject=1,
             max_age=0,
             max_bytes=256,
@@ -110,7 +110,7 @@ class GraphQueueStorageTests(unittest.IsolatedAsyncioTestCase):
         returned = await _bucket(
             jetstream,
             KeyValueConfig(
-                bucket="atlas_graph_workers",
+                bucket="periplus_graph_workers",
                 history=1,
                 ttl=60,
                 max_bytes=512,

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, call, patch
 import duckdb
 import psycopg
 
-from atlas.platform.catalogue.operations import (
+from periplus.platform.catalogue.operations import (
     is_catalogue_data_corruption,
     is_retryable_catalogue_unavailability,
     run_with_catalogue_retry,
@@ -45,14 +45,14 @@ class CatalogueOperationRetryTests(unittest.TestCase):
 
         with (
             patch(
-                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
                 0.1,
             ),
             patch(
-                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
                 0.25,
             ),
-            patch("atlas.platform.catalogue.operations.time.sleep") as sleep,
+            patch("periplus.platform.catalogue.operations.time.sleep") as sleep,
         ):
             result = run_with_catalogue_retry(operation, description="test commit")
 
@@ -75,14 +75,14 @@ class CatalogueOperationRetryTests(unittest.TestCase):
         )
         with (
             patch(
-                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
                 0,
             ),
             patch(
-                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
                 0,
             ),
-            patch("atlas.platform.catalogue.operations.time.sleep"),
+            patch("periplus.platform.catalogue.operations.time.sleep"),
         ):
             result = run_with_catalogue_retry(
                 operation, description="materialization partition"
@@ -99,18 +99,18 @@ class CatalogueOperationRetryTests(unittest.TestCase):
         )
         with (
             patch(
-                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_MAX_ATTEMPTS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_MAX_ATTEMPTS",
                 3,
             ),
             patch(
-                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
                 0.1,
             ),
             patch(
-                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
                 0.25,
             ),
-            patch("atlas.platform.catalogue.operations.time.sleep") as sleep,
+            patch("periplus.platform.catalogue.operations.time.sleep") as sleep,
             self.assertRaises(duckdb.IOException),
         ):
             run_with_catalogue_retry(
@@ -126,18 +126,18 @@ class CatalogueOperationRetryTests(unittest.TestCase):
         )
         with (
             patch(
-                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_MAX_ATTEMPTS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_MAX_ATTEMPTS",
                 3,
             ),
             patch(
-                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
                 0,
             ),
             patch(
-                "atlas.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
                 0,
             ),
-            patch("atlas.platform.catalogue.operations.time.sleep"),
+            patch("periplus.platform.catalogue.operations.time.sleep"),
             self.assertRaises(duckdb.TransactionException),
         ):
             run_with_catalogue_retry(operation, description="test commit")

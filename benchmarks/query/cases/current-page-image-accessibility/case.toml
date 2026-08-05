@@ -1,6 +1,6 @@
 id = "current-page-image-accessibility"
-title = "Image accessibility across current documentation"
-use_case = "Audit missing and empty alternative text across a bounded sample of current documentation pages."
+title = "Image accessibility across observed documentation"
+use_case = "Audit missing and empty alternative text across a bounded sample of observed documentation content."
 classification = "optimizer"
 ordered = true
 scales = [50, 100, 250]

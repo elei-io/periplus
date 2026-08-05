@@ -1,6 +1,6 @@
 id = "mdn-main-link-extraction"
-title = "Extract links from current MDN content"
-use_case = "Export the navigable main-content links from a bounded set of current MDN pages."
+title = "Extract anchors from observed MDN content"
+use_case = "Export anchor evidence from a bounded set of observed MDN content objects."
 classification = "optimizer"
 ordered = true
 scales = [100, 500, 1000]

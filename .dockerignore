@@ -1,6 +1,6 @@
 .git
 .env
-.atlas
+.periplus
 .extension-sources
 **/.DS_Store
 **/.venv

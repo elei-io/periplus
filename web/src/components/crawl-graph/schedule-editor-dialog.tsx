@@ -327,7 +327,7 @@ export function ScheduleEditorDialog({
                 </SelectContent>
               </Select>
             </Field>
-            <Field label="If Atlas missed occurrences">
+            <Field label="If Periplus missed occurrences">
               <Select
                 value={misfire}
                 onValueChange={(value) =>

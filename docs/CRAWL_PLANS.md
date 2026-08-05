@@ -1,11 +1,11 @@
 # Crawl plans
 
-Atlas begins every native crawl with one or more URLs. Every start URL enters
+Periplus begins every native crawl with one or more URLs. Every start URL enters
 the frozen plan's root node, and run-wide URL deduplication applies across all
 roots and derived links. The caller chooses one of two traversal strategies:
 
 ```python
-crawl = atlas.crawl(
+crawl = periplus.crawl(
     [
         "https://en.wikipedia.org/wiki/Sauli_Niinist%C3%B6",
         "https://en.wikipedia.org/wiki/Tarja_Halonen",
@@ -18,7 +18,7 @@ crawl = atlas.crawl(
 or:
 
 ```python
-crawl = atlas.crawl(
+crawl = periplus.crawl(
     [
         "https://en.wikipedia.org/wiki/Sauli_Niinist%C3%B6",
         "https://en.wikipedia.org/wiki/Tarja_Halonen",
@@ -31,7 +31,7 @@ crawl = atlas.crawl(
 
 ## Built-in finite-depth plan
 
-Atlas represents `depth=N` as a frozen linear plan with `N + 1` acquisition
+Periplus represents `depth=N` as a frozen linear plan with `N + 1` acquisition
 nodes and `N` edges. Every start URL enters depth zero. An edge from depth `i`
 to depth `i + 1` selects links from the page acquired at depth `i`. This makes
 the depth limit durable and exact even across retries and worker restarts.
@@ -43,7 +43,7 @@ the depth limit durable and exact even across retries and worker restarts.
 - `same_site` additionally includes `same_site`.
 - `external` permits every scope, including `external`.
 
-If neither a stored plan nor a depth is supplied, Atlas acquires only the
+If neither a stored plan nor a depth is supplied, Periplus acquires only the
 submitted start URLs.
 
 ## Stored plans
@@ -78,7 +78,7 @@ crawl_id
 ```
 
 Plan SQL cannot read files, call table functions, attach databases, or access
-`ingest.*`, `material.*`, `web.*`, `dom.*`, or user data. It runs in a bounded
+`ingest.*`, `material.*`, `web.*`, `content.*`, or user data. It runs in a bounded
 in-memory DuckDB connection with external access and extension loading
 disabled.
 
@@ -91,7 +91,7 @@ later, explicit crawl submission if a real workflow requires it.
 ## Admission and completion
 
 The normalized URL is the only admission identity within a crawl run. If
-several edges select the same URL, Atlas acquires it once. This rule has no
+several edges select the same URL, Periplus acquires it once. This rule has no
 user-facing mode.
 
 The SDK lifecycle is:

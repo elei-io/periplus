@@ -5,18 +5,18 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from atlas.ingestion.external import (
+from periplus.ingestion.external import (
     EvidenceImportService,
     ExternalHtmlMetadata,
 )
-from atlas.platform.catalogue.schema import (
+from periplus.platform.catalogue.schema import (
     ATTEMPTS,
     DOCUMENTS,
     TABLE_COLUMNS,
     VISITS,
 )
-from atlas.platform.catalogue.service import _visit_values
-from atlas.ingestion.objects.store import FileObjectStore
+from periplus.platform.catalogue.service import _visit_values
+from periplus.ingestion.objects.store import FileObjectStore
 
 
 class _Queue:

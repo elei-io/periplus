@@ -1,8 +1,8 @@
 [project]
-name = "atlas"
+name = "periplus"
 version = "0.1.0"
 description = "Web acquisition and normalization for SQL-centric data pipelines"
-readme = { text = "Atlas backend services.", content-type = "text/markdown" }
+readme = { text = "Periplus backend services.", content-type = "text/markdown" }
 requires-python = ">=3.14"
 dependencies = [
     "alembic>=1.18",
@@ -34,8 +34,8 @@ dev = [
 ]
 
 [project.scripts]
-atlas-setup = "atlas.entrypoints.setup:main"
-atlas-worker = "atlas.entrypoints.worker:main"
+periplus-setup = "periplus.entrypoints.setup:main"
+periplus-worker = "periplus.entrypoints.worker:main"
 
 [build-system]
 requires = ["setuptools"]
@@ -46,15 +46,11 @@ where = ["src"]
 exclude = ["tests*", "build*"]
 
 [tool.setuptools.package-data]
-"atlas.platform.postgres" = [
+"periplus.platform.postgres" = [
     "alembic.ini",
     "alembic/script.py.mako",
 ]
-"atlas.platform.catalogue" = [
-    "sql/dom/macros_scalar/*.sql",
-    "sql/dom/views/*.sql",
-    "sql/dom/macros_table/*.sql",
-    "sql/web/macros_scalar/*.sql",
+"periplus.platform.catalogue" = [
+    "sql/content/views/*.sql",
     "sql/web/views/*.sql",
-    "sql/web/macros_table/*.sql",
 ]

@@ -1,4 +1,4 @@
-"""Open Atlas's configured DuckLake with the native extension-enabled CLI."""
+"""Open Periplus's configured DuckLake with the native extension-enabled CLI."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from atlas.platform.catalogue.config import catalogue_config_from_env
-from atlas.platform.catalogue.connection import DuckLakeConnectionFactory
+from periplus.platform.catalogue.config import catalogue_config_from_env
+from periplus.platform.catalogue.connection import DuckLakeConnectionFactory
 
 
 def main() -> None:
@@ -23,7 +23,7 @@ def main() -> None:
         read_only=True,
         override_data_path=True,
     )
-    with tempfile.TemporaryDirectory(prefix="atlas-duckdb-") as directory:
+    with tempfile.TemporaryDirectory(prefix="periplus-duckdb-") as directory:
         init_path = Path(directory) / "init.sql"
         init_path.write_text(init)
         os.chmod(init_path, 0o600)

@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from atlas.platform.messaging.client import connect_nats
+from periplus.platform.messaging.client import connect_nats
 
 
 class NatsClientTests(unittest.IsolatedAsyncioTestCase):
@@ -14,10 +14,10 @@ class NatsClientTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.dict(
                 os.environ,
-                {"ATLAS_NATS_URL": "nats://localhost:4222"},
+                {"PERIPLUS_NATS_URL": "nats://localhost:4222"},
                 clear=True,
             ),
-            patch("atlas.platform.messaging.client.nats.connect", connect),
+            patch("periplus.platform.messaging.client.nats.connect", connect),
         ):
             returned = await connect_nats()
 
@@ -35,12 +35,12 @@ class NatsClientTests(unittest.IsolatedAsyncioTestCase):
             patch.dict(
                 os.environ,
                 {
-                    "ATLAS_NATS_URL": "tls://nats.example.test:4222",
-                    "ATLAS_NATS_SEED": "SUATESTSEED",
+                    "PERIPLUS_NATS_URL": "tls://nats.example.test:4222",
+                    "PERIPLUS_NATS_SEED": "SUATESTSEED",
                 },
                 clear=True,
             ),
-            patch("atlas.platform.messaging.client.nats.connect", connect),
+            patch("periplus.platform.messaging.client.nats.connect", connect),
         ):
             returned = await connect_nats(connect_timeout=4)
 

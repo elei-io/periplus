@@ -1,6 +1,6 @@
 # Lifecycle
 
-Atlas keeps acquisition small and every derived lake write append-only.
+Periplus keeps acquisition small and every derived lake write append-only.
 
 ## Ingestion
 
@@ -15,7 +15,7 @@ evidence is a no-op; conflicting evidence fails. Materialization consumes insert
 Every ingestor replica is symmetric; there is no ingestion coordinator or elected owner. At
 process startup a replica opens one NATS session, validates the shared stream, durable consumer,
 result store, and operation-lease contracts once, then creates one pull handle per local lane.
-`ATLAS_INGESTOR_CONCURRENCY` selects one to four lanes per replica. Each lane owns one independent
+`PERIPLUS_INGESTOR_CONCURRENCY` selects one to four lanes per replica. Each lane owns one independent
 DuckLake connection, while all lanes reuse the process-owned queue session and handles.
 
 Replicas compete on the same durable consumer. Its fixed global unacknowledged-delivery ceiling is
@@ -62,7 +62,7 @@ content lookup is their dominant access path. Visit-owned link occurrences use
 many small URL-bucket files; they are sorted by source URL, target URL, time, and occurrence
 identity. A projection may instead declare day, year, bucket, multiple transforms, or no
 partitioning. Rebuild visits are ordered chronologically so monthly files remain coherent. Rebuilds
-default to 500 visits per batch. LakeDucktor alone compacts and reclaims unreferenced files; Atlas
+default to 500 visits per batch. LakeDucktor alone compacts and reclaims unreferenced files; Periplus
 never deletes registered material data.
 
 The process-owned DuckLake connection factory selects one storage protocol for attachment,
@@ -72,7 +72,7 @@ URI. Materialization code does not branch by storage backend.
 
 ## Complete rebuild
 
-1. Atlas Postgres records the source snapshot, registry digest, and visit batch identities.
+1. Periplus Postgres records the source snapshot, registry digest, and visit batch identities.
 2. The planner creates every discovered hidden relation from the registry.
 3. Horizontally scalable workers append final files and applied markers.
 4. Activation checks the exact registry, validates every hidden relation, and catches up visits
@@ -97,18 +97,17 @@ The elected connection turns each snapshot window into deterministic visit batch
 JetStream lane as rebuild work. The CDC cursor advances only after every applied marker is durable.
 Restarting or failing over before cursor commit replays the same batch identities.
 
-An unreadable registered file invalidates the complete generation. Atlas ensures a replacement
+An unreadable registered file invalidates the complete generation. Periplus ensures a replacement
 rebuild exists, fences the active generation, and rebuilds every discovered relation from unchanged
 ingestion evidence and immutable objects. It never repairs one table or one file in place.
 
 ## Query
 
-`web.page_visit` stays narrow. `web.page` performs runtime URL distinct/latest work.
-`web.link` aggregates immutable link occurrences. URL decomposition and DOM statistics are lazy
-public computations. A measured recurring query may justify a new fixed expensive projection,
-but it must enter as one projection file and use the same append-only lifecycle.
+The complete public query contract and its grains are defined in [`SCHEMA.md`](SCHEMA.md). A
+measured recurring query may justify a new fixed expensive projection, but it must enter as one
+projection file and use the same append-only lifecycle.
 
 Views and macros do not belong to projection files. A separate lightweight public registry owns
-the `web.*` and `dom.*` SQL resources and declares any required material relations. This keeps the
-runtime API independently evolvable while automatically removing objects whose projection
-dependency is no longer discovered.
+the `web.*` and `content.*` SQL resources and declares their required material relations. This
+keeps the runtime API independently evolvable while making installation fail if any dependency of
+the four-relation public contract is missing.

@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "periplus.fullname" . }}-api
+  labels:
+    {{- include "periplus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "api") | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "periplus.backendPodSpec" . | nindent 6 }}
+      containers:
+        - name: api
+          image: {{ include "periplus.backendImage" . | quote }}
+          imagePullPolicy: {{ .Values.images.backend.pullPolicy }}
+          command: [fastapi, run, src/periplus/entrypoints/api.py, --host, 0.0.0.0, --port, "8000"]
+          workingDir: /app/backend
+          ports:
+            - name: http
+              containerPort: 8000
+          {{- include "periplus.envFrom" . | nindent 10 }}
+          env:
+            {{- include "periplus.backendEnv" . | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: /openapi.json
+              port: http
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /openapi.json
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /openapi.json
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}

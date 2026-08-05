@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from atlas.platform.catalogue import (
+from periplus.platform.catalogue import (
     AttemptRecord,
     CatalogueConflictError,
     CrawlRecord,
@@ -16,14 +16,14 @@ from atlas.platform.catalogue import (
     attempt_id_for,
     document_id_for,
 )
-from atlas.platform.catalogue.schema import CRAWLS, STEPS
-from atlas.platform.catalogue.records import canonical_json
-from atlas.platform.catalogue.service import (
+from periplus.platform.catalogue.schema import CRAWLS, STEPS
+from periplus.platform.catalogue.records import canonical_json
+from periplus.platform.catalogue.service import (
     CatalogueService,
     _decode_json_columns,
     _visit_values,
 )
-from atlas.ingestion.queue import (
+from periplus.ingestion.queue import (
     crawl_ingestion_job,
     visit_ingestion_job,
 )
@@ -123,7 +123,7 @@ class IngestionEvidenceTests(unittest.TestCase):
         self.assertEqual(
             _visit_values(evidence.visit)["provenance"],
             {
-                "kind": "atlas",
+                "kind": "periplus",
                 "system": None,
                 "dataset": None,
                 "source_record_id": None,

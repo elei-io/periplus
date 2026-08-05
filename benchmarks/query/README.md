@@ -1,6 +1,6 @@
-# Atlas query benchmarks
+# Periplus query benchmarks
 
-These cases measure the SQL a user actually writes against the public `web.*` and `dom.*`
+These cases measure the SQL a user actually writes against the public `web.*` and `content.*`
 catalogue. Production optimizations remain in the native extension; the Python runner only invokes
 DuckDB, captures profiles, and compares results.
 
@@ -39,4 +39,4 @@ The fixed protocol is:
 
 The `current-page-image-accessibility` case is the next optimization candidate. It asks a normal
 content-audit question while testing whether a bounded runtime `content_id` scope can constrain a
-direct `dom.element` join, rather than only the CSS-selector API.
+direct `content.html_element` join.

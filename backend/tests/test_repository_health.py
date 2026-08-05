@@ -5,7 +5,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
-from atlas.platform.health import HealthMonitor, start_health_server
+from periplus.platform.health import HealthMonitor, start_health_server
 
 
 class RepositoryHealthTests(unittest.TestCase):
@@ -49,7 +49,7 @@ class RepositoryHealthTests(unittest.TestCase):
     def test_health_fails_when_event_loop_heartbeat_is_stale(self) -> None:
         monitor = HealthMonitor(heartbeat_timeout_seconds=1)
         monitor.dependencies_ready()
-        with patch("atlas.platform.health.time.monotonic", side_effect=[10.0, 12.0]):
+        with patch("periplus.platform.health.time.monotonic", side_effect=[10.0, 12.0]):
             monitor.heartbeat()
             self.assertEqual(monitor.status(), (False, "event loop heartbeat is stale"))
 
@@ -69,7 +69,7 @@ class RepositoryHealthTests(unittest.TestCase):
         monitor.dependencies_ready()
         clock = [10.0]
         with patch(
-            "atlas.platform.health.time.monotonic",
+            "periplus.platform.health.time.monotonic",
             side_effect=lambda: clock[0],
         ):
             monitor.heartbeat()

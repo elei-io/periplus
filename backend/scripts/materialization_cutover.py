@@ -8,16 +8,16 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 
-from atlas.ingestion.objects.config import object_store_from_env
-from atlas.ingestion.objects.document import ExactDocumentRepository
-from atlas.ingestion.objects.html import RawHtmlRepository
-from atlas.materialization.cutover import (
+from periplus.ingestion.objects.config import object_store_from_env
+from periplus.ingestion.objects.document import ExactDocumentRepository
+from periplus.ingestion.objects.html import RawHtmlRepository
+from periplus.materialization.cutover import (
     finalize_cutover,
     preflight,
     verify_cutover,
     write_report,
 )
-from atlas.platform.catalogue import catalogue_from_env
+from periplus.platform.catalogue import catalogue_from_env
 
 
 def main() -> None:

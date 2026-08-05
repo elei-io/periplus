@@ -1,34 +1,30 @@
 import unittest
 
-from atlas.query.http import _bounded_query
+from periplus.query.http import _bounded_query
 
 
 class SqlConsoleValidationTests(unittest.TestCase):
     def test_accepts_read_only_public_catalogue_query(self):
         bounded = _bounded_query(
             """
-            WITH recent AS (
-                SELECT page_visit_id, requested_url
-                FROM web.page_visit
-            )
-            SELECT recent.requested_url, pages.hostname
-            FROM recent
-            JOIN web.page AS pages
-              ON pages.url = recent.requested_url
+            SELECT observation.requested_url, element.tag
+            FROM web.observation AS observation
+            JOIN content.html_element AS element
+              ON element.content_id = observation.content_id
             """
         )
 
         self.assertIn("LIMIT 10001", bounded)
-        self.assertIn("FROM web.page_visit", bounded)
+        self.assertIn("FROM web.observation", bounded)
 
     def test_rejects_mutation(self):
         with self.assertRaisesRegex(ValueError, "read-only query"):
-            _bounded_query("DELETE FROM web.page_visit")
+            _bounded_query("DELETE FROM web.observation")
 
     def test_rejects_multiple_statements(self):
         with self.assertRaisesRegex(ValueError, "exactly one"):
             _bounded_query(
-                "SELECT * FROM web.page_visit; SELECT * FROM web.page"
+                "SELECT * FROM web.observation; SELECT * FROM content.object"
             )
 
     def test_requires_public_schema_qualification(self):
@@ -43,37 +39,22 @@ class SqlConsoleValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "web"):
             _bounded_query("SELECT * FROM material.html_elements")
 
-    def test_accepts_public_table_macro(self):
+    def test_accepts_content_relation(self):
         bounded = _bounded_query(
-            "SELECT * FROM dom.text_content(NULL::VARCHAR, NULL::INTEGER)"
+            "SELECT content_id, tag FROM content.html_element"
         )
 
-        self.assertIn("dom.text_content", bounded)
-
-    def test_accepts_dom_relation_and_table_macro(self):
-        bounded = _bounded_query(
-            """
-            SELECT element.tag_name, text.text_content
-            FROM dom.element AS element
-            JOIN LATERAL dom.text_content(
-                element.content_id,
-                element.element_index
-            ) AS text USING (content_id, element_index)
-            """
-        )
-
-        self.assertIn("FROM dom.element", bounded)
-        self.assertIn("dom.text_content", bounded)
+        self.assertIn("FROM content.html_element", bounded)
 
     def test_accepts_describe_for_public_relation(self):
         self.assertEqual(
-            _bounded_query("DESCRIBE web.page;"),
-            "DESCRIBE web.page",
+            _bounded_query("DESCRIBE web.observation;"),
+            "DESCRIBE web.observation",
         )
 
         self.assertEqual(
-            _bounded_query("DESCRIBE dom.element;"),
-            "DESCRIBE dom.element",
+            _bounded_query("DESCRIBE content.object;"),
+            "DESCRIBE content.object",
         )
 
     def test_rejects_describe_for_physical_relation(self):
@@ -82,19 +63,19 @@ class SqlConsoleValidationTests(unittest.TestCase):
 
     def test_accepts_explain_for_public_query(self):
         self.assertEqual(
-            _bounded_query("EXPLAIN SELECT * FROM web.page"),
-            "EXPLAIN SELECT * FROM web.page",
+            _bounded_query("EXPLAIN SELECT * FROM web.observation"),
+            "EXPLAIN SELECT * FROM web.observation",
         )
 
     def test_accepts_explain_analyze_for_public_query(self):
         self.assertEqual(
-            _bounded_query("EXPLAIN ANALYZE SELECT * FROM web.page"),
-            "EXPLAIN ANALYZE SELECT * FROM web.page",
+            _bounded_query("EXPLAIN ANALYZE SELECT * FROM web.observation"),
+            "EXPLAIN ANALYZE SELECT * FROM web.observation",
         )
 
     def test_rejects_explain_for_mutation(self):
         with self.assertRaisesRegex(ValueError, "read-only query"):
-            _bounded_query("EXPLAIN DELETE FROM web.page")
+            _bounded_query("EXPLAIN DELETE FROM web.observation")
 
     def test_rejects_explain_for_physical_relation(self):
         with self.assertRaisesRegex(ValueError, "web"):
@@ -102,13 +83,13 @@ class SqlConsoleValidationTests(unittest.TestCase):
 
     def test_accepts_summarize_for_public_relation(self):
         self.assertEqual(
-            _bounded_query("SUMMARIZE web.page"),
-            "SUMMARIZE web.page",
+            _bounded_query("SUMMARIZE web.observation"),
+            "SUMMARIZE web.observation",
         )
 
         self.assertEqual(
-            _bounded_query("SUMMARIZE dom.element"),
-            "SUMMARIZE dom.element",
+            _bounded_query("SUMMARIZE content.html_element"),
+            "SUMMARIZE content.html_element",
         )
 
     def test_accepts_show_tables_for_public_schema(self):
@@ -117,8 +98,8 @@ class SqlConsoleValidationTests(unittest.TestCase):
             "SHOW TABLES FROM web",
         )
         self.assertEqual(
-            _bounded_query("SHOW TABLES FROM dom"),
-            "SHOW TABLES FROM dom",
+            _bounded_query("SHOW TABLES FROM content"),
+            "SHOW TABLES FROM content",
         )
 
     def test_rejects_show_all_tables(self):
@@ -128,6 +109,10 @@ class SqlConsoleValidationTests(unittest.TestCase):
     def test_rejects_external_table_function(self):
         with self.assertRaisesRegex(ValueError, "qualified"):
             _bounded_query("SELECT * FROM read_parquet('private.parquet')")
+
+    def test_rejects_internal_extension_function(self):
+        with self.assertRaisesRegex(ValueError, "periplus_lint_query"):
+            _bounded_query("SELECT periplus_lint_query('SELECT 42')")
 
 
 if __name__ == "__main__":

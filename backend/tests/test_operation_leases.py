@@ -12,7 +12,7 @@ from nats.js.errors import (
     KeyWrongLastSequenceError,
 )
 
-from atlas.platform.messaging.leases import (
+from periplus.platform.messaging.leases import (
     OperationLease,
     OperationLeaseUnavailable,
     _try_acquire,
@@ -163,7 +163,7 @@ class OperationLeaseTests(unittest.IsolatedAsyncioTestCase):
         bucket = SlowLeaseSetBucket()
 
         with patch(
-            "atlas.platform.messaging.leases.CATALOGUE_OPERATION_HEARTBEAT_SECONDS",
+            "periplus.platform.messaging.leases.CATALOGUE_OPERATION_HEARTBEAT_SECONDS",
             0.001,
         ):
             async with operation_leases(

@@ -3,7 +3,7 @@ name: Release Python SDK
 on:
   push:
     tags:
-      - "atlas-python-sdk-v*"
+      - "periplus-python-sdk-v*"
 
 concurrency:
   group: python-sdk-release-${{ github.ref }}
@@ -30,15 +30,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: packages/atlas-python-sdk/pyproject.toml
+          cache-dependency-path: packages/periplus-python-sdk/pyproject.toml
 
       - name: Install SDK
-        run: python -m pip install ./packages/atlas-python-sdk
+        run: python -m pip install ./packages/periplus-python-sdk
 
       - name: Run unit tests against installed SDK
         run: >-
           python -m unittest discover
-          -s packages/atlas-python-sdk/tests
+          -s packages/periplus-python-sdk/tests
 
   build:
     name: Build and verify release
@@ -52,7 +52,7 @@ jobs:
         with:
           python-version: "3.14"
           cache: pip
-          cache-dependency-path: packages/atlas-python-sdk/pyproject.toml
+          cache-dependency-path: packages/periplus-python-sdk/pyproject.toml
 
       - name: Match tag to package version
         shell: python
@@ -62,10 +62,10 @@ jobs:
           import tomllib
 
           metadata = tomllib.loads(
-              Path("packages/atlas-python-sdk/pyproject.toml").read_text()
+              Path("packages/periplus-python-sdk/pyproject.toml").read_text()
           )
           version = metadata["project"]["version"]
-          expected_tag = f"atlas-python-sdk-v{version}"
+          expected_tag = f"periplus-python-sdk-v{version}"
           actual_tag = os.environ["GITHUB_REF_NAME"]
           if actual_tag != expected_tag:
               raise SystemExit(
@@ -79,7 +79,7 @@ jobs:
         run: >-
           python -m build
           --outdir dist
-          packages/atlas-python-sdk
+          packages/periplus-python-sdk
 
       - name: Check distribution metadata
         run: python -m twine check dist/*
@@ -98,22 +98,22 @@ jobs:
               )
           with ZipFile(wheels[0]) as archive:
               roots = {name.partition("/")[0] for name in archive.namelist()}
-          if "atlas_sdk" not in roots:
-              raise SystemExit("wheel does not contain atlas_sdk")
-          if "atlas" in roots:
-              raise SystemExit("wheel unexpectedly contains the backend atlas package")
+          if "periplus_sdk" not in roots:
+              raise SystemExit("wheel does not contain periplus_sdk")
+          if "periplus" in roots:
+              raise SystemExit("wheel unexpectedly contains the backend periplus package")
 
       - name: Verify clean wheel installation
         run: |
-          python -m venv "${RUNNER_TEMP}/atlas-sdk-verify"
-          "${RUNNER_TEMP}/atlas-sdk-verify/bin/python" -m pip install dist/*.whl
+          python -m venv "${RUNNER_TEMP}/periplus-sdk-verify"
+          "${RUNNER_TEMP}/periplus-sdk-verify/bin/python" -m pip install dist/*.whl
           cd "${RUNNER_TEMP}"
-          "${RUNNER_TEMP}/atlas-sdk-verify/bin/python" -c \
-            "import atlas_sdk; assert atlas_sdk.__file__ is not None"
+          "${RUNNER_TEMP}/periplus-sdk-verify/bin/python" -c \
+            "import periplus_sdk; assert periplus_sdk.__file__ is not None"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: atlas-python-sdk-${{ github.ref_name }}
+          name: periplus-python-sdk-${{ github.ref_name }}
           path: dist/
           if-no-files-found: error
           retention-days: 7
@@ -124,14 +124,14 @@ jobs:
     runs-on: ubuntu-24.04
     environment:
       name: pypi
-      url: https://pypi.org/p/atlas-python-sdk
+      url: https://pypi.org/p/periplus-python-sdk
     permissions:
       id-token: write
 
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: atlas-python-sdk-${{ github.ref_name }}
+          name: periplus-python-sdk-${{ github.ref_name }}
           path: dist/
 
       - uses: pypa/gh-action-pypi-publish@release/v1

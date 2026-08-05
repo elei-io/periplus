@@ -1,190 +1,107 @@
 # DuckDB extension development
 
-Atlas keeps portable query semantics in the persistent `web.*` and `dom.*` DuckLake catalogue.
-The C++ extension supplies bounded selector operations and recognizes and accelerates eligible
-plans; portable base catalogue semantics do not require it.
-See [`QUERY.md`](QUERY.md) for the query boundary.
+Periplus keeps all public query semantics in the four persistent DuckLake views
+defined by [`SCHEMA.md`](SCHEMA.md). The C++ extension contributes only query
+safety and measured, semantics-preserving optimizer rules. Public catalogue
+queries must remain correct when the extension is absent.
 
-This guide describes the local development loop against Atlas's own DuckLake attachment.
+## Repositories and versioning
 
-## Layout and prerequisites
-
-The repositories are siblings:
+The Periplus and extension repositories are siblings:
 
 ```text
 Code/
-├── atlas/
-│   ├── .env
-│   ├── ducklake.sh
-│   └── backend/scripts/direct_ducklake.py
-├── atlas-duckdb-extension/
+├── periplus/
+└── periplus-duckdb-extension/
     ├── duckdb/
-    ├── src/atlas_extension.cpp
+    ├── src/
     └── test/sql/
-└── quack/
-    └── ducklake-cdc-extension-1.5.5/
 ```
 
-The extension repository comes from DuckDB's official C++ extension template. Its DuckDB
-submodule and Atlas's Python `duckdb` dependency must remain on the exact same version because
-loadable C++ extensions are version- and platform-specific.
+The extension uses DuckDB's official C++ extension template. Its DuckDB
+submodule must stay pinned to the exact DuckDB version used by Periplus because
+loadable extensions are version- and platform-specific.
 
-Compose passes both extension sources as additional build contexts. Cached Linux builder stages
-compile both against DuckDB 1.5.5, and the final Atlas image contains only
-`/opt/atlas/atlas.duckdb_extension` and
-`/opt/atlas/ducklake_cdc.duckdb_extension`. `atlas-setup` installs the persistent catalogue and
-bootstraps CDC state. Ordinary catalogue connections load only the Atlas extension; the dedicated
-live-materialization connection loads and prewarms the CDC extension before attaching DuckLake.
+Periplus images compile the matching extension and make it available to hosted
+query connections. Ordinary clients may attach Periplus DuckLake without it. The
+dedicated live-materialization connection separately loads the DuckLake CDC
+extension; these two extensions have no shared query contract.
 
-The shell uses the same centralized DuckLake connection factory contract as Atlas:
-`ATLAS_DUCKLAKE_ALIAS`, `ATLAS_DUCKLAKE_METADATA_PATH`,
-`ATLAS_DUCKLAKE_METADATA_SCHEMA`, and `ATLAS_DUCKLAKE_DATA_PATH`, plus protocol-specific
-credentials such as `ATLAS_DUCKLAKE_S3_*`. The configured data path and endpoint must be reachable
-by the host-native DuckDB process.
+## Development loop
 
-## First build
-
-Build and test both native configurations:
+Build and test both configurations:
 
 ```sh
-cd ../atlas-duckdb-extension
+cd ../periplus-duckdb-extension
 make debug
 make test_debug
 make release
 make test_release
 ```
 
-The first build compiles DuckDB and takes longer. Subsequent extension-only rebuilds are
-incremental.
+The first build compiles DuckDB. Later extension-only builds are incremental.
+The macOS debug build is sanitizer-instrumented and should be exercised through
+the template's native runner. Use the release artifact with the stock DuckDB
+Python wheel.
 
-On macOS, the debug build is sanitizer-instrumented. Use it with the template's native test
-runner. The stock DuckDB Python wheel cannot safely load that debug artifact, so the direct Atlas
-connection uses the release build.
-
-## Daily development loop
-
-1. Change the optimizer or specialist functions under
-   `atlas-duckdb-extension/src/`.
-2. Add or update SQLLogicTests under `atlas-duckdb-extension/test/sql/`.
-3. Run the debug tests:
-
-   ```sh
-   cd ../atlas-duckdb-extension
-   make debug
-   make test_debug
-   ```
-
-4. Build and test the loadable release artifact:
-
-   ```sh
-   make release
-   make test_release
-   ```
-
-5. Exercise it against the development DuckLake:
-
-   ```sh
-   cd ../atlas
-   ./ducklake.sh
-   ```
-
-The shell opens the configured lake in DuckDB's native interactive terminal. Useful
-terminal commands include `.tables`, `.schema`, `.help`, and `.quit`.
-
-To execute one statement without entering the terminal:
+Exercise the release build against the configured development lake:
 
 ```sh
+cd ../periplus
 ./ducklake.sh --sql \
-  "SELECT web._catalogue_version(), count(*) FROM web.page"
+  "SELECT count(*) FROM web.observation"
 ```
 
-All arguments accepted by `backend/scripts/direct_ducklake.py` pass through the wrapper.
+`ducklake.sh` uses the centralized `PERIPLUS_DUCKLAKE_*` attachment contract. If
+the extension repository is not the default sibling, set
+`PERIPLUS_DUCKDB_EXTENSION_REPO` to its absolute path.
 
-The `web.*` and `dom.*` objects are persistent DuckLake catalogue definitions installed by
-`make setup` or,
-when only the analytical catalogue needs reconciliation:
+## Optimizer requirements
 
-```sh
-cd backend
-uv run python -m atlas.platform.catalogue bootstrap
-```
+Before adding a rule, classify the issue as schema/catalogue design,
+compiler/optimizer behavior, or both using [`QUERY.md`](QUERY.md). Native work
+is justified only for the compiler portion after correcting any poor public
+schema.
 
-The direct client attaches the lake read-only. It can verify and exercise both public namespaces,
-but cannot
-install or replace catalogue definitions.
+Every rewrite requires:
 
-If the extension repository is not the default sibling, point the wrapper at it:
+- a differential test comparing portable and optimized result bags;
+- an `EXPLAIN` assertion or another positive proof that the rule fired;
+- neighboring cases where the rule must not fire;
+- coverage for NULLs, empty inputs, duplicates, and relevant projections or
+  filters; and
+- confirmation that the public query remains correct with extension
+  optimizers disabled.
 
-```sh
-ATLAS_DUCKDB_EXTENSION_REPO=/absolute/path/to/atlas-duckdb-extension \
-  ./ducklake.sh
-```
+The first optimizer removes `web.observation`'s visit/document left join when
+no document-derived value is used. It relies on Periplus's one-document-per-visit
+invariant. Selecting, filtering, grouping, or ordering by `content_id` must
+retain the join and its NULL semantics.
 
-## What the wrapper does
+## Safety requirements
 
-`ducklake.sh` selects the matching release extension and native DuckDB CLI, then delegates
-connection setup to `backend/scripts/direct_ducklake.py`.
+Optimizer actions and diagnostics share one `PeriplusPlanAnalyzer` and policy
+evaluation. Rules should consume reusable facts such as physical Periplus grain,
+cardinality, expansion, or blocking state; do not add a whole-plan visitor for
+one SQL spelling.
 
-The interactive CLI has the Atlas extension linked into its executable, so run `make release` and
-restart the terminal after every extension change. One-shot `--sql` execution loads the matching
-release extension into the pinned Python DuckDB process.
+For a safety rule, test:
 
-The Python launcher loads the release extension, attaches the configured DuckLake read-only, and
-starts the extension-enabled native DuckDB terminal.
-
-For an interactive session, credentials exist only in a mode-`0600` temporary initialization file.
-The file is held inside a private temporary directory and removed when the terminal exits.
-
-## Optimizer testing requirements
-
-Before implementing an optimizer rule, record the performance-triage classification required by
-[`QUERY.md`](QUERY.md). Native work is appropriate only for the compiler part of the issue after
-any required schema or catalogue correction. A warning or boundedness error may be the correct
-compiler action when execution should not be rewritten.
-
-Every optimizer rewrite or native public capability needs evidence for both semantics and
-activation:
-
-- A differential correctness test must compare the portable and optimized result bags.
-- An `EXPLAIN` assertion or another positive signal must prove the intended rule fired.
-- Tests must cover empty and `NULL` inputs, duplicate preservation, relevant limit/order
-  behavior, and aliases or projections affected by the rewrite.
-- Base portable queries must remain correct when the Atlas extension is absent. An explicitly
-  extension-backed capability must instead be absent from installation and metadata.
-
-Native selectors are table-in/table-out operators. Public selector macros supply a keyed
-`dom.element` slice followed by a typed end-of-document sentinel. The native operator buffers and
-reconstructs only that document, matches with Lexbor, and returns complete element rows. Tests must
-prove that content predicates prune before the operator, input spanning multiple DuckDB vectors is
-not truncated, and lateral calls do not combine documents.
-
-Optimizer actions and diagnostics share `AtlasPlanAnalyzer` and the ordered Atlas policy registry.
-A new rule must be based on reusable plan facts such as relation grain, capability, cardinality,
-expansion, or blocking state. Do not add a second whole-plan visitor for one SQL spelling or
-function. Hard errors must follow the relevant dataflow and have high-confidence activation tests;
-warnings may be advisory but need a specific rewrite hint.
-
-Add SQLLogicTests for:
-
-- the triggering plan and diagnostic code;
+- its triggering plan and stable diagnostic code;
 - a bounded or otherwise safe neighboring plan;
-- an unrelated Atlas query family to guard against overmatching;
-- independent plan branches that must not be treated as one dataflow; and
-- plain `EXPLAIN` access plus enforced `EXPLAIN ANALYZE` for any plan rejected during normal
-  execution.
+- an unrelated Periplus query family;
+- an intentional batch-profile case; and
+- plain `EXPLAIN` plus enforced execution behavior.
 
-`atlas_lint_query(sql, profile := 'interactive')` binds and optimizes one `SELECT` or `EXPLAIN`
-without executing it. Use it to assert structured warnings and would-be errors. Keep lint output
-stable and machine-readable; shell and SDK presentation belongs outside the extension.
-
-Use real development-lake queries for plan and performance investigation, but keep deterministic
-correctness coverage in SQLLogicTests.
+`periplus_lint_query(sql, profile := 'interactive')` binds and optimizes one
+`SELECT` or `EXPLAIN` without executing it. Keep its diagnostics stable and
+machine-readable. Hosted presentation belongs outside the extension.
 
 ## Release validation
 
-Before publishing an extension build:
+Before publishing:
 
-1. run the debug and release SQLLogicTests;
-2. verify the release artifact against the development lake;
-3. confirm the DuckDB ABI/version matches Atlas's pinned DuckDB version; and
-4. repeat the representative query and plan checks against the configured DuckLake.
+1. run debug and release SQLLogicTests;
+2. verify the release artifact against the development DuckLake;
+3. confirm the DuckDB ABI/version matches Periplus; and
+4. repeat representative plan and performance checks on the configured lake.

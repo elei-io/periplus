@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 import unittest
 
-from atlas.platform.health import HealthMonitor
-from atlas.platform.messaging.catalogue_workers import (
+from periplus.platform.health import HealthMonitor
+from periplus.platform.messaging.catalogue_workers import (
     CatalogueLaneReporter,
     CatalogueLaneState,
     CatalogueWorkerState,

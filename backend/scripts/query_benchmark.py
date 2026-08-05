@@ -7,7 +7,7 @@ from dataclasses import replace
 import json
 from pathlib import Path
 
-from atlas.query.benchmarking import compare_reports, discover_cases, report_payload
+from periplus.query.benchmarking import compare_reports, discover_cases, report_payload
 
 
 DEFAULT_CASE_ROOT = Path(__file__).resolve().parents[2] / "benchmarks/query/cases"

@@ -47,7 +47,7 @@ export function DataMetricsPage() {
           <CardDescription>
             {statusQuery.error
               ? extractApiError(statusQuery.error)
-              : "Atlas did not return a data status."}
+              : "Periplus did not return a data status."}
           </CardDescription>
         </CardHeader>
       </Card>
@@ -101,7 +101,7 @@ function DataVerdict({ status }: { status: DataStatus }) {
     },
     processing: {
       title: "Processing data",
-      description: "Atlas is working through incoming evidence.",
+      description: "Periplus is working through incoming evidence.",
     },
     attention: {
       title: "Needs attention",

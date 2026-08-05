@@ -6,24 +6,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import duckdb
 
-from atlas.ingestion.consumer import _commit_prepared_batch
-from atlas.ingestion.service import PreparedIngestion
-from atlas.ingestion.ingestor import _ingestion_concurrency
-from atlas.platform.config.environment import ConfigurationError
+from periplus.ingestion.consumer import _commit_prepared_batch
+from periplus.ingestion.service import PreparedIngestion
+from periplus.ingestion.ingestor import _ingestion_concurrency
+from periplus.platform.config.environment import ConfigurationError
 
 
 class IngestionConcurrencyTests(unittest.TestCase):
     def test_local_concurrency_is_configurable_within_process_bound(self) -> None:
         with patch.dict(
             os.environ,
-            {"ATLAS_INGESTOR_CONCURRENCY": "1"},
+            {"PERIPLUS_INGESTOR_CONCURRENCY": "1"},
         ):
             self.assertEqual(_ingestion_concurrency(), 1)
 
     def test_scaling_beyond_process_bound_uses_replicas(self) -> None:
         with patch.dict(
             os.environ,
-            {"ATLAS_INGESTOR_CONCURRENCY": "5"},
+            {"PERIPLUS_INGESTOR_CONCURRENCY": "5"},
         ):
             with self.assertRaisesRegex(
                 ConfigurationError,
@@ -33,7 +33,7 @@ class IngestionConcurrencyTests(unittest.TestCase):
 
 
 class IngestionCommitRetryTests(unittest.TestCase):
-    @patch("atlas.platform.catalogue.operations.time.sleep")
+    @patch("periplus.platform.catalogue.operations.time.sleep")
     def test_transaction_conflict_retries_the_same_immutable_batch(
         self,
         _sleep,
@@ -59,17 +59,17 @@ class IngestionCommitRetryTests(unittest.TestCase):
 
 
 class IngestionProcessOwnershipTests(unittest.IsolatedAsyncioTestCase):
-    @patch("atlas.ingestion.ingestor.run_catalogue_process_presence")
-    @patch("atlas.ingestion.ingestor.monitor_catalogue_lanes")
-    @patch("atlas.ingestion.ingestor.run_ingestion")
-    @patch("atlas.ingestion.ingestor.run_worker_process")
-    @patch("atlas.ingestion.ingestor.ensure_repository_consumer")
-    @patch("atlas.ingestion.ingestor.ensure_operation_lease_storage")
-    @patch("atlas.ingestion.ingestor.ensure_ingestion_results")
-    @patch("atlas.ingestion.ingestor.ensure_dead_letter_stream")
-    @patch("atlas.ingestion.ingestor.ensure_repository_stream")
-    @patch("atlas.ingestion.ingestor.connect_nats")
-    @patch("atlas.ingestion.ingestor._ingestion_concurrency", return_value=3)
+    @patch("periplus.ingestion.ingestor.run_catalogue_process_presence")
+    @patch("periplus.ingestion.ingestor.monitor_catalogue_lanes")
+    @patch("periplus.ingestion.ingestor.run_ingestion")
+    @patch("periplus.ingestion.ingestor.run_worker_process")
+    @patch("periplus.ingestion.ingestor.ensure_repository_consumer")
+    @patch("periplus.ingestion.ingestor.ensure_operation_lease_storage")
+    @patch("periplus.ingestion.ingestor.ensure_ingestion_results")
+    @patch("periplus.ingestion.ingestor.ensure_dead_letter_stream")
+    @patch("periplus.ingestion.ingestor.ensure_repository_stream")
+    @patch("periplus.ingestion.ingestor.connect_nats")
+    @patch("periplus.ingestion.ingestor._ingestion_concurrency", return_value=3)
     async def test_one_nats_session_and_one_subscription_per_lane(
         self,
         _concurrency,
@@ -84,7 +84,7 @@ class IngestionProcessOwnershipTests(unittest.IsolatedAsyncioTestCase):
         monitor_lanes,
         process_presence,
     ) -> None:
-        from atlas.ingestion.ingestor import run
+        from periplus.ingestion.ingestor import run
 
         client = MagicMock()
         client.drain = AsyncMock()

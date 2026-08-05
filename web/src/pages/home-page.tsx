@@ -160,7 +160,7 @@ export function HomePage() {
             toast.error(
               extractApiError(
                 new Error(
-                  event.message ?? "Atlas could not complete the response."
+                  event.message ?? "Periplus could not complete the response."
                 )
               )
             )
@@ -178,7 +178,7 @@ export function HomePage() {
             ? {
                 ...item,
                 status: "failed",
-                error: "Atlas closed the response before returning an answer.",
+                error: "Periplus closed the response before returning an answer.",
               }
             : item
         )
@@ -219,8 +219,8 @@ export function HomePage() {
   }
 
   return (
-    <div className="atlas-conversation mx-auto flex min-h-[calc(100svh-3.5rem)] w-full max-w-5xl flex-col px-4 pt-5 lg:px-6">
-      <div className="atlas-conversation-content flex flex-1 flex-col">
+    <div className="periplus-conversation mx-auto flex min-h-[calc(100svh-3.5rem)] w-full max-w-5xl flex-col px-4 pt-5 lg:px-6">
+      <div className="periplus-conversation-content flex flex-1 flex-col">
         <div
           ref={conversationFeed}
           className="mx-auto flex w-full max-w-4xl flex-col gap-8"
@@ -255,7 +255,7 @@ function EmptyHome({
 }) {
   return (
     <div className="flex min-h-[calc(100svh-3.5rem)] w-full items-center justify-center px-5 py-12">
-      <div className="atlas-home-intro w-full max-w-3xl text-center">
+      <div className="periplus-home-intro w-full max-w-3xl text-center">
         <h1 className="text-3xl font-medium tracking-tight text-balance sm:text-4xl">
           The web at your fingertips.
         </h1>
@@ -294,7 +294,7 @@ function Composer({
   return (
     <div
       className={cn(
-        "atlas-question-bar flex items-center gap-2 rounded-2xl border bg-background p-1.5 shadow-sm",
+        "periplus-question-bar flex items-center gap-2 rounded-2xl border bg-background p-1.5 shadow-sm",
         hero && "border-foreground/20",
         className
       )}
@@ -308,7 +308,7 @@ function Composer({
         placeholder={
           hero ? "Ask anything of the web…" : "Ask a follow-up question…"
         }
-        aria-label="Ask Atlas"
+        aria-label="Ask Periplus"
         className="max-h-36 min-h-11 flex-1 resize-none border-0 bg-transparent px-1 py-3 text-sm leading-5 shadow-none focus-visible:ring-0 dark:bg-transparent"
         onChange={(event) => setPrompt(event.target.value)}
         onKeyDown={(event) => {
@@ -421,7 +421,7 @@ function ToolCallItem({
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <div
-        className="atlas-tool-call overflow-hidden rounded-lg border bg-muted/25"
+        className="periplus-tool-call overflow-hidden rounded-lg border bg-muted/25"
         data-state={activity.state}
       >
         <CollapsibleTrigger className="flex h-9 w-full items-center gap-2.5 px-3 text-left">
@@ -968,7 +968,7 @@ function applyEvent(turn: AssistantTurn, event: AssistantEvent): AssistantTurn {
     return {
       ...turn,
       status: "failed",
-      error: event.message ?? "Atlas could not complete the response.",
+      error: event.message ?? "Periplus could not complete the response.",
     }
   }
 
@@ -1177,7 +1177,7 @@ function downloadTable(
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement("a")
     anchor.href = url
-    anchor.download = `atlas-results.${format}`
+    anchor.download = `periplus-results.${format}`
     document.body.append(anchor)
     anchor.click()
     anchor.remove()

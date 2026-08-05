@@ -6,9 +6,9 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
-from atlas.crawl.runtime.graph_navigation import _process_edge
-from atlas.crawl.runtime.graph_queue import EdgeWork
-from atlas.crawl.runtime.graph_runs import EdgeEvaluationRetryable
+from periplus.crawl.runtime.graph_navigation import _process_edge
+from periplus.crawl.runtime.graph_queue import EdgeWork
+from periplus.crawl.runtime.graph_runs import EdgeEvaluationRetryable
 
 
 class GraphNavigationRetryTests(unittest.IsolatedAsyncioTestCase):
@@ -50,11 +50,11 @@ class GraphNavigationRetryTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "atlas.crawl.runtime.graph_navigation.EdgeUrlExecutor",
+                "periplus.crawl.runtime.graph_navigation.EdgeUrlExecutor",
                 return_value=executor,
             ),
             patch(
-                "atlas.crawl.runtime.graph_navigation.evaluate_edge",
+                "periplus.crawl.runtime.graph_navigation.evaluate_edge",
                 new=AsyncMock(
                     side_effect=EdgeEvaluationRetryable("pool exhausted")
                 ),

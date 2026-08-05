@@ -1,21 +1,18 @@
 WITH scope AS MATERIALIZED (
-    SELECT DISTINCT visit.content_id
-    FROM web.page AS page
-    JOIN web.page_visit AS visit
-      ON visit.page_visit_id = page.latest_page_visit_id
-    WHERE page.hostname = 'developer.mozilla.org'
-      AND visit.content_id IS NOT NULL
-    ORDER BY hash(visit.content_id), visit.content_id
+    SELECT DISTINCT content_id
+    FROM web.observation
+    WHERE effective_url LIKE 'https://developer.mozilla.org/%'
+      AND content_id IS NOT NULL
+    ORDER BY hash(content_id), content_id
     LIMIT $scope
 )
 SELECT
     scope.content_id,
-    match.element_index,
-    dom.get_attribute(match.attributes, 'href') AS href
+    element.element_index,
+    map_extract_value(element.attributes, 'href') AS href
 FROM scope
-JOIN LATERAL dom.query_selector_all(
-    scope.content_id,
-    'main a[href]'
-) AS match ON true
-ORDER BY scope.content_id, match.element_index
+JOIN content.html_element AS element USING (content_id)
+WHERE element.tag = 'a'
+  AND map_contains(element.attributes, 'href')
+ORDER BY scope.content_id, element.element_index
 LIMIT 5000;

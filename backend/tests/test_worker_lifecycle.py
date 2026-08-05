@@ -4,8 +4,8 @@ import asyncio
 import unittest
 from unittest.mock import MagicMock, patch
 
-from atlas.platform.health import HealthMonitor
-from atlas.platform.process import (
+from periplus.platform.health import HealthMonitor
+from periplus.platform.process import (
     WorkerEndpointConfig,
     WorkerEndpoints,
     cancel_task,
@@ -101,14 +101,14 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "atlas.platform.process.WorkerEndpointConfig.from_env",
+                "periplus.platform.process.WorkerEndpointConfig.from_env",
                 return_value=MagicMock(),
             ) as config,
             patch(
-                "atlas.platform.process.WorkerEndpoints",
+                "periplus.platform.process.WorkerEndpoints",
                 return_value=endpoints,
             ),
-            patch("atlas.platform.process.install_signal_handlers") as signals,
+            patch("periplus.platform.process.install_signal_handlers") as signals,
         ):
             await run_worker_process(
                 role="janitor",
@@ -136,11 +136,11 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         monitor = HealthMonitor()
         with (
             patch(
-                "atlas.platform.process.start_health_server",
+                "periplus.platform.process.start_health_server",
                 return_value=(health_server, MagicMock()),
             ) as start_health,
             patch(
-                "atlas.platform.process.start_http_server",
+                "periplus.platform.process.start_http_server",
                 return_value=(metrics_server, MagicMock()),
             ) as start_metrics,
         ):

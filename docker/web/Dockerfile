@@ -3,14 +3,14 @@ FROM node:24-alpine AS build
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-COPY packages/atlas-console-core/package.json packages/atlas-console-core/package.json
-COPY packages/atlas-terminal-shell/package.json packages/atlas-terminal-shell/package.json
-COPY packages/atlas-web-shell/package.json packages/atlas-web-shell/package.json
+COPY packages/periplus-console-core/package.json packages/periplus-console-core/package.json
+COPY packages/periplus-terminal-shell/package.json packages/periplus-terminal-shell/package.json
+COPY packages/periplus-web-shell/package.json packages/periplus-web-shell/package.json
 COPY web/package.json web/package.json
 RUN npm ci
 
-COPY packages/atlas-console-core/ packages/atlas-console-core/
-COPY packages/atlas-web-shell/ packages/atlas-web-shell/
+COPY packages/periplus-console-core/ packages/periplus-console-core/
+COPY packages/periplus-web-shell/ packages/periplus-web-shell/
 COPY web/ web/
 RUN npm run build:web
 RUN find web/dist/assets -name '*.wasm' -exec gzip -9 -k '{}' ';'
@@ -18,8 +18,8 @@ RUN find web/dist/assets -name '*.wasm' -exec gzip -9 -k '{}' ';'
 
 FROM nginx:1.27-alpine
 
-ENV ATLAS_API_HOST=atlas-api \
-    ATLAS_API_PORT=8000
+ENV PERIPLUS_API_HOST=periplus-api \
+    PERIPLUS_API_PORT=8000
 
 # The stock nginx entrypoint renders templates with envsubst at container start.
 # This keeps the web image portable across Compose and Helm release names.

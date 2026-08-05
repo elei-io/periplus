@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 import unittest
 from uuid import uuid4
 
-from atlas.crawl.runtime.crawl_scheduler import scheduled_run_id
+from periplus.crawl.runtime.crawl_scheduler import scheduled_run_id
 
 
 class CrawlSchedulerTests(unittest.IsolatedAsyncioTestCase):

@@ -10,17 +10,17 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from atlas.ingestion.documents_http import (
+from periplus.ingestion.documents_http import (
     get_document_store,
     router,
 )
-from atlas.ingestion.objects.document import (
+from periplus.ingestion.objects.document import (
     ExactDocumentRepository,
     identify_document,
 )
-from atlas.ingestion.objects.html import RawHtmlRepository
-from atlas.ingestion.objects.store import FileObjectStore
-from atlas.platform.catalogue.control import get_catalogue_control
+from periplus.ingestion.objects.html import RawHtmlRepository
+from periplus.ingestion.objects.store import FileObjectStore
+from periplus.platform.catalogue.control import get_catalogue_control
 
 
 class _FakeCatalogue:

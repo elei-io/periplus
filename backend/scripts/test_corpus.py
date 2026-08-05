@@ -1,4 +1,4 @@
-"""Append random Common Crawl HTML pages to a disposable Atlas lake."""
+"""Append random Common Crawl HTML pages to a disposable Periplus lake."""
 
 from __future__ import annotations
 
@@ -20,11 +20,11 @@ from typing import Any
 from dotenv import load_dotenv
 import httpx
 
-from atlas.urls import normalize_url
+from periplus.urls import normalize_url
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CACHE = ROOT / ".atlas" / "test-corpus"
+DEFAULT_CACHE = ROOT / ".periplus" / "test-corpus"
 DEFAULT_API_URL = "http://127.0.0.1:8000"
 DEFAULT_CRAWL = "CC-MAIN-2026-25"
 DEFAULT_SEED = 20260727
@@ -58,7 +58,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Append random successful HTML pages from Common Crawl through "
-            "Atlas's external ingestion API."
+            "Periplus's external ingestion API."
         )
     )
     parser.add_argument(
@@ -79,8 +79,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--api-url",
-        default=os.environ.get("ATLAS_API_URL", DEFAULT_API_URL),
-        help=f"Atlas API base URL (default: {DEFAULT_API_URL})",
+        default=os.environ.get("PERIPLUS_API_URL", DEFAULT_API_URL),
+        help=f"Periplus API base URL (default: {DEFAULT_API_URL})",
     )
     parser.add_argument(
         "--cache-dir",
@@ -98,7 +98,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help=(
-            "select and cache pages without querying Atlas, downloading WARC "
+            "select and cache pages without querying Periplus, downloading WARC "
             "records, or changing the lake"
         ),
     )
@@ -113,7 +113,7 @@ def positive_int(value: str) -> int:
 
 
 def dataset_name(crawl: str, seed: int) -> str:
-    return f"atlas-test-corpus/{DATASET_VERSION}/{crawl}/{seed}"
+    return f"periplus-test-corpus/{DATASET_VERSION}/{crawl}/{seed}"
 
 
 def manifest_path(cache_dir: Path, crawl: str, seed: int) -> Path:
@@ -166,13 +166,13 @@ def query_existing(api_url: str, dataset: str) -> set[int]:
                        split_part(source_record_id, ':', 2) AS BIGINT
                    )
                ) AS ordinals
-        FROM web.page_visit
+        FROM web.observation
         WHERE source_kind = 'external'
           AND source_system = 'common-crawl'
           AND source_dataset = {sql_string(dataset)}
           AND starts_with(source_record_id, 'page:')
     """
-    payload = query_atlas(api_url, sql)
+    payload = query_periplus(api_url, sql)
     ordinals = payload["rows"][0][0] if payload["rows"] else None
     return {
         int(ordinal)
@@ -186,9 +186,10 @@ def query_lake_urls(api_url: str, *, page_size: int = 10_000) -> set[str]:
     existing: set[str] = set()
     offset = 0
     while True:
-        rows = query_atlas(
+        rows = query_periplus(
             api_url,
-            "SELECT url FROM web.page "
+            "SELECT coalesce(effective_url, requested_url) AS url "
+            "FROM web.observation GROUP BY url "
             f"ORDER BY url LIMIT {page_size} OFFSET {offset}",
         )["rows"]
         existing.update(str(row[0]) for row in rows)
@@ -197,7 +198,7 @@ def query_lake_urls(api_url: str, *, page_size: int = 10_000) -> set[str]:
         offset += page_size
 
 
-def query_atlas(api_url: str, sql: str) -> dict[str, Any]:
+def query_periplus(api_url: str, sql: str) -> dict[str, Any]:
     with httpx.Client(timeout=60) as client:
         response = client.post(
             f"{api_url.rstrip('/')}/sql/query",
@@ -613,7 +614,7 @@ def reconcile(arguments: argparse.Namespace) -> int:
     report(f"selection complete: selected={len(selected)} cached={len(captures)}")
     if arguments.dry_run:
         report(
-            f"dry-run: manifest cached at {path}; no Atlas data changed"
+            f"dry-run: manifest cached at {path}; no Periplus data changed"
         )
         return 0
 
@@ -676,11 +677,11 @@ def reconcile(arguments: argparse.Namespace) -> int:
         if len(failures) > 20:
             report(f"failed: {len(failures) - 20} more pages omitted")
         report(
-            f"Atlas committed {len(successful)} pages; rerun the command to "
+            f"Periplus committed {len(successful)} pages; rerun the command to "
             f"retry the {len(failures)} failures."
         )
         return 1
-    report(f"Atlas committed {len(successful)} new pages.")
+    report(f"Periplus committed {len(successful)} new pages.")
     return 0
 
 

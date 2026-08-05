@@ -18,9 +18,9 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  BACKEND_IMAGE: ghcr.io/ekkuleivonen/atlas-backend
-  WEB_IMAGE: ghcr.io/ekkuleivonen/atlas-web
-  CHART_REGISTRY: oci://ghcr.io/ekkuleivonen/atlas-charts
+  BACKEND_IMAGE: ghcr.io/ekkuleivonen/periplus-backend
+  WEB_IMAGE: ghcr.io/ekkuleivonen/periplus-web
+  CHART_REGISTRY: oci://ghcr.io/ekkuleivonen/periplus-charts
 
 jobs:
   metadata:
@@ -30,8 +30,8 @@ jobs:
       image_tags: ${{ steps.release.outputs.image_tags }}
       chart_version: ${{ steps.release.outputs.chart_version }}
       app_version: ${{ steps.release.outputs.app_version }}
-      atlas_extension_repository: ${{ steps.extensions.outputs.atlas_repository }}
-      atlas_extension_ref: ${{ steps.extensions.outputs.atlas_ref }}
+      periplus_extension_repository: ${{ steps.extensions.outputs.periplus_repository }}
+      periplus_extension_ref: ${{ steps.extensions.outputs.periplus_ref }}
       cdc_extension_repository: ${{ steps.extensions.outputs.cdc_repository }}
       cdc_extension_ref: ${{ steps.extensions.outputs.cdc_ref }}
       duckdb_version: ${{ steps.extensions.outputs.duckdb_version }}
@@ -68,8 +68,8 @@ jobs:
           source .github/extension-sources.env
           set +a
           {
-            echo "atlas_repository=${ATLAS_EXTENSION_REPOSITORY}"
-            echo "atlas_ref=${ATLAS_EXTENSION_REF}"
+            echo "periplus_repository=${PERIPLUS_EXTENSION_REPOSITORY}"
+            echo "periplus_ref=${PERIPLUS_EXTENSION_REF}"
             echo "cdc_repository=${DUCKLAKE_CDC_EXTENSION_REPOSITORY}"
             echo "cdc_ref=${DUCKLAKE_CDC_EXTENSION_REF}"
             echo "duckdb_version=${DUCKDB_VERSION}"
@@ -81,14 +81,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Check out Atlas DuckDB extension
+      - name: Check out Periplus DuckDB extension
         uses: actions/checkout@v4
         with:
-          repository: ${{ needs.metadata.outputs.atlas_extension_repository }}
-          ref: ${{ needs.metadata.outputs.atlas_extension_ref }}
-          ssh-key: ${{ secrets.ATLAS_EXTENSION_DEPLOY_KEY }}
+          repository: ${{ needs.metadata.outputs.periplus_extension_repository }}
+          ref: ${{ needs.metadata.outputs.periplus_extension_ref }}
+          ssh-key: ${{ secrets.PERIPLUS_EXTENSION_DEPLOY_KEY }}
           persist-credentials: false
-          path: .extension-sources/atlas
+          path: .extension-sources/periplus
       - name: Check out DuckLake CDC extension
         uses: actions/checkout@v4
         with:
@@ -117,17 +117,17 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/atlas/Dockerfile
+          file: docker/periplus/Dockerfile
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.value }}
           build-args: |
             DUCKDB_VERSION=${{ needs.metadata.outputs.duckdb_version }}
           build-contexts: |
-            atlas-extension=${{ github.workspace }}/.extension-sources/atlas
+            periplus-extension=${{ github.workspace }}/.extension-sources/periplus
             ducklake-cdc-extension=${{ github.workspace }}/.extension-sources/ducklake-cdc
-          cache-from: type=gha,scope=atlas-backend
-          cache-to: type=gha,mode=max,scope=atlas-backend
+          cache-from: type=gha,scope=periplus-backend
+          cache-to: type=gha,mode=max,scope=periplus-backend
           provenance: mode=max
           sbom: true
 
@@ -163,8 +163,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.value }}
-          cache-from: type=gha,scope=atlas-web
-          cache-to: type=gha,mode=max,scope=atlas-web
+          cache-from: type=gha,scope=periplus-web
+          cache-to: type=gha,mode=max,scope=periplus-web
           provenance: mode=max
           sbom: true
 
@@ -180,10 +180,10 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: v3.18.6
-      - run: helm lint charts/atlas
+      - run: helm lint charts/periplus
       - name: Package chart
         run: >-
-          helm package charts/atlas
+          helm package charts/periplus
           --destination dist
           --version "${{ needs.metadata.outputs.chart_version }}"
           --app-version "${{ needs.metadata.outputs.app_version }}"
@@ -194,4 +194,4 @@ jobs:
           --username "${{ github.actor }}"
           --password-stdin
       - name: Publish chart
-        run: helm push dist/atlas-*.tgz "${CHART_REGISTRY}"
+        run: helm push dist/periplus-*.tgz "${CHART_REGISTRY}"
