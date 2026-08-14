@@ -1,6 +1,7 @@
 .git
 .env
-.atlas
+.periplus
+.extension-sources
 **/.DS_Store
 **/.venv
 **/__pycache__
@@ -11,4 +12,4 @@
 **/.tmp
 **/build
 **/dist
-web/node_modules
+**/node_modules

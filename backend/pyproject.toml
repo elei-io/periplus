@@ -1,39 +1,32 @@
 [project]
-name = "atlas"
+name = "periplus"
 version = "0.1.0"
 description = "Web acquisition and normalization for SQL-centric data pipelines"
-readme = { text = "Atlas backend services and command-line tools.", content-type = "text/markdown" }
+readme = { text = "Periplus backend services.", content-type = "text/markdown" }
 requires-python = ">=3.14"
 dependencies = [
-    "atlas-sdk>=0.1.0",
     "alembic>=1.18",
     "fastapi[standard]>=0.139.0",
     "httpx>=0.28",
     "nats-py[nkeys]>=2.11",
-    "numpy>=2.0",
     "playwright==1.55.0",
     "magika>=1.0,<2",
     "psycopg[binary]>=3.2",
     "prometheus-client>=0.22",
     "pydantic>=2.12",
+    "pydantic-ai-slim[openai]>=2.14.0",
     "pytz>=2025.2",
     "python-dotenv>=1.2",
     "sqlalchemy>=2.0",
-    "typer>=0.26.8",
     "tldextract>=5.3",
-    "rich>=14.0",
     "boto3>=1.42",
     "zstandard>=0.25",
     "html5lib>=1.1",
     "croniter>=6.0",
     "pyarrow>=21",
     "sqlglot>=27",
-    "duckdb==1.5.4",
-    "pydantic-ai-slim[openai]>=2.14.0",
+    "duckdb==1.5.5",
 ]
-
-[tool.uv.sources]
-atlas-sdk = { path = "../sdk", editable = true }
 
 [dependency-groups]
 dev = [
@@ -41,17 +34,23 @@ dev = [
 ]
 
 [project.scripts]
-atlas = "cli.app:app"
-atlas-setup = "deployment:main"
-atlas-worker = "workers.cli:main"
+periplus-setup = "periplus.entrypoints.setup:main"
+periplus-worker = "periplus.entrypoints.worker:main"
 
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-py-modules = ["deployment"]
-
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 exclude = ["tests*", "build*"]
+
+[tool.setuptools.package-data]
+"periplus.platform.postgres" = [
+    "alembic.ini",
+    "alembic/script.py.mako",
+]
+"periplus.platform.catalogue" = [
+    "sql/content/views/*.sql",
+    "sql/web/views/*.sql",
+]

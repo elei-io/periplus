@@ -1,50 +1,49 @@
 import {
   ChartNoAxesCombinedIcon,
-  BracesIcon,
   GitForkIcon,
-  FileCode2Icon,
   ShieldCheckIcon,
   Globe2Icon,
-  SquareTerminalIcon,
-  ViewIcon,
   CalendarClockIcon,
+  DatabaseZapIcon,
+  FileTextIcon,
+  SquareTerminalIcon,
 } from "lucide-react"
 
 import type { NavigationGroup } from "@/types/navigation"
 
 export const navigationGroups: NavigationGroup[] = [
   {
-    name: "Catalogue",
-    slug: "catalogue",
+    name: "Data",
+    slug: "data",
     items: [
       {
-        name: "Workbench",
-        href: "/catalogue/workbench",
+        name: "Console",
+        href: "/sql",
         icon: SquareTerminalIcon,
-        title: "Catalogue Workbench",
+        title: "SQL Console",
+        description: "Query the public web and DOM catalogue.",
+      },
+      {
+        name: "Documents",
+        href: "/data/documents",
+        icon: FileTextIcon,
+        title: "Documents",
+        description: "Browse acquired documents and their owned bytes.",
+      },
+      {
+        name: "Metrics",
+        href: "/data/metrics",
+        icon: ChartNoAxesCombinedIcon,
+        title: "Data Metrics",
         description:
-          "Explore the DuckLake catalogue in an interactive SQL session.",
+          "See whether accepted evidence is ingested and query-ready.",
       },
       {
-        name: "Queries",
-        href: "/catalogue/queries",
-        icon: FileCode2Icon,
-        title: "Saved Queries",
-        description: "Author SQL with immutable revision history.",
-      },
-      {
-        name: "Views",
-        href: "/catalogue/views",
-        icon: ViewIcon,
-        title: "Catalogue Views",
-        description: "Inspect and edit persistent DuckLake views.",
-      },
-      {
-        name: "Macros",
-        href: "/catalogue/macros",
-        icon: BracesIcon,
-        title: "Catalogue Macros",
-        description: "Manage reusable scalar expressions and table relations.",
+        name: "Materializations",
+        href: "/materializations",
+        icon: DatabaseZapIcon,
+        title: "Materializations",
+        description: "Backfill or rebuild fixed Periplus projections.",
       },
     ],
   },
@@ -53,80 +52,72 @@ export const navigationGroups: NavigationGroup[] = [
     slug: "crawls",
     items: [
       {
-        name: "Graphs",
-        href: "/crawls/graphs",
+        name: "Plans",
+        href: "/crawls/plans",
         icon: GitForkIcon,
-        title: "Crawl Graphs",
-        description: "Compose crawl nodes with SQL-defined edges.",
+        title: "Crawl Plans",
+        description: "Compose and run reusable page-acquisition plans.",
       },
       {
         name: "Schedules",
         href: "/crawls/schedules",
         icon: CalendarClockIcon,
         title: "Crawl Schedules",
-        description: "Run crawl graphs automatically on intervals or cron.",
+        description: "Run crawl plans automatically on intervals or cron.",
+      },
+      {
+        name: "Content policies",
+        href: "/content-policies",
+        icon: ShieldCheckIcon,
+        title: "Content Policies",
+        description:
+          "Control response handling and rendered-content completion.",
+      },
+      {
+        name: "Domain policies",
+        href: "/domain-policies",
+        icon: Globe2Icon,
+        title: "Domain Policies",
+        description: "Limit concurrent and paced requests to websites.",
       },
       {
         name: "Metrics",
         href: "/crawls/metrics",
         icon: ChartNoAxesCombinedIcon,
         title: "Crawl Metrics",
-        description:
-          "See what each graph is doing and whether its data is up to date.",
-      },
-    ],
-  },
-  {
-    name: "Settings",
-    slug: "settings",
-    items: [
-      {
-        name: "Content policies",
-        href: "/crawl-policies",
-        icon: ShieldCheckIcon,
-        title: "Policies",
-        description:
-          "Control response handling and rendered-content completion.",
-      },
-      {
-        name: "Domain politeness",
-        href: "/domain-policies",
-        icon: Globe2Icon,
-        title: "Domain Politeness",
-        description: "Limit concurrent and paced requests to websites.",
+        description: "See page acquisition progress, capacity, and crawl runs.",
       },
     ],
   },
 ]
 
 export const defaultNavigationItem = navigationGroups[0].items[0]
+export const homeNavigationItem = {
+  name: "Home",
+  href: "/",
+  icon: DatabaseZapIcon,
+  title: "Periplus",
+  description: "Turn the web into queryable evidence.",
+}
 
 export function findNavigationItem(pathname: string) {
-  if (pathname.startsWith("/crawls/graphs/")) {
+  if (pathname === "/") {
+    return homeNavigationItem
+  }
+  if (pathname.startsWith("/crawls/plans/")) {
     return navigationGroups
       .flatMap((group) => group.items)
-      .find((item) => item.href === "/crawls/graphs")
+      .find((item) => item.href === "/crawls/plans")
   }
   if (pathname.startsWith("/crawls/schedules/")) {
     return navigationGroups
       .flatMap((group) => group.items)
       .find((item) => item.href === "/crawls/schedules")
   }
-  for (const href of [
-    "/catalogue/queries",
-    "/catalogue/views",
-    "/catalogue/macros",
-  ]) {
-    if (pathname.startsWith(`${href}/`)) {
-      return navigationGroups
-        .flatMap((group) => group.items)
-        .find((item) => item.href === href)
-    }
-  }
-  if (pathname.startsWith("/crawl-policies/")) {
+  if (pathname.startsWith("/content-policies/")) {
     return navigationGroups
       .flatMap((group) => group.items)
-      .find((item) => item.href === "/crawl-policies")
+      .find((item) => item.href === "/content-policies")
   }
   return navigationGroups
     .flatMap((group) => group.items)

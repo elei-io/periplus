@@ -1,0 +1,7 @@
+id = "current-domain-inventory"
+title = "Observation inventory by domain"
+use_case = "Compare retained observation volume and freshness across several documentation sites."
+classification = "schema"
+ordered = true
+memory_limit = "512MB"
+max_warm_ms = 60000

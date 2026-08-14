@@ -4,18 +4,18 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from control.crawl_policies.schemas import (
+from periplus.crawl.control.content_policies.schemas import (
     ContentCompletion,
-    ContentPolicy,
-    CrawlPolicySnapshot,
+    ContentPolicyConfig,
+    ContentPolicySnapshot,
     ExpandCompletion,
     ScrollCompletion,
     WaitDynamicCompletion,
     WaitFixedCompletion,
 )
-from control.crawl_policies.variance import vary_content_policy
-from control.domain_policies.schemas import DomainPolicySnapshot
-from runtime.graph_runs import resolve_policy_snapshot
+from periplus.crawl.control.content_policies.variance import vary_content_policy
+from periplus.crawl.control.domain_policies.schemas import DomainPolicySnapshot
+from periplus.crawl.runtime.graph_runs import resolve_policy_snapshot
 
 
 class IndexedRandom:
@@ -40,7 +40,7 @@ class ContentPolicyVarianceTests(unittest.TestCase):
             ("expand.maximum_actions", 8, 13),
             ("expand.wait_ms", 250, 750),
         )
-        content = ContentPolicy()
+        content = ContentPolicyConfig()
 
         for setting_index, (setting, lower, higher) in enumerate(expected):
             with self.subTest(setting=setting, arm="lower"):
@@ -73,7 +73,7 @@ class ContentPolicyVarianceTests(unittest.TestCase):
                 )
 
     def test_baseline_arm_records_assignment_without_changing_policy(self) -> None:
-        content = ContentPolicy()
+        content = ContentPolicyConfig()
 
         varied, assignment = vary_content_policy(
             content,
@@ -89,7 +89,7 @@ class ContentPolicyVarianceTests(unittest.TestCase):
         self.assertEqual(assignment.effective_value, 30)
 
     def test_enabled_fixed_wait_is_eligible_for_variance(self) -> None:
-        content = ContentPolicy(
+        content = ContentPolicyConfig(
             completion=ContentCompletion(
                 wait_dynamic=WaitDynamicCompletion(enabled=False),
                 wait_fixed=WaitFixedCompletion(enabled=True, duration_ms=1_000),
@@ -110,7 +110,7 @@ class ContentPolicyVarianceTests(unittest.TestCase):
         self.assertEqual(assignment.arm, "lower")
 
     def test_disabled_methods_and_excluded_settings_remain_unchanged(self) -> None:
-        content = ContentPolicy(
+        content = ContentPolicyConfig(
             completion=ContentCompletion(
                 wait_dynamic=WaitDynamicCompletion(
                     sample_interval_ms=321,
@@ -149,7 +149,7 @@ class ContentPolicyVarianceTests(unittest.TestCase):
         self.assertEqual(assignment.setting, "wait_dynamic.maximum_wait_ms")
 
     def test_no_active_experiment_returns_original_policy(self) -> None:
-        content = ContentPolicy(
+        content = ContentPolicyConfig(
             completion=ContentCompletion(
                 wait_dynamic=WaitDynamicCompletion(enabled=False),
                 wait_fixed=WaitFixedCompletion(enabled=False),
@@ -164,9 +164,9 @@ class ContentPolicyVarianceTests(unittest.TestCase):
         self.assertIsNone(assignment)
 
     def test_resolution_freezes_assignment_without_changing_domain_policy(self) -> None:
-        crawl = CrawlPolicySnapshot(
+        content_policy = ContentPolicySnapshot(
             id=uuid4(),
-            slug="crawl",
+            slug="content",
             scheme="*",
             host="*",
             path_prefix="/",
@@ -180,34 +180,37 @@ class ContentPolicyVarianceTests(unittest.TestCase):
             minimum_request_interval_seconds=0,
         )
         varied_content, assignment = vary_content_policy(
-            crawl.content,
+            content_policy.content,
             rng=IndexedRandom(0, 0),
         )
 
         with (
             patch(
-                "runtime.graph_runs.find_crawl_policies_for_urls",
+                "periplus.crawl.runtime.graph_runs.find_content_policies_for_urls",
                 return_value={"https://example.com/": object()},
             ),
             patch(
-                "runtime.graph_runs.find_domain_policies_for_urls",
+                "periplus.crawl.runtime.graph_runs.find_domain_policies_for_urls",
                 return_value={"https://example.com/": object()},
             ),
-            patch("runtime.graph_runs.policy_snapshot", return_value=crawl),
-            patch("runtime.graph_runs.domain_policy_snapshot", return_value=domain),
             patch(
-                "runtime.graph_runs.vary_content_policy",
+                "periplus.crawl.runtime.graph_runs.content_policy_snapshot",
+                return_value=content_policy,
+            ),
+            patch("periplus.crawl.runtime.graph_runs.domain_policy_snapshot", return_value=domain),
+            patch(
+                "periplus.crawl.runtime.graph_runs.vary_content_policy",
                 return_value=(varied_content, assignment),
             ),
         ):
             resolved = resolve_policy_snapshot(object(), "https://example.com/")
 
         self.assertEqual(
-            resolved["crawl"]["content"],
+            resolved["content"]["content"],
             varied_content.model_dump(mode="json"),
         )
         self.assertEqual(
-            resolved["crawl"]["content_variance"],
+            resolved["content"]["content_variance"],
             assignment.model_dump(mode="json") if assignment else None,
         )
         self.assertEqual(
@@ -217,8 +220,8 @@ class ContentPolicyVarianceTests(unittest.TestCase):
 
     @staticmethod
     def _changed_settings(
-        before: ContentPolicy,
-        after: ContentPolicy,
+        before: ContentPolicyConfig,
+        after: ContentPolicyConfig,
     ) -> dict[str, int]:
         before_completion = before.completion.model_dump(mode="python")
         after_completion = after.completion.model_dump(mode="python")

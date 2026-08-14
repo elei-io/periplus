@@ -53,22 +53,17 @@ export function CrawlSchedulesPage({
   onNavigate: (href: string) => void
 }) {
   const schedulesQuery = useAllCrawlSchedules()
-  const graphsQuery = useCrawlGraphs()
-  const [selectingGraph, setSelectingGraph] = useState(false)
-  const [graphId, setGraphId] = useState("")
-  const [creatingForGraph, setCreatingForGraph] = useState<string | null>(null)
+  const plansQuery = useCrawlGraphs()
+  const [selectingPlan, setSelectingPlan] = useState(false)
+  const [planId, setPlanId] = useState("")
+  const [creatingForPlan, setCreatingForPlan] = useState<string | null>(null)
   const schedules = schedulesQuery.data?.items ?? []
-  const graphs =
-    graphsQuery.data?.items.filter((graph) => graph.root_node_id) ?? []
+  const plans = plansQuery.data?.items.filter((plan) => plan.root_node_id) ?? []
 
   return (
     <div className="flex min-h-0 w-full flex-col gap-4">
       <section className="flex flex-wrap items-center justify-between gap-3 border-b pb-4">
-        <div className="flex items-center gap-2">
-          <CalendarClockIcon className="size-4 text-muted-foreground" />
-          <h1 className="text-lg font-medium">Schedules</h1>
-          <Badge variant="outline">{schedulesQuery.data?.total ?? 0}</Badge>
-        </div>
+        <Badge variant="outline">{schedulesQuery.data?.total ?? 0} total</Badge>
         <div className="flex gap-2">
           <Button
             size="sm"
@@ -81,7 +76,7 @@ export function CrawlSchedulesPage({
             />
             Refresh
           </Button>
-          <Button size="sm" onClick={() => setSelectingGraph(true)}>
+          <Button size="sm" onClick={() => setSelectingPlan(true)}>
             <PlusIcon />
             New schedule
           </Button>
@@ -92,7 +87,7 @@ export function CrawlSchedulesPage({
         <TableHeader>
           <TableRow>
             <TableHead>Schedule</TableHead>
-            <TableHead>Graph</TableHead>
+            <TableHead>Plan</TableHead>
             <TableHead>Timing</TableHead>
             <TableHead>Next run</TableHead>
             <TableHead>Runs</TableHead>
@@ -109,12 +104,12 @@ export function CrawlSchedulesPage({
               <TableCell>
                 <span className="font-medium">{schedule.name}</span>
                 <span className="block text-xs text-muted-foreground">
-                  {schedule.root_urls.length} root URL
-                  {schedule.root_urls.length === 1 ? "" : "s"}
+                  {schedule.urls.length.toLocaleString()}{" "}
+                  {schedule.urls.length === 1 ? "start URL" : "start URLs"}
                 </span>
               </TableCell>
               <TableCell className="font-mono text-xs">
-                {schedule.graph_slug}
+                {schedule.plan_slug}
               </TableCell>
               <TableCell>{timingLabel(schedule.timing)}</TableCell>
               <TableCell>{formatDate(schedule.next_run_at)}</TableCell>
@@ -136,43 +131,43 @@ export function CrawlSchedulesPage({
         </TableBody>
       </Table>
 
-      <Dialog open={selectingGraph} onOpenChange={setSelectingGraph}>
+      <Dialog open={selectingPlan} onOpenChange={setSelectingPlan}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Choose a crawl graph</DialogTitle>
+            <DialogTitle>Choose a crawl plan</DialogTitle>
             <DialogDescription>
-              The schedule will offer its URL list to this graph’s root node.
+              Each scheduled run offers its start URLs to this plan’s root node.
             </DialogDescription>
           </DialogHeader>
           <Select
-            value={graphId || null}
-            onValueChange={(value) => value && setGraphId(value)}
+            value={planId || null}
+            onValueChange={(value) => value && setPlanId(value)}
           >
             <SelectTrigger className="w-full">
               <span>
-                {graphs.find((graph) => graph.id === graphId)?.slug ??
-                  "Select graph"}
+                {plans.find((plan) => plan.id === planId)?.slug ??
+                  "Select plan"}
               </span>
             </SelectTrigger>
             <SelectContent>
-              {graphs.map((graph) => (
-                <SelectItem key={graph.id} value={graph.id}>
-                  {graph.slug}
+              {plans.map((plan) => (
+                <SelectItem key={plan.id} value={plan.id}>
+                  {plan.slug}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
-          {graphs.length === 0 ? (
+          {plans.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              Create a graph with a root node before adding a schedule.
+              Create a plan with a root node before adding a schedule.
             </p>
           ) : null}
           <DialogFooter showCloseButton>
             <Button
-              disabled={!graphId}
+              disabled={!planId}
               onClick={() => {
-                setSelectingGraph(false)
-                setCreatingForGraph(graphId)
+                setSelectingPlan(false)
+                setCreatingForPlan(planId)
               }}
             >
               Continue
@@ -181,13 +176,13 @@ export function CrawlSchedulesPage({
         </DialogContent>
       </Dialog>
 
-      {creatingForGraph ? (
+      {creatingForPlan ? (
         <ScheduleEditorDialog
-          key={creatingForGraph}
-          graphId={creatingForGraph}
+          key={creatingForPlan}
+          graphId={creatingForPlan}
           schedule={null}
           open
-          onOpenChange={(open) => !open && setCreatingForGraph(null)}
+          onOpenChange={(open) => !open && setCreatingForPlan(null)}
         />
       ) : null}
     </div>
@@ -227,9 +222,9 @@ function ScheduleDetail({
   onRefresh: () => void
   refreshing: boolean
 }) {
-  const enabledMutation = useSetCrawlScheduleEnabled(schedule.graph_id)
-  const deleteMutation = useDeleteCrawlSchedule(schedule.graph_id)
-  const runNow = useRunCrawlScheduleNow(schedule.graph_id)
+  const enabledMutation = useSetCrawlScheduleEnabled(schedule.plan_id)
+  const deleteMutation = useDeleteCrawlSchedule(schedule.plan_id)
+  const runNow = useRunCrawlScheduleNow(schedule.plan_id)
   const [editing, setEditing] = useState(false)
 
   const remove = () => {
@@ -259,9 +254,9 @@ function ScheduleDetail({
             <button
               type="button"
               className="mt-1 text-sm text-link hover:underline"
-              onClick={() => onNavigate(`/crawls/graphs/${schedule.graph_id}`)}
+              onClick={() => onNavigate(`/crawls/plans/${schedule.plan_id}`)}
             >
-              Graph: {schedule.graph_slug}
+              Plan: {schedule.plan_slug}
             </button>
           </div>
         </div>
@@ -272,7 +267,7 @@ function ScheduleDetail({
             disabled={runNow.isPending}
             onClick={() =>
               runNow.mutate(schedule.id, {
-                onSuccess: () => toast.success("Manual graph run queued."),
+                onSuccess: () => toast.success("Manual crawl run queued."),
               })
             }
           >
@@ -386,13 +381,13 @@ function ScheduleDetail({
 
       <Card>
         <CardHeader>
-          <CardTitle>Root URLs</CardTitle>
+          <CardTitle>Start URLs</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {schedule.root_urls.map((url) => (
+          {schedule.urls.map((url) => (
             <div
               key={url}
-              className="rounded-md border bg-muted/20 px-3 py-2 font-mono text-xs"
+              className="rounded-md border bg-muted/20 px-3 py-2 font-mono text-xs break-all"
             >
               {url}
             </div>
@@ -403,7 +398,7 @@ function ScheduleDetail({
       {editing ? (
         <ScheduleEditorDialog
           key={schedule.updated_at}
-          graphId={schedule.graph_id}
+          graphId={schedule.plan_id}
           schedule={schedule}
           open
           onOpenChange={setEditing}

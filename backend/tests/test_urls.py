@@ -1,6 +1,6 @@
 import unittest
 
-from control.urls import normalize_url
+from periplus.urls import normalize_url
 
 
 class NormalizeUrlTests(unittest.TestCase):

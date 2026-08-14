@@ -1,23 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import unittest
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
-import unittest
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-from actions.crawl.service import PlaywrightRuntimeLost
-from repository.ingestion.health import HealthMonitor
-from runtime.domain_pacing import DomainCapacityUnavailable
-from runtime.graph_queue import CrawlRequest
-from workers.acquisition import (
+from periplus.crawl.acquisition.errors import PlaywrightRuntimeLost
+from periplus.platform.health import HealthMonitor
+from periplus.crawl.runtime.domain_pacing import DomainCapacityUnavailable
+from periplus.crawl.runtime.graph_queue import CrawlRequest
+from periplus.crawl.crawler import (
     _BufferedCrawl,
-    _HostnameDispatchBuffer,
-    _PreAcquiredDomainPermit,
     _dispatch_buffered_crawls,
+    _HostnameDispatchBuffer,
     _keep_buffered_deliveries_alive,
+    _PreAcquiredDomainPermit,
     _raise_background_failure,
     _release_buffered_deliveries,
     _run_presence_until_stopped,
@@ -100,17 +100,16 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
         async def permit(_domain_pacing, item):
             if item.hostname == blocked.hostname:
                 raise DomainCapacityUnavailable("domain is full")
-            return None
 
         processor = AsyncMock()
         with (
             patch(
-                "workers.acquisition.domain_backoff_seconds",
+                "periplus.crawl.crawler.domain_backoff_seconds",
                 new=AsyncMock(return_value=0),
             ),
-            patch("workers.acquisition._try_domain_permit", side_effect=permit),
+            patch("periplus.crawl.crawler._try_domain_permit", side_effect=permit),
             patch(
-                "workers.acquisition._process_dispatched_crawl",
+                "periplus.crawl.crawler._process_dispatched_crawl",
                 processor,
             ),
         ):
@@ -142,15 +141,15 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "workers.acquisition.domain_backoff_seconds",
+                "periplus.crawl.crawler.domain_backoff_seconds",
                 new=AsyncMock(return_value=0),
             ),
             patch(
-                "workers.acquisition._try_domain_permit",
+                "periplus.crawl.crawler._try_domain_permit",
                 new=AsyncMock(return_value=None),
             ),
             patch(
-                "workers.acquisition._process_dispatched_crawl",
+                "periplus.crawl.crawler._process_dispatched_crawl",
                 processor,
             ),
         ):
@@ -187,11 +186,11 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "workers.acquisition.domain_backoff_seconds",
+                "periplus.crawl.crawler.domain_backoff_seconds",
                 side_effect=backoff,
             ),
-            patch("workers.acquisition._try_domain_permit", permit),
-            patch("workers.acquisition._process_dispatched_crawl", processor),
+            patch("periplus.crawl.crawler._try_domain_permit", permit),
+            patch("periplus.crawl.crawler._process_dispatched_crawl", processor),
         ):
             launched = await _dispatch_buffered_crawls(
                 buffer,
@@ -216,12 +215,14 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
         buffer = _HostnameDispatchBuffer(2)
         item = buffered("a.example")
         buffer.add(item)
-        with patch(
-            "workers.acquisition.asyncio.sleep",
-            new=AsyncMock(side_effect=[None, asyncio.CancelledError]),
+        with (
+            patch(
+                "periplus.crawl.crawler.asyncio.sleep",
+                new=AsyncMock(side_effect=[None, asyncio.CancelledError]),
+            ),
+            self.assertRaises(asyncio.CancelledError),
         ):
-            with self.assertRaises(asyncio.CancelledError):
-                await _keep_buffered_deliveries_alive(buffer)
+            await _keep_buffered_deliveries_alive(buffer)
         item.message.in_progress.assert_awaited_once()
 
         await _release_buffered_deliveries(buffer)
@@ -288,9 +289,7 @@ class AcquisitionDispatchTests(unittest.IsolatedAsyncioTestCase):
         )
         await asyncio.wait({task})
 
-        with self.assertRaisesRegex(
-            PlaywrightRuntimeLost, "driver process exited"
-        ):
+        with self.assertRaisesRegex(PlaywrightRuntimeLost, "driver process exited"):
             _raise_background_failure((task,))
 
 

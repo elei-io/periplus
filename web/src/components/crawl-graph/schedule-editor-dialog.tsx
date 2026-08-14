@@ -66,7 +66,6 @@ export function ScheduleEditorDialog({
   schedule,
   initialName,
   initialMaxCrawls,
-  initialUrls,
   open,
   onOpenChange,
   onSaved,
@@ -75,7 +74,6 @@ export function ScheduleEditorDialog({
   schedule: CrawlSchedule | null
   initialName?: string
   initialMaxCrawls?: number
-  initialUrls?: string[]
   open: boolean
   onOpenChange: (open: boolean) => void
   onSaved?: (schedule: CrawlSchedule) => void
@@ -107,9 +105,7 @@ export function ScheduleEditorDialog({
   const [maxCrawls, setMaxCrawls] = useState(
     (schedule?.max_crawls ?? initialMaxCrawls ?? 1000).toString()
   )
-  const [urls, setUrls] = useState(
-    schedule?.root_urls.join("\n") ?? initialUrls?.join("\n") ?? ""
-  )
+  const [urls, setUrls] = useState(schedule?.urls.join("\n") ?? "")
   const [overlap, setOverlap] = useState<"skip" | "allow">(
     schedule?.overlap_policy ?? "skip"
   )
@@ -128,33 +124,43 @@ export function ScheduleEditorDialog({
         }
       : { kind, expression: cron.trim(), timezone: timezone.trim() }
 
-  const payload = (): CrawlScheduleInput => ({
-    name: name.trim(),
-    enabled: schedule?.enabled ?? true,
-    timing: timing(),
-    starts_at: instant(startsAt),
-    ends_at: instant(endsAt),
-    maximum_run_count: maximumRuns ? Number(maximumRuns) : null,
-    max_crawls: Number(maxCrawls),
-    root_urls: urls
-      .split("\n")
-      .map((value) => value.trim())
-      .filter(Boolean),
-    overlap_policy: overlap,
-    misfire_policy: misfire,
-  })
+  const payload = (): CrawlScheduleInput => {
+    const startUrls = Array.from(
+      new Set(
+        urls
+          .split(/\r?\n/)
+          .map((url) => url.trim())
+          .filter(Boolean)
+      )
+    )
+    return {
+      name: name.trim(),
+      enabled: schedule?.enabled ?? true,
+      timing: timing(),
+      starts_at: instant(startsAt),
+      ends_at: instant(endsAt),
+      maximum_run_count: maximumRuns ? Number(maximumRuns) : null,
+      max_crawls: Number(maxCrawls),
+      urls: startUrls,
+      overlap_policy: overlap,
+      misfire_policy: misfire,
+    }
+  }
 
   const save = () => {
     const values = payload()
-    if (!values.name || values.root_urls.length === 0) {
-      toast.error("Schedule name and at least one root URL are required.")
+    if (!values.name || values.urls.length === 0) {
+      toast.error("Schedule name and at least one start URL are required.")
       return
     }
-    if (
-      !Number.isInteger(values.max_crawls) ||
-      values.max_crawls < values.root_urls.length
-    ) {
-      toast.error("Maximum crawls must be at least the number of root URLs.")
+    if (!Number.isInteger(values.max_crawls) || values.max_crawls < 1) {
+      toast.error("Maximum crawls must be at least one.")
+      return
+    }
+    if (values.max_crawls < values.urls.length) {
+      toast.error(
+        `Maximum crawls must cover all ${values.urls.length.toLocaleString()} start URLs.`
+      )
       return
     }
     const options = {
@@ -182,7 +188,7 @@ export function ScheduleEditorDialog({
             {schedule ? "Edit schedule" : "Create schedule"}
           </DialogTitle>
           <DialogDescription>
-            Future occurrences use the latest saved graph and these root URLs.
+            Future occurrences use the latest saved plan and these start URLs.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-5">
@@ -291,13 +297,11 @@ export function ScheduleEditorDialog({
             </Field>
           </div>
 
-          <Field label="Root URLs · one per line">
+          <Field label="Start URLs · one per line">
             <Textarea
-              className="min-h-32 font-mono text-xs"
+              className="min-h-24 font-mono text-xs"
               value={urls}
-              placeholder={
-                "https://example.com/\nhttps://example.com/catalogue"
-              }
+              placeholder={"https://example.com/\nhttps://example.org/"}
               onChange={(event) => setUrls(event.target.value)}
             />
           </Field>
@@ -323,7 +327,7 @@ export function ScheduleEditorDialog({
                 </SelectContent>
               </Select>
             </Field>
-            <Field label="If Atlas missed occurrences">
+            <Field label="If Periplus missed occurrences">
               <Select
                 value={misfire}
                 onValueChange={(value) =>

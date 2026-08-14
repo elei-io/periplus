@@ -6,23 +6,31 @@ import unittest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from control.crawl_graphs.models import CrawlGraph, CrawlGraphEdge, CrawlGraphNode
-from control.crawl_graphs.schemas import CrawlGraphCreate, CrawlGraphNodeCreate
-from control.crawl_graphs.service import create_graph, create_node
-from control.crawl_schedules.models import CrawlSchedule
-from control.crawl_schedules.schemas import (
+from periplus.crawl.control.crawl_graphs.models import CrawlGraph, CrawlGraphEdge, CrawlGraphNode
+from periplus.crawl.control.crawl_graphs.schemas import (
+    CrawlGraphCreate,
+    CrawlGraphNodeCreate,
+    CrawlGraphUpdate,
+)
+from periplus.crawl.control.crawl_graphs.service import (
+    create_graph,
+    create_node,
+    update_graph,
+)
+from periplus.crawl.control.crawl_schedules.models import CrawlSchedule
+from periplus.crawl.control.crawl_schedules.schemas import (
     CronTiming,
     CrawlScheduleCreate,
     IntervalTiming,
     SchedulePreviewRequest,
 )
-from control.crawl_schedules.service import (
+from periplus.crawl.control.crawl_schedules.service import (
     CrawlScheduleValidationError,
     create_schedule,
     preview_occurrences,
     set_schedule_enabled,
 )
-from db import Base
+from periplus.platform.postgres import Base
 
 
 class CrawlScheduleTests(unittest.TestCase):
@@ -38,8 +46,15 @@ class CrawlScheduleTests(unittest.TestCase):
             ],
         )
         self.session = Session(self.engine, expire_on_commit=False)
-        graph = create_graph(
-            self.session, CrawlGraphCreate(slug="scheduled")
+        graph = create_graph(self.session, CrawlGraphCreate())
+        graph = update_graph(
+            self.session,
+            graph.id,
+            CrawlGraphUpdate(
+                slug="scheduled",
+                description=None,
+                root_node_id=None,
+            ),
         )
         create_node(
             self.session,
@@ -52,7 +67,9 @@ class CrawlScheduleTests(unittest.TestCase):
         self.session.close()
         self.engine.dispose()
 
-    def test_interval_schedule_normalizes_and_deduplicates_urls(self) -> None:
+    def test_interval_schedule_normalizes_and_deduplicates_start_urls(
+        self,
+    ) -> None:
         now = datetime(2026, 7, 17, 12, tzinfo=UTC)
         schedule = create_schedule(
             self.session,
@@ -61,15 +78,19 @@ class CrawlScheduleTests(unittest.TestCase):
                 name="Hourly",
                 timing=IntervalTiming(kind="interval", seconds=3600),
                 max_crawls=250,
-                root_urls=[
+                urls=[
                     "HTTPS://Example.com",
                     "https://example.com/",
+                    "https://example.org/start",
                 ],
             ),
             now=now,
         )
 
-        self.assertEqual(schedule.root_urls, ["https://example.com/"])
+        self.assertEqual(
+            schedule.urls,
+            ["https://example.com/", "https://example.org/start"],
+        )
         self.assertEqual(schedule.max_crawls, 250)
         self.assertEqual(schedule.next_run_at, now + timedelta(hours=1))
         self.assertEqual(schedule.status, "active")
@@ -84,7 +105,7 @@ class CrawlScheduleTests(unittest.TestCase):
                 name="Windowed",
                 timing=IntervalTiming(kind="interval", seconds=3600),
                 starts_at=starts_at,
-                root_urls=["https://example.com/"],
+                urls=["https://example.com/"],
             ),
             now=now,
         )
@@ -100,7 +121,7 @@ class CrawlScheduleTests(unittest.TestCase):
                 name="Paused",
                 enabled=False,
                 timing=IntervalTiming(kind="interval", seconds=3600),
-                root_urls=["https://example.com/"],
+                urls=["https://example.com/"],
             ),
         )
 
@@ -148,7 +169,7 @@ class CrawlScheduleTests(unittest.TestCase):
                 name="Once",
                 timing=IntervalTiming(kind="interval", seconds=60),
                 maximum_run_count=1,
-                root_urls=["https://example.com/"],
+                urls=["https://example.com/"],
             ),
         )
         model = self.session.get(CrawlSchedule, schedule.id)

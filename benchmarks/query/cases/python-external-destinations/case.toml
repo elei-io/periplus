@@ -1,0 +1,7 @@
+id = "python-external-destinations"
+title = "External destinations from Python documentation"
+use_case = "Discover which external sites the retained Python documentation most frequently references."
+classification = "optimizer"
+ordered = true
+memory_limit = "512MB"
+max_warm_ms = 60000

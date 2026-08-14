@@ -4,25 +4,16 @@ import {
   PauseIcon,
   PlayIcon,
   PlusIcon,
-  RefreshCwIcon,
+  Settings2Icon,
   Trash2Icon,
 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 
 import { GraphCanvas } from "@/components/crawl-graph/graph-canvas"
-import { SqlEditor } from "@/components/catalogue/sql-editor"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -30,15 +21,21 @@ import {
   SelectItem,
   SelectTrigger,
 } from "@/components/ui/select"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import {
   useCreateCrawlGraph,
-  useCreateCrawlGraphEdge,
   useCreateCrawlGraphNode,
   useCrawlGraph,
   useCrawlGraphs,
   useDeleteCrawlGraph,
-  useDeleteCrawlGraphEdge,
   useDeleteCrawlGraphNode,
   useActiveGraphRuns,
   useCancelGraphRun,
@@ -47,12 +44,9 @@ import {
   useResumeGraphRun,
   useSetCrawlGraphRoot,
   useTriggerCrawlGraph,
+  useUpdateCrawlGraph,
 } from "@/hooks/use-crawl-graphs"
-import type {
-  CrawlGraphDetail,
-  CrawlGraphEdge,
-  CrawlGraphNode,
-} from "@/types/graphs"
+import type { CrawlGraphDetail, CrawlGraphNode } from "@/types/graphs"
 
 export function CrawlGraphsPage({
   onNavigate,
@@ -61,96 +55,77 @@ export function CrawlGraphsPage({
 }) {
   const graphsQuery = useCrawlGraphs()
   const createGraph = useCreateCrawlGraph()
-  const [slug, setSlug] = useState("")
-  const [description, setDescription] = useState("")
 
   const graphs = graphsQuery.data?.items ?? []
 
-  const submitGraph = () => {
-    const nextSlug = slug.trim()
-    if (!nextSlug) {
-      toast.error("Graph slug is required.")
-      return
-    }
-    createGraph.mutate(
-      { slug: nextSlug, description: description.trim() },
-      {
-        onSuccess: (graph) => {
-          setSlug("")
-          setDescription("")
-          onNavigate(`/crawls/graphs/${graph.id}`)
-        },
-      }
-    )
-  }
+  const createPlan = () =>
+    createGraph.mutate(undefined, {
+      onSuccess: (graph) => onNavigate(`/crawls/plans/${graph.id}`),
+    })
 
   return (
     <div className="flex min-h-0 w-full flex-col gap-4">
-      <section className="flex min-h-0 flex-col gap-3 rounded-lg border bg-card/80 p-4">
-        <div className="flex items-center justify-between gap-2">
+      <section className="min-h-0 overflow-hidden rounded-lg border bg-card/80">
+        <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
           <div className="flex items-center gap-2">
             <GitForkIcon className="size-4 text-muted-foreground" />
-            <h1 className="font-medium">Crawl Graphs</h1>
+            <h1 className="font-medium">Crawl plans</h1>
             <Badge variant="outline">{graphsQuery.data?.total ?? 0}</Badge>
           </div>
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            disabled={graphsQuery.isFetching}
-            onClick={() => void graphsQuery.refetch()}
-          >
-            <RefreshCwIcon />
-          </Button>
-        </div>
-
-        <div className="grid gap-2 border-y py-4 md:grid-cols-[minmax(12rem,1fr)_minmax(16rem,2fr)_auto]">
-          <Input
-            value={slug}
-            placeholder="graph-slug"
-            onChange={(event) =>
-              setSlug(
-                event.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "-")
-              )
-            }
-          />
-          <Input
-            value={description}
-            placeholder="Description"
-            onChange={(event) => setDescription(event.target.value)}
-          />
-          <Button disabled={createGraph.isPending} onClick={submitGraph}>
+          <Button disabled={createGraph.isPending} onClick={createPlan}>
             <PlusIcon />
-            Create graph
+            Create plan
           </Button>
         </div>
-
-        <div className="grid min-h-0 gap-2 overflow-y-auto md:grid-cols-2 xl:grid-cols-3">
-          {graphs.map((graph) => (
-            <button
-              key={graph.id}
-              type="button"
-              className="w-full rounded-md border px-4 py-3 text-left transition-colors hover:border-primary/30 hover:bg-muted"
-              onClick={() => onNavigate(`/crawls/graphs/${graph.id}`)}
-            >
-              <span className="block truncate text-sm font-medium">
-                {graph.slug}
-                {graph.system_owned ? (
-                  <Badge variant="secondary" className="ml-2">
-                    System
-                  </Badge>
-                ) : null}
-              </span>
-              <span className="block truncate text-xs text-muted-foreground">
-                Created {new Date(graph.created_at).toLocaleDateString()}
-              </span>
-            </button>
-          ))}
-          {!graphsQuery.isLoading && graphs.length === 0 ? (
-            <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-              Create the first crawl graph.
-            </p>
-          ) : null}
-        </div>
+        <Table containerClassName="max-h-[calc(100svh-12rem)]">
+          <TableHeader className="sticky top-0 z-10 bg-card">
+            <TableRow>
+              <TableHead>Plan</TableHead>
+              <TableHead>Description</TableHead>
+              <TableHead>Root</TableHead>
+              <TableHead>Created</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {graphs.map((graph) => (
+              <TableRow key={graph.id}>
+                <TableCell>
+                  <button
+                    type="button"
+                    className="font-medium text-foreground hover:underline"
+                    onClick={() => onNavigate(`/crawls/plans/${graph.id}`)}
+                  >
+                    {graph.slug}
+                  </button>
+                  {graph.system_owned ? (
+                    <Badge variant="secondary" className="ml-2">
+                      System
+                    </Badge>
+                  ) : null}
+                </TableCell>
+                <TableCell className="max-w-md truncate text-muted-foreground">
+                  {graph.description || "—"}
+                </TableCell>
+                <TableCell>
+                  {graph.root_node_id ? "Configured" : "Not set"}
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  {new Date(graph.created_at).toLocaleString()}
+                </TableCell>
+              </TableRow>
+            ))}
+            {!graphsQuery.isLoading && graphs.length === 0 ? (
+              <TableRow>
+                <TableCell
+                  colSpan={4}
+                  className="h-32 text-center text-muted-foreground"
+                >
+                  Create the first crawl plan.
+                </TableCell>
+              </TableRow>
+            ) : null}
+          </TableBody>
+        </Table>
       </section>
     </div>
   )
@@ -167,9 +142,9 @@ export function CrawlGraphDetailPage({
   const deleteGraph = useDeleteCrawlGraph()
 
   const removeGraph = () => {
-    if (!window.confirm("Delete this crawl graph?")) return
+    if (!window.confirm("Delete this crawl plan?")) return
     deleteGraph.mutate(graphId, {
-      onSuccess: () => onNavigate("/crawls/graphs"),
+      onSuccess: () => onNavigate("/crawls/plans"),
     })
   }
 
@@ -180,15 +155,13 @@ export function CrawlGraphDetailPage({
   }
   if (!graphQuery.data) {
     return (
-      <p className="m-auto text-sm text-muted-foreground">Graph not found.</p>
+      <p className="m-auto text-sm text-muted-foreground">Plan not found.</p>
     )
   }
   return (
     <div className="w-full">
       <GraphDetail
         graph={graphQuery.data}
-        isRefreshing={graphQuery.isFetching}
-        onRefresh={() => void graphQuery.refetch()}
         onDelete={removeGraph}
         isDeleting={deleteGraph.isPending}
         onNavigate={onNavigate}
@@ -199,20 +172,17 @@ export function CrawlGraphDetailPage({
 
 function GraphDetail({
   graph,
-  isRefreshing,
-  onRefresh,
   onDelete,
   isDeleting,
   onNavigate,
 }: {
   graph: CrawlGraphDetail
-  isRefreshing: boolean
-  onRefresh: () => void
   onDelete: () => void
   isDeleting: boolean
   onNavigate: (href: string) => void
 }) {
   const setRoot = useSetCrawlGraphRoot(graph)
+  const updatePlan = useUpdateCrawlGraph(graph.id)
   const activeRunsQuery = useActiveGraphRuns(graph.id)
   const activeRuns = useMemo(
     () => activeRunsQuery.data?.items ?? [],
@@ -224,6 +194,35 @@ function GraphDetail({
   const pauseRun = usePauseGraphRun()
   const resumeRun = useResumeGraphRun()
   const announcedRuns = useRef(new Set<string>())
+  const [editingMetadata, setEditingMetadata] = useState<
+    "slug" | "description" | null
+  >(null)
+  const [metadataDraft, setMetadataDraft] = useState("")
+
+  const beginMetadataEdit = (field: "slug" | "description") => {
+    if (graph.system_owned) return
+    setMetadataDraft(field === "slug" ? graph.slug : (graph.description ?? ""))
+    setEditingMetadata(field)
+  }
+
+  const saveMetadata = (field: "slug" | "description") => {
+    setEditingMetadata(null)
+    const slug = field === "slug" ? metadataDraft.trim() : graph.slug
+    if (!slug) {
+      toast.error("Plan slug is required.")
+      return
+    }
+    const description =
+      field === "description" ? metadataDraft.trim() : (graph.description ?? "")
+    if (slug === graph.slug && description === (graph.description ?? "")) {
+      return
+    }
+    updatePlan.mutate({
+      slug,
+      description,
+      root_node_id: graph.root_node_id,
+    })
+  }
 
   useEffect(() => {
     if (activeRunId === null && activeRuns[0]) {
@@ -244,7 +243,7 @@ function GraphDetail({
     )
       return
     announcedRuns.current.add(run.id)
-    toast.success(`Graph run ${run.status.replaceAll("_", " ")}.`, {
+    toast.success(`Crawl run ${run.status.replaceAll("_", " ")}.`, {
       action: {
         label: "View metrics",
         onClick: () => onNavigate(`/crawls/metrics?run=${run.id}`),
@@ -253,16 +252,50 @@ function GraphDetail({
     void activeRunsQuery.refetch().then(() => setActiveRunId(null))
   }, [activeRunsQuery, onNavigate, runQuery.data])
   return (
-    <div className="flex min-h-0 flex-col gap-4">
-      <header className="flex flex-wrap items-start justify-between gap-3 border-b pb-4">
-        <div>
+    <div className="flex min-h-0 flex-col gap-3">
+      <header className="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
+        <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <h2 className="text-xl font-semibold tracking-tight">
-              {graph.slug}
-            </h2>
-            <Badge variant="secondary">
-              {graph.root_node_id ? "Root set" : "No root"}
-            </Badge>
+            {editingMetadata === "slug" ? (
+              <Input
+                autoFocus
+                className="h-8 w-64 text-lg font-semibold"
+                value={metadataDraft}
+                aria-label="Plan slug"
+                onChange={(event) =>
+                  setMetadataDraft(
+                    event.target.value
+                      .toLowerCase()
+                      .replace(/[^a-z0-9_-]/g, "-")
+                  )
+                }
+                onBlur={() => saveMetadata("slug")}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur()
+                  if (event.key === "Escape") setEditingMetadata(null)
+                }}
+              />
+            ) : (
+              <h2
+                className={
+                  graph.system_owned
+                    ? "truncate text-xl font-semibold tracking-tight"
+                    : "cursor-text truncate rounded-sm px-1 text-xl font-semibold tracking-tight outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring"
+                }
+                title={
+                  graph.system_owned
+                    ? graph.slug
+                    : "Double-click to edit the plan slug"
+                }
+                tabIndex={graph.system_owned ? undefined : 0}
+                onDoubleClick={() => beginMetadataEdit("slug")}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") beginMetadataEdit("slug")
+                }}
+              >
+                {graph.slug}
+              </h2>
+            )}
             {graph.system_owned ? (
               <Badge variant="outline">System</Badge>
             ) : (
@@ -288,15 +321,45 @@ function GraphDetail({
               </Select>
             )}
           </div>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {graph.description || "No description"}
-          </p>
-          <p className="mt-1 font-mono text-xs text-muted-foreground">
-            {graph.id}
-          </p>
+          {editingMetadata === "description" ? (
+            <Input
+              autoFocus
+              className="mt-1 h-8 w-[min(36rem,80vw)] text-sm"
+              value={metadataDraft}
+              aria-label="Plan description"
+              placeholder="Add a description"
+              onChange={(event) => setMetadataDraft(event.target.value)}
+              onBlur={() => saveMetadata("description")}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur()
+                if (event.key === "Escape") setEditingMetadata(null)
+              }}
+            />
+          ) : (
+            <p
+              className={
+                graph.system_owned
+                  ? "mt-1 text-sm text-muted-foreground"
+                  : "mt-1 w-fit cursor-text rounded-sm px-1 text-sm text-muted-foreground outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring"
+              }
+              title={
+                graph.system_owned
+                  ? undefined
+                  : "Double-click to edit the description"
+              }
+              tabIndex={graph.system_owned ? undefined : 0}
+              onDoubleClick={() => beginMetadataEdit("description")}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  beginMetadataEdit("description")
+                }
+              }}
+            >
+              {graph.description || "No description"}
+            </p>
+          )}
         </div>
-        <div className="flex gap-2">
-          <RunGraphButton graph={graph} onStarted={setActiveRunId} />
+        <div className="flex flex-wrap gap-2">
           {activeRuns.length > 1 ? (
             <Select
               value={activeRunId}
@@ -344,13 +407,10 @@ function GraphDetail({
               </Button>
             </>
           ) : null}
-          <Button variant="outline" disabled={isRefreshing} onClick={onRefresh}>
-            <RefreshCwIcon />
-            Refresh
-          </Button>
           {!graph.system_owned ? (
             <Button
-              variant="destructive"
+              variant="ghost"
+              className="text-destructive hover:text-destructive"
               disabled={isDeleting}
               onClick={onDelete}
             >
@@ -360,6 +420,8 @@ function GraphDetail({
           ) : null}
         </div>
       </header>
+
+      <RunPlanBar graph={graph} onStarted={setActiveRunId} />
 
       <GraphCanvas
         graph={graph}
@@ -430,7 +492,7 @@ export function NodesCard({ graph }: { graph: CrawlGraphDetail }) {
           ))}
           {graph.nodes.length === 0 ? (
             <p className="py-4 text-center text-sm text-muted-foreground">
-              Add a node to establish the graph root.
+              Add a node to establish the plan root.
             </p>
           ) : null}
         </div>
@@ -468,199 +530,7 @@ function NodeRow({
   )
 }
 
-export function EdgesCard({ graph }: { graph: CrawlGraphDetail }) {
-  const createEdge = useCreateCrawlGraphEdge(graph.id)
-  const deleteEdge = useDeleteCrawlGraphEdge(graph.id)
-  const [name, setName] = useState("")
-  const [description, setDescription] = useState("")
-  const [sourceId, setSourceId] = useState("")
-  const [targetId, setTargetId] = useState("")
-  const [sql, setSql] = useState(
-    "SELECT target_url AS url\nFROM edge.page_links\nWHERE crawl_id = $crawl_id\n  AND relation_kind <> 'external'\nLIMIT 100000"
-  )
-
-  const nodeOptions = useMemo(
-    () => new Map(graph.nodes.map((node) => [node.id, node.name])),
-    [graph.nodes]
-  )
-
-  /* eslint-disable react-hooks/set-state-in-effect -- defaults follow server graph membership */
-  useEffect(() => {
-    if (!nodeOptions.has(sourceId)) {
-      setSourceId(graph.nodes[0]?.id ?? "")
-    }
-    if (!nodeOptions.has(targetId)) {
-      setTargetId(graph.nodes[0]?.id ?? "")
-    }
-  }, [graph.nodes, nodeOptions, sourceId, targetId])
-  /* eslint-enable react-hooks/set-state-in-effect */
-
-  const submit = () => {
-    if (!name.trim() || !sourceId || !targetId || !sql.trim()) {
-      toast.error("Edge name, endpoints, and SQL are required.")
-      return
-    }
-    createEdge.mutate(
-      {
-        name: name.trim(),
-        description: description.trim(),
-        source_node_id: sourceId,
-        target_node_id: targetId,
-        sql: sql.trim(),
-      },
-      {
-        onSuccess: () => {
-          setName("")
-          setDescription("")
-        },
-      }
-    )
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>SQL edges</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid gap-2 sm:grid-cols-2">
-          <Input
-            value={name}
-            placeholder="Edge name"
-            onChange={(event) => setName(event.target.value)}
-          />
-          <Input
-            value={description}
-            placeholder="Description"
-            onChange={(event) => setDescription(event.target.value)}
-          />
-          <NodeSelect
-            label="Source"
-            nodes={graph.nodes}
-            value={sourceId}
-            onChange={setSourceId}
-          />
-          <NodeSelect
-            label="Target"
-            nodes={graph.nodes}
-            value={targetId}
-            onChange={setTargetId}
-          />
-          <Textarea
-            className="min-h-32 font-mono text-xs sm:col-span-2"
-            value={sql}
-            onChange={(event) => setSql(event.target.value)}
-          />
-          <Button
-            className="sm:col-span-2"
-            disabled={createEdge.isPending || graph.nodes.length === 0}
-            onClick={submit}
-          >
-            <PlusIcon />
-            Add edge
-          </Button>
-        </div>
-
-        <div className="space-y-2">
-          {graph.edges.map((edge) => (
-            <EdgeRow
-              key={edge.id}
-              edge={edge}
-              nodeNames={nodeOptions}
-              isDeleting={deleteEdge.isPending}
-              onDelete={() => deleteEdge.mutate(edge.id)}
-            />
-          ))}
-          {graph.edges.length === 0 ? (
-            <p className="py-4 text-center text-sm text-muted-foreground">
-              Edges turn each ready crawl into URL inputs for another node.
-            </p>
-          ) : null}
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function NodeSelect({
-  label,
-  nodes,
-  value,
-  onChange,
-}: {
-  label: string
-  nodes: CrawlGraphNode[]
-  value: string
-  onChange: (value: string) => void
-}) {
-  return (
-    <Select
-      value={value || null}
-      onValueChange={(nextValue) => nextValue && onChange(nextValue)}
-    >
-      <SelectTrigger className="w-full">
-        <span>
-          {label}: {nodes.find((node) => node.id === value)?.name ?? "Select"}
-        </span>
-      </SelectTrigger>
-      <SelectContent>
-        {nodes.map((node) => (
-          <SelectItem key={node.id} value={node.id}>
-            {node.name}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  )
-}
-
-function EdgeRow({
-  edge,
-  nodeNames,
-  isDeleting,
-  onDelete,
-}: {
-  edge: CrawlGraphEdge
-  nodeNames: Map<string, string>
-  isDeleting: boolean
-  onDelete: () => void
-}) {
-  const selfEdge = edge.source_node_id === edge.target_node_id
-  return (
-    <div className="rounded-md border p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-medium">{edge.name}</span>
-            {selfEdge ? <Badge variant="secondary">Self-edge</Badge> : null}
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {nodeNames.get(edge.source_node_id) ?? edge.source_node_id} →{" "}
-            {nodeNames.get(edge.target_node_id) ?? edge.target_node_id}
-          </p>
-        </div>
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          disabled={isDeleting}
-          onClick={onDelete}
-        >
-          <Trash2Icon />
-        </Button>
-      </div>
-      <div className="mt-2 overflow-hidden rounded border bg-card/50">
-        <SqlEditor
-          value={edge.sql}
-          readOnly
-          height={`${Math.max(80, Math.min(128, edge.sql.split("\n").length * 20 + 28))}px`}
-          ariaLabel={`Read-only SQL for edge ${edge.name}`}
-        />
-      </div>
-    </div>
-  )
-}
-
-function RunGraphButton({
+function RunPlanBar({
   graph,
   onStarted,
 }: {
@@ -668,23 +538,32 @@ function RunGraphButton({
   onStarted: (runId: string) => void
 }) {
   const trigger = useTriggerCrawlGraph(graph.id)
-  const [urlsText, setUrlsText] = useState("")
+  const [urls, setUrls] = useState("")
   const [maxCrawls, setMaxCrawls] = useState("1000")
   const [maxRunDays, setMaxRunDays] = useState("7")
-  const [open, setOpen] = useState(false)
 
   const run = () => {
-    const urls = urlsText
-      .split("\n")
-      .map((value) => value.trim())
-      .filter(Boolean)
-    if (urls.length === 0) {
-      toast.error("Enter at least one URL.")
+    const startUrls = Array.from(
+      new Set(
+        urls
+          .split(/\r?\n/)
+          .map((url) => url.trim())
+          .filter(Boolean)
+      )
+    )
+    if (startUrls.length === 0) {
+      toast.error("Enter at least one start URL.")
       return
     }
     const crawlBudget = Number(maxCrawls)
-    if (!Number.isInteger(crawlBudget) || crawlBudget < urls.length) {
-      toast.error("Maximum crawls must be at least the number of root URLs.")
+    if (!Number.isInteger(crawlBudget) || crawlBudget < 1) {
+      toast.error("Maximum crawls must be at least one.")
+      return
+    }
+    if (crawlBudget < startUrls.length) {
+      toast.error(
+        `Maximum crawls must cover all ${startUrls.length.toLocaleString()} start URLs.`
+      )
       return
     }
     const runDays = Number(maxRunDays)
@@ -694,77 +573,98 @@ function RunGraphButton({
     }
     trigger.mutate(
       {
-        urls,
+        urls: startUrls,
         max_crawls: crawlBudget,
         max_run_seconds: runDays * 24 * 60 * 60,
       },
       {
         onSuccess: (submission) => {
-          toast.success(`Graph run ${submission.run_id} queued.`)
+          toast.success(`Crawl run ${submission.run_id} queued.`)
           onStarted(submission.run_id)
-          setOpen(false)
-          setUrlsText("")
+          setUrls("")
         },
       }
     )
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <Button disabled={!graph.root_node_id} onClick={() => setOpen(true)}>
-        <PlayIcon />
-        Run graph
-      </Button>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Run graph</DialogTitle>
-          <DialogDescription>
-            Enter one URL per line. Each URL is offered to the root node.
-          </DialogDescription>
-        </DialogHeader>
+    <form
+      className="grid items-stretch gap-2 rounded-lg border bg-card/50 p-2 shadow-sm md:grid-cols-[minmax(20rem,1fr)_9rem_8rem_auto]"
+      onSubmit={(event) => {
+        event.preventDefault()
+        run()
+      }}
+    >
+      <div className="relative min-w-0">
+        <span className="pointer-events-none absolute top-1.5 left-3 z-10 text-[0.625rem] font-medium tracking-wide text-muted-foreground uppercase">
+          Start URLs · one per line
+        </span>
         <Textarea
-          className="min-h-40 font-mono text-xs"
-          value={urlsText}
-          placeholder={"https://example.com/a\nhttps://example.com/b"}
-          onChange={(event) => setUrlsText(event.target.value)}
+          className="min-h-12 resize-y pt-5 font-mono text-xs"
+          value={urls}
+          placeholder={"https://example.com/\nhttps://example.org/"}
+          aria-label="Start URLs, one per line"
+          onChange={(event) => setUrls(event.target.value)}
         />
-        <div className="space-y-1.5">
-          <p className="text-sm font-medium">Maximum crawls</p>
-          <Input
-            min={1}
-            max={1_000_000}
-            type="number"
-            value={maxCrawls}
-            onChange={(event) => setMaxCrawls(event.target.value)}
-          />
-          <p className="text-xs text-muted-foreground">
-            Stops admitting new URLs when this run reaches its budget.
-          </p>
-        </div>
-        <div className="space-y-1.5">
-          <p className="text-sm font-medium">Maximum run duration (days)</p>
-          <Input
-            min={1}
-            max={365}
-            type="number"
-            value={maxRunDays}
-            onChange={(event) => setMaxRunDays(event.target.value)}
-          />
-          <p className="text-xs text-muted-foreground">
-            The persisted deadline survives worker and service restarts.
-          </p>
-        </div>
-        <DialogFooter>
-          <Button disabled={trigger.isPending} onClick={run}>
-            {trigger.isPending ? (
-              <LoaderCircleIcon className="animate-spin" />
-            ) : (
-              <PlayIcon />
-            )}
-            Start run
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      </div>
+      <RunSettingField
+        label="Max pages"
+        value={maxCrawls}
+        min={1}
+        max={1_000_000}
+        onChange={setMaxCrawls}
+      />
+      <RunSettingField
+        label="Max days"
+        value={maxRunDays}
+        min={1}
+        max={365}
+        onChange={setMaxRunDays}
+      />
+      <Button
+        className="h-12 px-5"
+        type="submit"
+        disabled={!graph.root_node_id || !urls.trim() || trigger.isPending}
+      >
+        {trigger.isPending ? (
+          <LoaderCircleIcon className="animate-spin" />
+        ) : (
+          <PlayIcon />
+        )}
+        Run
+      </Button>
+    </form>
+  )
+}
+
+function RunSettingField({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string
+  value: string
+  min: number
+  max: number
+  onChange: (value: string) => void
+}) {
+  return (
+    <div className="relative">
+      <span className="pointer-events-none absolute top-1.5 left-3 z-10 flex items-center gap-1 text-[0.625rem] font-medium tracking-wide text-muted-foreground uppercase">
+        <Settings2Icon className="size-2.5" />
+        {label}
+      </span>
+      <Input
+        className="h-12 pt-5 tabular-nums"
+        type="number"
+        min={min}
+        max={max}
+        value={value}
+        aria-label={label}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </div>
   )
 }

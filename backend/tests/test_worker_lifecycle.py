@@ -4,8 +4,8 @@ import asyncio
 import unittest
 from unittest.mock import MagicMock, patch
 
-from repository.ingestion.health import HealthMonitor
-from workers.lifecycle import (
+from periplus.platform.health import HealthMonitor
+from periplus.platform.process import (
     WorkerEndpointConfig,
     WorkerEndpoints,
     cancel_task,
@@ -101,23 +101,23 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "workers.lifecycle.WorkerEndpointConfig.from_env",
+                "periplus.platform.process.WorkerEndpointConfig.from_env",
                 return_value=MagicMock(),
             ) as config,
             patch(
-                "workers.lifecycle.WorkerEndpoints",
+                "periplus.platform.process.WorkerEndpoints",
                 return_value=endpoints,
             ),
-            patch("workers.lifecycle.install_signal_handlers") as signals,
+            patch("periplus.platform.process.install_signal_handlers") as signals,
         ):
             await run_worker_process(
-                role="housekeeping",
+                role="janitor",
                 monitor=monitor,
                 tasks={"work": work()},
                 stop=stop,
             )
 
-        config.assert_called_once_with("housekeeping")
+        config.assert_called_once_with("janitor")
         endpoints.start_health.assert_called_once_with(monitor)
         endpoints.start_metrics.assert_called_once_with()
         signals.assert_called_once_with(stop)
@@ -136,11 +136,11 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         monitor = HealthMonitor()
         with (
             patch(
-                "workers.lifecycle.start_health_server",
+                "periplus.platform.process.start_health_server",
                 return_value=(health_server, MagicMock()),
             ) as start_health,
             patch(
-                "workers.lifecycle.start_http_server",
+                "periplus.platform.process.start_http_server",
                 return_value=(metrics_server, MagicMock()),
             ) as start_metrics,
         ):

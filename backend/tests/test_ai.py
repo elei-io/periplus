@@ -2,30 +2,57 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from unittest.mock import patch
 
-from agents.catalogue_ai import (
+from pydantic import ValidationError
+
+from periplus.query.ai import (
+    AiAnswer,
     AiRequest,
-    _AI_AGENT,
+    CatalogueAssistantTools,
+    _INSTRUCTIONS,
+    query_catalogue,
 )
-from agents.catalogue_tools import CatalogueTools
-from repository.catalogue.interactive import BufferedCatalogueResult
+
+
+class _Catalogue:
+    def __init__(self, rows=None):
+        self.rows = rows or []
+        self.sql: list[str] = []
+
+    def trusted_remote_result(self, sql: str):
+        self.sql.append(sql)
+        return ["value"], ["INTEGER"], self.rows
+
+
+class _Control:
+    def __init__(self, catalogue: _Catalogue):
+        self.catalogue = catalogue
+
+    async def run(self, operation):
+        return operation(object(), self.catalogue)
 
 
 class AiContractTests(unittest.IsolatedAsyncioTestCase):
+    def test_instructions_prioritize_notebook_ready_research_sql(self) -> None:
+        instructions = " ".join(_INSTRUCTIONS.split())
+        self.assertIn("turn a research goal into SQL", instructions)
+        self.assertIn("take your suggested SQL into a notebook", instructions)
+        self.assertIn("register at least one and at most three", instructions)
+        self.assertIn("exploratory probes", instructions)
+
     def test_request_context_is_small_and_strict(self) -> None:
         request = AiRequest.model_validate(
             {
                 "prompt": "What data do we have?",
                 "context": [
-                    {"role": "user", "content": "Books?"},
-                    {"role": "assistant", "content": "There is a books view."},
+                    {"role": "user", "content": "Pages?"},
+                    {"role": "assistant", "content": "There is a pages view."},
                 ],
             }
         )
         self.assertEqual(len(request.context), 2)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValidationError):
             AiRequest.model_validate(
                 {
                     "prompt": "Too much context",
@@ -36,159 +63,147 @@ class AiContractTests(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-    async def test_sql_tool_uses_the_interactive_query_boundary(self) -> None:
-        runtime = SimpleNamespace(
-            config=SimpleNamespace(
-                catalogue_alias="atlas", catalogue_schema="main"
-            )
-        )
-        service = CatalogueTools(runtime)
-        result = BufferedCatalogueResult(
-            query_id=uuid4(),
-            columns=["price"],
-            column_types=["DOUBLE"],
-            rows=[[12.5]],
-        )
+    async def test_catalogue_metadata_uses_the_current_five_value_contract(
+        self,
+    ) -> None:
+        tools = CatalogueAssistantTools(_Control(_Catalogue()))
         with patch(
-            "agents.catalogue_tools.execute_interactive_query",
-            new=AsyncMock(return_value=result),
-        ) as execute:
-            response = await service.query(
-                "SELECT price FROM views.books LIMIT 900"
-            )
-
-        self.assertIn("LIMIT 201", execute.await_args.args[1])
-        self.assertEqual(response.rows, [[12.5]])
-        self.assertTrue(response.compilation.valid)
-        self.assertEqual(
-            response.compilation.authored_sql,
-            execute.await_args.args[1],
-        )
-
-    async def test_describe_relation_returns_ducklake_comments(self) -> None:
-        runtime = SimpleNamespace(
-            config=SimpleNamespace(
-                catalogue_alias="atlas", catalogue_schema="main"
-            )
-        )
-
-        async def run_internal(operation):
-            return operation(object())
-
-        runtime.run_internal = run_internal
-        service = CatalogueTools(runtime)
-        rows = [
-            (
-                "main",
-                "documents",
-                "BASE TABLE",
-                "One retained document per content identity.",
-                "document_id",
-                "UUID",
-                "NO",
-                "Stable document identity.",
-            )
-        ]
-        with patch(
-            "agents.catalogue_tools.trusted_remote_rows",
-            return_value=rows,
-        ) as query:
-            relation = await service.describe_relation("main.documents")
-
-        sql = query.call_args.args[1]
-        self.assertIn("duckdb_tables()", sql)
-        self.assertIn("duckdb_views()", sql)
-        self.assertIn("duckdb_columns()", sql)
-        self.assertEqual(
-            relation.description,
-            "One retained document per content identity.",
-        )
-        self.assertEqual(
-            relation.columns[0].description,
-            "Stable document identity.",
-        )
-
-    async def test_list_macros_uses_managed_descriptions(self) -> None:
-        runtime = SimpleNamespace(
-            config=SimpleNamespace(
-                catalogue_alias="atlas", catalogue_schema="main"
-            )
-        )
-
-        async def run_internal(operation):
-            return operation(object())
-
-        runtime.run_internal = run_internal
-        service = CatalogueTools(
-            runtime,
-            macro_descriptions={
-                "macros.suggest_records": "Discovers repeated records."
-            },
-        )
-        with patch(
-            "agents.catalogue_tools.trusted_remote_rows",
-            return_value=[
-                (
-                    "macros",
-                    "suggest_records",
-                    "table_macro",
-                    None,
-                    ["p_url"],
-                    None,
-                )
-            ],
+            "periplus.query.ai._public_metadata",
+            return_value=(
+                "catalogue-v1",
+                "duckdb-v1",
+                128,
+                [
+                    (
+                        "web",
+                        "observation",
+                        "Captured observations.",
+                        "requested_url",
+                        "VARCHAR",
+                        False,
+                        "Normalized URL.",
+                    )
+                ],
+                {},
+            ),
         ):
-            macros = await service.list_macros()
+            result = await tools.list_objects()
 
-        self.assertEqual(macros[0].description, "Discovers repeated records.")
-
-    def test_agent_has_a_non_executing_lint_tool(self) -> None:
-        tools = {
-            tool.name
-            for toolset in _AI_AGENT.toolsets
-            for tool in toolset.tools.values()
-        }
-        self.assertIn("lint_catalogue_sql", tools)
-        self.assertIn("suggest_sql_query", tools)
-
-    def test_sql_suggestion_must_be_clean_and_read_only(self) -> None:
-        runtime = SimpleNamespace(
-            config=SimpleNamespace(
-                catalogue_alias="atlas", catalogue_schema="main"
-            )
+        self.assertEqual(result["catalogue_version"], "catalogue-v1")
+        self.assertEqual(result["relations"][0]["name"], "web.observation")
+        self.assertEqual(
+            result["relations"][0]["columns"][0]["name"],
+            "requested_url",
         )
-        service = CatalogueTools(runtime)
 
-        with self.assertRaisesRegex(ValueError, "errors or warnings"):
-            service.prepare_suggestion(
-                title="All documents",
-                description="Inspect retained documents.",
-                sql="SELECT * FROM main.documents",
-            )
-        with self.assertRaisesRegex(ValueError, "only SELECT queries are allowed"):
-            service.prepare_suggestion(
-                title="Delete documents",
-                description="This must never be accepted.",
-                sql="DELETE FROM main.documents",
-            )
+    async def test_ai_query_is_read_only_and_bounded(self) -> None:
+        catalogue = _Catalogue([[index] for index in range(202)])
+        tools = CatalogueAssistantTools(_Control(catalogue))
 
-        suggestion = service.prepare_suggestion(
-            title="Sample documents",
-            description="Inspect a bounded sample.",
-            sql="SELECT * FROM main.documents LIMIT 10",
+        result = await tools.query("SELECT requested_url FROM web.observation")
+
+        self.assertIn("LIMIT 201", catalogue.sql[0])
+        self.assertEqual(len(result["rows"]), 200)
+        self.assertEqual(result["row_count"], 200)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(
+            result["sql"], "SELECT requested_url FROM web.observation;"
         )
-        self.assertEqual(suggestion.title, "Sample documents")
-        self.assertIn("LIMIT 10", suggestion.authored_sql)
-
-    async def test_mutating_sql_is_rejected(self) -> None:
-        runtime = SimpleNamespace(
-            config=SimpleNamespace(
-                catalogue_alias="atlas", catalogue_schema="main"
-            )
+        self.assertEqual(
+            result["display_sql"],
+            "SELECT\n  requested_url\nFROM web.observation;",
         )
-        service = CatalogueTools(runtime)
-        with self.assertRaisesRegex(ValueError, "only SELECT queries are allowed"):
-            await service.query("DELETE FROM main.documents")
+        with self.assertRaisesRegex(ValueError, "read-only"):
+            await tools.query("DELETE FROM web.observation")
+
+    async def test_suggestion_is_bound_and_normalized_before_handoff(self) -> None:
+        catalogue = _Catalogue()
+        tools = CatalogueAssistantTools(_Control(catalogue))
+
+        suggestion = await tools.prepare_suggestion(
+            title="Recent pages",
+            description="Inspect recently observed pages.",
+            sql="select * from web.observation limit 10;",
+        )
+
+        self.assertEqual(
+            suggestion.sql, "SELECT * FROM web.observation LIMIT 10;"
+        )
+        self.assertEqual(
+            suggestion.display_sql,
+            "SELECT\n  *\nFROM web.observation\nLIMIT 10;",
+        )
+        self.assertEqual(
+            catalogue.sql,
+            ["EXPLAIN SELECT * FROM web.observation LIMIT 10"],
+        )
+        with self.assertRaisesRegex(ValueError, "web"):
+            await tools.prepare_suggestion(
+                title="Internal",
+                description="Must be rejected.",
+                sql="SELECT * FROM material.html_elements",
+            )
+
+    async def test_query_events_explain_and_preserve_agent_work(self) -> None:
+        catalogue = _Catalogue([[4413]])
+        tools = CatalogueAssistantTools(_Control(catalogue))
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        context = SimpleNamespace(
+            deps=SimpleNamespace(
+                run_id="run",
+                tools=tools,
+                emit=emit,
+            ),
+            tool_call_id="query-1",
+        )
+        result = await query_catalogue(
+            context,
+            "Count retained domains",
+            "select count(*) from web.observation",
+        )
+
+        self.assertEqual(result["row_count"], 1)
+        self.assertEqual([event.type for event in events], [
+            "tool.started",
+            "tool.completed",
+        ])
+        self.assertTrue(all(event.activity == "query" for event in events))
+        self.assertTrue(
+            all(event.purpose == "Count retained domains" for event in events)
+        )
+        self.assertEqual(
+            events[-1].sql, "SELECT COUNT(*) FROM web.observation;"
+        )
+        self.assertEqual(
+            events[-1].display_sql,
+            "SELECT\n  COUNT(*)\nFROM web.observation;",
+        )
+        self.assertEqual(events[-1].row_count, 1)
+        self.assertEqual(events[-1].columns, ["value"])
+        self.assertEqual(events[-1].types, ["INTEGER"])
+        self.assertEqual(events[-1].rows, [[4413]])
+
+    def test_answer_contract_is_compact_markdown(self) -> None:
+        answer = AiAnswer.model_validate(
+            {
+                "markdown": (
+                    "There are **4,413 domains**.\n\n"
+                    "- Counted distinct non-null domains."
+                ),
+            }
+        )
+
+        self.assertIn("**4,413 domains**", answer.markdown)
+        with self.assertRaises(ValidationError):
+            AiAnswer.model_validate(
+                {
+                    "markdown": "x" * 4_001,
+                }
+            )
 
 
 if __name__ == "__main__":

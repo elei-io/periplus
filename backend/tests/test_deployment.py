@@ -1,24 +1,24 @@
 from unittest import TestCase
 from unittest.mock import MagicMock, call, patch
 
-import deployment
+from periplus.entrypoints import setup
 
 
 class DeploymentTests(TestCase):
-    @patch("deployment.bootstrap_catalogue")
-    @patch("deployment.seed_catalogue_fixture_definitions")
-    @patch("deployment.seed_system_control_plane")
-    @patch("deployment.migrate_control_database")
+    @patch("periplus.entrypoints.setup.bootstrap_live_cdc")
+    @patch("periplus.entrypoints.setup.bootstrap_catalogue")
+    @patch("periplus.entrypoints.setup.seed_system_control_plane")
+    @patch("periplus.entrypoints.setup.migrate_control_database")
     def test_setup_order(
-        self, migrate, seed_control, seed_fixtures, bootstrap
+        self, migrate, seed_control, bootstrap, bootstrap_cdc
     ) -> None:
         manager = MagicMock()
         manager.attach_mock(migrate, "migrate")
         manager.attach_mock(bootstrap, "bootstrap")
         manager.attach_mock(seed_control, "seed_control")
-        manager.attach_mock(seed_fixtures, "seed_fixtures")
+        manager.attach_mock(bootstrap_cdc, "bootstrap_cdc")
 
-        deployment.main([])
+        setup.main([])
 
         self.assertEqual(
             manager.mock_calls,
@@ -26,15 +26,19 @@ class DeploymentTests(TestCase):
                 call.migrate(),
                 call.seed_control(),
                 call.bootstrap(),
-                call.seed_fixtures(),
+                call.bootstrap_cdc(),
             ],
         )
 
-    @patch("deployment.command.upgrade")
+    @patch("periplus.entrypoints.setup.command.upgrade")
     def test_migrations_use_packaged_configuration(self, upgrade) -> None:
-        deployment.migrate_control_database()
+        setup.migrate_control_database()
 
         config, revision = upgrade.call_args.args
         self.assertIsNone(config.config_file_name)
         self.assertEqual(revision, "head")
-        self.assertTrue(config.get_main_option("script_location").endswith("db/alembic"))
+        self.assertTrue(
+            config.get_main_option("script_location").endswith(
+                "platform/postgres/alembic"
+            )
+        )

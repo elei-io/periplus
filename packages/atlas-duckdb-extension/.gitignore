@@ -1,5 +1,0 @@
-build/
-cmake_build/
-configure/
-duckdb_unittest_tempdir/
-

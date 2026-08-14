@@ -1,19 +1,22 @@
 {
-  "name": "atlas-clients",
+  "name": "periplus-shells",
   "private": true,
   "workspaces": [
-    "packages/console-core",
-    "atlas-cli"
+    "packages/periplus-console-core",
+    "packages/periplus-terminal-shell",
+    "packages/periplus-web-shell",
+    "web"
   ],
   "scripts": {
-    "build:console": "npm run build --workspace @atlas/console-core && npm run build --workspace atlas-cli",
-    "check:console": "npm run check --workspace @atlas/console-core && npm run build --workspace @atlas/console-core --silent && npm run check --workspace atlas-cli",
-    "test:console": "npm run test --workspace @atlas/console-core && npm run test --workspace atlas-cli",
-    "atlas": "npm run build:console --silent && node atlas-cli/dist/main.js",
-    "prepare": "npm run build:console"
+    "build:packages": "npm run build --workspace periplus-console-core && npm run build --workspace periplus-web-shell && npm run build --workspace periplus-terminal-shell",
+    "check:packages": "npm run check --workspace periplus-console-core && npm run build --workspace periplus-console-core --silent && npm run check --workspace periplus-web-shell && npm run build --workspace periplus-web-shell --silent && npm run check --workspace periplus-terminal-shell",
+    "test:packages": "npm run test --workspace periplus-console-core && npm run test --workspace periplus-terminal-shell",
+    "build:web": "npm run build --workspace periplus-console-core --silent && npm run build --workspace periplus-web-shell --silent && npm run build --workspace periplus-web",
+    "check:web": "npm run build --workspace periplus-console-core --silent && npm run build --workspace periplus-web-shell --silent && npm run typecheck --workspace periplus-web && npm run lint --workspace periplus-web && npm run test --workspace periplus-web",
+    "periplus": "npm run build --workspace periplus-console-core --silent && npm run build --workspace periplus-terminal-shell --silent && node packages/periplus-terminal-shell/dist/main.js"
   },
   "dependencies": {
-    "atlas-cli": "*"
+    "periplus-terminal-shell": "*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

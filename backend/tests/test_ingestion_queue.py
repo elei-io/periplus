@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 from nats.js.errors import NotFoundError
 
-from repository.ingestion.queue import (
+from periplus.ingestion.queue import (
     DURABLE,
     STREAM,
     ensure_repository_consumer,
@@ -47,7 +47,7 @@ class IngestionQueueTests(unittest.IsolatedAsyncioTestCase):
     async def test_mutable_delivery_limits_are_reconciled_at_startup(self) -> None:
         expected = repository_consumer_config()
         existing = SimpleNamespace(
-            config=replace(expected, max_ack_pending=1024)
+            config=replace(expected, max_ack_pending=400)
         )
         reconciled = SimpleNamespace(config=expected)
         jetstream = SimpleNamespace(

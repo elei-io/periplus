@@ -18,10 +18,8 @@ import {
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 import { CopyIcon, PencilIcon, Trash2Icon } from "lucide-react"
-import { AnimatePresence, motion } from "motion/react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
-import { SqlEditor } from "@/components/catalogue/sql-editor"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -40,12 +38,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from "@/components/ui/select"
+import { Textarea } from "@/components/ui/textarea"
 import {
   useCreateCrawlGraphEdge,
   useCreateCrawlGraphNode,
@@ -66,14 +59,22 @@ import type {
   CrawlGraphDetail,
   CrawlGraphEdge,
   CrawlGraphNode,
-  EdgeDedupeMode,
 } from "@/types/graphs"
 
 const DEFAULT_EDGE_SQL = `SELECT target_url AS url
-FROM edge.page_links
-WHERE crawl_id = $crawl_id
-  AND relation_kind <> 'external'
-LIMIT 100000`
+FROM nav.links
+WHERE relation_scope IN ('self', 'same_origin')`
+
+type NodeValues = {
+  name: string
+  description: string
+}
+
+type EdgeValues = {
+  name: string
+  description: string
+  sql: string
+}
 
 type CrawlNodeData = {
   node: CrawlGraphNode
@@ -85,32 +86,31 @@ type CrawlNodeData = {
   isRoot: boolean
   setRoot: (id: string) => void
 }
+
 type CrawlNode = Node<CrawlNodeData, "crawlNode">
-type NodeValues = { name: string; description: string }
 
 type CrawlEdgeData = {
   edge: CrawlGraphEdge
   readOnly: boolean
-  save: (edge: CrawlGraphEdge, values: EdgeValues) => void
   remove: (id: string) => void
   copy: (edge: CrawlGraphEdge) => void
   edit: (id: string) => void
   runId: string | null
 }
+
 type CrawlFlowEdge = Edge<CrawlEdgeData, "crawlEdge">
-type EdgeValues = {
-  name: string
-  description: string
-  sql: string
-  dedupe_mode: EdgeDedupeMode
-}
 
 const nodeTypes = { crawlNode: CrawlNodeCard }
-const edgeTypes = { crawlEdge: CrawlEdgeEditor }
+const edgeTypes = { crawlEdge: CrawlEdgeView }
 const EDGE_NODE_CLEARANCE = 24
 
 type Point = { x: number; y: number }
-type Rect = { left: number; right: number; top: number; bottom: number }
+type Rect = {
+  left: number
+  right: number
+  top: number
+  bottom: number
+}
 
 export function GraphCanvas({
   graph,
@@ -158,17 +158,21 @@ function GraphCanvasContent({
     },
     [updateNode]
   )
+
   const saveEdge = useCallback(
     (edge: CrawlGraphEdge, values: EdgeValues) => {
       updateEdge.mutate({
         id: edge.id,
-        source_node_id: edge.source_node_id,
-        target_node_id: edge.target_node_id,
-        ...values,
+        payload: {
+          source_node_id: edge.source_node_id,
+          target_node_id: edge.target_node_id,
+          ...values,
+        },
       })
     },
     [updateEdge]
   )
+
   const copyNode = useCallback(
     (node: CrawlGraphNode) => {
       createNode.mutate({
@@ -178,6 +182,7 @@ function GraphCanvasContent({
     },
     [createNode, graph.nodes.length]
   )
+
   const copyEdge = useCallback(
     (edge: CrawlGraphEdge) => {
       createEdge.mutate({
@@ -186,7 +191,6 @@ function GraphCanvasContent({
         source_node_id: edge.source_node_id,
         target_node_id: edge.target_node_id,
         sql: edge.sql,
-        dedupe_mode: edge.dedupe_mode,
       })
     },
     [createEdge, graph.edges.length]
@@ -198,8 +202,8 @@ function GraphCanvasContent({
         id: node.id,
         type: "crawlNode",
         position: {
-          x: node.position_x ?? 100 + (index % 3) * 640,
-          y: node.position_y ?? 100 + Math.floor(index / 3) * 280,
+          x: node.position_x ?? 100 + (index % 3) * 520,
+          y: node.position_y ?? 100 + Math.floor(index / 3) * 240,
         },
         data: {
           node,
@@ -235,15 +239,15 @@ function GraphCanvasContent({
         data: {
           edge,
           readOnly,
-          save: saveEdge,
           remove: (id) => deleteEdge.mutate(id),
           copy: copyEdge,
           edit: setEditingEdgeId,
           runId,
         },
       })),
-    [copyEdge, deleteEdge, graph.edges, readOnly, runId, saveEdge]
+    [copyEdge, deleteEdge, graph.edges, readOnly, runId]
   )
+
   const [nodes, setNodes, onNodesChange] = useNodesState(projectedNodes)
   const nodesRevision = `${runId ?? "no-run"}|${graph.nodes
     .map(
@@ -261,9 +265,10 @@ function GraphCanvasContent({
           node.position,
       }))
     )
-    // Callback identities in node data do not represent graph-definition changes.
+    // Callback identities in node data do not change the plan definition.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodesRevision, setNodes])
+
   useEffect(() => {
     if (!instance || graph.nodes.length === 0) return
     const frame = window.requestAnimationFrame(() => {
@@ -280,7 +285,6 @@ function GraphCanvasContent({
         source_node_id: source,
         target_node_id: target,
         sql: DEFAULT_EDGE_SQL,
-        dedupe_mode: "graph",
       })
     },
     [createEdge, graph.edges.length]
@@ -288,8 +292,9 @@ function GraphCanvasContent({
 
   const onConnect = useCallback(
     (connection: Connection) => {
-      if (connection.source && connection.target)
+      if (connection.source && connection.target) {
         void addEdge(connection.source, connection.target)
+      }
     },
     [addEdge]
   )
@@ -297,7 +302,7 @@ function GraphCanvasContent({
   const addStartNode = useCallback(() => {
     createNode.mutate({
       name: "Start",
-      description: "Receives graph trigger URLs.",
+      description: "Receives the crawl start URLs.",
     })
   }, [createNode])
 
@@ -334,6 +339,11 @@ function GraphCanvasContent({
             },
           },
         ])
+        updateNodePosition.mutate({
+          nodeId: node.id,
+          x: position.x,
+          y: position.y,
+        })
         await addEdge(sourceId, node.id)
       })()
     },
@@ -349,6 +359,7 @@ function GraphCanvasContent({
       saveNode,
       setNodes,
       setRoot,
+      updateNodePosition,
     ]
   )
 
@@ -390,11 +401,18 @@ function GraphCanvasContent({
         fitViewOptions={{ padding: 0.25 }}
         minZoom={0.2}
         maxZoom={2}
-        defaultEdgeOptions={{ markerEnd: { type: MarkerType.ArrowClosed } }}
+        defaultEdgeOptions={{
+          markerEnd: { type: MarkerType.ArrowClosed },
+        }}
         proOptions={{ hideAttribution: true }}
       >
         <Background gap={24} size={1} />
       </ReactFlow>
+
+      <div className="pointer-events-none absolute right-3 bottom-3 z-10 rounded-full border bg-background/80 px-2.5 py-1 text-[0.6875rem] text-muted-foreground backdrop-blur">
+        Drag a handle to connect · drop on the canvas to add a node
+      </div>
+
       {connectionState === "reconnecting" || connectionState === "stale" ? (
         <div className="pointer-events-none absolute top-3 right-3 z-10 rounded-full border bg-background/95 px-2.5 py-1 text-[0.6875rem] text-amber-500 shadow-sm">
           {connectionState === "stale"
@@ -402,24 +420,27 @@ function GraphCanvasContent({
             : "Progress reconnecting"}
         </div>
       ) : null}
+
       {!readOnly && editingEdgeId ? (
         <EdgeEditDialog
           key={editingEdgeId}
           edge={graph.edges.find((edge) => edge.id === editingEdgeId) ?? null}
           open
+          saving={updateEdge.isPending}
           onOpenChange={(open) => !open && setEditingEdgeId(null)}
           onSave={saveEdge}
         />
       ) : null}
+
       {!readOnly && graph.nodes.length === 0 ? (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
           <div className="pointer-events-auto flex max-w-sm flex-col items-center rounded-xl border bg-background/95 px-8 py-7 text-center shadow-xl backdrop-blur-sm">
             <h3 className="text-base font-semibold">
-              Add your first node to get started
+              Add your first acquisition node
             </h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              The first node receives the URLs supplied when this graph is
-              triggered.
+              The first node becomes the plan root and receives its single
+              starting URL.
             </p>
             <Button
               className="mt-5"
@@ -441,7 +462,7 @@ function CrawlNodeCard({ data }: NodeProps<CrawlNode>) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(node.name)
   const [description, setDescription] = useState(node.description ?? "")
-  const working = Boolean(
+  const active = Boolean(
     progress &&
     progress.queued +
       progress.crawling +
@@ -449,53 +470,62 @@ function CrawlNodeCard({ data }: NodeProps<CrawlNode>) {
       progress.evaluating_edges >
       0
   )
+
   return (
     <>
       <ContextMenu>
         <ContextMenuTrigger
           render={<div />}
-          className="relative min-w-60 rounded-lg border bg-card text-card-foreground shadow-lg"
+          className={`relative min-w-64 rounded-lg border bg-card text-card-foreground shadow-lg ${
+            active ? "border-primary/60 ring-2 ring-primary/15" : ""
+          }`}
         >
-          {working ? (
-            <motion.div
-              className="pointer-events-none absolute -inset-px rounded-lg border border-primary/50"
-              animate={{ opacity: [0.25, 0.7, 0.25] }}
-              transition={{
-                duration: 2.4,
-                repeat: Infinity,
-                ease: "easeInOut",
-              }}
-            />
+          {progress?.activity[0] ? (
+            <div className="pointer-events-none absolute inset-x-0 bottom-[calc(100%+0.65rem)] flex h-8 items-center gap-2 rounded-lg border bg-background/95 px-3 text-xs shadow-md backdrop-blur-sm">
+              <span
+                className={`size-1.5 shrink-0 rounded-full ${
+                  progress.activity[0].status === "completed"
+                    ? "bg-emerald-500"
+                    : progress.activity[0].status === "failed"
+                      ? "bg-destructive"
+                      : "animate-pulse bg-primary"
+                }`}
+              />
+              <span className="font-medium">
+                {activityLabel(progress.activity[0].status)}
+              </span>
+              <span className="truncate text-muted-foreground">
+                {displayUrl(progress.activity[0].url)}
+              </span>
+            </div>
           ) : null}
-          <div className="pointer-events-none absolute inset-x-0 bottom-[calc(100%+0.65rem)] h-8">
-            <AnimatePresence mode="popLayout">
-              {progress?.activity[0] ? (
-                <motion.div
-                  key={`${progress.activity[0].request_id}:${progress.activity[0].status}:${progress.activity[0].updated_at}`}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -12 }}
-                  transition={{ duration: 0.22, ease: "easeOut" }}
-                  className="absolute inset-x-0 flex h-8 items-center gap-2 rounded-lg border bg-background/95 px-3 text-xs shadow-md backdrop-blur-sm"
-                >
-                  <span
-                    className={`size-1.5 shrink-0 rounded-full ${progress.activity[0].status === "completed" ? "bg-emerald-500" : progress.activity[0].status === "failed" ? "bg-destructive" : "animate-pulse bg-primary"}`}
-                  />
-                  <span className="font-medium">
-                    {activityLabel(progress.activity[0].status)}
-                  </span>
-                  <span className="truncate text-muted-foreground">
-                    {displayUrl(progress.activity[0].url)}
-                  </span>
-                </motion.div>
-              ) : null}
-            </AnimatePresence>
-          </div>
           <Handle type="target" position={Position.Left} />
-          <div className="flex w-full items-center gap-2 p-3 text-left">
-            <p className="min-w-0 flex-1 truncate font-medium">{node.name}</p>
-            {data.isRoot ? <Badge variant="secondary">Root</Badge> : null}
+          <div className="flex w-full items-start gap-2 p-3 text-left">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <p className="truncate font-medium">{node.name}</p>
+                {data.isRoot ? <Badge variant="secondary">Root</Badge> : null}
+              </div>
+              <p className="mt-1 max-w-56 truncate text-xs text-muted-foreground">
+                {node.description || "Page acquisition"}
+              </p>
+            </div>
+            {!data.readOnly ? (
+              <Button
+                className="nodrag nopan"
+                size="icon-sm"
+                variant="ghost"
+                onClick={() => setEditing(true)}
+              >
+                <PencilIcon />
+              </Button>
+            ) : null}
           </div>
+          {progress ? (
+            <div className="border-t px-3 py-2 text-[0.6875rem] text-muted-foreground tabular-nums">
+              {progress.completed} completed · {progress.failed} failed
+            </div>
+          ) : null}
           <Handle type="source" position={Position.Right} />
         </ContextMenuTrigger>
         <ContextMenuContent>
@@ -532,30 +562,35 @@ function CrawlNodeCard({ data }: NodeProps<CrawlNode>) {
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
+
       <Dialog open={editing} onOpenChange={setEditing}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Edit node</DialogTitle>
             <DialogDescription>
-              Configure how this node receives crawl inputs.
+              Name this acquisition stage and describe its role.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <Input
               value={name}
-              onChange={(event) => setName(event.target.value)}
               placeholder="Node name"
+              onChange={(event) => setName(event.target.value)}
             />
             <Input
               value={description}
-              onChange={(event) => setDescription(event.target.value)}
               placeholder="Description"
+              onChange={(event) => setDescription(event.target.value)}
             />
           </div>
           <DialogFooter>
             <Button
+              disabled={!name.trim()}
               onClick={() => {
-                data.save(node, { name, description })
+                data.save(node, {
+                  name: name.trim(),
+                  description: description.trim(),
+                })
                 setEditing(false)
               }}
             >
@@ -568,34 +603,12 @@ function CrawlNodeCard({ data }: NodeProps<CrawlNode>) {
   )
 }
 
-function activityLabel(status: string) {
-  return (
-    {
-      queued: "Queued",
-      crawling: "Crawling",
-      awaiting_navigation: "Activating links",
-      evaluating_edges: "Following links",
-      completed: "Crawled",
-      failed: "Failed",
-      cancelled: "Cancelled",
-    }[status] ?? status
-  )
-}
-
-function displayUrl(value: string) {
-  try {
-    const url = new URL(value)
-    return `${url.hostname}${url.pathname === "/" ? "" : url.pathname}${url.search}`
-  } catch {
-    return value
-  }
-}
-
-function CrawlEdgeEditor(props: EdgeProps<CrawlFlowEdge>) {
+function CrawlEdgeView(props: EdgeProps<CrawlFlowEdge>) {
   const nodes = useNodes<CrawlNode>()
   const [path, labelX, labelY] = getOrthogonalPath(props, nodes)
   const edge = props.data!.edge
   const progress = useEdgeProgress(props.data!.runId, edge.id)
+
   return (
     <>
       <BaseEdge
@@ -613,8 +626,12 @@ function CrawlEdgeEditor(props: EdgeProps<CrawlFlowEdge>) {
         >
           <ContextMenu>
             <ContextMenuTrigger
-              className={`${props.data!.readOnly ? "" : "cursor-pointer"} rounded-full border bg-background px-3 py-1 text-xs font-medium shadow-sm`}
-              onClick={() => !props.data!.readOnly && props.data!.edit(edge.id)}
+              className={`${
+                props.data!.readOnly ? "" : "cursor-pointer"
+              } rounded-full border bg-background px-3 py-1 text-xs font-medium shadow-sm`}
+              onClick={() => {
+                if (!props.data!.readOnly) props.data!.edit(edge.id)
+              }}
             >
               {edge.name}
             </ContextMenuTrigger>
@@ -644,32 +661,113 @@ function CrawlEdgeEditor(props: EdgeProps<CrawlFlowEdge>) {
               </ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>
-          <div className="pointer-events-none absolute top-[calc(100%+0.5rem)] left-1/2 h-7 -translate-x-1/2">
-            <AnimatePresence mode="popLayout">
-              {progress ? (
-                <motion.div
-                  key={`${progress.urls_selected}:${progress.urls_admitted}:${progress.urls_deduplicated}:${progress.evaluations_running}:${progress.evaluations_completed}`}
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  transition={{ duration: 0.22, ease: "easeOut" }}
-                  className="absolute left-1/2 flex h-7 w-max -translate-x-1/2 items-center gap-1.5 rounded-lg border bg-background/95 px-2.5 text-[0.6875rem] text-muted-foreground tabular-nums shadow-sm backdrop-blur-sm"
-                >
-                  <span>{progress.urls_admitted} passed</span>
-                  {progress.urls_deduplicated ? (
-                    <span>· {progress.urls_deduplicated} duplicate</span>
-                  ) : null}
-                  {progress.evaluations_running ? (
-                    <span>· evaluating</span>
-                  ) : null}
-                </motion.div>
+          {progress ? (
+            <div className="pointer-events-none absolute top-[calc(100%+0.5rem)] left-1/2 flex h-7 w-max -translate-x-1/2 items-center gap-1.5 rounded-lg border bg-background/95 px-2.5 text-[0.6875rem] text-muted-foreground tabular-nums shadow-sm backdrop-blur-sm">
+              <span>{progress.urls_admitted} passed</span>
+              {progress.urls_deduplicated ? (
+                <span>· {progress.urls_deduplicated} duplicate</span>
               ) : null}
-            </AnimatePresence>
-          </div>
+              {progress.evaluations_running ? <span>· evaluating</span> : null}
+            </div>
+          ) : null}
         </div>
       </EdgeLabelRenderer>
     </>
   )
+}
+
+function EdgeEditDialog({
+  edge,
+  open,
+  saving,
+  onOpenChange,
+  onSave,
+}: {
+  edge: CrawlGraphEdge | null
+  open: boolean
+  saving: boolean
+  onOpenChange: (open: boolean) => void
+  onSave: (edge: CrawlGraphEdge, values: EdgeValues) => void
+}) {
+  const [name, setName] = useState(edge?.name ?? "")
+  const [description, setDescription] = useState(edge?.description ?? "")
+  const [sql, setSql] = useState(edge?.sql ?? "")
+  if (!edge) return null
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Edit navigation edge</DialogTitle>
+          <DialogDescription>
+            Select URLs from the current <code>nav.links</code> relation. The
+            query must return a column named <code>url</code>.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <Input
+            value={name}
+            placeholder="Edge name"
+            onChange={(event) => setName(event.target.value)}
+          />
+          <Input
+            value={description}
+            placeholder="Description"
+            onChange={(event) => setDescription(event.target.value)}
+          />
+          <Textarea
+            className="min-h-40 font-mono text-xs leading-relaxed"
+            value={sql}
+            aria-label="Edge SQL"
+            onChange={(event) => setSql(event.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            Available columns include target_url, relation_scope, target_host,
+            target_path, raw_href, and element_index. URLs are always
+            deduplicated across the complete plan run.
+          </p>
+        </div>
+        <DialogFooter>
+          <Button
+            disabled={saving || !name.trim() || !sql.trim()}
+            onClick={() => {
+              onSave(edge, {
+                name: name.trim(),
+                description: description.trim(),
+                sql: sql.trim(),
+              })
+              onOpenChange(false)
+            }}
+          >
+            Save changes
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function activityLabel(status: string) {
+  return (
+    {
+      queued: "Queued",
+      crawling: "Crawling",
+      awaiting_navigation: "Activating links",
+      evaluating_edges: "Following links",
+      completed: "Crawled",
+      failed: "Failed",
+      cancelled: "Cancelled",
+    }[status] ?? status
+  )
+}
+
+function displayUrl(value: string) {
+  try {
+    const url = new URL(value)
+    return `${url.hostname}${url.pathname === "/" ? "" : url.pathname}${url.search}`
+  } catch {
+    return value
+  }
 }
 
 function getOrthogonalPath(
@@ -678,8 +776,14 @@ function getOrthogonalPath(
 ): [path: string, labelX: number, labelY: number] {
   const start = { x: edge.sourceX, y: edge.sourceY }
   const end = { x: edge.targetX, y: edge.targetY }
-  const startOutside = { x: start.x + EDGE_NODE_CLEARANCE, y: start.y }
-  const endOutside = { x: end.x - EDGE_NODE_CLEARANCE, y: end.y }
+  const startOutside = {
+    x: start.x + EDGE_NODE_CLEARANCE,
+    y: start.y,
+  }
+  const endOutside = {
+    x: end.x - EDGE_NODE_CLEARANCE,
+    y: end.y,
+  }
   const obstacles = nodes.map(nodeRect)
   const middle = routeOrthogonally(startOutside, endOutside, obstacles)
   const points = simplifyPoints([start, ...middle, end])
@@ -693,8 +797,8 @@ function getOrthogonalPath(
 }
 
 function nodeRect(node: CrawlNode): Rect {
-  const width = node.measured?.width ?? node.width ?? 240
-  const height = node.measured?.height ?? node.height ?? 48
+  const width = node.measured?.width ?? node.width ?? 256
+  const height = node.measured?.height ?? node.height ?? 72
   return {
     left: node.position.x - EDGE_NODE_CLEARANCE,
     right: node.position.x + width + EDGE_NODE_CLEARANCE,
@@ -762,9 +866,11 @@ function routeOrthogonally(
 
   while (unvisited.size > 0) {
     let current = -1
-    for (const candidate of unvisited)
-      if (current === -1 || distances[candidate] < distances[current])
+    for (const candidate of unvisited) {
+      if (current === -1 || distances[candidate] < distances[current]) {
         current = candidate
+      }
+    }
     if (current === -1 || !Number.isFinite(distances[current])) break
     if (current === endIndex) break
     unvisited.delete(current)
@@ -781,10 +887,13 @@ function routeOrthogonally(
     }
   }
 
-  if (previous[endIndex] === -1 && startIndex !== endIndex) return [start, end]
+  if (previous[endIndex] === -1 && startIndex !== endIndex) {
+    return [start, end]
+  }
   const route: Point[] = []
-  for (let index = endIndex; index !== -1; index = previous[index])
+  for (let index = endIndex; index !== -1; index = previous[index]) {
     route.unshift(points[index])
+  }
   return route
 }
 
@@ -798,13 +907,14 @@ function pointInside(rect: Rect, point: Point) {
 }
 
 function segmentCrossesInterior(rect: Rect, start: Point, end: Point) {
-  if (start.x === end.x)
+  if (start.x === end.x) {
     return (
       start.x > rect.left &&
       start.x < rect.right &&
       Math.max(start.y, end.y) > rect.top &&
       Math.min(start.y, end.y) < rect.bottom
     )
+  }
   return (
     start.y > rect.top &&
     start.y < rect.bottom &&
@@ -850,85 +960,5 @@ function pointHalfwayAlong(points: Point[]) {
     }
     remaining -= lengths[index]
   }
-  return points[0]
-}
-
-function EdgeEditDialog({
-  edge,
-  open,
-  onOpenChange,
-  onSave,
-}: {
-  edge: CrawlGraphEdge | null
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  onSave: (edge: CrawlGraphEdge, values: EdgeValues) => void
-}) {
-  const [name, setName] = useState(edge?.name ?? "")
-  const [description, setDescription] = useState(edge?.description ?? "")
-  const [sql, setSql] = useState(edge?.sql ?? "")
-  const [dedupeMode, setDedupeMode] = useState<EdgeDedupeMode>(
-    edge?.dedupe_mode ?? "graph"
-  )
-  if (!edge) return null
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Edit edge</DialogTitle>
-          <DialogDescription>
-            The SQL must return URLs derived from the source crawl.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3">
-          <Input
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="Edge name"
-          />
-          <Input
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-            placeholder="Description"
-          />
-          <Select
-            value={dedupeMode}
-            onValueChange={(value) =>
-              value && setDedupeMode(value as EdgeDedupeMode)
-            }
-          >
-            <SelectTrigger
-              className="w-full"
-              aria-label="URL deduplication scope"
-            >
-              <span>Deduplicate per {dedupeMode}</span>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="graph">Graph run</SelectItem>
-              <SelectItem value="crawl">Source crawl</SelectItem>
-              <SelectItem value="document">Source document</SelectItem>
-            </SelectContent>
-          </Select>
-          <div className="overflow-hidden rounded-md border">
-            <SqlEditor
-              value={sql}
-              onChange={setSql}
-              height="240px"
-              ariaLabel="Edge SQL"
-            />
-          </div>
-        </div>
-        <DialogFooter>
-          <Button
-            onClick={() => {
-              onSave(edge, { name, description, sql, dedupe_mode: dedupeMode })
-              onOpenChange(false)
-            }}
-          >
-            Save changes
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
+  return points[0] ?? { x: 0, y: 0 }
 }

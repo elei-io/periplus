@@ -12,10 +12,11 @@ wheels/
 
 
 .env
+.env.extra
 
 .cache
 .artifacts
-.atlas/
+.periplus/
 
 
 # Logs

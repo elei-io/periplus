@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Periplus">
+  <g fill="none" stroke="#36b7df" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke-width="12" d="M29 109V19h43c24 0 39 13 39 33S96 85 72 85H29" />
+    <path stroke-width="7" d="M16 86c10 20 30 32 54 32 23 0 41-9 51-25" />
+    <path stroke-width="7" d="m110 94 12-5-2 13" />
+  </g>
+</svg>

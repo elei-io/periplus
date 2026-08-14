@@ -8,7 +8,6 @@ import {
 } from "react"
 
 import { AppSidebar } from "@/components/app-sidebar"
-import { useLakeIdentity } from "@/hooks/use-lake-identity"
 import {
   defaultNavigationItem,
   findNavigationItem,
@@ -20,24 +19,29 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 
-const CatalogueWorkbenchPage = lazy(() =>
-  import("@/pages/catalogue/workbench-page").then((module) => ({
-    default: module.CatalogueWorkbenchPage,
+const HomePage = lazy(() =>
+  import("@/pages/home-page").then((module) => ({
+    default: module.HomePage,
   }))
 )
-const CatalogueViewsPage = lazy(() =>
-  import("@/pages/catalogue/views-page").then((module) => ({
-    default: module.CatalogueViewsPage,
+const SqlConsolePage = lazy(() =>
+  import("@/pages/sql-console-page").then((module) => ({
+    default: module.SqlConsolePage,
   }))
 )
-const CatalogueQueriesPage = lazy(() =>
-  import("@/pages/catalogue/queries-page").then((module) => ({
-    default: module.CatalogueQueriesPage,
+const MaterializationsPage = lazy(() =>
+  import("@/pages/materializations-page").then((module) => ({
+    default: module.MaterializationsPage,
   }))
 )
-const CatalogueMacrosPage = lazy(() =>
-  import("@/pages/catalogue/macros-page").then((module) => ({
-    default: module.CatalogueMacrosPage,
+const DataMetricsPage = lazy(() =>
+  import("@/pages/data/metrics-page").then((module) => ({
+    default: module.DataMetricsPage,
+  }))
+)
+const DocumentsPage = lazy(() =>
+  import("@/pages/data/documents-page").then((module) => ({
+    default: module.DocumentsPage,
   }))
 )
 const CrawlGraphsPage = lazy(() =>
@@ -65,18 +69,18 @@ const CrawlScheduleDetailPage = lazy(() =>
     default: module.CrawlScheduleDetailPage,
   }))
 )
-const CrawlPoliciesPage = lazy(() =>
-  import("@/pages/settings/crawl-policies-page").then((module) => ({
-    default: module.CrawlPoliciesPage,
+const ContentPoliciesPage = lazy(() =>
+  import("@/pages/crawls/content-policies-page").then((module) => ({
+    default: module.ContentPoliciesPage,
   }))
 )
-const CrawlPolicyDetailPage = lazy(() =>
-  import("@/pages/settings/crawl-policy-detail-page").then((module) => ({
-    default: module.CrawlPolicyDetailPage,
+const ContentPolicyDetailPage = lazy(() =>
+  import("@/pages/crawls/content-policy-detail-page").then((module) => ({
+    default: module.ContentPolicyDetailPage,
   }))
 )
 const DomainPoliciesPage = lazy(() =>
-  import("@/pages/settings/domain-policies-page").then((module) => ({
+  import("@/pages/crawls/domain-policies-page").then((module) => ({
     default: module.DomainPoliciesPage,
   }))
 )
@@ -97,7 +101,6 @@ function getCurrentPathname() {
 
 export function App() {
   const [pathname, setPathname] = useState(getCurrentPathname)
-  const lakeIdentity = useLakeIdentity()
 
   useEffect(() => {
     const handlePopState = () => {
@@ -119,9 +122,7 @@ export function App() {
       ) ?? navigationGroups[0]
     )
   }, [activeItem.href])
-
-  const isFullScreenWorkbench =
-    pathname === "/" || pathname === "/catalogue/workbench"
+  const ActiveItemIcon = activeItem.icon
 
   const handleNavigate = useCallback((href: string) => {
     const target = new URL(href, window.location.origin)
@@ -136,42 +137,27 @@ export function App() {
 
   const page = (() => {
     if (pathname === "/") {
-      return <CatalogueWorkbenchPage />
+      return <HomePage />
     }
 
-    if (activeItem.href === "/catalogue/workbench") {
-      return <CatalogueWorkbenchPage />
+    if (activeItem.href === "/sql") {
+      return <SqlConsolePage />
     }
 
-    if (activeItem.href === "/catalogue/views") {
-      const viewId = pathname.match(/^\/catalogue\/views\/([^/]+)$/)?.[1]
-      return (
-        <CatalogueViewsPage
-          viewId={viewId ? decodeURIComponent(viewId) : undefined}
-        />
-      )
+    if (activeItem.href === "/materializations") {
+      return <MaterializationsPage />
     }
 
-    if (activeItem.href === "/catalogue/queries") {
-      const queryId = pathname.match(/^\/catalogue\/queries\/([^/]+)$/)?.[1]
-      return (
-        <CatalogueQueriesPage
-          queryId={queryId ? decodeURIComponent(queryId) : undefined}
-        />
-      )
+    if (activeItem.href === "/data/metrics") {
+      return <DataMetricsPage />
     }
 
-    if (activeItem.href === "/catalogue/macros") {
-      const macroId = pathname.match(/^\/catalogue\/macros\/([^/]+)$/)?.[1]
-      return (
-        <CatalogueMacrosPage
-          macroId={macroId ? decodeURIComponent(macroId) : undefined}
-        />
-      )
+    if (activeItem.href === "/data/documents") {
+      return <DocumentsPage />
     }
 
-    if (activeItem.href === "/crawls/graphs") {
-      const graphId = pathname.match(/^\/crawls\/graphs\/([^/]+)$/)?.[1]
+    if (activeItem.href === "/crawls/plans") {
+      const graphId = pathname.match(/^\/crawls\/plans\/([^/]+)$/)?.[1]
       if (graphId) {
         return (
           <CrawlGraphDetailPage
@@ -200,13 +186,15 @@ export function App() {
       return <CrawlSchedulesPage onNavigate={handleNavigate} />
     }
 
-    if (activeItem.href === "/crawl-policies") {
-      const policyId = pathname.match(/^\/crawl-policies\/([^/]+)$/)?.[1]
+    if (activeItem.href === "/content-policies") {
+      const policyId = pathname.match(/^\/content-policies\/([^/]+)$/)?.[1]
       if (policyId) {
-        return <CrawlPolicyDetailPage policyId={decodeURIComponent(policyId)} />
+        return (
+          <ContentPolicyDetailPage policyId={decodeURIComponent(policyId)} />
+        )
       }
 
-      return <CrawlPoliciesPage />
+      return <ContentPoliciesPage />
     }
 
     if (activeItem.href === "/domain-policies") {
@@ -224,13 +212,15 @@ export function App() {
 
   return (
     <SidebarProvider>
-      <AppSidebar
-        pathname={activeItem.href}
-        onNavigate={handleNavigate}
-      />
+      <AppSidebar pathname={activeItem.href} onNavigate={handleNavigate} />
       <SidebarInset className="h-svh min-h-0 overflow-hidden">
         <header className="relative z-10 flex h-14 shrink-0 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur-xl">
-          <SidebarTrigger />
+          <SidebarTrigger
+            aria-label={`Toggle sidebar · ${activeItem.name}`}
+            title={`Toggle sidebar · ${activeItem.name}`}
+          >
+            <ActiveItemIcon />
+          </SidebarTrigger>
           <div className="flex min-w-0 flex-col">
             <span className="truncate text-sm font-medium">
               {activeItem.title ?? activeItem.name}
@@ -239,32 +229,30 @@ export function App() {
               {activeItem.description ?? activeGroup.name}
             </span>
           </div>
-          <span
-            className="ml-auto max-w-48 truncate rounded-md border bg-muted/40 px-2 py-1 font-mono text-xs text-muted-foreground"
-            title={
-              lakeIdentity.data
-                ? `DuckLake ${lakeIdentity.data.lake_slug}`
-                : "DuckLake unavailable"
-            }
-          >
-            {lakeIdentity.data?.lake_slug ?? "lake unavailable"}
-          </span>
         </header>
         <div
           className={
-            isFullScreenWorkbench
-              ? "app-surface relative min-h-0 min-w-0 flex-1 overflow-hidden"
-              : "app-surface relative min-h-0 min-w-0 flex-1 [scrollbar-gutter:stable] overflow-auto overscroll-contain p-4 lg:p-6"
+            activeItem.href === "/sql"
+              ? "relative min-h-0 min-w-0 flex-1 overflow-hidden"
+              : activeItem.href === "/"
+                ? "app-surface relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain"
+                : "app-surface relative min-h-0 min-w-0 flex-1 [scrollbar-gutter:stable] overflow-auto overscroll-contain p-4 lg:p-6"
           }
         >
-          {!isFullScreenWorkbench && (
-            <div className="app-surface-grain pointer-events-none absolute inset-0" />
-          )}
           <div
             className={
-              isFullScreenWorkbench
+              activeItem.href === "/"
+                ? "app-surface-grain periplus-home-grain pointer-events-none absolute inset-0"
+                : "app-surface-grain pointer-events-none absolute inset-0"
+            }
+          />
+          <div
+            className={
+              activeItem.href === "/sql"
                 ? "relative z-10 flex h-full min-h-0 min-w-0"
-                : "relative z-10 flex min-h-full min-w-0 pb-10"
+                : activeItem.href === "/"
+                  ? "relative z-10 flex min-h-full min-w-0"
+                  : "relative z-10 flex min-h-full min-w-0 pb-10"
             }
           >
             <Suspense fallback={<PageFallback />}>{page}</Suspense>

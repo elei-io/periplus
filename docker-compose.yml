@@ -1,102 +1,124 @@
-x-atlas-backend: &atlas-backend
+name: periplus
+
+x-periplus-backend: &periplus-backend
   build:
     context: .
-    dockerfile: docker/atlas/Dockerfile
-  image: atlas-backend:local
+    dockerfile: docker/periplus/Dockerfile
+    additional_contexts:
+      periplus-extension: ${PERIPLUS_DUCKDB_EXTENSION_REPO:-../periplus-duckdb-extension}
+      ducklake-cdc-extension: ${PERIPLUS_DUCKLAKE_CDC_EXTENSION_REPO:-../quack/ducklake-cdc-extension-1.5.5}
+  image: ${PERIPLUS_BACKEND_IMAGE:-periplus-backend:local}
   working_dir: /app/backend
 
-x-atlas-repository-volumes: &atlas-repository-volumes
-  - ./.atlas/repository:/app/.atlas/repository
+x-periplus-state-volumes: &periplus-state-volumes
+  - periplus-repository-data:/app/.periplus/repository
 
-x-atlas-healthcheck: &atlas-healthcheck
+x-periplus-healthcheck: &periplus-healthcheck
   interval: 5s
   timeout: 3s
   retries: 12
   start_period: 10s
 
-x-atlas-control-environment: &atlas-control-environment
-  DATABASE_URL: postgresql://atlas:atlas_local@atlas-test-postgres:5432/atlas_test
+x-periplus-control-environment: &periplus-control-environment
+  PERIPLUS_CONTROL_DATABASE_URL: postgresql://${PERIPLUS_POSTGRES_USER:-periplus}:${PERIPLUS_POSTGRES_PASSWORD:-periplus_local}@periplus-postgres:5432/${PERIPLUS_POSTGRES_DATABASE:-periplus}
 
-x-atlas-nats-environment: &atlas-nats-environment
-  ATLAS_NATS_URL: nats://atlas-test-nats:4222
-  ATLAS_NATS_SEED: ""
+x-periplus-nats-environment: &periplus-nats-environment
+  PERIPLUS_NATS_URL: nats://periplus-nats:4222
+  PERIPLUS_NATS_SEED: ""
 
-x-duckbasin-nats-environment: &duckbasin-nats-environment
-  DUCKBASIN_NATS_URL: ${DUCKBASIN_NATS_URL:?DUCKBASIN_NATS_URL is required}
-  DUCKBASIN_NATS_SEED: ${DUCKBASIN_NATS_SEED:?DUCKBASIN_NATS_SEED is required}
+x-periplus-ducklake-environment: &periplus-ducklake-environment
+  PERIPLUS_DUCKLAKE_ALIAS: periplus
+  PERIPLUS_DUCKLAKE_METADATA_PATH: postgres:dbname=${LAKE_POSTGRES_DATABASE:-lake} host=lake-postgres port=5432 user=${LAKE_POSTGRES_USER:-lake} password=${LAKE_POSTGRES_PASSWORD:-lake_local}
+  PERIPLUS_DUCKLAKE_METADATA_SCHEMA: ducklake
+  PERIPLUS_DUCKLAKE_DATA_PATH: s3://lake/
+  PERIPLUS_DUCKLAKE_S3_ENDPOINT: lake-s3:7070
+  PERIPLUS_DUCKLAKE_S3_REGION: us-east-1
+  PERIPLUS_DUCKLAKE_S3_KEY_ID: ${PERIPLUS_DUCKLAKE_S3_KEY_ID:-lake}
+  PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY: ${PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY:-lake-secret}
+  PERIPLUS_DUCKLAKE_S3_URL_STYLE: path
+  PERIPLUS_DUCKLAKE_S3_USE_SSL: "false"
+  PERIPLUS_DUCKLAKE_CDC_EXTENSION_PATH: /opt/periplus/ducklake_cdc.duckdb_extension
 
-x-duckbasin-environment: &duckbasin-environment
-  DUCKBASIN_URL: ${DUCKBASIN_URL:?DUCKBASIN_URL is required}
-  DUCKBASIN_LAKE: ${DUCKBASIN_LAKE:?DUCKBASIN_LAKE is required}
-  DUCKBASIN_TOKEN_ENDPOINT: ${DUCKBASIN_TOKEN_ENDPOINT:?DUCKBASIN_TOKEN_ENDPOINT is required}
-  DUCKBASIN_CLIENT_ID: ${DUCKBASIN_CLIENT_ID:?DUCKBASIN_CLIENT_ID is required}
-  DUCKBASIN_CLIENT_SECRET: ${DUCKBASIN_CLIENT_SECRET:?DUCKBASIN_CLIENT_SECRET is required}
+x-periplus-repository-environment: &periplus-repository-environment
+  PERIPLUS_REPOSITORY_STORAGE: disk
+  PERIPLUS_REPOSITORY_ROOT: /app/.periplus/repository
 
-x-atlas-repository-environment: &atlas-repository-environment
-  ATLAS_REPOSITORY_STORAGE: s3
-  ATLAS_REPOSITORY_S3_BUCKET: ${ATLAS_REPOSITORY_S3_BUCKET:?ATLAS_REPOSITORY_S3_BUCKET is required}
-  ATLAS_REPOSITORY_S3_ENDPOINT: ${ATLAS_REPOSITORY_S3_ENDPOINT:?ATLAS_REPOSITORY_S3_ENDPOINT is required}
-  ATLAS_REPOSITORY_S3_REGION: ${ATLAS_REPOSITORY_S3_REGION:?ATLAS_REPOSITORY_S3_REGION is required}
-  ATLAS_REPOSITORY_S3_KEY_ID: ${ATLAS_REPOSITORY_S3_KEY_ID:?ATLAS_REPOSITORY_S3_KEY_ID is required}
-  ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY: ${ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY:?ATLAS_REPOSITORY_S3_SECRET_ACCESS_KEY is required}
-  ATLAS_REPOSITORY_S3_URL_STYLE: ${ATLAS_REPOSITORY_S3_URL_STYLE:-path}
-  ATLAS_REPOSITORY_S3_USE_SSL: ${ATLAS_REPOSITORY_S3_USE_SSL:-true}
-
-x-atlas-graph-environment: &atlas-graph-environment
-  ATLAS_GRAPH_MAX_RUN_SECONDS: ${ATLAS_GRAPH_MAX_RUN_SECONDS:-604800}
-
-x-atlas-quack-environment: &atlas-quack-environment
-  ATLAS_QUACK_MAX_CONCURRENCY: ${ATLAS_QUACK_MAX_CONCURRENCY:-4}
-  ATLAS_QUACK_POOL_WAIT_SECONDS: ${ATLAS_QUACK_POOL_WAIT_SECONDS:-5}
-  ATLAS_QUACK_QUERY_TIMEOUT_SECONDS: ${ATLAS_QUACK_QUERY_TIMEOUT_SECONDS:-30}
-  ATLAS_QUACK_QUERY_MAX_ROWS: ${ATLAS_QUACK_QUERY_MAX_ROWS:-100000}
-  ATLAS_QUACK_QUERY_MAX_BYTES: ${ATLAS_QUACK_QUERY_MAX_BYTES:-67108864}
-  ATLAS_QUACK_QUERY_STATE_TTL_SECONDS: ${ATLAS_QUACK_QUERY_STATE_TTL_SECONDS:-3600}
-  ATLAS_QUACK_QUERY_STATE_MAX_BYTES: ${ATLAS_QUACK_QUERY_STATE_MAX_BYTES:-67108864}
+x-periplus-graph-environment: &periplus-graph-environment
+  PERIPLUS_GRAPH_MAX_RUN_SECONDS: ${PERIPLUS_GRAPH_MAX_RUN_SECONDS:-604800}
 
 services:
-  atlas-test-postgres:
+  lake-s3:
+    container_name: lake-s3
+    image: ghcr.io/versity/versitygw:v1.4.1
+    command:
+      [
+        "--port",
+        ":7070",
+        "--health",
+        "/healthz",
+        "posix",
+        "--sidecar",
+        "/metadata",
+        "/data",
+      ]
+    environment:
+      ROOT_ACCESS_KEY: ${LAKE_S3_ROOT_ACCESS_KEY:-lake}
+      ROOT_SECRET_KEY: ${LAKE_S3_ROOT_SECRET_ACCESS_KEY:-lake-secret}
+    ports:
+      - "127.0.0.1:${LAKE_S3_PORT:-7070}:7070"
+    volumes:
+      - lake-s3-data:/data/lake
+      - lake-s3-metadata:/metadata
+    healthcheck:
+      <<: *periplus-healthcheck
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:7070/healthz"]
+    restart: unless-stopped
+
+  lake-postgres:
+    container_name: lake-postgres
     image: postgres:17-alpine
     environment:
-      POSTGRES_DB: atlas_test
-      POSTGRES_USER: atlas
-      POSTGRES_PASSWORD: atlas_local
+      POSTGRES_DB: ${LAKE_POSTGRES_DATABASE:-lake}
+      POSTGRES_USER: ${LAKE_POSTGRES_USER:-lake}
+      POSTGRES_PASSWORD: ${LAKE_POSTGRES_PASSWORD:-lake_local}
     ports:
-      - "127.0.0.1:55432:5432"
+      - "127.0.0.1:${LAKE_POSTGRES_PORT:-55433}:5432"
     volumes:
-      - atlas-test-postgres-data:/var/lib/postgresql/data
+      - lake-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U atlas -d atlas_test"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 2s
       timeout: 3s
       retries: 30
     restart: unless-stopped
 
-  atlas-load-postgres:
+  periplus-postgres:
+    container_name: periplus-postgres
     image: postgres:17-alpine
     environment:
-      POSTGRES_DB: atlas_load
-      POSTGRES_USER: atlas
-      POSTGRES_PASSWORD: atlas_local
+      POSTGRES_DB: ${PERIPLUS_POSTGRES_DATABASE:-periplus}
+      POSTGRES_USER: ${PERIPLUS_POSTGRES_USER:-periplus}
+      POSTGRES_PASSWORD: ${PERIPLUS_POSTGRES_PASSWORD:-periplus_local}
     ports:
-      - "127.0.0.1:55433:5432"
+      - "127.0.0.1:${PERIPLUS_POSTGRES_PORT:-55432}:5432"
     volumes:
-      - atlas-load-postgres-data:/var/lib/postgresql/data
+      - periplus-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U atlas -d atlas_load"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 2s
       timeout: 3s
       retries: 30
     restart: unless-stopped
 
-  atlas-test-nats:
+  periplus-nats:
+    container_name: periplus-nats
     image: nats:2.11-alpine
     command: ["--jetstream", "--store_dir=/data", "--http_port=8222"]
     ports:
-      - "127.0.0.1:5422:4222"
-      - "127.0.0.1:5822:8222"
+      - "127.0.0.1:${PERIPLUS_NATS_PORT:-5422}:4222"
+      - "127.0.0.1:${PERIPLUS_NATS_MONITOR_PORT:-5822}:8222"
     volumes:
-      - atlas-test-nats-data:/data
+      - periplus-nats-data:/data
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/healthz"]
       interval: 2s
@@ -104,42 +126,28 @@ services:
       retries: 30
     restart: unless-stopped
 
-  atlas-load-nats:
-    image: nats:2.11-alpine
-    command: ["--jetstream", "--store_dir=/data", "--http_port=8222"]
-    ports:
-      - "127.0.0.1:5423:4222"
-      - "127.0.0.1:5823:8222"
-    volumes:
-      - atlas-load-nats-data:/data
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/healthz"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-    restart: unless-stopped
-
-  atlas-web:
+  periplus-web:
+    container_name: periplus-web
     build:
       context: .
       dockerfile: docker/web/Dockerfile
-    image: atlas-web:local
-    container_name: atlas-web
+    image: ${PERIPLUS_WEB_IMAGE:-periplus-web:local}
     ports:
-      - "127.0.0.1:${ATLAS_WEB_PORT:-8080}:80"
+      - "127.0.0.1:${PERIPLUS_WEB_PORT:-8080}:80"
     depends_on:
-      atlas-api:
+      periplus-api:
         condition: service_healthy
     restart: unless-stopped
 
-  atlas-api:
-    <<: *atlas-backend
-    container_name: atlas-api
-    command: fastapi run api/app.py --host 0.0.0.0 --port 8000
+  periplus-api:
+    container_name: periplus-api
+    <<: *periplus-backend
+    command: fastapi run src/periplus/entrypoints/api.py --host 0.0.0.0 --port 8000
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${PERIPLUS_API_PORT:-8000}:8000"
+    volumes: *periplus-state-volumes
     healthcheck:
-      <<: *atlas-healthcheck
+      <<: *periplus-healthcheck
       test:
         [
           "CMD",
@@ -150,35 +158,32 @@ services:
     environment:
       <<:
         [
-          *atlas-control-environment,
-          *atlas-nats-environment,
-          *duckbasin-environment,
-          *atlas-repository-environment,
-          *atlas-graph-environment,
-          *atlas-quack-environment,
+          *periplus-control-environment,
+          *periplus-nats-environment,
+          *periplus-ducklake-environment,
+          *periplus-repository-environment,
+          *periplus-graph-environment,
         ]
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ATLAS_AI_MODEL: ${ATLAS_AI_MODEL:-openai:gpt-5.6-luna}
-      ATLAS_AI_MODEL_TIMEOUT_SECONDS: ${ATLAS_AI_MODEL_TIMEOUT_SECONDS:-180}
-      ATLAS_AI_REQUEST_LIMIT: ${ATLAS_AI_REQUEST_LIMIT:-32}
-      ATLAS_AI_TOOL_CALL_LIMIT: ${ATLAS_AI_TOOL_CALL_LIMIT:-24}
+      PERIPLUS_AI_MODEL: ${PERIPLUS_AI_MODEL:-openai:gpt-5.6-sol}
+      PERIPLUS_AI_MODEL_TIMEOUT_SECONDS: ${PERIPLUS_AI_MODEL_TIMEOUT_SECONDS:-180}
+      PERIPLUS_AI_REQUEST_LIMIT: ${PERIPLUS_AI_REQUEST_LIMIT:-32}
+      PERIPLUS_AI_TOOL_CALL_LIMIT: ${PERIPLUS_AI_TOOL_CALL_LIMIT:-24}
     depends_on:
-      atlas-setup:
+      periplus-setup:
         condition: service_completed_successfully
-      atlas-test-nats:
+      periplus-nats:
         condition: service_healthy
     restart: unless-stopped
 
-  atlas-acquisition-worker:
-    <<: *atlas-backend
-    command: atlas-worker acquisition
+  periplus-crawler:
+    <<: *periplus-backend
+    command: periplus-worker crawler
     deploy:
-      replicas: 2
-    expose:
-      - "9090"
-      - "9099"
+      replicas: 1
+    volumes: *periplus-state-volumes
     healthcheck:
-      <<: *atlas-healthcheck
+      <<: *periplus-healthcheck
       test:
         [
           "CMD",
@@ -189,31 +194,30 @@ services:
     environment:
       <<:
         [
-          *atlas-control-environment,
-          *atlas-nats-environment,
-          *duckbasin-environment,
-          *atlas-repository-environment,
-          *atlas-graph-environment,
+          *periplus-control-environment,
+          *periplus-nats-environment,
+          *periplus-ducklake-environment,
+          *periplus-repository-environment,
+          *periplus-graph-environment,
         ]
-      CDP_URL: ${CDP_URL:-ws://192.168.30.201:8411/v1/connect}
+      PERIPLUS_CDP_URL: ${PERIPLUS_COMPOSE_CDP_URL:-http://host.docker.internal:9222}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
-      atlas-setup:
+      periplus-setup:
         condition: service_completed_successfully
-      atlas-test-nats:
+      periplus-nats:
         condition: service_healthy
     restart: unless-stopped
 
-  atlas-ingestion-worker:
-    <<: *atlas-backend
-    command: atlas-worker ingestion
+  periplus-ingestor:
+    <<: *periplus-backend
+    command: periplus-worker ingestor
     deploy:
-      replicas: 1
-    volumes: *atlas-repository-volumes
-    expose:
-      - "9091"
-      - "9092"
+      replicas: 4
+    volumes: *periplus-state-volumes
     healthcheck:
-      <<: *atlas-healthcheck
+      <<: *periplus-healthcheck
       test:
         [
           "CMD",
@@ -224,29 +228,27 @@ services:
     environment:
       <<:
         [
-          *atlas-control-environment,
-          *atlas-nats-environment,
-          *duckbasin-environment,
-          *atlas-repository-environment,
+          *periplus-control-environment,
+          *periplus-nats-environment,
+          *periplus-ducklake-environment,
+          *periplus-repository-environment,
         ]
-      ATLAS_REPOSITORY_STAGING_ROOT: /app/.atlas/repository/staging
+      PERIPLUS_INGESTOR_CONCURRENCY: ${PERIPLUS_INGESTOR_CONCURRENCY:-4}
     depends_on:
-      atlas-setup:
+      periplus-setup:
         condition: service_completed_successfully
-      atlas-test-nats:
+      periplus-nats:
         condition: service_healthy
     restart: unless-stopped
 
-  atlas-materialization-worker:
-    <<: *atlas-backend
-    command: atlas-worker materialization
+  periplus-materializer:
+    <<: *periplus-backend
+    command: periplus-worker materializer
     deploy:
-      replicas: 1
-    expose:
-      - "9093"
-      - "9096"
+      replicas: 4
+    volumes: *periplus-state-volumes
     healthcheck:
-      <<: *atlas-healthcheck
+      <<: *periplus-healthcheck
       test:
         [
           "CMD",
@@ -257,57 +259,26 @@ services:
     environment:
       <<:
         [
-          *atlas-control-environment,
-          *atlas-nats-environment,
-          *duckbasin-environment,
+          *periplus-control-environment,
+          *periplus-nats-environment,
+          *periplus-ducklake-environment,
+          *periplus-repository-environment,
         ]
+      PERIPLUS_MATERIALIZER_CONCURRENCY: ${PERIPLUS_MATERIALIZER_CONCURRENCY:-2}
     depends_on:
-      atlas-setup:
+      periplus-setup:
         condition: service_completed_successfully
-      atlas-catalogue-relay:
-        condition: service_healthy
-      atlas-test-nats:
+      periplus-nats:
         condition: service_healthy
     restart: unless-stopped
 
-  atlas-catalogue-relay:
-    <<: *atlas-backend
-    command: atlas-worker catalogue-relay
-    expose:
-      - "9097"
-      - "9098"
+  periplus-janitor:
+    container_name: periplus-janitor
+    <<: *periplus-backend
+    command: periplus-worker janitor
+    volumes: *periplus-state-volumes
     healthcheck:
-      <<: *atlas-healthcheck
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9098/healthz', timeout=2).read()",
-        ]
-    environment:
-      <<:
-        [
-          *atlas-nats-environment,
-          *duckbasin-nats-environment,
-          *duckbasin-environment,
-        ]
-    depends_on:
-      atlas-setup:
-        condition: service_completed_successfully
-      atlas-test-nats:
-        condition: service_healthy
-    restart: unless-stopped
-
-  atlas-housekeeping-worker:
-    <<: *atlas-backend
-    command: atlas-worker housekeeping
-    volumes: *atlas-repository-volumes
-    expose:
-      - "9094"
-      - "9095"
-    healthcheck:
-      <<: *atlas-healthcheck
+      <<: *periplus-healthcheck
       test:
         [
           "CMD",
@@ -318,40 +289,44 @@ services:
     environment:
       <<:
         [
-          *atlas-control-environment,
-          *atlas-nats-environment,
-          *atlas-repository-environment,
-          *atlas-graph-environment,
+          *periplus-control-environment,
+          *periplus-nats-environment,
+          *periplus-repository-environment,
+          *periplus-graph-environment,
         ]
-      ATLAS_REPOSITORY_STAGING_ROOT: /app/.atlas/repository/staging
     depends_on:
-      atlas-setup:
+      periplus-setup:
         condition: service_completed_successfully
-      atlas-test-nats:
+      periplus-nats:
         condition: service_healthy
     restart: unless-stopped
 
-  atlas-setup:
-    <<: *atlas-backend
-    image: atlas-state-tools:local
-    build:
-      context: .
-      dockerfile: docker/atlas/Dockerfile
+  periplus-setup:
+    container_name: periplus-setup
+    <<: *periplus-backend
     # Run the image-time package so schema changes require an explicit rebuild.
-    command: python -m deployment
+    command: periplus-setup
+    volumes: *periplus-state-volumes
     environment:
       <<:
         [
-          *atlas-control-environment,
-          *duckbasin-environment,
+          *periplus-control-environment,
+          *periplus-ducklake-environment,
+          *periplus-repository-environment,
         ]
     depends_on:
-      atlas-test-postgres:
+      periplus-postgres:
+        condition: service_healthy
+      lake-postgres:
+        condition: service_healthy
+      lake-s3:
         condition: service_healthy
     restart: "no"
 
 volumes:
-  atlas-test-postgres-data:
-  atlas-load-postgres-data:
-  atlas-test-nats-data:
-  atlas-load-nats-data:
+  lake-s3-data:
+  lake-s3-metadata:
+  lake-postgres-data:
+  periplus-postgres-data:
+  periplus-nats-data:
+  periplus-repository-data:

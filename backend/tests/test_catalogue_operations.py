@@ -6,11 +6,8 @@ from unittest.mock import MagicMock, call, patch
 import duckdb
 import psycopg
 
-from repository.catalogue.duckbasin import (
-    DuckBasinAuthenticationError,
-    DuckBasinUnavailableError,
-)
-from repository.catalogue.operations import (
+from periplus.platform.catalogue.operations import (
+    is_catalogue_data_corruption,
     is_retryable_catalogue_unavailability,
     run_with_catalogue_retry,
 )
@@ -26,14 +23,15 @@ class CatalogueOperationRetryTests(unittest.TestCase):
         self.assertFalse(is_retryable_catalogue_unavailability(ValueError("bad row")))
         self.assertTrue(
             is_retryable_catalogue_unavailability(
-                DuckBasinUnavailableError("Quack timed out")
+                duckdb.IOException("metadata connection failed")
             )
         )
-        self.assertFalse(
-            is_retryable_catalogue_unavailability(
-                DuckBasinAuthenticationError("bad service account")
-            )
+        missing = duckdb.IOException(
+            'Cannot open file "/lake/material/data/file.parquet": '
+            "No such file or directory"
         )
+        self.assertTrue(is_catalogue_data_corruption(missing))
+        self.assertFalse(is_retryable_catalogue_unavailability(missing))
 
     def test_transaction_conflicts_retry_with_bounded_backoff(self) -> None:
         attempts = 0
@@ -47,14 +45,14 @@ class CatalogueOperationRetryTests(unittest.TestCase):
 
         with (
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
                 0.1,
             ),
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
                 0.25,
             ),
-            patch("repository.catalogue.operations.time.sleep") as sleep,
+            patch("periplus.platform.catalogue.operations.time.sleep") as sleep,
         ):
             result = run_with_catalogue_retry(operation, description="test commit")
 
@@ -77,14 +75,14 @@ class CatalogueOperationRetryTests(unittest.TestCase):
         )
         with (
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
                 0,
             ),
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
                 0,
             ),
-            patch("repository.catalogue.operations.time.sleep"),
+            patch("periplus.platform.catalogue.operations.time.sleep"),
         ):
             result = run_with_catalogue_retry(
                 operation, description="materialization partition"
@@ -93,24 +91,53 @@ class CatalogueOperationRetryTests(unittest.TestCase):
         self.assertEqual(result, "committed")
         self.assertEqual(operation.call_count, 2)
 
+    def test_io_unavailability_is_bounded_for_durable_redelivery(
+        self,
+    ) -> None:
+        operation = MagicMock(
+            side_effect=duckdb.IOException("metadata unavailable")
+        )
+        with (
+            patch(
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_MAX_ATTEMPTS",
+                3,
+            ),
+            patch(
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
+                0.1,
+            ),
+            patch(
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
+                0.25,
+            ),
+            patch("periplus.platform.catalogue.operations.time.sleep") as sleep,
+            self.assertRaises(duckdb.IOException),
+        ):
+            run_with_catalogue_retry(
+                operation, description="materialization partition"
+            )
+
+        self.assertEqual(operation.call_count, 3)
+        self.assertEqual(sleep.call_args_list, [call(0.1), call(0.2)])
+
     def test_transaction_conflict_retry_is_bounded(self) -> None:
         operation = MagicMock(
             side_effect=duckdb.TransactionException("still conflicting")
         )
         with (
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_MAX_ATTEMPTS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_MAX_ATTEMPTS",
                 3,
             ),
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS",
                 0,
             ),
             patch(
-                "repository.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
+                "periplus.platform.catalogue.operations.CATALOGUE_OPERATION_RETRY_MAX_SECONDS",
                 0,
             ),
-            patch("repository.catalogue.operations.time.sleep"),
+            patch("periplus.platform.catalogue.operations.time.sleep"),
             self.assertRaises(duckdb.TransactionException),
         ):
             run_with_catalogue_retry(operation, description="test commit")

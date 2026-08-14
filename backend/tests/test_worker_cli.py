@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from workers import cli
+from periplus.entrypoints import worker as cli
 
 
 class WorkerCliTests(unittest.TestCase):
@@ -13,23 +13,22 @@ class WorkerCliTests(unittest.TestCase):
         self.assertEqual(
             cli.WORKER_MODULES,
             {
-                "acquisition": "workers.acquisition",
-                "ingestion": "workers.ingestion",
-                "catalogue-relay": "workers.catalogue_relay",
-                "materialization": "workers.materialization",
-                "housekeeping": "workers.housekeeping",
+                "crawler": "periplus.crawl.crawler",
+                "ingestor": "periplus.ingestion.ingestor",
+                "materializer": "periplus.materialization.materializer",
+                "janitor": "periplus.operations.janitor",
             },
         )
 
     def test_run_dispatches_to_the_selected_role(self) -> None:
         runner = AsyncMock()
         with patch(
-            "workers.cli.import_module",
+            "periplus.entrypoints.worker.import_module",
             return_value=SimpleNamespace(run=runner),
         ) as import_module:
-            asyncio.run(cli.run("materialization"))
+            asyncio.run(cli.run("materializer"))
 
-        import_module.assert_called_once_with("workers.materialization")
+        import_module.assert_called_once_with("periplus.materialization.materializer")
         runner.assert_awaited_once_with()
 
     def test_unknown_role_is_rejected_by_the_command(self) -> None:

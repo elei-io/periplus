@@ -1,15 +1,25 @@
 import { useState } from "react"
-import { ExternalLinkIcon, LoaderCircleIcon } from "lucide-react"
+import {
+  ChevronDownIcon,
+  ExternalLinkIcon,
+  LoaderCircleIcon,
+} from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
 import {
   Dialog,
   DialogContent,
@@ -56,199 +66,144 @@ export function CrawlMetricsPage() {
   }
 
   const runs = runsQuery.data?.items ?? []
-  const acquisitionBacklog = runs.reduce(
+  const queued = runs.reduce(
     (total, run) => total + run.queued_request_count,
     0
   )
-  const ingestionBacklog =
-    capacityQuery.data?.catalogue_executors.find(
-      (item) => item.capability === "ingestion"
-    )?.backlog ?? 0
-  const materializationBacklog =
-    capacityQuery.data?.catalogue_executors.find(
-      (item) => item.capability === "materialization"
-    )?.backlog ?? 0
+  const acquiring = runs.reduce(
+    (total, run) => total + run.fetching_request_count,
+    0
+  )
+  const navigating = runs.reduce(
+    (total, run) => total + run.navigating_request_count,
+    0
+  )
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-4 pb-2">
-      <WorkerCapacity
+      <AcquisitionStatus
         capacity={capacityQuery.data}
-        acquisitionBacklog={acquisitionBacklog}
-        ingestionBacklog={ingestionBacklog}
-        materializationBacklog={materializationBacklog}
+        queued={queued}
+        acquiring={acquiring}
+        navigating={navigating}
       />
       <LatestRuns runs={runs} />
+      <AcquisitionDiagnostics capacity={capacityQuery.data} queued={queued} />
     </div>
   )
 }
 
-function WorkerCapacity({
+function AcquisitionStatus({
   capacity,
-  acquisitionBacklog,
-  ingestionBacklog,
-  materializationBacklog,
+  queued,
+  acquiring,
+  navigating,
 }: {
   capacity?: CrawlConcurrencyLimits
-  acquisitionBacklog: number
-  ingestionBacklog: number
-  materializationBacklog: number
+  queued: number
+  acquiring: number
+  navigating: number
 }) {
-  const ingestion = capacity?.catalogue_executors.find(
-    (item) => item.capability === "ingestion"
-  )
-  const materialization = capacity?.catalogue_executors.find(
-    (item) => item.capability === "materialization"
-  )
+  const unavailable = (capacity?.runtime_capacity ?? 0) === 0
+  const active = acquiring + navigating
+  const state = unavailable
+    ? "Unavailable"
+    : queued > 0 || active > 0
+      ? "Acquiring"
+      : "Idle"
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>Worker capacity</CardTitle>
+      <CardHeader className="border-b">
+        <CardTitle>Acquisition status</CardTitle>
         <CardDescription>
-          Sustained full utilization with a growing backlog means this
-          deployment needs more client lanes or worker replicas.
+          Pages moving through crawl plans right now.
         </CardDescription>
+        <CardAction>
+          <Badge variant={unavailable ? "destructive" : "outline"}>
+            {state}
+          </Badge>
+        </CardAction>
       </CardHeader>
-      <CardContent className="grid gap-3 lg:grid-cols-3">
-        <WorkerCapacityCard
-          label="Acquisition"
-          used={capacity?.runtime_active ?? 0}
-          capacity={capacity?.runtime_capacity ?? 0}
-          instances={capacity?.worker_count ?? 0}
-          instanceLabel="replica"
-          backlog={acquisitionBacklog}
-          backlogLabel="pages queued"
-        />
-        <WorkerCapacityCard
-          label="Ingestion"
-          used={ingestion?.active ?? 0}
-          capacity={ingestion?.capacity ?? 0}
-          configuredCapacity={ingestion?.configured_capacity ?? 0}
-          degraded={ingestion?.degraded ?? 0}
-          instances={ingestion?.worker_count ?? 0}
-          instanceLabel="replica"
-          backlog={ingestionBacklog}
-          backlogLabel="catalogue jobs waiting"
-          queueDetail={
-            ingestion
-              ? `${ingestion.pending.toLocaleString()} queued · ${ingestion.ack_pending.toLocaleString()} ACK-pending · ${ingestion.redelivered.toLocaleString()} redelivered · ${ingestion.waiting_for_redelivery.toLocaleString()} waiting for redelivery`
-              : undefined
-          }
-        />
-        <WorkerCapacityCard
-          label="Materialization"
-          used={materialization?.active ?? 0}
-          capacity={materialization?.capacity ?? 0}
-          configuredCapacity={materialization?.configured_capacity ?? 0}
-          degraded={materialization?.degraded ?? 0}
-          instances={materialization?.worker_count ?? 0}
-          instanceLabel="replica"
-          backlog={materializationBacklog}
-          backlogLabel="view updates waiting"
-          queueDetail={
-            materialization
-              ? `${materialization.pending.toLocaleString()} queued · ${materialization.ack_pending.toLocaleString()} ACK-pending · ${materialization.redelivered.toLocaleString()} redelivered · ${materialization.waiting_for_redelivery.toLocaleString()} waiting for redelivery`
-              : undefined
-          }
-        />
+      <CardContent className="grid gap-6 sm:grid-cols-3">
+        <StatusCount value={queued} label="pages queued" />
+        <StatusCount value={acquiring} label="pages acquiring" />
+        <StatusCount value={navigating} label="following plan edges" />
       </CardContent>
     </Card>
   )
 }
 
-function WorkerCapacityCard({
-  label,
-  used,
+function StatusCount({ value, label }: { value: number; label: string }) {
+  return (
+    <div>
+      <p className="text-3xl font-semibold tabular-nums">
+        {value.toLocaleString()}
+      </p>
+      <p className="mt-1 text-sm text-muted-foreground">{label}</p>
+    </div>
+  )
+}
+
+function AcquisitionDiagnostics({
   capacity,
-  configuredCapacity = capacity,
-  degraded = 0,
-  instances,
-  instanceLabel,
-  backlog,
-  backlogLabel,
-  queueDetail,
+  queued,
 }: {
-  label: string
-  used: number
-  capacity: number
-  configuredCapacity?: number
-  degraded?: number
-  instances: number
-  instanceLabel: string
-  backlog: number
-  backlogLabel: string
-  queueDetail?: string
+  capacity?: CrawlConcurrencyLimits
+  queued: number
 }) {
-  const percent = capacity > 0 ? Math.min(100, (used / capacity) * 100) : 0
-  const full = capacity > 0 && used >= capacity
-  const needsScale = full && backlog > 0
-  const unavailable = configuredCapacity === 0 || capacity === 0
-  const partiallyDegraded = !unavailable && degraded > 0
+  const used = capacity?.runtime_active ?? 0
+  const usable = capacity?.runtime_capacity ?? 0
+  const configured = (capacity?.workers ?? []).reduce(
+    (total, worker) => total + worker.capacity,
+    0
+  )
 
   return (
-    <div className="rounded-lg border bg-muted/10 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="font-medium">{label}</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {instances.toLocaleString()} {instanceLabel}
-            {instances === 1 ? "" : "s"}
-          </p>
-        </div>
-        <Badge
-          variant={
-            unavailable || needsScale
-              ? "destructive"
-              : full || partiallyDegraded
-                ? "secondary"
-                : "outline"
-          }
-        >
-          {unavailable
-            ? "Unavailable"
-            : needsScale
-              ? "Add capacity"
-              : partiallyDegraded
-                ? "Degraded"
-              : full
-                ? "At capacity"
-                : "Available"}
-        </Badge>
-      </div>
-      <p
-        className={`mt-5 text-3xl font-semibold tabular-nums ${unavailable || needsScale ? "text-destructive" : ""}`}
-      >
-        {used.toLocaleString()} / {capacity.toLocaleString()} active slots
-      </p>
-      <div
-        className="mt-3 h-2 overflow-hidden rounded-full bg-muted"
-        role="progressbar"
-        aria-label={`${label} slot utilization`}
-        aria-valuemin={0}
-        aria-valuemax={capacity}
-        aria-valuenow={used}
-      >
-        <div
-          className={`h-full rounded-full transition-[width] duration-700 ease-out motion-reduce:transition-none ${unavailable || needsScale ? "bg-destructive" : "bg-primary"}`}
-          style={{ width: `${percent}%` }}
-        />
-      </div>
-      <p
-        className={`mt-3 text-sm tabular-nums ${partiallyDegraded || unavailable ? "font-medium text-destructive" : "text-muted-foreground"}`}
-      >
-        {capacity.toLocaleString()} of{" "}
-        {configuredCapacity.toLocaleString()} slots usable
-      </p>
-      <p
-        className={`mt-1 text-sm tabular-nums ${backlog > 0 ? "font-medium" : "text-muted-foreground"}`}
-      >
-        {backlog.toLocaleString()} {backlogLabel}
-      </p>
-      {queueDetail ? (
-        <p className="mt-1 text-xs tabular-nums text-muted-foreground">
-          {queueDetail}
-        </p>
-      ) : null}
+    <Collapsible>
+      <Card>
+        <CardHeader>
+          <CardTitle>Operations diagnostics</CardTitle>
+          <CardDescription>
+            Acquisition worker capacity and queue detail.
+          </CardDescription>
+          <CardAction>
+            <CollapsibleTrigger className="group inline-flex items-center gap-2 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground">
+              Details
+              <ChevronDownIcon className="size-3.5 transition-transform group-data-[panel-open]:rotate-180" />
+            </CollapsibleTrigger>
+          </CardAction>
+        </CardHeader>
+        <CollapsibleContent>
+          <CardContent className="grid gap-3 border-t pt-4 sm:grid-cols-2 lg:grid-cols-4">
+            <DiagnosticValue
+              value={`${used.toLocaleString()} / ${usable.toLocaleString()}`}
+              label="active / usable slots"
+            />
+            <DiagnosticValue
+              value={configured.toLocaleString()}
+              label="configured slots"
+            />
+            <DiagnosticValue
+              value={(capacity?.worker_count ?? 0).toLocaleString()}
+              label="worker replicas"
+            />
+            <DiagnosticValue
+              value={queued.toLocaleString()}
+              label="queued page requests"
+            />
+          </CardContent>
+        </CollapsibleContent>
+      </Card>
+    </Collapsible>
+  )
+}
+
+function DiagnosticValue({ value, label }: { value: string; label: string }) {
+  return (
+    <div className="rounded-md border bg-muted/10 p-3">
+      <p className="font-medium tabular-nums">{value}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{label}</p>
     </div>
   )
 }
@@ -265,7 +220,7 @@ function LatestRuns({ runs }: { runs: GraphRunRecord[] }) {
             <TableHeader className="bg-muted/30">
               <TableRow className="hover:bg-transparent">
                 <TableHead className="w-[8rem] pl-4">Status</TableHead>
-                <TableHead className="w-[15rem]">Graph</TableHead>
+                <TableHead className="w-[15rem]">Plan</TableHead>
                 <TableHead>Pages</TableHead>
                 <TableHead className="w-[6rem] text-right">Errors</TableHead>
               </TableRow>
@@ -278,7 +233,7 @@ function LatestRuns({ runs }: { runs: GraphRunRecord[] }) {
           </Table>
           {runs.length === 0 ? (
             <p className="py-10 text-center text-sm text-muted-foreground">
-              No graph runs yet
+              No crawl runs yet
             </p>
           ) : null}
         </div>
@@ -304,10 +259,10 @@ function RunRow({ run }: { run: GraphRunRecord }) {
       </TableCell>
       <TableCell className="py-4 align-top whitespace-normal">
         <a
-          href={`/crawls/graphs/${run.graph_id}`}
+          href={`/crawls/plans/${run.plan_id}`}
           className="inline-flex max-w-full items-center gap-1 font-medium hover:underline"
         >
-          <span className="truncate">{run.graph_slug || "Deleted graph"}</span>
+          <span className="truncate">{run.plan_slug || "Deleted plan"}</span>
           <ExternalLinkIcon className="size-3 shrink-0 text-muted-foreground" />
         </a>
         <p className="mt-1 text-xs text-muted-foreground tabular-nums">
@@ -336,7 +291,7 @@ function RunRow({ run }: { run: GraphRunRecord }) {
           <p className="mt-1.5 text-xs text-muted-foreground tabular-nums">
             {run.queued_request_count.toLocaleString()} queued ·{" "}
             {run.fetching_request_count.toLocaleString()} acquiring ·{" "}
-            {run.navigating_request_count.toLocaleString()} navigating graph
+            {run.navigating_request_count.toLocaleString()} navigating plan
           </p>
         ) : null}
       </TableCell>
@@ -392,9 +347,7 @@ function RunErrors({ run }: { run: GraphRunRecord }) {
                 className="rounded-md border bg-muted/20 p-3 text-left"
               >
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="destructive">
-                    {failure.failure_code}
-                  </Badge>
+                  <Badge variant="destructive">{failure.failure_code}</Badge>
                   <Badge variant="outline" className="tabular-nums">
                     {failure.count.toLocaleString()}
                   </Badge>

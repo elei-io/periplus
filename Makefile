@@ -1,118 +1,75 @@
-.PHONY: sync check console-check sdk-check duckdb-extension-configure duckdb-extension-check duckdb-extension-release duckdb-extension-clean setup catalogue-check catalogue-benchmark catalogue-load-synthetic analytical-ground-truth-test analytical-ground-truth-plan analytical-ground-truth-load analytical-ground-truth-verify analytical-ground-truth-run analytical-ground-truth-claim-plan analytical-ground-truth-claim-load analytical-ground-truth-claim-verify analytical-ground-truth-claim-run verify-remote-runtime worker-independence-smoke worker-horizontal-smoke reliability-check docs-diagrams api acquisition-worker ingestion-worker catalogue-relay-worker materialization-worker housekeeping-worker cli db-revision compose-up compose-down
+.PHONY: sync check setup catalogue-check query-benchmark api crawler ingestor materializer janitor db-revision compose-up compose-down compose-reset
 
 sync:
 	cd backend && uv sync
 	npm install
 
 check:
-	cd backend && uv run python -m compileall actions agents api catalogue catalogue_relay cli config control db dom materialization observability repository runtime workers
+	cd backend && uv run python -m compileall src/periplus
 	cd backend && uv run python -m unittest discover -s tests
-	$(MAKE) analytical-ground-truth-test
-	$(MAKE) sdk-check
-	$(MAKE) console-check
-
-sdk-check:
-	cd backend && uv run python -m unittest discover -s ../sdk/tests
-
-console-check:
-	npm run check:console
-	npm run test:console
-
-duckdb-extension-configure:
-	$(MAKE) -C packages/atlas-duckdb-extension configure
-
-duckdb-extension-check: duckdb-extension-configure
-	$(MAKE) -C packages/atlas-duckdb-extension debug
-	$(MAKE) -C packages/atlas-duckdb-extension test_debug
-
-duckdb-extension-release: duckdb-extension-configure
-	$(MAKE) -C packages/atlas-duckdb-extension release
-
-duckdb-extension-clean:
-	$(MAKE) -C packages/atlas-duckdb-extension clean_all
+	cd backend && PYTHONPATH=../packages/periplus-python-sdk/src uv run python -m unittest discover -s ../packages/periplus-python-sdk/tests
+	npm run check:packages
+	npm run test:packages
+	npm run check:web
+	npm run build:web
 
 setup:
-	cd backend && uv run atlas-setup
+	cd backend && uv run periplus-setup
 
 catalogue-check:
-	cd backend && uv run python -m repository.catalogue check
+	cd backend && \
+	PERIPLUS_DUCKLAKE_ALIAS="$${PERIPLUS_DUCKLAKE_ALIAS:-periplus}" \
+	PERIPLUS_DUCKLAKE_METADATA_PATH="$${PERIPLUS_DUCKLAKE_METADATA_PATH:-postgres:dbname=lake host=127.0.0.1 port=$${LAKE_POSTGRES_PORT:-55433} user=lake password=lake_local}" \
+	PERIPLUS_DUCKLAKE_METADATA_SCHEMA="$${PERIPLUS_DUCKLAKE_METADATA_SCHEMA:-ducklake}" \
+	PERIPLUS_DUCKLAKE_DATA_PATH="$${PERIPLUS_DUCKLAKE_DATA_PATH:-s3://lake/}" \
+	PERIPLUS_DUCKLAKE_S3_ENDPOINT="$${PERIPLUS_DUCKLAKE_S3_ENDPOINT:-127.0.0.1:$${LAKE_S3_PORT:-7070}}" \
+	PERIPLUS_DUCKLAKE_S3_REGION="$${PERIPLUS_DUCKLAKE_S3_REGION:-us-east-1}" \
+	PERIPLUS_DUCKLAKE_S3_KEY_ID="$${PERIPLUS_DUCKLAKE_S3_KEY_ID:-lake}" \
+	PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY="$${PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY:-lake-secret}" \
+	PERIPLUS_DUCKLAKE_S3_URL_STYLE="$${PERIPLUS_DUCKLAKE_S3_URL_STYLE:-path}" \
+	PERIPLUS_DUCKLAKE_S3_USE_SSL="$${PERIPLUS_DUCKLAKE_S3_USE_SSL:-false}" \
+	PERIPLUS_DUCKDB_EXTENSION_PATH="$${PERIPLUS_DUCKDB_EXTENSION_PATH:-$(CURDIR)/../periplus-duckdb-extension/build/release/extension/periplus/periplus.duckdb_extension}" \
+	uv run python -m periplus.platform.catalogue check
 
-catalogue-benchmark:
-	cd backend && uv run python -m repository.catalogue benchmark
-
-catalogue-load-synthetic:
-	cd backend && uv run python scripts/load_synthetic_catalogue.py
-
-analytical-ground-truth-test:
-	cd backend && uv run python -m unittest discover -s ../benchmarks/analytical_ground_truth/tests
-
-analytical-ground-truth-plan:
-	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py plan
-
-analytical-ground-truth-load:
-	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py load
-
-analytical-ground-truth-verify:
-	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py verify
-
-analytical-ground-truth-run:
-	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py run
-
-analytical-ground-truth-claim-plan:
-	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py plan --scenario claim_lineage
-
-analytical-ground-truth-claim-load:
-	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py load --scenario claim_lineage --batch-size 30
-
-analytical-ground-truth-claim-verify:
-	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py verify --scenario claim_lineage
-
-analytical-ground-truth-claim-run:
-	cd backend && uv run python ../benchmarks/analytical_ground_truth/cli.py run --scenario claim_lineage
-
-verify-remote-runtime:
-	cd backend && uv run python scripts/verify_remote_runtime.py
-
-worker-independence-smoke:
-	cd backend && uv run python ../scripts/verify-worker-independence.py
-
-worker-horizontal-smoke:
-	cd backend && uv run python ../scripts/verify-worker-horizontal-safety.py
-
-reliability-check:
-	docker compose up -d --wait
-	$(MAKE) worker-independence-smoke
-	$(MAKE) worker-horizontal-smoke
-
-docs-diagrams:
-	./scripts/render-doc-diagrams.sh
+query-benchmark:
+	cd backend && \
+	PERIPLUS_DUCKLAKE_ALIAS="$${PERIPLUS_DUCKLAKE_ALIAS:-periplus}" \
+	PERIPLUS_DUCKLAKE_METADATA_PATH="$${PERIPLUS_DUCKLAKE_METADATA_PATH:-postgres:dbname=lake host=127.0.0.1 port=$${LAKE_POSTGRES_PORT:-55433} user=lake password=lake_local}" \
+	PERIPLUS_DUCKLAKE_METADATA_SCHEMA="$${PERIPLUS_DUCKLAKE_METADATA_SCHEMA:-ducklake}" \
+	PERIPLUS_DUCKLAKE_DATA_PATH="$${PERIPLUS_DUCKLAKE_DATA_PATH:-s3://lake/}" \
+	PERIPLUS_DUCKLAKE_S3_ENDPOINT="$${PERIPLUS_DUCKLAKE_S3_ENDPOINT:-127.0.0.1:$${LAKE_S3_PORT:-7070}}" \
+	PERIPLUS_DUCKLAKE_S3_REGION="$${PERIPLUS_DUCKLAKE_S3_REGION:-us-east-1}" \
+	PERIPLUS_DUCKLAKE_S3_KEY_ID="$${PERIPLUS_DUCKLAKE_S3_KEY_ID:-lake}" \
+	PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY="$${PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY:-lake-secret}" \
+	PERIPLUS_DUCKLAKE_S3_URL_STYLE="$${PERIPLUS_DUCKLAKE_S3_URL_STYLE:-path}" \
+	PERIPLUS_DUCKLAKE_S3_USE_SSL="$${PERIPLUS_DUCKLAKE_S3_USE_SSL:-false}" \
+	PERIPLUS_DUCKDB_EXTENSION_PATH="$${PERIPLUS_DUCKDB_EXTENSION_PATH:-$(CURDIR)/../periplus-duckdb-extension/build/release/extension/periplus/periplus.duckdb_extension}" \
+	uv run python scripts/query_benchmark.py $(ARGS)
 
 api:
-	cd backend && uv run fastapi dev api/app.py
+	cd backend && uv run fastapi dev src/periplus/entrypoints/api.py
 
-acquisition-worker:
-	cd backend && uv run atlas-worker acquisition
+crawler:
+	cd backend && uv run periplus-worker crawler
 
-ingestion-worker:
-	cd backend && uv run atlas-worker ingestion
+ingestor:
+	cd backend && uv run periplus-worker ingestor
 
-catalogue-relay-worker:
-	cd backend && uv run atlas-worker catalogue-relay
+materializer:
+	cd backend && uv run periplus-worker materializer
 
-materialization-worker:
-	cd backend && uv run atlas-worker materialization
-
-housekeeping-worker:
-	cd backend && uv run atlas-worker housekeeping
-
-cli:
-	npm run atlas
+janitor:
+	cd backend && uv run periplus-worker janitor
 
 db-revision:
-	cd backend && uv run alembic -c db/alembic.ini revision --autogenerate -m "$(m)"
+	cd backend && uv run alembic -c src/periplus/platform/postgres/alembic.ini revision --autogenerate -m "$(m)"
 
 compose-up:
 	docker compose up --build -d --wait
 
 compose-down:
 	docker compose down
+
+# Periplus is greenfield: reset the complete disposable local data plane.
+compose-reset:
+	docker compose down --volumes

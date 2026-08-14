@@ -1,4 +1,13 @@
-import { createContext, createElement, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import {
+  createContext,
+  createElement,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 
 import { apiUrl } from "@/lib/api"
 
@@ -40,7 +49,8 @@ export type EdgeProgress = {
   settled: boolean
 }
 
-type ConnectionState = "idle" | "connecting" | "connected" | "reconnecting" | "stale"
+type ConnectionState =
+  "idle" | "connecting" | "connected" | "reconnecting" | "stale"
 type ProgressSnapshot = {
   graph_run_id: string
   nodes: Record<string, NodeProgress>
@@ -60,9 +70,22 @@ const ProgressContext = createContext<ProgressContextValue>({
   connectionState: "idle",
 })
 
-export function GraphProgressProvider({ runId, children }: { runId: string | null; children: ReactNode }) {
-  const [snapshot, setSnapshot] = useState<{ runId: string; nodes: Record<string, NodeProgress>; edges: Record<string, EdgeProgress> } | null>(null)
-  const [connection, setConnection] = useState<{ runId: string; state: ConnectionState } | null>(null)
+export function GraphProgressProvider({
+  runId,
+  children,
+}: {
+  runId: string | null
+  children: ReactNode
+}) {
+  const [snapshot, setSnapshot] = useState<{
+    runId: string
+    nodes: Record<string, NodeProgress>
+    edges: Record<string, EdgeProgress>
+  } | null>(null)
+  const [connection, setConnection] = useState<{
+    runId: string
+    state: ConnectionState
+  } | null>(null)
 
   useEffect(() => {
     if (!runId) return
@@ -71,32 +94,47 @@ export function GraphProgressProvider({ runId, children }: { runId: string | nul
     const markAlive = () => {
       setConnection({ runId, state: "connected" })
       if (staleTimer !== null) window.clearTimeout(staleTimer)
-      staleTimer = window.setTimeout(() => setConnection({ runId, state: "stale" }), 25_000)
+      staleTimer = window.setTimeout(
+        () => setConnection({ runId, state: "stale" }),
+        25_000
+      )
     }
     source.onopen = markAlive
     source.onerror = () => setConnection({ runId, state: "reconnecting" })
     source.addEventListener("heartbeat", markAlive)
     source.addEventListener("progress_snapshot", (event) => {
       markAlive()
-      const value = JSON.parse((event as MessageEvent<string>).data) as ProgressSnapshot
+      const value = JSON.parse(
+        (event as MessageEvent<string>).data
+      ) as ProgressSnapshot
       setSnapshot({ runId, nodes: value.nodes, edges: value.edges })
     })
     source.addEventListener("node_progress", (event) => {
       markAlive()
-      const value = JSON.parse((event as MessageEvent<string>).data) as NodeProgress
+      const value = JSON.parse(
+        (event as MessageEvent<string>).data
+      ) as NodeProgress
       setSnapshot((current) => ({
         runId,
-        nodes: { ...(current?.runId === runId ? current.nodes : {}), [value.node_id]: value },
+        nodes: {
+          ...(current?.runId === runId ? current.nodes : {}),
+          [value.node_id]: value,
+        },
         edges: current?.runId === runId ? current.edges : {},
       }))
     })
     source.addEventListener("edge_progress", (event) => {
       markAlive()
-      const value = JSON.parse((event as MessageEvent<string>).data) as EdgeProgress
+      const value = JSON.parse(
+        (event as MessageEvent<string>).data
+      ) as EdgeProgress
       setSnapshot((current) => ({
         runId,
         nodes: current?.runId === runId ? current.nodes : {},
-        edges: { ...(current?.runId === runId ? current.edges : {}), [value.edge_id]: value },
+        edges: {
+          ...(current?.runId === runId ? current.edges : {}),
+          [value.edge_id]: value,
+        },
       }))
     })
     source.addEventListener("run_settled", () => {
@@ -110,16 +148,20 @@ export function GraphProgressProvider({ runId, children }: { runId: string | nul
     }
   }, [runId])
 
-  const value = useMemo<ProgressContextValue>(() => ({
-    runId,
-    nodes: snapshot?.runId === runId ? snapshot.nodes : {},
-    edges: snapshot?.runId === runId ? snapshot.edges : {},
-    connectionState: runId === null
-      ? "idle"
-      : connection?.runId === runId
-        ? connection.state
-        : "connecting",
-  }), [connection, runId, snapshot])
+  const value = useMemo<ProgressContextValue>(
+    () => ({
+      runId,
+      nodes: snapshot?.runId === runId ? snapshot.nodes : {},
+      edges: snapshot?.runId === runId ? snapshot.edges : {},
+      connectionState:
+        runId === null
+          ? "idle"
+          : connection?.runId === runId
+            ? connection.state
+            : "connecting",
+    }),
+    [connection, runId, snapshot]
+  )
 
   return createElement(ProgressContext.Provider, { value }, children)
 }
@@ -128,16 +170,45 @@ export function useGraphProgressConnection() {
   return useContext(ProgressContext).connectionState
 }
 
+export function useGraphProgressSummary(runId: string | null) {
+  const context = useContext(ProgressContext)
+  const nodes = context.runId === runId ? Object.values(context.nodes) : []
+  return nodes.reduce(
+    (summary, node) => ({
+      admitted: summary.admitted + node.admitted,
+      queued: summary.queued + node.queued,
+      crawling: summary.crawling + node.crawling,
+      navigating:
+        summary.navigating + node.awaiting_navigation + node.evaluating_edges,
+      completed: summary.completed + node.completed,
+      failed: summary.failed + node.failed,
+      cancelled: summary.cancelled + node.cancelled,
+      connectionState: context.connectionState,
+    }),
+    {
+      admitted: 0,
+      queued: 0,
+      crawling: 0,
+      navigating: 0,
+      completed: 0,
+      failed: 0,
+      cancelled: 0,
+      connectionState: context.connectionState,
+    }
+  )
+}
+
 export function useNodeProgress(runId: string | null, nodeId: string) {
   const context = useContext(ProgressContext)
-  const progress = context.runId === runId ? context.nodes[nodeId] ?? null : null
+  const progress =
+    context.runId === runId ? (context.nodes[nodeId] ?? null) : null
   const activity = useTransientActivity(progress?.activity ?? [])
   return progress ? { ...progress, activity } : null
 }
 
 export function useEdgeProgress(runId: string | null, edgeId: string) {
   const context = useContext(ProgressContext)
-  return context.runId === runId ? context.edges[edgeId] ?? null : null
+  return context.runId === runId ? (context.edges[edgeId] ?? null) : null
 }
 
 function useTransientActivity(activity: NodeActivity[]) {
@@ -147,10 +218,14 @@ function useTransientActivity(activity: NodeActivity[]) {
   const replaceTimer = useRef<number | null>(null)
   const pending = useRef<NodeActivity | null>(null)
   const lastReplacementAt = useRef(0)
-  useEffect(() => () => {
-    if (hideTimer.current !== null) window.clearTimeout(hideTimer.current)
-    if (replaceTimer.current !== null) window.clearTimeout(replaceTimer.current)
-  }, [])
+  useEffect(
+    () => () => {
+      if (hideTimer.current !== null) window.clearTimeout(hideTimer.current)
+      if (replaceTimer.current !== null)
+        window.clearTimeout(replaceTimer.current)
+    },
+    []
+  )
   useEffect(() => {
     const additions = activity.filter((item) => {
       const identity = `${item.request_id}:${item.status}:${item.updated_at}`
@@ -174,7 +249,8 @@ function useTransientActivity(activity: NodeActivity[]) {
 
     const elapsed = performance.now() - lastReplacementAt.current
     if (visible === null || elapsed >= 250) {
-      if (replaceTimer.current !== null) window.clearTimeout(replaceTimer.current)
+      if (replaceTimer.current !== null)
+        window.clearTimeout(replaceTimer.current)
       replace()
     } else if (replaceTimer.current === null) {
       replaceTimer.current = window.setTimeout(replace, 250 - elapsed)

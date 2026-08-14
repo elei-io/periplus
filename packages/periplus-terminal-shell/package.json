@@ -1,0 +1,19 @@
+{
+  "name": "periplus-terminal-shell",
+  "version": "0.1.0",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "bin": {
+    "periplus": "dist/main.js"
+  },
+  "dependencies": {
+    "periplus-console-core": "*"
+  },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && chmod +x dist/main.js",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build --silent && test -x dist/main.js && node --test dist/*.test.js"
+  }
+}

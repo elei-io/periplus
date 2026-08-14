@@ -1,0 +1,38 @@
+# Values for the compute-main homelab cluster. Secret names follow the
+# secret-access controller's projected bundle convention.
+imagePullSecrets:
+  - name: ghcr-pull
+
+images:
+  backend:
+    tag: sha-abcdef0
+  web:
+    tag: sha-abcdef0
+
+secrets:
+  controlDatabase:
+    name: postgres-periplus-control
+    urlKey: DATABASE_URL
+  ducklakeMetadata:
+    name: postgres-periplus-lake
+    pathKey: DATABASE_URL
+  nats:
+    name: nats-periplus
+  s3:
+    name: s3-periplus
+
+config:
+  cdpUrl: http://replace-with-cdp-service:9222
+  ducklake:
+    dataPath: s3://periplus/ducklake/
+    s3Endpoint: s3.elei.io:9000
+    s3UrlStyle: path
+    s3UseSSL: true
+
+web:
+  service:
+    type: LoadBalancer
+    annotations:
+      metallb.io/address-pool: compute-lb
+      # Reserve and verify this address in the homelab registry before apply.
+      metallb.io/loadBalancerIPs: 192.168.30.207
