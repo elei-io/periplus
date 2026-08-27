@@ -182,6 +182,8 @@ layer.
 - Do not commit generated artifacts, local `.periplus/` data, virtual environments, or secrets.
 - Manage schema changes with Alembic; do not add compatibility models for removed storage paths.
 
+Before changing anything under `web/`, read and follow `web/AGENTS.md` in full.
+
 For the frontend, use shadcn components, React Query for server state, shared API types under
 `web/src/types/`, and named exports except for `App.tsx`. Every mutation must surface
 `extractApiError` through `toast.error()`.
