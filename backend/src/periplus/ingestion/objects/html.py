@@ -198,7 +198,7 @@ class RawHtmlRepository:
 def html_object_key(sha256: str) -> str:
     if len(sha256) != 64 or any(character not in "0123456789abcdef" for character in sha256):
         raise ValueError("HTML SHA-256 must be 64 lowercase hexadecimal characters")
-    return f"raw/html/sha256/{sha256[:2]}/{sha256[2:4]}/{sha256}.html.zst"
+    return f"html/sha256/{sha256[:2]}/{sha256[2:4]}/{sha256}.html.zst"
 
 
 def _sha256_from_key(object_key: str) -> str | None:

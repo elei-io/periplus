@@ -276,6 +276,8 @@ class S3ObjectStore:
             response = self.client.list_objects_v2(**options)
             for item in response.get("Contents", []):
                 object_key = str(item["Key"])
+                if object_key.endswith("/"):
+                    continue
                 relative_key = (
                     object_key[len(self.prefix) + 1 :]
                     if self.prefix

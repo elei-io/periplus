@@ -153,6 +153,7 @@ class DocumentApiTests(unittest.TestCase):
             observed_at=datetime.now(UTC),
             content_type="application/pdf",
         )
+        self.assertTrue(stored.object_key.startswith("documents/sha256/"))
         self.catalogue.content_rows[document_id] = (
             document_id,
             "application/pdf",
@@ -186,6 +187,7 @@ class DocumentApiTests(unittest.TestCase):
             observed_at=datetime.now(UTC),
             content_type="text/html",
         )
+        self.assertTrue(stored.object_key.startswith("html/sha256/"))
         self.catalogue.content_rows[document_id] = (
             document_id,
             "text/html",

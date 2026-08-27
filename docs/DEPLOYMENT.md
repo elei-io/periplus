@@ -5,8 +5,8 @@ domain capabilities.
 
 ## Naming
 
-- Infrastructure uses ownership-first names: `lake-s3`, `lake-postgres`, `periplus-postgres`, and
-  `periplus-nats`.
+- Infrastructure uses ownership-first names: `lake-alluxio-s3`, `lake-postgres`,
+  `periplus-postgres`, and `periplus-nats`.
 - Executable roles use actor names: `periplus-crawler`, `periplus-ingestor`, `periplus-materializer`, and
   `periplus-janitor`.
 - Domain names remain `crawl`, `acquisition`, `ingestion`, and `materialization` in schemas,
@@ -20,17 +20,21 @@ container names. This means one local Periplus Compose project may run on a Dock
 
 | Service | Authority or role | Persistent state |
 | --- | --- | --- |
-| `lake-s3` | S3-compatible DuckLake object storage | `lake-s3-data` and `lake-s3-metadata` |
+| `lake-alluxio-master` | Local Alluxio namespace and asynchronous persistence coordination | `lake-alluxio-journal` |
+| `lake-alluxio-worker` | Local SSD working set and persistence job execution | `lake-alluxio-worker-data` |
+| `lake-alluxio-namespace-init` | One-shot creation of Alluxio's `raw` and `lake` S3 bucket directories | none |
+| `lake-alluxio-s3` | Alluxio's S3-compatible proxy; it is not a storage authority | none |
+| Backblaze B2 under-store | Durable raw objects and DuckLake files behind Alluxio | configured bucket and prefix |
 | `lake-postgres` | DuckLake metadata only | `lake-postgres-data` |
 | `periplus-postgres` | Periplus editable control and current execution state only | `periplus-postgres-data` |
 | `periplus-nats` | JetStream/KV delivery, presence, pacing, and leases | `periplus-nats-data` |
-| `periplus-crawler` | Crawl graph execution and page acquisition | shared `periplus-repository-data` |
-| `periplus-ingestor` | Immutable crawl and visit evidence writes | shared `periplus-repository-data` |
-| `periplus-materializer` | Fixed projections, rebuilds, and live CDC | shared `periplus-repository-data` |
-| `periplus-api` | HTTP API | shared `periplus-repository-data` |
+| `periplus-crawler` | Crawl graph execution, page acquisition, and immutable raw-object writes | Alluxio `raw` namespace |
+| `periplus-ingestor` | Immutable crawl and visit evidence writes | none |
+| `periplus-materializer` | Fixed projections, rebuilds, and live CDC | Alluxio `raw` reads and `lake` writes |
+| `periplus-api` | HTTP API | Alluxio `raw` namespace |
 | `periplus-web` | Web application | none |
-| `periplus-janitor` | Periplus-owned staging, navigation, and runtime cleanup | shared `periplus-repository-data` |
-| `periplus-setup` | One-shot schema and catalogue installation | shared `periplus-repository-data` |
+| `periplus-janitor` | Periplus-owned staging, navigation, and runtime cleanup | Alluxio `raw` namespace |
+| `periplus-setup` | One-shot schema and catalogue installation | none |
 
 `PERIPLUS_CONTROL_DATABASE_URL` always identifies Periplus Postgres.
 `PERIPLUS_DUCKLAKE_METADATA_PATH` independently identifies the DuckLake metadata store. They must
@@ -41,11 +45,14 @@ standard URLs to the native DuckLake form at its configuration boundary.
 
 Deleting `periplus-postgres-data` loses editable plans, schedules, policies, and current execution
 state without deleting lake history. Deleting `lake-postgres-data` loses the DuckLake catalogue;
-the S3 objects alone are not a usable lake. A complete disposable reset removes both databases,
-NATS, S3 data and sidecar metadata, and the shared repository volume.
+the B2 objects alone are not a usable lake. A local Compose reset removes both databases, NATS,
+the Alluxio journal and cache. It intentionally does not delete the remote B2 prefix, so raw objects
+remain and files from a reset catalogue become unreferenced remote objects until they are reclaimed
+explicitly.
 
-The default Compose deployment keeps all persistent state in named volumes, so
-`docker compose down --volumes` is a complete reset. A direct-filesystem DuckLake deployment is a
+The default Compose deployment keeps all local persistent state in named volumes, so
+`docker compose down --volumes` is a complete local reset; it leaves the B2 under-store untouched.
+A direct-filesystem DuckLake deployment is a
 separate production configuration: set `PERIPLUS_DUCKLAKE_DATA_PATH` to an absolute shared path and
 mount that path consistently into every Periplus process that writes or reads lake files.
 
@@ -55,13 +62,32 @@ The checked-in `.env.example` is the canonical runnable development contract. It
 
 - Compose build inputs and published ports;
 - Periplus control Postgres from DuckLake metadata Postgres;
-- Versity root credentials from Periplus S3 client credentials;
+- Alluxio's local cache capacity and S3 identity from Periplus connection settings;
 - host addresses from container-network addresses; and
 - required attachment settings from optional storage and operational overrides.
 
 Application code does not infer a DuckLake metadata store or data path.
 `PERIPLUS_DUCKLAKE_METADATA_PATH` and `PERIPLUS_DUCKLAKE_DATA_PATH` are required. Standard provider
 credentials such as `AWS_*` remain valid where the selected protocol supports them.
+
+The development S3 endpoint is the Alluxio OSS proxy at `/api/v1/s3`. It uses `ASYNC_THROUGH`
+from one SSD-class worker tier and the S3 streaming uploader into the configured Backblaze B2 bucket
+and prefix. The official OSS
+image is amd64-only, so Docker Desktop uses emulation on Apple Silicon. Alluxio SIMPLE authentication
+interprets the client-facing S3 key ID as an Alluxio/Unix identity and does not validate that secret;
+the local default therefore uses the image's `alluxio` user. B2 uses a separate bucket-scoped S3
+application key supplied only through the ignored `.env` file. These remain single-node local cache
+defaults, not the production replication, authentication, or topology contract.
+
+Alluxio exposes two top-level S3 namespaces over the same B2 under-store. `raw` contains immutable
+source documents at `raw/html/...` and `raw/documents/...`; repository-relative keys omit that bucket
+name and begin with `html/...` or `documents/...`. `lake` is exclusively the DuckLake data root, so
+DuckLake and Periplus materialization files appear under `lake/...`. Raw-object and lake-file
+ownership remain separate even though both use the same local cache and remote bucket.
+
+The preferred development configuration uses a dedicated B2 bucket with an empty
+`LAKE_B2_PREFIX`. A non-empty prefix must already exist as an object-store directory before Alluxio
+starts; nested prefixes require each ancestor directory marker.
 
 The Compose build still compiles the Periplus and DuckLake CDC extensions together against the pinned
 DuckDB version. `PERIPLUS_DUCKDB_EXTENSION_REPO` and `PERIPLUS_DUCKLAKE_CDC_EXTENSION_REPO` only relocate

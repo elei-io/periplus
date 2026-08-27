@@ -33,8 +33,11 @@ Requirements are Python 3.14 with `uv`, Node.js 22 or newer, Docker Compose, the
 `periplus-duckdb-extension` checkout, the pinned
 `quack/ducklake-cdc-extension-1.5.5` checkout, and a standard CDP endpoint. The default Compose
 stack builds both matching Linux extensions in cached builder stages, then provisions separate
-Postgres authorities for Periplus control state and DuckLake metadata, S3-compatible lake storage, an
-immutable object repository, and JetStream without external credentials.
+Postgres authorities for Periplus control state and DuckLake metadata, and an Alluxio-backed local
+S3 working set with `raw/*` source objects and `lake/*` DuckLake files persisted into Backblaze B2.
+JetStream owns work delivery. The official Alluxio OSS image is amd64-only and runs under Docker emulation on Apple
+Silicon. Copy `.env.example` and supply the required bucket-scoped B2 application-key settings
+before starting Compose.
 
 ```sh
 cp .env.example .env
@@ -55,8 +58,8 @@ make compose-reset
 make compose-up
 ```
 
-This resets both Postgres authorities, lake objects and gateway metadata, the shared immutable
-repository, and JetStream.
+This resets both Postgres authorities, the local Alluxio journal and cache, and JetStream. It does
+not delete raw or lake objects already persisted under the configured B2 prefix.
 
 Run one query from the terminal:
 

@@ -28,3 +28,25 @@ maintenance; Periplus owns ingestion evidence and logical materialization genera
   MERGE insert/update and filtered INSERT inputs.
 - **Periplus status:** Periplus removed the affected projections. Semantic material data is immutable
   Parquet registered append-only; no page/head/link replacement DML remains.
+
+## DuckLake Postgres inlined-data reads can invalidate independent readers
+
+- **Periplus caller:** the serialized, process-owned API catalogue connection reading public and
+  physical relations while independent ingestor connections commit DuckLake evidence.
+- **Evidence:** DuckDB/DuckLake 1.5.5 on Linux ARM64 raised `INTERNAL Error: Attempted to access
+  index 0 within vector of size 0` in
+  `PostgresMetadataManager::TransformInlinedData` ->
+  `DuckLakeInlinedDataReader::TryInitializeScan`. DuckDB then permanently rejected every query on
+  that connection with `database has been invalidated`. At the same metadata snapshot, fresh
+  attachments successfully read all four public views. The catalogue contained active Postgres
+  inlined-data generations and had concurrent commits from independent writer attachments. This is
+  consistent with the cross-attachment inlined-data cache invalidation gap tracked in
+  [duckdb/ducklake#1305](https://github.com/duckdb/ducklake/issues/1305), although that report's
+  surface error is a stale missing-table reference rather than this invalid vector access.
+- **Needed upstream contract:** an independently attached reader must see one transactionally
+  consistent inlined-data membership and schema after another attachment commits or flushes inline
+  data. A metadata-cache miss or stale entry must refresh without an internal error or connection
+  invalidation.
+- **Periplus status:** the API discards a connection after DuckDB `InternalException` or
+  `FatalException`, opens a validated fresh attachment, and retries its serialized read-only
+  operation once. This bounds the incident but does not replace an upstream cache-coherence fix.

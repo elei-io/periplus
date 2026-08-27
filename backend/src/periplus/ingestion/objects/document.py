@@ -209,11 +209,11 @@ def document_object_key(sha256: str) -> str:
         character not in "0123456789abcdef" for character in sha256
     ):
         raise ValueError("document SHA-256 must be lowercase hexadecimal")
-    return f"raw/documents/sha256/{sha256[:2]}/{sha256[2:4]}/{sha256}"
+    return f"documents/sha256/{sha256[:2]}/{sha256[2:4]}/{sha256}"
 
 
 def _sha256_from_key(object_key: str) -> str | None:
-    prefix = "raw/documents/sha256/"
+    prefix = "documents/sha256/"
     if not object_key.startswith(prefix):
         return None
     value = object_key.rsplit("/", 1)[-1]

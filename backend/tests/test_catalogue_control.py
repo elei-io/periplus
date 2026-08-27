@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import duckdb
+
 from periplus.platform.catalogue.control import CatalogueControl
 
 
@@ -79,6 +81,44 @@ class CatalogueControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot, 42)
         self.assertTrue(catalogue.closed)
         self.assertTrue(catalogue.validated)
+
+    async def test_invalidating_error_reopens_and_retries_once(self) -> None:
+        catalogues = [_FakeCatalogue(), _FakeCatalogue(), _FakeCatalogue()]
+        factory_calls = 0
+        second_calls = 0
+
+        def factory() -> _FakeCatalogue:
+            nonlocal factory_calls
+            catalogue = catalogues[factory_calls]
+            factory_calls += 1
+            return catalogue
+
+        @contextmanager
+        def fake_session_scope():
+            yield SimpleNamespace()
+
+        def operation(_session, catalogue):
+            nonlocal second_calls
+            if catalogue is catalogues[0]:
+                raise duckdb.InternalException("inlined data cache failed")
+            if catalogue is catalogues[1]:
+                second_calls += 1
+                if second_calls == 2:
+                    raise duckdb.FatalException("database was invalidated")
+            return catalogue
+
+        control = CatalogueControl(factory=factory)
+        with patch("periplus.platform.catalogue.control.session_scope", fake_session_scope):
+            await control.start()
+            first_result = await control.run(operation)
+            second_result = await control.run(operation)
+            await control.close()
+
+        self.assertIs(first_result, catalogues[1])
+        self.assertIs(second_result, catalogues[2])
+        self.assertEqual(factory_calls, 3)
+        self.assertTrue(all(catalogue.validated for catalogue in catalogues))
+        self.assertTrue(all(catalogue.closed for catalogue in catalogues))
 
 
 if __name__ == "__main__":

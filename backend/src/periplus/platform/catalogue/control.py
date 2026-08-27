@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 from typing import TypeVar
 
+import duckdb
 from fastapi import Request
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,7 @@ from periplus.platform.catalogue.public import PUBLIC_CATALOGUE_VERSION
 
 T = TypeVar("T")
 CatalogueOperation = Callable[[Session, Catalogue], T]
+_INVALIDATING_ERRORS = (duckdb.FatalException, duckdb.InternalException)
 
 
 class CatalogueControl:
@@ -59,6 +61,9 @@ class CatalogueControl:
     def _open(self) -> None:
         if self._catalogue is not None:
             raise RuntimeError("API catalogue control is already started.")
+        self._catalogue = self._new_catalogue()
+
+    def _new_catalogue(self) -> Catalogue:
         catalogue = self._factory()
         try:
             catalogue.validate_schema()
@@ -73,7 +78,7 @@ class CatalogueControl:
             CATALOGUE_SCHEMA_VERSION,
             PUBLIC_CATALOGUE_VERSION,
         )
-        self._catalogue = catalogue
+        return catalogue
 
     def _close(self) -> None:
         if self._catalogue is None:
@@ -82,10 +87,34 @@ class CatalogueControl:
         self._catalogue = None
 
     def _run(self, operation: CatalogueOperation[T]) -> T:
-        if self._catalogue is None:
-            raise RuntimeError("API catalogue control is not started.")
-        with session_scope() as session:
-            return operation(session, self._catalogue)
+        for attempt in range(2):
+            if self._catalogue is None:
+                raise RuntimeError("API catalogue control is not started.")
+            try:
+                with session_scope() as session:
+                    return operation(session, self._catalogue)
+            except _INVALIDATING_ERRORS:
+                logging.exception(
+                    "DuckLake invalidated the API catalogue connection; "
+                    "opening a fresh attachment%s",
+                    " and retrying once" if attempt == 0 else "",
+                )
+                self._replace_invalidated_catalogue()
+                if attempt > 0:
+                    raise
+        raise AssertionError("unreachable catalogue retry state")
+
+    def _replace_invalidated_catalogue(self) -> None:
+        invalidated = self._catalogue
+        self._catalogue = None
+        if invalidated is not None:
+            try:
+                invalidated.close()
+            except BaseException:
+                logging.exception(
+                    "Failed to close an invalidated API catalogue connection"
+                )
+        self._catalogue = self._new_catalogue()
 
 
 def get_catalogue_control(request: Request) -> CatalogueControl:
