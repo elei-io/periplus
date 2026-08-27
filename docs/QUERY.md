@@ -49,8 +49,8 @@ processes validate this contract and never repair it at startup.
 
 Every public view and view column has a concise description derived from the semantic contract in
 `SCHEMA.md`. Setup reapplies supported view comments after replacing each view. DuckLake does not
-currently accept `COMMENT ON COLUMN` for view columns, so the authoritative manifest supplies
-column descriptions to the SQL metadata endpoint and both shells.
+currently accept `COMMENT ON COLUMN` for view columns, so the authoritative manifest remains the
+source of column descriptions for internal metadata consumers.
 
 Recurring expensive computations belong in Periplus-owned `material.*` relations maintained through
 the ordinary materialization lifecycle.
@@ -58,9 +58,25 @@ the ordinary materialization lifecycle.
 The shared terminal and web shell accepts bounded read-only SQL over the qualified relations in
 the public registry only. It also accepts `DESCRIBE`, `EXPLAIN`, `EXPLAIN ANALYZE`, and `SUMMARIZE`
 when their target passes the same public-namespace validation, plus `SHOW TABLES` for each public
-schema. Its metadata and autocomplete endpoints expose the public views but no `ingest.*` or
-`material.*` objects. The shared shell uses that metadata for `.tables`, `.describe`, and
-context-aware completion; `.completion reload` refreshes it explicitly.
+schema. The shared shell derives `.tables`, `.describe`, and context-aware completion through that
+same query operation; `.completion reload` refreshes the derived information explicitly.
+
+### Public application boundary
+
+The public application depends on one infrastructure operation: bounded execution of one SQL
+statement. Its server-only Periplus client sends `POST /sql/query` and validates the generic
+column, type, row, and truncation response. A separate metadata route is not part of this
+application contract; inspection uses ordinary accepted SQL statements.
+
+The Next.js server owns product-specific queries, typed domain and page responses, authentication,
+rate limits, billing, caching, and future user state. Browsers call the Next.js API and never reach
+the Periplus API directly. Periplus owns public-catalogue semantics and generic infrastructure
+safety only: namespace validation, read-only enforcement, bounded results, and DuckDB/DuckLake
+execution. It does not receive end-user identity or contain public-application business routes.
+
+This boundary permits the server-only client to target the current Periplus API, an internal load
+balancer, or a future read-only query deployment without changing product query definitions. All
+implementations must preserve the same query contract and public catalogue semantics.
 
 The Periplus web home page provides a request-scoped assistant over the same public query boundary.
 The server may inspect public metadata and run row-bounded, read-only queries; it cannot access
