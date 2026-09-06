@@ -13,7 +13,7 @@ export class SqlApiError extends Error {
 }
 
 export class SqlApi {
-  constructor(private readonly baseUrl: string) {}
+  constructor(private readonly baseUrl: string, private readonly token?: string) {}
 
   async query(sql: string, signal?: AbortSignal): Promise<SqlResult> {
     const value = await this.request<unknown>("/sql/query", {
@@ -87,7 +87,7 @@ export class SqlApi {
   private async request<T>(path: string, init: RequestInit): Promise<T> {
     const response = await fetch(
       new URL(path.slice(1), `${this.baseUrl.replace(/\/$/, "")}/`),
-      init
+      { ...init, headers: { ...init.headers, ...(this.token ? { authorization: `Bearer ${this.token}` } : {}) } }
     )
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {

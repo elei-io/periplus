@@ -25,7 +25,7 @@ if [[ ! -f "${PERIPLUS_DUCKDB_EXTENSION_PATH}" || ! -x "${duckdb_cli}" ]]; then
   exit 1
 fi
 
-cd "${periplus_root}/backend"
+cd "${periplus_root}/packages/periplus"
 exec uv run python scripts/direct_ducklake.py \
   --duckdb-cli "${duckdb_cli}" \
   "$@"

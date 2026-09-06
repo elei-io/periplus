@@ -1,14 +1,14 @@
 name: periplus
 
-x-periplus-backend: &periplus-backend
+x-periplus-core: &periplus-core
   build:
     context: .
     dockerfile: docker/periplus/Dockerfile
     additional_contexts:
       periplus-extension: ${PERIPLUS_DUCKDB_EXTENSION_REPO:-../periplus-duckdb-extension}
       ducklake-cdc-extension: ${PERIPLUS_DUCKLAKE_CDC_EXTENSION_REPO:-../quack/ducklake-cdc-extension-1.5.5}
-  image: ${PERIPLUS_BACKEND_IMAGE:-periplus-backend:local}
-  working_dir: /app/backend
+  image: ${PERIPLUS_CORE_IMAGE:-periplus-core:local}
+  working_dir: /app/packages/periplus
 
 x-periplus-healthcheck: &periplus-healthcheck
   interval: 5s
@@ -224,14 +224,33 @@ services:
       retries: 30
     restart: unless-stopped
 
-  periplus-web:
-    container_name: periplus-web
+  periplus-admin:
+    container_name: periplus-admin
     build:
       context: .
-      dockerfile: docker/web/Dockerfile
-    image: ${PERIPLUS_WEB_IMAGE:-periplus-web:local}
+      dockerfile: docker/admin/Dockerfile
+    image: ${PERIPLUS_ADMIN_IMAGE:-periplus-admin:local}
+    environment:
+      PERIPLUS_ADMIN_API_TOKEN: ${PERIPLUS_ADMIN_API_TOKEN:?Set PERIPLUS_ADMIN_API_TOKEN}
     ports:
-      - "127.0.0.1:${PERIPLUS_WEB_PORT:-8080}:80"
+      - "127.0.0.1:${PERIPLUS_ADMIN_PORT:-8081}:80"
+    depends_on:
+      periplus-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  periplus-public:
+    container_name: periplus-public
+    build:
+      context: .
+      dockerfile: docker/public/Dockerfile
+    image: ${PERIPLUS_PUBLIC_IMAGE:-periplus-public:local}
+    environment:
+      PERIPLUS_API_URL: http://periplus-api:8000
+      PERIPLUS_PUBLIC_API_TOKEN: ${PERIPLUS_PUBLIC_API_TOKEN:?Set PERIPLUS_PUBLIC_API_TOKEN}
+      PERIPLUS_PUBLIC_RECEIPT_SECRET: ${PERIPLUS_PUBLIC_RECEIPT_SECRET:?Set PERIPLUS_PUBLIC_RECEIPT_SECRET}
+    ports:
+      - "127.0.0.1:${PERIPLUS_PUBLIC_PORT:-8080}:3000"
     depends_on:
       periplus-api:
         condition: service_healthy
@@ -239,7 +258,7 @@ services:
 
   periplus-api:
     container_name: periplus-api
-    <<: *periplus-backend
+    <<: *periplus-core
     command: fastapi run src/periplus/entrypoints/api.py --host 0.0.0.0 --port 8000
     ports:
       - "127.0.0.1:${PERIPLUS_API_PORT:-8000}:8000"
@@ -250,9 +269,11 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=2).read()",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).read()",
         ]
     environment:
+      PERIPLUS_ADMIN_API_TOKEN: ${PERIPLUS_ADMIN_API_TOKEN:?Set PERIPLUS_ADMIN_API_TOKEN}
+      PERIPLUS_PUBLIC_API_TOKEN: ${PERIPLUS_PUBLIC_API_TOKEN:?Set PERIPLUS_PUBLIC_API_TOKEN}
       <<:
         [
           *periplus-control-environment,
@@ -261,11 +282,6 @@ services:
           *periplus-repository-environment,
           *periplus-graph-environment,
         ]
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      PERIPLUS_AI_MODEL: ${PERIPLUS_AI_MODEL:-openai:gpt-5.6-sol}
-      PERIPLUS_AI_MODEL_TIMEOUT_SECONDS: ${PERIPLUS_AI_MODEL_TIMEOUT_SECONDS:-180}
-      PERIPLUS_AI_REQUEST_LIMIT: ${PERIPLUS_AI_REQUEST_LIMIT:-32}
-      PERIPLUS_AI_TOOL_CALL_LIMIT: ${PERIPLUS_AI_TOOL_CALL_LIMIT:-24}
     depends_on:
       periplus-setup:
         condition: service_completed_successfully
@@ -274,7 +290,7 @@ services:
     restart: unless-stopped
 
   periplus-crawler:
-    <<: *periplus-backend
+    <<: *periplus-core
     command: periplus-worker crawler
     deploy:
       replicas: 1
@@ -307,7 +323,7 @@ services:
     restart: unless-stopped
 
   periplus-ingestor:
-    <<: *periplus-backend
+    <<: *periplus-core
     command: periplus-worker ingestor
     deploy:
       replicas: 4
@@ -337,7 +353,7 @@ services:
     restart: unless-stopped
 
   periplus-materializer:
-    <<: *periplus-backend
+    <<: *periplus-core
     command: periplus-worker materializer
     deploy:
       replicas: 4
@@ -368,7 +384,7 @@ services:
 
   periplus-janitor:
     container_name: periplus-janitor
-    <<: *periplus-backend
+    <<: *periplus-core
     command: periplus-worker janitor
     healthcheck:
       <<: *periplus-healthcheck
@@ -396,7 +412,7 @@ services:
 
   periplus-setup:
     container_name: periplus-setup
-    <<: *periplus-backend
+    <<: *periplus-core
     # Run the image-time package so schema changes require an explicit rebuild.
     command: periplus-setup
     environment:

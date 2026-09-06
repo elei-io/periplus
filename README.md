@@ -18,18 +18,25 @@ semantics. The bounded read-only SQL console exposes only qualified public relat
 web application and the `periplus` terminal client; physical `ingest.*` and `material.*` relations
 remain Periplus implementation details.
 
-The TypeScript workspace keeps its distributable clients under `packages/`:
-`periplus-console-core`, `periplus-web-shell`, and `periplus-terminal-shell`. The deployable React
-application lives under `web/` and consumes `periplus-web-shell`.
-The locally installable Python SDK lives under `packages/periplus-python-sdk/`.
+## Products and packages
 
-The backend is one `periplus` Python package organized by capability under `backend/src/periplus/`.
-The API, crawler, ingestor, materializer, and janitor are independently runnable process roles
-from the same package.
+| Package | Owns |
+| --- | --- |
+| `packages/periplus/` | Crawl execution, ingestion, materialization, catalogue and infrastructure APIs. |
+| `packages/periplus-admin/` | Authenticated operator UI for plans, policies, schedules, runs, workers and catalogue maintenance. |
+| `packages/periplus-public/` | Catalogue discovery, SQL queries, single-page crawl submission and receipt-scoped progress. |
+
+The core API, crawler, ingestor, materializer, setup and janitor are process roles of
+one Python package. Admin is a Vite application served by an authenticated nginx gateway;
+public is a Next.js application whose server holds the restricted infrastructure credential.
+Neither frontend imports core implementation code or connects directly to its stores.
+
+The console core, browser shell, terminal shell and Python SDK remain supporting packages.
+`_web_old_dont_touch/` is an untouched historical reference, excluded from workspaces and images.
 
 ## Development
 
-Requirements are Python 3.14 with `uv`, Node.js 22 or newer, Docker Compose, the sibling
+Requirements are Python 3.14 with `uv`, Node.js 24 or newer, Docker Compose, the sibling
 `periplus-duckdb-extension` checkout, the pinned
 `quack/ducklake-cdc-extension-1.5.5` checkout, and a standard CDP endpoint. The default Compose
 stack builds both matching Linux extensions in cached builder stages, then provisions separate
@@ -37,7 +44,8 @@ Postgres authorities for Periplus control state and DuckLake metadata, and an Al
 S3 working set with `raw/*` source objects and `lake/*` DuckLake files persisted into Backblaze B2.
 JetStream owns work delivery. The official Alluxio OSS image is amd64-only and runs under Docker emulation on Apple
 Silicon. Copy `.env.example` and supply the required bucket-scoped B2 application-key settings
-before starting Compose.
+and three distinct API/receipt secrets before starting Compose. Generate each secret with
+`openssl rand -hex 32`; the required names are in `.env.example`.
 
 ```sh
 cp .env.example .env
@@ -70,9 +78,21 @@ npm run periplus -- 'SELECT count(*) FROM web.observation'
 Run `npm run periplus` without SQL to open the interactive terminal. Set `PERIPLUS_API_URL` when the API
 is not available at `http://127.0.0.1:8000`. Inside either shell, `.tables` lists the public
 catalogue, `.describe content.object` shows an object's columns, and `.history` shows recent input.
-`.help` lists all local commands. The Periplus web
-home page provides catalogue assistance with Markdown answers, result tables, and validated SQL
-drafts that can be copied or run directly in the conversation.
+`.help` lists all local commands. Set `PERIPLUS_API_TOKEN` to the public service token for
+terminal SQL, or to the admin token for SDK operational calls.
+
+Start the applications locally with `npm run dev --workspace periplus-public` and
+`npm run dev --workspace periplus-admin`. Both read root `.env` during development.
+Compose exposes public on port 8080 and admin on port 8081. Admin uses HTTP Basic
+login with username `admin` and the administrative API token as password.
+Use TLS at the ingress in production.
+
+Public crawl submission acquires one URL, follows no links, and has a five-minute
+run deadline. Save the returned page URL to track the request for seven days.
+Receipts are bearer capabilities: anyone holding one can read that request's progress.
+There is no account system or public request database. Submission is capped at ten
+requests per minute per public process; production ingress owns aggregate rate limits.
+
 
 Useful commands:
 

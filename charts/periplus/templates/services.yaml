@@ -21,21 +21,41 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "periplus.fullname" . }}-web
+  name: {{ include "periplus.fullname" . }}-admin
   labels:
     {{- include "periplus.labels" . | nindent 4 }}
-    app.kubernetes.io/component: web
-  {{- with .Values.web.service.annotations }}
+    app.kubernetes.io/component: admin
+  {{- with .Values.admin.service.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  type: {{ .Values.web.service.type }}
+  type: {{ .Values.admin.service.type }}
   selector:
-    {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "web") | nindent 4 }}
+    {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "admin") | nindent 4 }}
   ports:
     - name: http
-      port: {{ .Values.web.service.port }}
+      port: {{ .Values.admin.service.port }}
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "periplus.fullname" . }}-public
+  labels:
+    {{- include "periplus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: public
+  {{- with .Values.public.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.public.service.type }}
+  selector:
+    {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "public") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.public.service.port }}
       targetPort: http
 {{- $root := . }}
 {{- range $worker := list (dict "name" "crawler" "port" 9090) (dict "name" "ingestor" "port" 9091) (dict "name" "materializer" "port" 9093) (dict "name" "janitor" "port" 9094) }}

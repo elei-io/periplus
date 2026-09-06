@@ -13,7 +13,7 @@ domain capabilities.
   queues, APIs, metrics, and capability packages.
 
 The crawler, ingestor, and materializer are horizontally scalable and must not declare a Compose
-`container_name`. Singleton infrastructure, API, web, janitor, and setup services have explicit
+`container_name`. Singleton infrastructure, API, admin, public, janitor, and setup services have explicit
 container names. This means one local Periplus Compose project may run on a Docker host at a time.
 
 ## Local topology
@@ -32,7 +32,8 @@ container names. This means one local Periplus Compose project may run on a Dock
 | `periplus-ingestor` | Immutable crawl and visit evidence writes | none |
 | `periplus-materializer` | Fixed projections, rebuilds, and live CDC | Alluxio `raw` reads and `lake` writes |
 | `periplus-api` | HTTP API | Alluxio `raw` namespace |
-| `periplus-web` | Web application | none |
+| `periplus-admin` | Authenticated operator application and API gateway | none |
+| `periplus-public` | Public Next.js application and bounded API client | none |
 | `periplus-janitor` | Periplus-owned staging, navigation, and runtime cleanup | Alluxio `raw` namespace |
 | `periplus-setup` | One-shot schema and catalogue installation | none |
 
@@ -95,16 +96,16 @@ the two additional build contexts; they do not change the extension build.
 
 ## Production artifacts
 
-GitHub Actions publishes three immutable artifacts for each main-branch revision:
+GitHub Actions publishes four immutable artifacts for each main-branch revision:
 
-- `ghcr.io/ekkuleivonen/periplus-backend:sha-<commit>` contains the API, every worker role,
+- `ghcr.io/ekkuleivonen/periplus-core:sha-<commit>` contains the API, every worker role,
   `periplus-setup`, the Periplus DuckDB extension, and the DuckLake CDC extension;
-- `ghcr.io/ekkuleivonen/periplus-web:sha-<commit>` contains the static console and its nginx API
-  proxy; and
-- `oci://ghcr.io/ekkuleivonen/periplus-charts/periplus:0.1.0-dev.<commit>` deploys the two images.
+- `ghcr.io/ekkuleivonen/periplus-admin:sha-<commit>` contains the operator UI and authenticated nginx gateway;
+- `ghcr.io/ekkuleivonen/periplus-public:sha-<commit>` contains the standalone Next.js public application; and
+- `oci://ghcr.io/ekkuleivonen/periplus-charts/periplus:0.1.0-dev.<commit>` deploys the three images.
 
 Release tags `vX.Y.Z` additionally publish matching `X.Y.Z` image and chart versions. Production
-GitOps must pin the explicit chart version and both explicit image tags; it must not consume a
+GitOps must pin the explicit chart version and all three explicit image tags; it must not consume a
 mutable `latest` tag.
 
 The production extension sources and DuckDB version are pinned in
@@ -120,7 +121,7 @@ downloaded or mounted at runtime.
 The chart under `charts/periplus` owns only Periplus processes. PostgreSQL, NATS JetStream, S3-compatible
 storage, the standard CDP endpoint, secret projection, ingress, and metrics storage remain external
 platform authorities. The chart supports one API, one janitor, scalable crawler/ingestor/
-materializer deployments, and scalable stateless web replicas.
+materializer deployments, and independently scalable stateless admin and public replicas.
 
 `periplus-setup` is a blocking Helm pre-install and pre-upgrade hook. A failed migration or catalogue
 bootstrap prevents the new runtime image from rolling out. All backend workloads in one release
@@ -151,3 +152,24 @@ retain their domain terminology.
 The maintained development replica baseline is one crawler, four ingestors, and four
 materializers. `PERIPLUS_INGESTOR_CONCURRENCY` and `PERIPLUS_MATERIALIZER_CONCURRENCY` remain
 per-process lane bounds; replica count and local concurrency are separate controls.
+
+## Application access
+
+Core requires distinct `PERIPLUS_ADMIN_API_TOKEN` and `PERIPLUS_PUBLIC_API_TOKEN` values.
+Missing or equal credentials fail closed. Only health and Prometheus metrics are anonymous;
+keep the API on the private service network. Admin injects the administrative credential
+server-side and protects all UI and proxied API requests with HTTP Basic authentication
+(username `admin`, password the administrative token). Expose admin only through a separate
+TLS ingress with operator access controls. Public receives only its restricted token.
+
+`PERIPLUS_PUBLIC_RECEIPT_SECRET` is a separate random secret of at least 32 characters,
+shared by all public replicas. Rotating it invalidates outstanding request receipts.
+The Helm chart references `secrets.apiAccess` for these three values and does not create
+credentials. The public application caps anonymous submissions at ten per minute per
+process. The platform ingress owns aggregate limits across replicas and the CDP service's
+network policy must prevent access to private/internal destinations, including redirects.
+
+Compose publishes public on localhost:8080, admin on localhost:8081, and core on localhost:8000.
+The three images are independently buildable under `docker/periplus`, `docker/admin`, and
+`docker/public`. Application health probes use `/healthz` for core/admin and `/api/healthz`
+for public, without forwarding health probes into administrative APIs.

@@ -4,9 +4,11 @@ imagePullSecrets:
   - name: ghcr-pull
 
 images:
-  backend:
+  core:
     tag: sha-abcdef0
-  web:
+  admin:
+    tag: sha-abcdef0
+  public:
     tag: sha-abcdef0
 
 secrets:

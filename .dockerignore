@@ -13,3 +13,7 @@
 **/build
 **/dist
 **/node_modules
+
+**/.next
+_web_old_dont_touch
+**/.env*

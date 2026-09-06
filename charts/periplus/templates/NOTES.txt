@@ -1,8 +1,5 @@
-Periplus web service: {{ include "periplus.fullname" . }}-web
-Periplus API service: {{ include "periplus.fullname" . }}-api
-
-The setup hook completed before this release was installed or upgraded. Periplus expects:
-- a control PostgreSQL database in {{ .Values.secrets.controlDatabase.name }}
-- a distinct DuckLake metadata PostgreSQL database in {{ .Values.secrets.ducklakeMetadata.name }}
-- NATS credentials in {{ .Values.secrets.nats.name }}
-- S3 credentials in {{ .Values.secrets.s3.name }}
+Periplus public service: {{ include "periplus.fullname" . }}-public
+Periplus admin service: {{ include "periplus.fullname" . }}-admin
+Admin HTTP Basic login: admin / the administrative API token.
+Expose public and admin through separate TLS ingress routes; keep the API private.
+The platform owns ingress, rate limiting, and CDP egress restrictions.

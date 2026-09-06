@@ -27,24 +27,24 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          cache-dependency-glob: backend/uv.lock
+          cache-dependency-glob: packages/periplus/uv.lock
       - name: Install Python 3.14
         run: uv python install 3.14
       - name: Install backend
-        working-directory: backend
+        working-directory: packages/periplus
         run: uv sync --frozen
       - name: Compile backend
-        working-directory: backend
+        working-directory: packages/periplus
         run: uv run python -m compileall src/periplus
       - name: Test backend
-        working-directory: backend
+        working-directory: packages/periplus
         run: uv run python -m unittest discover -s tests
       - name: Test Python SDK
-        working-directory: backend
+        working-directory: packages/periplus
         run: >-
-          env PYTHONPATH=../packages/periplus-python-sdk/src
+          env PYTHONPATH=../periplus-python-sdk/src
           uv run python -m unittest discover
-          -s ../packages/periplus-python-sdk/tests
+          -s ../periplus-python-sdk/tests
 
   frontend:
     name: Frontend
@@ -58,8 +58,10 @@ jobs:
       - run: npm ci
       - run: npm run check:packages
       - run: npm run test:packages
-      - run: npm run check:web
-      - run: npm run build:web
+      - run: npm run check:public
+      - run: npm run build:public
+      - run: npm run check:admin
+      - run: npm run build:admin
 
   helm:
     name: Helm chart

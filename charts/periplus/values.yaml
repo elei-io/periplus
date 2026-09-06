@@ -4,18 +4,27 @@ fullnameOverride: ""
 imagePullSecrets: []
 
 images:
-  backend:
-    repository: ghcr.io/ekkuleivonen/periplus-backend
+  core:
+    repository: ghcr.io/ekkuleivonen/periplus-core
     tag: ""
     pullPolicy: IfNotPresent
-  web:
-    repository: ghcr.io/ekkuleivonen/periplus-web
+  admin:
+    repository: ghcr.io/ekkuleivonen/periplus-admin
+    tag: ""
+    pullPolicy: IfNotPresent
+  public:
+    repository: ghcr.io/ekkuleivonen/periplus-public
     tag: ""
     pullPolicy: IfNotPresent
 
 # Periplus deliberately does not install PostgreSQL, NATS, S3, or a CDP service.
 # These references bind the chart to credentials projected by the platform.
 secrets:
+  apiAccess:
+    name: periplus-api-access
+    adminTokenKey: ADMIN_API_TOKEN
+    publicTokenKey: PUBLIC_API_TOKEN
+    receiptSecretKey: PUBLIC_RECEIPT_SECRET
   controlDatabase:
     name: postgres-periplus-control
     urlKey: DATABASE_URL
@@ -38,7 +47,6 @@ secrets:
 config:
   cdpUrl: http://browserless.browserless.svc.cluster.local:3000
   logLevel: INFO
-  aiModel: openai:gpt-5.6-sol
   ducklake:
     alias: periplus
     metadataSchema: ducklake
@@ -56,7 +64,7 @@ config:
     catalogueWorkStreamReplicas: 3
     ingestResultReplicas: 3
 
-# Additional secrets may supply OPENAI_API_KEY or other optional Periplus settings.
+# Additional optional Periplus settings.
 extraEnvFrom: []
 extraEnv: []
 
@@ -75,7 +83,7 @@ api:
       prometheus.io/path: /metrics
       prometheus.io/port: "8000"
 
-web:
+admin:
   replicas: 1
   resources:
     requests:
@@ -83,6 +91,19 @@ web:
       memory: 32Mi
     limits:
       memory: 128Mi
+  service:
+    type: ClusterIP
+    port: 80
+    annotations: {}
+
+public:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
   service:
     type: ClusterIP
     port: 80

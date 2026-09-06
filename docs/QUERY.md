@@ -40,8 +40,8 @@ native extension. `periplus-setup` installs the complete catalogue or fails rath
 partial installation. The objects are changed only by Periplus catalogue upgrades.
 
 The authoritative one-object SQL definitions live under
-`backend/src/periplus/platform/catalogue/sql/web/` and
-`backend/src/periplus/platform/catalogue/sql/content/`. The explicit manifest in
+`packages/periplus/src/periplus/platform/catalogue/sql/web/` and
+`packages/periplus/src/periplus/platform/catalogue/sql/content/`. The explicit manifest in
 `periplus.platform.catalogue.public` installs them in dependency order. `periplus-setup` replaces the
 complete interface transactionally after reconciling the typed physical schema, then validates
 object names, columns, view comments, and manifest descriptions. Ordinary
@@ -63,13 +63,15 @@ same query operation; `.completion reload` refreshes the derived information exp
 
 ### Public application boundary
 
-The public application depends on one infrastructure operation: bounded execution of one SQL
-statement. Its server-only Periplus client sends `POST /sql/query` and validates the generic
-column, type, row, and truncation response. A separate metadata route is not part of this
-application contract; inspection uses ordinary accepted SQL statements.
+The public application's query client sends `POST /sql/query` with its server-only service
+credential and validates the generic column, type, row, and truncation response.
+Inspection uses accepted SQL statements; metadata routes are administrative.
+The same service credential may submit a single-page crawl through `POST /crawls/`
+and read narrow progress through `GET /crawls/{id}`. It cannot configure plans or policies,
+list runs, retrieve graph snapshots, or perform maintenance.
 
-The Next.js server owns product-specific queries, typed domain and page responses, authentication,
-rate limits, billing, caching, and future user state. Browsers call the Next.js API and never reach
+The Next.js server owns product-specific queries, typed domain and page responses, application access policy,
+rate limits, caching, and future authentication, billing and user state. Browsers call the Next.js API and never reach
 the Periplus API directly. Periplus owns public-catalogue semantics and generic infrastructure
 safety only: namespace validation, read-only enforcement, bounded results, and DuckDB/DuckLake
 execution. It does not receive end-user identity or contain public-application business routes.
@@ -78,17 +80,12 @@ This boundary permits the server-only client to target the current Periplus API,
 balancer, or a future read-only query deployment without changing product query definitions. All
 implementations must preserve the same query contract and public catalogue semantics.
 
-The Periplus web home page provides a request-scoped assistant over the same public query boundary.
-The server may inspect public metadata and run row-bounded, read-only queries; it cannot access
-physical or control-plane schemas. SQL drafts are accepted only after Periplus validates the
-statement and binds it with `EXPLAIN`. The browser keeps a small recent conversation context
-locally, while the server stores no assistant session state. During a turn, each SQL operation
-exposes its purpose, elapsed time, final status, bounded rows, columns, and types. A completed turn
-renders a compact Markdown answer, result tables, and validated SQL drafts. A draft can be copied
-or run directly in the conversation, where its bounded result table is rendered in place. Result
-tables stay within the conversation, scroll horizontally, support resizable columns and cell
-copying, and can be copied or downloaded as CSV or JSON. Catalogue assistance is not a terminal
-command.
+`periplus-public` owns the catalogue browser and SQL experience. Its crawl route accepts
+one URL and fixes depth to zero, maximum pages to one, and the deadline to five minutes.
+Core independently enforces these bounds for the public service credential. The public
+server signs a seven-day receipt for the admitted run and requires that receipt before
+reading progress. Acquisition completion does not imply catalogue visibility: ingestion
+and materialization retain their independent lifecycle.
 
 ## 2. Python SDK
 
