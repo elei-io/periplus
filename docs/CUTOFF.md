@@ -74,3 +74,10 @@ registrations retain their complete immutable object URI.
   projections.
 - Repository-wide search finds no removed material relation, hard-coded old table list, or
   target-specific material commit branch.
+
+## Next crawl-runtime cutoff
+
+The accepted [frontier destination](FRONTIER.md) specifies the next scheduling replacement.
+Implement its direct replacements together: do not layer a second frontier store or scheduler
+over the existing graph path. Preserve immutable lake evidence and SQL-directed traversal.
+Its acceptance criteria supplement, rather than replace, the evidence invariants above.

@@ -90,6 +90,10 @@ later, explicit crawl submission if a real workflow requires it.
 
 ## Admission and completion
 
+The [frontier destination](FRONTIER.md) preserves the plan and run identities below while
+separating durable admission from acquisition dispatch. It is a pending runtime replacement,
+not a second traversal strategy or an implemented change to this contract.
+
 The normalized URL is the only admission identity within a crawl run. If
 several edges select the same URL, Periplus acquires it once. This rule has no
 user-facing mode.
