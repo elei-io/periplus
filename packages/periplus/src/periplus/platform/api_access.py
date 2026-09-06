@@ -40,12 +40,13 @@ class ApiAccessMiddleware:
                 headers={"WWW-Authenticate": "Bearer"},
             )(scope, receive, send)
         allowed = (
-            (method == "POST" and path in {"/sql/query", "/crawls/"})
-            or (method == "GET" and re.fullmatch(r"/crawls/[0-9a-fA-F-]{36}", path))
+            (method in {"GET", "POST"} and path == "/coverage-requests")
+            or (method == "GET" and re.fullmatch(r"/coverage-requests/[0-9a-fA-F-]{36}", path))
         )
         if role == "public" and not allowed:
             return await JSONResponse(
-                {"detail": "This operation requires administrative access."}, status_code=403
+                {"detail": "This operation requires administrative access."},
+                status_code=403,
             )(scope, receive, send)
         scope.setdefault("state", {})["api_role"] = role
         await self.app(scope, receive, send)

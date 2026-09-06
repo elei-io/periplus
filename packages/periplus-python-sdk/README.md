@@ -23,9 +23,7 @@ is `periplus_sdk`. This keeps it safe to install alongside the Periplus backend,
 whose import package is `periplus`.
 
 `duck()` returns an ordinary `duckdb.DuckDBPyConnection` attached read-only to
-the configured Periplus DuckLake. The four public views work without the Periplus
-extension. When `PERIPLUS_DUCKDB_EXTENSION_PATH` points to a matching artifact,
-the SDK additionally loads Periplus query safety and optimizer policy.
+the configured Periplus DuckLake. It uses standard DuckDB and official storage extensions. Query policy and optimizations belong to the hosted query API.
 
 Lifecycle waits are local, cancellable polling operations. Timing out or
 cancelling a wait never cancels the server-side crawl; call `crawl.cancel()`

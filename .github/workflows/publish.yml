@@ -29,8 +29,6 @@ jobs:
       image_tags: ${{ steps.release.outputs.image_tags }}
       chart_version: ${{ steps.release.outputs.chart_version }}
       app_version: ${{ steps.release.outputs.app_version }}
-      periplus_extension_repository: ${{ steps.extensions.outputs.periplus_repository }}
-      periplus_extension_ref: ${{ steps.extensions.outputs.periplus_ref }}
       cdc_extension_repository: ${{ steps.extensions.outputs.cdc_repository }}
       cdc_extension_ref: ${{ steps.extensions.outputs.cdc_ref }}
       duckdb_version: ${{ steps.extensions.outputs.duckdb_version }}
@@ -67,8 +65,6 @@ jobs:
           source .github/extension-sources.env
           set +a
           {
-            echo "periplus_repository=${PERIPLUS_EXTENSION_REPOSITORY}"
-            echo "periplus_ref=${PERIPLUS_EXTENSION_REF}"
             echo "cdc_repository=${DUCKLAKE_CDC_EXTENSION_REPOSITORY}"
             echo "cdc_ref=${DUCKLAKE_CDC_EXTENSION_REF}"
             echo "duckdb_version=${DUCKDB_VERSION}"
@@ -80,14 +76,6 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Check out Periplus DuckDB extension
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ needs.metadata.outputs.periplus_extension_repository }}
-          ref: ${{ needs.metadata.outputs.periplus_extension_ref }}
-          ssh-key: ${{ secrets.PERIPLUS_EXTENSION_DEPLOY_KEY }}
-          persist-credentials: false
-          path: .extension-sources/periplus
       - name: Check out DuckLake CDC extension
         uses: actions/checkout@v4
         with:
@@ -123,7 +111,6 @@ jobs:
           build-args: |
             DUCKDB_VERSION=${{ needs.metadata.outputs.duckdb_version }}
           build-contexts: |
-            periplus-extension=${{ github.workspace }}/.extension-sources/periplus
             ducklake-cdc-extension=${{ github.workspace }}/.extension-sources/ducklake-cdc
           cache-from: type=gha,scope=periplus-core
           cache-to: type=gha,mode=max,scope=periplus-core

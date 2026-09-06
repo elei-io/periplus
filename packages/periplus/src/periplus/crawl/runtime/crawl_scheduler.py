@@ -261,7 +261,7 @@ async def run_schedule_tick(
     return processed
 
 
-async def run_scheduler(
+async def _run_schedule_loop(
     stop: asyncio.Event,
     *,
     runs,
@@ -284,3 +284,10 @@ async def run_scheduler(
             await asyncio.wait_for(stop.wait(), timeout=interval)
         except TimeoutError:
             pass
+
+
+async def run_scheduler(stop, *, runs, requests, progress, jetstream, leases):
+    from periplus.crawl.runtime.coverage_requests import run_coverage_scheduler
+    async with asyncio.TaskGroup() as tasks:
+        tasks.create_task(_run_schedule_loop(stop, runs=runs, requests=requests, progress=progress, jetstream=jetstream))
+        tasks.create_task(run_coverage_scheduler(stop, leases=leases, runs=runs, requests=requests, progress=progress, jetstream=jetstream))

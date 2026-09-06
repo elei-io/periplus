@@ -16,7 +16,7 @@ export class SqlApi {
   constructor(private readonly baseUrl: string, private readonly token?: string) {}
 
   async query(sql: string, signal?: AbortSignal): Promise<SqlResult> {
-    const value = await this.request<unknown>("/sql/query", {
+    const value = await this.request<unknown>("/query/exec", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sql }),

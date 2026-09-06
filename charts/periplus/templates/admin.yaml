@@ -38,6 +38,13 @@ spec:
               value: {{ printf "%s-api" (include "periplus.fullname" .) | quote }}
             - name: PERIPLUS_API_PORT
               value: "8000"
+            - name: PERIPLUS_QUERY_HOST
+              value: {{ printf "%s-query" (include "periplus.fullname" .) | quote }}
+            - name: PERIPLUS_QUERY_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.apiAccess.name }}
+                  key: {{ .Values.secrets.apiAccess.queryTokenKey }}
             - name: PERIPLUS_ADMIN_API_TOKEN
               valueFrom:
                 secretKeyRef:

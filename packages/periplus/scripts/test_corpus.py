@@ -172,7 +172,7 @@ def query_existing(api_url: str, dataset: str) -> set[int]:
           AND source_dataset = {sql_string(dataset)}
           AND starts_with(source_record_id, 'page:')
     """
-    payload = query_periplus(api_url, sql)
+    payload = query_periplus(sql)
     ordinals = payload["rows"][0][0] if payload["rows"] else None
     return {
         int(ordinal)
@@ -187,7 +187,6 @@ def query_lake_urls(api_url: str, *, page_size: int = 10_000) -> set[str]:
     offset = 0
     while True:
         rows = query_periplus(
-            api_url,
             "SELECT coalesce(effective_url, requested_url) AS url "
             "FROM web.observation GROUP BY url "
             f"ORDER BY url LIMIT {page_size} OFFSET {offset}",
@@ -198,10 +197,13 @@ def query_lake_urls(api_url: str, *, page_size: int = 10_000) -> set[str]:
         offset += page_size
 
 
-def query_periplus(api_url: str, sql: str) -> dict[str, Any]:
+def query_periplus(sql: str) -> dict[str, Any]:
+    api_url = os.environ.get("PERIPLUS_QUERY_URL", "http://127.0.0.1:8010")
+    token = os.environ["PERIPLUS_QUERY_API_TOKEN"]
     with httpx.Client(timeout=60) as client:
         response = client.post(
-            f"{api_url.rstrip('/')}/sql/query",
+            f"{api_url.rstrip('/')}/query/exec",
+            headers={"Authorization": f"Bearer {token}"},
             json={"sql": sql},
         )
         response.raise_for_status()

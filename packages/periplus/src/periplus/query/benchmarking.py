@@ -1,7 +1,7 @@
 """Repeatable measurements of real public Periplus SQL.
 
 This module only conducts benchmarks. Production query optimization remains in
-the Periplus DuckDB extension and the public catalogue.
+the query API and the public catalogue.
 """
 
 from __future__ import annotations
@@ -309,14 +309,9 @@ def environment_metadata() -> dict[str, Any]:
         snapshot = connection.execute(
             "SELECT max(snapshot_id) FROM ducklake_snapshots(?)", [config.alias]
         ).fetchone()[0]
-        extension = connection.execute(
-            "SELECT extension_version FROM duckdb_extensions() "
-            "WHERE extension_name = 'periplus' AND loaded LIMIT 1"
-        ).fetchone()
         return {
             "recorded_at": datetime.now().astimezone().isoformat(),
             "duckdb_version": connection.execute("SELECT version()").fetchone()[0],
-            "periplus_extension_version": extension[0] if extension else None,
             "catalogue_version": PUBLIC_CATALOGUE_VERSION,
             "ducklake_snapshot": snapshot,
             "catalogue_alias": config.alias,

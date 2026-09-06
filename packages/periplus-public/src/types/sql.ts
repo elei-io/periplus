@@ -1,20 +1,15 @@
-export interface SqlQueryResult {
+export type PreparedQuery = {
+  query_id: string
+  sql: string
+  parameters: unknown[]
+  diagnostics: { severity: string; code: string; message: string }[]
+  plan: string
+}
+
+export type QueryResult = PreparedQuery & {
   columns: string[]
   types: string[]
   rows: unknown[][]
+  elapsed_ms: number
   truncated: boolean
-}
-
-export function isSqlQueryResult(value: unknown): value is SqlQueryResult {
-  if (!value || typeof value !== "object") return false
-  const candidate = value as Partial<SqlQueryResult>
-  return (
-    Array.isArray(candidate.columns) &&
-    candidate.columns.every((column) => typeof column === "string") &&
-    Array.isArray(candidate.types) &&
-    candidate.types.every((type) => typeof type === "string") &&
-    Array.isArray(candidate.rows) &&
-    candidate.rows.every((row) => Array.isArray(row)) &&
-    typeof candidate.truncated === "boolean"
-  )
 }

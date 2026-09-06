@@ -24,7 +24,7 @@ secrets:
     name: periplus-api-access
     adminTokenKey: ADMIN_API_TOKEN
     publicTokenKey: PUBLIC_API_TOKEN
-    receiptSecretKey: PUBLIC_RECEIPT_SECRET
+    queryTokenKey: QUERY_API_TOKEN
   controlDatabase:
     name: postgres-periplus-control
     urlKey: DATABASE_URL
@@ -32,6 +32,14 @@ secrets:
     name: postgres-periplus-lake
     # Periplus normalizes this standard URL into DuckLake's postgres: attach form.
     pathKey: DATABASE_URL
+  queryDucklakeMetadata:
+    name: postgres-periplus-lake-reader
+    pathKey: DATABASE_URL
+  queryS3:
+    name: s3-periplus-lake-reader
+    regionKey: REGION
+    accessKeyIdKey: ACCESS_KEY_ID
+    secretAccessKeyKey: SECRET_ACCESS_KEY
   nats:
     name: nats-periplus
     urlKey: NATS_URL
@@ -69,6 +77,11 @@ extraEnvFrom: []
 extraEnv: []
 
 api:
+  coverage:
+    model: ""
+    existingSecret: ""
+    openaiKeyKey: OPENAI_API_KEY
+    braveKeyKey: BRAVE_SEARCH_API_KEY
   resources:
     requests:
       cpu: 250m
@@ -97,6 +110,10 @@ admin:
     annotations: {}
 
 public:
+  ai:
+    model: ""
+    existingSecret: ""
+    apiKeyKey: OPENAI_API_KEY
   replicas: 1
   resources:
     requests:
@@ -168,3 +185,16 @@ tolerations: []
 affinity: {}
 topologySpreadConstraints: []
 terminationGracePeriodSeconds: 30
+
+query:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 2
+      memory: 1Gi
+  service:
+    type: ClusterIP
+    port: 8000

@@ -14,7 +14,7 @@ RUN npm run build:admin
 
 FROM nginx:1.27-alpine
 RUN apk add --no-cache apache2-utils
-ENV PERIPLUS_API_HOST=periplus-api PERIPLUS_API_PORT=8000
+ENV PERIPLUS_API_HOST=periplus-api PERIPLUS_API_PORT=8000 PERIPLUS_QUERY_HOST=periplus-query
 COPY docker/admin/nginx.conf /etc/nginx/templates/default.conf.template
 COPY docker/admin/15-auth.sh /docker-entrypoint.d/15-auth.sh
 COPY --from=build /app/packages/periplus-admin/dist/ /usr/share/nginx/html/

@@ -24,7 +24,7 @@ remain Periplus implementation details.
 | --- | --- |
 | `packages/periplus/` | Crawl execution, ingestion, materialization, catalogue and infrastructure APIs. |
 | `packages/periplus-admin/` | Authenticated operator UI for plans, policies, schedules, runs, workers and catalogue maintenance. |
-| `packages/periplus-public/` | Catalogue discovery, SQL queries, single-page crawl submission and receipt-scoped progress. |
+| `packages/periplus-public/` | Single-page SQL interface over the isolated Python query server. |
 
 The core API, crawler, ingestor, materializer, setup and janitor are process roles of
 one Python package. Admin is a Vite application served by an authenticated nginx gateway;
@@ -36,15 +36,14 @@ The console core, browser shell, terminal shell and Python SDK remain supporting
 
 ## Development
 
-Requirements are Python 3.14 with `uv`, Node.js 24 or newer, Docker Compose, the sibling
-`periplus-duckdb-extension` checkout, the pinned
-`quack/ducklake-cdc-extension-1.5.5` checkout, and a standard CDP endpoint. The default Compose
-stack builds both matching Linux extensions in cached builder stages, then provisions separate
-Postgres authorities for Periplus control state and DuckLake metadata, and an Alluxio-backed local
-S3 working set with `raw/*` source objects and `lake/*` DuckLake files persisted into Backblaze B2.
-JetStream owns work delivery. The official Alluxio OSS image is amd64-only and runs under Docker emulation on Apple
-Silicon. Copy `.env.example` and supply the required bucket-scoped B2 application-key settings
-and three distinct API/receipt secrets before starting Compose. Generate each secret with
+Requirements are Python 3.14 with `uv`, Node.js 24 or newer, Docker Compose, the pinned
+`ducklake-cdc-extension` checkout, and a standard CDP endpoint. The default Compose
+stack builds the matching DuckLake CDC extension in cached builder stages, then provisions separate
+Postgres authorities for Periplus control state and DuckLake metadata, and a VersityGW S3 service
+with `raw/*` source objects and `lake/*` DuckLake files stored in a local named volume.
+JetStream owns work delivery. Storage runs natively on Apple Silicon and needs no cloud account.
+Copy `.env.example` and supply three distinct API service secrets before starting Compose.
+Generate each secret with
 `openssl rand -hex 32`; the required names are in `.env.example`.
 
 ```sh
@@ -54,8 +53,8 @@ make check
 make compose-up
 ```
 
-The first image build compiles DuckDB and both extensions. Later builds reuse those layers until
-the pinned DuckDB version or extension source changes. Runtime images contain only the compiled
+The first image build compiles the DuckLake CDC extension against DuckDB. Later builds reuse those layers until
+the pinned DuckDB version or CDC extension source changes. Runtime images contain only the compiled
 extension artifacts, not the compiler toolchain.
 
 If a greenfield baseline replacement leaves either local database or another disposable service
@@ -66,8 +65,7 @@ make compose-reset
 make compose-up
 ```
 
-This resets both Postgres authorities, the local Alluxio journal and cache, and JetStream. It does
-not delete raw or lake objects already persisted under the configured B2 prefix.
+This resets both Postgres authorities, all local raw and lake objects, and JetStream.
 
 Run one query from the terminal:
 
@@ -75,7 +73,7 @@ Run one query from the terminal:
 npm run periplus -- 'SELECT count(*) FROM web.observation'
 ```
 
-Run `npm run periplus` without SQL to open the interactive terminal. Set `PERIPLUS_API_URL` when the API
+Run `npm run periplus` without SQL to open the interactive terminal. Set `PERIPLUS_QUERY_URL` and `PERIPLUS_QUERY_API_TOKEN` when the query server
 is not available at `http://127.0.0.1:8000`. Inside either shell, `.tables` lists the public
 catalogue, `.describe content.object` shows an object's columns, and `.history` shows recent input.
 `.help` lists all local commands. Set `PERIPLUS_API_TOKEN` to the public service token for

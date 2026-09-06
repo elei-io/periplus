@@ -14,7 +14,6 @@ from dotenv import dotenv_values
 
 from periplus_sdk.errors import PeriplusConnectionError, ConfigurationError
 
-from ._common import ExtensionMode, QueryProfile
 from ._factory import DuckLakeConnectionFactory
 from ._protocol import DuckLakeConnectionProtocol
 
@@ -46,7 +45,6 @@ class DuckConfig:
     metadata_path: str
     data_path: str
     metadata_schema: str = "ducklake"
-    extension_path: str | None = None
     s3: S3Config | None = None
 
     @classmethod
@@ -75,7 +73,6 @@ class DuckConfig:
             metadata_schema=(
                 values.get("PERIPLUS_DUCKLAKE_METADATA_SCHEMA") or "ducklake"
             ),
-            extension_path=values.get("PERIPLUS_DUCKDB_EXTENSION_PATH"),
             s3=_s3_config(values, data_path),
         )
 
@@ -85,9 +82,6 @@ def duck(
     *,
     alias: str | None = None,
     read_only: bool = True,
-    profile: QueryProfile = "interactive",
-    extension: ExtensionMode = "auto",
-    extension_path: str | Path | None = None,
     protocol: DuckLakeConnectionProtocol | None = None,
 ) -> duckdb.DuckDBPyConnection:
     """Attach Periplus's configured DuckLake and return a DuckDB connection."""
@@ -102,11 +96,6 @@ def duck(
     catalogue_alias = alias or config.alias
     if not _ALIAS.fullmatch(catalogue_alias):
         raise ConfigurationError("alias must be a SQL identifier")
-    periplus_path = (
-        extension_path
-        or config.extension_path
-        or os.getenv("PERIPLUS_DUCKDB_EXTENSION_PATH")
-    )
     try:
         return DuckLakeConnectionFactory(
             config,
@@ -114,9 +103,6 @@ def duck(
         ).connect(
             alias=catalogue_alias,
             read_only=read_only,
-            profile=profile,
-            extension=extension,
-            extension_path=periplus_path,
         )
     except BaseException as exc:
         if isinstance(exc, duckdb.Error):

@@ -34,6 +34,15 @@ spec:
           image: {{ include "periplus.publicImage" . | quote }}
           imagePullPolicy: {{ .Values.images.public.pullPolicy }}
           env:
+            - name: PERIPLUS_AI_MODEL
+              value: {{ .Values.public.ai.model | quote }}
+            {{- if .Values.public.ai.existingSecret }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.public.ai.existingSecret }}
+                  key: {{ .Values.public.ai.apiKeyKey }}
+            {{- end }}
             - name: PERIPLUS_API_URL
               value: {{ printf "http://%s-api:%v" (include "periplus.fullname" .) .Values.api.service.port | quote }}
             - name: PERIPLUS_PUBLIC_API_TOKEN
@@ -41,11 +50,13 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.apiAccess.name }}
                   key: {{ .Values.secrets.apiAccess.publicTokenKey }}
-            - name: PERIPLUS_PUBLIC_RECEIPT_SECRET
+            - name: PERIPLUS_QUERY_URL
+              value: {{ printf "http://%s-query:%v" (include "periplus.fullname" .) .Values.query.service.port | quote }}
+            - name: PERIPLUS_QUERY_API_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.secrets.apiAccess.name }}
-                  key: {{ .Values.secrets.apiAccess.receiptSecretKey }}
+                  key: {{ .Values.secrets.apiAccess.queryTokenKey }}
           ports:
             - name: http
               containerPort: 3000

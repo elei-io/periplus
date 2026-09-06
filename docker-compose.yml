@@ -5,7 +5,6 @@ x-periplus-core: &periplus-core
     context: .
     dockerfile: docker/periplus/Dockerfile
     additional_contexts:
-      periplus-extension: ${PERIPLUS_DUCKDB_EXTENSION_REPO:-../periplus-duckdb-extension}
       ducklake-cdc-extension: ${PERIPLUS_DUCKLAKE_CDC_EXTENSION_REPO:-../quack/ducklake-cdc-extension-1.5.5}
   image: ${PERIPLUS_CORE_IMAGE:-periplus-core:local}
   working_dir: /app/packages/periplus
@@ -15,32 +14,6 @@ x-periplus-healthcheck: &periplus-healthcheck
   timeout: 3s
   retries: 12
   start_period: 10s
-
-x-lake-alluxio-environment: &lake-alluxio-environment
-  ALLUXIO_JAVA_OPTS: >-
-    -Dalluxio.master.hostname=lake-alluxio-master
-    -Dalluxio.master.mount.table.root.ufs=s3://${LAKE_B2_BUCKET:?Set LAKE_B2_BUCKET}/${LAKE_B2_PREFIX-}
-    -Dalluxio.master.journal.folder=/journal
-    -Dalluxio.worker.tieredstore.level0.alias=SSD
-    -Dalluxio.worker.tieredstore.level0.dirs.path=/worker
-    -Dalluxio.worker.tieredstore.level0.dirs.quota=${LAKE_ALLUXIO_WORKER_CAPACITY:-4GB}
-    -Dalluxio.proxy.s3.writetype=ASYNC_THROUGH
-    -Dalluxio.user.file.replication.durable=1
-    -Dalluxio.underfs.s3.endpoint=${LAKE_B2_ENDPOINT:?Set LAKE_B2_ENDPOINT}
-    -Dalluxio.underfs.s3.endpoint.region=${LAKE_B2_REGION:?Set LAKE_B2_REGION}
-    -Dalluxio.underfs.s3.region=${LAKE_B2_REGION:?Set LAKE_B2_REGION}
-    -Dalluxio.underfs.s3.disable.dns.buckets=true
-    -Dalluxio.underfs.s3.inherit.acl=false
-    -Dalluxio.underfs.s3.secure.http.enabled=true
-    -Dalluxio.underfs.s3.streaming.upload.enabled=true
-    -Ds3a.accessKeyId=${LAKE_B2_KEY_ID:?Set LAKE_B2_KEY_ID}
-    -Ds3a.secretKey=${LAKE_B2_APPLICATION_KEY:?Set LAKE_B2_APPLICATION_KEY}
-
-x-lake-alluxio: &lake-alluxio
-  image: ${LAKE_ALLUXIO_IMAGE:-alluxio/alluxio:2.9.5}
-  # The upstream OSS image is amd64-only. Docker Desktop emulates it on Apple Silicon.
-  platform: linux/amd64
-  environment: *lake-alluxio-environment
 
 x-periplus-control-environment: &periplus-control-environment
   PERIPLUS_CONTROL_DATABASE_URL: postgresql://${PERIPLUS_POSTGRES_USER:-periplus}:${PERIPLUS_POSTGRES_PASSWORD:-periplus_local}@periplus-postgres:5432/${PERIPLUS_POSTGRES_DATABASE:-periplus}
@@ -54,10 +27,10 @@ x-periplus-ducklake-environment: &periplus-ducklake-environment
   PERIPLUS_DUCKLAKE_METADATA_PATH: postgres:dbname=${LAKE_POSTGRES_DATABASE:-lake} host=lake-postgres port=5432 user=${LAKE_POSTGRES_USER:-lake} password=${LAKE_POSTGRES_PASSWORD:-lake_local}
   PERIPLUS_DUCKLAKE_METADATA_SCHEMA: ducklake
   PERIPLUS_DUCKLAKE_DATA_PATH: s3://lake/
-  PERIPLUS_DUCKLAKE_S3_ENDPOINT: lake-alluxio-s3:39999/api/v1/s3
+  PERIPLUS_DUCKLAKE_S3_ENDPOINT: lake-s3:7070
   PERIPLUS_DUCKLAKE_S3_REGION: us-east-1
-  PERIPLUS_DUCKLAKE_S3_KEY_ID: ${PERIPLUS_DUCKLAKE_S3_KEY_ID:-alluxio}
-  PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY: ${PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY:-lake-secret}
+  PERIPLUS_DUCKLAKE_S3_KEY_ID: ${LAKE_S3_KEY_ID:-periplus-local}
+  PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY: ${LAKE_S3_SECRET_ACCESS_KEY:-lake-secret}
   PERIPLUS_DUCKLAKE_S3_URL_STYLE: path
   PERIPLUS_DUCKLAKE_S3_USE_SSL: "false"
   PERIPLUS_DUCKLAKE_CDC_EXTENSION_PATH: /opt/periplus/ducklake_cdc.duckdb_extension
@@ -65,10 +38,10 @@ x-periplus-ducklake-environment: &periplus-ducklake-environment
 x-periplus-repository-environment: &periplus-repository-environment
   PERIPLUS_REPOSITORY_STORAGE: s3
   PERIPLUS_REPOSITORY_S3_BUCKET: raw
-  PERIPLUS_REPOSITORY_S3_ENDPOINT: ${PERIPLUS_COMPOSE_REPOSITORY_S3_ENDPOINT:-http://lake-alluxio-s3:39999/api/v1/s3}
+  PERIPLUS_REPOSITORY_S3_ENDPOINT: http://lake-s3:7070
   PERIPLUS_REPOSITORY_S3_REGION: us-east-1
-  PERIPLUS_REPOSITORY_S3_KEY_ID: ${PERIPLUS_REPOSITORY_S3_KEY_ID:-alluxio}
-  PERIPLUS_REPOSITORY_S3_SECRET_ACCESS_KEY: ${PERIPLUS_REPOSITORY_S3_SECRET_ACCESS_KEY:-lake-secret}
+  PERIPLUS_REPOSITORY_S3_KEY_ID: ${LAKE_S3_KEY_ID:-periplus-local}
+  PERIPLUS_REPOSITORY_S3_SECRET_ACCESS_KEY: ${LAKE_S3_SECRET_ACCESS_KEY:-lake-secret}
   PERIPLUS_REPOSITORY_S3_URL_STYLE: path
   PERIPLUS_REPOSITORY_S3_USE_SSL: "false"
 
@@ -76,100 +49,34 @@ x-periplus-graph-environment: &periplus-graph-environment
   PERIPLUS_GRAPH_MAX_RUN_SECONDS: ${PERIPLUS_GRAPH_MAX_RUN_SECONDS:-604800}
 
 services:
-  lake-alluxio-init:
-    container_name: lake-alluxio-init
-    <<: *lake-alluxio
-    user: root
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        set -euo pipefail
-        mkdir -p /journal /worker
-        if [[ ! -f /journal/.periplus-formatted ]]; then
-          /opt/alluxio/bin/alluxio formatMaster
-          touch /journal/.periplus-formatted
-        fi
-        if [[ ! -f /worker/.periplus-formatted ]]; then
-          /opt/alluxio/bin/alluxio formatWorker
-          touch /worker/.periplus-formatted
-        fi
-        chown -R 1000:1000 /journal /worker
+  lake-s3-init:
+    container_name: lake-s3-init
+    image: alpine:3.22
+    command: ["sh", "-ec", "mkdir -p /data/raw /data/lake"]
     volumes:
-      - lake-alluxio-journal:/journal
-      - lake-alluxio-worker-data:/worker
+      - lake-s3-data:/data
     restart: "no"
 
-  lake-alluxio-master:
-    container_name: lake-alluxio-master
-    <<: *lake-alluxio
-    command: ["master", "--no-format"]
-    volumes:
-      - lake-alluxio-journal:/journal
-    healthcheck:
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 20s
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:19999/api/v1/master/info"]
-    depends_on:
-      lake-alluxio-init:
-        condition: service_completed_successfully
-    restart: unless-stopped
-
-  lake-alluxio-namespace-init:
-    container_name: lake-alluxio-namespace-init
-    <<: *lake-alluxio
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        set -euo pipefail
-        for namespace in raw lake; do
-          /opt/alluxio/bin/alluxio fs stat "/$${namespace}" >/dev/null 2>&1 \
-            || /opt/alluxio/bin/alluxio fs mkdir "/$${namespace}"
-        done
-    depends_on:
-      lake-alluxio-master:
-        condition: service_healthy
-    restart: "no"
-
-  lake-alluxio-worker:
-    container_name: lake-alluxio-worker
-    <<: *lake-alluxio
-    command: ["worker", "--no-format"]
-    volumes:
-      - lake-alluxio-worker-data:/worker
-    healthcheck:
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 20s
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:30000/api/v1/worker/info"]
-    depends_on:
-      lake-alluxio-init:
-        condition: service_completed_successfully
-      lake-alluxio-master:
-        condition: service_healthy
-      lake-alluxio-namespace-init:
-        condition: service_completed_successfully
-    restart: unless-stopped
-
-  lake-alluxio-s3:
-    container_name: lake-alluxio-s3
-    <<: *lake-alluxio
-    command: ["proxy"]
+  lake-s3:
+    container_name: lake-s3
+    image: ${LAKE_S3_IMAGE:-versity/versitygw:v1.8.0}
+    command: ["--port", ":7070", "--health", "/healthz", "--iam-dir", "/iam", "posix", "/data"]
+    environment:
+      ROOT_ACCESS_KEY: ${LAKE_S3_KEY_ID:-periplus-local}
+      ROOT_SECRET_KEY: ${LAKE_S3_SECRET_ACCESS_KEY:-lake-secret}
     ports:
-      - "127.0.0.1:${LAKE_ALLUXIO_S3_PORT:-7070}:39999"
+      - "127.0.0.1:${LAKE_S3_PORT:-7070}:7070"
+    volumes:
+      - lake-s3-data:/data
+      - lake-s3-iam:/iam
     healthcheck:
-      interval: 5s
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7070/healthz"]
+      interval: 2s
       timeout: 3s
-      retries: 30
-      start_period: 20s
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:39999/api/v1/proxy/info"]
+      retries: 15
     depends_on:
-      lake-alluxio-master:
-        condition: service_healthy
-      lake-alluxio-worker:
-        condition: service_healthy
+      lake-s3-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   lake-postgres:
@@ -232,12 +139,62 @@ services:
     image: ${PERIPLUS_ADMIN_IMAGE:-periplus-admin:local}
     environment:
       PERIPLUS_ADMIN_API_TOKEN: ${PERIPLUS_ADMIN_API_TOKEN:?Set PERIPLUS_ADMIN_API_TOKEN}
+      PERIPLUS_QUERY_API_TOKEN: ${PERIPLUS_QUERY_API_TOKEN:?Set PERIPLUS_QUERY_API_TOKEN}
     ports:
       - "127.0.0.1:${PERIPLUS_ADMIN_PORT:-8081}:80"
     depends_on:
       periplus-api:
         condition: service_healthy
+      periplus-query:
+        condition: service_healthy
     restart: unless-stopped
+
+  query-access-init:
+    <<: *periplus-core
+    command: ["python", "/bootstrap/query-access.py"]
+    volumes:
+      - ./docker/query/bootstrap.py:/bootstrap/query-access.py:ro
+    environment:
+      LAKE_ADMIN_DSN: postgresql://${LAKE_POSTGRES_USER:-lake}:${LAKE_POSTGRES_PASSWORD:-lake_local}@lake-postgres:5432/${LAKE_POSTGRES_DATABASE:-lake}
+      LAKE_QUERY_USER: ${LAKE_QUERY_USER:-lake_query}
+      LAKE_QUERY_PASSWORD: ${LAKE_QUERY_PASSWORD:-lake_query_local}
+      LAKE_S3_ENDPOINT: http://lake-s3:7070
+      LAKE_S3_KEY_ID: ${LAKE_S3_KEY_ID:-periplus-local}
+      LAKE_S3_SECRET_ACCESS_KEY: ${LAKE_S3_SECRET_ACCESS_KEY:-lake-secret}
+      LAKE_QUERY_S3_KEY_ID: ${LAKE_QUERY_S3_KEY_ID:-periplus-query}
+      LAKE_QUERY_S3_SECRET_ACCESS_KEY: ${LAKE_QUERY_S3_SECRET_ACCESS_KEY:-query-local-secret}
+    depends_on:
+      periplus-setup:
+        condition: service_completed_successfully
+    restart: "no"
+
+  periplus-query:
+    <<: *periplus-core
+    command: fastapi run src/periplus/entrypoints/query.py --host 0.0.0.0 --port 8000
+    ports:
+      - "127.0.0.1:${PERIPLUS_QUERY_PORT:-8010}:8000"
+    environment:
+      PERIPLUS_QUERY_API_TOKEN: ${PERIPLUS_QUERY_API_TOKEN:?Set PERIPLUS_QUERY_API_TOKEN}
+      PERIPLUS_DUCKLAKE_ALIAS: periplus
+      PERIPLUS_DUCKLAKE_METADATA_PATH: postgres:dbname=${LAKE_POSTGRES_DATABASE:-lake} host=lake-postgres port=5432 user=${LAKE_QUERY_USER:-lake_query} password=${LAKE_QUERY_PASSWORD:-lake_query_local}
+      PERIPLUS_DUCKLAKE_METADATA_SCHEMA: ducklake
+      PERIPLUS_DUCKLAKE_DATA_PATH: s3://lake/
+      PERIPLUS_DUCKLAKE_S3_ENDPOINT: lake-s3:7070
+      PERIPLUS_DUCKLAKE_S3_REGION: us-east-1
+      PERIPLUS_DUCKLAKE_S3_KEY_ID: ${LAKE_QUERY_S3_KEY_ID:-periplus-query}
+      PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY: ${LAKE_QUERY_S3_SECRET_ACCESS_KEY:-query-local-secret}
+      PERIPLUS_DUCKLAKE_S3_URL_STYLE: path
+      PERIPLUS_DUCKLAKE_S3_USE_SSL: "false"
+    mem_limit: 1g
+    cpus: 2
+    healthcheck:
+      <<: *periplus-healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).read()"]
+    depends_on:
+      query-access-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
 
   periplus-public:
     container_name: periplus-public
@@ -246,13 +203,16 @@ services:
       dockerfile: docker/public/Dockerfile
     image: ${PERIPLUS_PUBLIC_IMAGE:-periplus-public:local}
     environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      PERIPLUS_AI_MODEL: ${PERIPLUS_AI_MODEL:-}
+      PERIPLUS_QUERY_URL: http://periplus-query:8000
       PERIPLUS_API_URL: http://periplus-api:8000
       PERIPLUS_PUBLIC_API_TOKEN: ${PERIPLUS_PUBLIC_API_TOKEN:?Set PERIPLUS_PUBLIC_API_TOKEN}
-      PERIPLUS_PUBLIC_RECEIPT_SECRET: ${PERIPLUS_PUBLIC_RECEIPT_SECRET:?Set PERIPLUS_PUBLIC_RECEIPT_SECRET}
+      PERIPLUS_QUERY_API_TOKEN: ${PERIPLUS_QUERY_API_TOKEN:?Set PERIPLUS_QUERY_API_TOKEN}
     ports:
       - "127.0.0.1:${PERIPLUS_PUBLIC_PORT:-8080}:3000"
     depends_on:
-      periplus-api:
+      periplus-query:
         condition: service_healthy
     restart: unless-stopped
 
@@ -272,6 +232,9 @@ services:
           "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).read()",
         ]
     environment:
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      PERIPLUS_COVERAGE_MODEL: ${PERIPLUS_COVERAGE_MODEL:-}
       PERIPLUS_ADMIN_API_TOKEN: ${PERIPLUS_ADMIN_API_TOKEN:?Set PERIPLUS_ADMIN_API_TOKEN}
       PERIPLUS_PUBLIC_API_TOKEN: ${PERIPLUS_PUBLIC_API_TOKEN:?Set PERIPLUS_PUBLIC_API_TOKEN}
       <<:
@@ -427,13 +390,13 @@ services:
         condition: service_healthy
       lake-postgres:
         condition: service_healthy
-      lake-alluxio-s3:
+      lake-s3:
         condition: service_healthy
     restart: "no"
 
 volumes:
-  lake-alluxio-journal:
-  lake-alluxio-worker-data:
+  lake-s3-data:
+  lake-s3-iam:
   lake-postgres-data:
   periplus-postgres-data:
   periplus-nats-data:
