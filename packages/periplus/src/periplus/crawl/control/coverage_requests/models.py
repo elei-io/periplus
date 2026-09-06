@@ -25,6 +25,7 @@ class CoverageRequest(Base):
     depth: Mapped[int] = mapped_column(Integer)
     link_scope: Mapped[str] = mapped_column(Text)
     max_pages: Mapped[int] = mapped_column(Integer)
+    allowed_sections: Mapped[list[str]] = mapped_column(json_type, default=list)
     status: Mapped[str] = mapped_column(Text, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

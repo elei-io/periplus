@@ -84,9 +84,41 @@ class CoverageRequestTests(unittest.TestCase):
         self.assertEqual(first["total"], 2)
         self.assertNotEqual(first["items"][0]["id"], second["items"][0]["id"])
 
+    def test_allowed_sections_are_normalized_and_persisted(self):
+        response = self.client.post("/coverage-requests", json=self.payload | {
+            "input": "https://example.org/docs/page?q=1", "allowed_sections": ["https://EXAMPLE.org/docs/", "https://example.org/docs"]})
+        self.assertEqual(response.status_code, 201, response.text)
+        data = response.json()
+        self.assertEqual(data["allowed_sections"], ["https://example.org/docs"])
+        self.assertEqual(self.client.get(f'/coverage-requests/{data["id"]}').json()["allowed_sections"], data["allowed_sections"])
+        for sections in [["https://other.org/docs"], ["https://example.org/docs?x=1"],
+                         ["https://example.org/docs#x"], ["https://user:pass@example.org/docs"],
+                         ["ftp://example.org/docs"], ["https://example.org/" + "x" * 1000],
+                         ["https://example.org/"] * 11]:
+            with self.subTest(sections=sections):
+                self.assertEqual(self.client.post("/coverage-requests", json=self.payload | {"allowed_sections": sections}).status_code, 422)
+
     def test_invalid_reads_and_mutations(self):
         self.assertEqual(self.client.get(f"/coverage-requests/{uuid4()}").status_code, 404)
         for query in ["limit=101", "offset=-1", "status=anything"]:
             self.assertEqual(self.client.get(f"/coverage-requests?{query}").status_code, 422)
         self.assertEqual(self.client.patch(f"/coverage-requests/{uuid4()}", json={"status": "completed"}).status_code, 403)
         self.assertEqual(self.client.post("/crawls/", json={}).status_code, 403)
+
+
+class CoverageProgressTests(unittest.TestCase):
+    def test_acquired_pages_are_visible_while_links_are_pending(self):
+        from periplus.crawl.control.coverage_requests.schemas import CoverageProgress
+        progress = CoverageProgress(status="running", request_count=106,
+            pending_request_count=106, acquisition_pending_count=48,
+            failed_request_count=0, crawl_limit_reached=False).model_dump()
+        self.assertEqual(progress["acquisition_settled_count"], 58)
+        self.assertEqual(progress["navigation_pending_count"], 58)
+
+    def test_failed_acquisitions_are_not_reported_as_link_work(self):
+        from periplus.crawl.control.coverage_requests.schemas import CoverageProgress
+        progress = CoverageProgress(status="running", request_count=123,
+            pending_request_count=115, acquisition_pending_count=48,
+            failed_request_count=5, crawl_limit_reached=False).model_dump()
+        self.assertEqual(progress["acquisition_settled_count"], 75)
+        self.assertEqual(progress["navigation_pending_count"], 67)

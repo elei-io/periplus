@@ -161,12 +161,12 @@ attempts. Permanent discovery failures are visible as `failed`.
 The ordinary graph runtime executes one run per request with a one-hour deadline. Internal
 links are restricted to the registrable starting sites including their subdomains. External-only
 links exclude those sites. Both scopes permit any linked site. Depth and the total page budget
-apply across all starting pages. Starting URLs must resolve to public addresses. This initial
+apply across all starting pages. Optional `allowed_sections` restrict starting URLs and selected traversal links to explicit HTTP(S) origins and path sections, including descendant paths. Section limits are enforced in Python source selection and ordinary frozen SQL edges; existing runs keep their frozen plans. They do not constrain redirects or subresources. Starting URLs must resolve to public addresses. This initial
 DNS check is not an egress sandbox: the CDP service's network boundary must also prevent access
 to private networks through redirects, subresources, and DNS rebinding.
 
 The public request API exposes pending, resolving, ongoing, completed, and failed states, source
-URLs, search queries, and safe live run counters. Completion means collection finished; ingestion
+URLs, search queries, section limits, and safe live run counters. Acquisition-settled counts include failed attempts; acquisition-pending and navigation-pending counts distinguish fetching from outgoing-link work. Completion means collection finished; ingestion
 and materialization may still be processing. Failed/cancelled runs remain distinguishable, and
 partial page failures remain visible. Request records survive graph-run retention; old run
 counters disappear with the runtime record, while the run ID still identifies lake evidence.

@@ -12,6 +12,7 @@ import tldextract
 
 from periplus.crawl.control.coverage_requests.resolver import CoverageResolver, ResolutionFailed, ResolutionUnavailable, public_start_url
 from periplus.crawl.control.coverage_requests.store import CoverageRequestStore
+from periplus.crawl.control.coverage_requests.schemas import within_allowed_sections
 from periplus.crawl.control.crawl_graphs.depth_plan import depth_plan_snapshot
 from periplus.crawl.runtime.graph_runs import create_graph_run
 from periplus.platform.messaging.leases import operation_leases, OperationLeaseLost, OperationLeaseUnavailable
@@ -35,6 +36,13 @@ def coverage_plan(request):
         conditions.append(f"(target_host = '{literal}' OR ends_with(target_host, '.{literal}'))")
     internal = "(" + " OR ".join(conditions) + ")"
     predicate = {"internal": internal, "external": f"NOT {internal}", "both": "TRUE"}[request.link_scope]
+    if request.allowed_sections:
+        sections = []
+        target = "split_part(split_part(target_url, '?', 1), '#', 1)"
+        for section in request.allowed_sections:
+            literal = section.replace("'", "''")
+            sections.append(f"({target} = '{literal}' OR starts_with({target}, '{literal}/'))")
+        predicate = f"({predicate}) AND ({' OR '.join(sections)})"
     return depth_plan_snapshot(request.depth, predicate)
 
 
@@ -67,7 +75,13 @@ async def process_coverage_request(identity, *, store, resolver, runs, requests,
                 async def checkpoint(state):
                     await asyncio.to_thread(store.update, identity, resolution=state)
                 async with asyncio.timeout(180):
-                    urls = await resolver.resolve(request.input, request.max_pages, request.resolution, checkpoint)
+                    description = request.input
+                    if request.allowed_sections:
+                        description += "\nSelect starting URLs only within these allowed URL sections (exact host and path, including descendants):\n" + "\n".join(request.allowed_sections)
+                    urls = await resolver.resolve(description, request.max_pages, request.resolution, checkpoint)
+            urls = [url for url in urls if within_allowed_sections(url, request.allowed_sections)]
+            if not urls:
+                raise ResolutionFailed("No starting pages were found within the allowed sections. Try a starting URL within a section or revise the limits.")
             await asyncio.to_thread(store.update, identity, resolved_urls=urls, error=None)
             request = await asyncio.to_thread(store.get, identity)
         if request.started_at is None:

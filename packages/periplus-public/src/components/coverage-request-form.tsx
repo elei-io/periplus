@@ -24,16 +24,17 @@ export function CoverageRequestForm({ onCreated }: { onCreated: (id: string) => 
   const [depth, setDepth] = useState(1)
   const [scope, setScope] = useState<CoverageRequestInput["link_scope"]>("internal")
   const [maxPages, setMaxPages] = useState(25)
+  const [sections, setSections] = useState("")
   const submit = useMutation({
     mutationFn: async () => responseJson<CoverageRequest>(await fetch("/api/coverage-requests", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ kind, input: kind === "url" ? url : description, depth, link_scope: scope, max_pages: maxPages } satisfies CoverageRequestInput),
+      body: JSON.stringify({ kind, input: kind === "url" ? url : description, depth, link_scope: scope, max_pages: maxPages, allowed_sections: sections.split("\n").map(value => value.trim()).filter(Boolean) } satisfies CoverageRequestInput),
     })),
     onSuccess: result => {
       cache.setQueryData(["coverage-request", result.id], result)
       void cache.invalidateQueries({ queryKey: ["coverage-requests"] })
       onCreated(result.id)
-      setUrl(""); setDescription("")
+      setUrl(""); setDescription(""); setSections("")
       toast.success("Request saved as pending. Keep its link to follow updates.")
     },
     onError: error => toast.error(extractApiError(error)),
@@ -72,6 +73,14 @@ export function CoverageRequestForm({ onCreated }: { onCreated: (id: string) => 
           </div>
         </div>
         <CardDescription>Internal means within the starting site, including subdomains; external means other sites. The page budget covers the whole request, including starting pages. Depth above 2 and budgets above 1k are unavailable in the public preview.</CardDescription>
+        <details>
+          <summary>Limit collection to specific sections (optional)</summary>
+          <div className="flex flex-col gap-2">
+            <label htmlFor="coverage-sections">Allowed URL sections</label>
+            <Textarea id="coverage-sections" rows={3} maxLength={10000} value={sections} onChange={event => setSections(event.target.value)} placeholder="https://duckdb.org/docs/stable/" aria-describedby="coverage-sections-help" />
+            <CardDescription id="coverage-sections-help">One URL per line, up to 10. Starting pages and followed links must match an exact host and section path, or a descendant path. Other hosts and sections are excluded. Query strings are ignored when matching. These limits apply in addition to your link choice; they do not restrict redirects or page resources.</CardDescription>
+          </div>
+        </details>
         <Alert><AlertDescription>Requests are picked up automatically. Descriptions are sent to our AI and search providers to find starting pages. Collection is limited by the options above; inclusion is not guaranteed. All request details are public—please leave out private URLs, credentials, and personal information.</AlertDescription></Alert>
         {submit.error && <Alert variant="destructive"><AlertDescription>{extractApiError(submit.error)}</AlertDescription></Alert>}
         <Button className="self-start" type="submit" disabled={submit.isPending}>{submit.isPending ? "Saving request…" : "Submit coverage request"}<ArrowUpRight /></Button>

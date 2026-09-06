@@ -42,7 +42,7 @@ Production ingress owns aggregate traffic limits; the agent bounds concurrent ru
 ## Coverage requests
 
 `/suggest` accepts a starting URL or plain-language description, depth 0–2, internal/external/both
-link scope, and a budget up to 1,000 pages. Larger options are visible but disabled.
+link scope, a budget up to 1,000 pages, and optional allowed URL sections (up to ten exact origins/path prefixes with segment boundaries). Section limits apply to starting pages and followed links; they do not restrict redirects or subresources. Larger options are visible but disabled.
 The Python API validates and saves requests as `pending` in the operational Postgres
 `coverage_requests` table. Next.js proxies POST/GET `/api/coverage-requests` and
 GET `/api/coverage-requests/[id]`; it owns no persistence or scheduling.

@@ -70,7 +70,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.row = SimpleNamespace(id=uuid4(), kind='description', input='Robots', status='pending', retry_at=None,
             run_id=None, started_at=None, completed_at=None, resolved_urls=[], resolution={}, attempts=0,
-            max_pages=5, depth=1, link_scope='internal', error=None)
+            max_pages=5, depth=1, link_scope='internal', allowed_sections=[], error=None)
         self.store = Store(self.row)
         self.runs = SimpleNamespace(get_run=AsyncMock(return_value=None))
         self.resolver = SimpleNamespace(resolve=AsyncMock(return_value=['https://example.org/products']))
@@ -129,6 +129,38 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.runs.get_run.return_value = SimpleNamespace(status='completed_with_errors', completed_at=datetime.now(UTC), request_count=1, failed_request_count=1)
         await self.process()
         self.assertEqual(self.row.status, 'failed')
+
+    async def test_discovery_only_dispatches_starting_urls_inside_sections(self):
+        self.row.allowed_sections = ['https://example.org/products']
+        self.resolver.resolve.return_value = ['https://example.org/products/one', 'https://example.org/jobs']
+        await self.process()
+        self.assertEqual(self.created.call_args.kwargs['urls'], ['https://example.org/products/one'])
+        self.assertIn('https://example.org/products', self.resolver.resolve.call_args.args[0])
+
+    async def test_no_matching_starting_urls_fails_without_dispatch(self):
+        self.row.allowed_sections = ['https://example.org/docs']
+        await self.process()
+        self.assertEqual(self.row.status, 'failed')
+        self.assertIn('allowed sections', self.row.error)
+        self.created.assert_not_called()
+
+    def test_section_boundaries_are_enforced_by_actual_edge_sql(self):
+        from periplus.crawl.control.coverage_requests.schemas import within_allowed_sections
+        self.row.resolved_urls = ['https://example.org/docs/stable/index']
+        self.row.allowed_sections = ['https://example.org/docs/stable']
+        urls = ['https://example.org/docs/stable', 'https://example.org/docs/stable/',
+                'https://example.org/docs/stable/page?q=1', 'https://example.org/docs/stable?q=1',
+                'https://example.org/docs/stable-old/page', 'https://example.org/docs/old',
+                'https://sub.example.org/docs/stable/page', 'https://example.org.evil.test/docs/stable/page',
+                'http://example.org/docs/stable/page', 'https://example.org:444/docs/stable/page',
+                'https://example.org/jobs?next=/docs/stable/']
+        with duckdb.connect() as con:
+            con.execute('CREATE SCHEMA nav')
+            con.execute('CREATE TABLE nav.links(target_url VARCHAR, target_host VARCHAR)')
+            from urllib.parse import urlsplit
+            con.executemany('INSERT INTO nav.links VALUES (?, ?)', [(url, urlsplit(url).hostname) for url in urls])
+            self.assertEqual({row[0] for row in con.execute(coverage_plan(self.row).edges[0].sql).fetchall()}, set(urls[:4]))
+        self.assertEqual([url for url in urls if within_allowed_sections(url, self.row.allowed_sections)], urls[:4])
 
     def test_link_scope_is_relative_to_starting_site(self):
         self.row.resolved_urls = ['https://www.example.org/products']
