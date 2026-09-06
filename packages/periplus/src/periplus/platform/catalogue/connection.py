@@ -34,7 +34,7 @@ class DuckLakeConnectionFactory:
         override_data_path: bool = False,
     ) -> duckdb.DuckDBPyConnection:
         connection_config = dict(self.duckdb_config or {})
-        connection_config["allow_unsigned_extensions"] = "true"
+        connection_config["allow_unsigned_extensions"] = "true" if load_cdc else "false"
         connection = duckdb.connect(":memory:", config=connection_config)
         try:
             connection.execute("INSTALL ducklake")
@@ -43,15 +43,13 @@ class DuckLakeConnectionFactory:
                 connection.execute("INSTALL postgres")
                 connection.execute("LOAD postgres")
             self.storage.configure_connection(connection)
-            connection.load_extension(
-                str(self.config.resolved_extension_path())
-            )
             if load_cdc:
                 connection.load_extension(
                     str(self.config.resolved_cdc_extension_path())
                 )
                 connection.execute("SELECT cdc_version()").fetchone()
-            self.storage.prepare_root()
+            if not read_only:
+                self.storage.prepare_root()
             connection.execute(
                 self.attach_sql(
                     read_only=read_only,
@@ -77,7 +75,6 @@ class DuckLakeConnectionFactory:
                 else ""
             ),
             *self.storage.cli_init_sql(),
-            f"LOAD {_literal(str(self.config.resolved_extension_path()))};",
             self.attach_sql(
                 read_only=read_only,
                 override_data_path=override_data_path,

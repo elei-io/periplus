@@ -1,6 +1,26 @@
 apiVersion: v1
 kind: Service
 metadata:
+  name: {{ include "periplus.fullname" . }}-query
+  labels:
+    {{- include "periplus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: query
+  {{- with .Values.query.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.query.service.type }}
+  selector:
+    {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "query") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.query.service.port }}
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
   name: {{ include "periplus.fullname" . }}-api
   labels:
     {{- include "periplus.labels" . | nindent 4 }}

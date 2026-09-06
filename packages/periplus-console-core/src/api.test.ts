@@ -20,7 +20,7 @@ test("loads completion metadata through the query operation", async (context) =>
   })
   const statements: string[] = []
   globalThis.fetch = async (input, init) => {
-    assert.equal(String(input), "https://periplus.test/api/sql/query")
+    assert.equal(String(input), "https://periplus.test/api/query/exec")
     assert.equal(init?.method, "POST")
     const body = JSON.parse(String(init?.body)) as { sql: string }
     statements.push(body.sql)

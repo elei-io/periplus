@@ -324,12 +324,9 @@ async def capacity(
 @crawl_router.post("/", response_model=GraphRunSubmission, status_code=202)
 async def crawl(
     payload: CrawlCreate,
-    request: Request,
     session: Annotated[Session, Depends(get_session)],
     runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
 ) -> GraphRunSubmission:
-    if getattr(request.state, "api_role", None) == "public":
-        validate_public_crawl(payload)
     if payload.plan is not None:
         plan_id = session.scalar(
             select(CrawlGraph.id).where(CrawlGraph.slug == payload.plan)
@@ -575,20 +572,6 @@ async def resume(
         return await resume_graph_run(runtime.runs, run_id)
     except GraphRunNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-def validate_public_crawl(payload: CrawlCreate) -> None:
-    """A public service may acquire one page using ordinary domain policies."""
-    if (
-        len(payload.urls) != 1
-        or payload.plan is not None
-        or payload.depth not in (None, 0)
-        or payload.relation_scope not in (None, CrawlRelationScope.same_origin)
-        or payload.max_crawls != 1
-        or payload.max_run_seconds is None
-        or payload.max_run_seconds > 300
-    ):
-        raise HTTPException(status_code=403, detail="Public crawls acquire one URL within five minutes.")
 
 
 class CrawlProgress(BaseModel):

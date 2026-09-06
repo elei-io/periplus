@@ -36,21 +36,6 @@ class CatalogueConfigTests(unittest.TestCase):
                     with self.assertRaisesRegex(CatalogueConfigError, missing):
                         catalogue_config_from_env()
 
-    def test_extension_path_is_required(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "PERIPLUS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
-                "PERIPLUS_DUCKLAKE_DATA_PATH": "/srv/lake",
-            },
-            clear=True,
-        ):
-            with self.assertRaisesRegex(
-                CatalogueConfigError,
-                "PERIPLUS_DUCKDB_EXTENSION_PATH",
-            ):
-                catalogue_config_from_env()
-
     def test_standard_postgres_metadata_url_is_normalized_for_ducklake(self) -> None:
         with patch.dict(
             os.environ,
@@ -59,7 +44,6 @@ class CatalogueConfigTests(unittest.TestCase):
                     "postgresql://periplus:secret@postgres.example.test/periplus_lake"
                 ),
                 "PERIPLUS_DUCKLAKE_DATA_PATH": "/srv/lake",
-                "PERIPLUS_DUCKDB_EXTENSION_PATH": "/opt/periplus/extension",
             },
             clear=True,
         ):
@@ -78,7 +62,6 @@ class CatalogueConfigTests(unittest.TestCase):
                     "postgres:dbname=periplus_lake host=postgres.example.test"
                 ),
                 "PERIPLUS_DUCKLAKE_DATA_PATH": "/srv/lake",
-                "PERIPLUS_DUCKDB_EXTENSION_PATH": "/opt/periplus/extension",
             },
             clear=True,
         ):
@@ -89,13 +72,12 @@ class CatalogueConfigTests(unittest.TestCase):
             "postgres:dbname=periplus_lake host=postgres.example.test",
         )
 
-    def test_extension_path_must_identify_a_file(self) -> None:
+    def test_cdc_extension_path_must_identify_a_file(self) -> None:
         config = CatalogueConfig(
             alias="periplus",
             metadata_path="metadata.duckdb",
             data_path="lake/",
             metadata_schema="ducklake",
-            extension_path="/missing/periplus.duckdb_extension",
             cdc_extension_path="/missing/ducklake_cdc.duckdb_extension",
         )
 
@@ -103,23 +85,22 @@ class CatalogueConfigTests(unittest.TestCase):
             CatalogueConfigError,
             "was not found",
         ):
-            config.resolved_extension_path()
+            config.resolved_cdc_extension_path()
 
-    def test_extension_path_resolves_existing_file(self) -> None:
+    def test_cdc_extension_path_resolves_existing_file(self) -> None:
         with TemporaryDirectory() as directory:
-            extension = Path(directory) / "periplus.duckdb_extension"
+            extension = Path(directory) / "ducklake_cdc.duckdb_extension"
             extension.touch()
             config = CatalogueConfig(
                 alias="periplus",
                 metadata_path="metadata.duckdb",
                 data_path="lake/",
                 metadata_schema="ducklake",
-                extension_path=str(extension),
                 cdc_extension_path=str(extension),
             )
 
             self.assertEqual(
-                config.resolved_extension_path(),
+                config.resolved_cdc_extension_path(),
                 extension.resolve(),
             )
 
@@ -129,7 +110,6 @@ class CatalogueConfigTests(unittest.TestCase):
             metadata_path="metadata.duckdb",
             data_path="lake/",
             metadata_schema="ducklake",
-            extension_path="/missing/periplus.duckdb_extension",
             cdc_extension_path="",
         )
 
@@ -150,7 +130,6 @@ class CatalogueConfigTests(unittest.TestCase):
                 "PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY": "secret-value",
                 "PERIPLUS_DUCKLAKE_S3_URL_STYLE": "path",
                 "PERIPLUS_DUCKLAKE_S3_USE_SSL": "false",
-                "PERIPLUS_DUCKDB_EXTENSION_PATH": "/opt/periplus/extension",
             },
             clear=True,
         ):
@@ -171,7 +150,6 @@ class CatalogueConfigTests(unittest.TestCase):
             {
                 "PERIPLUS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
                 "PERIPLUS_DUCKLAKE_DATA_PATH": "/srv/periplus/lake/",
-                "PERIPLUS_DUCKDB_EXTENSION_PATH": "/opt/periplus/extension",
             },
             clear=True,
         ):
@@ -189,7 +167,6 @@ class CatalogueConfigTests(unittest.TestCase):
                 "PERIPLUS_DUCKLAKE_METADATA_PATH": "metadata.sqlite",
                 "PERIPLUS_DUCKLAKE_DATA_PATH": "s3://periplus/",
                 "PERIPLUS_DUCKLAKE_S3_KEY_ID": "key",
-                "PERIPLUS_DUCKDB_EXTENSION_PATH": "/opt/periplus/extension",
             },
             clear=True,
         ):
@@ -205,7 +182,6 @@ class CatalogueConfigTests(unittest.TestCase):
             metadata_path="metadata.ducklake",
             data_path="/srv/lake",
             metadata_schema="ducklake",
-            extension_path="/opt/periplus/extension",
             cdc_extension_path="",
         )
         protocol = MagicMock(spec=DuckLakeStorageProtocol)

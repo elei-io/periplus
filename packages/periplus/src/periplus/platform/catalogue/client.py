@@ -27,9 +27,6 @@ from periplus.platform.catalogue.public import (
 from periplus.platform.catalogue.storage import DuckLakeStorageProtocol
 
 _INTERNAL_TABLE_NAME = re.compile(r"^_periplus_[a-z0-9_]+$")
-_REQUIRED_PERIPLUS_NATIVE_FUNCTIONS = frozenset(
-    {"periplus_lint_query"}
-)
 
 
 class Catalogue:
@@ -57,23 +54,6 @@ class Catalogue:
             read_only=read_only,
             override_data_path=override_data_path,
         )
-        native_functions = {
-            str(name)
-            for (name,) in self._connection.execute(
-                "SELECT DISTINCT function_name FROM duckdb_functions() "
-                "WHERE function_name IN "
-                "('periplus_lint_query')"
-            ).fetchall()
-        }
-        if native_functions != _REQUIRED_PERIPLUS_NATIVE_FUNCTIONS:
-            missing = sorted(
-                _REQUIRED_PERIPLUS_NATIVE_FUNCTIONS - native_functions
-            )
-            self._connection.close()
-            raise CatalogueSchemaError(
-                "Periplus DuckDB extension is missing required functions: "
-                + ", ".join(missing)
-            )
         self._use_schema_if_available()
 
     @property

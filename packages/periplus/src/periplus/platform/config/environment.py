@@ -16,6 +16,9 @@ load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 DEFAULTS: Final[dict[str, str | None]] = {
     "PERIPLUS_API_URL": None,
+    "BRAVE_SEARCH_API_KEY": None,
+    "OPENAI_API_KEY": None,
+    "PERIPLUS_COVERAGE_MODEL": None,
     "PERIPLUS_ADMIN_API_TOKEN": None,
     "PERIPLUS_PUBLIC_API_TOKEN": None,
     "PERIPLUS_CONTROL_DATABASE_URL": None,

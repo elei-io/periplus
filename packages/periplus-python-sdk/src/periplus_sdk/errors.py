@@ -49,7 +49,3 @@ class CrawlFailed(PeriplusError):
 
 class CatalogueVersionError(PeriplusConnectionError):
     """The attached lake does not expose a valid Periplus catalogue."""
-
-
-class ExtensionVersionError(PeriplusConnectionError):
-    """The requested Periplus DuckDB extension cannot be loaded."""

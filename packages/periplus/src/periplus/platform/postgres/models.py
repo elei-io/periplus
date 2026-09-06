@@ -6,3 +6,5 @@ import periplus.crawl.control.crawl_schedules.models  # noqa: F401
 import periplus.crawl.control.domain_policies.models  # noqa: F401
 import periplus.crawl.runtime.graph_models  # noqa: F401
 import periplus.materialization.models  # noqa: F401
+
+import periplus.crawl.control.coverage_requests.models  # noqa: F401

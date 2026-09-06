@@ -10,7 +10,7 @@ topology, environment contracts, container scaling, or infrastructure ownership.
 compatibility layer, or abstraction. Read [docs/QUERY.md](docs/QUERY.md) before changing
 `web.*`, `content.*`, SDK, or DuckDB extension boundaries. Read
 [docs/EXTENSION_DEVELOPMENT.md](docs/EXTENSION_DEVELOPMENT.md) before building, testing, or
-changing the Periplus DuckDB extension.
+changing the DuckLake CDC extension.
 
 For every query performance issue, first classify it as schema/catalogue design, compiler/optimizer
 behavior, or both, using the evidence and decision rules in [docs/QUERY.md](docs/QUERY.md).
@@ -137,31 +137,15 @@ npm run typecheck
 npm run build
 ```
 
-### DuckDB extension development
+### DuckLake CDC extension
 
-The C++ extension is a separate sibling repository at `../periplus-duckdb-extension`, created from
-DuckDB's official extension template. Keep its DuckDB submodule pinned to the exact DuckDB version
-used by `packages/periplus/`.
+Periplus uses standard DuckDB and has no custom query extension. Query validation and future
+optimizations belong behind the query API. The separately maintained DuckLake CDC extension is
+loaded only by live materialization; keep its source and DuckDB ABI pinned together.
+See [docs/EXTENSION_DEVELOPMENT.md](docs/EXTENSION_DEVELOPMENT.md) for that boundary.
 
-Use the native debug runner while implementing a rule, then build the release artifact used by the
-direct development connection:
-
-```sh
-cd ../periplus-duckdb-extension
-make debug
-make test_debug
-make release
-make test_release
-
-cd ../periplus
-./ducklake.sh
-```
-
-`./ducklake.sh` opens the native DuckDB terminal with the configured Periplus DuckLake attached
-read-only. Pass `--sql "..."` to execute one statement and exit. It uses the same
-`PERIPLUS_DUCKLAKE_*` attachment contract as Periplus. See
-[docs/EXTENSION_DEVELOPMENT.md](docs/EXTENSION_DEVELOPMENT.md) for the full loop and testing
-requirements.
+`./ducklake.sh` opens the standard DuckDB CLI on PATH with the configured lake attached read-only.
+Pass `--sql "..."` to execute a statement and exit. No sibling query extension build is required.
 
 ## DuckLake upstream
 

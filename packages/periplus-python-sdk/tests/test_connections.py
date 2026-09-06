@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 import duckdb
 
-from periplus_sdk.conn._common import load_periplus_extension, validate_catalogue
+from periplus_sdk.conn._common import validate_catalogue
 from periplus_sdk.conn._direct import DuckConfig, S3Config, duck
 from periplus_sdk.conn._factory import DuckLakeConnectionFactory
 from periplus_sdk.conn._protocol import (
@@ -21,7 +21,7 @@ from periplus_sdk.errors import (
 
 
 class ConnectionConfigurationTests(unittest.TestCase):
-    def test_extension_is_optional_by_default(self) -> None:
+    def test_connection_uses_only_official_extensions(self) -> None:
         config = DuckConfig(
             alias="periplus",
             metadata_path="metadata.duckdb",
@@ -48,20 +48,6 @@ class ConnectionConfigurationTests(unittest.TestCase):
         connection.load_extension.assert_any_call("ducklake")
         self.assertEqual(connection.load_extension.call_count, 1)
 
-    def test_connection_modes_are_runtime_validated(self) -> None:
-        with self.assertRaises(ValueError):
-            load_periplus_extension(
-                Mock(),
-                mode="surprise",  # type: ignore[arg-type]
-                path=None,
-            )
-        with self.assertRaises(ValueError):
-            validate_catalogue(
-                Mock(),
-                profile="surprise",  # type: ignore[arg-type]
-                extension_loaded=False,
-            )
-
     def test_direct_config_uses_periplus_ducklake_contract(self) -> None:
         config = DuckConfig.from_values(
             {
@@ -70,16 +56,11 @@ class ConnectionConfigurationTests(unittest.TestCase):
                     "postgres:dbname=periplus host=postgres"
                 ),
                 "PERIPLUS_DUCKLAKE_DATA_PATH": "s3://periplus/lake/",
-                "PERIPLUS_DUCKDB_EXTENSION_PATH": "/opt/periplus/periplus.duckdb_extension",
             }
         )
 
         self.assertEqual(config.alias, "periplus")
         self.assertEqual(config.metadata_schema, "ducklake")
-        self.assertEqual(
-            config.extension_path,
-            "/opt/periplus/periplus.duckdb_extension",
-        )
 
     def test_s3_config_selects_a_parameterized_protocol(self) -> None:
         config = DuckConfig.from_values(
@@ -124,49 +105,6 @@ class ConnectionConfigurationTests(unittest.TestCase):
                     "PERIPLUS_DUCKLAKE_DATA_PATH": "/tmp/lake",
                 }
             )
-
-    def test_extension_loads_before_ducklake_attach(self) -> None:
-        config = DuckConfig(
-            alias="periplus",
-            metadata_path="metadata.duckdb",
-            data_path="/host/lake",
-        )
-        connection = Mock()
-        connection.execute.return_value = connection
-        connection.fetchall.return_value = [
-            ("web", "observation"),
-            ("web", "link_occurrence"),
-            ("content", "object"),
-            ("content", "html_element"),
-        ]
-        with TemporaryDirectory() as directory:
-            extension = Path(directory) / "periplus.duckdb_extension"
-            extension.touch()
-            with patch(
-                "periplus_sdk.conn._direct.duckdb.connect",
-                return_value=connection,
-            ) as connect:
-                result = duck(config, extension_path=extension)
-
-        self.assertIs(result, connection)
-        connect.assert_called_once_with(
-            ":memory:",
-            config={"allow_unsigned_extensions": "true"},
-        )
-        extension_call = connection.method_calls.index(
-            call.load_extension(str(extension.resolve()))
-        )
-        attach_call = next(
-            index
-            for index, item in enumerate(connection.method_calls)
-            if item[0] == "execute"
-            and item.args
-            and str(item.args[0]).startswith("ATTACH ")
-        )
-        self.assertLess(extension_call, attach_call)
-        attach_sql = str(connection.method_calls[attach_call].args[0])
-        self.assertIn("OVERRIDE_DATA_PATH true", attach_sql)
-        self.assertIn("READ_ONLY", attach_sql)
 
     def test_direct_duckdb_errors_do_not_expose_metadata_path(self) -> None:
         secret = "postgres:password=database-secret"

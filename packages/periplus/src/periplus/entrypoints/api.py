@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -6,6 +7,7 @@ from fastapi import FastAPI
 from periplus.crawl.api_runtime import ApiGraphRuntime
 from periplus.crawl.api import (
     content_policies,
+    coverage_requests,
     domain_policies,
     graphs,
     runs,
@@ -27,6 +29,7 @@ from periplus.crawl.runtime.graph_queue import (
 )
 from periplus.crawl.runtime.graph_outbox import run_outbox_relay
 from periplus.platform.messaging.client import connect_nats
+from periplus.platform.messaging.leases import ensure_operation_lease_storage
 from periplus.ingestion.external import EvidenceImportService
 from periplus.materialization.store import AsyncMaterializationRunStore
 from periplus.platform.messaging.catalogue_queue import ensure_catalogue_work_stream
@@ -34,6 +37,7 @@ from periplus.platform.messaging.catalogue_queue import ensure_catalogue_work_st
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logging.basicConfig(level=logging.INFO)
     nats_client = await connect_nats()
     catalogue_control = None
     scheduler_stop = None
@@ -43,6 +47,7 @@ async def lifespan(app: FastAPI):
     evidence_import_service = None
     try:
         jetstream = nats_client.jetstream()
+        coverage_leases = await ensure_operation_lease_storage(jetstream)
         await ensure_catalogue_work_stream(jetstream)
         runs, requests, workers = await ensure_graph_storage(jetstream)
         catalogue_workers = await ensure_catalogue_worker_storage(jetstream)
@@ -72,6 +77,7 @@ async def lifespan(app: FastAPI):
         scheduler_task = asyncio.create_task(
             run_scheduler(
                 scheduler_stop,
+                leases=coverage_leases,
                 runs=runs,
                 requests=requests,
                 progress=runs,
@@ -122,3 +128,5 @@ app.include_router(runs.crawl_router)
 app.include_router(runs.router)
 app.include_router(content_policies.router)
 app.include_router(domain_policies.router)
+
+app.include_router(coverage_requests.router)

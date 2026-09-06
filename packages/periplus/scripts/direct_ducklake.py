@@ -1,4 +1,4 @@
-"""Open Periplus's configured DuckLake with the native extension-enabled CLI."""
+"""Open Periplus's configured DuckLake with the standard DuckDB CLI."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def main() -> None:
         init_path = Path(directory) / "init.sql"
         init_path.write_text(init)
         os.chmod(init_path, 0o600)
-        command = [str(arguments.duckdb_cli), "-init", str(init_path)]
+        command = [str(arguments.duckdb_cli.resolve()), "-init", str(init_path)]
         if arguments.sql:
             command.extend(("-c", arguments.sql))
         subprocess.run(command, check=True)

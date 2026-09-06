@@ -17,6 +17,7 @@ WORKDIR /app
 ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=3000
 COPY --from=build --chown=node:node /app/packages/periplus-public/.next/standalone/ ./
 COPY --from=build --chown=node:node /app/packages/periplus-public/.next/static/ ./packages/periplus-public/.next/static/
+COPY --from=build --chown=node:node /app/packages/periplus-public/public/ ./packages/periplus-public/public/
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=5s --timeout=3s --retries=12 --start-period=5s \

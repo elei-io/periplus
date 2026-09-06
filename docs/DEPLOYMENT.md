@@ -5,7 +5,7 @@ domain capabilities.
 
 ## Naming
 
-- Infrastructure uses ownership-first names: `lake-alluxio-s3`, `lake-postgres`,
+- Infrastructure uses ownership-first names: `lake-s3`, `lake-postgres`,
   `periplus-postgres`, and `periplus-nats`.
 - Executable roles use actor names: `periplus-crawler`, `periplus-ingestor`, `periplus-materializer`, and
   `periplus-janitor`.
@@ -20,21 +20,19 @@ container names. This means one local Periplus Compose project may run on a Dock
 
 | Service | Authority or role | Persistent state |
 | --- | --- | --- |
-| `lake-alluxio-master` | Local Alluxio namespace and asynchronous persistence coordination | `lake-alluxio-journal` |
-| `lake-alluxio-worker` | Local SSD working set and persistence job execution | `lake-alluxio-worker-data` |
-| `lake-alluxio-namespace-init` | One-shot creation of Alluxio's `raw` and `lake` S3 bucket directories | none |
-| `lake-alluxio-s3` | Alluxio's S3-compatible proxy; it is not a storage authority | none |
-| Backblaze B2 under-store | Durable raw objects and DuckLake files behind Alluxio | configured bucket and prefix |
+| `lake-s3-init` | One-shot creation of local `raw` and `lake` bucket directories | none |
+| `lake-s3` | VersityGW S3 endpoint over the local filesystem | `lake-s3-data` |
 | `lake-postgres` | DuckLake metadata only | `lake-postgres-data` |
 | `periplus-postgres` | Periplus editable control and current execution state only | `periplus-postgres-data` |
 | `periplus-nats` | JetStream/KV delivery, presence, pacing, and leases | `periplus-nats-data` |
-| `periplus-crawler` | Crawl graph execution, page acquisition, and immutable raw-object writes | Alluxio `raw` namespace |
+| `periplus-crawler` | Crawl graph execution, page acquisition, and immutable raw-object writes | S3 `raw` namespace |
 | `periplus-ingestor` | Immutable crawl and visit evidence writes | none |
-| `periplus-materializer` | Fixed projections, rebuilds, and live CDC | Alluxio `raw` reads and `lake` writes |
-| `periplus-api` | HTTP API | Alluxio `raw` namespace |
+| `periplus-materializer` | Fixed projections, rebuilds, and live CDC | S3 `raw` reads and `lake` writes |
+| `periplus-query` | Isolated read-only SQL preparation and execution | none |
+| `periplus-api` | Control HTTP API | S3 `raw` namespace |
 | `periplus-admin` | Authenticated operator application and API gateway | none |
 | `periplus-public` | Public Next.js application and bounded API client | none |
-| `periplus-janitor` | Periplus-owned staging, navigation, and runtime cleanup | Alluxio `raw` namespace |
+| `periplus-janitor` | Periplus-owned staging, navigation, and runtime cleanup | S3 `raw` namespace |
 | `periplus-setup` | One-shot schema and catalogue installation | none |
 
 `PERIPLUS_CONTROL_DATABASE_URL` always identifies Periplus Postgres.
@@ -46,13 +44,12 @@ standard URLs to the native DuckLake form at its configuration boundary.
 
 Deleting `periplus-postgres-data` loses editable plans, schedules, policies, and current execution
 state without deleting lake history. Deleting `lake-postgres-data` loses the DuckLake catalogue;
-the B2 objects alone are not a usable lake. A local Compose reset removes both databases, NATS,
-the Alluxio journal and cache. It intentionally does not delete the remote B2 prefix, so raw objects
-remain and files from a reset catalogue become unreferenced remote objects until they are reclaimed
-explicitly.
+the objects alone are not a usable lake. Deleting `lake-s3-data` loses local raw objects and lake
+files. Keep the catalogue and its objects together when backing up or restoring development state.
 
-The default Compose deployment keeps all local persistent state in named volumes, so
-`docker compose down --volumes` is a complete local reset; it leaves the B2 under-store untouched.
+The default Compose deployment keeps all persistent state in named volumes, so
+`docker compose down --volumes` resets both databases, local objects, and NATS. No remote object
+store or cloud credentials are required for development.
 A direct-filesystem DuckLake deployment is a
 separate production configuration: set `PERIPLUS_DUCKLAKE_DATA_PATH` to an absolute shared path and
 mount that path consistently into every Periplus process that writes or reads lake files.
@@ -63,7 +60,7 @@ The checked-in `.env.example` is the canonical runnable development contract. It
 
 - Compose build inputs and published ports;
 - Periplus control Postgres from DuckLake metadata Postgres;
-- Alluxio's local cache capacity and S3 identity from Periplus connection settings;
+- local S3 service credentials from host-side Periplus connection settings;
 - host addresses from container-network addresses; and
 - required attachment settings from optional storage and operational overrides.
 
@@ -71,35 +68,29 @@ Application code does not infer a DuckLake metadata store or data path.
 `PERIPLUS_DUCKLAKE_METADATA_PATH` and `PERIPLUS_DUCKLAKE_DATA_PATH` are required. Standard provider
 credentials such as `AWS_*` remain valid where the selected protocol supports them.
 
-The development S3 endpoint is the Alluxio OSS proxy at `/api/v1/s3`. It uses `ASYNC_THROUGH`
-from one SSD-class worker tier and the S3 streaming uploader into the configured Backblaze B2 bucket
-and prefix. The official OSS
-image is amd64-only, so Docker Desktop uses emulation on Apple Silicon. Alluxio SIMPLE authentication
-interprets the client-facing S3 key ID as an Alluxio/Unix identity and does not validate that secret;
-the local default therefore uses the image's `alluxio` user. B2 uses a separate bucket-scoped S3
-application key supplied only through the ignored `.env` file. These remain single-node local cache
-defaults, not the production replication, authentication, or topology contract.
+The development S3 endpoint is VersityGW's POSIX backend at `http://lake-s3:7070` inside
+Compose and `http://127.0.0.1:7070` on the host (port configurable with `LAKE_S3_PORT`). The pinned
+multi-architecture image runs natively on Apple Silicon. One named volume contains two buckets:
+`raw` owns immutable source documents with repository-relative keys such as `html/...` and
+`documents/...`; `lake` is exclusively the DuckLake data root. The bucket initializer is idempotent.
+Versity validates S3 signatures using `LAKE_S3_KEY_ID` and `LAKE_S3_SECRET_ACCESS_KEY`; Compose
+supplies the same credentials to its writers. Host-side client credentials in `.env` must match.
+These local root credentials must never be given to public clients.
 
-Alluxio exposes two top-level S3 namespaces over the same B2 under-store. `raw` contains immutable
-source documents at `raw/html/...` and `raw/documents/...`; repository-relative keys omit that bucket
-name and begin with `html/...` or `documents/...`. `lake` is exclusively the DuckLake data root, so
-DuckLake and Periplus materialization files appear under `lake/...`. Raw-object and lake-file
-ownership remain separate even though both use the same local cache and remote bucket.
+The S3 provider, caching, replication, and public-access infrastructure are production deployment
+choices. Periplus uses its existing generic S3 connection settings; the production chart does not
+provision Versity. Local development no longer depends on a remote under-store.
 
-The preferred development configuration uses a dedicated B2 bucket with an empty
-`LAKE_B2_PREFIX`. A non-empty prefix must already exist as an object-store directory before Alluxio
-starts; nested prefixes require each ancestor directory marker.
-
-The Compose build still compiles the Periplus and DuckLake CDC extensions together against the pinned
-DuckDB version. `PERIPLUS_DUCKDB_EXTENSION_REPO` and `PERIPLUS_DUCKLAKE_CDC_EXTENSION_REPO` only relocate
-the two additional build contexts; they do not change the extension build.
+The Compose build compiles only the DuckLake CDC extension against the pinned DuckDB version.
+`PERIPLUS_DUCKLAKE_CDC_EXTENSION_REPO` locates its source checkout. Query connections use standard
+DuckDB and official storage extensions, with no custom query extension.
 
 ## Production artifacts
 
 GitHub Actions publishes four immutable artifacts for each main-branch revision:
 
 - `ghcr.io/ekkuleivonen/periplus-core:sha-<commit>` contains the API, every worker role,
-  `periplus-setup`, the Periplus DuckDB extension, and the DuckLake CDC extension;
+  `periplus-setup`, the DuckLake CDC extension;
 - `ghcr.io/ekkuleivonen/periplus-admin:sha-<commit>` contains the operator UI and authenticated nginx gateway;
 - `ghcr.io/ekkuleivonen/periplus-public:sha-<commit>` contains the standalone Next.js public application; and
 - `oci://ghcr.io/ekkuleivonen/periplus-charts/periplus:0.1.0-dev.<commit>` deploys the three images.
@@ -109,12 +100,10 @@ GitOps must pin the explicit chart version and all three explicit image tags; it
 mutable `latest` tag.
 
 The production extension sources and DuckDB version are pinned in
-`.github/extension-sources.env`. The Periplus extension repository is private, so the Periplus GitHub
-repository uses an `PERIPLUS_EXTENSION_DEPLOY_KEY` Actions secret whose public half is a read-only
-deploy key on that repository; DuckLake CDC is public. BuildKit receives clean checkouts of both
-exact revisions as named build contexts. The backend Dockerfile compiles both native artifacts
-against the pinned DuckDB source and embeds them under `/opt/periplus`; extensions are never
-downloaded or mounted at runtime.
+`.github/extension-sources.env`. BuildKit receives the pinned public DuckLake CDC source as a named build context. The backend
+Dockerfile builds its native artifact against pinned DuckDB and embeds it under `/opt/periplus`.
+No private extension checkout or deploy key is required. Official DuckDB storage extensions are
+installed into the image at build time.
 
 ## Kubernetes topology
 
@@ -126,7 +115,7 @@ materializer deployments, and independently scalable stateless admin and public 
 `periplus-setup` is a blocking Helm pre-install and pre-upgrade hook. A failed migration or catalogue
 bootstrap prevents the new runtime image from rolling out. All backend workloads in one release
 must use the same immutable image tag, keeping Python code, the DuckDB runtime, catalogue schema,
-and both native extensions on one release identity.
+and the CDC extension on one release identity.
 
 Control state and DuckLake metadata still require distinct PostgreSQL databases in Kubernetes.
 The same S3 bucket may back raw repository objects and DuckLake data when the repository prefix and
@@ -162,14 +151,49 @@ server-side and protects all UI and proxied API requests with HTTP Basic authent
 (username `admin`, password the administrative token). Expose admin only through a separate
 TLS ingress with operator access controls. Public receives only its restricted token.
 
-`PERIPLUS_PUBLIC_RECEIPT_SECRET` is a separate random secret of at least 32 characters,
-shared by all public replicas. Rotating it invalidates outstanding request receipts.
-The Helm chart references `secrets.apiAccess` for these three values and does not create
-credentials. The public application caps anonymous submissions at ten per minute per
-process. The platform ingress owns aggregate limits across replicas and the CDP service's
-network policy must prevent access to private/internal destinations, including redirects.
+The public app receives `PERIPLUS_QUERY_URL` and `PERIPLUS_QUERY_API_TOKEN` for SQL, plus
+`PERIPLUS_API_URL` and the restricted `PERIPLUS_PUBLIC_API_TOKEN` for coverage-request submission
+and public status listing. Next.js only transports these requests; Python validates and stores
+them in Periplus Postgres. Public credentials cannot start crawls. Admin proxies
+`/api/query/*` to the same query server with the query token. Core uses its separate API tokens.
+The query service uses the core image but its own `entrypoints/query.py` composition root.
+It has one connection and admission slot per process; replica count scales query capacity.
 
+Compose's `query-access-init` runs after catalogue setup and provisions a metadata reader role
+plus a Versity user with only GetObject access to `lake/*`. Future tables created by the lake
+owner inherit SELECT grants. Writer credentials are present only in this one-shot provisioning
+process, never in the query server. Versity user definitions persist in `lake-s3-iam`.
+
+In production, provision the distinct `secrets.queryDucklakeMetadata` and `secrets.queryS3`
+identities with the same privileges, including default SELECT privileges for every metadata
+writer role. The query deployment intentionally does not inherit shared `extraEnvFrom` or
+`extraEnv`, which could inject writer secrets. Its pod must have no write-capable storage
+identity from the surrounding platform. Ingress owns request/body limits and aggregate traffic
+protection. Query memory, spill, runtime, and response limits are documented in QUERY.md.
+
+Compose publishes the query server at localhost:8010, configurable with `PERIPLUS_QUERY_PORT`.
 Compose publishes public on localhost:8080, admin on localhost:8081, and core on localhost:8000.
 The three images are independently buildable under `docker/periplus`, `docker/admin`, and
 `docker/public`. Application health probes use `/healthz` for core/admin and `/api/healthz`
 for public, without forwarding health probes into administrative APIs.
+
+The public Next.js process optionally receives `OPENAI_API_KEY` and `PERIPLUS_AI_MODEL` for its
+web discovery assistant. Helm configures these through `public.ai.model` and
+`public.ai.existingSecret` / `public.ai.apiKeyKey`. These never reach browser bundles. Python source discovery has its own model setting.
+The assistant streams with Vercel AI SDK, limits runs to seven model steps and 90 seconds,
+and admits two active runs per process. Ingress must provide deployment-wide rate and body limits.
+
+## Coverage source discovery
+
+The API process automatically dispatches coverage requests through the existing crawl runtime.
+URL submissions require no model credentials. Text requests use `OPENAI_API_KEY`,
+`BRAVE_SEARCH_API_KEY`, and `PERIPLUS_COVERAGE_MODEL` (a model supporting Responses structured
+outputs). Compose supplies these only to the control API; query and crawler processes do not
+receive them. Configure Helm `api.coverage.model` and `api.coverage.existingSecret`, containing
+keys named by `openaiKeyKey` and `braveKeyKey`. Credentials remain server-side.
+
+Provider configuration failures leave requests pending and retry after a minute. Search queries,
+completed search steps, selected URLs, and dispatch identity are durable in operational Postgres.
+No approval step is required. Website pacing and worker limits remain owned by the existing
+crawler/CDP infrastructure. The CDP service must have private-network egress restrictions;
+validating initial URL DNS in Python alone does not constrain redirects or subresources.

@@ -36,7 +36,6 @@ class CatalogueConfig:
     metadata_path: str
     data_path: str
     metadata_schema: str
-    extension_path: str
     cdc_extension_path: str
     s3: S3StorageConfig | None = None
 
@@ -47,18 +46,6 @@ class CatalogueConfig:
             raise CatalogueConfigError("catalogue metadata path must not be empty")
         if not self.data_path.strip():
             raise CatalogueConfigError("catalogue data path must not be empty")
-        if not self.extension_path.strip():
-            raise CatalogueConfigError(
-                "PERIPLUS_DUCKDB_EXTENSION_PATH must identify the Periplus extension"
-            )
-
-    def resolved_extension_path(self) -> Path:
-        return self._resolved_extension_path(
-            self.extension_path,
-            variable="PERIPLUS_DUCKDB_EXTENSION_PATH",
-            label="Periplus DuckDB extension",
-        )
-
     def resolved_cdc_extension_path(self) -> Path:
         if not self.cdc_extension_path.strip():
             raise CatalogueConfigError(
@@ -100,10 +87,6 @@ def catalogue_config_from_env() -> CatalogueConfig:
         metadata_schema=os.environ.get(
             "PERIPLUS_DUCKLAKE_METADATA_SCHEMA",
             "ducklake",
-        ),
-        extension_path=os.environ.get(
-            "PERIPLUS_DUCKDB_EXTENSION_PATH",
-            "",
         ),
         cdc_extension_path=os.environ.get(
             "PERIPLUS_DUCKLAKE_CDC_EXTENSION_PATH",

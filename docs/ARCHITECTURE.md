@@ -18,14 +18,13 @@ The monorepo delivers three independently buildable products under `packages/`:
 
 - `periplus` owns crawl execution, durable evidence, catalogue maintenance and infrastructure APIs.
 - `periplus-admin` owns operator workflows over administrative APIs.
-- `periplus-public` owns discovery, querying, crawl submission and request visibility.
+- `periplus-public` owns the browser SQL interface over the query service.
 
 Frontends consume HTTP contracts, never core Python modules or backing databases.
 Supporting SDK and shell packages contain client behavior only. Core remains usable without
-both frontends. Service credentials distinguish administrative access from the public
-application's bounded SQL, single-page submission and narrow progress capabilities.
-End-user identities do not enter core. Public request visibility uses an expiring signed
-receipt issued by the public server after admission; it is not another execution ledger.
+both frontends. A separate query process owns SQL preparation and bounded execution over a
+read-only DuckLake connection. Next.js owns web-specific agent orchestration, proxies all SQL to that process, and sends coverage requests to the control API; neither frontend receives
+lake credentials. The query process has no control-state, NATS, or writer credentials.
 
 ## Authorities
 
@@ -49,11 +48,10 @@ service stores Periplus control state only.
 schemas, and transactionally installs the complete persistent `web.*` and `content.*` contract.
 Ordinary Periplus processes validate the installed contract and never repair it.
 
-The optional Periplus extension binary executes inside a DuckDB client and is not stored in DuckLake.
-It supplies hosted query safety and measured optimizer rules, but never public semantics. SDK and
-direct clients can attach and query the four public views without it; a matching host artifact may
-be loaded when those internal policies are desired. One DuckLake connection factory owns optional
-extension loading, storage-protocol configuration, and attachment for every Periplus process.
+Periplus uses the standard DuckDB runtime and official storage extensions. The query API owns
+query validation and future optimizations. One DuckLake connection factory owns storage-protocol
+configuration and attachment for every Periplus process; only live materialization loads the
+separate DuckLake CDC extension.
 Filesystem and S3 are built-in protocols; callers may inject a protocol for another DuckDB-supported
 data URI without adding storage branches to catalogue or materialization workflows.
 Periplus services are needed only to acquire, ingest, or materialize more data. Stopping those
@@ -144,3 +142,32 @@ The detailed data contract is in [`SCHEMA.md`](SCHEMA.md), execution and recover
 [`LIFECYCLE.md`](LIFECYCLE.md), external loading is in [`IMPORTS.md`](IMPORTS.md), and the portable
 query boundary is in [`QUERY.md`](QUERY.md), and plan semantics are in
 [`CRAWL_PLANS.md`](CRAWL_PLANS.md).
+
+## Public coverage requests
+
+`coverage_requests` in Periplus Postgres stores public coverage intent, requested depth (0–2),
+link scope, and total page budget (1–1,000). Submission saves `pending`; the API's existing
+scheduler process automatically picks it up. A request-scoped NATS operation lease suppresses
+concurrent processing, and a deterministic run ID makes dispatch retry-stable. No separate
+service, delivery queue, or public execution endpoint is introduced.
+
+Python source discovery turns descriptions into at most three distinct Brave search queries,
+then selects up to ten returned URLs (also bounded by the page budget). Structured model
+outputs select candidate IDs, never invented URLs. Queries and completed searches are
+checkpointed; selected URLs are frozen before dispatch. Missing credentials keep requests
+pending with a visible explanation; transient discovery errors use bounded backoff and three
+attempts. Permanent discovery failures are visible as `failed`.
+
+The ordinary graph runtime executes one run per request with a one-hour deadline. Internal
+links are restricted to the registrable starting sites including their subdomains. External-only
+links exclude those sites. Both scopes permit any linked site. Depth and the total page budget
+apply across all starting pages. Starting URLs must resolve to public addresses. This initial
+DNS check is not an egress sandbox: the CDP service's network boundary must also prevent access
+to private networks through redirects, subresources, and DNS rebinding.
+
+The public request API exposes pending, resolving, ongoing, completed, and failed states, source
+URLs, search queries, and safe live run counters. Completion means collection finished; ingestion
+and materialization may still be processing. Failed/cancelled runs remain distinguishable, and
+partial page failures remain visible. Request records survive graph-run retention; old run
+counters disappear with the runtime record, while the run ID still identifies lake evidence.
+Recently completed lists cover the last 30 days. Next.js only proxies the Python endpoints.

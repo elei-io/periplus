@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "periplus.fullname" . }}-query
+  labels:
+    {{- include "periplus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: query
+spec:
+  replicas: {{ .Values.query.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "query") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "query") | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "periplus.corePodSpec" . | nindent 6 }}
+      containers:
+        - name: query
+          image: {{ include "periplus.coreImage" . | quote }}
+          imagePullPolicy: {{ .Values.images.core.pullPolicy }}
+          command: [fastapi, run, src/periplus/entrypoints/query.py, --host, 0.0.0.0, --port, "8000"]
+          workingDir: /app/packages/periplus
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: PERIPLUS_QUERY_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.apiAccess.name }}
+                  key: {{ .Values.secrets.apiAccess.queryTokenKey }}
+            - name: PERIPLUS_DUCKLAKE_METADATA_PATH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.queryDucklakeMetadata.name }}
+                  key: {{ .Values.secrets.queryDucklakeMetadata.pathKey }}
+            - name: PERIPLUS_DUCKLAKE_ALIAS
+              value: {{ .Values.config.ducklake.alias | quote }}
+            - name: PERIPLUS_DUCKLAKE_METADATA_SCHEMA
+              value: {{ .Values.config.ducklake.metadataSchema | quote }}
+            - name: PERIPLUS_DUCKLAKE_DATA_PATH
+              value: {{ .Values.config.ducklake.dataPath | quote }}
+            - name: PERIPLUS_DUCKLAKE_S3_ENDPOINT
+              value: {{ .Values.config.ducklake.s3Endpoint | quote }}
+            - name: PERIPLUS_DUCKLAKE_S3_URL_STYLE
+              value: {{ .Values.config.ducklake.s3UrlStyle | quote }}
+            - name: PERIPLUS_DUCKLAKE_S3_USE_SSL
+              value: {{ .Values.config.ducklake.s3UseSSL | quote }}
+            - name: PERIPLUS_DUCKLAKE_S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.queryS3.name }}
+                  key: {{ .Values.secrets.queryS3.regionKey }}
+            - name: PERIPLUS_DUCKLAKE_S3_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.queryS3.name }}
+                  key: {{ .Values.secrets.queryS3.accessKeyIdKey }}
+            - name: PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.queryS3.name }}
+                  key: {{ .Values.secrets.queryS3.secretAccessKeyKey }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.query.resources | nindent 12 }}

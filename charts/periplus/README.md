@@ -85,8 +85,14 @@ contract. The API Service exposes `/metrics`; worker Services expose ports 9090,
 
 The three image keys are `images.core`, `images.admin`, and `images.public`; pin all three.
 Create the externally managed `periplus-api-access` secret with distinct `ADMIN_API_TOKEN`,
-`PUBLIC_API_TOKEN`, and `PUBLIC_RECEIPT_SECRET` keys (the receipt secret needs at least 32
-characters). Configure alternative names through `secrets.apiAccess`.
+`PUBLIC_API_TOKEN`, and `QUERY_API_TOKEN` keys. Configure alternative names through `secrets.apiAccess`.
 Route public and admin through separate TLS ingresses. Admin login is `admin` with the
 administrative token as password. Keep the core API private and enforce aggregate public
 rate limits at ingress. No database or service token is supplied to the public browser.
+
+The `query` deployment runs preparation and execution separately from the control API. Public
+and admin proxy query requests using `secrets.apiAccess.queryTokenKey`. Provision separate
+`secrets.queryDucklakeMetadata` (SELECT-only, including future metadata tables) and
+`secrets.queryS3` (GetObject-only on the lake prefix). Query does not inherit shared extraEnv
+or extraEnvFrom; do not inject a writer identity through pod credentials. See docs/QUERY.md
+for execution and response limits. This chart does not provision those external grants.

@@ -1,6 +1,6 @@
 import unittest
 
-from periplus.query.http import _bounded_query
+from periplus.query.validation import _bounded_query
 
 
 class SqlConsoleValidationTests(unittest.TestCase):
@@ -110,9 +110,6 @@ class SqlConsoleValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "qualified"):
             _bounded_query("SELECT * FROM read_parquet('private.parquet')")
 
-    def test_rejects_internal_extension_function(self):
-        with self.assertRaisesRegex(ValueError, "periplus_lint_query"):
-            _bounded_query("SELECT periplus_lint_query('SELECT 42')")
 
 
 if __name__ == "__main__":

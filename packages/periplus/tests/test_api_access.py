@@ -3,11 +3,10 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from periplus.platform.api_access import ApiAccessMiddleware
-from periplus.crawl.api.runs import CrawlCreate, validate_public_crawl
 
 
 class ApiAccessTests(unittest.TestCase):
@@ -33,9 +32,9 @@ class ApiAccessTests(unittest.TestCase):
 
     def test_public_service_has_only_explicit_capabilities(self):
         headers = {"Authorization": "Bearer public-test-token"}
-        for method, path in [("POST", "/sql/query"), ("POST", "/crawls/"), ("GET", f"/crawls/{uuid4()}")]:
+        for method, path in [("POST", "/coverage-requests"), ("GET", "/coverage-requests"), ("GET", f"/coverage-requests/{uuid4()}")]:
             self.assertEqual(self.client.request(method, path, headers=headers).status_code, 200)
-        for method, path in [("GET", "/graph-runs/"), ("POST", "/materializations/rebuild"), ("POST", "/crawl-plans/"), ("DELETE", "/crawls/"), ("GET", "/sql/metadata"), ("GET", "/openapi.json")]:
+        for method, path in [("POST", "/crawls/"), ("GET", f"/crawls/{uuid4()}"), ("DELETE", "/coverage-requests"), ("POST", "/query/exec"), ("POST", "/sql/query"), ("POST", f"/query/browser/{uuid4()}/metadata"), ("GET", "/graph-runs/"), ("POST", "/materializations/rebuild"), ("POST", "/crawl-plans/"), ("DELETE", "/crawls/"), ("GET", "/sql/metadata"), ("GET", "/openapi.json")]:
             self.assertEqual(self.client.request(method, path, headers=headers).status_code, 403)
 
     def test_admin_can_reach_operational_routes(self):
@@ -44,11 +43,4 @@ class ApiAccessTests(unittest.TestCase):
     def test_equal_or_missing_tokens_fail_closed(self):
         for value in ["", "admin-test-token"]:
             with patch.dict(os.environ, {"PERIPLUS_PUBLIC_API_TOKEN": value}):
-                self.assertEqual(self.client.post("/sql/query", headers={"Authorization": "Bearer admin-test-token"}).status_code, 503)
-
-    def test_public_crawl_cannot_expand_work(self):
-        payload = {"urls": ["https://example.com/"], "depth": 0, "max_crawls": 1, "max_run_seconds": 300}
-        validate_public_crawl(CrawlCreate(**payload))
-        for changes in [{"depth": 1}, {"max_crawls": 2}, {"max_run_seconds": None}, {"max_run_seconds": 301}, {"urls": ["https://example.com/", "https://example.org/"]}, {"plan": "operator-plan", "depth": None}]:
-            with self.subTest(changes=changes), self.assertRaises(HTTPException):
-                validate_public_crawl(CrawlCreate(**(payload | changes)))
+                self.assertEqual(self.client.post("/query/exec", headers={"Authorization": "Bearer admin-test-token"}).status_code, 503)

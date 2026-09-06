@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Literal
 
 import duckdb
 
-from periplus_sdk.errors import CatalogueVersionError, ExtensionVersionError
+from periplus_sdk.errors import CatalogueVersionError
 
-ExtensionMode = Literal["auto", "required", "disabled"]
-QueryProfile = Literal["interactive", "batch"]
 PUBLIC_CATALOGUE_VERSION = "1.0.0"
 PUBLIC_RELATIONS = frozenset(
     {
@@ -22,43 +18,7 @@ PUBLIC_RELATIONS = frozenset(
 )
 
 
-def load_periplus_extension(
-    connection: duckdb.DuckDBPyConnection,
-    *,
-    mode: ExtensionMode,
-    path: str | Path | None,
-) -> bool:
-    if mode not in {"auto", "required", "disabled"}:
-        raise ValueError(f"invalid Periplus extension mode: {mode!r}")
-    if mode == "disabled":
-        return False
-    if path is None:
-        if mode == "required":
-            raise ExtensionVersionError(
-                "Periplus extension is required but no extension path was supplied"
-            )
-        return False
-    try:
-        connection.load_extension(str(Path(path).expanduser().resolve(strict=True)))
-    except Exception as exc:
-        raise ExtensionVersionError(
-            "Periplus extension could not be loaded"
-        ) from exc
-    return True
-
-
-def validate_catalogue(
-    connection: duckdb.DuckDBPyConnection,
-    *,
-    profile: QueryProfile,
-    extension_loaded: bool,
-) -> str:
-    if profile not in {"interactive", "batch"}:
-        raise ValueError(f"invalid Periplus query profile: {profile!r}")
-    if extension_loaded:
-        connection.execute(
-            f"SET periplus_query_profile = {quote_literal(profile)}"
-        )
+def validate_catalogue(connection: duckdb.DuckDBPyConnection) -> str:
     try:
         rows = connection.execute(
             "SELECT schema_name, view_name FROM duckdb_views() "

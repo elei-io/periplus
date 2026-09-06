@@ -86,7 +86,7 @@ class TestCorpusTests(unittest.TestCase):
             )
 
         self.assertEqual(empty, set())
-        sql = query.call_args.args[1]
+        sql = query.call_args.args[0]
         self.assertIn("FROM web.observation", sql)
         self.assertIn("starts_with(source_record_id, 'page:')", sql)
 
@@ -123,8 +123,8 @@ class TestCorpusTests(unittest.TestCase):
                 "https://c.example/",
             },
         )
-        self.assertIn("LIMIT 2 OFFSET 0", query.call_args_list[0].args[1])
-        self.assertIn("LIMIT 2 OFFSET 2", query.call_args_list[1].args[1])
+        self.assertIn("LIMIT 2 OFFSET 0", query.call_args_list[0].args[0])
+        self.assertIn("LIMIT 2 OFFSET 2", query.call_args_list[1].args[0])
 
     def test_pending_pages_retry_manifest_gaps_before_adding_more(self):
         captures = [self.capture(ordinal=ordinal) for ordinal in range(5)]

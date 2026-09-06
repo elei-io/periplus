@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol
 
 import duckdb
 
 from ._common import (
-    ExtensionMode,
-    QueryProfile,
-    load_periplus_extension,
     quote_identifier,
     quote_literal,
     validate_catalogue,
@@ -27,7 +23,6 @@ class DuckConfigLike(Protocol):
     metadata_path: str
     data_path: str
     metadata_schema: str
-    extension_path: str | None
 
 
 @dataclass(slots=True)
@@ -46,29 +41,14 @@ class DuckLakeConnectionFactory:
         *,
         alias: str,
         read_only: bool,
-        profile: QueryProfile,
-        extension: ExtensionMode,
-        extension_path: str | Path | None,
     ) -> duckdb.DuckDBPyConnection:
-        connection = duckdb.connect(
-            ":memory:",
-            config={
-                "allow_unsigned_extensions": (
-                    "true" if extension_path is not None else "false"
-                )
-            },
-        )
+        connection = duckdb.connect(":memory:")
         try:
             connection.load_extension("ducklake")
             if self.config.metadata_path.startswith("postgres:"):
                 connection.load_extension("postgres")
             assert self.protocol is not None
             self.protocol.configure(connection)
-            loaded = load_periplus_extension(
-                connection,
-                mode=extension,
-                path=extension_path,
-            )
             mode = ", READ_ONLY" if read_only else ""
             connection.execute(
                 "ATTACH "
@@ -80,11 +60,7 @@ class DuckLakeConnectionFactory:
                 f"{mode})"
             )
             connection.execute(f"USE {quote_identifier(alias)}")
-            validate_catalogue(
-                connection,
-                profile=profile,
-                extension_loaded=loaded,
-            )
+            validate_catalogue(connection)
             return connection
         except BaseException:
             connection.close()
