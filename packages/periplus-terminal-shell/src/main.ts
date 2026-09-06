@@ -12,7 +12,7 @@ import {
 import { renderConsoleResult, startProgress } from "./render.js"
 
 const apiUrl = process.env.PERIPLUS_API_URL?.trim() || "http://127.0.0.1:8000"
-const sqlConsole = new SqlConsole(new SqlApi(apiUrl))
+const sqlConsole = new SqlConsole(new SqlApi(apiUrl, process.env.PERIPLUS_API_TOKEN))
 
 async function interactive(): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {

@@ -4,6 +4,6 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 exec uv run \
-  --project "$repo_dir/backend" \
+  --project "$repo_dir/packages/periplus" \
   --with "warcio==1.7.5" \
-  python -u "$repo_dir/backend/scripts/test_corpus.py" "$@"
+  python -u "$repo_dir/packages/periplus/scripts/test_corpus.py" "$@"

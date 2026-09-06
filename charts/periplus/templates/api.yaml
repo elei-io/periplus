@@ -24,33 +24,43 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      {{- include "periplus.backendPodSpec" . | nindent 6 }}
+      {{- include "periplus.corePodSpec" . | nindent 6 }}
       containers:
         - name: api
-          image: {{ include "periplus.backendImage" . | quote }}
-          imagePullPolicy: {{ .Values.images.backend.pullPolicy }}
+          image: {{ include "periplus.coreImage" . | quote }}
+          imagePullPolicy: {{ .Values.images.core.pullPolicy }}
           command: [fastapi, run, src/periplus/entrypoints/api.py, --host, 0.0.0.0, --port, "8000"]
-          workingDir: /app/backend
+          workingDir: /app/packages/periplus
           ports:
             - name: http
               containerPort: 8000
           {{- include "periplus.envFrom" . | nindent 10 }}
           env:
-            {{- include "periplus.backendEnv" . | nindent 12 }}
+            {{- include "periplus.coreEnv" . | nindent 12 }}
+            - name: PERIPLUS_ADMIN_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.apiAccess.name }}
+                  key: {{ .Values.secrets.apiAccess.adminTokenKey }}
+            - name: PERIPLUS_PUBLIC_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.apiAccess.name }}
+                  key: {{ .Values.secrets.apiAccess.publicTokenKey }}
           startupProbe:
             httpGet:
-              path: /openapi.json
+              path: /healthz
               port: http
             failureThreshold: 30
             periodSeconds: 5
           readinessProbe:
             httpGet:
-              path: /openapi.json
+              path: /healthz
               port: http
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /openapi.json
+              path: /healthz
               port: http
             periodSeconds: 10
           resources:

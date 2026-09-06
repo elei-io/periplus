@@ -7,7 +7,6 @@ import type { SqlMetadata } from "./types.js"
 const metadata: SqlMetadata = {
   catalogue_version: "1.0.0",
   duckdb_version: "v1.5.5",
-  catalogue_bytes: 12_345,
   relations: [
     {
       schema_name: "web",

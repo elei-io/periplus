@@ -44,4 +44,4 @@ dist-ssr
 *.sln
 *.sw?
 
-backend/.tmp/
+packages/periplus/.tmp/

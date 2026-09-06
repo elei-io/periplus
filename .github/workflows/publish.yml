@@ -18,8 +18,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  BACKEND_IMAGE: ghcr.io/ekkuleivonen/periplus-backend
-  WEB_IMAGE: ghcr.io/ekkuleivonen/periplus-web
+  CORE_IMAGE: ghcr.io/ekkuleivonen/periplus-core
   CHART_REGISTRY: oci://ghcr.io/ekkuleivonen/periplus-charts
 
 jobs:
@@ -75,8 +74,8 @@ jobs:
             echo "duckdb_version=${DUCKDB_VERSION}"
           } >> "${GITHUB_OUTPUT}"
 
-  backend:
-    name: Backend image
+  core:
+    name: Core image
     needs: metadata
     runs-on: ubuntu-24.04
     steps:
@@ -107,7 +106,7 @@ jobs:
         run: |
           IFS=',' read -ra versions <<< "${{ needs.metadata.outputs.image_tags }}"
           for version in "${versions[@]}"; do
-            echo "${BACKEND_IMAGE}:${version}"
+            echo "${CORE_IMAGE}:${version}"
           done > /tmp/tags
           {
             echo "value<<EOF"
@@ -126,13 +125,16 @@ jobs:
           build-contexts: |
             periplus-extension=${{ github.workspace }}/.extension-sources/periplus
             ducklake-cdc-extension=${{ github.workspace }}/.extension-sources/ducklake-cdc
-          cache-from: type=gha,scope=periplus-backend
-          cache-to: type=gha,mode=max,scope=periplus-backend
+          cache-from: type=gha,scope=periplus-core
+          cache-to: type=gha,mode=max,scope=periplus-core
           provenance: mode=max
           sbom: true
 
-  web:
-    name: Web image
+  frontend:
+    name: ${{ matrix.app }} image
+    strategy:
+      matrix:
+        app: [admin, public]
     needs: metadata
     runs-on: ubuntu-24.04
     steps:
@@ -149,7 +151,7 @@ jobs:
         run: |
           IFS=',' read -ra versions <<< "${{ needs.metadata.outputs.image_tags }}"
           for version in "${versions[@]}"; do
-            echo "${WEB_IMAGE}:${version}"
+            echo "ghcr.io/ekkuleivonen/periplus-${{ matrix.app }}:${version}"
           done > /tmp/tags
           {
             echo "value<<EOF"
@@ -159,12 +161,12 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/web/Dockerfile
+          file: docker/${{ matrix.app }}/Dockerfile
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.value }}
-          cache-from: type=gha,scope=periplus-web
-          cache-to: type=gha,mode=max,scope=periplus-web
+          cache-from: type=gha,scope=periplus-${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=periplus-${{ matrix.app }}
           provenance: mode=max
           sbom: true
 
@@ -172,8 +174,8 @@ jobs:
     name: Helm chart
     needs:
       - metadata
-      - backend
-      - web
+      - core
+      - frontend
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

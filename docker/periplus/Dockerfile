@@ -72,9 +72,9 @@ RUN apt-get update \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app/backend
+WORKDIR /app/packages/periplus
 
-COPY backend/pyproject.toml backend/uv.lock ./
+COPY packages/periplus/pyproject.toml packages/periplus/uv.lock ./
 
 RUN UV_PROJECT_ENVIRONMENT=/opt/periplus-venv uv sync --frozen --no-install-project --no-dev
 
@@ -85,7 +85,7 @@ RUN PERIPLUS_DUCKDB_EXTENSIONS="${PERIPLUS_DUCKDB_EXTENSIONS}" /opt/periplus-ven
 ENV PATH="/opt/periplus-venv/bin:${PATH}"
 
 FROM dependencies AS base
-COPY backend/ ./
+COPY packages/periplus/ ./
 COPY --from=periplus-extension-builder \
     /build/periplus-extension/build/release/extension/periplus/periplus.duckdb_extension \
     /opt/periplus/periplus.duckdb_extension

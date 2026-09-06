@@ -25,14 +25,14 @@ spec:
       {{- end }}
     spec:
       restartPolicy: Never
-      {{- include "periplus.backendPodSpec" . | nindent 6 }}
+      {{- include "periplus.corePodSpec" . | nindent 6 }}
       containers:
         - name: setup
-          image: {{ include "periplus.backendImage" . | quote }}
-          imagePullPolicy: {{ .Values.images.backend.pullPolicy }}
+          image: {{ include "periplus.coreImage" . | quote }}
+          imagePullPolicy: {{ .Values.images.core.pullPolicy }}
           command: [periplus-setup]
           {{- include "periplus.envFrom" . | nindent 10 }}
           env:
-            {{- include "periplus.backendEnv" . | nindent 12 }}
+            {{- include "periplus.coreEnv" . | nindent 12 }}
           resources:
             {{- toYaml .Values.setup.resources | nindent 12 }}

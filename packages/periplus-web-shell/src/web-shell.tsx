@@ -20,7 +20,6 @@ const DEFAULT_HISTORY_KEY = "periplus.sql.history"
 interface ShellStatus {
   connection: "connecting" | "connected" | "disconnected"
   duckdbVersion?: string
-  catalogueBytes?: number
   apiLatencyMilliseconds?: number
   error?: string
 }
@@ -193,12 +192,17 @@ class BrowserSqlSession {
     this.onStatus({ connection: "connecting" })
     const startedAt = performance.now()
     try {
-      const metadata = await this.sqlConsole.metadata()
+      const result = await this.sqlConsole.api.query(
+        "SELECT version() AS duckdb_version"
+      )
+      const duckdbVersion = result.rows[0]?.[0]
+      if (typeof duckdbVersion !== "string") {
+        throw new Error("Periplus API did not return the DuckDB version.")
+      }
       if (this.closed) return
       this.onStatus({
         connection: "connected",
-        duckdbVersion: metadata.duckdb_version,
-        catalogueBytes: metadata.catalogue_bytes,
+        duckdbVersion,
         apiLatencyMilliseconds: performance.now() - startedAt,
       })
     } catch (error) {
@@ -238,12 +242,7 @@ function ShellFooter({ status }: { status: ShellStatus }) {
       aria-live="polite"
     >
       <span>DuckDB {status.duckdbVersion ?? "—"}</span>
-      <span>
-        catalogue{" "}
-        {status.catalogueBytes === undefined
-          ? "—"
-          : formatBytes(status.catalogueBytes)}
-      </span>
+      <span>catalogue public</span>
       <span className="periplus-web-shell-footer-end">
         API{" "}
         {status.apiLatencyMilliseconds === undefined
@@ -254,18 +253,6 @@ function ShellFooter({ status }: { status: ShellStatus }) {
       </span>
     </footer>
   )
-}
-
-function formatBytes(value: number): string {
-  if (value < 1_024) return `${value} B`
-  const units = ["KiB", "MiB", "GiB", "TiB", "PiB"]
-  let scaled = value
-  let unit = -1
-  do {
-    scaled /= 1_024
-    unit += 1
-  } while (scaled >= 1_024 && unit < units.length - 1)
-  return `${scaled.toFixed(scaled >= 10 ? 0 : 1)} ${units[unit]}`
 }
 
 function loadHistory(historyKey: string): string[] {

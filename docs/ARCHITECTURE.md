@@ -12,6 +12,21 @@ External HTML joins at the same immutable-byte boundary:
 external evidence -> immutable bytes -> ingest.* -> material.* -> web.* / content.*
 ```
 
+## Package ownership
+
+The monorepo delivers three independently buildable products under `packages/`:
+
+- `periplus` owns crawl execution, durable evidence, catalogue maintenance and infrastructure APIs.
+- `periplus-admin` owns operator workflows over administrative APIs.
+- `periplus-public` owns discovery, querying, crawl submission and request visibility.
+
+Frontends consume HTTP contracts, never core Python modules or backing databases.
+Supporting SDK and shell packages contain client behavior only. Core remains usable without
+both frontends. Service credentials distinguish administrative access from the public
+application's bounded SQL, single-page submission and narrow progress capabilities.
+End-user identities do not enter core. Public request visibility uses an expiring signed
+receipt issued by the public server after admission; it is not another execution ledger.
+
 ## Authorities
 
 - Periplus Postgres owns editable control state, current graph execution, admission, progress,

@@ -32,7 +32,7 @@ to encode around one accidental optimizer plan.
   operation leases, and per-domain crawl pacing/concurrency. It is not authoritative graph state.
 - Crawl history belongs only in DuckLake; never reintroduce it into Periplus Postgres.
 - Raw HTML is immutable, content-addressed, and stored through
-  `backend/src/periplus/ingestion/objects/`.
+  `packages/periplus/src/periplus/ingestion/objects/`.
 - `crawl` is the only page-acquisition primitive. Graph nodes map admitted URL inputs to crawl work;
   scoped SQL edges derive URL inputs for subsequent nodes from durable crawl evidence.
 - Crawler replicas acquire one page, store immutable raw HTML, publish frozen ingestion jobs,
@@ -80,28 +80,29 @@ to encode around one accidental optimizer plan.
 
 ## Code map
 
-- `backend/src/periplus/crawl/control/` — editable Periplus Postgres-backed crawl graphs, policies, and
+- `packages/periplus/src/periplus/crawl/control/` — editable Periplus Postgres-backed crawl graphs, policies, and
   schedules.
-- `backend/src/periplus/crawl/runtime/` — current graph execution, transactional outbox, work
+- `packages/periplus/src/periplus/crawl/runtime/` — current graph execution, transactional outbox, work
   delivery, navigation, progress, and per-domain pacing.
-- `backend/src/periplus/crawl/acquisition/` — standard-CDP page capture, readiness, response
+- `packages/periplus/src/periplus/crawl/acquisition/` — standard-CDP page capture, readiness, response
   classification, and acquisition evidence; do not add traversal loops here.
-- `backend/src/periplus/crawl/crawler.py` — crawler process composition.
-- `backend/src/periplus/ingestion/` — immutable objects, ingestion contracts, queue, writer, import,
+- `packages/periplus/src/periplus/crawl/crawler.py` — crawler process composition.
+- `packages/periplus/src/periplus/ingestion/` — immutable objects, ingestion contracts, queue, writer, import,
   health, and recovery.
-- `backend/src/periplus/ingestion/ingestor.py` — ingestor process composition.
-- `backend/src/periplus/materialization/` — fixed document and visit projections, maintenance, and
+- `packages/periplus/src/periplus/ingestion/ingestor.py` — ingestor process composition.
+- `packages/periplus/src/periplus/materialization/` — fixed document and visit projections, maintenance, and
   materialization lifecycle.
-- `backend/src/periplus/materialization/materializer.py` — materializer process composition.
-- `backend/src/periplus/materialization/dom/` — versioned structural DOM projection.
-- `backend/src/periplus/query/` — bounded physical SQL inspection.
-- `backend/src/periplus/operations/janitor.py` — janitor process composition.
-- `backend/src/periplus/operations/api/` — status and dead-letter operations.
-- `backend/src/periplus/platform/` — configuration, worker health/lifecycle, and Postgres, NATS, and
+- `packages/periplus/src/periplus/materialization/materializer.py` — materializer process composition.
+- `packages/periplus/src/periplus/materialization/dom/` — versioned structural DOM projection.
+- `packages/periplus/src/periplus/query/` — bounded physical SQL inspection.
+- `packages/periplus/src/periplus/operations/janitor.py` — janitor process composition.
+- `packages/periplus/src/periplus/operations/api/` — status and dead-letter operations.
+- `packages/periplus/src/periplus/platform/` — configuration, worker health/lifecycle, and Postgres, NATS, and
   DuckLake adapters; business workflows do not belong here.
-- `backend/src/periplus/entrypoints/` — thin API, worker CLI, and setup composition roots.
+- `packages/periplus/src/periplus/entrypoints/` — thin API, worker CLI, and setup composition roots.
 - `packages/periplus-web-shell/` — distributable browser SQL shell built on `periplus-console-core`.
-- `web/` — React frontend application; it consumes `periplus-web-shell`.
+- `packages/periplus-public/` — Next.js public catalogue and crawl-submission application.
+- `packages/periplus-admin/` — Vite operator application for crawl and catalogue maintenance.
 
 Keep editable graph and policy definitions under `crawl/control/`, current graph execution under
 `crawl/runtime/`, acquisition behavior in the shared crawl path, durable evidence under
@@ -113,7 +114,7 @@ or action-specific traversal loop when a node and scoped SQL edge express the be
 
 ## Workflow
 
-Use `uv` from `backend/`; the project targets Python 3.14. Common root commands:
+Use `uv` from `packages/periplus/`; the project targets Python 3.14. Common root commands:
 
 ```sh
 make sync
@@ -128,7 +129,10 @@ Run `make check` after Python changes. Add targeted tests for changed behavior. 
 exercise one low-depth URL with low concurrency. For frontend changes, run:
 
 ```sh
-cd web
+cd packages/periplus-public
+npm run typecheck
+npm run build
+cd ../periplus-admin
 npm run typecheck
 npm run build
 ```
@@ -137,7 +141,7 @@ npm run build
 
 The C++ extension is a separate sibling repository at `../periplus-duckdb-extension`, created from
 DuckDB's official extension template. Keep its DuckDB submodule pinned to the exact DuckDB version
-used by `backend/`.
+used by `packages/periplus/`.
 
 Use the native debug runner while implementing a rule, then build the release artifact used by the
 direct development connection:
@@ -182,6 +186,8 @@ layer.
 - Do not commit generated artifacts, local `.periplus/` data, virtual environments, or secrets.
 - Manage schema changes with Alembic; do not add compatibility models for removed storage paths.
 
+Before changing either frontend, read its package-local `AGENTS.md` in full.
+
 For the frontend, use shadcn components, React Query for server state, shared API types under
-`web/src/types/`, and named exports except for `App.tsx`. Every mutation must surface
+each application’s `src/types/`, and named exports except for `App.tsx`. Every mutation must surface
 `extractApiError` through `toast.error()`.

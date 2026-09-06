@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "periplus.fullname" . }}-admin
+  labels:
+    {{- include "periplus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+spec:
+  replicas: {{ .Values.admin.replicas }}
+  selector:
+    matchLabels:
+      {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "admin") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "admin") | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- include "periplus.podPlacement" . | nindent 6 }}
+      containers:
+        - name: admin
+          image: {{ include "periplus.adminImage" . | quote }}
+          imagePullPolicy: {{ .Values.images.admin.pullPolicy }}
+          env:
+            - name: PERIPLUS_API_HOST
+              value: {{ printf "%s-api" (include "periplus.fullname" .) | quote }}
+            - name: PERIPLUS_API_PORT
+              value: "8000"
+            - name: PERIPLUS_ADMIN_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.apiAccess.name }}
+                  key: {{ .Values.secrets.apiAccess.adminTokenKey }}
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            {{- toYaml .Values.admin.resources | nindent 12 }}

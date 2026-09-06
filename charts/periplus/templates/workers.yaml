@@ -37,11 +37,11 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      {{- include "periplus.backendPodSpec" $root | nindent 6 }}
+      {{- include "periplus.corePodSpec" $root | nindent 6 }}
       containers:
         - name: {{ $worker.name }}
-          image: {{ include "periplus.backendImage" $root | quote }}
-          imagePullPolicy: {{ $root.Values.images.backend.pullPolicy }}
+          image: {{ include "periplus.coreImage" $root | quote }}
+          imagePullPolicy: {{ $root.Values.images.core.pullPolicy }}
           command: [periplus-worker, {{ $worker.name }}]
           ports:
             - name: health
@@ -50,7 +50,7 @@ spec:
               containerPort: {{ $worker.metricsPort }}
           {{- include "periplus.envFrom" $root | nindent 10 }}
           env:
-            {{- include "periplus.backendEnv" $root | nindent 12 }}
+            {{- include "periplus.coreEnv" $root | nindent 12 }}
             {{- if eq $worker.name "crawler" }}
             - name: PERIPLUS_CDP_URL
               value: {{ $root.Values.config.cdpUrl | quote }}

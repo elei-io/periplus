@@ -189,7 +189,7 @@ commands = new CommandRegistry([
         kind: "table",
         columns: ["Name", "Kind", "Signature", "Description"],
         rows,
-        summary: `${rows.length} public objects · catalogue ${metadata.catalogue_version}`,
+        summary: `${rows.length} public objects${catalogueSuffix(metadata)}`,
       }
     },
   },
@@ -215,7 +215,7 @@ commands = new CommandRegistry([
           ),
         summary: `${metadata.macros.length} public macro${
           metadata.macros.length === 1 ? "" : "s"
-        } · catalogue ${metadata.catalogue_version}`,
+        }${catalogueSuffix(metadata)}`,
       }
     },
   },
@@ -372,6 +372,12 @@ function signature(macro: SqlMacro): string {
   return `${qualified(macro)}(${parameters})${
     macro.return_type ? ` → ${macro.return_type}` : ""
   }`
+}
+
+function catalogueSuffix(metadata: SqlMetadata): string {
+  return metadata.catalogue_version
+    ? ` · catalogue ${metadata.catalogue_version}`
+    : ""
 }
 
 function qualified(item: { schema_name: string; name: string }): string {

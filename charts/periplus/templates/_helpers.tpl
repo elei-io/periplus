@@ -37,12 +37,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/component: {{ .component }}
 {{- end }}
 
-{{- define "periplus.backendImage" -}}
-{{- printf "%s:%s" .Values.images.backend.repository (.Values.images.backend.tag | default .Chart.AppVersion) }}
+{{- define "periplus.coreImage" -}}
+{{- printf "%s:%s" .Values.images.core.repository (.Values.images.core.tag | default .Chart.AppVersion) }}
 {{- end }}
 
-{{- define "periplus.webImage" -}}
-{{- printf "%s:%s" .Values.images.web.repository (.Values.images.web.tag | default .Chart.AppVersion) }}
+{{- define "periplus.adminImage" -}}
+{{- printf "%s:%s" .Values.images.admin.repository (.Values.images.admin.tag | default .Chart.AppVersion) }}
+{{- end }}
+
+{{- define "periplus.publicImage" -}}
+{{- printf "%s:%s" .Values.images.public.repository (.Values.images.public.tag | default .Chart.AppVersion) }}
 {{- end }}
 
 {{- define "periplus.podPlacement" -}}
@@ -64,7 +68,7 @@ topologySpreadConstraints:
 {{- end }}
 {{- end }}
 
-{{- define "periplus.backendEnv" -}}
+{{- define "periplus.coreEnv" -}}
 - name: PERIPLUS_CONTROL_DATABASE_URL
   valueFrom:
     secretKeyRef:
@@ -153,8 +157,6 @@ topologySpreadConstraints:
   value: {{ .Values.config.nats.ingestResultReplicas | quote }}
 - name: PERIPLUS_LOG_LEVEL
   value: {{ .Values.config.logLevel | quote }}
-- name: PERIPLUS_AI_MODEL
-  value: {{ .Values.config.aiModel | quote }}
 {{- with .Values.extraEnv }}
 {{ toYaml . }}
 {{- end }}
@@ -167,7 +169,7 @@ envFrom:
 {{- end }}
 {{- end }}
 
-{{- define "periplus.backendPodSpec" -}}
+{{- define "periplus.corePodSpec" -}}
 automountServiceAccountToken: false
 terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
 {{- with .Values.imagePullSecrets }}

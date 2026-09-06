@@ -1,6 +1,6 @@
 # Periplus Helm chart
 
-This chart deploys the Periplus API, web console, crawler, ingestors, materializers, janitor, and an
+This chart deploys the Periplus API, admin application, public application, crawler, ingestors, materializers, janitor, and an
 idempotent setup hook. It intentionally does not deploy PostgreSQL, NATS, S3, a CDP service, an
 Ingress, or secret-management controllers; those remain platform-owned dependencies.
 
@@ -62,9 +62,11 @@ spec:
     imagePullSecrets:
       - name: ghcr-pull
     images:
-      backend:
+      core:
         tag: sha-abcdef0
-      web:
+      admin:
+        tag: sha-abcdef0
+      public:
         tag: sha-abcdef0
     config:
       cdpUrl: http://your-cdp-service:9222
@@ -80,3 +82,11 @@ This can be removed if the published packages are made public.
 All five metrics endpoints are exposed through annotated Services for the homelab Alloy discovery
 contract. The API Service exposes `/metrics`; worker Services expose ports 9090, 9091, 9093, and
 9094.
+
+The three image keys are `images.core`, `images.admin`, and `images.public`; pin all three.
+Create the externally managed `periplus-api-access` secret with distinct `ADMIN_API_TOKEN`,
+`PUBLIC_API_TOKEN`, and `PUBLIC_RECEIPT_SECRET` keys (the receipt secret needs at least 32
+characters). Configure alternative names through `secrets.apiAccess`.
+Route public and admin through separate TLS ingresses. Admin login is `admin` with the
+administrative token as password. Keep the core API private and enforce aggregate public
+rate limits at ingress. No database or service token is supplied to the public browser.
