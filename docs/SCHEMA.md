@@ -196,4 +196,19 @@ The observation grain is required because resolving `raw_href` depends on the ef
 even when identical content bytes appear at multiple URLs. `target_url` is the normalized resolved
 HTTP(S) target. `relation_scope` is `self`, `same_origin`, `same_host`, `same_site`, or `external`.
 
-No other relations or macros are public.
+### `content.subtree_text`
+
+A public table macro reads one immutable HTML subtree by `source_content_id` and
+`root_element_index`. Optional `max_chars` (default 20,000; allowed 0–100,000) bounds output
+characters. `max_elements` (default and maximum 10,000) rejects oversized subtrees.
+It returns `text`, `truncated`, `total_chars`, and `element_count`.
+
+Text follows DOM document order, preserving existing whitespace and including descendant
+text tails only after their subtrees. The selected root's tail is excluded. Missing roots
+return zero rows; empty roots return empty text. There is no CSS visibility filtering,
+inserted block separator, whitespace normalization, deduplication, or summarization.
+This is faithful projected DOM text, not browser-rendered text or original HTML bytes.
+
+Helper declarations, SQL resources, documentation and examples are owned by the explicit
+registry in `platform/catalogue/helpers/`. Installation uses the same setup transaction
+as the public views. No new materialized relation is introduced.

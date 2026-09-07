@@ -77,7 +77,8 @@ registrations retain their complete immutable object URI.
 
 ## Next crawl-runtime cutoff
 
-The accepted [frontier destination](FRONTIER.md) specifies the next scheduling replacement.
-Implement its direct replacements together: do not layer a second frontier store or scheduler
-over the existing graph path. Preserve immutable lake evidence and SQL-directed traversal.
-Its acceptance criteria supplement, rather than replace, the evidence invariants above.
+The [continuous crawler destination](FRONTIER.md) replaces the earlier graph-preserving frontier
+proposal. Reconsider the scheduling core and acquisition ownership directly; do not layer another
+frontier over graph execution. Preserve immutable evidence and SQL selection, while explicitly
+designing shared acquisition and durable provenance. Its replacement scope and acceptance criteria
+guide the next cutoff; no runtime or historical evidence change is authorized by documentation alone.

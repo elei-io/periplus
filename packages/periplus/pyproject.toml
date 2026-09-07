@@ -50,6 +50,6 @@ exclude = ["tests*", "build*"]
     "alembic/script.py.mako",
 ]
 "periplus.platform.catalogue" = [
-    "sql/content/views/*.sql",
-    "sql/web/views/*.sql",
+    "sql/*/*/*.sql",
+    "helpers/README.md",
 ]

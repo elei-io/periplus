@@ -69,7 +69,7 @@ lake credentials. The SQL bench offers editable examples, schema queries, export
 Coverage suggestions use the control API; crawl completion is not proof of indexing readiness.
 SQL preparation and execution remain in the separate Python
 `periplus-query` process, which exposes only `POST /query/prep`, `POST /query/exec`, and
-its health probe. Query routes do not exist on the control API.
+`GET /query/helpers`, and its health probe. Query routes do not exist on the control API.
 
 Both operations accept SQL and positional parameters and use the same public SQL validation.
 Preparation binds and explains without executing the analytical query, returning SQL, parameters,
@@ -115,3 +115,30 @@ extension belongs only to live materialization and does not participate in query
 Before adding an optimization, follow the performance triage above and record representative
 plans and scale. Verify equivalent column types, values, multiplicities, and required ordering
 at the same snapshot. The existing benchmark runner and query cases remain useful for this work.
+
+## SQL helper development
+
+The explicit helper registry is `packages/periplus/src/periplus/platform/catalogue/helpers/`.
+Its README documents the add/edit/test/install workflow. Each declaration provides a SQL
+resource, signature, output descriptions, limits, and executable examples. The public manifest
+installs the macros alongside views; `GET /query/helpers` derives documentation from that same
+manifest. Next.js proxies discovery and loads it into the agent context for each request.
+There is no helper-specific Python execution or prep-time rewrite path.
+
+The initial `content.subtree_text` helper addresses a catalogue usability/correctness gap:
+callers were reconstructing DOM text incorrectly. It is not an optimizer workaround. The
+implementation orders direct-text and tail events by document position, placing nested tails
+before ancestor tails and excluding the root tail. Selected element count and output characters
+are bounded; ordinary query limits still govern physical scan cost. Contract tests compare every
+subtree with parser text, exercise lateral calls, and install the helper into read-only DuckLake
+query-service fixtures. Future performance changes follow the triage above.
+
+### Query failure categories
+
+Query failures return a safe `code` alongside `detail`: `sql_invalid` (422), `helper_limit`
+(422), `resource_limit` (408 for time or 422 for memory), `service_busy` (429),
+`storage_unavailable` (503), or `query_failed` (500). Native DuckDB errors never expose
+storage URLs or credentials. HTTP and filesystem failures are operational; clients must
+not treat them as evidence of missing corpus coverage or repeatedly rewrite SQL to fix them.
+The Next.js agent preserves these categories and stops querying when storage/service access
+is unavailable. Read-only clients never initiate lake repair.

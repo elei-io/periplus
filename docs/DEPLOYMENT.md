@@ -180,7 +180,7 @@ for public, without forwarding health probes into administrative APIs.
 The public Next.js process optionally receives `OPENAI_API_KEY` and `PERIPLUS_AI_MODEL` for its
 web discovery assistant. Helm configures these through `public.ai.model` and
 `public.ai.existingSecret` / `public.ai.apiKeyKey`. These never reach browser bundles. Python source discovery has its own model setting.
-The assistant streams with Vercel AI SDK, limits runs to seven model steps and 90 seconds,
+The assistant streams with Vercel AI SDK, bounds exploration by time and output tokens (32 steps and 180 seconds overall),
 and admits two active runs per process. Ingress must provide deployment-wide rate and body limits.
 
 ## Coverage source discovery
@@ -197,3 +197,5 @@ completed search steps, selected URLs, and dispatch identity are durable in oper
 No approval step is required. Website pacing and worker limits remain owned by the existing
 crawler/CDP infrastructure. The CDP service must have private-network egress restrictions;
 validating initial URL DNS in Python alone does not constrain redirects or subresources.
+
+The query service also exposes authenticated `GET /query/helpers` for registry-derived SQL helper documentation. Catalogue setup installs helpers before query processes validate and serve them.

@@ -18,17 +18,33 @@ of the parsed projection. Source bytes are retained separately.
 Dataset definitions live in `src/lib/datasets.ts`: a name, description, SQL, and explanatory scope/grain metadata. They do not persist result copies or introduce a separate query endpoint. Coverage and dataset previews use the existing Python query API through the Next.js proxy, with React Query caching for one minute in the browser.
 
 The server-side agent uses Vercel AI SDK 7 (`ToolLoopAgent`, typed tools, UI message streams)
-and the browser uses `useChat`. It calls Python `/query/exec` for every SQL operation. The agent uses the same checked dataset definitions for matching questions and receives the compact public schema upfront. Exploration is bounded by elapsed time and cumulative output tokens, with a final-query allowance and time reserved for presentation (180 seconds overall, 32 steps as a safety ceiling). Python
+and the browser uses `useChat`. It calls Python `/query/exec` for every SQL operation. The agent uses the same checked dataset definitions for matching questions and receives the compact public schema upfront. Exploration is bounded by elapsed time and cumulative output tokens, with a final-query allowance and time reserved for presentation (180 seconds overall, 32 steps as a safety ceiling). The agent reads Python’s `/query/helpers` registry for every request; `/api/query/helpers` exposes the same documentation through the public proxy. Python
 owns SQL validation, read-only execution, and resource limits. The agent cannot crawl or write.
 Client history is limited to text and never trusted as tool evidence. Sessions live only in the
 browser and are lost on reload. Questions and sampled public results go to the model provider.
 
-Completed analyses show a short finding, selected database results, and an analysis scope note.
-The agent selects final results by query ID; the server resolves only successful results from
-that request. Tables and scalar values render those rows directly, with CSV export and expandable
-SQL/execution details. Schema inspections and exploratory queries remain in query activity.
-SQL-only requests produce a clearly labelled, unexecuted draft that opens in the SQL workspace.
-Follow-up requests carry recent SQL drafts as bounded, untrusted text notes without replaying result payloads. The agent must execute them again before treating them as evidence.
+Completed analyses distinguish query results from agent analysis. Tables and CSV contain server-resolved SQL output; generated summaries and labels appear separately with links to selected evidence. The server rejects unknown or unselected evidence references. Prompt instructions prohibit embedding generated source text or labels into SQL output; this is not a semantic proof of SQL provenance.
+
+The presentation tool maintains a dataset brief: intended use, grain, fields, population, time scope,
+acceptance criteria and open questions. A turn can remain `designing`, or conclude `ready`,
+`collection_needed`, or `not_fit`. Operational failures use `blocked`, never a coverage or fit verdict.
+Coverage and correctness confidence are separate low/medium/high assessments with reasons.
+Ready requires executed nonempty results, no unresolved brief questions, and no result-budget truncation;
+these structural checks do not prove semantic correctness. Collection recommendations require selected
+query evidence. Users refine the brief through ordinary follow-up messages, not a separate form.
+
+The agent chooses methods to fit the task: representative bounded context for extraction, population
+aggregates and cohort checks for temporal analysis. The 20-row model evidence cap is not an input
+population limit. Precise requests can execute directly; ambiguous ones combine small SQL probes with
+focused design questions. There is no forced correction query after every incomplete assessment:
+remaining design choices can be resolved with the user. Turn deadlines still bound investigation.
+
+Selected results resolve only to successful queries in the current request. Tables and CSV contain
+actual returned rows; exploratory coverage evidence may accompany the working brief without being
+called the final dataset. SQL-only requests produce an unexecuted draft. Follow-up requests carry the
+brief, assessment and recent SQL as bounded, untrusted text notes, without replaying result payloads.
+Corpus claims and prior SQL must be verified again as needed. No extra persistence, agent or service
+is introduced; the brief disappears with the conversation on reload.
 
 Set server-only `OPENAI_API_KEY` and `PERIPLUS_AI_MODEL` to enable the assistant. Existing
 `openai:`-prefixed model configuration is accepted. No default model is selected automatically.
@@ -53,3 +69,8 @@ regardless of age. Python automatically resolves descriptions through bounded mo
 crawl run. Request details show starting pages, search queries, and live run counters. Collection
 completion does not guarantee that materialization is ready. Public credentials cannot invoke
 crawl execution endpoints directly.
+
+
+Analysis allows up to 24 notes of 2,000 characters with a shared 16,000-character prose budget
+including the brief and confidence. Oversized prose is rejected, never silently clipped. Only CSV
+export of returned query rows is currently available.

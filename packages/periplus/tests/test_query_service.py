@@ -48,9 +48,17 @@ class QueryServiceTests(unittest.TestCase):
         d.execute(
             "INSERT INTO ingest.visits (visit_id, requested_url, outcome) VALUES (uuid(), 'https://example.com/inline', 'success')"
         )
+        d.execute("INSERT INTO material.html_elements (content_sha256, element_index, subtree_end_index, depth, text_direct, text_tail) VALUES ('helper-fixture',0,2,0,'start','outside'),('helper-fixture',1,2,1,'nested','end')")
         d.close()
         self.service = QueryService(self.config)
         self.addCleanup(self.service.close)
+
+    def test_persisted_helper_executes_through_read_only_query_api(self):
+        request = QueryRequest(sql="SELECT * FROM content.subtree_text(?, ?, max_chars := ?)", parameters=["helper-fixture", 0, 10])
+        self.assertEqual(self.service.prepare(request).sql, request.sql)
+        result = self.service.execute(request)
+        self.assertEqual(result.columns, ["text", "truncated", "total_chars", "element_count"])
+        self.assertEqual(result.rows, [["startneste", True, 14, 2]])
 
     def test_prepare_execute_and_reuse(self):
         payload = QueryRequest(sql="SELECT requested_url FROM web.observation WHERE requested_url=?", parameters=["https://example.com/inline"])
@@ -101,6 +109,22 @@ class QueryServiceTests(unittest.TestCase):
             for endpoint in ['prep', 'exec']:
                 self.assertEqual(client.post('/query/'+endpoint, headers=headers, json={'sql':'SELECT 1'}).status_code, 200)
                 self.assertEqual(client.post('/query/'+endpoint, headers=headers, json={'sql':'DELETE FROM web.observation'}).status_code, 422)
+            self.assertEqual(client.get('/query/helpers').status_code, 401)
+            helper_response = client.get('/query/helpers', headers=headers)
+            self.assertEqual(helper_response.status_code, 200)
+            self.assertEqual(helper_response.json()['helpers'][0]['name'], 'content.subtree_text')
+            self.assertEqual(client.post('/query/helpers', headers=headers).status_code, 404)
+            limited = client.post('/query/exec', headers=headers, json={'sql': "SELECT * FROM content.subtree_text('helper-fixture',0,max_elements := 1)"})
+            self.assertEqual(limited.status_code, 422)
+            self.assertEqual(limited.json()['detail'], 'subtree exceeds max_elements; select a smaller root')
+            with patch.object(self.service, "execute", side_effect=duckdb.HTTPException("HTTP 404 https://private/file?token=secret")):
+                unavailable = client.post('/query/exec', headers=headers, json={'sql': 'SELECT 1'})
+            self.assertEqual(unavailable.status_code, 503)
+            self.assertEqual(unavailable.json()['code'], 'storage_unavailable')
+            self.assertNotIn('secret', unavailable.text)
+            invalid = client.post('/query/exec', headers=headers, json={'sql': 'SELECT nonexistent FROM web.observation'})
+            self.assertEqual(invalid.status_code, 422)
+            self.assertEqual(invalid.json()['code'], 'sql_invalid')
             self.assertEqual(client.post('/query/report', headers=headers).status_code, 404)
             self.assertEqual(client.post('/query/exec', headers=headers, content='x'*140000).status_code, 413)
             self.assertEqual(client.get('/graph-runs/', headers=headers).status_code, 404)

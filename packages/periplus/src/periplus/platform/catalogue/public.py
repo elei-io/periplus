@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 
 from periplus.platform.catalogue.exceptions import CatalogueSchemaError
 
-PUBLIC_CATALOGUE_VERSION = "1.0.0"
+PUBLIC_CATALOGUE_VERSION = "1.1.0"
 WEB_SCHEMA = "web"
 CONTENT_SCHEMA = "content"
 PUBLIC_SCHEMAS = (WEB_SCHEMA, CONTENT_SCHEMA)
@@ -37,6 +37,9 @@ class CatalogueObject:
     schema: Literal["web", "content"] = WEB_SCHEMA
     comment: str | None = None
     column_comments: tuple[tuple[str, str], ...] = ()
+    notes: tuple[str, ...] = ()
+    examples: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
     requires_functions: frozenset[str] = frozenset()
     requires_relations: frozenset[str] = frozenset()
 

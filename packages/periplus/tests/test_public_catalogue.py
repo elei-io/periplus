@@ -47,10 +47,10 @@ class PublicCatalogueTests(unittest.TestCase):
     def test_manifest_is_exactly_the_narrow_public_contract(self) -> None:
         objects = public_objects()
         self.assertEqual(
-            {(item.schema, item.name) for item in objects},
+            {(item.schema, item.name) for item in objects if item.kind == "view"},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertTrue(all(item.kind == "view" for item in objects))
+        self.assertEqual([(item.schema, item.name) for item in objects if item.kind == "table_macro"], [("content", "subtree_text")])
         self.assertTrue(all(not item.requires_functions for item in objects))
 
     def test_installs_and_validates_only_four_views(self) -> None:
@@ -70,7 +70,7 @@ class PublicCatalogueTests(unittest.TestCase):
             "AND function_type IN ('macro', 'table_macro')"
         ).fetchall()
         self.assertEqual(views, EXPECTED_PUBLIC_RELATIONS)
-        self.assertEqual(macros, [])
+        self.assertEqual(macros, [("subtree_text",)])
 
     def test_install_removes_superseded_web_and_dom_objects(self) -> None:
         self.catalogue.connection.execute("CREATE SCHEMA web")
@@ -264,7 +264,7 @@ class PublicCatalogueTests(unittest.TestCase):
         with self.assertRaisesRegex(CatalogueSchemaError, "unmanaged"):
             validate_public_catalogue(self.catalogue)
 
-    def test_metadata_exposes_four_relations_and_no_macros(self) -> None:
+    def test_metadata_exposes_relations_and_registered_helpers(self) -> None:
         install_public_catalogue(self.catalogue)
         version, duckdb_version, catalogue_bytes, rows, macro_rows = (
             _public_metadata(self.catalogue)
@@ -276,7 +276,7 @@ class PublicCatalogueTests(unittest.TestCase):
             {(str(row[0]), str(row[1])) for row in rows},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual(macro_rows, {})
+        self.assertEqual(set(macro_rows), {("content", "subtree_text")})
 
         response = asyncio.run(metadata(_LocalCatalogueControl(self.catalogue)))
         self.assertEqual(response.catalogue_version, PUBLIC_CATALOGUE_VERSION)
@@ -284,7 +284,7 @@ class PublicCatalogueTests(unittest.TestCase):
             {(item.schema_name, item.name) for item in response.relations},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual(response.macros, [])
+        self.assertEqual([item.name for item in response.macros], ["subtree_text"])
 
 
 class _LocalCatalogue:

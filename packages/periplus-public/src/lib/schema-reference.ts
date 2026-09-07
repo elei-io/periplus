@@ -1,4 +1,4 @@
-// Public catalogue v1.0.0. Keep aligned with public_registry.py and its SQL views.
+// Public catalogue v1.1.0. Keep aligned with public_registry.py and its SQL views.
 // DESCRIBE links on /docs expose the deployed contract directly.
 export const schemaReference = [
   { name: "web.observation", grain: "One observation of a URL at a point in time, including unsuccessful observations.", key: "observation_id", columns: [

@@ -1,5 +1,6 @@
 import { createAgentUIStreamResponse } from "ai"
 import { createDiscoveryAgent } from "@/server/discovery-agent"
+import type { QueryHelpers } from "@/types/query-helpers"
 import { assistantMessages } from "@/server/assistant-input"
 
 export const runtime = "nodejs"
@@ -32,8 +33,14 @@ export async function POST(request: Request) {
   const signal = AbortSignal.any([request.signal, AbortSignal.timeout(180_000)])
   signal.addEventListener("abort", release, { once: true })
   try {
+    const helperResponse = await fetch(new URL("/query/helpers", process.env.PERIPLUS_QUERY_URL ?? "http://127.0.0.1:8010"), {
+      headers: { authorization: `Bearer ${process.env.PERIPLUS_QUERY_API_TOKEN}` },
+      cache: "no-store", signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+    })
+    if (!helperResponse.ok) throw new Error("SQL helper catalogue unavailable")
+    const helpers: QueryHelpers = await helperResponse.json()
     return await createAgentUIStreamResponse({
-      agent: createDiscoveryAgent(), uiMessages: messages, abortSignal: signal, timeout: 180_000,
+      agent: createDiscoveryAgent(helpers), uiMessages: messages, abortSignal: signal, timeout: 180_000,
       sendReasoning: false,
       onEnd: () => { signal.removeEventListener("abort", release); release() },
       onError: () => { release(); return "The assistant could not finish. Try a narrower question or use the SQL bench." },

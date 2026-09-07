@@ -1,6 +1,7 @@
 """Authoritative manifest for the narrow public evidence catalogue."""
 
 from periplus.platform.catalogue.public import CatalogueObject
+from periplus.platform.catalogue.helpers import HELPERS
 
 
 def _comments(
@@ -99,4 +100,5 @@ PUBLIC_OBJECTS = (
         column_comments=_HTML_COMMENTS,
         requires_relations=_HTML,
     ),
+    *HELPERS,
 )

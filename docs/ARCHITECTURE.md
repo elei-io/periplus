@@ -1,9 +1,9 @@
 # Architecture
 
-This document describes the implemented system. The accepted next crawl architecture is
-[Continuous crawl frontier](FRONTIER.md): one logical frontier, separate durable admission and
-bounded dispatch, preserved SQL plans, and public live activity. Its replacement table and
-acceptance criteria govern that change; the frontier redesign is not implemented yet.
+This document describes the implemented system. The [continuous crawler destination](FRONTIER.md)
+reconsiders graph-centered execution in favor of a shared frontier, background exploration,
+SQL selection, and request/observation lineage. It is not implemented yet; its replacement scope
+and acceptance criteria guide the next design and runtime change.
 
 Periplus delivers one evidence path:
 
