@@ -41,7 +41,7 @@ class ApiAccessMiddleware:
             )(scope, receive, send)
         allowed = (
             (method in {"GET", "POST"} and path == "/collections")
-            or (method == "GET" and path in {"/collections/history", "/frontier/live"})
+            or (method == "GET" and path in {"/collections/history", "/frontier/live", "/frontier/captures"})
             or (method == "GET" and re.fullmatch(r"/collections/[0-9a-fA-F-]{36}(?:/(?:items|arrivals))?", path))
             or (method == "GET" and re.fullmatch(r"/frontier/items/[0-9a-fA-F-]{36}", path))
             or (method == "GET" and re.fullmatch(r"/frontier/observations/[0-9a-fA-F-]{36}/lineage", path))

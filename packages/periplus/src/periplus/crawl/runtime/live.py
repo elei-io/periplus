@@ -5,9 +5,10 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, literal, select
 
-from periplus.crawl.runtime.frontier_models import AcquisitionRecord, FrontierControlRecord
+from periplus.crawl.runtime.frontier_models import AcquisitionRecord, FrontierControlRecord, InterestRecord
+from periplus.crawl.control.collections.models import CollectionRecord
 from periplus.platform.catalogue.connection import _identifier
 
 
@@ -26,6 +27,8 @@ class DomainActivity(BaseModel):
     dispatched: int
     started: int
     oldest_wait_at: datetime | None
+    unique_queued_urls: int
+    request_queued_urls: int | None = None
 
 
 class UpcomingItem(BaseModel):
@@ -39,6 +42,12 @@ class UpcomingItem(BaseModel):
 from periplus.crawl.runtime.start_estimates import StartEstimate
 
 
+class ActiveItem(BaseModel):
+    acquisition_id: UUID
+    requested_url: str
+    attempt_started_at: datetime | None
+
+
 class CurrentActivity(BaseModel):
     as_of: datetime
     paused: bool
@@ -49,6 +58,8 @@ class CurrentActivity(BaseModel):
     domains: list[DomainActivity]
     more_domains: bool
     upcoming: list[UpcomingItem]
+    active: list[ActiveItem] = Field(default_factory=list)
+    more_active: bool = False
     upcoming_semantics: Literal["oldest_pending_preview_not_dispatch_order"] = "oldest_pending_preview_not_dispatch_order"
     next_start_estimate: StartEstimate | None = None
     estimate_unavailable_reason: str | None = "domain_permits_and_dispatch_capacity_not_observed"
@@ -90,15 +101,25 @@ def _aware(value: datetime | None):
     return value.replace(tzinfo=UTC) if value is not None and value.tzinfo is None else value
 
 
-def current_activity(sessions) -> CurrentActivity:
+def current_activity(sessions, *, collection_id: UUID | None = None) -> CurrentActivity:
     with sessions() as session:
         control = session.scalar(select(FrontierControlRecord).where(FrontierControlRecord.id == 1).with_for_update(read=True))
         now = datetime.now(UTC)
         queued = AcquisitionRecord.status.in_(("queued", "retry"))
         dispatched = AcquisitionRecord.status == "dispatched"
         active = dispatched & AcquisitionRecord.attempt_started_at.is_not(None)
+        request_member = select(InterestRecord.id).join(CollectionRecord,
+            CollectionRecord.id == InterestRecord.collection_id).where(
+                InterestRecord.acquisition_id == AcquisitionRecord.id,
+                InterestRecord.collection_id == collection_id,
+                InterestRecord.status.in_(("queued", "awaiting_result")),
+                CollectionRecord.spec["visibility"].as_string() == "public",
+                CollectionRecord.retiring.is_(False)).exists()
+        request_count = (func.count(func.distinct(case((queued & request_member, AcquisitionRecord.url))))
+                         if collection_id is not None else literal(None))
         counters = (func.sum(case((queued, 1), else_=0)), func.sum(case((dispatched, 1), else_=0)),
-                    func.sum(case((active, 1), else_=0)), func.min(case((queued, AcquisitionRecord.created_at))))
+                    func.sum(case((active, 1), else_=0)), func.min(case((queued, AcquisitionRecord.created_at))),
+                    func.count(func.distinct(case((queued, AcquisitionRecord.url)))), request_count)
         visible = (AcquisitionRecord.visibility == "public", AcquisitionRecord.status.in_(("queued", "retry", "dispatched")))
         totals = session.execute(select(*counters).where(*visible)).one()
         domains = session.execute(select(AcquisitionRecord.domain, *counters).where(*visible).group_by(
@@ -107,6 +128,9 @@ def current_activity(sessions) -> CurrentActivity:
         upcoming = session.execute(select(AcquisitionRecord.id, AcquisitionRecord.url, AcquisitionRecord.domain,
             AcquisitionRecord.created_at, AcquisitionRecord.eligible_at).where(AcquisitionRecord.visibility == "public",
                 queued).order_by(AcquisitionRecord.created_at, AcquisitionRecord.id).limit(5)).all()
+        active_rows = session.execute(select(AcquisitionRecord.id, AcquisitionRecord.url,
+            AcquisitionRecord.attempt_started_at).where(AcquisitionRecord.visibility == "public",
+                dispatched).order_by(AcquisitionRecord.created_at, AcquisitionRecord.id).limit(13)).all()
         recent = session.execute(select(AcquisitionRecord.id, AcquisitionRecord.url,
             AcquisitionRecord.completed_at, AcquisitionRecord.evidence_snapshot).where(
                 AcquisitionRecord.visibility == "public", AcquisitionRecord.status == "succeeded",
@@ -115,7 +139,9 @@ def current_activity(sessions) -> CurrentActivity:
         return CurrentActivity(as_of=now, paused=control.paused, queued=totals[0] or 0,
             dispatched=totals[1] or 0, started=totals[2] or 0, oldest_wait_at=_aware(totals[3]),
             domains=[DomainActivity(domain=row[0], queued=row[1], dispatched=row[2], started=row[3],
-                oldest_wait_at=_aware(row[4])) for row in domains[:10]], more_domains=len(domains) > 10,
+                oldest_wait_at=_aware(row[4]), unique_queued_urls=row[5], request_queued_urls=row[6]) for row in domains[:10]], more_domains=len(domains) > 10,
+            active=[ActiveItem(acquisition_id=row[0], requested_url=row[1],
+                attempt_started_at=_aware(row[2])) for row in active_rows[:12]], more_active=len(active_rows) > 12,
             upcoming=[UpcomingItem(acquisition_id=row[0], requested_url=row[1], domain=row[2],
                 admitted_at=_aware(row[3]), retry_not_before=_aware(row[4])) for row in upcoming],
             recent=[RecentCapture(observation_id=row[0], requested_url=row[1], completed_at=_aware(row[2]),

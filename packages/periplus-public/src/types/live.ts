@@ -30,9 +30,11 @@ export interface LiveView {
     dispatched: number
     started: number
     oldest_wait_at: string | null
-    domains: Array<{domain: string; queued: number; dispatched: number; started: number; oldest_wait_at: string | null}>
+    domains: Array<{domain: string; unique_queued_urls: number; request_queued_urls: number | null; queued: number; dispatched: number; started: number; oldest_wait_at: string | null}>
     more_domains: boolean
     upcoming: Array<{acquisition_id: string; requested_url: string; domain: string; admitted_at: string; retry_not_before: string}>
+    active: Array<{acquisition_id: string; requested_url: string; attempt_started_at: string | null}>
+    more_active: boolean
     upcoming_semantics: "oldest_pending_preview_not_dispatch_order"
     next_start_estimate: StartEstimate | null
     estimate_unavailable_reason: string | null
@@ -48,4 +50,18 @@ export interface LiveView {
   } | null
   history_unavailable_reason: string | null
   recent: RecentCapture[]
+}
+
+export interface CapturePage {
+  items: RecentCapture[]
+  cursor: string
+  has_more: boolean
+  bootstrap: boolean
+  reset_reason: "cursor_expired" | "clock_moved_backwards" | null
+  as_of: string
+  source: "retained_public_completions"
+}
+
+export interface CaptureBatch extends CapturePage {
+  tail: RecentCapture[]
 }

@@ -10,6 +10,7 @@ from periplus.crawl.control.collections.frontier_controls import (
 )
 
 from periplus.crawl.control.collections.history import HistoryUnavailable
+from periplus.crawl.runtime.capture_feed import CapturePage, capture_page, decode_capture_cursor
 from periplus.crawl.runtime.live import LiveView, current_activity
 from periplus.crawl.runtime.frontier_items import AcquisitionView, acquisition_view, enrich_readiness
 
@@ -51,9 +52,9 @@ async def item(identity: UUID, request: Request):
 
 
 @router.get("/live", response_model=LiveView)
-async def live(request: Request):
+async def live(request: Request, collection_id: UUID | None = None):
     workers = await request.app.state.crawler_presence.read()
-    current = await asyncio.to_thread(current_activity, request.app.state.frontier_sessions)
+    current = await asyncio.to_thread(current_activity, request.app.state.frontier_sessions, collection_id=collection_id)
     if current.queued == 1 and current.upcoming:
         candidate = await asyncio.to_thread(acquisition_view, request.app.state.frontier_sessions,
             current.upcoming[0].acquisition_id, public_only=True, workers=workers)
@@ -86,3 +87,12 @@ async def observation_lineage(identity: UUID, request: Request,
     if page is None:
         raise HTTPException(404, "Observation not found.")
     return page
+
+
+@router.get("/captures", response_model=CapturePage)
+async def captures(request: Request, cursor: Annotated[str | None, Query(max_length=1024)] = None):
+    try:
+        anchor = decode_capture_cursor(cursor)
+    except ValueError as exc:
+        raise HTTPException(422, "Invalid capture cursor.") from exc
+    return await asyncio.to_thread(capture_page, request.app.state.frontier_sessions, anchor)

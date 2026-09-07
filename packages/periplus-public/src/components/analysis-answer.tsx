@@ -76,7 +76,7 @@ export function AnalysisAnswer({ message, onOpenSql, running }: { message: Disco
       <dl className="analysis-method-body grid gap-3">
         {([ ["Requested information", presentation.outcome.requested_information], ["Source fidelity", presentation.outcome.source_fidelity], ["Missing data & limits", presentation.outcome.limitations], ["Your next step", presentation.outcome.next_step] ] as const).map(([label, value]) => <div key={label}><dt><strong>{label}</strong></dt><dd>{value}</dd></div>)}
       </dl>
-      {presentation.outcome.status === "collection_needed" && <div className="analysis-method-body"><Button variant="outline" render={<Link href="/suggest" />}>Suggest the missing coverage <ArrowUpRight /></Button></div>}
+      {presentation.outcome.status === "collection_needed" && <div className="analysis-method-body"><Button variant="outline" render={<Link href="/observatory" />}>Suggest the missing coverage <ArrowUpRight /></Button></div>}
     </section>}
     {presentation && <section className="analysis-result" aria-label="Confidence"><header><h3>Confidence in this assessment</h3></header><dl className="analysis-method-body grid gap-3 sm:grid-cols-2">{(["coverage", "correctness"] as const).map(key => <div key={key}><dt><strong>{key === "coverage" ? "Coverage assessment" : "Correctness assessment"}</strong> · {presentation.confidence[key].level}</dt><dd>{presentation.confidence[key].reason}</dd></div>)}</dl></section>}
     {!running && queries.length > 0 && !presentation && !draft && <p className="analysis-note">This investigation has not yet produced a dataset assessment. Continue the conversation or inspect the query activity.</p>}

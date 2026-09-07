@@ -47,7 +47,7 @@ export function DiscoveryChat({ initialPrompt, autoRun = false, onOpenSql }: { i
       <p className="composer-footnote">Inspect the SQL and returned rows. Source links open live websites.</p>
     </div>
     {!messages.length && <>
-      <p className="story-note">Design a dataset together, or start with a <Link className="story-link" href="/datasets">named dataset</Link>. <Link className="story-link" href="/coverage">See available sites and dates</Link> before choosing a question. Questions explore the existing corpus; they do not add new pages.</p>
+      <p className="story-note">Start with a question about the observed web. <Link className="story-link" href="/observatory#coverage">See available sites and dates</Link> before choosing a question. Questions explore the existing corpus; they do not add new pages.</p>
       <div className="starter-grid">{starters.map(({ text, label, detail, icon: Icon }) => <Button className="starter-card" key={text} variant="ghost" onClick={() => send(text)}><Icon /><span><strong>{label}</strong><span>{detail}</span></span><ArrowUpRight /></Button>)}</div>
     </>}
     <p className="discovery-disclosure">Ask mode receives up to 20 rows per query and may inspect a smaller input sample. Check the SQL and scope before generalising. Questions and sampled results go to the model provider; conversations disappear on reload. <Link href="/about#access">Access & data use</Link></p>

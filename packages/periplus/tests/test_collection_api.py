@@ -389,6 +389,18 @@ class CollectionApiTests(unittest.TestCase):
         self.assertEqual(unavailable.status_code, 503)
         self.assertEqual(unavailable.headers['retry-after'], '5')
 
+    def test_public_capture_feed_is_read_only_cursor_validated_and_independent_of_history(self):
+        self.history.live.side_effect = AssertionError('capture feed must not read history')
+        first = self.client.get('/frontier/captures')
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertTrue(first.json()['bootstrap'])
+        second = self.client.get('/frontier/captures', params={'cursor': first.json()['cursor']})
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertFalse(second.json()['bootstrap'])
+        self.assertEqual(second.json()['items'], [])
+        self.assertEqual(self.client.get('/frontier/captures?cursor=bad').status_code, 422)
+        self.assertEqual(self.client.post('/frontier/captures').status_code, 403)
+
     def test_public_live_keeps_current_activity_when_history_is_unavailable(self):
         from periplus.crawl.control.collections.history import HistoryUnavailable
         self.history.live.side_effect = HistoryUnavailable('private storage details')

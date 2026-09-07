@@ -10,7 +10,7 @@ export function DiscoveryWorkspace({ initialMode, question, sql, parameters, aut
   const [mode, setMode] = useState(initialMode)
   const [sqlDraft, setSqlDraft] = useState({ sql, parameters })
   return <main className="discovery-workspace">
-    <header className="workspace-heading"><h1>Discover</h1><span className="eyebrow">Your view of the web</span></header>
+    <header className="public-page-hero"><span className="eyebrow">Discover / Questions & SQL</span><h1>Your view of the web.</h1><p>Ask a question or explore with SQL. Compare observed pages, follow their connections, and find the perspective that matters to you.</p></header>
     <Tabs value={mode} onValueChange={value => {
       const next = String(value)
       setMode(next)

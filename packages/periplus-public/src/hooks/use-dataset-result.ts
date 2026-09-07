@@ -8,7 +8,7 @@ class QueryBusyError extends Error {
   constructor(readonly retryAfterMs: number) { super("The query server is busy. Please try again shortly.") }
 }
 
-export function useDatasetResult(sql: string) {
+export function useDatasetResult(sql: string, refetchInterval: number | false = false) {
   return useQuery({
     queryKey: ["dataset-result", sql],
     // Preserve a shared in-flight read across remounts. Disconnecting does not
@@ -25,6 +25,7 @@ export function useDatasetResult(sql: string) {
       return responseJson<QueryResult>(response)
     },
     staleTime: 60_000,
+    refetchInterval,
     retry: (failures, error) => error instanceof QueryBusyError && failures < 2,
     retryDelay: (_attempt, error) => error instanceof QueryBusyError ? error.retryAfterMs : 1_000,
     refetchOnWindowFocus: false,

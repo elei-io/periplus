@@ -4,7 +4,7 @@ import type { StartEstimate } from "@/types/frontier-items"
 
 type WindowValues = Pick<StartEstimate, "earliest_at" | "latest_at" | "calculated_at" | "expires_at" | "sample_size">
 
-export function StartWindow({ estimate, label = "Start" }: { estimate: WindowValues; label?: "Start" | "First admission" }) {
+export function StartWindow({ estimate, label = "Start" }: { estimate: WindowValues; label?: "Start" | "First page accepted" }) {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000)

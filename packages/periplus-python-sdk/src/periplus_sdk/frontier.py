@@ -3,7 +3,7 @@ from uuid import UUID
 
 from ._http import request
 from .types import (
-    AcquisitionView, ObservationLineagePage, LiveView, DomainPolicyCreateRequest, DomainPolicyListResponse, DomainPolicyRecord,
+    CapturePage, AcquisitionView, ObservationLineagePage, LiveView, DomainPolicyCreateRequest, DomainPolicyListResponse, DomainPolicyRecord,
     DomainPolicyUpdateRequest, FrontierControlView, FrontierSettings,
 )
 
@@ -55,9 +55,12 @@ async def item(id: UUID | str) -> AcquisitionView:
     return value
 
 
-async def live() -> LiveView:
+async def live(*, collection_id: UUID | str | None = None) -> LiveView:
     """Public activity; missing history remains unknown rather than zero."""
-    return LiveView.model_validate(await request("GET", "/frontier/live"))
+    path = "/frontier/live"
+    if collection_id is not None:
+        path += f"?collection_id={UUID(str(collection_id))}"
+    return LiveView.model_validate(await request("GET", path))
 
 
 async def lineage(id: UUID | str, *, limit: int = 20, cursor: str | None = None) -> ObservationLineagePage:
@@ -76,3 +79,12 @@ async def lineage(id: UUID | str, *, limit: int = 20, cursor: str | None = None)
     if value.observation_id != identity:
         raise ValueError("lineage response changed observation identity")
     return value
+
+
+async def captures(*, cursor: str | None = None) -> CapturePage:
+    """Public completion pages, oldest first; expired cursors explicitly resync."""
+    if cursor is not None and len(cursor) > 1024:
+        raise ValueError("capture cursor too long")
+    from urllib.parse import urlencode
+    path = "/frontier/captures" + ("?" + urlencode({"cursor": cursor}) if cursor is not None else "")
+    return CapturePage.model_validate(await request("GET", path))

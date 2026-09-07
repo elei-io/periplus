@@ -42,7 +42,7 @@ export function CollectionForm({ onCreated }: { onCreated: (id: string) => void 
     onError: error => toast.error(extractApiError(error)),
   })
   return <Card>
-    <CardHeader><CardTitle><h2>Suggest coverage</h2></CardTitle><CardDescription>Start with a URL, or describe the data you wish you could query.</CardDescription></CardHeader>
+    <CardHeader><CardTitle><h2>Suggest a starting point</h2></CardTitle><CardDescription>Start with a URL, or describe the data you wish you could query.</CardDescription></CardHeader>
     <CardContent>
       <form className="flex flex-col gap-6" onSubmit={event => { event.preventDefault(); if (frozen) return; try { const payload = { id: crypto.randomUUID(), specification: publicCollectionSpec({ kind, input: kind === "url" ? url : description, depth, scope, maxPages, sections }), priority: 0 }; setFrozen(payload); submit.mutate(payload) } catch (error) { toast.error(extractApiError(error)) } }}>
         <fieldset disabled={frozen !== null} className="flex min-w-0 flex-col gap-6">
@@ -56,7 +56,7 @@ export function CollectionForm({ onCreated }: { onCreated: (id: string) => void 
           <CardDescription>{kind === "url" ? "The starting page is depth 0. Each additional level follows another link." : "Tell us the topic, region, or kinds of pages you need. Starting URLs will be chosen automatically using search."}</CardDescription>
         </div>
         <div className="grid gap-4 sm:grid-cols-3">
-          <div className="flex flex-col gap-2"><label id="depth-label">Crawl depth</label>
+          <div className="flex flex-col gap-2"><label id="depth-label">How far to follow links</label>
             <Select value={depth} onValueChange={value => { if (value !== null) setDepth(value) }}>
               <SelectTrigger className="w-full min-h-11" aria-labelledby="depth-label"><SelectValue>{depth === 0 ? "0 · Starting pages only" : `${depth} ${depth === 1 ? "level" : "levels"}`}</SelectValue></SelectTrigger>
               <SelectContent>{[0, 1, 2].map(value => <SelectItem key={value} value={value} disabled={value > 2}>{value === 0 ? "0 · Starting pages only" : `${value} ${value === 1 ? "level" : "levels"}`}{value > 2 ? " · Unavailable" : ""}</SelectItem>)}</SelectContent>
@@ -75,7 +75,7 @@ export function CollectionForm({ onCreated }: { onCreated: (id: string) => void 
             </Select>
           </div>
         </div>
-        <CardDescription>Internal means within each acquired page’s site, including subdomains; external means other sites. The page budget covers the whole request, including starting pages. Depth above 2 and budgets above 1k are unavailable in the public preview.</CardDescription>
+        <CardDescription>Internal means within each observed page’s site, including subdomains; external means other sites. The page budget covers the whole request, including starting pages. Public requests support up to 2 link steps and 1,000 pages.</CardDescription>
         <details>
           <summary>Limit collection to specific sections (optional)</summary>
           <div className="flex flex-col gap-2">
@@ -84,11 +84,11 @@ export function CollectionForm({ onCreated }: { onCreated: (id: string) => void 
             <CardDescription id="coverage-sections-help">One URL per line, up to 10. Starting pages and followed links must match an exact host and section path, or a descendant path. Other hosts and sections are excluded. Query strings are ignored when matching. These limits apply in addition to your link choice; they do not restrict redirects or page resources.</CardDescription>
           </div>
         </details>
-        <Alert><AlertDescription>Requests are picked up automatically. Descriptions are sent to our AI and search providers to find starting pages. Collection is limited by the options above; inclusion is not guaranteed. All request details are public—please leave out private URLs, credentials, and personal information.</AlertDescription></Alert>
+        <Alert><AlertDescription>Requests are picked up automatically. Descriptions are sent to our AI and search providers to find starting pages. Observations are limited by the options above; inclusion is not guaranteed. All request details are public—please leave out private URLs, credentials, and personal information.</AlertDescription></Alert>
         </fieldset>
         {submit.error && <Alert variant="destructive"><AlertDescription>{extractApiError(submit.error)}</AlertDescription></Alert>}
-        {!frozen && <Button className="self-start" type="submit">Submit collection<ArrowUpRight /></Button>}
-        {frozen && <div className="flex flex-col gap-3"><a className="underline break-all" href={`/suggest?request=${frozen.id}#request`}>View request {frozen.id}</a>{submit.isPending && <p role="status">Submitting…</p>}{submit.isError && <><p>Submission was not confirmed. Retrying preserves the same intent and identity.</p><Button type="button" className="self-start" onClick={() => submit.mutate(frozen)}>Retry same request</Button></>}<a className="underline" href="/suggest">Start another collection</a></div>}
+        {!frozen && <Button className="self-start" type="submit">Submit request<ArrowUpRight /></Button>}
+        {frozen && <div className="flex flex-col gap-3"><a className="underline break-all" href={`/observatory?request=${frozen.id}#request`}>View request {frozen.id}</a>{submit.isPending && <p role="status">Submitting…</p>}{submit.isError && <><p>Submission was not confirmed. Retrying preserves the same intent and identity.</p><Button type="button" className="self-start" onClick={() => submit.mutate(frozen)}>Retry same request</Button></>}<a className="underline" href="/observatory">Suggest another starting point</a></div>}
       </form>
     </CardContent>
   </Card>

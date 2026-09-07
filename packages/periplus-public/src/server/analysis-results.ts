@@ -32,7 +32,7 @@ export function prepareAnalysisAnswer(results: Map<string, AnalysisQueryResult>,
   if (input.outcome.status === "ready") {
     if (!selected.length || selected.every(({ result }) => !result.rows.length)) throw new Error("A ready dataset requires executed, nonempty query results.")
     if (input.brief.open_questions.length) throw new Error("Resolve the dataset brief's open questions before marking it ready.")
-    if (selected.some(({ result }) => result.truncated)) throw new Error("A truncated result is a preview. Continue designing or narrow the agreed dataset before marking it ready.")
+    if (selected.some(({ result }) => result.truncated)) throw new Error("A truncated result is incomplete. Continue designing or narrow the agreed dataset before marking it ready.")
   }
   if (input.outcome.status === "collection_needed" && !selected.length) throw new Error("A collection recommendation requires query evidence of the coverage gap.")
   return { ...input, results: selected }

@@ -111,7 +111,7 @@ test("ready requires executed rows, resolved design choices and a complete retur
   const input = { ...answer, outcome: { ...assessment, status: "ready" as const } }
   assert.equal(prepareAnalysisAnswer(new Map([["q1", result]]), input).outcome.status, "ready")
   assert.throws(() => prepareAnalysisAnswer(new Map([["q1", { ...result, rows: [] }]]), input), /nonempty/)
-  assert.throws(() => prepareAnalysisAnswer(new Map([["q1", { ...result, truncated: true }]]), input), /preview/)
+  assert.throws(() => prepareAnalysisAnswer(new Map([["q1", { ...result, truncated: true }]]), input), /incomplete/)
   assert.throws(() => prepareAnalysisAnswer(new Map([["q1", result]]), { ...input, brief: { ...brief, open_questions: ["Which dates?"] } }), /open questions/)
   assert.throws(() => prepareAnalysisAnswer(new Map(), { ...input, results: [], analysis: [], outcome: { ...assessment, status: "collection_needed" } }), /coverage gap/)
   assert.equal(prepareAnalysisAnswer(new Map(), { ...answer, results: [], analysis: [] }).outcome.status, "designing")

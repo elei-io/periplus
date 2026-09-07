@@ -350,6 +350,8 @@ class RecentCapture(Snapshot):
 
 
 class DomainActivity(Snapshot):
+    request_queued_urls: int | None = None
+    unique_queued_urls: int
     domain: str
     queued: int
     dispatched: int
@@ -365,6 +367,12 @@ class UpcomingItem(Snapshot):
     retry_not_before: datetime
 
 
+class ActiveItem(Snapshot):
+    acquisition_id: UUID
+    requested_url: str
+    attempt_started_at: datetime | None
+
+
 class CurrentActivity(Snapshot):
     as_of: datetime
     paused: bool
@@ -375,6 +383,8 @@ class CurrentActivity(Snapshot):
     domains: list[DomainActivity]
     more_domains: bool
     upcoming: list[UpcomingItem]
+    active: list[ActiveItem] = Field(default_factory=list)
+    more_active: bool = False
     upcoming_semantics: Literal["oldest_pending_preview_not_dispatch_order"] = "oldest_pending_preview_not_dispatch_order"
     next_start_estimate: StartEstimate | None = None
     estimate_unavailable_reason: str | None = "domain_permits_and_dispatch_capacity_not_observed"
@@ -443,3 +453,13 @@ class ObservationLineagePage(Snapshot):
     next_cursor: str | None
     as_of: datetime
     completeness: Literal['committed_visible_evidence_only_ingestion_may_lag'] = 'committed_visible_evidence_only_ingestion_may_lag'
+
+
+class CapturePage(Snapshot):
+    items: list[RecentCapture]
+    cursor: str
+    has_more: bool
+    bootstrap: bool
+    reset_reason: Literal["cursor_expired", "clock_moved_backwards"] | None
+    as_of: datetime
+    source: Literal["retained_public_completions"]

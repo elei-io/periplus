@@ -15,11 +15,11 @@ const geist = Geist({ subsets: ["latin"], variable: "--font-sans" })
 
 export const metadata: Metadata = {
   title: {
-    default: "Periplus — the web, as one dataset",
+    default: "Periplus — a public web observatory",
     template: "%s · Periplus",
   },
   description:
-    "A different lens on the web: one shared tabular model for pages, HTML structure, text, and links. Explore with a question or SQL, and define what the data means for you.",
+    "A public web observatory. Explore dated observations through questions or SQL, follow new pages, and help shape where we look next.",
 }
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

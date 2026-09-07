@@ -100,6 +100,6 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false 
       </CardContent></Card> : null}
       </div>
     </section>
-    <footer className="flex flex-col gap-3 pb-6"><Separator /><div className="flex flex-wrap justify-between gap-3"><CardDescription><Link href="/datasets">Datasets</Link> · <Link href="/coverage">Coverage</Link> · <Link href="/docs">Schema & SQL docs</Link> · <Link href="/about#access">Data use</Link></CardDescription><CardDescription>CSV includes returned rows only; a LIMIT can make the result partial.</CardDescription></div></footer>
+    <footer className="flex flex-col gap-3 pb-6"><Separator /><div className="flex flex-wrap justify-between gap-3"><CardDescription><Link href="/observatory#coverage">Coverage</Link> · <Link href="/docs">Schema & SQL docs</Link> · <Link href="/about#access">Data use</Link></CardDescription><CardDescription>CSV includes returned rows only; a LIMIT can make the result partial.</CardDescription></div></footer>
   </section>
 }
