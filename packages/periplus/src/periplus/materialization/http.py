@@ -76,7 +76,7 @@ async def create_run(
         raise HTTPException(409, str(exc)) from exc
     try:
         await publish_plan(
-            request.app.state.graph_runtime.jetstream,
+            request.app.state.jetstream,
             store,
             run.id,
         )

@@ -1,12 +1,13 @@
 [project]
 name = "periplus-python-sdk"
 version = "0.1.0"
-description = "Python connections and crawl lifecycle client for Periplus"
+description = "Python connections, collection requests, and crawler controls for Periplus"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "duckdb==1.5.5",
     "httpx>=0.28",
+    "pydantic>=2.12,<3",
     "python-dotenv>=1.2",
 ]
 

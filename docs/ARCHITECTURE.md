@@ -1,14 +1,14 @@
 # Architecture
 
-This document describes the implemented system. The [continuous crawler destination](FRONTIER.md)
-reconsiders graph-centered execution in favor of a shared frontier, background exploration,
-SQL selection, and request/observation lineage. It is not implemented yet; its replacement scope
-and acceptance criteria guide the next design and runtime change.
+This document describes the replacement continuous crawler in the working tree. Its complete
+requirements are in [FRONTIER.md](FRONTIER.md). Coordinated deployment, development-state reset,
+and live acceptance remain tracked in [FRONTIER_IMPLEMENTATION.md](FRONTIER_IMPLEMENTATION.md).
+The removed graph execution model has no compatibility routes or runtime.
 
 Periplus delivers one evidence path:
 
 ```text
-crawl plan -> immutable bytes -> ingest.* -> material.* -> web.* / content.*
+collection or background selection -> immutable bytes -> ingest.* -> material.* -> web.* / content.*
 ```
 
 External HTML joins at the same immutable-byte boundary:
@@ -28,22 +28,22 @@ The monorepo delivers three independently buildable products under `packages/`:
 Frontends consume HTTP contracts, never core Python modules or backing databases.
 Supporting SDK and shell packages contain client behavior only. Core remains usable without
 both frontends. A separate query process owns SQL preparation and bounded execution over a
-read-only DuckLake connection. Next.js owns web-specific agent orchestration, proxies all SQL to that process, and sends coverage requests to the control API; neither frontend receives
+read-only DuckLake connection. Next.js owns web-specific agent orchestration, proxies all SQL to that process, and submits collections to the control API; neither frontend receives
 lake credentials. The query process has no control-state, NATS, or writer credentials.
 
 ## Authorities
 
-- Periplus Postgres owns editable control state, current graph execution, admission, progress,
-  schedules, policies, and the transactional graph outbox.
-- NATS JetStream and KV own graph, ingestion, and materialization work delivery, worker presence,
-  operation leases, and per-domain pacing. They are not authoritative graph or materialization
+- Periplus Postgres owns editable control state, current collections, shared acquisitions, admission,
+  selection checkpoints, budgets, policies, and the transactional frontier outbox.
+- NATS JetStream and KV own frontier, ingestion, and materialization work delivery, worker presence,
+  operation leases, and per-domain pacing. They are not authoritative frontier or materialization
   state.
 - The object repository owns immutable content-addressed source bytes.
 - DuckLake owns historical observed evidence, rebuildable Periplus materializations, and the portable
   public `web.*` and `content.*` catalogue. Its metadata store is a separate authority from Periplus
   Postgres.
 
-Current graph execution never moves into DuckLake. Crawl history never moves into Periplus Postgres.
+Current frontier execution never moves into DuckLake. Crawl history never moves into Periplus Postgres.
 The local `lake-postgres` service stores DuckLake metadata only; the local `periplus-postgres`
 service stores Periplus control state only.
 
@@ -61,14 +61,14 @@ Filesystem and S3 are built-in protocols; callers may inject a protocol for anot
 data URI without adding storage branches to catalogue or materialization workflows.
 Periplus services are needed only to acquire, ingest, or materialize more data. Stopping those
 services leaves the complete analytical lake intact. Deleting Periplus Postgres removes editable
-plans, schedules, and current execution state, but never historical evidence already committed to
+collection intent, controls, and current execution state, but never historical evidence already committed to
 DuckLake. Deleting the DuckLake metadata store destroys the catalogue even when its immutable S3
 objects remain.
 
 ## Process ownership
 
 - The crawler acquires one page, stores immutable bytes, publishes visit evidence, and advances
-  graph work without waiting for catalogue ingestion.
+  frontier work without waiting for catalogue ingestion.
 - Ingestor replicas consume one shared durable lane without a leader. Each process owns one NATS
   session and a configurable bounded set of DuckLake writer lanes; each lane has its own catalogue
   connection.
@@ -128,51 +128,51 @@ bounded so one bad delivery cannot occupy a worker lane indefinitely.
 
 Runtime `web.*` and `content.*` objects belong to a separate lightweight public-catalogue registry.
 Its entries reference SQL resources and declare required material relations. Installation fails if
-any dependency of the four-relation public contract is missing; runtime SQL is never part of a
+any dependency of the public contract is missing; runtime SQL is never part of a
 materialization declaration.
 
-## Crawl-plan boundary
+## Shared frontier and finite collections
 
-Crawl plans are editable Periplus Postgres definitions. A run freezes its complete plan configuration
-before admitting one or more start URLs into durable crawl requests. Current run, request, and
-edge-evaluation state remains in Periplus Postgres. A terminal run schedules its immutable `ingest.crawls`
-evidence through the transactional graph outbox and ordinary ingestion path.
+A collection freezes URL, description, or corpus-SQL seed intent and bounded page-local follow SQL.
+Its URL interests are deduplicated across the whole collection. Compatible public pending work
+shares an acquisition; private work is isolated by collection. Participants freeze at dispatch.
+Later requests can reuse eligible recent observations without changing the original capture cause.
+Each collection retains its own first-admitted traversal context, depth, page budget, and settlement.
 
-Plan edges select URLs only from the navigation package derived from the page
-that just completed acquisition. Historical catalogue joins are not an
-acquisition-plan capability. URL admission is always deduplicated across the
-complete run.
+The crawler owns independent dispatch, acquisition, selection, publication, and recovery loops.
+Before authorizing a physical attempt, capture checks the existing ingestion connection, stream,
+and result-store handles with a five-second bound. Known delivery failure releases the unstarted
+physical reservation and returns work to a thirty-second retry with an explicit waiting reason.
+This does not wait for an ingestor or materializer and does not prove future publication success.
+Every dispatched URL, regardless of seed or follow source, also passes a public-address preflight
+before domain pacing and attempt authorization. Non-public destinations are cancelled without a
+physical attempt; unavailable DNS defers work. DNS lookups have a ten-second caller deadline and
+four outstanding slots per event loop; timed-out lookups retain a slot until the resolver finishes.
+Protection against redirects, subresources, other targets, and DNS rebinding reaching sensitive
+internal services belongs at the CDP deployment's network boundary. The configured Stolosio
+deployment's isolation has not been verified; Periplus's initial DNS check does not establish it.
+Short PostgreSQL transactions reserve global physical budgets and collection page units. Time-dependent
+control transitions read PostgreSQL wall-clock time after acquiring the control row. Lock waiting
+cannot extend an expired authorization or consume part of a newly issued lease.
+Independent outbox publication and retry transitions likewise lock their row before checking
+expiry. Collection, outbox, and receipt claims use a database-time selection bound and grant lease
+duration only after their bounded selection has acquired the rows. NATS
+operation leases suppress duplicate execution; per-domain permits enforce website pacing.
+Timeout after authorization can leave an uncertain remote attempt, so recovery records uncertainty
+and charges the conservative bound rather than claiming exactly-once physical execution.
 
-The detailed data contract is in [`SCHEMA.md`](SCHEMA.md), execution and recovery semantics are in
-[`LIFECYCLE.md`](LIFECYCLE.md), external loading is in [`IMPORTS.md`](IMPORTS.md), and the portable
-query boundary is in [`QUERY.md`](QUERY.md), and plan semantics are in
-[`CRAWL_PLANS.md`](CRAWL_PLANS.md).
+Description discovery runs in bounded checkpointed passes in the crawler. Corpus seed SQL uses
+the isolated query service; follow SQL uses only the current page's bounded navigation package.
+Public background selection has its own controls and budget, can continue after collection
+settlement, and checks committed public history plus bounded operational admission markers.
+Private work never seeds public background exploration.
 
-## Public coverage requests
+Immutable observations, attempts, collection definitions/outcomes, fulfillments, and acquisition
+reasons travel through the ingestion lane into DuckLake. Current item views read bounded control
+state; arrivals and historical collection views read bounded durable evidence. Readiness is a
+separate active-generation proof, not an inference from settlement or queue acknowledgement.
 
-`coverage_requests` in Periplus Postgres stores public coverage intent, requested depth (0–2),
-link scope, and total page budget (1–1,000). Submission saves `pending`; the API's existing
-scheduler process automatically picks it up. A request-scoped NATS operation lease suppresses
-concurrent processing, and a deterministic run ID makes dispatch retry-stable. No separate
-service, delivery queue, or public execution endpoint is introduced.
-
-Python source discovery turns descriptions into at most three distinct Brave search queries,
-then selects up to ten returned URLs (also bounded by the page budget). Structured model
-outputs select candidate IDs, never invented URLs. Queries and completed searches are
-checkpointed; selected URLs are frozen before dispatch. Missing credentials keep requests
-pending with a visible explanation; transient discovery errors use bounded backoff and three
-attempts. Permanent discovery failures are visible as `failed`.
-
-The ordinary graph runtime executes one run per request with a one-hour deadline. Internal
-links are restricted to the registrable starting sites including their subdomains. External-only
-links exclude those sites. Both scopes permit any linked site. Depth and the total page budget
-apply across all starting pages. Optional `allowed_sections` restrict starting URLs and selected traversal links to explicit HTTP(S) origins and path sections, including descendant paths. Section limits are enforced in Python source selection and ordinary frozen SQL edges; existing runs keep their frozen plans. They do not constrain redirects or subresources. Starting URLs must resolve to public addresses. This initial
-DNS check is not an egress sandbox: the CDP service's network boundary must also prevent access
-to private networks through redirects, subresources, and DNS rebinding.
-
-The public request API exposes pending, resolving, ongoing, completed, and failed states, source
-URLs, search queries, section limits, and safe live run counters. Acquisition-settled counts include failed attempts; acquisition-pending and navigation-pending counts distinguish fetching from outgoing-link work. Completion means collection finished; ingestion
-and materialization may still be processing. Failed/cancelled runs remain distinguishable, and
-partial page failures remain visible. Request records survive graph-run retention; old run
-counters disappear with the runtime record, while the run ID still identifies lake evidence.
-Recently completed lists cover the last 30 days. Next.js only proxies the Python endpoints.
+The detailed contracts are in [SCHEMA.md](SCHEMA.md), recovery and materialization in
+[LIFECYCLE.md](LIFECYCLE.md), external loading in [IMPORTS.md](IMPORTS.md), and bounded SQL
+in [QUERY.md](QUERY.md). Historical import cleanup and the remaining cutover gates are listed in
+the implementation ledger; do not start replacement services against an old control schema.

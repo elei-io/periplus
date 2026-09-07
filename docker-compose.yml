@@ -5,7 +5,7 @@ x-periplus-core: &periplus-core
     context: .
     dockerfile: docker/periplus/Dockerfile
     additional_contexts:
-      ducklake-cdc-extension: ${PERIPLUS_DUCKLAKE_CDC_EXTENSION_REPO:-../quack/ducklake-cdc-extension-1.5.5}
+      ducklake-cdc-extension: ${PERIPLUS_DUCKLAKE_CDC_EXTENSION_REPO:-../ducklake-cdc-extension}
   image: ${PERIPLUS_CORE_IMAGE:-periplus-core:local}
   working_dir: /app/packages/periplus
 
@@ -44,9 +44,6 @@ x-periplus-repository-environment: &periplus-repository-environment
   PERIPLUS_REPOSITORY_S3_SECRET_ACCESS_KEY: ${LAKE_S3_SECRET_ACCESS_KEY:-lake-secret}
   PERIPLUS_REPOSITORY_S3_URL_STYLE: path
   PERIPLUS_REPOSITORY_S3_USE_SSL: "false"
-
-x-periplus-graph-environment: &periplus-graph-environment
-  PERIPLUS_GRAPH_MAX_RUN_SECONDS: ${PERIPLUS_GRAPH_MAX_RUN_SECONDS:-604800}
 
 services:
   lake-s3-init:
@@ -232,9 +229,6 @@ services:
           "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).read()",
         ]
     environment:
-      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      PERIPLUS_COVERAGE_MODEL: ${PERIPLUS_COVERAGE_MODEL:-}
       PERIPLUS_ADMIN_API_TOKEN: ${PERIPLUS_ADMIN_API_TOKEN:?Set PERIPLUS_ADMIN_API_TOKEN}
       PERIPLUS_PUBLIC_API_TOKEN: ${PERIPLUS_PUBLIC_API_TOKEN:?Set PERIPLUS_PUBLIC_API_TOKEN}
       <<:
@@ -243,7 +237,6 @@ services:
           *periplus-nats-environment,
           *periplus-ducklake-environment,
           *periplus-repository-environment,
-          *periplus-graph-environment,
         ]
     depends_on:
       periplus-setup:
@@ -267,13 +260,17 @@ services:
           "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9099/healthz', timeout=2).read()",
         ]
     environment:
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      PERIPLUS_DISCOVERY_MODEL: ${PERIPLUS_DISCOVERY_MODEL:-}
+      PERIPLUS_QUERY_URL: http://periplus-query:8000
+      PERIPLUS_QUERY_API_TOKEN: ${PERIPLUS_QUERY_API_TOKEN:?Set PERIPLUS_QUERY_API_TOKEN}
       <<:
         [
           *periplus-control-environment,
           *periplus-nats-environment,
           *periplus-ducklake-environment,
           *periplus-repository-environment,
-          *periplus-graph-environment,
         ]
       PERIPLUS_CDP_URL: ${PERIPLUS_COMPOSE_CDP_URL:-http://host.docker.internal:9222}
     extra_hosts:
@@ -364,7 +361,6 @@ services:
           *periplus-control-environment,
           *periplus-nats-environment,
           *periplus-repository-environment,
-          *periplus-graph-environment,
         ]
     depends_on:
       periplus-setup:

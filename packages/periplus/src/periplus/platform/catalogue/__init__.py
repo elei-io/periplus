@@ -51,7 +51,6 @@ _EXPORTS = {
 for _name in (
     "PeriplusProvenance",
     "AttemptRecord",
-    "CrawlRecord",
     "DocumentRecord",
     "EvidenceProvenance",
     "ExternalProvenance",

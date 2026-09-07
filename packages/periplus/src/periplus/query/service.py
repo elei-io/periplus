@@ -52,6 +52,7 @@ class QueryResult(PreparedQuery):
     rows: list[list[JsonValue]]
     truncated: bool
     elapsed_ms: float
+    source_snapshot: int = Field(ge=0)
 
 
 class BusyError(Exception):
@@ -62,6 +63,7 @@ class QueryService:
     """One connection and admission slot; no unbounded request queue."""
 
     def __init__(self, config: CatalogueConfig, *, deadline: float = QUERY_SECONDS):
+        self.alias = config.alias
         self.deadline = deadline
         self._lock = threading.Lock()
         self.connection = DuckLakeConnectionFactory(config, duckdb_config={
@@ -114,6 +116,7 @@ class QueryService:
             if any(join.args.get("kind") == "CROSS" for join in statement.find_all(exp.Join)):
                 diagnostics.append(Diagnostic(severity="warning", code="cartesian_product", message="A Cartesian product can require substantial work."))
             d.execute("BEGIN TRANSACTION")
+            snapshot = int(d.execute("SELECT id FROM ducklake_current_snapshot(?)", [self.alias]).fetchone()[0])
             # Plain EXPLAIN binds without running EXPLAIN ANALYZE's child.
             if payload.sql.lstrip().upper().startswith("EXPLAIN"):
                 import re
@@ -150,7 +153,7 @@ class QueryService:
                     raise TimeoutError("Query time limit exceeded.")
                 rows.append(converted)
             status = "completed"
-            return QueryResult(**prepared.model_dump(), columns=columns, types=types, rows=rows, truncated=truncated, elapsed_ms=(time.monotonic()-started)*1000)
+            return QueryResult(**prepared.model_dump(), columns=columns, types=types, rows=rows, truncated=truncated, source_snapshot=snapshot, elapsed_ms=(time.monotonic()-started)*1000)
         except duckdb.InterruptException as exc:
             raise TimeoutError("Query time limit exceeded.") from exc
         finally:

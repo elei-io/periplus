@@ -13,7 +13,7 @@ of the parsed projection. Source bytes are retained separately.
   Home submissions launch once; the URL retains the input but consumes the run flag before execution. Reloading restores a draft.
 - `/coverage`: live site counts, distinct URLs, observations, and available collection dates.
 - `/datasets` and `/datasets/[slug]`: curated named SQL queries, live previews, source/scope notes, copy/open SQL, and CSV export.
-- `/suggest`: pending coverage requests, collection preferences, and public request activity.
+- `/suggest`: collection requests, collection preferences, and public request activity.
 
 Dataset definitions live in `src/lib/datasets.ts`: a name, description, SQL, and explanatory scope/grain metadata. They do not persist result copies or introduce a separate query endpoint. Coverage and dataset previews use the existing Python query API through the Next.js proxy, with React Query caching for one minute in the browser.
 
@@ -48,28 +48,29 @@ is introduced; the brief disappears with the conversation on reload.
 
 Set server-only `OPENAI_API_KEY` and `PERIPLUS_AI_MODEL` to enable the assistant. Existing
 `openai:`-prefixed model configuration is accepted. No default model is selected automatically.
-The query and coverage-request transports use `PERIPLUS_QUERY_URL` / `PERIPLUS_QUERY_API_TOKEN` and
+The query and collection transports use `PERIPLUS_QUERY_URL` / `PERIPLUS_QUERY_API_TOKEN` and
 `PERIPLUS_API_URL` / `PERIPLUS_PUBLIC_API_TOKEN` respectively.
 
 Run `npm run dev -- --port 3011`; the launcher loads the root `.env`.
 Run `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build` to validate.
 Production ingress owns aggregate traffic limits; the agent bounds concurrent runs locally.
 
-## Coverage requests
+## Collection requests and Live
 
-`/suggest` accepts a starting URL or plain-language description, depth 0–2, internal/external/both
-link scope, a budget up to 1,000 pages, and optional allowed URL sections (up to ten exact origins/path prefixes with segment boundaries). Section limits apply to starting pages and followed links; they do not restrict redirects or subresources. Larger options are visible but disabled.
-The Python API validates and saves requests as `pending` in the operational Postgres
-`coverage_requests` table. Next.js proxies POST/GET `/api/coverage-requests` and
-GET `/api/coverage-requests/[id]`; it owns no persistence or scheduling.
+`/suggest` accepts a starting URL or description, depth 0–2, internal/external/both link scope,
+up to 1,000 pages and ten allowed sections. These map directly to CollectionSpec and page-local
+follow SQL. Section limits constrain selection, not redirects or subresources. Python validates
+and stores intent in Postgres; `/api/collections` proxies the same collection API used by the SDK.
 
-The public activity list polls every 10 seconds, supports pagination, and filters pending,
-finding sources, collecting, requests needing attention, and requests completed in the last 30 days. Individual request links remain readable
-regardless of age. Python automatically resolves descriptions through bounded model/Brave calls and starts an ordinary
-crawl run. Request details show starting pages, search queries, and live run counters. Collection
-completion does not guarantee that materialization is ready. Public credentials cannot invoke
-crawl execution endpoints directly.
+The activity list polls every ten seconds and distinguishes active, paused and settled requests.
+Details show discovery, admission backlog, runnable/deferred/unknown queue counts, waiting age,
+shared/reused results, last progress and conditional estimate ranges. Frontier items and durable
+arrivals link to public provenance. Request settlement does not prove query readiness; the latter
+requires a separate catalogue/materialization proof. Historical requests remain readable after
+operational cleanup. Public credentials cannot change crawler controls or private collections.
 
+`/live` shows bounded current worker/domain activity, recent public captures and upcoming work.
+It reports observation time and unavailable/stale dependencies without claiming a global FIFO order.
 
 Analysis allows up to 24 notes of 2,000 characters with a shared 16,000-character prose budget
 including the brief and confidence. Oversized prose is rejected, never silently clipped. Only CSV

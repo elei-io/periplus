@@ -10,7 +10,6 @@ from periplus.platform.catalogue.physical.base import (
 )
 from periplus.platform.catalogue.physical.ingest import (
     ATTEMPTS,
-    CRAWLS,
     DOCUMENTS,
     STEPS,
     VISITS,
@@ -18,7 +17,6 @@ from periplus.platform.catalogue.physical.ingest import (
 __all__ = [
     "ATTEMPTS",
     "CATALOGUE_SCHEMA_VERSION",
-    "CRAWLS",
     "DOCUMENTS",
     "INGEST_SCHEMA",
     "MATERIAL_SCHEMA",

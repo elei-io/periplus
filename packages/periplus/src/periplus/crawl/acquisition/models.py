@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, JsonValue
 
+from periplus.platform.catalogue.records import AttemptUsage, VisitEvidence
+
 
 class AcquisitionStepEvidence(BaseModel):
     attempt_number: int
@@ -39,14 +41,15 @@ class AcquisitionStepEvidence(BaseModel):
 
 
 class AcquisitionAttemptEvidence(BaseModel):
+    resource_usage: AttemptUsage | None = None
     attempt: int
     started_at: datetime
-    completed_at: datetime
+    completed_at: datetime | None
     requested_url: str
     final_url: str | None = None
     status_code: int | None = None
     response_media_type: str | None = None
-    outcome: Literal["success", "retry", "failed", "skipped"]
+    outcome: Literal["success", "retry", "failed", "skipped", "uncertain"]
     failure_stage: str | None = None
     failure_code: str | None = None
     failure_message: str | None = None
@@ -54,6 +57,7 @@ class AcquisitionAttemptEvidence(BaseModel):
 
 
 class AcquisitionResult(BaseModel):
+    evidence: VisitEvidence | None = None
     url: str
     success: bool
     status_code: int | None = None

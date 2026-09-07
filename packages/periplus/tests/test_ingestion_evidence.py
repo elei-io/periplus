@@ -1,5 +1,4 @@
-from datetime import UTC, datetime, timedelta
-import hashlib
+from datetime import UTC, datetime
 import unittest
 from unittest.mock import MagicMock
 from uuid import uuid4
@@ -9,22 +8,19 @@ from pydantic import ValidationError
 from periplus.platform.catalogue import (
     AttemptRecord,
     CatalogueConflictError,
-    CrawlRecord,
     DocumentRecord,
     VisitEvidence,
     VisitRecord,
     attempt_id_for,
     document_id_for,
 )
-from periplus.platform.catalogue.schema import CRAWLS, STEPS
-from periplus.platform.catalogue.records import canonical_json
+from periplus.platform.catalogue.schema import STEPS
 from periplus.platform.catalogue.service import (
     CatalogueService,
     _decode_json_columns,
     _visit_values,
 )
 from periplus.ingestion.queue import (
-    crawl_ingestion_job,
     visit_ingestion_job,
 )
 
@@ -33,40 +29,18 @@ class IngestionEvidenceTests(unittest.TestCase):
     def test_json_columns_decode_to_domain_values(self) -> None:
         self.assertEqual(
             _decode_json_columns(
-                CRAWLS,
-                {"graph_config": '{"edges":[],"nodes":[]}'},
-            ),
-            {"graph_config": {"edges": [], "nodes": []}},
-        )
-        self.assertEqual(
-            _decode_json_columns(
                 STEPS,
                 {"parameters": '[1,"x",{"enabled":true}]'},
             ),
             {"parameters": [1, "x", {"enabled": True}]},
         )
 
-    def test_crawl_job_has_stable_identity_and_canonical_hash(self) -> None:
-        now = datetime.now(UTC)
-        config = {"nodes": [], "edges": [], "version": 1}
-        record = CrawlRecord(
-            crawl_id=uuid4(),
-            graph_id=uuid4(),
-            graph_config_hash=hashlib.sha256(
-                canonical_json(config).encode()
-            ).hexdigest(),
-            graph_config=config,
-            root_url_count=2,
-            started_at=now,
-            finished_at=now + timedelta(seconds=1),
-            stop_reason="completed",
-        )
-
-        first = crawl_ingestion_job(record)
-        second = crawl_ingestion_job(record)
-
-        self.assertEqual(first.request_id, second.request_id)
-        self.assertEqual(first.identity, record.crawl_id)
+    def test_removed_crawl_jobs_and_payload_fields_are_rejected(self):
+        from periplus.ingestion.queue import IngestionJob
+        from periplus.platform.catalogue.schema import TABLE_COLUMNS
+        self.assertNotIn('ingest.crawls', {relation.qualified for relation in TABLE_COLUMNS})
+        with self.assertRaises(ValidationError):
+            IngestionJob(kind='crawl', request_id='crawl-old', enqueued_at=datetime.now(UTC), crawl={})
 
     def test_visit_evidence_uses_observation_and_content_identities(self) -> None:
         now = datetime.now(UTC)
@@ -76,7 +50,6 @@ class IngestionEvidenceTests(unittest.TestCase):
         evidence = VisitEvidence(
             visit=VisitRecord(
                 visit_id=visit_id,
-                crawl_id=uuid4(),
                 requested_url="https://example.com/",
                 effective_url="https://example.com/",
                 admitted_at=now,
@@ -117,6 +90,8 @@ class IngestionEvidenceTests(unittest.TestCase):
         )
 
         job = visit_ingestion_job(evidence)
+        with self.assertRaises(ValidationError):
+            type(job).model_validate(job.model_dump() | {"crawl": {}})
 
         self.assertEqual(job.identity, visit_id)
         self.assertNotEqual(document_id.hex, evidence.document.content_sha256)
@@ -221,7 +196,6 @@ def _visit_evidence() -> VisitEvidence:
     return VisitEvidence(
         visit=VisitRecord(
             visit_id=visit_id,
-            crawl_id=uuid4(),
             requested_url="https://example.com/",
             effective_url="https://example.com/",
             admitted_at=now,

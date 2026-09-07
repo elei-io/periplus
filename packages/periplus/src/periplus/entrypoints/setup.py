@@ -7,6 +7,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 
+from periplus.crawl.control.collections.frontier_controls import ensure_frontier_control
 from periplus.crawl.control.content_policies.service import ensure_default_content_policy
 from periplus.crawl.control.domain_policies.service import ensure_default_domain_policy
 from periplus.platform.postgres.session import session_scope
@@ -32,6 +33,7 @@ def bootstrap_catalogue() -> None:
 
 def seed_system_control_plane() -> None:
     with session_scope() as session:
+        ensure_frontier_control(session)
         ensure_default_content_policy(session)
         ensure_default_domain_policy(session)
 

@@ -149,8 +149,6 @@ topologySpreadConstraints:
   value: {{ .Values.config.repository.s3UrlStyle | quote }}
 - name: PERIPLUS_REPOSITORY_S3_USE_SSL
   value: {{ .Values.config.repository.s3UseSSL | quote }}
-- name: PERIPLUS_GRAPH_STREAM_REPLICAS
-  value: {{ .Values.config.nats.graphStreamReplicas | quote }}
 - name: PERIPLUS_CATALOGUE_WORK_STREAM_REPLICAS
   value: {{ .Values.config.nats.catalogueWorkStreamReplicas | quote }}
 - name: PERIPLUS_INGEST_RESULT_REPLICAS

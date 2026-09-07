@@ -68,7 +68,6 @@ config:
     s3UrlStyle: path
     s3UseSSL: true
   nats:
-    graphStreamReplicas: 3
     catalogueWorkStreamReplicas: 3
     ingestResultReplicas: 3
 
@@ -77,11 +76,6 @@ extraEnvFrom: []
 extraEnv: []
 
 api:
-  coverage:
-    model: ""
-    existingSecret: ""
-    openaiKeyKey: OPENAI_API_KEY
-    braveKeyKey: BRAVE_SEARCH_API_KEY
   resources:
     requests:
       cpu: 250m
@@ -127,6 +121,11 @@ public:
     annotations: {}
 
 crawler:
+  discovery:
+    model: ""
+    existingSecret: ""
+    openaiKeyKey: OPENAI_API_KEY
+    braveKeyKey: BRAVE_SEARCH_API_KEY
   replicas: 1
   resources:
     requests:

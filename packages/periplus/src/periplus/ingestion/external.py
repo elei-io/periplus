@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-import hashlib
 from typing import BinaryIO
 from uuid import UUID, uuid5
 
@@ -13,7 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from periplus.platform.config import get_int
 from periplus.urls import normalize_url
 from periplus.platform.catalogue import (
-    CrawlRecord,
     DocumentRecord,
     ExternalProvenance,
     VisitEvidence,
@@ -30,7 +28,6 @@ from periplus.ingestion.objects.document import (
 from periplus.ingestion.objects.store import ObjectStore
 
 
-_IMPORT_NAMESPACE = UUID("94be7653-f7f0-5534-bec8-aa154373eb7e")
 _VISIT_NAMESPACE = UUID("d967f180-4d23-55bb-b341-88ea5032e60b")
 
 
@@ -58,7 +55,6 @@ class ExternalHtmlMetadata(BaseModel):
 class HtmlIngestionResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    crawl_id: UUID
     visit_id: UUID
     document_id: UUID
     content_sha256: str
@@ -104,15 +100,8 @@ class EvidenceImportService:
     ) -> HtmlIngestionResult:
         if not self._running:
             raise RuntimeError("evidence import service is not running")
-        identity = (
-            f"{metadata.system}\n{metadata.dataset or ''}\n"
-            f"{metadata.source_record_id}"
-        )
-        crawl_id = uuid5(_IMPORT_NAMESPACE, identity)
-        visit_id = uuid5(
-            _VISIT_NAMESPACE,
-            f"{crawl_id}\n{metadata.source_record_id}",
-        )
+        identity = canonical_json([metadata.system, metadata.dataset, metadata.source_record_id])
+        visit_id = uuid5(_VISIT_NAMESPACE, identity)
         requested_url = normalize_url(metadata.requested_url)
         effective_url = (
             normalize_url(metadata.effective_url)
@@ -151,7 +140,6 @@ class EvidenceImportService:
         )
         visit = VisitRecord(
             visit_id=visit_id,
-            crawl_id=crawl_id,
             requested_url=requested_url,
             effective_url=effective_url,
             admitted_at=metadata.observed_at,
@@ -174,27 +162,7 @@ class EvidenceImportService:
                 document=document,
             )
         )
-        config = {
-            "kind": "external",
-            "system": metadata.system,
-            "dataset": metadata.dataset,
-        }
-        encoded = canonical_json(config)
-        await self.queue.enqueue_crawl(
-            CrawlRecord(
-                crawl_id=crawl_id,
-                kind="import",
-                graph_id=None,
-                graph_config_hash=hashlib.sha256(encoded.encode()).hexdigest(),
-                graph_config=config,
-                root_url_count=1,
-                started_at=metadata.observed_at,
-                finished_at=metadata.observed_at,
-                stop_reason="imported",
-            )
-        )
         return HtmlIngestionResult(
-            crawl_id=crawl_id,
             visit_id=visit_id,
             document_id=document_id,
             content_sha256=stored.sha256,

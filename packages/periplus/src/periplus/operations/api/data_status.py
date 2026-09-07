@@ -11,7 +11,6 @@ from fastapi import APIRouter, Depends, Request
 from nats.js.errors import NotFoundError
 from pydantic import BaseModel, ConfigDict
 
-from periplus.crawl.api_runtime import ApiGraphRuntime, get_graph_runtime
 from periplus.ingestion.queue import DURABLE as INGESTION_DURABLE
 from periplus.materialization.registry import PROJECTIONS
 from periplus.platform.messaging.catalogue_queue import (
@@ -143,14 +142,13 @@ _MATERIALIZATION_WORKLOADS = (
 @router.get("/data-status", response_model=DataOperationalStatus)
 async def data_status(
     request: Request,
-    runtime: Annotated[ApiGraphRuntime, Depends(get_graph_runtime)],
 ) -> DataOperationalStatus:
     worker_states_task = asyncio.create_task(
-        list_catalogue_worker_states(runtime.catalogue_workers)
+        list_catalogue_worker_states(request.app.state.catalogue_workers)
     )
     ingestion_queue_task = asyncio.create_task(
         _queue_status(
-            runtime.jetstream,
+            request.app.state.jetstream,
             stream=WORK_STREAM,
             durable=INGESTION_DURABLE,
             unit="ingestion_jobs",
@@ -159,7 +157,7 @@ async def data_status(
     materialization_queue_tasks = {
         name: asyncio.create_task(
             _queue_status(
-                runtime.jetstream,
+                request.app.state.jetstream,
                 stream=WORK_STREAM,
                 durable=durable,
                 unit="materialization_batches",
@@ -168,7 +166,7 @@ async def data_status(
         for name, _source, _projections, durable in _MATERIALIZATION_WORKLOADS
     }
     dead_letters_task = asyncio.create_task(
-        _ingestion_dead_letter_count(runtime.jetstream)
+        _ingestion_dead_letter_count(request.app.state.jetstream)
     )
     materialization_runs_task = asyncio.create_task(
         _materialization_runs(request)

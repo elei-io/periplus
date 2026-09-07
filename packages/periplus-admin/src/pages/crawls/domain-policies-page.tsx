@@ -32,15 +32,18 @@ import {
   useDomainPolicies,
   useUpdateDomainPolicy,
 } from "@/hooks/use-resource-data"
+import { extractApiError } from "@/lib/api"
 import type { DomainPolicyRecord } from "@/types/resources"
 
 type Draft = {
+  paused: boolean
   host: string
   concurrency: string
   interval: string
 }
 
 type EditableDraft = Draft & {
+  version: number
   enabled: boolean
 }
 
@@ -57,17 +60,40 @@ export function DomainPoliciesPage() {
   return (
     <div className="flex min-h-0 w-full flex-col gap-4">
       <section className="flex items-center justify-between gap-3 border-b pb-4">
-        <Badge variant="outline">{query.data?.total ?? 0} total</Badge>
+        <Badge variant="outline">
+          {query.data ? `${query.data.total} total` : "Loading domains…"}
+        </Badge>
         <Button
           size="sm"
           onClick={() =>
-            setDraft({ host: "", concurrency: "4", interval: "0" })
+            setDraft({
+              host: "",
+              concurrency: "4",
+              interval: "0",
+              paused: false,
+            })
           }
         >
           <PlusIcon />
           New policy
         </Button>
       </section>
+      {query.isError && (
+        <div
+          role="alert"
+          className="rounded-md border border-destructive p-3 text-sm"
+        >
+          Domain status may be stale. {extractApiError(query.error)}{" "}
+          <Button variant="outline" onClick={() => void query.refetch()}>
+            Retry
+          </Button>
+        </div>
+      )}
+      <p className="text-sm text-muted-foreground">
+        Current policies govern queued captures at dispatch and start. Paused
+        domains wait; started captures finish. Exact hosts override matching
+        wildcard policies.
+      </p>
       <Table containerClassName="min-h-0 flex-1 rounded-md border bg-card/80">
         <TableHeader>
           <TableRow>
@@ -97,6 +123,8 @@ export function DomainPoliciesPage() {
 }
 
 function DomainRow({ policy }: { policy: DomainPolicyRecord }) {
+  const concurrencyId = useId()
+  const intervalId = useId()
   const update = useUpdateDomainPolicy(policy.id)
   const fallback = policy.slug === "default-domain"
   const [draft, setDraft] = useState<EditableDraft | null>(null)
@@ -107,14 +135,22 @@ function DomainRow({ policy }: { policy: DomainPolicyRecord }) {
     const concurrency = Number(draft.concurrency)
     const interval = Number(draft.interval)
     if (!fallback && host.error) return toast.error(host.error)
-    if (!Number.isInteger(concurrency) || concurrency < 1) {
-      return toast.error("Maximum concurrency must be at least one.")
+    if (
+      !Number.isInteger(concurrency) ||
+      concurrency < 1 ||
+      concurrency > 10000
+    ) {
+      return toast.error(
+        "Maximum concurrency must be a whole number between 1 and 10000."
+      )
     }
-    if (!Number.isFinite(interval) || interval < 0) {
-      return toast.error("Minimum interval cannot be negative.")
+    if (!Number.isFinite(interval) || interval < 0 || interval > 3600) {
+      return toast.error("Minimum interval must be between 0 and 3600 seconds.")
     }
     update.mutate(
       {
+        expected_version: draft.version,
+        paused: draft.paused,
         host_match: fallback ? undefined : host.host,
         maximum_concurrency: concurrency,
         minimum_request_interval_seconds: interval,
@@ -131,6 +167,9 @@ function DomainRow({ policy }: { policy: DomainPolicyRecord }) {
           <span className="font-medium">
             {policy.host_match === "*" ? "Every host" : policy.host_match}
           </span>
+          <span className="block text-xs text-muted-foreground">
+            v{policy.version} · {policy.updated_by}
+          </span>
           {fallback ? (
             <span className="block text-xs text-muted-foreground">
               Required fallback
@@ -145,7 +184,11 @@ function DomainRow({ policy }: { policy: DomainPolicyRecord }) {
         </TableCell>
         <TableCell>
           <Badge variant={policy.enabled ? "secondary" : "destructive"}>
-            {policy.enabled ? "Enabled" : "Disabled"}
+            {!policy.enabled
+              ? "Disabled"
+              : policy.paused
+                ? "Paused"
+                : "Enabled"}
           </Badge>
         </TableCell>
         <TableCell>
@@ -154,6 +197,8 @@ function DomainRow({ policy }: { policy: DomainPolicyRecord }) {
             variant="outline"
             onClick={() =>
               setDraft({
+                version: policy.version,
+                paused: policy.paused,
                 host: policy.host_match,
                 concurrency: String(policy.maximum_concurrency),
                 interval: String(policy.minimum_request_interval_seconds),
@@ -175,18 +220,58 @@ function DomainRow({ policy }: { policy: DomainPolicyRecord }) {
           <DialogHeader>
             <DialogTitle>Edit domain policy</DialogTitle>
             <DialogDescription>
-              Changes apply to newly admitted crawl requests.
+              Changes apply before queued captures start. Started captures keep
+              their authorized settings.
             </DialogDescription>
           </DialogHeader>
           {draft ? (
             <div className="grid gap-4">
+              {draft.version !== policy.version && (
+                <div
+                  role="alert"
+                  className="space-y-2 rounded-md border border-destructive p-3 text-sm"
+                >
+                  <p>
+                    This policy changed while you were editing. Reload and
+                    review before saving.
+                  </p>
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      setDraft({
+                        version: policy.version,
+                        paused: policy.paused,
+                        enabled: policy.enabled,
+                        host: policy.host_match,
+                        concurrency: String(policy.maximum_concurrency),
+                        interval: String(
+                          policy.minimum_request_interval_seconds
+                        ),
+                      })
+                    }
+                  >
+                    Reload latest policy
+                  </Button>
+                </div>
+              )}
+              <div className="flex items-center justify-between rounded-md border p-3">
+                <Label htmlFor={`pause-${policy.id}`}>
+                  Pause captures for matching hosts
+                </Label>
+                <Switch
+                  id={`pause-${policy.id}`}
+                  checked={draft.paused}
+                  onCheckedChange={(paused) => setDraft({ ...draft, paused })}
+                />
+              </div>
               <DomainHostField
                 disabled={fallback}
                 value={draft.host}
                 onChange={(host) => setDraft({ ...draft, host })}
               />
-              <Field label="Maximum concurrency">
+              <Field label="Maximum concurrency" htmlFor={concurrencyId}>
                 <Input
+                  id={concurrencyId}
                   type="number"
                   min={1}
                   value={draft.concurrency}
@@ -195,8 +280,12 @@ function DomainRow({ policy }: { policy: DomainPolicyRecord }) {
                   }
                 />
               </Field>
-              <Field label="Minimum request interval (seconds)">
+              <Field
+                label="Minimum request interval (seconds)"
+                htmlFor={intervalId}
+              >
                 <Input
+                  id={intervalId}
                   type="number"
                   min={0}
                   step={0.1}
@@ -211,10 +300,12 @@ function DomainRow({ policy }: { policy: DomainPolicyRecord }) {
                   <div>
                     <p className="font-medium">Policy enabled</p>
                     <p className="text-xs text-muted-foreground">
-                      Disabled policies do not affect admission.
+                      Disabling this rule exposes the next matching policy. Use
+                      pause to stop new captures.
                     </p>
                   </div>
                   <Switch
+                    aria-label="Policy enabled"
                     checked={draft.enabled}
                     onCheckedChange={(enabled) =>
                       setDraft({ ...draft, enabled })
@@ -225,7 +316,10 @@ function DomainRow({ policy }: { policy: DomainPolicyRecord }) {
             </div>
           ) : null}
           <DialogFooter showCloseButton>
-            <Button disabled={update.isPending} onClick={save}>
+            <Button
+              disabled={update.isPending || draft?.version !== policy.version}
+              onClick={save}
+            >
               Save
             </Button>
           </DialogFooter>
@@ -242,6 +336,8 @@ function NewDomainPolicy({
   draft: Draft | null
   setDraft: (value: Draft | null) => void
 }) {
+  const concurrencyId = useId()
+  const intervalId = useId()
   const create = useCreateDomainPolicy()
 
   const submit = () => {
@@ -250,11 +346,17 @@ function NewDomainPolicy({
     const concurrency = Number(draft.concurrency)
     const interval = Number(draft.interval)
     if (host.error) return toast.error(host.error)
-    if (!Number.isInteger(concurrency) || concurrency < 1) {
-      return toast.error("Maximum concurrency must be at least one.")
+    if (
+      !Number.isInteger(concurrency) ||
+      concurrency < 1 ||
+      concurrency > 10000
+    ) {
+      return toast.error(
+        "Maximum concurrency must be a whole number between 1 and 10000."
+      )
     }
-    if (!Number.isFinite(interval) || interval < 0) {
-      return toast.error("Minimum interval cannot be negative.")
+    if (!Number.isFinite(interval) || interval < 0 || interval > 3600) {
+      return toast.error("Minimum interval must be between 0 and 3600 seconds.")
     }
     create.mutate(
       {
@@ -263,6 +365,7 @@ function NewDomainPolicy({
         maximum_concurrency: concurrency,
         minimum_request_interval_seconds: interval,
         enabled: true,
+        paused: draft.paused,
       },
       { onSuccess: () => setDraft(null) }
     )
@@ -279,17 +382,28 @@ function NewDomainPolicy({
         <DialogHeader>
           <DialogTitle>New domain policy</DialogTitle>
           <DialogDescription>
-            Set distributed crawl limits for matching acquisition workers.
+            Set live concurrency and pacing for a host or wildcard.
           </DialogDescription>
         </DialogHeader>
         {draft ? (
           <div className="grid gap-4">
+            <div className="flex items-center gap-3">
+              <Switch
+                id="new-domain-paused"
+                checked={draft.paused}
+                onCheckedChange={(paused) => setDraft({ ...draft, paused })}
+              />
+              <Label htmlFor="new-domain-paused">
+                Pause matching hosts immediately
+              </Label>
+            </div>
             <DomainHostField
               value={draft.host}
               onChange={(host) => setDraft({ ...draft, host })}
             />
-            <Field label="Maximum concurrency">
+            <Field label="Maximum concurrency" htmlFor={concurrencyId}>
               <Input
+                id={concurrencyId}
                 type="number"
                 min={1}
                 value={draft.concurrency}
@@ -298,8 +412,12 @@ function NewDomainPolicy({
                 }
               />
             </Field>
-            <Field label="Minimum request interval (seconds)">
+            <Field
+              label="Minimum request interval (seconds)"
+              htmlFor={intervalId}
+            >
               <Input
+                id={intervalId}
                 type="number"
                 min={0}
                 step={0.1}

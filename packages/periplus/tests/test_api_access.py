@@ -32,9 +32,9 @@ class ApiAccessTests(unittest.TestCase):
 
     def test_public_service_has_only_explicit_capabilities(self):
         headers = {"Authorization": "Bearer public-test-token"}
-        for method, path in [("POST", "/coverage-requests"), ("GET", "/coverage-requests"), ("GET", f"/coverage-requests/{uuid4()}")]:
+        for method, path in [("POST", "/collections"), ("GET", "/collections"), ("GET", "/collections/history"), ("GET", f"/collections/{uuid4()}")]:
             self.assertEqual(self.client.request(method, path, headers=headers).status_code, 200)
-        for method, path in [("POST", "/crawls/"), ("GET", f"/crawls/{uuid4()}"), ("DELETE", "/coverage-requests"), ("POST", "/query/exec"), ("POST", "/sql/query"), ("POST", f"/query/browser/{uuid4()}/metadata"), ("GET", "/graph-runs/"), ("POST", "/materializations/rebuild"), ("POST", "/crawl-plans/"), ("DELETE", "/crawls/"), ("GET", "/sql/metadata"), ("GET", "/openapi.json")]:
+        for method, path in [("POST", "/collections/history"), ("GET", "/collections/history/private"), ("POST", "/crawls/"), ("GET", f"/crawls/{uuid4()}"), ("DELETE", "/collections"), ("POST", "/query/exec"), ("POST", "/sql/query"), ("POST", f"/query/browser/{uuid4()}/metadata"), ("GET", "/graph-runs/"), ("POST", "/materializations/rebuild"), ("POST", "/crawl-plans/"), ("DELETE", "/crawls/"), ("GET", "/sql/metadata"), ("GET", "/openapi.json")]:
             self.assertEqual(self.client.request(method, path, headers=headers).status_code, 403)
 
     def test_admin_can_reach_operational_routes(self):

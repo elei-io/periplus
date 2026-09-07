@@ -5,17 +5,19 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import logging
 import tempfile
 import time
-from contextlib import suppress
+from contextlib import suppress, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import Playwright
+from playwright.async_api import Playwright, Browser
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from periplus.crawl.acquisition.errors import ExecutionContextReplacedError, PlaywrightRuntimeLost
+from periplus.crawl.control.collections.exclusions import UrlExclusion
+from periplus.crawl.acquisition.errors import ExecutionContextReplacedError, PlaywrightRuntimeLost, CdpUnavailable
 from periplus.crawl.acquisition.models import AcquisitionResult, AcquisitionStepEvidence
 from periplus.crawl.acquisition.readiness import (
     document_is_meaningful,
@@ -89,13 +91,25 @@ async def _download_bytes(download) -> bytes:
 class _NavigationArtifactCapture:
     """Capture a document response before Chromium hands it to a MIME viewer."""
 
-    def __init__(self, accepted_content_types: tuple[str, ...]) -> None:
+    def __init__(self, accepted_content_types: tuple[str, ...], exclusions: tuple[UrlExclusion, ...] = ()) -> None:
         self.accepted_content_types = accepted_content_types
+        self.exclusions = exclusions
+        self.blocked_document = False
+        self.main_frame_id: str | None = None
         self.body: bytes | None = None
         self.error: str | None = None
 
     async def handle_paused(self, session, event: dict[str, object]) -> None:
         request_id = str(event["requestId"])
+        if "responseStatusCode" not in event and "responseErrorReason" not in event:
+            url = str(event.get("request", {}).get("url", ""))
+            if any(rule.matches(url) for rule in self.exclusions):
+                if event.get("resourceType") == "Document" and event.get("frameId") == self.main_frame_id:
+                    self.blocked_document = True
+                await session.send("Fetch.failRequest", {"requestId": request_id, "errorReason": "BlockedByClient"})
+            else:
+                await session.send("Fetch.continueRequest", {"requestId": request_id})
+            return
         try:
             status = event.get("responseStatusCode")
             headers = {
@@ -138,31 +152,53 @@ class _NavigationArtifactCapture:
 async def _enable_navigation_document_capture(
     page,
     accepted_content_types: tuple[str, ...],
+    exclusions: tuple[UrlExclusion, ...] = (),
 ) -> _NavigationArtifactCapture | None:
-    if not any(
+    capture_documents = any(
         media_type not in {"text/html", "application/xhtml+xml"}
         for media_type in accepted_content_types
-    ):
+    )
+    if not capture_documents and not exclusions:
         return None
     session = await page.context.new_cdp_session(page)
-    capture = _NavigationArtifactCapture(accepted_content_types)
+    capture = _NavigationArtifactCapture(accepted_content_types, exclusions)
+    if exclusions:
+        tree = await session.send("Page.getFrameTree")
+        capture.main_frame_id = tree["frameTree"]["frame"]["id"]
     session.on(
         "Fetch.requestPaused",
         lambda event: capture.handle_paused(session, event),
     )
-    await session.send(
-        "Fetch.enable",
-        {
-            "patterns": [
-                {
-                    "urlPattern": "*",
-                    "resourceType": "Document",
-                    "requestStage": "Response",
-                }
-            ]
-        },
-    )
+    patterns = [{"urlPattern": "*", "resourceType": "Document", "requestStage": "Response"}] if capture_documents else []
+    if exclusions:
+        patterns.append({"urlPattern": "*", "requestStage": "Request"})
+    await session.send("Fetch.enable", {"patterns": patterns})
     return capture
+
+
+@asynccontextmanager
+async def connect_cdp(playwright: Playwright):
+    """Own one bounded standard-CDP connection, before any page authorization."""
+    browser = None
+    try:
+        try:
+            async with asyncio.timeout(5):
+                browser = await playwright.chromium.connect_over_cdp(get_str("PERIPLUS_CDP_URL"), timeout=5000)
+        except (TimeoutError, PlaywrightTimeoutError, OSError) as exc:
+            raise CdpUnavailable("CDP connection unavailable.") from exc
+        except PlaywrightError as exc:
+            _raise_if_playwright_runtime_lost(exc)
+            raise CdpUnavailable("CDP connection unavailable.") from exc
+        yield browser
+    finally:
+        if browser is not None:
+            try:
+                async with asyncio.timeout(5):
+                    await browser.close()
+            except PlaywrightError as exc:
+                _raise_if_playwright_runtime_lost(exc)
+            except TimeoutError:
+                logging.getLogger(__name__).warning("CDP connection cleanup exceeded its five-second bound")
 
 
 async def capture_page(
@@ -170,51 +206,16 @@ async def capture_page(
     policy,
     *,
     attempt_number: int,
-    playwright: Playwright,
+    browser: Browser,
+    timeout_seconds: float = ACQUISITION_TIMEOUT_SECONDS,
+    exclusions: tuple[UrlExclusion, ...] = (),
 ) -> AcquisitionResult:
+    if not 1 <= timeout_seconds <= 3600:
+        raise ValueError("capture timeout must be between 1 and 3600 seconds")
     started = time.perf_counter()
     started_at = datetime.now(UTC)
-    browser = None
     try:
-        async with asyncio.timeout(ACQUISITION_TIMEOUT_SECONDS):
-            try:
-                browser = await playwright.chromium.connect_over_cdp(
-                    get_str("PERIPLUS_CDP_URL")
-                )
-            except PlaywrightTimeoutError as exc:
-                return acquisition_failure(
-                    url,
-                    started,
-                    started_at,
-                    attempt_number,
-                    str(exc) or "CDP connection timed out",
-                    "cdp_connection_timeout",
-                    "connection",
-                    True,
-                )
-            except PlaywrightError as exc:
-                _raise_if_playwright_runtime_lost(exc)
-                return acquisition_failure(
-                    url,
-                    started,
-                    started_at,
-                    attempt_number,
-                    str(exc),
-                    "cdp_connection_failed",
-                    "connection",
-                    True,
-                )
-            except OSError as exc:
-                return acquisition_failure(
-                    url,
-                    started,
-                    started_at,
-                    attempt_number,
-                    str(exc),
-                    "cdp_connection_failed",
-                    "connection",
-                    True,
-                )
+        async with asyncio.timeout(timeout_seconds):
             try:
                 completion = policy.content.completion
                 # A static policy is expressed by omitting browser-only CDP
@@ -225,6 +226,7 @@ async def capture_page(
                 document_capture = await _enable_navigation_document_capture(
                     page,
                     policy.content.accepted_content_types,
+                    exclusions,
                 )
                 steps: list[AcquisitionStepEvidence] = []
                 status: int | None = None
@@ -287,6 +289,11 @@ async def capture_page(
                         )
                     response = None
                 except PlaywrightError as exc:
+                    if document_capture is not None and document_capture.blocked_document:
+                        await _cancel_event_wait(download_wait)
+                        await _cancel_event_wait(response_wait)
+                        return acquisition_failure(url, started, started_at, attempt_number,
+                            "Document navigation blocked by crawler exclusion policy", "global_exclusion", "navigation", False)
                     if not _is_download_navigation(exc):
                         await _cancel_event_wait(download_wait)
                         await _cancel_event_wait(response_wait)
@@ -391,8 +398,6 @@ async def capture_page(
                     policy=policy,
                 )
                 if rejection is not None:
-                    await browser.close()
-                    browser = None
                     return rejection
                 if media_type not in {"text/html", "application/xhtml+xml"}:
                     if document_capture is None:
@@ -431,8 +436,6 @@ async def capture_page(
                         media_type=media_type,
                         outcome="success",
                     )
-                    await browser.close()
-                    browser = None
                     return AcquisitionResult(
                         url=final_url,
                         success=True,
@@ -580,8 +583,6 @@ async def capture_page(
                     "navigation",
                     True,
                 )
-            await browser.close()
-            browser = None
         evidence = attempt_evidence(
             number=attempt_number,
             started_at=started_at,
@@ -616,9 +617,3 @@ async def capture_page(
     except PlaywrightError as exc:
         _raise_if_playwright_runtime_lost(exc)
         raise
-    finally:
-        if browser is not None:
-            try:
-                await browser.close()
-            except PlaywrightError as exc:
-                _raise_if_playwright_runtime_lost(exc)

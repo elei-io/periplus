@@ -22,7 +22,6 @@ from periplus.ingestion.objects.store import FileObjectStore
 class _Queue:
     def __init__(self) -> None:
         self.visits = []
-        self.crawls = []
 
     async def connect(self) -> None:
         pass
@@ -33,8 +32,6 @@ class _Queue:
     async def enqueue_visit(self, evidence) -> None:
         self.visits.append(evidence)
 
-    async def enqueue_crawl(self, record) -> None:
-        self.crawls.append(record)
 
 
 class ExternalIngestionTests(unittest.IsolatedAsyncioTestCase):
@@ -81,10 +78,10 @@ class ExternalIngestionTests(unittest.IsolatedAsyncioTestCase):
                 await service.close()
 
         self.assertEqual(first.visit_id, second.visit_id)
+        self.assertNotIn("crawl_id", first.model_dump())
         self.assertEqual(first.disposition, "created")
         self.assertEqual(second.disposition, "deduplicated")
         self.assertEqual(queue.visits[0], queue.visits[1])
-        self.assertEqual(queue.crawls[0], queue.crawls[1])
         evidence = queue.visits[0]
         self.assertEqual(evidence.attempts, ())
         self.assertIsNone(evidence.document.attempt_id)
@@ -108,8 +105,24 @@ class ExternalIngestionTests(unittest.IsolatedAsyncioTestCase):
             evidence.visit.effective_url,
             "https://www.example.com/final?b=2&a=1",
         )
-        self.assertEqual(queue.crawls[0].kind, "import")
-        self.assertIsNone(queue.crawls[0].graph_id)
+
+    async def test_source_identity_tuple_is_unambiguous(self):
+        with tempfile.TemporaryDirectory() as directory:
+            queue = _Queue()
+            service = EvidenceImportService(queue=queue, object_store=FileObjectStore(Path(directory)))
+            await service.start()
+            try:
+                identities = []
+                for system, dataset, record in [('a\nb', 'c', 'd'), ('a', 'b\nc', 'd'),
+                                                 ('a', None, 'd'), ('a', 'none', 'd')]:
+                    result = await service.ingest_external_html(io.BytesIO(b'<html></html>'),
+                        ExternalHtmlMetadata(system=system, dataset=dataset, source_record_id=record,
+                            requested_url='https://example.com/', observed_at=datetime(2024,1,2,tzinfo=UTC)))
+                    identities.append(result.visit_id)
+                self.assertEqual(len(set(identities)), 4)
+                self.assertEqual(len(queue.visits), 4)
+            finally:
+                await service.close()
 
     async def test_independent_records_can_ingest_concurrently(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -141,7 +154,6 @@ class ExternalIngestionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(results), 32)
         self.assertEqual(len(queue.visits), 32)
-        self.assertEqual(len(queue.crawls), 32)
         self.assertEqual(len({result.visit_id for result in results}), 32)
 
 

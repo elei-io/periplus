@@ -11,7 +11,6 @@ from periplus.platform.catalogue.physical.base import (
 from periplus.platform.catalogue.schema_types import ColumnDef
 
 
-CRAWLS = RelationName(INGEST_SCHEMA, "crawls")
 VISITS = RelationName(INGEST_SCHEMA, "visits")
 ATTEMPTS = RelationName(INGEST_SCHEMA, "attempts")
 STEPS = RelationName(INGEST_SCHEMA, "steps")
@@ -19,20 +18,9 @@ DOCUMENTS = RelationName(INGEST_SCHEMA, "documents")
 
 
 TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
-    CRAWLS: {
-        "crawl_id": ColumnDef("UUID", nullable=False),
-        "kind": ColumnDef("VARCHAR", nullable=False),
-        "graph_id": ColumnDef("UUID"),
-        "graph_config_hash": ColumnDef("VARCHAR", nullable=False),
-        "graph_config": ColumnDef("JSON", nullable=False),
-        "root_url_count": ColumnDef("BIGINT", nullable=False),
-        "started_at": ColumnDef("TIMESTAMPTZ", nullable=False),
-        "finished_at": ColumnDef("TIMESTAMPTZ", nullable=False),
-        "stop_reason": ColumnDef("VARCHAR", nullable=False),
-    },
     VISITS: {
         "visit_id": ColumnDef("UUID", nullable=False),
-        "crawl_id": ColumnDef("UUID", nullable=False),
+        "visibility": ColumnDef("VARCHAR", nullable=False),
         "requested_url": ColumnDef("VARCHAR", nullable=False),
         "effective_url": ColumnDef("VARCHAR"),
         "admitted_at": ColumnDef("TIMESTAMPTZ", nullable=False),
@@ -52,8 +40,9 @@ TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
         "attempt_id": ColumnDef("UUID", nullable=False),
         "visit_id": ColumnDef("UUID", nullable=False),
         "attempt_index": ColumnDef("INTEGER", nullable=False),
+        "resource_usage": ColumnDef("JSON"),
         "started_at": ColumnDef("TIMESTAMPTZ", nullable=False),
-        "finished_at": ColumnDef("TIMESTAMPTZ", nullable=False),
+        "finished_at": ColumnDef("TIMESTAMPTZ"),
         "effective_url": ColumnDef("VARCHAR"),
         "status_code": ColumnDef("INTEGER"),
         "outcome": ColumnDef("VARCHAR", nullable=False),
@@ -92,13 +81,9 @@ TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
 
 
 TABLE_LAYOUTS = {
-    CRAWLS: TableLayout(
-        partition_by=("day(finished_at)",),
-        sort_by=("graph_id ASC", "finished_at ASC", "crawl_id ASC"),
-    ),
     VISITS: TableLayout(
         partition_by=("day(finished_at)",),
-        sort_by=("crawl_id ASC", "admitted_at ASC", "visit_id ASC"),
+        sort_by=("requested_url ASC", "finished_at ASC", "visit_id ASC"),
     ),
     ATTEMPTS: TableLayout(
         partition_by=("day(started_at)",),
@@ -116,8 +101,7 @@ TABLE_LAYOUTS = {
 
 
 TABLE_COMMENTS = {
-    CRAWLS: "Terminal immutable crawl-graph executions.",
-    VISITS: "Terminal destination observations produced by crawls.",
+    VISITS: "Independent terminal observations from acquisitions or external sources.",
     ATTEMPTS: "Ordered acquisition attempts belonging to visits.",
     STEPS: "Ordered content-completion executions belonging to attempts.",
     DOCUMENTS: "Visit-owned references to immutable document bytes.",
@@ -125,20 +109,9 @@ TABLE_COMMENTS = {
 
 
 COLUMN_COMMENTS = {
-    CRAWLS: {
-        "crawl_id": "Unique identity of the terminal crawl execution.",
-        "kind": "Whether Periplus acquired pages or imported external evidence.",
-        "graph_id": "Stable logical identity of the crawl graph.",
-        "graph_config_hash": "SHA-256 of the canonical frozen graph configuration.",
-        "graph_config": "Complete frozen graph configuration.",
-        "root_url_count": "Number of root URLs admitted to the initial frontier.",
-        "started_at": "Time crawl execution began.",
-        "finished_at": "Time crawl execution reached its terminal state.",
-        "stop_reason": "Stable reason the crawl stopped.",
-    },
     VISITS: {
         "visit_id": "Unique identity of this destination observation.",
-        "crawl_id": "Crawl execution that produced this visit.",
+        "visibility": "Frozen acquisition visibility; private evidence is excluded from public SQL.",
         "requested_url": "Exact URL Periplus attempted to visit.",
         "effective_url": "Final URL after navigation or redirects, if resolved.",
         "admitted_at": "Time the destination entered the crawl.",
@@ -151,6 +124,7 @@ COLUMN_COMMENTS = {
         "provenance": "Typed origin of this observation.",
     },
     ATTEMPTS: {
+        "resource_usage": "Frozen client capture reservation and measured or uncertain elapsed time; not provider billing.",
         "attempt_id": "Unique deterministic identity of this acquisition attempt.",
         "visit_id": "Visit that owns this attempt.",
         "attempt_index": "Zero-based execution order within the visit.",

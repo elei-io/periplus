@@ -9,7 +9,7 @@ then inserts the terminal crawl/visit evidence, ordered attempts and steps, and 
 reference. It never waits for materialization. External HTML enters at the same immutable-byte
 boundary.
 
-The five `ingest.*` relations are the complete rebuild authority. Identity replay with the same
+Immutable `ingest.*` evidence is the complete rebuild authority. Identity replay with the same
 evidence is a no-op; conflicting evidence fails. Materialization consumes inserted visits only.
 
 Every ingestor replica is symmetric; there is no ingestion coordinator or elected owner. At
@@ -35,8 +35,9 @@ physical-schema declaration. Add one file, edit one file, or delete one file; th
 a complete rebuild. The generation digest includes the complete source of every discovered
 projection file, so an implementation-only edit cannot silently reuse the previous generation.
 
-The current files project structural HTML and JSON-LD at content grain and link occurrences at
-visit grain.
+The current files project structural HTML and JSON-LD at content grain, plus link occurrences
+and readiness membership at visit grain. HTML readiness also requires the active content root
+marker because a separate batch may own shared-content output.
 
 A visit batch loads its visits and documents, groups unique HTML content sources, and builds one
 shared projection context. Each content body is read and parsed once in that batch. Element zero
@@ -111,3 +112,87 @@ Views and macros do not belong to projection files. A separate lightweight publi
 the `web.*` and `content.*` SQL resources and declares their required material relations. This
 keeps the runtime API independently evolvable while making installation fail if any dependency of
 the four-relation public contract is missing.
+
+## Acquisition dependency checks
+
+Each crawler checks ingestion delivery, repository storage, and its standard CDP endpoint before
+calling transactional dispatch. A successful check is usable for five seconds; known failure backs
+that replica's dispatcher off for thirty seconds. The check does not open DuckLake or wait for an
+ingestor/materializer. It runs outside PostgreSQL transactions, so it is evidence of recent health,
+not a guarantee that a dependency will remain available after authorization.
+
+Storage readiness performs a conditional write, bounded read-back, and deletion of a small unique
+`runtime/probes/` object using the configured repository. Each acquisition pipeline owns at most one
+in-flight storage probe, retained after a caller's five-second timeout or cancellation; concurrent
+callers share it. Successful storage results are cached for five seconds from probe completion.
+Shutdown drains that operation. The janitor scans bounded metadata batches and reclaims probe objects
+older than two hours after a process crash. Immutable HTML/document evidence is never a probe target.
+
+Capture deliveries recheck delivery and storage health and establish the browser connection before
+physical-attempt authorization. Failures defer unstarted work and release physical allowance;
+`ingestion_delivery_unavailable`, `storage_unavailable`, and `cdp_unavailable` explain that wait.
+The original request page charge, if dispatch already committed, remains consumed and is not repeated.
+
+Crawler heartbeats publish the dispatch check state in the existing ephemeral worker KV bucket.
+A ready report expires after five seconds even if its dispatch loop stalls; blocked reports name
+only delivery, storage, or CDP, never raw dependency errors. `/frontier/live` reads a startup-owned
+handle with one concurrent read, a two-second timeout/cache, and a 128-report preview limit. It
+excludes server-timestamped heartbeats older than fifteen seconds, malformed reports, and implausible
+future reports. Counts describe observed reports, not guaranteed available capacity. Missing or
+unreadable presence leaves availability unknown. Public responses omit worker IDs and private work.
+
+## Current frontier wait explanations
+
+Item reads resolve current domain policy with the same specificity as dispatch, for only the bounded
+visible page. They distinguish domain pause, version-matching domain pacing, domain/global capacity,
+global pacing, and physical allowance exhaustion. A policy edit invalidates an older stored domain
+pacing hint. The eligibility floor combines applicable persisted timing constraints; it is not a
+promised dispatch time. Reads return constraint names without exposing other callers, private targets,
+or occupancy counts. Live domain permits and future worker capacity can still prevent a start after
+that floor, so these explanations do not by themselves establish an estimate range.
+
+
+### Frozen candidates awaiting admission
+
+Current collection responses include an `admission` snapshot. `pending_candidates` counts remaining
+entries in frozen seed and follow selections; it does not count unresolved discovery or promise
+unique newly acquired pages. `preview_urls` contains at most five entries from that collection,
+without claiming dispatch order. `oldest_selected_at` and `elapsed_seconds` describe selection age
+at the enclosing response's `as_of`; an absent timestamp remains unknown. A conditional first-admission range can be supplied for direct single-URL requests using recent
+comparable observations. Unsupported work or insufficient evidence has an explicit unavailable reason. Collection pause,
+settlement, and known admission constraints remain distinct from selection still being unresolved.
+
+
+Due collection resolution/admission service honors bounded request priority: service age is shifted
+by priority seconds (-10 through 10). Completing a service pass refreshes its due timestamp, allowing
+older requests to overtake repeatedly served higher-priority work. Not-yet-due dependency backoff
+and active service leases are excluded before ranking. This is separate from dispatch's scheduling
+turns and never grants a public global queue position.
+
+
+First-admission estimates measure submission to the first committed interest, including the initial
+selection service wait. They use three to twenty recent public single-URL requests on the same
+hostname, under the same crawler control version, priority and recent-result age setting. Samples
+are drawn from the last ten minutes and must include an admission within two minutes. Predictions
+require recent crawler-process presence, available current admission/retained capacity, and unchanged
+request controls. Browser dependency readiness is not an admission requirement. Description/SQL discovery, deadlines and later admission batches are unsupported;
+they retain explicit unavailable reasons. Ranges include calculation time, five-second expiry,
+sample count and uncertainty. Historical contention is not reconstructed; unchanged readiness and
+competing work are assumptions, not promises or a statistical confidence interval.
+
+### Current collection queue and progress
+
+Current collection responses partition admitted waiting interests into `queue.runnable_pages`,
+`deferred_pages`, and `unknown_pages`; these sum to `queued_pages`. Counts include retry waits,
+exclude captures already dispatched and candidates not yet admitted, and are scoped to the request.
+Runnable means eligible under the observed stored controls and fresh worker readiness. It reserves
+no domain permit or browser slot. Domain/global pacing, capacity, pauses and attempt/time allowances
+produce explicit constraints. Missing readiness/policy evidence and exclusions requiring candidate
+inspection produce unknown eligibility rather than an optimistic runnable count.
+
+`oldest_admitted_at` and `oldest_wait_seconds` describe the oldest currently queued interest at
+`as_of`, including its elapsed time across retries. No waiting interests yields null age.
+`last_progress_at` records execution progress: admission, frozen or advanced selection, dispatch,
+physical authorization, retry outcome, fulfillment and settlement. Polling, claim renewal,
+waiting-reason updates and priority/pause edits do not advance it. Catalogue commit/readiness
+observations remain separate fields. These operational summaries retire with current collection state.

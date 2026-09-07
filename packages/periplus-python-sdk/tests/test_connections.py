@@ -32,6 +32,9 @@ class ConnectionConfigurationTests(unittest.TestCase):
         connection.fetchall.return_value = [
             ("web", "observation"),
             ("web", "link_occurrence"),
+            ("web", "collection"),
+            ("web", "fulfillment"),
+            ("web", "acquisition_reason"),
             ("content", "object"),
             ("content", "html_element"),
         ]

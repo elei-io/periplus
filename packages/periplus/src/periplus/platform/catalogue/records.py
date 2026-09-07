@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-import hashlib
 import json
 from typing import Annotated, Literal
 from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from periplus.crawl.control.domain_policies.schemas import DomainPolicySnapshot
 
 
 _ATTEMPT_NAMESPACE = UUID("feef76f0-a91d-58f8-9533-e30c90a784b2")
@@ -76,36 +76,11 @@ EvidenceProvenance = Annotated[
 ]
 
 
-class CrawlRecord(CatalogueRecord):
-    crawl_id: UUID
-    kind: Literal["periplus", "import"] = "periplus"
-    graph_id: UUID | None = None
-    graph_config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    graph_config: JsonValue
-    root_url_count: int = Field(ge=0)
-    started_at: datetime
-    finished_at: datetime
-    stop_reason: str = Field(min_length=1, max_length=128)
-
-    @model_validator(mode="after")
-    def validate_record(self) -> CrawlRecord:
-        if self.kind == "periplus" and self.graph_id is None:
-            raise ValueError("Periplus crawl evidence requires graph_id")
-        if self.kind == "import" and self.graph_id is not None:
-            raise ValueError("import crawl evidence cannot claim a graph_id")
-        if self.finished_at < self.started_at:
-            raise ValueError("crawl finished_at cannot precede started_at")
-        digest = hashlib.sha256(canonical_json(self.graph_config).encode()).hexdigest()
-        if digest != self.graph_config_hash:
-            raise ValueError(
-                "graph_config_hash must match canonical graph_config JSON"
-            )
-        return self
-
-
 class VisitRecord(CatalogueRecord):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     visit_id: UUID
-    crawl_id: UUID
+    visibility: Literal["public", "private"] = "public"
     requested_url: str = Field(min_length=1)
     effective_url: str | None = Field(default=None, min_length=1)
     admitted_at: datetime
@@ -154,15 +129,29 @@ class VisitRecord(CatalogueRecord):
         return self
 
 
+class AttemptUsage(CatalogueRecord):
+    """Client capture time, not a provider billing or remote-execution guarantee."""
+    policy_version: int = Field(ge=1)
+    domain_policy: DomainPolicySnapshot | None = None
+    exclusion_policy_version: int | None = Field(default=None, ge=1)
+    reserved_ms: int = Field(ge=1)
+    measured_ms: int | None = Field(default=None, ge=0)
+
+    @property
+    def charged_ms(self) -> int:
+        return self.reserved_ms if self.measured_ms is None else self.measured_ms
+
+
 class AttemptRecord(CatalogueRecord):
+    resource_usage: AttemptUsage | None = None
     attempt_id: UUID
     visit_id: UUID
     attempt_index: int = Field(ge=0)
     started_at: datetime
-    finished_at: datetime
+    finished_at: datetime | None
     effective_url: str | None = Field(default=None, min_length=1)
     status_code: int | None = Field(default=None, ge=100, le=599)
-    outcome: Literal["succeeded", "failed", "cancelled"]
+    outcome: Literal["succeeded", "failed", "cancelled", "uncertain"]
     failure_stage: str | None = Field(default=None, max_length=128)
     failure_code: str | None = Field(default=None, max_length=128)
     failure_message: str | None = Field(default=None, max_length=2048)
@@ -171,7 +160,9 @@ class AttemptRecord(CatalogueRecord):
     def validate_record(self) -> AttemptRecord:
         if self.attempt_id != attempt_id_for(self.visit_id, self.attempt_index):
             raise ValueError("attempt_id must be derived from visit_id and attempt_index")
-        if self.finished_at < self.started_at:
+        if self.finished_at is None and self.outcome != "uncertain":
+            raise ValueError("only uncertain attempts may have no known finish time")
+        if self.finished_at is not None and self.finished_at < self.started_at:
             raise ValueError("attempt finished_at cannot precede started_at")
         failure_values = (
             self.failure_stage,
@@ -281,7 +272,7 @@ class VisitEvidence(CatalogueRecord):
 
 
 class IngestionWriteResult(CatalogueRecord):
-    kind: Literal["crawl", "visit"]
+    kind: Literal["visit", "lineage"]
     identity: UUID
     created: bool
-    repository_snapshot: int
+    repository_snapshot: int = Field(ge=0)

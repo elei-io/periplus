@@ -85,26 +85,47 @@ def get_domain_policy(session: Session, policy_id: UUID) -> DomainPolicy | None:
     return session.get(DomainPolicy, policy_id)
 
 
+class DomainPolicyVersionConflict(ValueError):
+    pass
+
+
+def _lock_frontier(session: Session) -> None:
+    from periplus.crawl.runtime.frontier_models import FrontierControlRecord
+    if session.scalar(select(FrontierControlRecord.id).where(FrontierControlRecord.id == 1).with_for_update()) is None:
+        raise RuntimeError("frontier control is not installed; run setup")
+
+
 def create_domain_policy(session: Session, request: DomainPolicyCreateRequest) -> DomainPolicy:
-    policy = DomainPolicy(**request.model_dump())
+    _lock_frontier(session)
+    policy = DomainPolicy(**request.model_dump(), updated_by="admin")
     session.add(policy)
     session.flush()
     return policy
 
 
-def update_domain_policy(session: Session, *, policy: DomainPolicy, **changes) -> DomainPolicy:
+def update_domain_policy(session: Session, *, policy: DomainPolicy, expected_version: int, **changes) -> DomainPolicy:
+    _lock_frontier(session)
+    current = session.get(DomainPolicy, policy.id, populate_existing=True)
+    if current is None or current.version != expected_version:
+        raise DomainPolicyVersionConflict("domain policy changed; reload before updating")
     if policy.slug == DEFAULT_DOMAIN_POLICY_SLUG:
         if changes.get("enabled") is False or changes.get("host_match") not in {None, "*"}:
             raise ValueError("the default DomainPolicy must remain enabled and match every host")
     for field, value in changes.items():
         if value is not None:
             setattr(policy, field, value)
+    policy.version += 1
+    policy.updated_by = "admin"
     policy.updated_at = datetime.now(UTC)
     session.flush()
     return policy
 
 
-def delete_domain_policy(session: Session, *, policy: DomainPolicy) -> None:
+def delete_domain_policy(session: Session, *, policy: DomainPolicy, expected_version: int) -> None:
+    _lock_frontier(session)
+    current = session.get(DomainPolicy, policy.id, populate_existing=True)
+    if current is None or current.version != expected_version:
+        raise DomainPolicyVersionConflict("domain policy changed; reload before deleting")
     if policy.slug == DEFAULT_DOMAIN_POLICY_SLUG:
         raise ValueError("the default DomainPolicy cannot be deleted")
     session.delete(policy)

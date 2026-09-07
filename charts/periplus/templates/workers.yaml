@@ -52,6 +52,27 @@ spec:
           env:
             {{- include "periplus.coreEnv" $root | nindent 12 }}
             {{- if eq $worker.name "crawler" }}
+            - name: PERIPLUS_QUERY_URL
+              value: http://{{ include "periplus.fullname" $root }}-query:{{ $root.Values.query.service.port }}
+            - name: PERIPLUS_QUERY_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $root.Values.secrets.apiAccess.name }}
+                  key: {{ $root.Values.secrets.apiAccess.queryTokenKey }}
+            - name: PERIPLUS_DISCOVERY_MODEL
+              value: {{ $root.Values.crawler.discovery.model | quote }}
+            {{- if $root.Values.crawler.discovery.existingSecret }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $root.Values.crawler.discovery.existingSecret }}
+                  key: {{ $root.Values.crawler.discovery.openaiKeyKey }}
+            - name: BRAVE_SEARCH_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $root.Values.crawler.discovery.existingSecret }}
+                  key: {{ $root.Values.crawler.discovery.braveKeyKey }}
+            {{- end }}
             - name: PERIPLUS_CDP_URL
               value: {{ $root.Values.config.cdpUrl | quote }}
             {{- end }}

@@ -1,4 +1,4 @@
-# Upstream DuckLake feedback
+# Upstream feedback
 
 Periplus uses the official DuckDB and DuckLake extensions directly. LakeDucktor owns physical lake
 maintenance; Periplus owns ingestion evidence and logical materialization generations.
@@ -50,3 +50,18 @@ maintenance; Periplus owns ingestion evidence and logical materialization genera
 - **Periplus status:** the API discards a connection after DuckDB `InternalException` or
   `FatalException`, opens a validated fresh attachment, and retries its serialized read-only
   operation once. This bounds the incident but does not replace an upstream cache-coherence fix.
+
+## SQLGlot DuckDB tokenizer misclassifies anonymous parameter casts
+
+- **Periplus caller:** parameterized public queries and crawler corpus seed SQL.
+- **Evidence:** with SQLGlot 30.12.0, DuckDB tokenization of `SELECT ?::UUID` produces one
+  `QDCOLON` token for `?::` and parsing fails. DuckDB 1.5.5 executes that statement successfully
+  with a bound UUID string. SQLGlot accepts `SELECT ? :: UUID`, `SELECT CAST(? AS UUID)`, and
+  `SELECT $1::UUID`. The shared tokenizer keyword table supplies the conflicting operator.
+- **Needed upstream contract:** DuckDB's dialect should tokenize adjacent `?::` as an anonymous
+  parameter followed by a cast, with parameter, literal/comment, and surrounding-expression tests.
+- **Periplus implementation:** the query-boundary DuckDB tokenizer omits this one inherited keyword.
+  It does not rewrite SQL, alter global SQLGlot state, change parameters, or weaken namespace and
+  statement checks. Regression tests execute both cast forms through a real read-only DuckLake
+  query service and confirm the seed client sends the original SQL. No upstream issue or message
+  has been published from this session.

@@ -1,4 +1,4 @@
-"""Prometheus metrics for acquisition-owned graph navigation packages."""
+"""Prometheus metrics for acquisition-owned navigation packages."""
 
 from prometheus_client import Counter, Histogram
 

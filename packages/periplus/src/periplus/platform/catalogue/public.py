@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 
 from periplus.platform.catalogue.exceptions import CatalogueSchemaError
 
-PUBLIC_CATALOGUE_VERSION = "1.1.0"
+PUBLIC_CATALOGUE_VERSION = "2.0.0"
 WEB_SCHEMA = "web"
 CONTENT_SCHEMA = "content"
 PUBLIC_SCHEMAS = (WEB_SCHEMA, CONTENT_SCHEMA)

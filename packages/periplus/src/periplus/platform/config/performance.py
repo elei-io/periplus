@@ -38,9 +38,7 @@ MATERIALIZATION_CATALOGUE_HARD_TIMEOUT_SECONDS = 300.0
 # Ingestion replicas share this code-owned cluster ceiling. It is deliberately
 # independent of local lane count so adding replicas adds useful executors
 # without mutating the durable consumer contract.
-GRAPH_CONSUMER_MAX_ACK_PENDING = 1024
 INGESTION_CONSUMER_MAX_ACK_PENDING = 1024
-GRAPH_ACK_WAIT_SECONDS = 60.0
 INGESTION_ACK_WAIT_SECONDS = 60.0
 
 # Domain concurrency is a website-politeness contract, separate from generic

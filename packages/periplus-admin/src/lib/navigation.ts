@@ -1,9 +1,7 @@
 import {
   ChartNoAxesCombinedIcon,
-  GitForkIcon,
   ShieldCheckIcon,
   Globe2Icon,
-  CalendarClockIcon,
   DatabaseZapIcon,
   FileTextIcon,
   SquareTerminalIcon,
@@ -48,22 +46,24 @@ export const navigationGroups: NavigationGroup[] = [
     ],
   },
   {
-    name: "Crawls",
-    slug: "crawls",
+    name: "Crawler",
+    slug: "crawler",
     items: [
       {
-        name: "Plans",
-        href: "/crawls/plans",
-        icon: GitForkIcon,
-        title: "Crawl Plans",
-        description: "Compose and run reusable page-acquisition plans.",
+        name: "Controls",
+        href: "/frontier",
+        icon: Globe2Icon,
+        title: "Crawler Controls",
+        description:
+          "Control shared crawler pace, budgets, and background exploration.",
       },
       {
-        name: "Schedules",
-        href: "/crawls/schedules",
-        icon: CalendarClockIcon,
-        title: "Crawl Schedules",
-        description: "Run crawl plans automatically on intervals or cron.",
+        name: "Collections",
+        href: "/collections",
+        icon: FileTextIcon,
+        title: "Collections",
+        description:
+          "Inspect collection intent, progress, outcomes, and history.",
       },
       {
         name: "Content policies",
@@ -80,39 +80,32 @@ export const navigationGroups: NavigationGroup[] = [
         title: "Domain Policies",
         description: "Limit concurrent and paced requests to websites.",
       },
-      {
-        name: "Metrics",
-        href: "/crawls/metrics",
-        icon: ChartNoAxesCombinedIcon,
-        title: "Crawl Metrics",
-        description: "See page acquisition progress, capacity, and crawl runs.",
-      },
     ],
   },
 ]
 
-export const defaultNavigationItem = navigationGroups[0].items[0]
+export const defaultNavigationItem = navigationGroups[1].items[0]
 export const homeNavigationItem = {
   name: "Overview",
   href: "/",
   icon: DatabaseZapIcon,
   title: "Periplus Admin",
-  description: "Monitor and maintain crawls and the catalogue.",
+  description: "Control the continuous crawler and maintain the catalogue.",
 }
 
 export function findNavigationItem(pathname: string) {
+  if (/^\/frontier\/items\/[^/]+$/.test(pathname)) {
+    return navigationGroups
+      .flatMap((group) => group.items)
+      .find((item) => item.href === "/frontier")
+  }
   if (pathname === "/") {
     return homeNavigationItem
   }
-  if (pathname.startsWith("/crawls/plans/")) {
+  if (/^\/collections\/[^/]+$/.test(pathname)) {
     return navigationGroups
       .flatMap((group) => group.items)
-      .find((item) => item.href === "/crawls/plans")
-  }
-  if (pathname.startsWith("/crawls/schedules/")) {
-    return navigationGroups
-      .flatMap((group) => group.items)
-      .find((item) => item.href === "/crawls/schedules")
+      .find((item) => item.href === "/collections")
   }
   if (pathname.startsWith("/content-policies/")) {
     return navigationGroups

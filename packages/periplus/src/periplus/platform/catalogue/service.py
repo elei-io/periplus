@@ -16,7 +16,6 @@ from periplus.platform.catalogue.exceptions import (
 )
 from periplus.platform.catalogue.records import (
     AttemptRecord,
-    CrawlRecord,
     DocumentRecord,
     IngestionWriteResult,
     StepRecord,
@@ -26,7 +25,6 @@ from periplus.platform.catalogue.records import (
 )
 from periplus.platform.catalogue.schema import (
     ATTEMPTS,
-    CRAWLS,
     DOCUMENTS,
     STEPS,
     VISITS,
@@ -34,50 +32,22 @@ from periplus.platform.catalogue.schema import (
     expected_columns,
 )
 
+from periplus.platform.catalogue.lineage import LINEAGE_ADAPTER, LineageEvidence
+from periplus.platform.catalogue.physical.lineage import (
+    COLLECTIONS, COLLECTION_OUTCOMES, FULFILLMENTS, ACQUISITION_REASONS,
+)
+
+_LINEAGE_RELATIONS = {
+    "collection": COLLECTIONS, "collection_outcome": COLLECTION_OUTCOMES,
+    "fulfillment": FULFILLMENTS, "acquisition_reason": ACQUISITION_REASONS,
+}
+
 
 class CatalogueService:
     """The only durable write boundary for immutable ingestion evidence."""
 
     def __init__(self, catalogue: Catalogue) -> None:
         self.catalogue = catalogue
-
-    def record_crawls(
-        self,
-        records: Sequence[CrawlRecord],
-    ) -> list[IngestionWriteResult]:
-        if not records:
-            return []
-        unique = _unique_records(records, identity=lambda value: value.crawl_id)
-        created: dict[UUID, bool] = {}
-        with self.catalogue.transaction():
-            existing = self.get_crawls([record.crawl_id for record in unique])
-            missing: list[CrawlRecord] = []
-            for record in unique:
-                durable = existing.get(record.crawl_id)
-                if durable is None:
-                    missing.append(record)
-                    created[record.crawl_id] = True
-                elif durable != record:
-                    raise CatalogueConflictError(
-                        f"crawl_id {record.crawl_id} has different durable evidence"
-                    )
-                else:
-                    created[record.crawl_id] = False
-            self._append(
-                CRAWLS,
-                [_crawl_values(record) for record in missing],
-                json_columns=("graph_config",),
-            )
-        snapshot = self._result_snapshot(changed=bool(missing))
-        return [
-            IngestionWriteResult(
-                kind="crawl",
-                identity=record.crawl_id,
-                created=created[record.crawl_id],
-                repository_snapshot=snapshot,
-            )
-            for record in records
-        ]
 
     def record_visits(
         self,
@@ -114,6 +84,7 @@ class CatalogueService:
                     for entry in missing
                     for attempt in entry.attempts
                 ],
+                json_columns=("resource_usage",),
             )
             self._append(
                 STEPS,
@@ -147,16 +118,43 @@ class CatalogueService:
             for entry in entries
         ]
 
-    def get_crawl(self, crawl_id: UUID) -> CrawlRecord | None:
-        return self.get_crawls([crawl_id]).get(crawl_id)
+    def get_lineage(self, kind: str, identity: UUID) -> LineageEvidence | None:
+        relation = _LINEAGE_RELATIONS[kind]
+        rows = self._rows_by_ids(relation, "record_id", [identity])
+        return LINEAGE_ADAPTER.validate_python(rows[0] | {"kind": kind}) if rows else None
 
-    def get_crawls(self, crawl_ids: Sequence[UUID]) -> dict[UUID, CrawlRecord]:
-        rows = self._rows_by_ids(CRAWLS, "crawl_id", crawl_ids)
-        return {
-            record.crawl_id: record
-            for row in rows
-            if (record := CrawlRecord.model_validate(row))
-        }
+    def record_lineage(self, entries: Sequence[LineageEvidence]) -> list[IngestionWriteResult]:
+        if not entries:
+            return []
+        unique = _unique_records(entries, identity=lambda value: (value.kind, value.record_id))
+        created = {}
+        with self.catalogue.transaction():
+            for kind, relation in _LINEAGE_RELATIONS.items():
+                group = [entry for entry in unique if entry.kind == kind]
+                durable = {
+                    row["record_id"]: LINEAGE_ADAPTER.validate_python(row | {"kind": kind})
+                    for row in self._rows_by_ids(relation, "record_id", [entry.record_id for entry in group])
+                }
+                # Backends may expose UUID columns as strings or UUID values.
+                durable = {str(key): value for key, value in durable.items()}
+                missing = []
+                json_columns = tuple(name for name, column in expected_columns()[relation].items() if column.data_type == "JSON")
+                for entry in group:
+                    existing = durable.get(str(entry.record_id))
+                    if existing is not None and existing != entry:
+                        raise CatalogueConflictError(f"{kind} {entry.record_id} has different durable evidence")
+                    created[(kind, entry.record_id)] = existing is None
+                    if existing is None:
+                        values = {key: str(value) if isinstance(value, UUID) else value
+                                  for key, value in entry.model_dump(exclude={"kind"}).items()}
+                        encoded = entry.model_dump(mode="json")
+                        values.update({key: encoded[key] for key in json_columns})
+                        missing.append(values)
+                self._append(relation, missing, json_columns=json_columns)
+        snapshot = self._result_snapshot(changed=any(created.values()))
+        return [IngestionWriteResult(kind="lineage", identity=entry.record_id,
+                                     created=created[(entry.kind, entry.record_id)],
+                                     repository_snapshot=snapshot) for entry in entries]
 
     def get_visit(self, visit_id: UUID) -> VisitRecord | None:
         rows = self._rows_by_ids(VISITS, "visit_id", [visit_id])
@@ -313,10 +311,6 @@ def _unique_records(records: Sequence, *, identity) -> list:
     return list(unique.values())
 
 
-def _crawl_values(record: CrawlRecord) -> dict[str, object]:
-    return record.model_dump(mode="python")
-
-
 def _visit_values(record: VisitRecord) -> dict[str, object]:
     values = record.model_dump(mode="python")
     provenance = values["provenance"]
@@ -330,7 +324,9 @@ def _visit_values(record: VisitRecord) -> dict[str, object]:
 
 
 def _attempt_values(record: AttemptRecord) -> dict[str, object]:
-    return record.model_dump(mode="python")
+    values = record.model_dump(mode="python")
+    values["resource_usage"] = record.resource_usage.model_dump(mode="json") if record.resource_usage else None
+    return values
 
 
 def _step_values(record: StepRecord) -> dict[str, object]:

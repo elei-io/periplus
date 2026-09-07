@@ -25,7 +25,6 @@ from pydantic import BaseModel, ConfigDict, model_validator
 import zstandard
 
 from periplus.platform.catalogue import (
-    CrawlRecord,
     IngestionWriteResult,
     VisitEvidence,
 )
@@ -44,23 +43,28 @@ DURABLE = "periplus-ingestion"
 RESULTS_BUCKET = "periplus_ingestion_results"
 
 
-class IngestionJob(BaseModel):
-    model_config = ConfigDict(frozen=True)
+from periplus.platform.catalogue.lineage import LineageEvidence
 
-    kind: Literal["crawl", "visit"]
+
+class IngestionJob(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: Literal["visit", "lineage"]
     request_id: str
     enqueued_at: datetime
-    crawl: CrawlRecord | None = None
     visit: VisitEvidence | None = None
+    lineage: LineageEvidence | None = None
 
     @model_validator(mode="after")
     def validate_job(self) -> IngestionJob:
-        if self.kind == "crawl":
-            if self.crawl is None or self.visit is not None:
-                raise ValueError("crawl ingestion requires only crawl evidence")
-            expected = crawl_ingestion_request_id(self.crawl.crawl_id)
+        if self.kind == "lineage":
+            if self.lineage is None or self.visit is not None:
+                raise ValueError("lineage ingestion requires only lineage evidence")
+            expected = f"lineage-{self.lineage.kind}-{self.lineage.record_id.hex}"
+        elif self.lineage is not None:
+            raise ValueError("non-lineage job cannot carry lineage evidence")
         else:
-            if self.visit is None or self.crawl is not None:
+            if self.visit is None:
                 raise ValueError("visit ingestion requires only visit evidence")
             expected = visit_ingestion_request_id(self.visit.visit.visit_id)
         if self.request_id != expected:
@@ -69,9 +73,9 @@ class IngestionJob(BaseModel):
 
     @property
     def identity(self) -> UUID:
-        if self.kind == "crawl":
-            assert self.crawl is not None
-            return self.crawl.crawl_id
+        if self.kind == "lineage":
+            assert self.lineage is not None
+            return self.lineage.record_id
         assert self.visit is not None
         return self.visit.visit.visit_id
 
@@ -118,21 +122,8 @@ class IngestionState(BaseModel):
         return self
 
 
-def crawl_ingestion_request_id(crawl_id: UUID) -> str:
-    return f"crawl-{crawl_id.hex}"
-
-
 def visit_ingestion_request_id(visit_id: UUID) -> str:
     return f"visit-{visit_id.hex}"
-
-
-def crawl_ingestion_job(record: CrawlRecord) -> IngestionJob:
-    return IngestionJob(
-        kind="crawl",
-        request_id=crawl_ingestion_request_id(record.crawl_id),
-        enqueued_at=datetime.now(UTC),
-        crawl=record,
-    )
 
 
 def visit_ingestion_job(evidence: VisitEvidence) -> IngestionJob:
@@ -142,6 +133,12 @@ def visit_ingestion_job(evidence: VisitEvidence) -> IngestionJob:
         enqueued_at=datetime.now(UTC),
         visit=evidence,
     )
+
+
+def lineage_ingestion_job(evidence: LineageEvidence) -> IngestionJob:
+    return IngestionJob(kind="lineage", lineage=evidence,
+                        request_id=f"lineage-{evidence.kind}-{evidence.record_id.hex}",
+                        enqueued_at=datetime.now(UTC))
 
 
 def encode_dead_letter(entry: DeadLetterEntry) -> bytes:
@@ -488,11 +485,16 @@ class IngestionQueueClient:
         await ensure_repository_stream(self.jetstream)
         self.results = await ensure_ingestion_results(self.jetstream)
 
+    async def check_available(self) -> None:
+        """Probe existing delivery handles without provisioning or waiting for ingestion."""
+        self._require_connected()
+        async with asyncio.timeout(5):
+            await self.client.flush(timeout=2)
+            await self.jetstream.stream_info(STREAM)
+            await self.results.status()
+
     async def enqueue_visit(self, evidence: VisitEvidence) -> None:
         await self.enqueue(visit_ingestion_job(evidence))
-
-    async def enqueue_crawl(self, record: CrawlRecord) -> None:
-        await self.enqueue(crawl_ingestion_job(record))
 
     async def enqueue(self, job: IngestionJob) -> None:
         state = await self._pending_state(job)
@@ -501,26 +503,21 @@ class IngestionQueueClient:
         await self._publish(state.job)
         await mark_ingestion_published(self.results, state.job.request_id)
 
+    async def reconcile(self, job: IngestionJob) -> IngestionState:
+        """Return a verified receipt or republish pending work without waiting.
+
+        Expired result KV entries are not proof of missing lake evidence. Replay
+        the original immutable job so the ingestor can reconcile its lake commit.
+        The caller owns bounded scheduling/backoff; this performs no provisioning.
+        """
+        state = await self._pending_state(job)
+        if state.status == "pending":
+            await self._publish(state.job)
+            state = await mark_ingestion_published(self.results, state.job.request_id)
+        return state
+
     async def submit(self, job: IngestionJob) -> IngestionWriteResult:
         state = await self._pending_state(job)
-        if state.status != "pending":
-            return result_from_ingestion_state(state)
-        return await self._publish_and_wait(state)
-
-    async def resume(
-        self,
-        kind: Literal["crawl", "visit"],
-        identity: UUID,
-    ) -> IngestionWriteResult | None:
-        self._require_connected()
-        request_id = (
-            crawl_ingestion_request_id(identity)
-            if kind == "crawl"
-            else visit_ingestion_request_id(identity)
-        )
-        state = await get_ingestion_state(self.results, request_id)
-        if state is None:
-            return None
         if state.status != "pending":
             return result_from_ingestion_state(state)
         return await self._publish_and_wait(state)

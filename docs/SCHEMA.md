@@ -14,20 +14,30 @@ small evidence kernel.
 Periplus owns observation faithfully. Interpretation begins outside Periplus. It does not publish a
 `data.*` schema or define domain entities such as companies, products, people, claims, or topics.
 
+Physical contract version: `5.0.0`. The cutover resets disposable prior state; there is no graph-era
+crawl table or compatibility migration.
+
 ## `ingest.*`
 
 The authoritative relations are:
 
-- `ingest.crawls` — terminal crawl executions and frozen graph configuration.
 - `ingest.visits` — one terminal acquisition or imported observation of a URL.
 - `ingest.attempts` — ordered acquisition attempts for a visit.
 - `ingest.steps` — content-completion actions within an attempt.
 - `ingest.documents` — the optional immutable content retained by a visit.
+- `ingest.collections` — frozen finite collection definitions.
+- `ingest.collection_outcomes` — separately appended terminal request outcomes.
+- `ingest.fulfillments` — one request URL result associated with an existing observation.
+- `ingest.acquisition_reasons` — request/background causal reasons frozen at dispatch.
 
 They contain observed evidence only. There is no page dimension, URL decomposition, latest-state
 pointer, or materialization hint in ingestion. Inserts are idempotent only when an existing
 identity has identical evidence; conflicting reuse fails. No update, correction, replacement, or
 deletion path exists.
+
+An acquisition attempt may have outcome `uncertain` after loss of its executing worker. Its
+`finished_at` is null when the actual finish time is unknown. Recovery does not invent a finish
+time or describe a repeated remote attempt as exactly-once execution.
 
 Requested and effective URLs are normalized before their frozen ingestion job is produced:
 surrounding whitespace and fragments are removed, scheme and hostname are lower-cased, default
@@ -102,11 +112,14 @@ or delete requires redeployment and a complete rebuild.
 
 ## Public catalogue
 
-The public catalogue contains exactly four relations:
+The public catalogue exposes observation/content evidence and separate collection lineage:
 
 ```text
 web.observation
 web.link_occurrence
+web.collection
+web.fulfillment
+web.acquisition_reason
 content.object
 content.html_element
 ```
@@ -133,7 +146,7 @@ Periplus with their own attached databases should use the fully qualified form.
 One terminal URL observation, including unsuccessful observations:
 
 ```text
-observation_id, crawl_id
+observation_id
 requested_url, effective_url
 observed_at, outcome, http_status_code
 content_id
@@ -141,6 +154,9 @@ source_kind, source_system, source_dataset, source_record_id
 ```
 
 `content_id` is nullable and identifies the one retained content object when present. The relation
+has no owning crawl or collection: one acquisition can supply multiple collections. Collection
+fulfillment and acquisition reasons belong to separate lineage relations in the frontier cutover.
+The relation
 does not implicitly join URL components, current or latest state, acquisition attempts, content
 statistics, or parsed structures.
 
@@ -163,7 +179,7 @@ for its format. The relation exposes neither repository keys nor physical storag
 Public `content_id` values are the same SHA-256 content identities stored physically as
 `content_sha256`.
 
-The same `content_id` may belong to observations of multiple URLs, crawls, sources, or times.
+The same `content_id` may belong to observations of multiple URLs, collections, sources, or times.
 Content-grain projections are therefore emitted once and reused through observation joins.
 
 ### `content.html_element`
@@ -212,3 +228,80 @@ This is faithful projected DOM text, not browser-rendered text or original HTML 
 Helper declarations, SQL resources, documentation and examples are owned by the explicit
 registry in `platform/catalogue/helpers/`. Installation uses the same setup transaction
 as the public views. No new materialized relation is introduced.
+
+### Collection lineage
+
+`web.collection` exposes public frozen intent and its optional terminal outcome. It has one row per
+collection; an absent outcome can mean collection is active or outcome ingestion is pending.
+`seed_provenance` in a collection outcome retains the seed query snapshot, query ID, selection
+time, and frozen-candidate digest. It remains available after control-state cleanup; SQL and
+parameters remain in the frozen collection specification.
+`web.fulfillment` has one row per request URL result and references the independently owned
+`observation_id`. Different collections may reference the same observation, including later recent
+reuse. `web.acquisition_reason` records the collection or background reason frozen at dispatch;
+later reuse does not retroactively become a cause of capture. Each lineage view filters private
+records. Observation queries do not implicitly join any lineage view or multiply their rows.
+
+Background reasons require `selection_provenance`, containing the background policy version,
+historical source snapshot, and source query ID used to admit the candidate. The parent observation
+and selection rule identify the discovery cause. Collection reasons omit this background provenance.
+These fields survive operational selection-check expiry through the ordinary lineage ingestion lane.
+
+Lineage jobs use the ordinary ingestion lane with stable identities and conflicting-evidence
+rejection. They append independently of visit insertion and never trigger visit materialization.
+During asynchronous ingestion a relationship may precede its referenced evidence. Query readiness
+must therefore be checked separately, not inferred from a lineage row's existence.
+
+`material.visit_readiness` records each visit processed by a materialization batch, including
+visits with no applicable structural output. Its files commit with the other projection files and
+applied-batch marker, and participate in the same atomic generation activation. It is a derived
+membership proof, not another ingestion cursor. For HTML, readiness additionally requires the
+active content-presence marker: a separate visit batch can own the shared DOM/JSON-LD output.
+
+Arrivals, Live recent captures, and current frontier-item drilldowns report `query_ready: true` only when visible base evidence,
+visit membership, applicable content presence, and the matching active registry are verified in
+one statement snapshot. `false` means materialization is pending in the verified active generation;
+`null` means readiness could not be verified, with an explicit reason. This describes the observed
+generation, not a promise that a later query cannot fail or that a future rebuild has finished.
+
+Collection API detail distinguishes `source: current` from `source: history`. Historical detail
+reads immutable definition/outcome rows, preserves unknown counters when the outcome has not
+arrived, and does not infer materialization readiness. The current-state list explicitly identifies
+its scope. A supplied collection ID is checked against immutable history when absent from current
+state; identical intent returns that historical request, while conflicting intent cannot restart it.
+History unavailability defers that identity check rather than treating failure as absence.
+
+During retirement, current collection rows remain hidden while their dependent interests and outbox
+rows are pruned in bounded batches. Definition/outcome receipts, all associated lineage receipts,
+and accepted evidence receipts must be durable before the handoff begins. API detail continues from
+history throughout pruning. Private history is available only through authorized administrative
+detail reads; the public SQL visibility contract is unchanged.
+
+### Attempt control provenance
+
+Frontier attempt `resource_usage` retains the effective domain policy snapshot (identity, version,
+actor, concurrency, interval, and pause setting) and exclusion-policy version alongside the global
+physical-allowance version and reserved/measured milliseconds. Final start freezes this domain
+snapshot after checking current policy; edits do not rewrite already-started attempt evidence.
+Unknown attempts retain the same frozen policy provenance and conservative time charge. Imported
+attempts may omit frontier control provenance. Nested policy values use canonical JSON in DuckLake.
+
+
+Current Postgres collection state retains an optional `admission_timing` observation containing the
+crawler control version, request priority, and first committed admission timestamp. It is written
+in the same transaction as the first interest and never reset by admission replay. Changing request
+priority invalidates comparability; changing crawler controls before first admission also invalidates
+the sample. This bounded operational observation retires with the collection and is not another
+crawl-history table. Alembic revision `20260907_0002` adds the nullable observation column; missing
+observations remain unknown and are not reconstructed from historical data.
+
+The nullable operational `collections.last_progress_at` timestamp is updated transactionally on
+execution progress, independently of scheduler claims and view polling. Current views also consider
+stored submission, last dispatch and completion timestamps; they never use read time as progress.
+It is not a crawl-history relation and is reclaimed with the collection.
+
+Completion-step `parameters` contains the executed `action_version` and `config` plus a distinct
+`measurements` object with iterations and before/after element, text, link and scroll-height counts.
+These measured completion signals accompany duration and stopping reason; they do not certify
+usefulness or completeness. A successful observation means capture checks passed, and may still
+contain a challenge or incomplete content. Immutable source bytes support later quality evaluation.

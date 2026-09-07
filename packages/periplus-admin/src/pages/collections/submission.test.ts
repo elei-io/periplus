@@ -1,0 +1,54 @@
+import assert from "node:assert/strict"
+import { test } from "node:test"
+import { collectionSubmission } from "./submission.ts"
+
+function form() {
+  const value = new FormData()
+  for (const [key, text] of Object.entries({
+    seed_urls: "https://example.com/a?x=1\nhttps://example.com/a?x=2",
+    follow_sql: "SELECT target_url AS url FROM nav.links",
+    max_depth: "0",
+    page_limit: "25",
+    result_max_age_seconds: "0",
+    access_context: "public",
+  }))
+    value.set(key, text)
+  return value
+}
+test("submission preserves conservative URLs, zero depth and fresh-result intent", () => {
+  const spec = collectionSubmission(form())
+  assert.deepEqual(spec.seed_urls, [
+    "https://example.com/a?x=1",
+    "https://example.com/a?x=2",
+  ])
+  assert.equal(spec.max_depth, 0)
+  assert.equal(spec.result_max_age_seconds, 0)
+  assert.equal(spec.visibility, "public")
+})
+test("SQL parameters and explicit private visibility survive submission", () => {
+  const value = form()
+  value.set(
+    "seed_sql",
+    "SELECT requested_url AS url FROM web.observation WHERE requested_url = ? LIMIT 10"
+  )
+  value.set("seed_parameters", '["example.com"]')
+  value.set("private", "on")
+  value.set("deadline_at", "2026-10-01T12:00:00+09:00")
+  const spec = collectionSubmission(value)
+  assert.deepEqual(spec.seed_parameters, ["example.com"])
+  assert.equal(spec.visibility, "private")
+  assert.equal(spec.deadline_at, "2026-10-01T03:00:00.000Z")
+})
+test("missing intent, orphan parameters, and invalid budgets do not silently coerce", () => {
+  const value = form()
+  value.set("page_limit", "")
+  assert.throws(() => collectionSubmission(value), /integer/)
+  value.set("page_limit", "1.5")
+  assert.throws(() => collectionSubmission(value), /integer/)
+  value.set("page_limit", "25")
+  value.set("seed_parameters", '["orphan"]')
+  assert.throws(() => collectionSubmission(value), /require seed SQL/)
+  value.set("seed_parameters", "[]")
+  value.set("seed_urls", "")
+  assert.throws(() => collectionSubmission(value), /Provide starting/)
+})

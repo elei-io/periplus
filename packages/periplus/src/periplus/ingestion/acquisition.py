@@ -18,6 +18,7 @@ from periplus.ingestion.queue import (
     visit_ingestion_request_id,
 )
 from periplus.ingestion.objects.config import object_store_from_env
+from periplus.ingestion.objects.readiness import StorageReadiness
 from periplus.ingestion.objects.document import (
     ExactDocumentIdentity,
     ExactDocumentRepository,
@@ -42,6 +43,7 @@ class AcquisitionPipeline:
         maximum_concurrency: int = 1,
     ) -> None:
         store = object_store_from_env(maximum_concurrency=maximum_concurrency)
+        self.storage_readiness = StorageReadiness(store)
         self.html_repository = RawHtmlRepository(store)
         self.document_repository = ExactDocumentRepository(store)
         self.queue = queue or IngestionQueueClient()
@@ -59,6 +61,10 @@ class AcquisitionPipeline:
         traceback: TracebackType | None,
     ) -> None:
         await self.close()
+
+    async def check_storage_available(self) -> None:
+        self._require_running()
+        await self.storage_readiness.check()
 
     async def store_html(
         self,
@@ -166,6 +172,7 @@ class AcquisitionPipeline:
     async def close(self) -> None:
         if not self._running:
             return
+        await self.storage_readiness.close()
         await self.queue.close()
         self._running = False
 

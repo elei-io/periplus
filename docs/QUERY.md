@@ -75,6 +75,9 @@ Both operations accept SQL and positional parameters and use the same public SQL
 Preparation binds and explains without executing the analytical query, returning SQL, parameters,
 a query ID, diagnostics, and a plan. SQL currently remains unchanged; DuckDB optimizes its plan.
 Execution always prepares independently, then runs the query. It does not trust a prior prep call.
+Execution returns `source_snapshot`, obtained from `ducklake_current_snapshot` inside the same
+read transaction before binding or executing the query. The result and snapshot therefore describe
+one consistent source even if another writer commits concurrently.
 The browser renders server results; there is no Wasm runtime, metadata export, file proxy, or
 client telemetry endpoint. Server logs capture SQL, parameters, outcome, and elapsed time.
 
@@ -99,8 +102,8 @@ attachment alone is not a substitute for read-only credentials.
 ## 2. Python SDK
 
 `packages/periplus-python-sdk/` is the first client package. It wraps DuckDB connection setup and
-results and control-plane operations such as crawl submission and run
-tracking. It does not define public catalogue semantics or compile and rewrite user SQL.
+results and control-plane operations for collection submission, current/history status, and
+versioned crawler/domain controls. Collection settlement and structural query readiness are separate. It does not define public catalogue semantics or compile and rewrite user SQL.
 `periplus_sdk.conn.duck()` returns an ordinary `duckdb.DuckDBPyConnection` over the versioned public
 catalogue using the same `PERIPLUS_DUCKLAKE_*` attachment contract as Periplus. Both runtime and SDK
 connections select one connection protocol at their factory boundary; filesystem, S3, and
@@ -142,3 +145,101 @@ storage URLs or credentials. HTTP and filesystem failures are operational; clien
 not treat them as evidence of missing corpus coverage or repeatedly rewrite SQL to fix them.
 The Next.js agent preserves these categories and stops querying when storage/service access
 is unavailable. Read-only clients never initiate lake repair.
+
+### Corpus seed selections
+
+The crawler calls `POST /query/exec` through one process-owned bounded HTTP client for an explicit
+collection seed query. It supplies frozen SQL and positional parameters and accepts only a complete
+single `url` column. Truncated results, invalid URLs, and oversized selections fail visibly rather
+than admitting a silently incomplete seed set. Service/storage failures defer selection with bounded
+backoff; page-local follow selection and existing acquisitions continue independently.
+
+Before admitting any seed, the crawler freezes the candidates, query ID, source snapshot, and
+selection time. Resumption uses that checkpoint. Collection outcome evidence retains the provenance
+and a digest of the frozen candidates; the collection definition retains SQL and parameters.
+
+### Background historical eligibility baseline
+
+The initial background lookup checks at most 64 normalized URLs / 64 KiB through the existing
+read-only query boundary. Any public terminal requested URL counts as seen; an effective URL counts
+only for a successful public observation. Private evidence is excluded by `web.observation`.
+Missing snapshots, incomplete results, unexpected URLs, and service/resource errors never prove
+absence. Each operational check registers before querying and expires after two minutes.
+
+The first measured query used two correlated `EXISTS` branches joined by `OR`. At one million
+synthetic observations, `EXPLAIN ANALYZE` showed roughly 941,176 public visits participating in
+observation/document joins before candidate filtering. This was classified as a compiler/optimizer
+issue: the requested output was already at most 64 URLs, but candidate predicates arrived too late.
+The generated lookup now binds one URL array and applies `list_contains` separately to requested
+and successful effective URLs, then unions and deduplicates the results. This is internal lookup
+SQL, not a rewrite of user queries or a new public schema.
+
+Local DuckLake / DuckDB v1.5.5 measurements on 2026-09-07:
+
+| Synthetic observations | Documents | Candidates / matches | Cold query | Warm queries |
+| --- | --- | --- | --- | --- |
+| 1,000,000 | 923,076 | 64 / 45 | 152 ms | 128 ms, 128 ms |
+| 10,000,000 | 9,230,769 | 64 / 45 | 1,072 ms | 935 ms, 949 ms |
+
+At the same one-million-row snapshot, the original query took 204 ms warm and returned identical
+rows, types, and ordering. At ten million rows, the same-snapshot comparison also matched exactly;
+the original query took 4,198 ms warm. The revised analyzed plan reduced visits entering its two document joins
+to 30 and 41 rows; final distinct output was 45 URLs. Document scans remained broad (approximately
+854k and 869k rows at one million observations). No claim is made that this removes all history scans.
+The lookup retains the query service's 20-second execution, 512 MiB memory, and 256 MiB spill bounds;
+exceeding them must defer background admission.
+
+Reproduce from `packages/periplus/` with:
+
+```sh
+uv run python scripts/benchmark_frontier_seen.py --rows 1000000 --report /tmp/periplus-seen-million.json
+uv run python scripts/benchmark_frontier_seen.py --rows 10000000 --report /tmp/periplus-seen-ten-million.json
+```
+
+The script creates and removes its own temporary lake, applies the declared physical layouts,
+installs public views, and runs the actual read-only query service. It records SQL, plans, snapshots,
+and timings and compares the original and revised queries at one snapshot. Synthetic data spans
+30 date partitions, includes private observations and failures, and uses repeated content. These
+are local bulk-load baselines; remote object-store latency, small-file accumulation, concurrent
+production writers, and substantially larger histories require further measurement. This benchmark
+alone does not enable background allocation or prove the full background admission/cleanup protocol.
+
+### Historical collection browsing
+
+`GET /collections/history` reads immutable collection definitions and any arrived terminal outcomes
+through the control API's existing catalogue owner. It returns at most 100 summaries per page;
+`next_cursor` orders subsequent pages by definition time and collection identity, descending.
+Public callers see only public lineage, with filtering applied before the page limit. Administrators
+can also browse private definitions. Missing outcomes retain unknown counters rather than zeroes.
+Responses carry `source: history` and `as_of`; `GET /collections/{id}` supplies the full frozen intent.
+
+This is a live append-only feed, not a snapshot pinned across pages. Definitions ingested above an
+already-consumed cursor appear on refresh. Each read is bounded by a ten-second interruption deadline,
+and historical list/detail requests share one outstanding-read slot. Invalid cursors return 422;
+busy, unavailable, oversized, or inconsistent historical data returns retryable 503. Reads do not
+recreate current execution or imply verified materialization readiness.
+
+### Historical observation provenance
+
+`GET /frontier/observations/{id}/lineage` returns committed capture causes and request result uses
+as distinct records. A later reuse is a fulfillment, never an added cause for the original capture.
+The read uses immutable observation and lineage evidence, so retirement of control rows does not
+remove it. Public service reads require public observations, matching public collection definitions,
+and public parent observations; administrative reads also permit private observations.
+
+Pages contain at most 100 bounded metadata records and use descending decision-time, record-ID,
+and record-kind cursors bound to the observation and visibility scope. Reads share the bounded
+catalogue owner and ten-second interruption deadline. Pages are not a pinned snapshot: later commits
+may appear above an existing cursor, so callers refresh the first page to see them. Missing visible
+observations return 404; catalogue unavailability returns retryable 503. Empty visible lineage may
+mean imported evidence or ingestion lag and is not a proof that no other relationships exist.
+
+### Anonymous parameter casts
+
+The query validator recognizes DuckDB's adjacent anonymous-parameter cast syntax (`?::UUID`,
+`?::INTEGER`) as a parameter followed by a cast. SQLGlot 30.12.0 inherits a shared `?::` operator
+keyword that prevents this recognition in its DuckDB dialect. Periplus's query-boundary tokenizer
+excludes that keyword; all other DuckDB lexical and parser rules are inherited. Original SQL and
+parameters execute unchanged. Real DuckLake tests compare cast forms and types and retain the
+single-statement and public-namespace restrictions. This is a parser correction, not a public schema
+change or an execution-plan rewrite.

@@ -25,7 +25,7 @@ container names. This means one local Periplus Compose project may run on a Dock
 | `lake-postgres` | DuckLake metadata only | `lake-postgres-data` |
 | `periplus-postgres` | Periplus editable control and current execution state only | `periplus-postgres-data` |
 | `periplus-nats` | JetStream/KV delivery, presence, pacing, and leases | `periplus-nats-data` |
-| `periplus-crawler` | Crawl graph execution, page acquisition, and immutable raw-object writes | S3 `raw` namespace |
+| `periplus-crawler` | Shared frontier execution, page acquisition, and immutable raw-object writes | S3 `raw` namespace |
 | `periplus-ingestor` | Immutable crawl and visit evidence writes | none |
 | `periplus-materializer` | Fixed projections, rebuilds, and live CDC | S3 `raw` reads and `lake` writes |
 | `periplus-query` | Isolated read-only SQL preparation and execution | none |
@@ -42,7 +42,7 @@ For platform integration, `PERIPLUS_DUCKLAKE_METADATA_PATH` accepts either DuckL
 `postgres:...` attach form or a standard `postgresql://...`/`postgres://...` URL. Periplus normalizes
 standard URLs to the native DuckLake form at its configuration boundary.
 
-Deleting `periplus-postgres-data` loses editable plans, schedules, policies, and current execution
+Deleting `periplus-postgres-data` loses collections, crawler controls, policies, and current execution
 state without deleting lake history. Deleting `lake-postgres-data` loses the DuckLake catalogue;
 the objects alone are not a usable lake. Deleting `lake-s3-data` loses local raw objects and lake
 files. Keep the catalogue and its objects together when backing up or restoring development state.
@@ -152,7 +152,7 @@ server-side and protects all UI and proxied API requests with HTTP Basic authent
 TLS ingress with operator access controls. Public receives only its restricted token.
 
 The public app receives `PERIPLUS_QUERY_URL` and `PERIPLUS_QUERY_API_TOKEN` for SQL, plus
-`PERIPLUS_API_URL` and the restricted `PERIPLUS_PUBLIC_API_TOKEN` for coverage-request submission
+`PERIPLUS_API_URL` and the restricted `PERIPLUS_PUBLIC_API_TOKEN` for collection submission
 and public status listing. Next.js only transports these requests; Python validates and stores
 them in Periplus Postgres. Public credentials cannot start crawls. Admin proxies
 `/api/query/*` to the same query server with the query token. Core uses its separate API tokens.
@@ -183,19 +183,54 @@ web discovery assistant. Helm configures these through `public.ai.model` and
 The assistant streams with Vercel AI SDK, bounds exploration by time and output tokens (32 steps and 180 seconds overall),
 and admits two active runs per process. Ingress must provide deployment-wide rate and body limits.
 
-## Coverage source discovery
+## Crawler acquisition and discovery
 
-The API process automatically dispatches coverage requests through the existing crawl runtime.
-URL submissions require no model credentials. Text requests use `OPENAI_API_KEY`,
-`BRAVE_SEARCH_API_KEY`, and `PERIPLUS_COVERAGE_MODEL` (a model supporting Responses structured
-outputs). Compose supplies these only to the control API; query and crawler processes do not
-receive them. Configure Helm `api.coverage.model` and `api.coverage.existingSecret`, containing
-keys named by `openaiKeyKey` and `braveKeyKey`. Credentials remain server-side.
+Collection discovery belongs to the crawler. The API validates and stores intent; it does not
+run discovery or dispatch. URL submissions require no model credentials. The CDP service must
+prevent private-network egress; initial DNS checks alone do not constrain redirects, subresources,
+or DNS rebinding.
 
-Provider configuration failures leave requests pending and retry after a minute. Search queries,
-completed search steps, selected URLs, and dispatch identity are durable in operational Postgres.
-No approval step is required. Website pacing and worker limits remain owned by the existing
-crawler/CDP infrastructure. The CDP service must have private-network egress restrictions;
-validating initial URL DNS in Python alone does not constrain redirects or subresources.
+When frontier exclusions are configured, page acquisition requires the standard CDP
+`Page.getFrameTree` and `Fetch` request-interception commands in addition to navigation. An
+endpoint that cannot install the interception must fail the attempt before navigation; there is
+no unchecked acquisition fallback. Page-session interception supplements the CDP service's egress
+restrictions; it does not establish enforcement for independent workers or other browser targets.
 
 The query service also exposes authenticated `GET /query/helpers` for registry-derived SQL helper documentation. Catalogue setup installs helpers before query processes validate and serve them.
+
+### Crawler corpus selection client
+
+The crawler receives `PERIPLUS_QUERY_URL` and `PERIPLUS_QUERY_API_TOKEN` to execute explicit corpus
+seed SQL through the isolated query service. Compose points it at `periplus-query:8000`; Helm uses
+the query service's configured port and the existing query-token secret reference. This grants no
+query-service write capability and introduces no additional process role. Query unavailability
+pauses seed selection with a visible waiting reason; URL seeds and page-local follow selection
+remain independent of this dependency.
+
+### Collection source discovery
+
+Description-based collection discovery runs in the crawler alongside seed and follow selection.
+The crawler receives `PERIPLUS_DISCOVERY_MODEL`, `OPENAI_API_KEY`, and `BRAVE_SEARCH_API_KEY`;
+these credentials are no longer supplied to the control API for discovery. Helm settings live under
+`crawler.discovery` (`model`, `existingSecret`, `openaiKeyKey`, and `braveKeyKey`). The model has no
+implicit default. Missing provider configuration defers discovery visibly while direct URL collection
+continues. The returned model identity is frozen after query planning and reused for source selection.
+
+One pass performs at most one provider request or one DNS validation. Provider responses are capped
+at 512 KiB and 25 seconds; the complete asynchronous discovery pass is capped at 30 seconds. Search
+plans, completed searches, and source selection live in bounded collection checkpoints. A failed
+worker resumes the last committed phase instead of dispatching a synthetic graph run.
+
+### Replacement control baseline
+
+The sole Alembic revision is `20260907_0001`, containing the continuous crawler's ten control tables.
+It has no upgrade bridge from graph or coverage schemas. Stop old producers/workers and reset
+only the intended disposable development state as part of the coordinated cutover before setup.
+Setup installs the frontier singleton and default policies; rerunning it preserves operator controls.
+The code replacement alone is not evidence that a deployed environment has been cut over.
+
+Crawler pause prevents new physical authorization; already-started captures finish under their
+frozen bounds. It is not a browser kill switch. There is no force-abort API in this cutoff.
+For an emergency, stop outbound access at the CDP deployment/network boundary; stopping a Periplus
+worker alone cannot prove that a remote browser stopped. Lost in-flight outcomes are recovered as
+uncertain attempts within the configured attempt/time allowances, not reported as cancelled network I/O.

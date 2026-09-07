@@ -4,7 +4,6 @@ import unittest
 from unittest.mock import patch
 
 from periplus.platform.config.performance import (
-    GRAPH_CONSUMER_MAX_ACK_PENDING,
     INGEST_BATCH_MAX_ITEMS,
     INGESTION_CONSUMER_MAX_ACK_PENDING,
     INGESTION_MAX_LOCAL_CONCURRENCY,
@@ -20,7 +19,6 @@ class PerformanceConfigTests(unittest.TestCase):
         with patch("periplus.platform.config.performance.os.process_cpu_count", return_value=32):
             self.assertEqual(duckdb_threads(), 2)
 
-        self.assertGreater(GRAPH_CONSUMER_MAX_ACK_PENDING, 1)
         self.assertEqual(INGESTION_CONSUMER_MAX_ACK_PENDING, 1024)
         self.assertGreater(
             INGESTION_CONSUMER_MAX_ACK_PENDING,

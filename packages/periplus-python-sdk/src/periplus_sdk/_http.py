@@ -1,8 +1,11 @@
-"""Small async HTTP boundary used by crawl resources."""
+"""Small async HTTP boundary used by collection and control resources."""
 
 from __future__ import annotations
 
 from typing import Any
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+import math
 
 import httpx
 
@@ -61,7 +64,24 @@ async def request(
             error_type = ValidationError
         else:
             error_type = ApiError
-        raise error_type(message, status_code=response.status_code)
+        raise error_type(message, status_code=response.status_code,
+                         retry_after_seconds=_retry_after(response.headers.get("Retry-After")))
     if response.status_code == 204:
         return None
     return response.json()
+
+
+def _retry_after(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            moment = parsedate_to_datetime(value)
+            if moment.utcoffset() is None:
+                return None
+            seconds = (moment - datetime.now(UTC)).total_seconds()
+        except (ValueError, TypeError, OverflowError):
+            return None
+    return max(0, seconds) if math.isfinite(seconds) else None

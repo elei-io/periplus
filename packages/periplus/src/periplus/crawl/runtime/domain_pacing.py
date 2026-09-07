@@ -47,9 +47,9 @@ class DomainConcurrencyGrant(BaseModel):
 
 
 class DomainPacingState(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
-    next_admission_at: datetime
+    last_admission_at: datetime | None = None
     blocked_until: datetime | None = None
     transient_failure_count: int = 0
     last_failure_at: datetime | None = None
@@ -110,7 +110,7 @@ async def _read_state(bucket, key: str) -> tuple[DomainPacingState, int | None]:
     try:
         entry = await bucket.get(key)
     except (KeyNotFoundError, KeyDeletedError):
-        return DomainPacingState(next_admission_at=datetime.now(UTC)), None
+        return DomainPacingState(), None
     return DomainPacingState.model_validate_json(entry.value), entry.revision
 
 
@@ -267,64 +267,29 @@ async def domain_permit(
             pass
 
 
-async def wait_for_domain_interval(
-    bucket,
-    *,
-    domain: str,
-    interval_seconds: float,
-) -> None:
-    """Atomically reserve the next domain admission time, then wait for it.
+async def try_domain_start(bucket, *, domain: str, interval_seconds: float) -> float:
+    """Reserve an immediately eligible start, or return a delay without waiting.
 
-    The reservation observes both the frozen policy interval and any adaptive
-    response backoff recorded by another crawler.
+    Only the worker holding a domain permit may reserve. A deferred check never
+    moves the pacing cursor, so a backlog cannot reserve hours of future starts.
     """
-
-    interval_seconds = max(0.0, interval_seconds)
+    if not 0 <= interval_seconds <= 3600:
+        raise ValueError("domain interval outside bounds")
     key = _domain_key(domain)
-    while True:
+    for _attempt in range(10):
+        state, revision = await _read_state(bucket, key)
         now = datetime.now(UTC)
-        try:
-            entry = await bucket.get(key)
-        except KeyNotFoundError:
-            if interval_seconds == 0:
-                return
-            state = DomainPacingState(
-                next_admission_at=now + timedelta(seconds=interval_seconds)
-            )
-            try:
-                await bucket.create(key, state.model_dump_json().encode())
-                return
-            except KeyWrongLastSequenceError:
-                continue
-        current = DomainPacingState.model_validate_json(entry.value)
-        admitted_at = max(
-            now,
-            current.next_admission_at,
-            current.blocked_until or now,
-        )
-        if interval_seconds == 0:
-            delay = (admitted_at - now).total_seconds()
-            if delay > 0:
-                await asyncio.sleep(delay)
-            return
-        state = current.model_copy(
-            update={
-                "next_admission_at": admitted_at
-                + timedelta(seconds=interval_seconds)
-            }
-        )
-        try:
-            await bucket.update(
-                key,
-                state.model_dump_json().encode(),
-                last=entry.revision,
-            )
-        except KeyWrongLastSequenceError:
-            continue
-        delay = (admitted_at - now).total_seconds()
+        interval_at = state.last_admission_at + timedelta(seconds=interval_seconds) if state.last_admission_at else now
+        ready_at = max(interval_at, state.blocked_until or now)
+        delay = (ready_at - now).total_seconds()
         if delay > 0:
-            await asyncio.sleep(delay)
-        return
+            return delay
+        updated = state.model_copy(update={
+            "last_admission_at": now,
+        })
+        if await _write_state(bucket, key, updated, revision):
+            return 0.0
+    raise DomainCapacityUnavailable("domain start reservation is contended")
 
 
 async def domain_backoff_seconds(bucket, *, domain: str) -> float:
@@ -366,7 +331,7 @@ async def record_domain_response(
         except KeyNotFoundError:
             if status_code != 429 and not 500 <= status_code <= 599:
                 return 0.0
-            current = DomainPacingState(next_admission_at=now)
+            current = DomainPacingState()
             revision = None
         else:
             current = DomainPacingState.model_validate_json(entry.value)

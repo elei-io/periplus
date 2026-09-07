@@ -1,9 +1,8 @@
-// Public catalogue v1.1.0. Keep aligned with public_registry.py and its SQL views.
+// Public catalogue v2.0.0. Keep aligned with public_registry.py and its SQL views.
 // DESCRIBE links on /docs expose the deployed contract directly.
 export const schemaReference = [
   { name: "web.observation", grain: "One observation of a URL at a point in time, including unsuccessful observations.", key: "observation_id", columns: [
     ["observation_id", "UUID", "Unique observation identity."],
-    ["crawl_id", "UUID", "Collection run that produced this observation."],
     ["requested_url", "VARCHAR", "URL Periplus attempted to visit."],
     ["effective_url", "VARCHAR", "Final URL after navigation or redirects; may be null."],
     ["observed_at", "TIMESTAMPTZ", "Capture time, when available; may be null."],
@@ -45,6 +44,39 @@ export const schemaReference = [
     ["raw_href", "VARCHAR", "Original href before resolution and normalization."],
     ["target_url", "VARCHAR", "Resolved, normalized HTTP(S) destination."],
     ["relation_scope", "VARCHAR", "Most-specific relationship: self, same_origin, same_host, same_site, or external."],
+  ] },
+  { name: "web.collection", grain: "One public collection definition with its separately committed outcome, when available.", key: "collection_id", columns: [
+    ["collection_id", "UUID", "Identity of the finite collection intent."],
+    ["requested_at", "TIMESTAMPTZ", "Time the collection was recorded."],
+    ["specification", "JSON", "Frozen seeds, follow selection, scope, and budget."],
+    ["settled_at", "TIMESTAMPTZ", "Recorded settlement time; null before outcome ingestion."],
+    ["outcome", "VARCHAR", "Terminal collection result, when available."],
+    ["seed_provenance", "JSON", "Retained starting-URL selection evidence."],
+    ["consumed_pages", "BIGINT", "Collection page units consumed, when the outcome is available."],
+    ["supplied_pages", "BIGINT", "Supplied results, including shared and reused observations."],
+    ["failed_pages", "BIGINT", "Failed request results, when the outcome is available."],
+  ] },
+  { name: "web.fulfillment", grain: "One collection URL result; several collections can reference one observation.", key: "fulfillment_id", columns: [
+    ["fulfillment_id", "UUID", "Immutable result relationship identity."],
+    ["collection_id", "UUID", "Collection receiving this result."],
+    ["observation_id", "UUID", "Independent observation supplying the result."],
+    ["requested_url", "VARCHAR", "URL admitted by the collection."],
+    ["parent_observation_id", "UUID", "Traversal parent, when applicable."],
+    ["depth", "INTEGER", "Depth within this collection."],
+    ["rule_id", "VARCHAR", "Selection rule that admitted this URL."],
+    ["mode", "VARCHAR", "Acquired, shared, or reused result."],
+    ["decided_at", "TIMESTAMPTZ", "Time the result association was recorded."],
+  ] },
+  { name: "web.acquisition_reason", grain: "One causal collection or background reason frozen when acquisition was dispatched.", key: "reason_id", columns: [
+    ["reason_id", "UUID", "Immutable acquisition reason identity."],
+    ["observation_id", "UUID", "Observation acquired for this reason."],
+    ["collection_id", "UUID", "Requesting collection; null for background exploration."],
+    ["parent_observation_id", "UUID", "Discovery parent, when applicable."],
+    ["reason", "VARCHAR", "Collection or background cause of acquisition."],
+    ["policy_version", "VARCHAR", "Effective policy identity frozen at dispatch."],
+    ["rule_id", "VARCHAR", "Selection rule for this acquisition."],
+    ["selection_provenance", "JSON", "Background selection snapshot, policy, and query evidence."],
+    ["decided_at", "TIMESTAMPTZ", "Time the acquisition reason was recorded."],
   ] },
 ] as const
 

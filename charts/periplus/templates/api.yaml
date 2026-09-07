@@ -47,20 +47,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.apiAccess.name }}
                   key: {{ .Values.secrets.apiAccess.publicTokenKey }}
-            - name: PERIPLUS_COVERAGE_MODEL
-              value: {{ .Values.api.coverage.model | quote }}
-            {{- if .Values.api.coverage.existingSecret }}
-            - name: OPENAI_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.api.coverage.existingSecret }}
-                  key: {{ .Values.api.coverage.openaiKeyKey }}
-            - name: BRAVE_SEARCH_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.api.coverage.existingSecret }}
-                  key: {{ .Values.api.coverage.braveKeyKey }}
-            {{- end }}
           startupProbe:
             httpGet:
               path: /healthz

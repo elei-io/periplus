@@ -12,6 +12,7 @@ from periplus.crawl.control.domain_policies.schemas import (
     DomainPolicyUpdateRequest,
 )
 from periplus.crawl.control.domain_policies.service import (
+    DomainPolicyVersionConflict,
     count_domain_policies,
     create_domain_policy,
     delete_domain_policy,
@@ -35,6 +36,8 @@ def list_(session: Annotated[Session, Depends(get_session)], match_pattern: Anno
 def create(payload: DomainPolicyCreateRequest, session: Annotated[Session, Depends(get_session)]) -> DomainPolicyRecord:
     try:
         return domain_policy_record(create_domain_policy(session, payload))
+    except DomainPolicyVersionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (ValueError, IntegrityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -54,16 +57,20 @@ def update(policy_id: UUID, payload: DomainPolicyUpdateRequest, session: Annotat
         raise HTTPException(status_code=404, detail="Domain policy not found.")
     try:
         return domain_policy_record(update_domain_policy(session, policy=policy, **payload.model_dump(exclude_unset=True)))
+    except DomainPolicyVersionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (ValueError, IntegrityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.delete("/{policy_id}", status_code=204)
-def delete(policy_id: UUID, session: Annotated[Session, Depends(get_session)]) -> None:
+def delete(policy_id: UUID, session: Annotated[Session, Depends(get_session)], expected_version: Annotated[int, Query(ge=1)]) -> None:
     policy = get_domain_policy(session, policy_id)
     if policy is None:
         raise HTTPException(status_code=404, detail="Domain policy not found.")
     try:
-        delete_domain_policy(session, policy=policy)
+        delete_domain_policy(session, policy=policy, expected_version=expected_version)
+    except DomainPolicyVersionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

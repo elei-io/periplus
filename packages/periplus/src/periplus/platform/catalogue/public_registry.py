@@ -31,11 +31,54 @@ _HTML_COMMENTS = _comments(
     ("text_tail", "Text following this element within its parent."),
 )
 
+_LINEAGE_OBJECTS = tuple(
+    CatalogueObject(
+        "view", name, resource, tuple(column for column, _ in columns),
+        comment=description, column_comments=columns,
+    )
+    for name, resource, description, columns in (
+        ("collection", "views/003_collection.sql", "Public collection intent with its optional terminal outcome.", (
+            ("collection_id", "Finite collection request identity."),
+            ("requested_at", "Time the collection definition was accepted."),
+            ("specification", "Frozen SQL selection, scope, and page limits."),
+            ("settled_at", "Time the collection settled, if available."),
+            ("outcome", "Why the collection settled."),
+            ("seed_provenance", "Frozen seed snapshot, query identity, selection time, and candidate digest."),
+            ("consumed_pages", "Request page units consumed by dispatch or reuse."),
+            ("supplied_pages", "Successfully supplied request URLs."),
+            ("failed_pages", "Request URLs with terminal acquisition failure."),
+        )),
+        ("fulfillment", "views/004_fulfillment.sql", "Request URL results referencing independently owned observations.", (
+            ("fulfillment_id", "Stable identity of the request URL result."),
+            ("collection_id", "Collection receiving this result."),
+            ("observation_id", "Observation supplying this result."),
+            ("requested_url", "Normalized URL selected by the collection."),
+            ("parent_observation_id", "Winning parent evidence, when applicable."),
+            ("depth", "First committed traversal depth."),
+            ("rule_id", "Frozen selection rule identity."),
+            ("mode", "Acquired, shared, or reused result."),
+            ("decided_at", "Time this fulfillment was accepted."),
+        )),
+        ("acquisition_reason", "views/005_acquisition_reason.sql", "Public causal reasons frozen before acquisition dispatch.", (
+            ("reason_id", "Stable identity of the causal reason."),
+            ("observation_id", "Observation this dispatch produces."),
+            ("collection_id", "Request causing capture; null for background."),
+            ("parent_observation_id", "Parent observation leading to discovery."),
+            ("reason", "Collection or background selection."),
+            ("policy_version", "Effective dispatch policy version."),
+            ("rule_id", "Selection rule identity."),
+            ("selection_provenance", "Historical-check snapshot, query identity, and selection policy version."),
+            ("decided_at", "Time this reason was frozen."),
+        )),
+    )
+)
+
 PUBLIC_OBJECTS = (
+    *_LINEAGE_OBJECTS,
     CatalogueObject(
         "view", "observation", "views/001_observation.sql",
         (
-            "observation_id", "crawl_id", "requested_url", "effective_url",
+            "observation_id", "requested_url", "effective_url",
             "observed_at", "outcome", "http_status_code", "content_id",
             "source_kind", "source_system", "source_dataset",
             "source_record_id",
@@ -43,7 +86,6 @@ PUBLIC_OBJECTS = (
         comment="Terminal URL observations with optional retained content evidence.",
         column_comments=_comments(
             ("observation_id", "Unique identity of this terminal observation."),
-            ("crawl_id", "Crawl execution that produced the observation."),
             ("requested_url", "Exact URL Periplus attempted to visit."),
             ("effective_url", "Final URL after navigation or redirects."),
             ("observed_at", "Time retained content was captured, when present."),

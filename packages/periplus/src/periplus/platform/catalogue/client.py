@@ -113,19 +113,6 @@ class Catalogue:
                 "registry_digest VARCHAR NOT NULL, "
                 "activated_at TIMESTAMPTZ NOT NULL)"
             )
-        state_columns = {
-            str(row[0])
-            for row in self.trusted_remote_rows(
-                "DESCRIBE material._periplus_materialization_state"
-            )
-        }
-        if "registry_digest" not in state_columns:
-            with self.remote_transaction():
-                self.trusted_remote_execute(
-                    "ALTER TABLE material._periplus_materialization_state "
-                    "ADD COLUMN registry_digest VARCHAR"
-                )
-
         from periplus.materialization.registry import REGISTRY_DIGEST
 
         active_rows = self.trusted_remote_rows(

@@ -9,7 +9,10 @@ import { tags } from "@lezer/highlight"
 const extensions = [
   sql({ dialect: StandardSQL, upperCaseKeywords: true, schema: {
     web: {
-      observation: ["observation_id", "crawl_id", "requested_url", "effective_url", "observed_at", "outcome", "http_status_code", "content_id"],
+      observation: ["observation_id", "requested_url", "effective_url", "observed_at", "outcome", "http_status_code", "content_id"],
+      collection: ["collection_id", "requested_at", "specification", "settled_at", "outcome", "seed_provenance", "consumed_pages", "supplied_pages", "failed_pages"],
+      fulfillment: ["fulfillment_id", "collection_id", "observation_id", "requested_url", "parent_observation_id", "depth", "rule_id", "mode", "decided_at"],
+      acquisition_reason: ["reason_id", "observation_id", "collection_id", "parent_observation_id", "reason", "policy_version", "rule_id", "selection_provenance", "decided_at"],
       link_occurrence: ["observation_id", "content_id", "source_url", "target_url", "observed_at", "raw_href", "relation_scope"],
     },
     content: {

@@ -2,7 +2,7 @@
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 [docs/SCHEMA.md](docs/SCHEMA.md), and
-[docs/LIFECYCLE.md](docs/LIFECYCLE.md) before changing graph execution, crawling, worker
+[docs/LIFECYCLE.md](docs/LIFECYCLE.md) before changing frontier execution, crawling, worker
 ownership, repository storage, DOM generation, NATS, DuckLake, or managed DuckDB use. Read
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) before changing service names, process roles, deployment
 topology, environment contracts, container scaling, or infrastructure ownership. Read
@@ -25,27 +25,27 @@ to encode around one accidental optimizer plan.
   the contract directly and delete the superseded path. Prefer resetting disposable development
   state over carrying compatibility code unless the user explicitly requires a real data
   migration.
-- Periplus Postgres owns editable control state and current graph execution: crawl plans, runs, requests,
-  edge evaluations, admission deduplication, progress counters, schedules, policies, matches,
-  schemas, catalogue definitions, and the transactional graph outbox.
-- NATS JetStream/KV owns graph, ingestion, and materialization work delivery, worker presence,
-  operation leases, and per-domain crawl pacing/concurrency. It is not authoritative graph state.
+- Periplus Postgres owns editable control state and current frontier execution: collections, shared acquisitions,
+  interests, selection checkpoints, admission deduplication, budgets, progress counters, policies,
+  catalogue definitions, and the transactional frontier outbox.
+- NATS JetStream/KV owns frontier, ingestion, and materialization work delivery, worker presence,
+  operation leases, and per-domain crawl pacing/concurrency. It is not authoritative frontier state.
 - Crawl history belongs only in DuckLake; never reintroduce it into Periplus Postgres.
 - Raw HTML is immutable, content-addressed, and stored through
   `packages/periplus/src/periplus/ingestion/objects/`.
-- `crawl` is the only page-acquisition primitive. Graph nodes map admitted URL inputs to crawl work;
-  scoped SQL edges derive URL inputs for subsequent nodes from durable crawl evidence.
-- Crawler replicas acquire one page, store immutable raw HTML, publish frozen ingestion jobs,
-  and own navigation readiness plus outgoing edge evaluation. Branch nodes derive a bounded
-  navigation package; leaf nodes skip it. They never wait for catalogue ingestion. Cross-replica
-  website concurrency and pacing are keyed per domain; browser and object-store concurrency remain
-  bounded by their owning process.
+- `crawl` is the only page-acquisition primitive. Finite collections and bounded public background
+  selection admit URL interests into one shared frontier. Preserve collection-local URL deduplication,
+  budgets, selection context, and immutable lineage when acquisitions are shared or reused.
+- Crawler replicas acquire one page, store immutable raw HTML, publish frozen ingestion jobs, and
+  independently advance bounded selection. Derive navigation when follow or background selection
+  requires it. Never wait for catalogue ingestion on the capture path. Cross-replica website
+  concurrency and pacing are keyed per domain; process-owned clients remain locally bounded.
 - A standard CDP endpoint is the sole acquisition boundary. Periplus has one crawl queue; the CDP
   service owns transport choice, browser-farm capacity, profiles, and acquisition strategy.
 - Ingestor replicas own base crawl evidence writes. Replicas are symmetric consumers of one
   durable lane: each process owns one NATS session and bounded configurable writer lanes, each
   with an independent DuckLake connection. They are independently observable `critical`
-  catalogue work, never settle graph traversal, and never wait for user materialization.
+  catalogue work, never settle collection traversal, and never wait for user materialization.
 - Complete materialization rebuilds use one visit-scoped workload. Every non-private module under
   `materialization/projections/` is one self-contained, auto-discovered projection declaration;
   adding, editing, or deleting a materialization touches only that file before redeploy and rebuild.
@@ -60,8 +60,8 @@ to encode around one accidental optimizer plan.
   eligible coordinator; a NATS operation lease elects one connection, which then holds the
   DuckLake consumer's owner-token lease. No worker is statically designated and the durable cursor
   remains only in DuckLake. The CDC cursor advances only after all applied markers are durable.
-- Crawl-plan edges use bounded standalone DuckDB connections over the current
-  page's navigation package. Historical catalogue joins are not a plan-edge capability.
+- Follow SQL uses bounded standalone DuckDB connections over the current page's navigation
+  package. Corpus seed SQL uses the isolated query service; follow SQL cannot join history.
 - LakeDucktor owns compaction, old-file cleanup, and physical lake maintenance. The Periplus janitor
   only reclaims Periplus-owned staging and navigation objects.
 - Per-domain crawl permits and operation leases are distinct. Domain permits enforce website
@@ -71,7 +71,7 @@ to encode around one accidental optimizer plan.
   table layout and generation transactions. LakeDucktor owns physical lake maintenance.
 - Crawler replicas connect to the configured standard CDP endpoint. Periplus owns content correctness,
   including when scrolling is required; the CDP service owns rendering and physical capacity.
-- API and CLI code validate and adapt. Graph execution belongs in runtime, acquisition belongs in
+- API and CLI code validate and adapt. Frontier execution belongs in runtime, acquisition belongs in
   crawl, derived navigation belongs in bounded catalogue SQL, and durable writes belong behind the
   repository boundary.
 - JetStream streams, consumers, and KV contracts are reconciled at process startup. Request and
@@ -80,9 +80,8 @@ to encode around one accidental optimizer plan.
 
 ## Code map
 
-- `packages/periplus/src/periplus/crawl/control/` — editable Periplus Postgres-backed crawl graphs, policies, and
-  schedules.
-- `packages/periplus/src/periplus/crawl/runtime/` — current graph execution, transactional outbox, work
+- `packages/periplus/src/periplus/crawl/control/` — Periplus Postgres-backed collection intent and crawler policies.
+- `packages/periplus/src/periplus/crawl/runtime/` — current frontier execution, transactional outbox, work
   delivery, navigation, progress, and per-domain pacing.
 - `packages/periplus/src/periplus/crawl/acquisition/` — standard-CDP page capture, readiness, response
   classification, and acquisition evidence; do not add traversal loops here.
@@ -104,13 +103,13 @@ to encode around one accidental optimizer plan.
 - `packages/periplus-public/` — Next.js public catalogue and crawl-submission application.
 - `packages/periplus-admin/` — Vite operator application for crawl and catalogue maintenance.
 
-Keep editable graph and policy definitions under `crawl/control/`, current graph execution under
+Keep collection intent and policy definitions under `crawl/control/`, current frontier execution under
 `crawl/runtime/`, acquisition behavior in the shared crawl path, durable evidence under
 `ingestion/`, fixed projections under `materialization/`, and generic adapters under `platform/`.
 Entrypoints validate, compose, and run these capabilities; they do not own domain transitions. Do
 not add generic deployment-wide resource locking; bound clients locally and keep distributed
-coordination scoped to the exact domain or operation identity. Do not add a task, action primitive,
-or action-specific traversal loop when a node and scoped SQL edge express the behavior.
+coordination scoped to the exact domain or operation identity. Do not add another execution primitive or action-specific traversal loop when collection intent
+and bounded seed/follow SQL express the behavior.
 
 ## Workflow
 

@@ -9,4 +9,8 @@ SELECT
     raw_href,
     target_url,
     relation_scope
-FROM material.link_occurrences;
+FROM material.link_occurrences AS occurrence
+WHERE EXISTS (
+    SELECT 1 FROM ingest.visits AS visit
+    WHERE visit.visit_id = occurrence.visit_id AND visit.visibility = 'public'
+);

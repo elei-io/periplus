@@ -19,5 +19,11 @@ SELECT
         WHEN lower(min(detected_media_type)) LIKE 'text/%' THEN 'text'
         ELSE 'binary'
     END AS content_format
-FROM ingest.documents
+FROM ingest.documents AS document
+WHERE EXISTS (
+    SELECT 1 FROM ingest.visits AS visit
+    WHERE visit.visit_id = document.visit_id
+      AND visit.document_id = document.document_id
+      AND visit.visibility = 'public'
+)
 GROUP BY content_sha256;

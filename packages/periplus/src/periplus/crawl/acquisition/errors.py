@@ -12,6 +12,10 @@ class RetryableAcquisitionFailure(RuntimeError):
         self.retry_after_seconds = result.retry_after_seconds
 
 
+class CdpUnavailable(RuntimeError):
+    """The standard CDP connection could not be established before page authorization."""
+
+
 class PlaywrightRuntimeLost(RuntimeError):
     """The local Playwright driver process or its transport is no longer usable."""
 

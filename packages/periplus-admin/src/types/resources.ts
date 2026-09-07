@@ -97,6 +97,9 @@ export type DomainPolicyRecord = {
   maximum_concurrency: number
   minimum_request_interval_seconds: number
   enabled: boolean
+  paused: boolean
+  version: number
+  updated_by: string
   created_at: string
   updated_at: string
 }
@@ -109,6 +112,7 @@ export type DomainPolicyCreateRequest = Pick<
   | "maximum_concurrency"
   | "minimum_request_interval_seconds"
   | "enabled"
+  | "paused"
 >
 export type DomainPolicyUpdateRequest = Partial<
   Pick<
@@ -117,5 +121,6 @@ export type DomainPolicyUpdateRequest = Partial<
     | "maximum_concurrency"
     | "minimum_request_interval_seconds"
     | "enabled"
+    | "paused"
   >
->
+> & { expected_version: number }

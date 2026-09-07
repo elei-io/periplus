@@ -39,29 +39,29 @@ const DocumentsPage = lazy(() =>
     default: module.DocumentsPage,
   }))
 )
-const CrawlGraphsPage = lazy(() =>
-  import("@/pages/admin/graphs-page").then((module) => ({
-    default: module.CrawlGraphsPage,
+const FrontierItemDetail = lazy(() =>
+  import("@/components/frontier-items").then((module) => ({
+    default: module.FrontierItemDetail,
   }))
 )
-const CrawlGraphDetailPage = lazy(() =>
-  import("@/pages/admin/graphs-page").then((module) => ({
-    default: module.CrawlGraphDetailPage,
+const FrontierControlsPage = lazy(() =>
+  import("@/pages/frontier/controls-page").then((module) => ({
+    default: module.FrontierControlsPage,
   }))
 )
-const CrawlMetricsPage = lazy(() =>
-  import("@/pages/crawls/metrics-page").then((module) => ({
-    default: module.CrawlMetricsPage,
+const CollectionsPage = lazy(() =>
+  import("@/pages/collections/collections-page").then((module) => ({
+    default: module.CollectionsPage,
   }))
 )
-const CrawlSchedulesPage = lazy(() =>
-  import("@/pages/crawls/schedules-page").then((module) => ({
-    default: module.CrawlSchedulesPage,
+const NewCollectionPage = lazy(() =>
+  import("@/pages/collections/new-collection-page").then((module) => ({
+    default: module.NewCollectionPage,
   }))
 )
-const CrawlScheduleDetailPage = lazy(() =>
-  import("@/pages/crawls/schedules-page").then((module) => ({
-    default: module.CrawlScheduleDetailPage,
+const CollectionDetailPage = lazy(() =>
+  import("@/pages/collections/collection-detail-page").then((module) => ({
+    default: module.CollectionDetailPage,
   }))
 )
 const ContentPoliciesPage = lazy(() =>
@@ -131,8 +131,21 @@ export function App() {
   }, [])
 
   const page = (() => {
-    if (pathname === "/") {
-      return <CrawlMetricsPage />
+    if (!findNavigationItem(pathname)) {
+      return (
+        <div className="grid flex-1 place-content-center gap-3 text-center">
+          <h1 className="text-xl font-medium">Page not found</h1>
+          <a href="/frontier" className="underline">
+            Open crawler controls
+          </a>
+        </div>
+      )
+    }
+    const frontierId = pathname.match(/^\/frontier\/items\/([^/]+)$/)?.[1]
+    if (frontierId)
+      return <FrontierItemDetail id={decodeURIComponent(frontierId)} />
+    if (pathname === "/" || activeItem.href === "/frontier") {
+      return <FrontierControlsPage />
     }
 
     if (activeItem.href === "/sql") {
@@ -151,34 +164,14 @@ export function App() {
       return <DocumentsPage />
     }
 
-    if (activeItem.href === "/crawls/plans") {
-      const graphId = pathname.match(/^\/crawls\/plans\/([^/]+)$/)?.[1]
-      if (graphId) {
-        return (
-          <CrawlGraphDetailPage
-            graphId={decodeURIComponent(graphId)}
-            onNavigate={handleNavigate}
-          />
-        )
-      }
-      return <CrawlGraphsPage onNavigate={handleNavigate} />
-    }
-
-    if (activeItem.href === "/crawls/metrics") {
-      return <CrawlMetricsPage />
-    }
-
-    if (activeItem.href === "/crawls/schedules") {
-      const scheduleId = pathname.match(/^\/crawls\/schedules\/([^/]+)$/)?.[1]
-      if (scheduleId) {
-        return (
-          <CrawlScheduleDetailPage
-            scheduleId={decodeURIComponent(scheduleId)}
-            onNavigate={handleNavigate}
-          />
-        )
-      }
-      return <CrawlSchedulesPage onNavigate={handleNavigate} />
+    if (activeItem.href === "/collections") {
+      if (pathname === "/collections/new") return <NewCollectionPage />
+      const id = pathname.match(/^\/collections\/([^/]+)$/)?.[1]
+      return id ? (
+        <CollectionDetailPage id={decodeURIComponent(id)} />
+      ) : (
+        <CollectionsPage />
+      )
     }
 
     if (activeItem.href === "/content-policies") {
@@ -225,13 +218,21 @@ export function App() {
             </span>
           </div>
         </header>
-        <div className={activeItem.href === "/sql"
-          ? "relative min-h-0 min-w-0 flex-1 overflow-hidden"
-          : "app-surface relative min-h-0 min-w-0 flex-1 overflow-auto p-4 lg:p-6"}>
+        <div
+          className={
+            activeItem.href === "/sql"
+              ? "relative min-h-0 min-w-0 flex-1 overflow-hidden"
+              : "app-surface relative min-h-0 min-w-0 flex-1 overflow-auto p-4 lg:p-6"
+          }
+        >
           <div className="app-surface-grain pointer-events-none absolute inset-0" />
-          <div className={activeItem.href === "/sql"
-            ? "relative z-10 flex h-full min-h-0 min-w-0"
-            : "relative z-10 flex min-h-full min-w-0 pb-10"}>
+          <div
+            className={
+              activeItem.href === "/sql"
+                ? "relative z-10 flex h-full min-h-0 min-w-0"
+                : "relative z-10 flex min-h-full min-w-0 pb-10"
+            }
+          >
             <Suspense fallback={<PageFallback />}>{page}</Suspense>
           </div>
         </div>

@@ -1,21 +1,19 @@
-"""Ephemeral, reproducible navigation packages for graph execution."""
+"""Ephemeral, reproducible navigation packages for bounded frontier selection."""
 
 from __future__ import annotations
 
 from hashlib import sha256
 from typing import cast
-from uuid import UUID, uuid5
 
 import pyarrow as pa
 from periplus.platform.config import get_int
 from periplus.materialization.dom import PARSER_NAME, PARSER_OPTIONS_HASH, PARSER_VERSION, links_from_html
 from periplus.ingestion.objects.store import ObjectStore
-from periplus.crawl.runtime.navigation_contract import EdgeSelectionPackage, NavigationPackage
+from periplus.crawl.runtime.navigation_contract import NavigationPackage
 
 NAVIGATION_RECIPE = sha256(
     f"{PARSER_NAME}:{PARSER_VERSION}:{PARSER_OPTIONS_HASH}:nav-links-v8".encode()
 ).hexdigest()
-_EVENT_NAMESPACE = UUID("f0d15d8a-a735-48b7-a576-a08f85ecac74")
 
 LINKS_SCHEMA = pa.schema(
     [
@@ -39,7 +37,6 @@ LINKS_SCHEMA = pa.schema(
         ("element_index", pa.int64()),
     ]
 )
-EDGE_SELECTION_SCHEMA = pa.schema([("url", pa.string())])
 
 
 def build_navigation_package(
@@ -92,21 +89,6 @@ def build_navigation_package(
     return payload, table.num_rows
 
 
-def navigation_object_name(
-    graph_run_id: UUID, content_sha256: str, page_url: str
-) -> str:
-    content_hash = content_sha256.removeprefix("sha256:")
-    recipe_hash = sha256(f"{NAVIGATION_RECIPE}\0{page_url}".encode()).hexdigest()
-    return (
-        f"runtime/navigation/{graph_run_id.hex}/documents/"
-        f"{content_hash}/{recipe_hash}.arrow"
-    )
-
-
-def navigation_event_id(crawl_id: UUID, package_sha256: str) -> UUID:
-    return uuid5(_EVENT_NAMESPACE, f"{crawl_id}:{package_sha256}")
-
-
 def put_navigation_package(
     store: ObjectStore, *, name: str, payload: bytes, row_count: int
 ) -> NavigationPackage:
@@ -131,83 +113,9 @@ def put_navigation_package(
 
 def load_navigation_package(store: ObjectStore, package: NavigationPackage) -> bytes:
     if store.size(package.object_name) != package.byte_size:
-        raise RuntimeError("navigation package size does not match its NATS reference")
+        raise RuntimeError("navigation package size does not match its recorded reference")
     with store.open(package.object_name) as content:
         payload = content.read()
     if sha256(payload).hexdigest() != package.sha256:
-        raise RuntimeError("navigation package digest does not match its NATS reference")
+        raise RuntimeError("navigation package digest does not match its recorded reference")
     return payload
-
-
-def build_edge_selection_package(urls: tuple[str, ...]) -> bytes:
-    table = pa.Table.from_arrays(
-        [pa.array(urls, type=pa.string())],
-        schema=EDGE_SELECTION_SCHEMA,
-    )
-    sink = pa.BufferOutputStream()
-    with pa.ipc.new_file(sink, EDGE_SELECTION_SCHEMA) as writer:
-        writer.write_table(table)
-    payload = sink.getvalue().to_pybytes()
-    maximum = get_int("PERIPLUS_EDGE_MAX_OUTPUT_BYTES") + 64 * 1024
-    if len(payload) > maximum:
-        raise ValueError(f"edge selection exceeded its {maximum} byte limit")
-    return payload
-
-
-def edge_selection_object_name(
-    graph_run_id: UUID,
-    identity: str,
-    digest: str,
-) -> str:
-    return (
-        f"runtime/navigation/{graph_run_id.hex}/edges/"
-        f"{identity}/{digest}.arrow"
-    )
-
-
-def put_edge_selection_package(
-    store: ObjectStore,
-    *,
-    name: str,
-    payload: bytes,
-    row_count: int,
-) -> EdgeSelectionPackage:
-    digest = sha256(payload).hexdigest()
-    import io
-
-    store.put_if_absent(name, io.BytesIO(payload))
-    if store.size(name) != len(payload):
-        raise RuntimeError("edge selection size changed after publication")
-    with store.open(name) as content:
-        if sha256(content.read()).hexdigest() != digest:
-            raise RuntimeError("edge selection digest changed after publication")
-    return EdgeSelectionPackage(
-        object_name=name,
-        sha256=digest,
-        schema_version=1,
-        row_count=row_count,
-        byte_size=len(payload),
-    )
-
-
-def load_edge_selection_package(
-    store: ObjectStore,
-    package: EdgeSelectionPackage,
-) -> tuple[str, ...]:
-    if store.size(package.object_name) != package.byte_size:
-        raise RuntimeError("edge selection size does not match its NATS reference")
-    with store.open(package.object_name) as content:
-        payload = content.read()
-    if sha256(payload).hexdigest() != package.sha256:
-        raise RuntimeError("edge selection digest does not match its NATS reference")
-    table = pa.ipc.open_file(pa.BufferReader(payload)).read_all()
-    if table.schema != EDGE_SELECTION_SCHEMA:
-        raise RuntimeError("edge selection schema does not match its NATS reference")
-    urls = tuple(str(value) for value in table.column("url").to_pylist())
-    if len(urls) != package.row_count:
-        raise RuntimeError("edge selection rows do not match its NATS reference")
-    return urls
-
-
-def delete_run_navigation(store: ObjectStore, graph_run_id: UUID) -> int:
-    return store.delete_prefix(f"runtime/navigation/{graph_run_id.hex}/")

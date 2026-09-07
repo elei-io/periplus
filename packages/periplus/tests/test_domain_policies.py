@@ -14,7 +14,7 @@ from periplus.crawl.runtime.domain_pacing import (
     domain_permit,
     domain_backoff_seconds,
     record_domain_response,
-    wait_for_domain_interval,
+    try_domain_start,
 )
 
 
@@ -125,16 +125,28 @@ class DomainPacingTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_reservations_serialize_the_minimum_interval(self):
-        bucket = FakeBucket()
-
+    def test_updated_interval_uses_last_actual_start(self):
         async def scenario():
-            with patch("periplus.crawl.runtime.domain_pacing.asyncio.sleep", new_callable=AsyncMock) as sleep:
-                await wait_for_domain_interval(bucket, domain="example.com", interval_seconds=2)
-                await wait_for_domain_interval(bucket, domain="example.com", interval_seconds=2)
-            self.assertEqual(sleep.await_count, 1)
-            self.assertGreaterEqual(sleep.await_args.args[0], 1.9)
+            bucket = FakeBucket()
+            self.assertEqual(await try_domain_start(bucket, domain="example.com", interval_seconds=60), 0)
+            self.assertGreater(await try_domain_start(bucket, domain="example.com", interval_seconds=60), 59)
+            self.assertEqual(await try_domain_start(bucket, domain="example.com", interval_seconds=0), 0)
+            self.assertGreater(await try_domain_start(bucket, domain="example.com", interval_seconds=120), 119)
+        asyncio.run(scenario())
 
+    def test_nonblocking_start_does_not_reserve_future_capacity(self):
+        async def scenario():
+            bucket = FakeBucket()
+            with patch("periplus.crawl.runtime.domain_pacing.asyncio.sleep", new_callable=AsyncMock) as sleep:
+                starts = await asyncio.gather(*(try_domain_start(bucket, domain="example.com", interval_seconds=60)
+                                               for _ in range(8)))
+                self.assertEqual(sum(delay == 0 for delay in starts), 1)
+                self.assertTrue(all(59 < delay <= 60 for delay in starts if delay))
+                self.assertEqual(next(iter(bucket.revisions.values())), 1)
+                self.assertEqual(await try_domain_start(bucket, domain="other.example", interval_seconds=60), 0)
+                await record_domain_response(bucket, domain="zero.example", status_code=429, retry_after_seconds=120)
+                self.assertGreater(await try_domain_start(bucket, domain="zero.example", interval_seconds=0), 119)
+                sleep.assert_not_awaited()
         asyncio.run(scenario())
 
     def test_429_applies_a_shared_retry_after_backoff(self):

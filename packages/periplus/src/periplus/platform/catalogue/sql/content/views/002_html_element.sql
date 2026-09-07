@@ -11,4 +11,8 @@ SELECT
     attributes,
     text_direct,
     text_tail
-FROM material.html_elements;
+FROM material.html_elements AS element
+WHERE EXISTS (
+    SELECT 1 FROM content.object AS object
+    WHERE object.content_id = element.content_sha256
+);

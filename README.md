@@ -3,28 +3,29 @@
 Periplus acquires web documents, retains immutable content-addressed bytes, records observed evidence
 in DuckLake, and maintains rebuildable structural and URL relations.
 
-The currently delivered path is:
+Finite collection requests and bounded public background exploration feed one shared crawler:
 
 ```text
-crawl plan -> immutable bytes -> ingest.* -> material.* -> web.* / content.*
+collections + background -> shared frontier -> CDP -> immutable bytes -> ingest.* -> material.* -> web.* / content.*
 ```
 
-Acquisition-plan edges are page-local DuckDB queries and do not require a SQL
-compiler or historical catalogue connection.
-The public SQL interface is exactly four portable DuckLake views under `web.*` and `content.*`:
-observations, link occurrences, immutable content objects, and HTML elements. The matching C++
-extension supplies hosted query safety and measured optimizer rules without adding public
-semantics. The bounded read-only SQL console exposes only qualified public relations in both the
-web application and the `periplus` terminal client; physical `ingest.*` and `material.*` relations
-remain Periplus implementation details.
+Compatible queued requests share acquisition while retaining independent traversal and budgets.
+Seed SQL selects bounded starting URLs from the corpus; follow SQL reads only the captured page's
+navigation package. Postgres owns current execution, NATS owns delivery and domain permits, and
+DuckLake retains observations and their durable collection/background lineage.
+
+The public catalogue exposes observations, link occurrences, collections, fulfillments, acquisition
+reasons, immutable content objects and HTML elements. The Python query service validates bounded
+read-only SQL over standard DuckDB. The separately pinned DuckLake CDC extension is used only by
+live materialization. Physical `ingest.*` and `material.*` remain implementation details.
 
 ## Products and packages
 
 | Package | Owns |
 | --- | --- |
 | `packages/periplus/` | Crawl execution, ingestion, materialization, catalogue and infrastructure APIs. |
-| `packages/periplus-admin/` | Authenticated operator UI for plans, policies, schedules, runs, workers and catalogue maintenance. |
-| `packages/periplus-public/` | Single-page SQL interface over the isolated Python query server. |
+| `packages/periplus-admin/` | Authenticated controls for the crawler, collections, policies, workers and catalogue maintenance. |
+| `packages/periplus-public/` | Public corpus discovery, SQL, Live crawler activity and collection submission. |
 
 The core API, crawler, ingestor, materializer, setup and janitor are process roles of
 one Python package. Admin is a Vite application served by an authenticated nginx gateway;
@@ -74,10 +75,10 @@ npm run periplus -- 'SELECT count(*) FROM web.observation'
 ```
 
 Run `npm run periplus` without SQL to open the interactive terminal. Set `PERIPLUS_QUERY_URL` and `PERIPLUS_QUERY_API_TOKEN` when the query server
-is not available at `http://127.0.0.1:8000`. Inside either shell, `.tables` lists the public
+is not available at `http://127.0.0.1:8010`. Inside either shell, `.tables` lists the public
 catalogue, `.describe content.object` shows an object's columns, and `.history` shows recent input.
-`.help` lists all local commands. Set `PERIPLUS_API_TOKEN` to the public service token for
-terminal SQL, or to the admin token for SDK operational calls.
+`.help` lists all local commands. The terminal uses `PERIPLUS_QUERY_API_TOKEN`; set `PERIPLUS_API_TOKEN` to the appropriate
+public or admin token for SDK collection/control calls.
 
 Start the applications locally with `npm run dev --workspace periplus-public` and
 `npm run dev --workspace periplus-admin`. Both read root `.env` during development.
@@ -85,12 +86,12 @@ Compose exposes public on port 8080 and admin on port 8081. Admin uses HTTP Basi
 login with username `admin` and the administrative API token as password.
 Use TLS at the ingress in production.
 
-Public crawl submission acquires one URL, follows no links, and has a five-minute
-run deadline. Save the returned page URL to track the request for seven days.
-Receipts are bearer capabilities: anyone holding one can read that request's progress.
-There is no account system or public request database. Submission is capped at ten
-requests per minute per public process; production ingress owns aggregate rate limits.
-
+Public collection submission accepts a URL or description, depth 0–2, link scope, allowed sections,
+and a budget of up to 1,000 pages. All public request details are public. Save the returned request
+URL to inspect current progress and durable historical arrivals. Settlement and verified query
+readiness are separate milestones. Ingress owns deployment-wide request/body limits. Operators
+control global/domain pacing and concurrency, priorities, exclusions and background allocation;
+configured speed is an upper bound rather than guaranteed throughput.
 
 Useful commands:
 

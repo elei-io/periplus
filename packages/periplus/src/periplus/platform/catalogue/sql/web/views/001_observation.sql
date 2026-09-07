@@ -1,7 +1,6 @@
 CREATE OR REPLACE VIEW web.observation AS
 SELECT
     visit.visit_id AS observation_id,
-    visit.crawl_id,
     visit.requested_url,
     visit.effective_url,
     visit.observed_at,
@@ -15,4 +14,5 @@ SELECT
 FROM ingest.visits AS visit
 LEFT JOIN ingest.documents AS document
     ON document.document_id = visit.document_id
-   AND document.visit_id = visit.visit_id;
+   AND document.visit_id = visit.visit_id
+WHERE visit.visibility = 'public';

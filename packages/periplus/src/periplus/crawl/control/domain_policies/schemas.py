@@ -23,6 +23,9 @@ class DomainPolicySnapshot(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: UUID
+    paused: bool = False
+    version: int = Field(default=1, ge=1)
+    updated_by: str = "setup"
     slug: str
     host_match: str
     maximum_concurrency: int = Field(ge=1, le=10_000)
@@ -48,6 +51,7 @@ class DomainPolicyCreateRequest(BaseModel):
     maximum_concurrency: int = Field(default=4, ge=1, le=10_000)
     minimum_request_interval_seconds: float = Field(default=0, ge=0, le=3600)
     enabled: bool = True
+    paused: bool = False
 
     @field_validator("host_match")
     @classmethod
@@ -56,6 +60,8 @@ class DomainPolicyCreateRequest(BaseModel):
 
 
 class DomainPolicyUpdateRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    paused: bool | None = None
     host_match: str | None = None
     maximum_concurrency: int | None = Field(default=None, ge=1, le=10_000)
     minimum_request_interval_seconds: float | None = Field(default=None, ge=0, le=3600)

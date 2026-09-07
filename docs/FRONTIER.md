@@ -1,9 +1,9 @@
 # The continuously exploring crawler
 
-Status: destination design, not implemented. This replaces the earlier proposal to add a frontier
-while retaining graph runs as the center of execution. The implemented contracts remain in
-`ARCHITECTURE.md`, `CRAWL_PLANS.md`, and `LIFECYCLE.md`. This document describes the desired system;
-it does not assert that existing tables, APIs, or workers already implement it.
+Status: implemented and locally acceptance-verified. Current architecture is documented in
+`ARCHITECTURE.md` and `LIFECYCLE.md`; the requirement audit is in `FRONTIER_ACCEPTANCE.md`, with
+measured verification evidence in `FRONTIER_IMPLEMENTATION.md`. The scraper VLAN remains a
+user-owned deployment follow-up; provider-wide network isolation is not claimed as verified.
 
 ## Purpose
 
@@ -22,7 +22,7 @@ It must not preserve historical graph machinery merely because it already exists
 | --- | --- |
 | Collection request | Intent, SQL selection rules, scope, budget, priority, visibility, and completion outcome |
 | Frontier | Authoritative pending acquisitions, eligibility, selection reasons, and scheduling state |
-| Acquisition | One physical page capture with defined requirements; may serve several compatible requests |
+| Acquisition | One logical capture operation with bounded physical attempts; may serve several compatible requests |
 | Observation | Immutable evidence of that capture, independent of which requests benefited |
 | Selection policy | Determines which starting or discovered URLs qualify, including background exploration |
 
@@ -87,8 +87,8 @@ cross-context sharing is implied. Required capture parameters are frozen before 
 
 One acquisition produces one observation, not one fabricated visit per requesting collection.
 Each attached request receives the result and applies its own follow-link SQL and depth/scope
-context. Fetch sharing never merges traversal permissions. A selected page consumes one page-budget
-unit per participating request; retries do not consume another unit. Report pages supplied to a
+context. Fetch sharing never merges traversal permissions. An admitted page reserves one page-budget
+unit per participating request, consumed at dispatch or reuse; retries do not consume another unit. Report pages supplied to a
 request separately from physical acquisitions and browser cost. Page-budget accounting is not a
 future billing policy.
 
@@ -98,9 +98,8 @@ are retry-safe; concurrent selection cannot exceed budgets or create duplicate p
 the same pending acquisition identity.
 
 Initially freeze participants at dispatch: new requests do not attach to an in-flight acquisition.
-A later request can schedule subsequent work. Reusing historical captures requires a separate,
-explicit freshness contract and is deferred. This limited boundary avoids pretending all temporal
-requests are equivalent while removing duplication in the pending frontier.
+A later request may reuse a recent completed result under the contract below or schedule subsequent
+work. General historical-result lookup is deferred.
 
 Requests anchor the user-facing reason for collection; observations anchor captured evidence.
 Persist the relationship and selection provenance in DuckLake so it survives operational cleanup.
@@ -111,8 +110,132 @@ only the lineage needed to explain actual decisions, not an unbounded record of 
 The current run-owned visit/crawl relationships are not assumed compatible with this model. Design
 an explicit evidence contract for shared acquisition and request fulfillment before implementation;
 replace obsolete ownership relationships rather than invent duplicate visits or dual-write lineage.
-Preserve existing immutable evidence. Any historical transition requires an explicit decision;
-this design does not authorize rewriting lake history or introduce a compatibility bridge.
+All existing local development data is disposable, and the user has authorized its reset for the
+implementation cutover. Replace these contracts directly without historical conversion or a
+compatibility bridge. This design edit does not itself delete data. New-system evidence remains
+immutable after cutover.
+
+## Resolved traversal, reuse, and accounting contracts
+
+### Once per request
+
+The request deduplication key is `(request_id, normalized_url)`, regardless of traversal context.
+The first committed selection freezes parent observation, depth, scope, and rule version. Later
+discoveries, including a shallower path, do not evaluate or expand the URL again. Seeds are admitted
+before follow-link expansion. Concurrent winners follow admission commit order. This deliberately
+does not promise shortest-path traversal or maximum depth-bounded coverage. Retain the winning
+parent rather than every alternate path. A crashed SQL evaluation may execute again, but its
+committed selection effects occur once through stable identities and checkpoints.
+
+### Recent-result reuse
+
+A request freezes a maximum reusable result age; the initial default is five minutes, and zero
+requires a fresh acquisition. At admission, reuse only a successful retained result with matching
+URL, capture requirements, and public access/visibility identity. Measure age from capture completion
+at the reuse decision. Apply current exclusions and request scope. Failure results are not reusable.
+Traversal additionally requires a retained navigation package; otherwise schedule acquisition.
+
+Reuse consumes one request page unit and records a fulfillment pointing to the existing observation,
+including its actual capture time. It creates no observation or browser cost. The new request runs
+its own follow-link SQL once. Pin the retained result and navigation until that selection settles.
+Retention is storage-bounded and opportunistic: eviction causes acquisition, not unbounded caching.
+In-flight joining and searching the historical lake for reusable results remain deferred.
+
+### Background seen checks
+
+Seen eligibility is separate from result reuse. Initially any public terminal observation, including
+a definitive failure, makes its normalized requested URL seen for background exploration. Successful
+effective URLs also count. Automatic retries after a terminal result require a later explicit revisit
+policy. Private evidence must not influence public eligibility. Explicit requests may acquire seen URLs.
+
+Background admission checks bounded candidate batches against DuckLake evidence and current Postgres
+acquisitions. This is an explicit background admission dependency, never an implicit per-page SQL join.
+Lake unavailability defers background admission; current acquisitions and request traversal continue.
+Limit batch size, query time, and outstanding candidate storage. Verify historical lookup plans at
+representative scale using QUERY.md before enabling background allocation. Do not introduce permanent
+crawl history in control Postgres. A lagging materialized lookup alone cannot prove absence.
+
+Keep completed operational acquisition markers until ingestion acknowledges their evidence commit.
+Historical checks record their lake snapshot. A marker may be cleaned up only when its evidence commit
+is visible in every outstanding check that could admit its URL; use bounded check lifetimes and a
+cleanup watermark. Expired checks must restart before admitting. Atomically recheck current work and
+insert background admission under a unique active URL key, so concurrent batches cannot both admit it.
+This closes the capture-to-ingestion gap and the historical-check-to-cleanup race without a second
+history store. Reconcile outstanding ingestion before background admission after a control-state
+reset; then consult lake evidence. Runtime deletion never implies an empty corpus.
+
+### Page budgets and physical cost
+
+Enforce `reserved + consumed <= page_limit` atomically with creation of the unique request/URL
+interest. Duplicate selection has no accounting effect.
+
+| Event | Page-budget effect |
+| --- | --- |
+| Candidate checkpointed, awaiting admission | None yet; selection storage is separately bounded |
+| Interest attached to queued acquisition | Reserve one unit |
+| Dispatch freezes a live participant | Move its reservation to consumed |
+| Recent result reused | Consume one unit with the reuse decision |
+| Cancellation, deadline, or exclusion before dispatch | Release reservation; terminalize interest |
+| Retry, failure, or cancellation after dispatch | Keep consumed unit; no further page charge |
+
+Consumed means acquisition was authorized, not that useful content was supplied. Report useful pages,
+failures, cancellations, and consumed units separately. Cancellation and dispatch serialize on the
+same request/interest state. Released interests stay deduplicated. Check dependency health before
+dispatch; outages after authorization pause retries rather than creating new page charges.
+
+Hitting the cap stops new admissions. Existing fulfillment and selection work must settle or explicitly
+stop at the cap before request completion. At frontier capacity, retain bounded deterministic selection
+checkpoints and pinned navigation inputs; resume on capacity availability with bounded recovery scans.
+Bound aggregate pending requests and retained inputs too, rather than creating an unlimited second queue.
+
+Physical attempts reserve browser-time/spend allowance separately, once per attempt regardless of the
+number of participants. Reserve an enforceable upper bound and reconcile measured usage. Unknown usage
+retains its reservation or is charged at the bound. Hard monetary ceilings require a provider cost
+bound; otherwise label cost as estimated and enforce measurable time/attempt ceilings. Background-only
+attempts also require background allowance. All retries obey physical attempt/time limits.
+
+### Crash guarantees
+
+An acquisition is one logical operation with bounded physical attempts and one accepted terminal
+observation. Claiming dispatch, freezing participants, consuming reservations, and inserting the outbox
+record commit together. Use a stable acquisition ID and fenced dispatch generation. Workers validate
+the generation and execution lease before remote work; outcome acceptance rejects stale generations.
+Store immutable bytes before committing the frozen outcome and ingestion/selection outbox records.
+Only accepted outcomes are published. After that commit, recovery republishes or reconciles rather
+than fetching again. Evidence identities and committed selection/accounting effects are idempotent.
+
+Standard CDP does not guarantee exactly-once physical capture. A crash after remote work but before
+durable outcome acceptance may require another attempt. Mark that attempt uncertain, retain known
+cost, and retry within bounded limits. Fencing protects accepted state, not a browser already acting
+remotely. Lease renewal and remote deadlines reduce overlap but cannot eliminate all uncertain-outcome
+duplicates. Do not describe the guarantee as exactly-once browser execution.
+
+### Evidence and public lineage
+
+Keep these separate grains in append-only lake evidence:
+
+- Observation: one terminal logical acquisition result, ordered attempts and steps, and optional
+  document; no owning request or crawl ID.
+- Collection: frozen request definition and a separately appended terminal outcome. Template changes
+  affect future requests; admitted rules are frozen.
+- Fulfillment: one `(request_id, normalized_url)` result association, containing observation ID,
+  winning parent, depth, rule identity, decision time, and mode (`acquired`, `shared`, or `reused`).
+  A terminal failure records attempted fulfillment, distinguishable from useful supplied content.
+- Acquisition reason: causal request/background reasons frozen at dispatch, with policy version and
+  parent evidence. Later reuse is a fulfillment decision, not a retroactive cause of capture.
+
+Cancellation without a result creates no fulfillment; collection outcomes retain its accounting.
+Dispatch reasons remain even when a caller later cancels. Late reuse associations append independently
+through the existing ingestion lane with stable identities and identical-evidence replay checks.
+Operational cleanup waits for acknowledged evidence and lineage commits. Request settlement does not
+wait for ingestion; query readiness remains separate.
+
+Remove `crawl_id` from `web.observation` at cutover and keep one row per observation. Expose separate
+public collection, fulfillment, and acquisition-reason relations; never implicitly multiply observation
+rows through a lineage join. Imported observations may have neither collection nor acquisition reason.
+Public lineage and counts include only public records. Count logical results from observations,
+request results from fulfillments, and physical attempts separately. Adding fulfillment never reruns
+the visit-scoped content materialization pipeline.
 
 ## Admission, eligibility, priority, and capacity
 
@@ -270,17 +393,19 @@ lake processing where they fit. Replace obsolete graph execution, ownership fiel
 APIs, counters, UI concepts, and tests with their last caller; do not add compatibility aliases,
 parallel schedulers, dual evidence writes, or a second frontier ledger. Adapt documentation and
 AGENTS.md to the implemented architecture at cutover. Existing graph docs remain factual until then.
-Use Alembic for operational schema changes and a coordinated drain or explicitly authorized reset
-of disposable runtime state. Preserve durable observations; no implicit historical reset is allowed.
+Use Alembic for operational schema changes. At the authorized development cutover, stop old producers
+and workers, reset disposable control, delivery, lake, and object state consistently, then initialize
+the replacement contracts. Old deliveries must not target the replacement schema.
 
 The first slice includes compatible queued sharing, bounded background exploration with a zero
-setting, simple fair scheduling, SQL seed/follow selection, and honest public/request visibility.
-Defer in-flight joining, historical-result reuse, automatic refresh, paid billing, learned ranking,
+setting, simple fair scheduling, bounded recent-result reuse, SQL seed/follow selection, and honest
+public/request visibility. Defer in-flight joining, general historical-result lookup, automatic refresh, paid billing, learned ranking,
 capture A/B automation, and arbitrary graph orchestration absent a demonstrated caller.
 
 ## Acceptance criteria
 
-- Two compatible queued requests cause one physical acquisition and one observation, both receive
+- Two compatible queued requests cause one logical acquisition and, without failures, one physical
+  attempt and one observation; both receive
   fulfillment, and each applies its own traversal rules and budgets. Incompatible captures do not
   merge. Cancelling one caller does not strand the other.
 - Background exploration continues independently after a public request finishes, respects its own
@@ -300,3 +425,8 @@ capture A/B automation, and arbitrary graph orchestration absent a demonstrated 
   validation measures successful acquisitions and browser cost, not merely terminal request counts.
 - Superseded graph/scheduling paths and contracts are deleted at implementation, with no permanent
   compatibility layer. Architecture, schema, lifecycle, deployment, and API docs describe one system.
+- Repeated URLs use the first committed request context, including when a later path is shallower.
+  Recent reuse obeys age, compatibility, and navigation retention limits without duplicating evidence.
+- Delayed ingestion, cleanup racing a historical check, and lake outages do not imply unseen URLs.
+- Cancellation racing dispatch releases or consumes exactly one unit according to commit order.
+  Uncertain remote attempts are bounded and reported separately from logical observations.

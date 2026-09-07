@@ -3,14 +3,14 @@
 This cutoff establishes one immutable lake contract:
 
 ```text
-crawl plan -> immutable bytes -> ingest.* -> append-only material.* -> web.* / content.*
+shared frontier -> immutable bytes -> ingest.* -> append-only material.* -> web.* / content.*
 ```
 
 ## Required outcome
 
 Periplus must:
 
-1. Preserve authoritative crawl, visit, attempt, step, and document evidence in insert-only
+1. Preserve authoritative collection lineage, visit, attempt, step, and document evidence in insert-only
    `ingest.*`.
 2. Verify every visible document object is readable and content-correct.
 3. Rebuild exactly three semantic projections:
@@ -75,10 +75,10 @@ registrations retain their complete immutable object URI.
 - Repository-wide search finds no removed material relation, hard-coded old table list, or
   target-specific material commit branch.
 
-## Next crawl-runtime cutoff
+## Continuous crawler cutoff
 
-The [continuous crawler destination](FRONTIER.md) replaces the earlier graph-preserving frontier
-proposal. Reconsider the scheduling core and acquisition ownership directly; do not layer another
-frontier over graph execution. Preserve immutable evidence and SQL selection, while explicitly
-designing shared acquisition and durable provenance. Its replacement scope and acceptance criteria
-guide the next cutoff; no runtime or historical evidence change is authorized by documentation alone.
+[FRONTIER.md](FRONTIER.md) defines the replacement crawl-runtime contract. The implementation uses
+one shared frontier, finite collection interests, independent background selection, immutable
+observations and durable lineage. See [FRONTIER_ACCEPTANCE.md](FRONTIER_ACCEPTANCE.md) for acceptance
+evidence and deployment follow-ups. The materialization and immutable-storage boundaries above
+continue to apply; no graph compatibility layer is retained.

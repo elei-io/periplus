@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import tempfile
 from collections.abc import Iterator
@@ -82,12 +83,20 @@ class FileObjectStore:
         headers: ObjectWriteHeaders | None = None,
     ) -> bool:
         destination = self._path(key)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        file_descriptor, temporary_name = tempfile.mkstemp(
-            dir=destination.parent,
-            prefix=f".{destination.name}.",
-            suffix=".tmp",
-        )
+        # A deleter may prune an empty parent between mkdir and mkstemp.
+        # Once the temporary file exists, rmdir cannot remove that directory.
+        for attempt in range(3):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                file_descriptor, temporary_name = tempfile.mkstemp(
+                    dir=destination.parent,
+                    prefix=f".{destination.name}.",
+                    suffix=".tmp",
+                )
+                break
+            except FileNotFoundError:
+                if attempt == 2:
+                    raise
         temporary = Path(temporary_name)
         try:
             with os.fdopen(file_descriptor, "wb") as output:
@@ -121,11 +130,24 @@ class FileObjectStore:
             raise RepositoryObjectNotFound(key) from exc
 
     def delete(self, key: str) -> bool:
+        path = self._path(key)
+        existed = True
         try:
-            self._path(key).unlink()
+            path.unlink()
         except FileNotFoundError:
-            return False
-        return True
+            existed = False
+        # Retry after an interrupted deletion also reclaims empty ancestors.
+        parent = path.parent
+        while parent != self.root:
+            try:
+                parent.rmdir()
+            except OSError as exc:
+                if exc.errno in (errno.ENOTEMPTY, errno.EEXIST):
+                    break
+                if exc.errno != errno.ENOENT:
+                    raise
+            parent = parent.parent
+        return existed
 
     def delete_prefix(self, prefix: str) -> int:
         root = self._path(prefix.rstrip("/"))
@@ -146,10 +168,13 @@ class FileObjectStore:
         root = self._path(prefix.rstrip("/"))
         if not root.exists():
             return
-        for path in sorted(root.rglob("*")):
+        for path in root.rglob("*"):
             if not path.is_file():
                 continue
-            stat = path.stat()
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
             yield ObjectMetadata(
                 key=path.relative_to(self.root).as_posix(),
                 size=stat.st_size,

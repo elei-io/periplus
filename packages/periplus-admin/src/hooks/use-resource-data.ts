@@ -30,15 +30,19 @@ function params(filters: ContentPolicyFilters, page: PageParams) {
 export function useDomainPolicies(page: PageParams) {
   return useQuery({
     queryKey: ["domain-policies", page],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const query = new URLSearchParams({
         limit: String(page.limit),
         offset: String(page.offset),
       })
-      const response = await fetch(apiUrl(`/domain-policies/?${query}`))
+      const response = await fetch(apiUrl(`/domain-policies/?${query}`), {
+        signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]),
+      })
       if (!response.ok) throw await apiErrorFromResponse(response)
       return (await response.json()) as DomainPolicyListResponse
     },
+    refetchInterval: 5000,
+    retry: false,
   })
 }
 
@@ -48,6 +52,7 @@ export function useCreateDomainPolicy() {
     mutationFn: async (request: DomainPolicyCreateRequest) => {
       const response = await fetch(apiUrl("/domain-policies/"), {
         method: "POST",
+        signal: AbortSignal.timeout(15000),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
       })
@@ -68,6 +73,7 @@ export function useUpdateDomainPolicy(id: string) {
     mutationFn: async (request: DomainPolicyUpdateRequest) => {
       const response = await fetch(apiUrl(`/domain-policies/${id}`), {
         method: "PATCH",
+        signal: AbortSignal.timeout(15000),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
       })
@@ -78,7 +84,10 @@ export function useUpdateDomainPolicy(id: string) {
       toast.success("Updated domain policy.")
       void client.invalidateQueries({ queryKey: ["domain-policies"] })
     },
-    onError: (error) => toast.error(extractApiError(error)),
+    onError: (error) => {
+      toast.error(extractApiError(error))
+      void client.invalidateQueries({ queryKey: ["domain-policies"] })
+    },
   })
 }
 

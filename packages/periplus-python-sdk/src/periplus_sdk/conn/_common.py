@@ -7,11 +7,14 @@ import duckdb
 
 from periplus_sdk.errors import CatalogueVersionError
 
-PUBLIC_CATALOGUE_VERSION = "1.0.0"
+PUBLIC_CATALOGUE_VERSION = "2.0.0"
 PUBLIC_RELATIONS = frozenset(
     {
         ("web", "observation"),
         ("web", "link_occurrence"),
+        ("web", "collection"),
+        ("web", "fulfillment"),
+        ("web", "acquisition_reason"),
         ("content", "object"),
         ("content", "html_element"),
     }

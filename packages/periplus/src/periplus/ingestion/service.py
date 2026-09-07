@@ -8,7 +8,6 @@ from types import TracebackType
 from periplus.platform.catalogue import (
     Catalogue,
     CatalogueService,
-    CrawlRecord,
     DocumentRecord,
     IngestionWriteResult,
     VisitEvidence,
@@ -68,27 +67,11 @@ class RepositoryIngestor:
         prepared: list[PreparedIngestion],
     ) -> list[IngestionWriteResult]:
         results: dict[str, IngestionWriteResult] = {}
-        crawls = [
-            value.job.crawl
-            for value in prepared
-            if value.job.kind == "crawl" and value.job.crawl is not None
-        ]
         visits = [
             value.job.visit
             for value in prepared
             if value.job.kind == "visit" and value.job.visit is not None
         ]
-        if crawls:
-            for job, result in zip(
-                (
-                    value.job
-                    for value in prepared
-                    if value.job.kind == "crawl"
-                ),
-                self.catalogue_service.record_crawls(crawls),
-                strict=True,
-            ):
-                results[job.request_id] = result
         if visits:
             for job, result in zip(
                 (
@@ -100,16 +83,22 @@ class RepositoryIngestor:
                 strict=True,
             ):
                 results[job.request_id] = result
+        lineage_jobs = [value.job for value in prepared if value.job.kind == "lineage"]
+        if lineage_jobs:
+            for job, result in zip(lineage_jobs, self.catalogue_service.record_lineage(
+                [job.lineage for job in lineage_jobs]
+            ), strict=True):
+                results[job.request_id] = result
         return [results[value.job.request_id] for value in prepared]
 
     def reconcile_commit(
         self,
         job: IngestionJob,
     ) -> IngestionWriteResult | None:
-        if job.kind == "crawl":
-            assert job.crawl is not None
-            durable = self.catalogue_service.get_crawl(job.crawl.crawl_id)
-            expected = job.crawl
+        if job.kind == "lineage":
+            assert job.lineage is not None
+            durable = self.catalogue_service.get_lineage(job.lineage.kind, job.identity)
+            expected = job.lineage
         else:
             assert job.visit is not None
             durable = self.catalogue_service.get_visit_evidence(

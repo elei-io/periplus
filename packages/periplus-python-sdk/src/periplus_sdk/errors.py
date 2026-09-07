@@ -22,9 +22,10 @@ class AuthenticationError(PeriplusConnectionError):
 class ApiError(PeriplusError):
     """The Periplus control-plane API rejected a request."""
 
-    def __init__(self, message: str, *, status_code: int) -> None:
+    def __init__(self, message: str, *, status_code: int, retry_after_seconds: float | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
 
 
 class NotFoundError(ApiError):
@@ -43,8 +44,8 @@ class WaitTimeout(PeriplusError, TimeoutError):
     """A local lifecycle wait exceeded its timeout."""
 
 
-class CrawlFailed(PeriplusError):
-    """A crawl reached an unsuccessful terminal state."""
+class CollectionFailed(PeriplusError):
+    """A collection settled unsuccessfully or supplied failed pages."""
 
 
 class CatalogueVersionError(PeriplusConnectionError):
