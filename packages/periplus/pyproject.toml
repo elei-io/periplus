@@ -40,7 +40,7 @@ periplus-setup = "periplus.entrypoints.setup:main"
 periplus-worker = "periplus.entrypoints.worker:main"
 
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
