@@ -1,4 +1,5 @@
 """Real DuckLake proof membership and atomic materialization commit checks."""
+from capture_policy_fixture import capture_policy
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -26,7 +27,7 @@ class MaterializationReadinessTests(unittest.TestCase):
         self.catalogue.bootstrap()
         self.now = datetime.now(UTC)
         self.identity, self.generation = uuid4(), uuid4()
-        self.visit = VisitRecord(visit_id=self.identity, requested_url='https://example.com/',
+        self.visit = VisitRecord(capture_policy=capture_policy(), visit_id=self.identity, requested_url='https://example.com/',
             admitted_at=self.now, finished_at=self.now, outcome='failed')
         CatalogueService(self.catalogue).record_visits([VisitEvidence(visit=self.visit, attempts=(), steps=())])
         self.connection = self.catalogue.trusted_connection
@@ -177,7 +178,7 @@ class MaterializationReadinessTests(unittest.TestCase):
     def test_live_reports_verified_pending_and_unknown_readiness(self):
         from periplus.crawl.runtime.live import read_live_history
         identity = uuid4()
-        visit = VisitRecord(visit_id=identity, requested_url='https://example.com/live',
+        visit = VisitRecord(capture_policy=capture_policy(), visit_id=identity, requested_url='https://example.com/live',
             admitted_at=self.now, finished_at=self.now, outcome='succeeded')
         CatalogueService(self.catalogue).record_visits([VisitEvidence(visit=visit, attempts=())])
         def recent():

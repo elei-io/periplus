@@ -124,6 +124,7 @@ jobs:
         with:
           context: .
           file: docker/${{ matrix.app }}/Dockerfile
+          build-args: ${{ matrix.app == 'public' && format('PERIPLUS_PUBLIC_ORIGIN={0}', vars.PERIPLUS_PUBLIC_ORIGIN) || '' }}
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.value }}

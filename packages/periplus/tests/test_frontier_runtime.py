@@ -1,4 +1,5 @@
 """Exercise the assembled loops with real repository transitions and bounded fake I/O."""
+from capture_policy_fixture import capture_policy
 import asyncio
 from test_domain_policies import FakeBucket
 from datetime import UTC, datetime, timedelta
@@ -112,6 +113,7 @@ class FrontierRuntimeTests(unittest.IsolatedAsyncioTestCase):
             now = datetime.now(UTC)
             from periplus.platform.catalogue.records import AttemptRecord, AttemptUsage, attempt_id_for
             evidence = VisitEvidence(visit=VisitRecord(
+                capture_policy=capture_policy(),
                 visit_id=context.acquisition_id, requested_url=kwargs["url"], admitted_at=context.admitted_at,
                 started_at=now, finished_at=now, outcome="succeeded",
             ), attempts=(AttemptRecord(

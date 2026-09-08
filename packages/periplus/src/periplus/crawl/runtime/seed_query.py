@@ -6,9 +6,11 @@ import httpx
 from sqlglot import exp
 
 from periplus.crawl.runtime.selection_contract import SelectionCheckpoint
-from periplus.query.service import QueryRequest, QueryResult, MAX_RESPONSE_BYTES
+from periplus.query.service import QueryRequest, QueryResult
 from periplus.query.validation import _one_statement
 
+
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 class SeedQueryUnavailable(RuntimeError):
     """Keep intent pending until the query service or its credentials recover."""

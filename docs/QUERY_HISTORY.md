@@ -23,13 +23,14 @@ connections are outside this history. A malformed SQL string inside a valid quer
 request is retained even if normalization fails, grouped as explicitly unparsed SQL.
 
 The isolated query service posts to `PERIPLUS_API_URL/internal/query-history` with its
-existing query-service token. API recognizes this token only for that bounded append
-endpoint; it grants no history reads or control actions. API and admin use the normal
+existing query-service token. API recognizes this token for that bounded append endpoint and `GET /access` public settings
+reads; it grants no history reads or control mutations. API and admin use the normal
 repository boundary for Postgres. Query receives no control database, NATS, or lake
 writer credentials. Source attribution is asserted by authenticated service clients,
-not a user identity/security boundary. Public proxy overwrites the source header;
-assistant and crawler clients set their own source. External HTTP clients can send
-`x-periplus-query-source: sdk`; clients that omit it are `unknown`.
+not a user identity/security boundary. Public proxy permits the caller-asserted `sdk` label and
+maps all other input to `public_console`; assistant and crawler clients set their own source.
+The public Python SDK sends `x-periplus-query-source: sdk` through that gateway. Direct internal
+HTTP clients can send the same header; clients that omit it are `unknown`.
 
 Delivery is best-effort, with eight bounded in-process recording slots, no retry queue,
 and a one-second remote delivery deadline. History failure does not change a query's
@@ -96,3 +97,31 @@ containers were rebuilt and restarted. Public and admin read-only smoke queries
 both produced history records; their SQL markers were absent from API/query logs.
 The two smoke-test records remain subject to ordinary 30-day retention. Production
 has not been deployed and external monitoring rule installation remains platform-owned.
+
+## Preparation plans
+
+Revision `20260908_0011` adds nullable preparation evidence to the same retained row:
+64,000-byte plan previews, explicit preview truncation, preparation diagnostics,
+DuckDB and compiler contract versions, and effective duration/row/result-byte limits.
+Capture occurs before execution so a subsequent SQL failure or timeout retains the
+available evidence. Early failures and old records have null fields. SHOW output is
+not stored as a plan; privileged admin scripts do not generate preparation plans.
+No additional EXPLAIN, execution or profiling pass is introduced.
+
+The preview explains the submitted SQL before the existing service row-limit wrapper.
+It contains estimated operators and cardinalities, not actual operator timing or work.
+`plan_fingerprint` hashes the complete preview with DuckDB and compiler versions;
+truncated previews have no fingerprint. This is exact preview identity, not a
+parameter-independent structural fingerprint. Literal values, cardinality estimates,
+source changes and formatting can all change it. Compare SQL parameters, snapshots,
+versions and effective limits before attributing latency changes to the optimizer.
+Bump the compiler contract version when changing preparation/validation semantics.
+
+A selected SQL pattern shows at most the 50 most recently seen plan/version groups,
+with successful p50/p95 sample counts, timeout counts/rates, first/last seen and a
+representative execution link. Missing/truncated plans remain an explicit ungrouped
+category per engine/compiler version. No plans or parameters are returned by aggregate
+or execution-list reads: they load only in the private execution detail's Plan tab.
+Plans can contain private literals and share SQL's access controls and 30-day deletion.
+Apply the migration before deploying API, query and admin; historical plans are not
+backfilled and unavailable evidence is not inferred.

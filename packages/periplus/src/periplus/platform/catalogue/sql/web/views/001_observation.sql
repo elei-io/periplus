@@ -10,7 +10,8 @@ SELECT
     visit.provenance.kind AS source_kind,
     visit.provenance.system AS source_system,
     visit.provenance.dataset AS source_dataset,
-    visit.provenance.source_record_id AS source_record_id
+    visit.provenance.source_record_id AS source_record_id,
+    visit.capture_policy
 FROM ingest.visits AS visit
 LEFT JOIN ingest.documents AS document
     ON document.document_id = visit.document_id

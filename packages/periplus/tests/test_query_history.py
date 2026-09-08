@@ -1,3 +1,4 @@
+from periplus.operations.access.schemas import QueryLimits
 import asyncio
 from datetime import UTC, datetime, timedelta
 import os
@@ -70,19 +71,24 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_capacity_and_timeout_are_terminal_history(self):
         recorder = SimpleNamespace(record=AsyncMock())
         slot = asyncio.Semaphore(1)
-        def timeout(payload):
+        def timeout(payload, *, limits, evidence):
+            evidence.plan = 'estimated scan'
+            evidence.plan_truncated = False
+            evidence.duckdb_version = 'test-engine'
             raise TimeoutError()
         request = SimpleNamespace(state=SimpleNamespace(), headers={}, app=SimpleNamespace(state=SimpleNamespace(
-            query_history=recorder, query_slot=slot, query_service=SimpleNamespace(execute=timeout))))
+            query_history=recorder, query_slot=slot, query_limits=SimpleNamespace(read=AsyncMock(return_value=QueryLimits())), query_service=SimpleNamespace(execute=timeout))))
         await slot.acquire()
         self.assertEqual((await _run(request, QueryRequest(sql='select 1'), 'execute')).status_code, 429)
         self.assertEqual(recorder.record.call_args.args[0].outcome, 'rejected')
+        self.assertIsNone(recorder.record.call_args.args[0].plan)
         slot.release()
         self.assertEqual((await _run(request, QueryRequest(sql='select 1'), 'execute')).status_code, 408)
         self.assertEqual(recorder.record.call_args.args[0].outcome, 'timeout')
+        self.assertEqual(recorder.record.call_args.args[0].plan, 'estimated scan')
 
 class AccessTests(unittest.TestCase):
-    def test_query_token_only_appends_and_public_cannot_read_history(self):
+    def test_query_token_appends_and_public_cannot_read_history(self):
         app = FastAPI()
         app.add_middleware(ApiAccessMiddleware)
         app.include_router(router)
@@ -133,6 +139,24 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.detail(values[0].execution_id).sql_text,'select 1')
         self.assertEqual(self.store.dashboard(source='admin').summary.p50_ms,99999)
         self.assertEqual(self.store.dashboard(operation='prepare').summary.executions,1)
+
+    def test_plan_roundtrip_and_comparison(self):
+        first = execution(plan='scan a', plan_fingerprint='a'*64, plan_truncated=False,
+            diagnostics=[], duckdb_version='test', compiler_version='v1',
+            effective_limits={'max_rows': 10, 'max_duration_seconds': 2, 'max_result_bytes': 1048576})
+        self.store.record(first)
+        self.store.record(execution(plan='scan a', plan_fingerprint='a'*64, duckdb_version='test',
+            compiler_version='v1', outcome='timeout', elapsed_ms=2000))
+        self.store.record(execution(plan='scan b', plan_fingerprint='b'*64, elapsed_ms=20))
+        self.store.record(execution())
+        self.store.record(execution(source='admin', plan_fingerprint='a'*64))
+        self.assertEqual(self.store.detail(first.execution_id), first)
+        self.assertEqual(self.store.dashboard().plans, [])
+        plans = self.store.dashboard(pattern=first.query_fingerprint).plans
+        self.assertEqual(len(plans), 3)
+        a = next(p for p in plans if p.plan_fingerprint == 'a'*64)
+        self.assertEqual((a.executions, a.successes, a.timeouts, a.p95_ms), (2, 1, 1, 100))
+        self.assertIsNotNone(self.store.detail(a.example_execution_id))
 
     def test_usage_and_retention(self):
         self.store.record(execution(sql_text='select count(*) from web.observation', **shape('select count(*) from web.observation')))

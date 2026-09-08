@@ -131,6 +131,12 @@ function AccessForm({
               requests: integer(`${key}.requests`),
               window_seconds: integer(`${key}.window_seconds`),
             }
+          body.sql = {
+            ...(body.sql as object),
+            max_rows: integer("sql.max_rows"),
+            max_duration_seconds: integer("sql.max_duration_seconds"),
+            max_result_bytes: integer("sql.max_result_mib") * 1024 * 1024,
+          }
           body.crawl = {
             ...(body.crawl as object),
             page_budgets: values("page_budgets"),
@@ -193,6 +199,30 @@ function AccessForm({
                   ? "Counts new assistant turns. Internal assistant queries use their own execution bounds."
                   : "Counts new submissions. Existing executions and retries of accepted identities continue."}
             </p>
+            {key === "sql" && (
+              <div className="space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label>
+                    Maximum result rows
+                    <Input name="sql.max_rows" type="number" min={1} max={10000} step={1} required defaultValue={policy.sql.max_rows} />
+                  </label>
+                  <label>
+                    Maximum duration (seconds)
+                    <Input name="sql.max_duration_seconds" type="number" min={1} max={120} step={1} required defaultValue={policy.sql.max_duration_seconds} />
+                  </label>
+                  <label>
+                    Maximum result size (MiB)
+                    <Input name="sql.max_result_mib" type="number" min={1} max={64} step={1} required defaultValue={policy.sql.max_result_bytes / (1024 * 1024)} />
+                  </label>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Execution limits apply to all new read-only query-service operations, including SDK,
+                  assistant and scheduled seed queries. Running queries keep their starting limits.
+                  Results explicitly report truncation when they reach the row or size limit. Duration includes preparation.
+                  Administrative SQL has separate permissions and limits.
+                </p>
+              </div>
+            )}
             {key === "crawl" && (
               <div className="grid gap-4 sm:grid-cols-2">
                 {(

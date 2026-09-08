@@ -5,6 +5,7 @@ import { ThemeProvider } from "next-themes"
 import { Toaster } from "@/components/ui/sonner"
 import { cn } from "@/lib/utils"
 import { QueryProvider } from "@/components/providers/query-provider"
+import { publicOrigin } from "@/lib/seo"
 
 import { PublicFooter } from "@/components/public-footer"
 import { PublicNav } from "@/components/public-nav"
@@ -14,12 +15,14 @@ import "./globals.css"
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" })
 
 export const metadata: Metadata = {
+  metadataBase: publicOrigin ? new URL(publicOrigin) : undefined,
+  robots: { index: Boolean(publicOrigin), follow: true },
   title: {
-    default: "Periplus — a public web observatory",
+    default: "Periplus — a shared web databank",
     template: "%s · Periplus",
   },
   description:
-    "A public web observatory. Explore dated observations through questions or SQL, follow new pages, and help shape where we look next.",
+    "A shared web databank. Explore available sources, query text, links, and HTML with SQL, and define your own datasets.",
 }
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

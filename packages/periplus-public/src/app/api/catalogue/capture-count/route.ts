@@ -19,7 +19,7 @@ export async function GET(request: Request) {
           parameters: [],
         }),
         cache: "no-store",
-        signal: AbortSignal.any([request.signal, AbortSignal.timeout(30000)]),
+        signal: AbortSignal.any([request.signal, AbortSignal.timeout(130000)]),
       },
     );
     return new Response(result.body, {

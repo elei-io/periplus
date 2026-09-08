@@ -1,19 +1,17 @@
 [project]
 name = "periplus-python-sdk"
-version = "0.1.0"
-description = "Python connections, collection requests, and crawler controls for Periplus"
+version = "0.2.0"
+description = "Read-only Python client for the public Periplus query API"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "duckdb==1.5.5",
     "httpx>=0.28",
     "pydantic>=2.12,<3",
-    "python-dotenv>=1.2",
 ]
 
 [project.urls]
-Repository = "https://github.com/ekkuleivonen/periplus"
-Issues = "https://github.com/ekkuleivonen/periplus/issues"
+Repository = "https://github.com/elei-io/periplus"
+Issues = "https://github.com/elei-io/periplus/issues"
 
 [build-system]
 requires = ["setuptools>=77"]

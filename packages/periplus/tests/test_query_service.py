@@ -1,3 +1,5 @@
+from periplus.operations.access.schemas import QueryLimits
+from unittest.mock import AsyncMock
 from importlib.resources import files
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -80,6 +82,40 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(result.columns, ["text", "truncated", "total_chars", "element_count"])
         self.assertEqual(result.rows, [["startneste", True, 14, 2]])
 
+    def test_preparation_evidence_and_failed_execution(self):
+        from periplus.operations.query_history.schemas import PreparationEvidence
+        evidence = PreparationEvidence()
+        result = self.service.execute(QueryRequest(sql='SELECT 42'), evidence=evidence,
+                                      limits=QueryLimits(max_rows=12))
+        self.assertEqual(evidence.plan, result.plan)
+        self.assertFalse(evidence.plan_truncated)
+        self.assertEqual(len(evidence.plan_fingerprint), 64)
+        self.assertEqual(evidence.duckdb_version, duckdb.__version__)
+        self.assertEqual(evidence.effective_limits['max_rows'], 12)
+        failed = PreparationEvidence()
+        with self.assertRaises(duckdb.Error):
+            self.service.execute(QueryRequest(sql="SELECT error('failure')"), evidence=failed)
+        self.assertIsNotNone(failed.plan)
+        self.assertIsNotNone(failed.plan_fingerprint)
+        show = PreparationEvidence()
+        self.service.prepare(QueryRequest(sql='SHOW TABLES FROM web'), evidence=show)
+        self.assertIsNone(show.plan)
+        oversized = PreparationEvidence()
+        connection = self.service.connection
+        class LongPlan:
+            def execute(proxy, sql, *args):
+                if sql.startswith('EXPLAIN '):
+                    return type('Rows', (), {'fetchall': lambda _: [('plan', '界'*30_000)]})()
+                return connection.execute(sql, *args)
+            def __getattr__(proxy, name):
+                return getattr(connection, name)
+        with patch.object(self.service, 'connection', LongPlan()):
+            self.service.prepare(QueryRequest(sql='SELECT 42'), evidence=oversized)
+        self.assertLessEqual(len(oversized.plan.encode()), 64_000)
+        self.assertTrue(oversized.plan_truncated)
+        self.assertIsNone(oversized.plan_fingerprint)
+        self.assertEqual(oversized.diagnostics[0]['code'], 'plan_truncated')
+
     def test_prepare_execute_and_reuse(self):
         payload = QueryRequest(sql="SELECT requested_url FROM web.observation WHERE requested_url=?", parameters=["https://example.com/inline"])
         self.assertEqual(self.service.prepare(payload).sql, payload.sql)
@@ -120,6 +156,8 @@ class QueryServiceTests(unittest.TestCase):
         from periplus.query.server_http import router, QueryAccessMiddleware
         from periplus.entrypoints.query import healthz
         app = FastAPI()
+        app.state.query_limits = AsyncMock()
+        app.state.query_limits.read.return_value = QueryLimits()
         app.state.query_service = self.service
         app.state.query_slot = asyncio.Semaphore(1)
         app.add_middleware(QueryAccessMiddleware)
@@ -158,10 +196,30 @@ class QueryServiceTests(unittest.TestCase):
             self.assertEqual(client.get('/graph-runs/', headers=headers).status_code, 404)
 
     def test_byte_budget_is_independent_of_row_budget(self):
-        with patch('periplus.query.service.MAX_RESPONSE_BYTES', 2048):
-            result = self.service.execute(QueryRequest(sql="SELECT repeat('x', 3000) AS large_value"))
+        result = self.service.execute(QueryRequest(sql="SELECT repeat('x', 2000000) AS large_value"),
+                                      limits=QueryLimits(max_result_bytes=1024 * 1024))
         self.assertTrue(result.truncated)
         self.assertEqual(result.rows, [])
+
+    def test_operator_limits_apply_per_operation(self):
+        payload = QueryRequest(sql="SELECT requested_url FROM web.observation ORDER BY requested_url")
+        for count in (2, 7):
+            result = self.service.execute(payload, limits=QueryLimits(max_rows=count))
+            self.assertEqual(len(result.rows), count)
+            self.assertTrue(result.truncated)
+        result = self.service.execute(QueryRequest(sql="WITH RECURSIVE t(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM t WHERE i<1099) SELECT i FROM t"), limits=QueryLimits(max_rows=2000))
+        self.assertEqual(len(result.rows), 1100)
+        self.assertFalse(result.truncated)
+        wide = QueryRequest(sql="SELECT repeat('x', 1500000) AS value")
+        self.assertTrue(self.service.execute(wide, limits=QueryLimits(max_result_bytes=1024 * 1024)).truncated)
+        self.assertFalse(self.service.execute(wide, limits=QueryLimits(max_result_bytes=2 * 1024 * 1024)).truncated)
+        with self.assertRaises(TimeoutError):
+            self.service.execute(QueryRequest(sql="WITH RECURSIVE t(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM t) SELECT sum(i) FROM t"), limits=QueryLimits(max_duration_seconds=1))
+        self.assertEqual(self.service.execute(QueryRequest(sql='SELECT 42')).rows, [[42]])
+        import threading
+        with patch('periplus.query.service.threading.Timer', wraps=threading.Timer) as timer:
+            self.service.prepare(payload, limits=QueryLimits(max_duration_seconds=120))
+            self.assertEqual(timer.call_args.args[0], 120)
 
     def test_reported_snapshot_pins_the_query_across_a_concurrent_commit(self):
         from periplus.platform.catalogue.connection import DuckLakeConnectionFactory

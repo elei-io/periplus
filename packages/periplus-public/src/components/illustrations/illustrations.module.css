@@ -61,3 +61,9 @@
   .fields > div:last-child { border-bottom: 0; }
 }
 @media (prefers-reduced-motion: reduce) { .reveal { animation: none; } .page { transition: none; } }
+
+.selectedText { background: color-mix(in srgb, var(--primary) 16%, transparent); box-shadow: 0 2px 0 var(--primary); border-radius: 2px; }
+.textDetail { min-height: 116px; }
+.sourcePanel { background: color-mix(in srgb, var(--background) 75%, var(--card)); }
+.rowsPanel { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 5%, transparent); }
+.fields dd { min-height: 42px; }

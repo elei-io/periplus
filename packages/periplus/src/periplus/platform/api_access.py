@@ -20,7 +20,12 @@ class ApiAccessMiddleware:
         path, method = scope["path"], scope["method"]
         if path in {"/healthz", "/metrics"} and method == "GET":
             return await self.app(scope, receive, send)
-        # The query token grants only append access, never control or history reads.
+        # Query processes may read public execution settings and append history only.
+        if path == "/access" and method == "GET":
+            query_token = get_optional("PERIPLUS_QUERY_API_TOKEN")
+            if query_token and compare_digest(dict(scope["headers"]).get(b"authorization", b""), f"Bearer {query_token}".encode()):
+                scope.setdefault("state", {})["api_role"] = "query"
+                return await self.app(scope, receive, send)
         if path == "/internal/query-history" and method == "POST":
             token = get_optional("PERIPLUS_QUERY_API_TOKEN")
             if not token or not compare_digest(dict(scope["headers"]).get(b"authorization", b""), f"Bearer {token}".encode()):

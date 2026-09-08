@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import dynamic from "next/dynamic"
 import { useQuery } from "@tanstack/react-query"
 import { ArrowRight, ArrowUpRight, Check, CornerDownRight, Globe2, Info, Plus, X } from "lucide-react"
 import { Button, buttonVariants } from "@/components/ui/button"
@@ -9,7 +10,6 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { CollectionForm } from "@/components/collection-form"
 import { RequestStory, PublicRequests, ExploreObservedWeb } from "@/components/observatory-stories"
 import { useCaptureStream } from "@/hooks/use-capture-stream"
 import { useAnimatedCount } from "@/hooks/use-animated-count"
@@ -20,6 +20,8 @@ import type { CockpitItem } from "@/types/cockpit"
 import { age } from "@/lib/observation-age"
 import { speedometerScale } from "@/lib/cockpit"
 import "./crawler-cockpit.css"
+
+const CollectionForm = dynamic(() => import("@/components/collection-form").then(module => module.CollectionForm))
 
 async function read<T>(path: string, signal: AbortSignal) {
   return responseJson<T>(await fetch(path, { signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]), cache: "no-store" }))
@@ -44,26 +46,24 @@ export function CrawlerCockpit({ initialId }: { initialId?: string }) {
   const [requestId, setRequestId] = useState<string | null>(initialId ?? null)
   const [motion, setMotion] = useState(true)
   const stream = useRef<HTMLDivElement>(null)
-  const rowPositions = useRef(new Map<string, number>())
+  const seenRows = useRef(new Set<string>())
+  const [reading, setReading] = useState(false)
   const requestForm = useRef<HTMLElement>(null)
   useEffect(() => { if (form) requestForm.current?.focus() }, [form])
   const live = useQuery({ queryKey: ["crawler-live"], queryFn: ({ signal }) => read<LiveView>("/api/frontier/live", signal), refetchInterval: motion ? 5000 : false, retry: false })
-  const captures = useCaptureStream(true, motion)
+  const captures = useCaptureStream(true, motion && !reading)
   const current = live.data?.current
   const recent: CockpitItem[] = captures.visible.map(item => ({ id: item.observation_id, url: item.requested_url, stage: "past", label: `Observed · ${age(item.completed_at, captures.query.data?.as_of ?? current?.as_of ?? item.completed_at)}`, origin: item.query_ready ? "Ready to query" : "Query readiness not yet verified" }))
   useLayoutEffect(() => {
-    const nextPositions = new Map<string, number>()
-    for (const row of stream.current?.querySelectorAll<HTMLElement>("[data-capture-id]") ?? []) {
+    const rows = stream.current?.querySelectorAll<HTMLElement>("[data-capture-id]") ?? []
+    const next = new Set<string>()
+    for (const row of rows) {
       const id = row.dataset.captureId!
-      const top = row.offsetTop
-      const before = rowPositions.current.get(id)
-      if (motion && before !== undefined && before !== top && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-        row.animate([{transform: `translateY(${before - top}px)`}, {transform: "translateY(0)"}], {duration: 320, easing: "ease-out"})
-      }
-      nextPositions.set(id, top)
+      if (seenRows.current.size && !seenRows.current.has(id)) row.dataset.fresh = "true"
+      next.add(id)
     }
-    rowPositions.current = nextPositions
-  })
+    seenRows.current = next
+  }, [captures.visible])
   const domains = (current?.domains ?? []).filter(item => item.unique_queued_urls > 0)
   const speed = live.data?.history?.velocities.find(value => value.seconds === 300 && value.domain === null)
   const unavailable = !live.data
@@ -78,23 +78,23 @@ export function CrawlerCockpit({ initialId }: { initialId?: string }) {
     }
   }
   return <main className={`crawler-cockpit ${!motion ? "crawler-updates-paused" : ""}`}>
-    <header className="flex flex-wrap items-baseline justify-between gap-2 py-6"><h1 className="text-xl font-medium">Observatory</h1><p className="text-sm text-muted-foreground">Monitor observations, inspect coverage, and submit a starting URL.</p></header><div className="crawler-heading-actions"><Badge variant="outline"><span className={current?.started ? "crawler-pulse" : "crawler-dot"} />{status}</Badge><Button variant="ghost" size="sm" onClick={() => {setMotion(!motion)}}>{motion ? "Pause updates" : "Resume updates"}</Button></div>
+    <header className="flex flex-wrap items-baseline justify-between gap-2 py-6"><h1 className="text-xl font-medium">Coverage</h1><p className="text-sm text-muted-foreground">Explore available sources and request broader coverage.</p></header><div className="crawler-heading-actions"><Badge variant="outline"><span className={current?.started ? "crawler-pulse" : "crawler-dot"} />{status}</Badge><Button variant="ghost" size="sm" onClick={() => {setMotion(!motion)}}>{motion ? "Pause updates" : "Resume updates"}</Button></div>
     {live.error && <Alert variant="destructive"><AlertDescription>{live.data ? "Showing the last received snapshot. " : "Live activity is unavailable. "}{extractApiError(live.error)}<Button variant="link" onClick={() => void live.refetch()}>Retry</Button></AlertDescription></Alert>}
     {[captures.query.error].filter(Boolean).map((error, index) => <Alert key={index} variant="destructive"><AlertDescription>Some activity may be unavailable. {extractApiError(error)}</AlertDescription></Alert>)}
     {captures.query.data?.reset_reason && <p className="crawler-footnote" role="status">The live feed resynced after an interruption. Showing the latest observations; earlier results remain in the catalogue.</p>}
-    <div className="crawler-workspace" aria-label="Observatory activity">
+    <div className="crawler-workspace" aria-label="Coverage activity">
       <section className="crawler-stream-panel" aria-labelledby="capture-stream-heading">
         <div className="crawler-instruments"><Speedometer rate={speed ? speed.successful_captures / 5 : undefined} /><CaptureCount motion={motion} /></div>
-        <header className="crawler-stream-heading"><div><h2 id="capture-stream-heading">Latest observations</h2></div></header>
-        <div ref={stream} className="crawler-stream-table"><Table aria-label="Latest observations"><TableHeader><TableRow><TableHead>Page</TableHead><TableHead>Observed</TableHead><TableHead><span className="sr-only">Open website</span></TableHead></TableRow></TableHeader><TableBody>{recent.map(item => <TableRow key={item.id} data-capture-id={item.id} className="crawler-stream-row"><TableCell><a href={item.url} target="_blank" rel="noopener noreferrer" className="crawler-row-url" title={`${item.url} (opens in a new tab)`}><Check size={13} /><span>{item.url.replace(/^https?:\/\//, "")}</span></a></TableCell><TableCell>{item.label.replace(/^Observed · /, "")}</TableCell><TableCell><a className={buttonVariants({ variant: "ghost", size: "icon-sm" })} href={item.url} target="_blank" rel="noopener noreferrer" aria-label={`Open ${item.url} in a new tab`}><ArrowUpRight size={14} /></a></TableCell></TableRow>)}</TableBody></Table>{!recent.length && <div className="crawler-empty">{unavailable ? "Waiting for a live snapshot." : "New observations will appear here as pages are explored."}</div>}</div>
-        <footer className="crawler-stream-footer"><span>{current ? `Snapshot ${new Date(current.as_of).toLocaleTimeString()} · updates every 5 seconds` : "Connecting to the observatory"}</span><span>{captures.burst > 1 ? `${captures.burst} observations in the latest burst · ` : ""}Links open the live website in a new tab <TooltipProvider><Tooltip><TooltipTrigger aria-label="About observation metrics" className="crawler-metrics-info"><Info size={13} /></TooltipTrigger><TooltipContent>Totals and rate count successful observations, including repeat visits. Recorded totals may follow a little behind the live feed. The dial adjusts its labeled scale to the current rate; it is not a capacity limit.</TooltipContent></Tooltip></TooltipProvider></span></footer>
+        <header className="crawler-stream-heading"><div><h2 id="capture-stream-heading">Latest observations</h2></div><span className="crawler-reading-status" role="status">{reading && motion ? "Held while you read" : ""}</span></header>
+        <div ref={stream} className="crawler-stream-table" onMouseEnter={() => { if (captures.visible.length) setReading(true) }} onMouseLeave={event => { if (!event.currentTarget.contains(document.activeElement)) setReading(false) }} onFocusCapture={() => setReading(true)} onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget) && !event.currentTarget.matches(":hover")) setReading(false) }}><Table aria-label="Latest observations"><TableHeader><TableRow><TableHead>Page</TableHead><TableHead>Observed</TableHead><TableHead><span className="sr-only">Open website</span></TableHead></TableRow></TableHeader><TableBody>{recent.map(item => <TableRow key={item.id} data-capture-id={item.id} className="crawler-stream-row"><TableCell><a href={item.url} target="_blank" rel="noopener noreferrer" className="crawler-row-url" title={`${item.url} (opens in a new tab)`}><Check size={13} /><span>{item.url.replace(/^https?:\/\//, "")}</span></a></TableCell><TableCell>{item.label.replace(/^Observed · /, "")}</TableCell><TableCell><a className={buttonVariants({ variant: "ghost", size: "icon-sm" })} href={item.url} target="_blank" rel="noopener noreferrer" aria-label={`Open ${item.url} in a new tab`}><ArrowUpRight size={14} /></a></TableCell></TableRow>)}</TableBody></Table>{!recent.length && <div className="crawler-empty">{unavailable ? "Waiting for a live snapshot." : "New observations will appear here as pages are explored."}</div>}</div>
+        <footer className="crawler-stream-footer"><span>{current ? `Snapshot ${new Date(current.as_of).toLocaleTimeString()} · updates every 5 seconds` : "Loading coverage activity"}</span><span>{captures.burst > 1 ? `${captures.burst} observations in the latest burst · ` : ""}Links open the live website in a new tab <TooltipProvider><Tooltip><TooltipTrigger aria-label="About observation metrics" className="crawler-metrics-info"><Info size={13} /></TooltipTrigger><TooltipContent>Totals and rate count successful observations, including repeat visits. Recorded totals may follow a little behind the live feed. The dial adjusts its labeled scale to the current rate; it is not a capacity limit.</TooltipContent></Tooltip></TooltipProvider></span></footer>
         
       </section>
-      <aside className="crawler-frontier-panel" aria-labelledby="frontier-heading"><header><span className="crawler-lane-eyebrow">LOOKING AHEAD <ArrowRight size={14} /></span><h2 id="frontier-heading">Where we’re looking next</h2><p>Sites and unique pages awaiting observation</p></header>
-        <div className="crawler-domain-list" aria-label="Upcoming sites">{domains.map(domain => <div key={domain.domain} className="crawler-domain"><div><Globe2 size={14} /><strong>{domain.domain}</strong><span>{domain.unique_queued_urls.toLocaleString()}<small>URLs</small></span></div></div>)}{!domains.length && <p className="crawler-empty">{unavailable ? "Waiting for a live snapshot." : "No waiting sites in this list. Suggest a starting point to bring more of the web into view."}</p>}</div>
-        <p className="crawler-footnote">{current?.more_domains ? "More sites are waiting beyond this list. " : ""}New requests and discovered links shape what comes next.</p>
-    <section className="crawler-request-bar" aria-label="Suggest a starting point"><div><span className="crawler-request-mark"><CornerDownRight size={20} /></span><div><strong>Where should we look next?</strong><p>Suggest a website or describe what you want to explore. Each request has its own progress view.</p></div></div>
-      <div className="crawler-request-actions"><Button variant="default" onClick={() => setForm(!form)}><Plus />Suggest a starting point</Button></div>
+      <aside className="crawler-frontier-panel" aria-labelledby="frontier-heading"><header><span className="crawler-lane-eyebrow">QUEUED WEBSITES <ArrowRight size={14} /></span><h2 id="frontier-heading">Waiting to be explored</h2><p>Websites with pages queued for observation.</p></header>
+        <div className="crawler-domain-list" aria-label="Queued websites">{domains.map(domain => <div key={domain.domain} className="crawler-domain"><div><Globe2 size={14} /><strong>{domain.domain}</strong><span>{domain.unique_queued_urls.toLocaleString()}<small>URLs</small></span></div></div>)}{!domains.length && <p className="crawler-empty">{unavailable ? "Waiting for a live snapshot." : "No websites are queued in this list. Request coverage for sources you need."}</p>}</div>
+        <p className="crawler-footnote">{current?.more_domains ? "More sites are waiting beyond this list. " : ""}Pages enter the queue through coverage requests and discovered links.</p>
+    <section className="crawler-request-bar" aria-label="Request coverage"><div><span className="crawler-request-mark"><CornerDownRight size={20} /></span><div><strong>What’s missing from Periplus?</strong><p>Tell us which websites or topics you’d like the databank to cover. Track progress and explore any resulting data.</p></div></div>
+      <div className="crawler-request-actions"><Button variant="default" onClick={() => setForm(!form)}><Plus />Request coverage</Button></div>
     </section>
       </aside>
     </div>

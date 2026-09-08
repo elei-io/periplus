@@ -1,7 +1,11 @@
 import type { Metadata } from "next"
+import { hasWorkspaceInput, pageMetadata } from "@/lib/seo"
 import { QueryWorkbench } from "@/components/query-workbench"
 
-export const metadata: Metadata = { title: "SQL", description: "Write and run SQL over Periplus's public web catalogue." }
+export async function generateMetadata({ searchParams }: PageProps<"/sql">): Promise<Metadata> {
+  const params = await searchParams
+  return pageMetadata("/sql", "SQL", "Write and run SQL over Periplus's public web catalogue.", !hasWorkspaceInput(params, ["sql", "parameters", "run"]))
+}
 
 export default async function SqlPage({ searchParams }: PageProps<"/sql">) {
   const params = await searchParams

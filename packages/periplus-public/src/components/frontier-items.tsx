@@ -19,7 +19,7 @@ async function read<T>(path: string, signal: AbortSignal): Promise<T> {
   if (!response.ok) throw new FrontierReadError(response.status, typeof body?.detail === "string" ? body.detail : "Observation details could not be loaded.")
   return body as T
 }
-const collectionLink = (id: string) => `/observatory?request=${encodeURIComponent(id)}#request`
+const collectionLink = (id: string) => `/coverage?request=${encodeURIComponent(id)}#request`
 const itemLink = (id: string) => `/frontier/${encodeURIComponent(id)}`
 function modeLabel(mode: string) { return mode === "acquired" ? "Observation requested" : mode === "shared" ? "Shared work" : mode === "reused" ? "Earlier observation reused" : mode }
 function observationLink(id: string) {

@@ -44,23 +44,23 @@ export function CollectionForm({ onCreated }: { onCreated: (id: string) => void 
       cache.setQueryData(["collection", result.id], result)
       void cache.invalidateQueries({ queryKey: ["collections"] })
       onCreated(result.id)
-      toast.success("Collection submitted. Keep its link to follow updates.")
+      toast.success("Coverage request submitted. Keep its link to follow progress.")
     },
     onError: error => { access.onDenied(error); if(error instanceof ApiError && error.code === "options_changed") setFrozen(null); toast.error(extractApiError(error)) },
   })
   return <Card>
-    <CardHeader><CardTitle><h2>Suggest a starting point</h2></CardTitle><CardDescription>Start with a URL, or describe the data you wish you could query.</CardDescription></CardHeader>
+    <CardHeader><CardTitle><h2>Request coverage</h2></CardTitle><CardDescription>Which sources would you like to see in Periplus? Add a website URL or describe the topics you need.</CardDescription></CardHeader>
     <CardContent>
       {access.message && <p role="status">{access.message}</p>}
       {options && !validOptions && <p role="alert">Available options changed. Please choose a supported page budget, depth and retention period.</p>}
       <form className="flex flex-col gap-6" onSubmit={event => { event.preventDefault(); if (frozen || !access.enabled || !validOptions) return; try { const payload = { id: crypto.randomUUID(), specification: publicCollectionSpec({ kind, input: kind === "url" ? url : description, depth, scope, maxPages, sections, retentionSeconds: retention }), priority: 0 }; setFrozen(payload); submit.mutate(payload) } catch (error) { toast.error(extractApiError(error)) } }}>
         <fieldset disabled={frozen !== null || !access.enabled} className="flex min-w-0 flex-col gap-6">
         <div className="flex flex-wrap gap-2" role="group" aria-label="Request type">
-          <Button type="button" variant={kind === "url" ? "secondary" : "outline"} aria-pressed={kind === "url"} onClick={() => setKind("url")}><Globe />Start with a URL</Button>
+          <Button type="button" variant={kind === "url" ? "secondary" : "outline"} aria-pressed={kind === "url"} onClick={() => setKind("url")}><Globe />Add a website URL</Button>
           <Button type="button" variant={kind === "description" ? "secondary" : "outline"} aria-pressed={kind === "description"} onClick={() => setKind("description")}><MessageSquare />Describe the data</Button>
         </div>
         <div className="flex flex-col gap-2">
-          <label htmlFor="coverage-input">{kind === "url" ? "Public starting URL" : "What would you like to explore?"}</label>
+          <label htmlFor="coverage-input">{kind === "url" ? "Public website URL" : "What should Periplus cover?"}</label>
           {kind === "url" ? <Input id="coverage-input" type="url" required maxLength={4000} placeholder="https://example.com" value={url} onChange={event => setUrl(event.target.value)} /> : <Textarea id="coverage-input" required maxLength={4000} rows={4} placeholder="For example: Finnish companies building industrial robots, including their products and technical specifications." value={description} onChange={event => setDescription(event.target.value)} />}
           <CardDescription>{kind === "url" ? "The starting page is depth 0. Each additional level follows another link." : "Tell us the topic, region, or kinds of pages you need. Starting URLs will be chosen automatically using search."}</CardDescription>
         </div>
@@ -88,8 +88,8 @@ export function CollectionForm({ onCreated }: { onCreated: (id: string) => void 
         <div className="flex flex-col gap-2">
           <label id="retention-label">Keep this request’s observations</label>
           <Select value={retention == null ? "forever" : String(retention)} onValueChange={value => { if (value !== null) setRetention(value === "forever" ? null : Number(value)) }}>
-            <SelectTrigger className="w-full min-h-11" aria-labelledby="retention-label"><SelectValue>{retention ? `${retention / 86400} days after completion` : "Forever"}</SelectValue></SelectTrigger>
-            <SelectContent>{(options?.retention_seconds ?? []).map(value => <SelectItem key={value ?? "forever"} value={value == null ? "forever" : String(value)}>{value ? `${value / 86400} days after completion` : "Forever"}</SelectItem>)}</SelectContent>
+            <SelectTrigger className="w-full min-h-11" aria-labelledby="retention-label"><SelectValue>{retention ? `${retention / 86400} days after completion` : "No scheduled expiry"}</SelectValue></SelectTrigger>
+            <SelectContent>{(options?.retention_seconds ?? []).map(value => <SelectItem key={value ?? "forever"} value={value == null ? "forever" : String(value)}>{value ? `${value / 86400} days after completion` : "No scheduled expiry"}</SelectItem>)}</SelectContent>
           </Select>
           <CardDescription>The retention period starts when the request finishes. After it expires, results may be removed unless another request still needs them.</CardDescription>
         </div>
@@ -105,7 +105,7 @@ export function CollectionForm({ onCreated }: { onCreated: (id: string) => void 
         </fieldset>
         {submit.error && <Alert variant="destructive"><AlertDescription>{extractApiError(submit.error)}</AlertDescription></Alert>}
         {!frozen && <Button className="self-start" type="submit" disabled={!access.enabled || !validOptions}>Submit request<ArrowUpRight /></Button>}
-        {frozen && <div className="flex flex-col gap-3"><a className="underline break-all" href={`/observatory?request=${frozen.id}#request`}>View request {frozen.id}</a>{submit.isPending && <p role="status">Submitting…</p>}{submit.isError && <><p>Submission was not confirmed. Retrying preserves the same intent and identity.</p><Button type="button" className="self-start" disabled={!access.enabled || !validOptions} onClick={() => submit.mutate(frozen)}>Retry same request</Button></>}<a className="underline" href="/observatory">Suggest another starting point</a></div>}
+        {frozen && <div className="flex flex-col gap-3"><a className="underline break-all" href={`/coverage?request=${frozen.id}#request`}>View request {frozen.id}</a>{submit.isPending && <p role="status">Submitting…</p>}{submit.isError && <><p>Submission was not confirmed. Retrying resubmits the same request without creating a duplicate.</p><Button type="button" className="self-start" disabled={!access.enabled || !validOptions} onClick={() => submit.mutate(frozen)}>Retry same request</Button></>}<a className="underline" href="/coverage">Request more coverage</a></div>}
       </form>
     </CardContent>
   </Card>

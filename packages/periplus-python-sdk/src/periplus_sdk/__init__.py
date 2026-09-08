@@ -1,8 +1,8 @@
-"""Periplus Python SDK."""
-from . import collections, conn, errors, frontier
-from ._config import configure
-from .collections import Collection, CollectionPage
-from .types import CollectionSpec, CurrentCollection, HistoricalCollection, FrontierSettings
+"""Read-only Python clients for the public Periplus query API."""
+from .client import AsyncClient, Client
+from .errors import ApiError, ConfigurationError, PeriplusError, ResponseError, TransportError
+from .types import Diagnostic, PreparedQuery, QueryHelper, QueryHelpers, QueryResult
 
-__all__ = ["Collection", "CollectionPage", "CollectionSpec", "CurrentCollection", "HistoricalCollection",
-           "FrontierSettings", "configure", "collections", "conn", "errors", "frontier"]
+__all__ = ["AsyncClient", "Client", "ApiError", "ConfigurationError", "PeriplusError",
+           "ResponseError", "TransportError", "Diagnostic", "PreparedQuery", "QueryHelper",
+           "QueryHelpers", "QueryResult"]

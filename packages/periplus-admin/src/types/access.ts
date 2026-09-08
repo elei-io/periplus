@@ -4,5 +4,5 @@ export type AccessPolicy = {
   version: number
   crawl: RatePolicy & { page_budgets: number[]; default_page_budget: number; max_depths: number[]; default_max_depth: number; retention_seconds: (number | null)[]; default_retention_seconds: number | null }
   assistant: RatePolicy
-  sql: RatePolicy
+  sql: RatePolicy & { max_rows: number; max_duration_seconds: number; max_result_bytes: number }
 }

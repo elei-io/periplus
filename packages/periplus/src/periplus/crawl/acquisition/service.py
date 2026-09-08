@@ -198,6 +198,7 @@ async def acquire_page(
                 stored_bytes=stored.size_bytes,
             )
         visit = VisitRecord(
+            capture_policy=context.policy.content,
             visit_id=context.acquisition_id,
             requested_url=normalized,
             effective_url=final_normalized,

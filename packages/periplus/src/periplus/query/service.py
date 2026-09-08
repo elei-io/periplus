@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from datetime import date, datetime, time as datetime_time
 from decimal import Decimal
 import json
@@ -20,10 +21,11 @@ from sqlglot import exp
 from periplus.platform.catalogue.config import CatalogueConfig
 from periplus.platform.catalogue.connection import DuckLakeConnectionFactory, _identifier
 from periplus.query.validation import _bounded_query, _one_statement
+from periplus.operations.access.schemas import QueryLimits
+from periplus.operations.query_history.schemas import PreparationEvidence
 
-MAX_ROWS = 1000
-MAX_RESPONSE_BYTES = 8 * 1024 * 1024
-QUERY_SECONDS = 20
+COMPILER_VERSION = "public-query-v1"
+
 logger = logging.getLogger(__name__)
 _active_queries = Gauge("periplus_query_active_operations", "Occupied query admission slots.")
 
@@ -64,7 +66,7 @@ class BusyError(Exception):
 class QueryService:
     """One connection and admission slot; no unbounded request queue."""
 
-    def __init__(self, config: CatalogueConfig, *, deadline: float = QUERY_SECONDS):
+    def __init__(self, config: CatalogueConfig, *, deadline: float | None = None):
         self.alias = config.alias
         self.deadline = deadline
         self._lock = threading.Lock()
@@ -101,25 +103,25 @@ class QueryService:
             if self.connection is not None:
                 self.connection.close()
 
-    def prepare(self, payload: QueryRequest) -> PreparedQuery:
-        return self._run(payload, execute=False)
+    def prepare(self, payload: QueryRequest, *, limits: QueryLimits = QueryLimits(), evidence: PreparationEvidence | None = None) -> PreparedQuery:
+        return self._run(payload, execute=False, limits=limits, evidence=evidence)
 
-    def execute(self, payload: QueryRequest) -> QueryResult:
-        return self._run(payload, execute=True)
+    def execute(self, payload: QueryRequest, *, limits: QueryLimits = QueryLimits(), evidence: PreparationEvidence | None = None) -> QueryResult:
+        return self._run(payload, execute=True, limits=limits, evidence=evidence)
 
-    def _run(self, payload: QueryRequest, *, execute: bool):
+    def _run(self, payload: QueryRequest, *, execute: bool, limits: QueryLimits, evidence: PreparationEvidence | None):
         if not self._lock.acquire(blocking=False):
             raise BusyError("Query server is busy. Try again shortly.")
         _active_queries.inc()
         try:
             if self.connection is None:
                 self.connection = self._connect()
-            return self._run_admitted(payload, execute=execute)
+            return self._run_admitted(payload, execute=execute, limits=limits, evidence=evidence)
         finally:
             _active_queries.dec()
             self._lock.release()
 
-    def _run_admitted(self, payload: QueryRequest, *, execute: bool):
+    def _run_admitted(self, payload: QueryRequest, *, execute: bool, limits: QueryLimits, evidence: PreparationEvidence | None):
         started = time.monotonic()
         query_id = str(uuid4())
         d = self.connection
@@ -128,7 +130,13 @@ class QueryService:
         def interrupt():
             expired.set()
             d.interrupt()
-        timer = threading.Timer(self.deadline, interrupt)
+        duration = limits.max_duration_seconds if self.deadline is None else min(self.deadline, limits.max_duration_seconds)
+        if evidence is not None:
+            evidence.duckdb_version = duckdb.__version__
+            evidence.compiler_version = COMPILER_VERSION
+            evidence.effective_limits = dict(max_rows=limits.max_rows, max_duration_seconds=duration,
+                                             max_result_bytes=limits.max_result_bytes)
+        timer = threading.Timer(duration, interrupt)
         timer.start()
         from periplus.platform.telemetry import event
         event("query_submitted", operation_id=query_id, operation="exec" if execute else "prep")
@@ -136,11 +144,13 @@ class QueryService:
         rows = []
         truncated = False
         try:
-            executable = _bounded_query(payload.sql, max_rows=MAX_ROWS)
+            executable = _bounded_query(payload.sql, max_rows=limits.max_rows)
             statement = _one_statement(payload.sql)
             diagnostics = []
             if any(join.args.get("kind") == "CROSS" for join in statement.find_all(exp.Join)):
                 diagnostics.append(Diagnostic(severity="warning", code="cartesian_product", message="A Cartesian product can require substantial work."))
+            if evidence is not None:
+                evidence.diagnostics = [item.model_dump() for item in diagnostics]
             d.execute("BEGIN TRANSACTION")
             snapshot = int(d.execute("SELECT id FROM ducklake_current_snapshot(?)", [self.alias]).fetchone()[0])
             # Plain EXPLAIN binds without running EXPLAIN ANALYZE's child.
@@ -156,7 +166,16 @@ class QueryService:
             if len(plan.encode()) > 64_000:
                 plan = plan.encode()[:64_000].decode(errors="ignore")
                 diagnostics.append(Diagnostic(severity="warning", code="plan_truncated", message="The execution plan preview was truncated."))
+            if evidence is not None and not isinstance(statement, exp.Show):
+                evidence.plan = plan
+                evidence.plan_truncated = any(item.code == "plan_truncated" for item in diagnostics)
+                # Exact preview identity, not an operator-shape or regression claim.
+                evidence.plan_fingerprint = None if evidence.plan_truncated else hashlib.sha256(
+                    (COMPILER_VERSION + "\n" + duckdb.__version__ + "\n" + plan).encode()).hexdigest()
+                evidence.diagnostics = [item.model_dump() for item in diagnostics]
             prepared = PreparedQuery(query_id=query_id, sql=payload.sql, parameters=payload.parameters, diagnostics=diagnostics, plan=plan)
+            if expired.is_set():
+                raise TimeoutError("Query time limit exceeded.")
             if not execute:
                 status = "prepared"
                 return prepared
@@ -172,12 +191,14 @@ class QueryService:
                     break
                 converted = [_json_value(value) for value in row]
                 size += len(json.dumps(converted, ensure_ascii=False).encode()) + 1
-                if len(rows) == MAX_ROWS or size > MAX_RESPONSE_BYTES:
+                if len(rows) == limits.max_rows or size > limits.max_result_bytes:
                     truncated = True
                     break
                 if expired.is_set():
                     raise TimeoutError("Query time limit exceeded.")
                 rows.append(converted)
+            if expired.is_set():
+                raise TimeoutError("Query time limit exceeded.")
             status = "completed"
             return QueryResult(**prepared.model_dump(), columns=columns, types=types, rows=rows, truncated=truncated, source_snapshot=snapshot, elapsed_ms=(time.monotonic()-started)*1000)
         except (duckdb.FatalException, duckdb.InternalException):

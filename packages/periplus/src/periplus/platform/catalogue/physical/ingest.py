@@ -30,6 +30,7 @@ TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
         "outcome": ColumnDef("VARCHAR", nullable=False),
         "status_code": ColumnDef("INTEGER"),
         "document_id": ColumnDef("UUID"),
+        "capture_policy": ColumnDef("JSON"),
         "provenance": ColumnDef(
             'STRUCT(kind VARCHAR, "system" VARCHAR, dataset VARCHAR, '
             "source_record_id VARCHAR)",
@@ -122,6 +123,7 @@ COLUMN_COMMENTS = {
         "status_code": "Final HTTP status when available.",
         "document_id": "Document observation produced by this visit, if any.",
         "provenance": "Typed origin of this observation.",
+        "capture_policy": "Frozen effective content policy, including disabled actions and variance; null for external observations. Retained with this visit.",
     },
     ATTEMPTS: {
         "resource_usage": "Frozen client capture reservation and measured or uncertain elapsed time; not provider billing.",

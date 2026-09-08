@@ -1,4 +1,6 @@
-import type { ReactNode } from "react"
+"use client"
+
+import { memo, type ReactNode } from "react"
 import { ArrowUpRight } from "lucide-react"
 import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -7,12 +9,17 @@ import { displayValue, formatQueryTimestamp } from "@/lib/query-values"
 const numericType = /^(U?(?:TINY|SMALL|BIG|HUGE)?INT(?:EGER)?|DECIMAL|NUMERIC|DOUBLE|FLOAT|REAL)(?:\(\d+(?:,\s*\d+)?\))?$/i
 const temporalType = /^(DATE|TIMESTAMP(?:_(?:S|MS|NS))?|TIMESTAMPTZ|TIMESTAMP WITH(?:OUT)? TIME ZONE)$/i
 
-function columnKind(type: string, values: unknown[]) {
+function columnKind(type: string, rows: unknown[][], column: number) {
   if (numericType.test(type)) return "number"
   if (temporalType.test(type)) return "date"
-  const populated = values.filter(value => value !== null && value !== undefined)
-  if (populated.length && populated.every(value => typeof value === "string" && /^https?:\/\//i.test(value))) return "url"
-  return "text"
+  let populated = false
+  for (const row of rows) {
+    const value = row[column]
+    if (value === null || value === undefined) continue
+    if (typeof value !== "string" || !/^https?:\/\//i.test(value)) return "text"
+    populated = true
+  }
+  return populated ? "url" : "text"
 }
 
 export function QueryValue({ value, type = "" }: { value: unknown; type?: string }) {
@@ -32,14 +39,14 @@ export function QueryValue({ value, type = "" }: { value: unknown; type?: string
   return displayValue(value)
 }
 
-export function QueryTable({ columns, types, rows, label = "Query results", renderCell }: {
+export const QueryTable = memo(function QueryTable({ columns, types, rows, label = "Query results", renderCell }: {
   columns: string[]
   types: string[]
   rows: unknown[][]
   label?: string
   renderCell?: (value: unknown, column: number) => ReactNode
 }) {
-  const kinds = columns.map((_, i) => columnKind(types[i] ?? "", rows.map(row => row[i])))
+  const kinds = columns.map((_, i) => columnKind(types[i] ?? "", rows, i))
   return <div className="query-table-region">
     <div className="analysis-table" role="region" aria-label={`${label}. Scroll to see more rows or columns.`} tabIndex={0}>
       <Table aria-label={label}>
@@ -49,7 +56,7 @@ export function QueryTable({ columns, types, rows, label = "Query results", rend
     </div>
     <p className="table-scroll-hint">Scroll the table to explore all columns.</p>
   </div>
-}
+})
 
 export function QueryTableLoading() {
   return <div className="query-loading" aria-hidden="true">{[0, 1, 2, 3].map(row => <div key={row}><Skeleton /><Skeleton /><Skeleton /></div>)}</div>

@@ -66,24 +66,25 @@ the workspace and execute once; ordinary shared SQL links restore a draft withou
 with a read-only SQL tool that calls the Python query API. The assistant cannot crawl or access
 lake credentials. The SQL bench offers editable examples, schema queries, export, and share links.
 Coverage suggestions use the control API; crawl completion is not proof of indexing readiness.
-The dataset builder turns a user idea into an editable specification with ordered typed columns,
-row grain, population, observation selection, and acceptance rules. Before choosing source-specific
-semantics, the agent inventories the available catalogue and inspects representative page structures
-and links. Its source plan cites successful queries from that request and explains how the material
-supplies the requested output. Listing cards can supply multiple records and outgoing detail URLs;
-a detail URL does not require a collected detail page. Only unresolved choices affecting population,
-meaning, or missing-value policy should interrupt the build. Source evidence is inspectable and
-exported alongside the definition. A build identifies its executed
-dataset query separately from coverage evidence and attaches executed validation queries. The server
-checks exact output names/types, required values, nonempty complete results, resolved design choices,
-and passing evidence-backed checks before accepting a ready result. The model receives at most 20
-sampled rows while the UI retains the bounded query result (up to 1,000 rows). Users can export CSV
-and download the definition, dataset SQL, check SQL, and source snapshot reference. The reference
-records provenance; it does not pin future executions or guarantee extraction after layout changes.
-The definition appears in a persistent side panel while the conversation holds source findings,
-questions and result previews. Generated SQL can open in the separate SQL workspace in a new tab;
-shared query links target `/sql` and restore drafts without executing. The workflow remains temporary
-browser state and adds no storage or execution service.
+The dataset builder uses one agent with two tools: query the public catalogue and update a dataset
+draft. A draft contains its name, row grain, ordered typed fields and source scope. Unclear intent
+gets a focused question; clear intent gets source discovery and a real sample of at most five rows.
+The user can change the fields or sources conversationally, or approve the current sample with
+Build dataset. A signed, expiring sample receipt binds approval to the exact draft without adding
+persistence. The server rejects forged receipts and ready results whose draft differs from approval.
+Conversation history carries prior drafts and SQL as untrusted text, never trusted result evidence.
+
+Only after approval does the agent build the complete standalone SQL and execute validation.
+Ready requires matching column names/types, nonempty complete returned rows, required values and
+executed one-row boolean checks that all pass. Inspection and validation results stay in collapsed
+technical details. The main view shows one selected table, first as a sample and then as the dataset;
+the compact sidebar retains fields and scope. Meaningful plain-language progress is visible during
+execution. Missing sources lead to the Observatory; operational failures do not imply missing data.
+The three draft statuses are draft, sample and ready; no stepper or separate SQL-drafting agent is
+part of discovery. SQL editing opens the separate /sql workspace. Users can download the final CSV
+and definition with SQL, check SQL and source snapshot. The snapshot records provenance; it does
+not pin future reruns or guarantee extraction after source layouts change. State remains temporary
+in the browser. The model sees at most 20 rows per query; the UI retains returned rows up to the configured query limits (1,000 rows by default).
 SQL preparation and execution remain in the separate Python
 `periplus-query` process, which exposes only `POST /query/prep`, `POST /query/exec`, and
 `GET /query/helpers`, and its health probe. Query routes do not exist on the control API.
@@ -99,13 +100,18 @@ The browser renders server results; there is no Wasm runtime, metadata export, f
 client telemetry endpoint. Server logs capture generated operation IDs, safe outcomes, truncation, row counts and elapsed time. SQL text, parameters, plans and result rows are not logged.
 
 Each query process owns one read-only DuckLake connection and accepts one operation at a time.
-Excess requests return 429 with Retry-After; there is no queue. A 20-second interrupt deadline,
-default 512 MB DuckDB memory budget, default 256 MB spill budget, and 1,000-row / 8 MiB result budget bound
-execution. Deployment-owned `PERIPLUS_DUCKDB_THREADS`, `PERIPLUS_DUCKDB_MEMORY_LIMIT`
+Excess requests return 429 with Retry-After; there is no queue. Operator-configured duration, row and result-size limits default to 20 seconds, 1,000 rows and 8 MiB.
+Admin Public access permits 1–120 seconds, 1–10,000 rows and 1–64 MiB. These apply to preparation
+and execution through this service, including browser, SDK, assistant, browsing and corpus-seed
+clients. Existing requests retain their starting limits; new requests read the current policy.
+Row and byte limits truncate results explicitly; duration interrupts the operation and returns 408.
+The duration starts at SQL preparation and excludes the bounded policy HTTP lookup and response
+transport. A default 512 MB DuckDB memory budget and 256 MB spill budget also bound execution.
+Memory, spill and worker concurrency remain deployment-owned settings. Deployment-owned `PERIPLUS_DUCKDB_THREADS`, `PERIPLUS_DUCKDB_MEMORY_LIMIT`
 and `PERIPLUS_DUCKDB_MAX_TEMP_DIRECTORY_SIZE` override connection sizing before
 configuration is locked; Helm exposes them under `query.duckdb`. Each replica
 still admits one operation. These capacity settings do not change SQL semantics,
-credentials, deadlines, or result limits. Result truncation is explicit. Integers outside JavaScript's safe range and decimals
+credentials or the operator-configured execution limits. Result truncation is explicit. Integers outside JavaScript's safe range and decimals
 are returned as strings; SQL column types accompany results. Disconnecting does not promise
 cancellation: the server deadline still bounds the work.
 An internal/fatal DuckDB error or failed transaction cleanup discards the connection. Cleanup does
@@ -124,15 +130,34 @@ and future metadata tables, and the S3 identity has GetObject on lake objects on
 infrastructure owns these grants, resource isolation, and ingress rate limits. A read-only
 attachment alone is not a substitute for read-only credentials.
 
+The query process reads `GET /access` on the control API through one process-owned HTTP client,
+using its query-service token, after acquiring its sole admission slot. This token grants public
+settings reads and query-history appends only. A five-second lookup failure rejects the query with
+503 `access_unavailable`; no stale/default policy is used and no lake query executes. Helpers are
+metadata-only and do not require this lookup. SQL request bodies cannot override limits.
+Apply Alembic revision `20260908_0010` before deploying this contract; it adds the defaults to the
+existing JSON policy and increments its optimistic version without resetting rate windows.
+Public query transports allow 130 seconds; the Python SDK defaults to 140 seconds. Callers may
+impose shorter deadlines, including bounded agent runs and crawler selections. These do not
+increase the server's limits. Administrative SQL retains its separate fixed result limits.
+
 ## 2. Python SDK
 
-`packages/periplus-python-sdk/` is the first client package. It wraps DuckDB connection setup and
-results and control-plane operations for collection submission, current/history status, and
-versioned crawler/domain controls. Collection settlement and structural query readiness are separate. It does not define public catalogue semantics or compile and rewrite user SQL.
-`periplus_sdk.conn.duck()` returns an ordinary `duckdb.DuckDBPyConnection` over the versioned public
-catalogue using the same `PERIPLUS_DUCKLAKE_*` attachment contract as Periplus. Both runtime and SDK
-connections select one connection protocol at their factory boundary; filesystem, S3, and
-externally configured DuckDB URI storage do not create branches in query or materialization code.
+`packages/periplus-python-sdk/` provides synchronous `Client` and asynchronous `AsyncClient`
+HTTP clients for the public application's `/api/query/prep`, `/api/query/exec`, and
+`/api/query/helpers` routes. Callers configure the public application URL directly or through
+`PERIPLUS_PUBLIC_URL`; they receive no service token or lake credentials. The SDK exposes only
+read-only catalogue queries, preparation and helper discovery, with typed JSON responses.
+It has no direct DuckDB attachment, collection mutations or administrative controls.
+
+The public gateway applies the same SQL admission policy as the browser and injects its internal
+query token. It accepts only `sdk` as an alternate query-source label, otherwise using
+`public_console`; this label is caller-asserted analytics, not authentication or entitlement.
+Preparation and execution flow through the query service's validation, diagnostics and optimization
+boundary. Execution always prepares independently. Query history records SDK operations through
+the existing best-effort history path; no separate SDK recorder exists. Result types, source
+snapshot, diagnostics and truncation are preserved. Clients never retry or paginate automatically.
+Direct operator lake access remains available through standard DuckDB and `./ducklake.sh`.
 
 ## 3. Query API optimization
 
@@ -145,6 +170,25 @@ plans and scale. Verify equivalent column types, values, multiplicities, and req
 at the same snapshot. The existing benchmark runner and query cases remain useful for this work.
 
 ## SQL helper development
+
+### SQL workspace assistant
+
+The `/sql` workbench offers a collapsed Ask SQL panel, an empty-editor prompt and a
+Help fix action on query errors. `/api/sql-assistant` uses the existing public assistant
+admission policy and model configuration to propose standalone SQL from intent, the current
+editor and selection, positional parameters, the last failed execution and bounded conversational
+context. It loads the public schema and current SQL helper registry. It can ask a focused
+clarifying question or revise an unapplied proposal; context is never trusted execution evidence.
+
+Proposals are prepared through the isolated query service, never executed by this assistant.
+One additional drafting attempt may repair a preparation SQL/helper error; operational failures
+are surfaced without a rewrite retry. The UI distinguishes successful preparation from execution,
+shows SQL and parameter changes, and applies only on user action. Apply and Undo both reject
+stale editor state. Run remains explicit. Conversation and undo state stay in the browser.
+Requests and generation are bounded, with at most two active SQL-assistant calls per public
+process and a 90-second generation/preparation deadline; production ingress owns aggregate limits.
+
+### Catalogue helper declarations
 
 The explicit helper registry is `packages/periplus/src/periplus/platform/catalogue/helpers/`.
 Its README documents the add/edit/test/install workflow. Each declaration provides a SQL
@@ -165,7 +209,7 @@ query-service fixtures. Future performance changes follow the triage above.
 
 Query failures return a safe `code` alongside `detail`: `sql_invalid` (422), `helper_limit`
 (422), `resource_limit` (408 for time or 422 for memory), `service_busy` (429),
-`storage_unavailable` (503), or `query_failed` (500). Native DuckDB errors never expose
+`storage_unavailable` (503), `access_unavailable` (503 for unavailable execution policy), or `query_failed` (500). Native DuckDB errors never expose
 storage URLs or credentials. HTTP and filesystem failures are operational; clients must
 not treat them as evidence of missing corpus coverage or repeatedly rewrite SQL to fix them.
 The Next.js agent preserves these categories and stops querying when storage/service access

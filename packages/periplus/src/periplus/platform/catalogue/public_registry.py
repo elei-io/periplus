@@ -82,7 +82,7 @@ PUBLIC_OBJECTS = (
             "observation_id", "requested_url", "effective_url",
             "observed_at", "outcome", "http_status_code", "content_id",
             "source_kind", "source_system", "source_dataset",
-            "source_record_id",
+            "source_record_id", "capture_policy",
         ),
         comment="Terminal URL observations with optional retained content evidence.",
         column_comments=_comments(
@@ -97,6 +97,7 @@ PUBLIC_OBJECTS = (
             ("source_system", "External source system, when applicable."),
             ("source_dataset", "External dataset, when applicable."),
             ("source_record_id", "Identity within the external source."),
+            ("capture_policy", "Frozen effective content policy with rule identity, completion settings, response rules and variance; null for external observations."),
         ),
     ),
     CatalogueObject(

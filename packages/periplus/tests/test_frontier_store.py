@@ -1,4 +1,5 @@
 """Behavioral checks for shared acquisition and once-per-request accounting."""
+from capture_policy_fixture import capture_policy
 from datetime import UTC, datetime, timedelta
 import unittest
 from uuid import uuid4
@@ -147,6 +148,7 @@ class FrontierStoreTests(unittest.TestCase):
                                             reserved_ms=acquisition.attempt_reserved_ms or 125000, measured_ms=100),
             ),)
         evidence = VisitEvidence(visit=VisitRecord(
+            capture_policy=capture_policy(),
             visit_id=acquisition_id, requested_url=acquisition.url,
             admitted_at=self.now, started_at=self.now, finished_at=now,
             outcome="succeeded" if success else "failed",
@@ -505,6 +507,7 @@ class FrontierStoreTests(unittest.TestCase):
         a = self.admit(self.collection())
         work = self.store.dispatch(a.acquisition_id, now=self.now)
         wrong = VisitEvidence(visit=VisitRecord(
+            capture_policy=capture_policy(),
             visit_id=uuid4(), requested_url="https://example.com/",
             admitted_at=self.now, finished_at=self.now, outcome="failed",
         ), attempts=())
@@ -520,6 +523,8 @@ class FrontierStoreTests(unittest.TestCase):
         a = self.admit(self.collection(request_class='admin'))
         work = self.store.dispatch(a.acquisition_id, now=self.now)
         evidence = terminal_evidence(self.store.get_acquisition(a.acquisition_id), self.now, "failed")
+        self.assertEqual(evidence.visit.capture_policy.model_dump(mode="json"),
+                         self.store.get_acquisition(a.acquisition_id).requirements["content"])
         for change in ({"requested_url": "https://other.example/"},):
             wrong = evidence.model_copy(update={"visit": evidence.visit.model_copy(update=change)})
             with self.assertRaisesRegex(ValueError, "URL"):
@@ -902,6 +907,7 @@ class FrontierStoreTests(unittest.TestCase):
             resource_usage=AttemptUsage(policy_version=work.generation, domain_policy=self.store.current_domain_policy(a.acquisition_id), exclusion_policy_version=1, reserved_ms=125000, measured_ms=130000),
         )
         evidence = VisitEvidence(visit=VisitRecord(
+            capture_policy=capture_policy(),
             visit_id=a.acquisition_id, requested_url="https://example.com/", admitted_at=self.now,
             started_at=self.now, finished_at=self.now, outcome="succeeded",
         ), attempts=(attempt,))
@@ -941,6 +947,7 @@ class FrontierStoreTests(unittest.TestCase):
         )
         attempts = attempt_records(a.acquisition_id, context.prior_attempts + (final,))
         evidence = VisitEvidence(visit=VisitRecord(
+            capture_policy=capture_policy(),
             visit_id=a.acquisition_id, requested_url="https://example.com/",
             admitted_at=self.now, started_at=self.now, finished_at=later, outcome="succeeded",
         ), attempts=attempts)

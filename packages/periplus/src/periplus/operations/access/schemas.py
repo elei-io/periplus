@@ -29,11 +29,20 @@ class CrawlPolicy(RatePolicy):
                 raise ValueError("Option outside supported request bounds")
         return self
 
+class QueryLimits(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_rows: int = Field(default=1000, ge=1, le=10000)
+    max_duration_seconds: int = Field(default=20, ge=1, le=120)
+    max_result_bytes: int = Field(default=8 * 1024 * 1024, ge=1024 * 1024, le=64 * 1024 * 1024)
+
+class SqlPolicy(RatePolicy, QueryLimits):
+    pass
+
 class AccessPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
     crawl: CrawlPolicy = Field(default_factory=CrawlPolicy)
     assistant: RatePolicy = Field(default_factory=lambda: RatePolicy(requests=10))
-    sql: RatePolicy = Field(default_factory=RatePolicy)
+    sql: SqlPolicy = Field(default_factory=SqlPolicy)
 
 class AccessView(AccessPolicy):
     version: int

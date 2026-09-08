@@ -1,4 +1,5 @@
 """Retention correctness against disposable real DuckLake catalogues."""
+from capture_policy_fixture import capture_policy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -31,7 +32,7 @@ class RetentionTests(unittest.TestCase):
         self.old = self.now - timedelta(days=10)
 
     def visit(self):
-        visit = VisitEvidence(visit=VisitRecord(visit_id=uuid4(), requested_url='https://example.com/',
+        visit = VisitEvidence(visit=VisitRecord(capture_policy=capture_policy(), visit_id=uuid4(), requested_url='https://example.com/',
             admitted_at=self.old, finished_at=self.old, outcome='failed'), attempts=())
         self.service.record_visits([visit])
         return visit
@@ -83,6 +84,32 @@ class RetentionTests(unittest.TestCase):
         self.assertEqual(len(self.retention.plan(now=self.old + timedelta(days=1)).candidates), 1)
         for invalid in [0, -1, 315360001]:
             with self.assertRaises(ValueError): CollectionSpec(retention_seconds=invalid)
+
+    def test_capture_policy_round_trips_and_retires_with_observation(self):
+        from periplus.platform.catalogue.public import install_public_catalogue
+        install_public_catalogue(self.catalogue)
+        visit = self.visit()
+        identity = visit.visit.visit_id
+        # This catalogue has no operational database: evidence is self-contained.
+        self.assertEqual(self.service.get_visit_evidence([identity])[identity], visit)
+        row = self.catalogue.trusted_connection.execute(
+            "SELECT capture_policy::JSON FROM web.observation WHERE observation_id = ?",
+            [identity],
+        ).fetchone()
+        import json
+        self.assertEqual(json.loads(row[0]), visit.visit.capture_policy.model_dump(mode="json"))
+        self.assertFalse(self.service.record_visits([visit])[0].created)
+        from periplus.platform.catalogue import CatalogueConflictError
+        changed = visit.model_copy(update={"visit": visit.visit.model_copy(update={
+            "capture_policy": visit.visit.capture_policy.model_copy(update={"slug": "changed"})})})
+        with self.assertRaises(CatalogueConflictError):
+            self.service.record_visits([changed])
+        self.request(visit, 1)
+        self.retention.purge_observation(self.candidates()[0], now=self.now)
+        self.assertEqual(self.service.get_visit_evidence([identity]), {})
+        self.assertEqual(self.catalogue.trusted_connection.execute(
+            "SELECT count(*) FROM web.observation WHERE observation_id = ?", [identity],
+        ).fetchone()[0], 0)
 
     def test_retirement_is_idempotent_and_delayed_evidence_cannot_resurrect(self):
         visit = self.visit()
@@ -293,7 +320,7 @@ class RetentionTests(unittest.TestCase):
         self.assertTrue(objects.exists(html_object_key(content_hash)))
         self.assertEqual(self.catalogue.trusted_connection.execute('SELECT count(*) FROM material._periplus_retention_objects').fetchone()[0], 1)
         with self.assertRaises(EvidenceRetired):
-            self.service.record_visits([VisitEvidence(visit=VisitRecord(visit_id=identity,
+            self.service.record_visits([VisitEvidence(visit=VisitRecord(capture_policy=capture_policy(), visit_id=identity,
                 requested_url='https://example.com/', admitted_at=self.old, finished_at=self.old, outcome='failed'), attempts=())])
 
     def test_new_publication_blocks_physical_deletion_after_snapshot_grace(self):

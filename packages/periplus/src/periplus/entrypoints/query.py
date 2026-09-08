@@ -11,6 +11,7 @@ from starlette.concurrency import run_in_threadpool
 from periplus.platform.catalogue.config import catalogue_config_from_env
 from periplus.query.server_http import QueryAccessMiddleware, router
 from periplus.query.service import QueryService
+from periplus.query.limits import QueryLimitsClient
 
 
 @asynccontextmanager
@@ -21,11 +22,13 @@ async def lifespan(app: FastAPI):
     service = await run_in_threadpool(QueryService, catalogue_config_from_env())
     from periplus.query.history import HistoryClient
     app.state.query_history = HistoryClient()
+    app.state.query_limits = QueryLimitsClient()
     app.state.query_service = service
     app.state.query_slot = asyncio.Semaphore(1)
     try:
         yield
     finally:
+        await app.state.query_limits.close()
         await app.state.query_history.close()
         await run_in_threadpool(service.close)
 

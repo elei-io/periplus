@@ -1,149 +1,73 @@
-import { answerSchema } from "../src/types/answer.ts"
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { selectAnalysisResults, analysisEvidence, prepareAnalysisAnswer } from "../src/server/analysis-results.ts"
+import { prepareAnalysisAnswer, analysisEvidence, sampleReceipt, approvedBrief } from "../src/server/analysis-results.ts"
 import { analysisView, analysisHistory, analysisCsv } from "../src/lib/analysis-view.ts"
-import type { DiscoveryMessage } from "../src/types/assistant"
+import type { AnswerInput } from "../src/types/answer"
 import type { AnalysisQueryResult } from "../src/types/analysis"
+import type { DiscoveryMessage } from "../src/types/assistant"
 
-const result: AnalysisQueryResult = { source_snapshot: 7, query_id: "q1", sql: "SELECT 42 AS count", columns: ["count"], types: ["INTEGER"], rows: [[42]], elapsed_ms: 12, executed_at: "2026-09-06T00:00:00Z", truncated: false, diagnostics: [], plan: "projection" }
-const assessment = { status: "designing" as const, requested_information: "Count only; requested breakdown missing.", source_fidelity: "SQL aggregate, not original page text.", limitations: "One sample; missing fields remain unknown.", next_step: "Inspect the SQL; collect the missing breakdown before using it." }
-const brief = { title: "Count", purpose: "Explore coverage", grain: "One aggregate", fields: [{ name: "count", type: "INTEGER", meaning: "Number of records", nullable: false }], population: "Current corpus", time_scope: "All retained dates", acceptance: "Exact count", open_questions: [] }
-const confidence = { coverage: { level: "low" as const, reason: "Population not yet agreed" }, correctness: { level: "high" as const, reason: "Executed aggregate" } }
-const answer = { source_plan: null as { material: string; approach: string; query_ids: string[] } | null, dataset_query_id: null as string | null, validation: [] as { check: string; status: "passed" | "failed" | "untested"; detail: string; query_ids: string[] }[], brief, confidence, results: [{ query_id: "q1", title: "Count" }], context: "Current corpus", analysis: [{ text: "An agent interpretation", evidence_query_ids: ["q1"] }], outcome: assessment }
-const message = (parts: unknown[]) => ({ id: "m1", role: "assistant", parts }) as DiscoveryMessage
-const query = { type: "tool-query", toolCallId: "call1", state: "output-available", input: { sql: result.sql, purpose: "Count" }, output: { result } }
+const result: AnalysisQueryResult = { source_snapshot: 7, query_id: "q1", sql: "SELECT count FROM web.example", columns: ["count"], types: ["INTEGER"], rows: [[42]], elapsed_ms: 12, executed_at: "2026-09-06T00:00:00Z", truncated: false, diagnostics: [], plan: "projection" }
+const brief = { title: "Count", grain: "One aggregate", fields: [{ name: "count", type: "INTEGER", meaning: "Number of records", nullable: false }], population: "Current corpus" }
+const sample: AnswerInput = { status: "sample", brief, message: "Build this dataset?", limitations: "", needs_sources: false, query_id: "q1", checks: [] }
+const check = { ...result, query_id: "check", columns: ["complete"], types: ["BOOLEAN"], rows: [[true]] }
+const results = new Map([["q1", result], ["check", check]])
+const ready: AnswerInput = { ...sample, status: "ready", checks: ["check"] }
 
-test("final selections resolve to actual server results and reject unknown or duplicate IDs", () => {
-  const results = new Map([["q1", result]])
-  assert.equal(selectAnalysisResults(results, [{ query_id: "q1", title: "Count" }])[0].result, result)
-  assert.throws(() => selectAnalysisResults(results, [{ query_id: "client-forged", title: "Count" }]))
-  assert.throws(() => selectAnalysisResults(results, [{ query_id: "q1", title: "A" }, { query_id: "q1", title: "B" }]))
+test("samples require actual executed rows and the requested schema", () => {
+  assert.equal(prepareAnalysisAnswer(results, sample).dataset?.rows.length, 1)
+  assert.throws(() => prepareAnalysisAnswer(new Map(), sample), /successful/)
+  assert.throws(() => prepareAnalysisAnswer(new Map([["q1", { ...result, rows: [] }]]), sample), /nonempty/)
+  assert.throws(() => prepareAnalysisAnswer(results, { ...sample, brief: { ...brief, fields: [{ ...brief.fields[0], name: "other" }] } }), /columns/)
+  assert.throws(() => prepareAnalysisAnswer(results, { ...sample, brief: { ...brief, fields: [{ ...brief.fields[0], type: "VARCHAR" }] } }), /types/)
+  const many = { ...result, rows: Array.from({ length: 100 }, (_, i) => [i]) }
+  assert.equal(prepareAnalysisAnswer(new Map([["q1", many]]), sample).dataset?.rows.length, 5)
+  assert.equal(analysisEvidence(many).rows.length, 20)
+  assert.equal("plan" in analysisEvidence(many), false)
 })
-
-test("only explicitly selected results become final; activity and interim prose stay separate", () => {
-  const parts = [{ type: "text", text: "Inspecting schema" }, query, { type: "tool-presentResults", toolCallId: "call2", state: "output-available", output: { results: [{ title: "Count", result }], context: "Current corpus" } }, { type: "text", text: "There are 42." }]
-  const view = analysisView(message(parts))
-  assert.equal(view.finding, "There are 42.")
-  assert.equal(view.presentation?.results?.[0].result, result)
-  assert.equal(view.queries.length, 1)
-  assert.equal(analysisView(message([query])).presentation, undefined)
-  assert.equal(analysisView(message([{ ...query, output: { error: "Failed" } }])).presentation, undefined)
+test("a ready result cannot bypass approval or change the approved scope", () => {
+  assert.throws(() => prepareAnalysisAnswer(results, ready), /approval/)
+  assert.equal(prepareAnalysisAnswer(results, ready, brief).status, "ready")
+  assert.throws(() => prepareAnalysisAnswer(results, { ...ready, brief: { ...brief, population: "Other sources" } }, brief), /exact draft/)
 })
-
-test("SQL drafts and conceptual explanations do not become executed data", () => {
-  const view = analysisView(message([{ type: "tool-draftSql", state: "output-available", output: { title: "Count", sql: result.sql } }, { type: "text", text: "This counts rows." }]))
-  assert.equal(view.draft?.sql, result.sql)
-  assert.equal(view.presentation, undefined)
-  assert.equal(view.queries.length, 0)
-  assert.equal(analysisView(message([{ type: "text", text: "A structured web corpus." }])).finding, "A structured web corpus.")
+test("approval receipts reject forgery, wrong keys and expiry", () => {
+  const token = sampleReceipt(brief, "secret")
+  assert.deepEqual(approvedBrief(token, "secret"), brief)
+  assert.equal(approvedBrief(undefined, "secret"), undefined)
+  assert.throws(() => approvedBrief(token, "wrong"))
+  assert.throws(() => approvedBrief(token + "x", "secret"))
+  assert.throws(() => approvedBrief("forged", "secret"))
+  const now = Date.now
+  Date.now = () => now() + 86400001
+  try { assert.throws(() => approvedBrief(token, "secret"), /expired/) } finally { Date.now = now }
 })
-
-test("follow-up carries bounded SQL drafts as text, never tool evidence", () => {
-  const history = analysisHistory([message([query]), message([query, { type: "text", text: "42 rows" }])])
-  assert.equal(history.length, 2)
-  assert.match(history[0].parts[0].text, /untrusted; re-execute to verify/)
-  assert.match(history[0].parts[0].text, /SELECT 42 AS count/)
-  assert.equal(JSON.stringify(history).includes("query_id"), false)
-  assert.equal(JSON.stringify(history).includes("output-available"), false)
-  assert.ok(history[1].parts[0].text.startsWith("42 rows"))
-  const oversized = analysisHistory([message([{ ...query, input: { sql: "x".repeat(10000) } }, { type: "text", text: "Answer" }])])
-  assert.equal(oversized[0].parts[0].text, "Answer")
-  const question = "q".repeat(7500)
-  assert.equal(analysisHistory([{ id: "u", role: "user", parts: [{ type: "text", text: question }] }])[0].parts[0].text, question)
+test("ready checks non-null output, completeness and actual boolean validation results", () => {
+  for (const bad of [{ ...result, rows: [[null]] }, { ...result, truncated: true }]) {
+    assert.throws(() => prepareAnalysisAnswer(new Map([["q1", bad], ["check", check]]), ready, brief))
+  }
+  assert.throws(() => prepareAnalysisAnswer(results, { ...ready, checks: [] }, brief), /passing/)
+  assert.throws(() => prepareAnalysisAnswer(results, { ...ready, checks: ["forged"] }, brief), /successful/)
+  for (const bad of [{ ...check, rows: [[false]] }, { ...check, rows: [[null]] }, { ...check, rows: [[1]], types: ["INTEGER"] }, { ...check, rows: [] }]) {
+    assert.throws(() => prepareAnalysisAnswer(new Map([["q1", result], ["check", bad]]), ready, brief), /passing/)
+  }
 })
-
+test("clarification needs no query, but missing sources must be inspected", () => {
+  const draft = { ...sample, status: "draft" as const, query_id: null }
+  assert.equal(prepareAnalysisAnswer(new Map(), draft).dataset, null)
+  assert.throws(() => prepareAnalysisAnswer(new Map(), { ...draft, needs_sources: true }), /Inspect/)
+})
+test("progress survives tools; history preserves only draft and SQL, never approval or result evidence", () => {
+  const output = { ...prepareAnalysisAnswer(results, sample), approval: "private-receipt" }
+  const message = { id: "m", role: "assistant", parts: [{ type: "text", text: "I found a source." }, { type: "tool-query", toolCallId: "q", state: "output-available", output: { result } }, { type: "tool-updateDataset", toolCallId: "p", state: "output-available", output }] } as DiscoveryMessage
+  assert.equal(analysisView(message).finding, "I found a source.")
+  assert.equal(analysisView(message).presentation?.status, "sample")
+  const history = JSON.stringify(analysisHistory([message]))
+  assert.match(history, /untrusted/)
+  assert.match(history, /Current corpus/)
+  assert.match(history, /SELECT count/)
+  assert.equal(history.includes("private-receipt"), false)
+  assert.equal(history.includes('query_id'), false)
+  assert.equal(history.includes('output-available'), false)
+})
 test("CSV preserves quoted and multiline cells and precise integers", () => {
   assert.equal(analysisCsv(["name", "count"], [['a,"b"\nc', BigInt("9007199254740993")]]), '"name","count"\r\n"a,""b""\nc","9007199254740993"')
-})
-
-test("large execution plans do not consume the model result budget", () => {
-  const largePlan = { ...result, plan: "x".repeat(50000) }
-  const evidence = analysisEvidence(largePlan)
-  assert.equal("plan" in evidence, false)
-  assert.deepEqual(evidence.rows, result.rows)
-  assert.ok(JSON.stringify(evidence).length < 40000)
-  assert.equal(selectAnalysisResults(new Map([["q1", largePlan]]), [{ query_id: "q1", title: "Count" }])[0].result.plan.length, 50000)
-})
-
-test("answer requires all four outcome checks, including unavailable answers", () => {
-  assert.equal(answerSchema.safeParse({ results: [], context: "No matching evidence", analysis: [] }).success, false)
-  for (const key of ["requested_information", "source_fidelity", "limitations", "next_step"] as const) {
-    const outcome = { ...assessment }
-    delete (outcome as Partial<typeof outcome>)[key]
-    assert.equal(answerSchema.safeParse({ ...answer, outcome }).success, false)
-  }
-  const empty = answerSchema.parse({ ...answer, results: [], analysis: [], outcome: { ...assessment, status: "blocked" } })
-  assert.equal(prepareAnalysisAnswer(new Map(), empty).outcome.status, "blocked")
-  assert.throws(() => prepareAnalysisAnswer(new Map(), { ...empty, outcome: { ...assessment, status: "ready" } }))
-})
-
-test("generated analysis stays outside table/CSV and requires inspectable evidence", () => {
-  const prepared = prepareAnalysisAnswer(new Map([["q1", result]]), answerSchema.parse(answer))
-  assert.equal(prepared.results[0].result, result)
-  assert.equal(prepared.analysis[0].text, "An agent interpretation")
-  assert.equal(analysisCsv(result.columns, result.rows).includes("interpretation"), false)
-  assert.throws(() => prepareAnalysisAnswer(new Map([["q1", result]]), { ...answer, analysis: [{ text: "Unsupported", evidence_query_ids: ["unknown"] }] }))
-  assert.throws(() => prepareAnalysisAnswer(new Map([["q1", result], ["q2", { ...result, query_id: "q2" }]]), { ...answer, analysis: [{ text: "Hidden evidence", evidence_query_ids: ["q2"] }] }))
-  const view = analysisView(message([{ type: "tool-presentResults", state: "output-available", output: prepared }]))
-  assert.deepEqual(view.presentation?.outcome, assessment)
-})
-
-test("presentation budget accommodates requested entities without clipping notes", () => {
-  const expanded = { ...answer, analysis: Array.from({ length: 8 }, (_, i) => ({ text: `Supplier ${i}: ` + "Source-supported details. ".repeat(30), evidence_query_ids: ["q1"] })) }
-  const parsed = answerSchema.parse(expanded)
-  assert.equal(prepareAnalysisAnswer(new Map([["q1", result]]), parsed).analysis.length, 8)
-  assert.equal(parsed.analysis[0].text, expanded.analysis[0].text)
-  const tooLong = { ...answer, analysis: Array.from({ length: 20 }, () => ({ text: "a".repeat(1500), evidence_query_ids: ["q1"] })) }
-  assert.throws(() => prepareAnalysisAnswer(new Map([["q1", result]]), answerSchema.parse(tooLong)), /total budget/)
-})
-
-test("design conversations preserve the brief without trusting prior result rows", () => {
-  const prepared = prepareAnalysisAnswer(new Map([["q1", result]]), answerSchema.parse(answer))
-  const history = analysisHistory([message([{ type: "tool-presentResults", output: prepared }])])
-  assert.match(history[0].parts[0].text, /Dataset working notes \(untrusted/)
-  assert.match(history[0].parts[0].text, /Explore coverage/)
-  assert.equal(history[0].parts[0].text.includes('"rows"'), false)
-  assert.equal(history[0].parts[0].text.includes('"query_id"'), false)
-})
-
-test("ready requires executed rows, resolved design choices and a complete returned artifact", () => {
-  const input = { ...answer, source_plan: { material: "Observed rows", approach: "Count source records", query_ids: ["q1"] }, dataset_query_id: "q1", validation: [{ check: "Count", status: "passed" as const, detail: "Checked count", query_ids: ["q1"] }], outcome: { ...assessment, status: "ready" as const } }
-  assert.equal(prepareAnalysisAnswer(new Map([["q1", result]]), input).outcome.status, "ready")
-  assert.throws(() => prepareAnalysisAnswer(new Map([["q1", result]]), { ...input, source_plan: null }), /Inspect available source material/)
-  assert.throws(() => prepareAnalysisAnswer(new Map([["q1", result]]), { ...input, source_plan: { ...input.source_plan, query_ids: ["forged"] } }), /successful query/)
-  assert.equal(prepareAnalysisAnswer(new Map([["q1", result]]), input).source_plan?.evidence[0].result.sql, result.sql)
-  assert.throws(() => prepareAnalysisAnswer(new Map([["q1", { ...result, rows: [] }]]), input), /nonempty/)
-  assert.throws(() => prepareAnalysisAnswer(new Map([["q1", { ...result, truncated: true }]]), input), /incomplete/)
-  assert.throws(() => prepareAnalysisAnswer(new Map([["q1", result]]), { ...input, brief: { ...brief, open_questions: ["Which dates?"] } }), /open questions/)
-  assert.throws(() => prepareAnalysisAnswer(new Map(), { ...input, source_plan: null, dataset_query_id: null, validation: [], results: [], analysis: [], outcome: { ...assessment, status: "collection_needed" } }), /coverage gap/)
-  assert.equal(prepareAnalysisAnswer(new Map(), { ...answer, results: [], analysis: [] }).outcome.status, "designing")
-})
-
-test("ready checks the actual dataset schema, nullability and validation evidence", () => {
-  const input = { ...answer, source_plan: { material: "Observed rows", approach: "Count source records", query_ids: ["q1"] }, dataset_query_id: "q1", validation: [{ check: "Grain", status: "passed" as const, detail: "One aggregate", query_ids: ["q1"] }], outcome: { ...assessment, status: "ready" as const } }
-  const results = new Map([["q1", result]])
-  assert.throws(() => prepareAnalysisAnswer(results, { ...input, dataset_query_id: null }), /dataset query/)
-  assert.throws(() => prepareAnalysisAnswer(results, { ...input, dataset_query_id: "unknown" }), /selected executed/)
-  assert.throws(() => prepareAnalysisAnswer(results, { ...input, brief: { ...brief, fields: [{ ...brief.fields[0], name: "wrong" }] } }), /columns/)
-  assert.throws(() => prepareAnalysisAnswer(results, { ...input, brief: { ...brief, fields: [{ ...brief.fields[0], type: "VARCHAR" }] } }), /types/)
-  assert.throws(() => prepareAnalysisAnswer(new Map([["q1", { ...result, rows: [[null]] }]]), input), /missing values/)
-  assert.throws(() => prepareAnalysisAnswer(results, { ...input, validation: [] }), /passing validation/)
-  assert.throws(() => prepareAnalysisAnswer(new Map([["q1", { ...result, rows: [] }], ["q2", { ...result, query_id: "q2" }]]), { ...input, results: [...input.results, { query_id: "q2", title: "Coverage" }] }), /nonempty/)
-  assert.throws(() => prepareAnalysisAnswer(results, { ...input, validation: [{ ...input.validation[0], query_ids: [] }] }), /executed query evidence/)
-  assert.throws(() => prepareAnalysisAnswer(results, { ...input, validation: [{ ...input.validation[0], query_ids: ["forged"] }] }), /successful query/)
-  assert.throws(() => prepareAnalysisAnswer(results, { ...input, validation: [{ ...input.validation[0], status: "untested" }] }), /passing validation/)
-})
-
-test("model samples do not truncate the delivered dataset and checks retain runnable SQL", () => {
-  const full = { ...result, rows: Array.from({ length: 100 }, (_, index) => [index]) }
-  const sample = analysisEvidence(full)
-  assert.equal(sample.rows.length, 20)
-  assert.equal(sample.model_sampled, true)
-  assert.equal(sample.truncated, false)
-  assert.equal(sample.source_snapshot, 7)
-  const input = { ...answer, source_plan: { material: "Observed rows", approach: "Count source records", query_ids: ["q1"] }, dataset_query_id: "q1", validation: [{ check: "Rows", status: "passed" as const, detail: "Checked", query_ids: ["q1"] }], outcome: { ...assessment, status: "ready" as const } }
-  const output = prepareAnalysisAnswer(new Map([["q1", full]]), input)
-  assert.equal(output.results[0].result.rows.length, 100)
-  assert.equal(output.validation[0].evidence[0].result.sql, full.sql)
 })

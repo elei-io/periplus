@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Button } from "@/components/ui/button"
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
@@ -548,6 +549,22 @@ export function QueriesPage() {
                   </div>
                 </CardContent>
               </Card>
+              {pattern && <Card>
+                <CardHeader><CardTitle>Plan comparisons</CardTitle>
+                  <p className="text-sm text-muted-foreground">Up to 50 most recently seen plan variants. Exact previews can differ with parameters, estimates or versions; a change alone does not establish a regression. Percentiles use successful operations only.</p>
+                </CardHeader>
+                <CardContent><Table><TableHeader><TableRow>
+                  {["Plan / engine", "Executions", "p50", "p95 / samples", "Timeout rate", "First / last seen"].map(h => <TableHead key={h}>{h}</TableHead>)}
+                </TableRow></TableHeader><TableBody>
+                  {data.plans.map(p => <TableRow key={`${p.plan_fingerprint}-${p.duckdb_version}-${p.compiler_version}`}>
+                    <TableCell><Button variant="link" onClick={() => setSelected(p.example_execution_id)}>{p.plan_fingerprint?.slice(0, 12) ?? "No complete plan"}</Button><p className="text-xs">DuckDB {p.duckdb_version ?? "unknown"} · {p.compiler_version ?? "unknown compiler"}</p></TableCell>
+                    <TableCell>{number(p.executions)}</TableCell><TableCell>{ms(p.p50_ms)}</TableCell>
+                    <TableCell>{ms(p.p95_ms)}<p className="text-xs">{number(p.successes)} samples{p.successes < 20 ? " · small sample" : ""}</p></TableCell>
+                    <TableCell>{percent(p.timeouts, p.executions)}<p className="text-xs">{number(p.timeouts)} timeouts</p></TableCell>
+                    <TableCell className="text-xs">{stamp(p.first_seen)}<br />{stamp(p.last_seen)}</TableCell>
+                  </TableRow>)}
+                </TableBody></Table></CardContent>
+              </Card>}
               <div className="grid gap-4 lg:grid-cols-3">
                 <Counts title="Failure reasons" rows={data.failures} />
                 <Counts title="Relations used" rows={data.relations} />
@@ -692,6 +709,9 @@ export function QueriesPage() {
                     </div>
                   ))}
                 </dl>
+                <Tabs defaultValue="sql" key={detail.data.execution_id}>
+                <TabsList><TabsTrigger value="sql">SQL</TabsTrigger><TabsTrigger value="plan">Plan</TabsTrigger></TabsList>
+                <TabsContent value="sql" className="space-y-4 pt-4">
                 {[
                   ["Original SQL", detail.data.sql_text],
                   [
@@ -711,6 +731,20 @@ export function QueriesPage() {
                     </pre>
                   </section>
                 ))}
+                </TabsContent>
+                <TabsContent value="plan" className="space-y-4 pt-4">
+                  <p className="text-sm text-muted-foreground">Estimated preparation preview for the submitted SQL, before the service adds its result-row wrapper. This is not a runtime profile; no query was rerun to collect it.</p>
+                  <dl className="grid grid-cols-2 gap-3 text-sm">
+                    {Object.entries({"DuckDB": detail.data.duckdb_version, "Compiler": detail.data.compiler_version, "Plan fingerprint": detail.data.plan_fingerprint, "Preview truncated": detail.data.plan_truncated}).map(([k,v]) => <div key={k}><dt className="text-muted-foreground">{k}</dt><dd className="break-all">{v == null ? "—" : String(v)}</dd></div>)}
+                  </dl>
+                  {detail.data.plan_truncated && <Badge variant="outline">Truncated preview · excluded from plan fingerprinting</Badge>}
+                  <pre tabIndex={0} aria-label="Query plan" className="overflow-auto rounded-md bg-muted p-3 text-xs">{detail.data.plan ?? "No plan was captured. Older records, early rejections, SHOW requests and privileged admin SQL have no preparation plan."}</pre>
+                  <h3 className="font-medium">Preparation diagnostics</h3>
+                  {detail.data.diagnostics === null ? <p>Unavailable</p> : detail.data.diagnostics.length === 0 ? <p>No diagnostics.</p> : <ul className="space-y-2">{detail.data.diagnostics.map((d,i) => <li key={i}><Badge variant="outline">{d.severity} · {d.code}</Badge><p className="text-sm">{d.message}</p></li>)}</ul>}
+                  <h3 className="font-medium">Effective query limits</h3>
+                  <pre className="overflow-auto rounded-md bg-muted p-3 text-xs">{detail.data.effective_limits ? JSON.stringify(detail.data.effective_limits, null, 2) : "Unavailable"}</pre>
+                </TabsContent>
+                </Tabs>
               </>
             )}
           </div>

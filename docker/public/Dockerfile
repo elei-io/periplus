@@ -10,6 +10,8 @@ RUN npm ci
 COPY packages/periplus-console-core/ packages/periplus-console-core/
 COPY packages/periplus-web-shell/ packages/periplus-web-shell/
 COPY packages/periplus-public/ packages/periplus-public/
+ARG PERIPLUS_PUBLIC_ORIGIN
+ENV PERIPLUS_PUBLIC_ORIGIN=$PERIPLUS_PUBLIC_ORIGIN
 RUN npm run build:public
 
 FROM node:24-alpine
@@ -17,7 +19,6 @@ WORKDIR /app
 ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=3000
 COPY --from=build --chown=node:node /app/packages/periplus-public/.next/standalone/ ./
 COPY --from=build --chown=node:node /app/packages/periplus-public/.next/static/ ./packages/periplus-public/.next/static/
-COPY --from=build --chown=node:node /app/packages/periplus-public/public/ ./packages/periplus-public/public/
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=5s --timeout=3s --retries=12 --start-period=5s \

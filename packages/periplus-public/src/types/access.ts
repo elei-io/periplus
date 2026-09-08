@@ -1,8 +1,22 @@
+import { z } from "zod"
+
 export type Capability = "crawl" | "assistant" | "sql"
-export type RatePolicy = { enabled: boolean; requests: number; window_seconds: number }
-export type AccessPolicy = {
-  version: number
-  crawl: RatePolicy & { page_budgets: number[]; default_page_budget: number; max_depths: number[]; default_max_depth: number; retention_seconds: (number | null)[]; default_retention_seconds: number | null }
-  assistant: RatePolicy
-  sql: RatePolicy
+const ratePolicySchema = z.object({ enabled: z.boolean(), requests: z.number().int().positive(), window_seconds: z.number().int().positive() })
+export type RatePolicy = z.infer<typeof ratePolicySchema>
+const accessPolicySchema = z.object({
+  version: z.number().int(),
+  crawl: ratePolicySchema.extend({
+    page_budgets: z.array(z.number().int().positive()), default_page_budget: z.number().int().positive(),
+    max_depths: z.array(z.number().int().nonnegative()), default_max_depth: z.number().int().nonnegative(),
+    retention_seconds: z.array(z.number().int().positive().nullable()), default_retention_seconds: z.number().int().positive().nullable(),
+  }),
+  assistant: ratePolicySchema,
+  sql: ratePolicySchema.extend({ max_rows: z.number().int().positive(), max_duration_seconds: z.number().int().positive(), max_result_bytes: z.number().int().positive() }),
+})
+export type AccessPolicy = z.infer<typeof accessPolicySchema>
+
+export function parseAccessPolicy(value: unknown): AccessPolicy {
+  const result = accessPolicySchema.safeParse(value)
+  if (!result.success) throw new Error("Public access settings are incomplete or invalid. Please try again shortly.")
+  return result.data
 }

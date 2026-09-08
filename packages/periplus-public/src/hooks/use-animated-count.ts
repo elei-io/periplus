@@ -18,7 +18,7 @@ export function useAnimatedCount(value: unknown, playing: boolean) {
       const next = String(from + (to - from) * BigInt(fraction) / BigInt(1000))
       current.current = next
       setDisplay(next)
-      if (fraction < 1000) frame = window.requestAnimationFrame(animate)
+      if (fraction < 1000 && next !== target) frame = window.requestAnimationFrame(animate)
     }
     frame = window.requestAnimationFrame(animate)
     return () => window.cancelAnimationFrame(frame)

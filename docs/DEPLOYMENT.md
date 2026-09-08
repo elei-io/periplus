@@ -143,6 +143,28 @@ per-process lane bounds; replica count and local concurrency are separate contro
 
 ## Application access
 
+### Public search metadata
+
+`PERIPLUS_PUBLIC_ORIGIN` is a **build-time**, non-secret HTTPS origin for the public
+application. It must contain no path, query, fragment, or credentials. Set the
+GitHub Actions repository variable of that name before publishing the public
+image; the frontend build passes it to `docker/public/Dockerfile`. For manual
+Docker builds, pass `--build-arg PERIPLUS_PUBLIC_ORIGIN=https://your-public-host`.
+For host builds, export it before `npm run build --workspace periplus-public`.
+
+The origin is baked into prerendered canonical URLs, social metadata, robots.txt,
+and sitemap.xml. Changing only a Kubernetes runtime environment value does not
+update those files: rebuild the public image for an origin change. An unset origin
+keeps the build usable locally but emits `noindex`, a disallow-all robots file,
+and an empty sitemap. Never infer canonical URLs from request Host headers.
+Preview deployments of an indexable production image need their own ingress
+authentication or `X-Robots-Tag: noindex`; robots rules are not an access control.
+
+Only the six clean public page URLs enter the sitemap. SQL, question, and request
+parameter variants and transient observation details are noindex; the clean
+workspace pages remain indexable. Before launch, verify these files on the actual
+TLS host, redirects to that host, and Search Console ownership/sitemap submission.
+
 Core requires distinct `PERIPLUS_ADMIN_API_TOKEN` and `PERIPLUS_PUBLIC_API_TOKEN` values.
 Missing or equal credentials fail closed. Only health and Prometheus metrics are anonymous;
 keep the API on the private service network. Admin injects the administrative credential
@@ -194,6 +216,12 @@ When frontier exclusions are configured, page acquisition requires the standard 
 endpoint that cannot install the interception must fail the attempt before navigation; there is
 no unchecked acquisition fallback. Page-session interception supplements the CDP service's egress
 restrictions; it does not establish enforcement for independent workers or other browser targets.
+
+The query process uses its existing API URL and query token to read `GET /access` before each
+SQL operation. This is a required dependency for authoritative duration, row and result-size
+limits; failed reads reject queries. Apply migration `20260908_0010` before deploying. Public
+SQL proxies allow up to 130 seconds; configure ingress timeouts accordingly if raising the
+execution duration above its default 20 seconds. No control database credentials enter query pods.
 
 The query service also exposes authenticated `GET /query/helpers` for registry-derived SQL helper documentation. Catalogue setup installs helpers before query processes validate and serve them.
 

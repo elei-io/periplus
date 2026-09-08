@@ -109,6 +109,7 @@ class CatalogueService:
             self._append(
                 VISITS,
                 [_visit_values(entry.visit) for entry in missing],
+                json_columns=("capture_policy",),
             )
         snapshot = self._result_snapshot(changed=bool(missing))
         return [
@@ -268,7 +269,7 @@ class CatalogueService:
         encoded = [
             {
                 key: (
-                    canonical_json(value) if key in json_columns else value
+                    canonical_json(value) if key in json_columns and value is not None else value
                 )
                 for key, value in row.items()
             }
@@ -318,6 +319,7 @@ def _unique_records(records: Sequence, *, identity) -> list:
 
 def _visit_values(record: VisitRecord) -> dict[str, object]:
     values = record.model_dump(mode="python")
+    values["capture_policy"] = record.capture_policy.model_dump(mode="json") if record.capture_policy else None
     provenance = values["provenance"]
     values["provenance"] = {
         "kind": provenance["kind"],

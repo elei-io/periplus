@@ -13,6 +13,7 @@ export const schemaReference = [
     ["source_system", "VARCHAR", "External source system, when applicable."],
     ["source_dataset", "VARCHAR", "External dataset, when applicable."],
     ["source_record_id", "VARCHAR", "Record identity within the external source."],
+    ["capture_policy", "JSON", "Frozen effective content policy, including disabled actions and variance. Null for external observations; retained with the observation."],
   ] },
   { name: "content.object", grain: "One distinct retained byte sequence, shared across observations with identical content.", key: "content_id", columns: [
     ["content_id", "VARCHAR", "SHA-256 identity of the logical bytes."],

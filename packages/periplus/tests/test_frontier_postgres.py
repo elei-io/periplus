@@ -1,4 +1,5 @@
 """Opt-in transaction races against isolated schemas in configured control Postgres."""
+from capture_policy_fixture import capture_policy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 import os
@@ -558,7 +559,7 @@ class FrontierPostgresTests(unittest.TestCase):
             acquisition.completed_at = self.now
             acquisition.evidence_snapshot = 7
             acquisition.pending_key = None
-            acquisition.outcome = VisitEvidence(visit=VisitRecord(visit_id=acquisition.id,
+            acquisition.outcome = VisitEvidence(visit=VisitRecord(capture_policy=capture_policy(), visit_id=acquisition.id,
                 requested_url=acquisition.url, admitted_at=self.now, started_at=self.now,
                 finished_at=self.now, outcome="succeeded"), attempts=()).model_dump(mode="json")
             session.get(InterestRecord, parent.interest_id).status = "settled"

@@ -1,7 +1,8 @@
 "use client";
+import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ApiError, responseJson } from "@/lib/api";
-import type { AccessPolicy, Capability } from "@/types/access";
+import { ApiError, extractApiError, responseJson } from "@/lib/api";
+import { parseAccessPolicy, type Capability } from "@/types/access";
 
 export function usePublicAccess(feature: Capability) {
   const cache = useQueryClient();
@@ -9,8 +10,9 @@ export function usePublicAccess(feature: Capability) {
     queryKey: ["public-access"],
     queryFn: ({ signal }) =>
       fetch("/api/access", { signal, cache: "no-store" }).then(
-        responseJson<AccessPolicy>,
+        responseJson<unknown>,
       ),
+    select: parseAccessPolicy,
     refetchInterval: 5000,
     refetchOnWindowFocus: "always",
     retry: false,
@@ -27,19 +29,19 @@ export function usePublicAccess(feature: Capability) {
   const message = query.isPending
     ? "Checking availability…"
     : query.isError
-      ? "Availability could not be checked. Please try again shortly."
+      ? extractApiError(query.error)
       : !query.data?.[feature].enabled
         ? `Public ${feature === "crawl" ? "crawl submissions" : feature === "sql" ? "SQL execution" : "dataset assistant"} is currently disabled.`
         : waiting
           ? `Rate limit reached. Retry after ${new Date(cooldown.data).toLocaleTimeString()}.`
           : null;
-  function onDenied(error: unknown) {
+  const onDenied = useCallback((error: unknown) => {
     if (error instanceof ApiError && error.status === 429)
       cache.setQueryData(
         ["access-cooldown", feature],
         Date.now() + Math.max(1, error.retryAfterSeconds ?? 5) * 1000,
       );
     void cache.invalidateQueries({ queryKey: ["public-access"] });
-  }
-  return { ...query, enabled, message, onDenied };
+  }, [cache, feature]);
+  return { data: query.isError ? undefined : query.data, enabled, message, onDenied };
 }

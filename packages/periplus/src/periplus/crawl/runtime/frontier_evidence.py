@@ -40,6 +40,7 @@ def terminal_evidence(acquisition, now: datetime, outcome: str) -> VisitEvidence
     context = acquisition_context(acquisition)
     attempts = attempt_records(acquisition.id, context.prior_attempts)
     return VisitEvidence(visit=VisitRecord(
+        capture_policy=context.policy.content,
         visit_id=acquisition.id, requested_url=acquisition.url, admitted_at=context.admitted_at, started_at=attempts[0].started_at if attempts else None,
         finished_at=now, outcome=outcome,
     ), attempts=attempts, steps=step_records(acquisition.id, context.prior_steps))

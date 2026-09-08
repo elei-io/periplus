@@ -76,8 +76,8 @@ npm run periplus -- 'SELECT count(*) FROM web.observation'
 Run `npm run periplus` without SQL to open the interactive terminal. Set `PERIPLUS_QUERY_URL` and `PERIPLUS_QUERY_API_TOKEN` when the query server
 is not available at `http://127.0.0.1:8010`. Inside either shell, `.tables` lists the public
 catalogue, `.describe content.object` shows an object's columns, and `.history` shows recent input.
-`.help` lists all local commands. The terminal uses `PERIPLUS_QUERY_API_TOKEN`; set `PERIPLUS_API_TOKEN` to the appropriate
-public or admin token for SDK collection/control calls.
+`.help` lists all local commands. The terminal uses `PERIPLUS_QUERY_API_TOKEN`. The Python SDK uses the public application URL
+(`PERIPLUS_PUBLIC_URL`) and needs no service token; see [its README](packages/periplus-python-sdk/README.md).
 
 Start the applications locally with `npm run dev --workspace periplus-public` and
 `npm run dev --workspace periplus-admin`. Both read root `.env` during development.

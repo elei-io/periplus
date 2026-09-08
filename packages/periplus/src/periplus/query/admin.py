@@ -13,7 +13,10 @@ from starlette.responses import JSONResponse
 
 from periplus.platform.catalogue.config import CatalogueConfig
 from periplus.platform.catalogue.connection import DuckLakeConnectionFactory, _identifier
-from periplus.query.service import MAX_RESPONSE_BYTES, MAX_ROWS, BusyError, QueryRequest, _json_value
+from periplus.query.service import BusyError, QueryRequest, _json_value
+
+MAX_ROWS = 1000
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 router = APIRouter(prefix="/admin/sql", tags=["admin-sql"])
 

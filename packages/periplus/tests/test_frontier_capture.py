@@ -1,4 +1,5 @@
 """Capture handlers ACK only after frontier acceptance, never direct ingestion."""
+from capture_policy_fixture import capture_policy
 import asyncio
 from test_domain_policies import FakeBucket
 from contextlib import asynccontextmanager
@@ -131,6 +132,7 @@ class FrontierCaptureTests(unittest.IsolatedAsyncioTestCase):
     async def test_accepted_evidence_precedes_ack(self):
         acquisition = self.acquisition()
         evidence = VisitEvidence(visit=VisitRecord(
+            capture_policy=capture_policy(),
             visit_id=acquisition.id,  requested_url=acquisition.url, admitted_at=acquisition.created_at,
             started_at=acquisition.created_at, finished_at=acquisition.created_at, outcome="succeeded",
         ), attempts=())

@@ -40,7 +40,13 @@ class PublicAccessTests(unittest.TestCase):
 
     def test_policy_edit_preserves_consumed_capacity_and_rejects_stale_save(self):
         self.store.admit('sql', now=self.now)
-        self.assertEqual(self.store.save(self.policy, 1).version, 2)
+        self.policy.sql.max_rows = 25
+        self.policy.sql.max_duration_seconds = 7
+        self.policy.sql.max_result_bytes = 2 * 1024 * 1024
+        saved = self.store.save(self.policy, 1)
+        self.assertEqual(saved.version, 2)
+        self.assertEqual((self.store.read().sql.max_rows, saved.sql.max_duration_seconds, saved.sql.max_result_bytes),
+                         (25, 7, 2 * 1024 * 1024))
         with self.assertRaises(AccessDenied) as caught:
             self.store.save(self.policy, 1)
         self.assertEqual(caught.exception.status_code, 409)

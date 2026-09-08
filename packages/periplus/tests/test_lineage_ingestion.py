@@ -1,4 +1,5 @@
 """Real DuckLake append/replay checks for late collection fulfillment."""
+from capture_policy_fixture import capture_policy
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -105,6 +106,7 @@ class LineageIngestionTests(unittest.TestCase):
                     "maximum_concurrency": 2, "minimum_request_interval_seconds": 1.5, "version": 7, "updated_by": "admin"}),
             )
             evidence = VisitEvidence(visit=VisitRecord(
+                capture_policy=capture_policy(),
                 visit_id=identity,  requested_url=f"https://example.com/{index}",
                 admitted_at=self.now, started_at=self.now, finished_at=self.now,
                 outcome="failed" if measured is None else "succeeded",

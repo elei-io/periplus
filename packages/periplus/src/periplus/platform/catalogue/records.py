@@ -9,6 +9,7 @@ from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from periplus.crawl.control.domain_policies.schemas import DomainPolicySnapshot
+from periplus.crawl.control.content_policies.schemas import ContentPolicySnapshot
 
 
 _ATTEMPT_NAMESPACE = UUID("feef76f0-a91d-58f8-9533-e30c90a784b2")
@@ -89,6 +90,7 @@ class VisitRecord(CatalogueRecord):
     outcome: Literal["succeeded", "failed", "cancelled", "skipped"]
     status_code: int | None = Field(default=None, ge=100, le=599)
     document_id: UUID | None = None
+    capture_policy: ContentPolicySnapshot | None = None
     provenance: EvidenceProvenance = Field(
         default_factory=PeriplusProvenance,
         discriminator="kind",
@@ -96,6 +98,10 @@ class VisitRecord(CatalogueRecord):
 
     @model_validator(mode="after")
     def validate_record(self) -> VisitRecord:
+        if self.provenance.kind == "periplus" and self.capture_policy is None:
+            raise ValueError("native observations require their frozen capture_policy")
+        if self.provenance.kind == "external" and self.capture_policy is not None:
+            raise ValueError("external observations cannot claim a Periplus capture_policy")
         if (
             self.provenance.kind == "periplus"
             and self.started_at is not None

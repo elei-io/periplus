@@ -17,7 +17,11 @@ export async function proxyQuery(request: Request, path: string) {
       { status: 503 },
     );
   }
-  const headers = new Headers({ authorization: `Bearer ${token}`, "x-periplus-query-source": "public_console" });
+  // Client attribution is analytics only; never forward arbitrary privileged source labels.
+  const headers = new Headers({
+    authorization: `Bearer ${token}`,
+    "x-periplus-query-source": request.headers.get("x-periplus-query-source") === "sdk" ? "sdk" : "public_console",
+  });
   for (const name of ["content-type", "range"]) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
@@ -30,7 +34,7 @@ export async function proxyQuery(request: Request, path: string) {
         headers,
         body: request.method === "POST" ? request.body : undefined,
         ...(request.method === "POST" ? { duplex: "half" } : {}),
-        signal: AbortSignal.any([request.signal, AbortSignal.timeout(30_000)]),
+        signal: AbortSignal.any([request.signal, AbortSignal.timeout(130_000)]),
         cache: "no-store",
       },
     );

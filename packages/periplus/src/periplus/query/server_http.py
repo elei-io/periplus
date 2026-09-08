@@ -14,6 +14,7 @@ from starlette.responses import JSONResponse
 
 from periplus.query.helpers import QueryHelpers, query_helpers
 from periplus.query.errors import query_error
+from periplus.query.limits import QueryLimitsUnavailable
 from periplus.query.service import BusyError, PreparedQuery, QueryRequest, QueryResult
 
 router = APIRouter(prefix="/query", tags=["query"])
@@ -57,7 +58,12 @@ class QueryAccessMiddleware:
 async def _run(request, payload, operation):
     from periplus.query.history import track, result_fields
     async with track(request, payload, operation) as record:
-        result = await _run_operation(request, payload, operation)
+        from periplus.operations.query_history.schemas import PreparationEvidence
+        evidence = PreparationEvidence()
+        try:
+            result = await _run_operation(request, payload, operation, evidence)
+        finally:
+            record.update(evidence.model_dump())
         if isinstance(result, JSONResponse):
             import json
             code = json.loads(result.body).get("code", "internal_error")
@@ -67,16 +73,20 @@ async def _run(request, payload, operation):
         return result
 
 
-async def _run_operation(request, payload, operation):
+async def _run_operation(request, payload, operation, evidence):
     slot = request.app.state.query_slot
     if slot.locked():
         _query_outcomes.labels(operation, "service_busy").inc()
         return JSONResponse({"code": "service_busy", "detail": "Query server is busy."}, status_code=429, headers={"Retry-After": "1"})
     try:
         async with slot:
-            result = await run_in_threadpool(getattr(request.app.state.query_service, operation), payload)
+            limits = await request.app.state.query_limits.read()
+            result = await run_in_threadpool(getattr(request.app.state.query_service, operation), payload, limits=limits, evidence=evidence)
             _query_outcomes.labels(operation, "success").inc()
             return result
+    except QueryLimitsUnavailable:
+        _query_outcomes.labels(operation, "access_unavailable").inc()
+        return JSONResponse({"code": "access_unavailable", "detail": "Query limits are temporarily unavailable."}, status_code=503)
     except (BusyError, TimeoutError, ValueError, duckdb.Error) as exc:
         status, error = query_error(exc)
         _query_outcomes.labels(operation, error.code).inc()

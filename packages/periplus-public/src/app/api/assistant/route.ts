@@ -1,3 +1,4 @@
+import { approvedBrief } from "@/server/analysis-results";
 import { beginOperation } from "@/server/telemetry";
 import { admitPublic } from "@/server/public-access"
 import { createAgentUIStreamResponse } from "ai";
@@ -18,7 +19,7 @@ export async function POST(request: Request) {
   ) {
     finish("unconfigured");
     return Response.json(
-      { detail: "The assistant is not configured yet. Try the SQL bench." },
+      { detail: "The assistant is not configured yet. Try the SQL console." },
       { status: 503 },
     );
   }
@@ -30,6 +31,7 @@ export async function POST(request: Request) {
     );
   }
   let messages;
+  let approved;
   try {
     const reader = request.body?.getReader();
     if (!reader) throw new Error("Missing body");
@@ -49,9 +51,9 @@ export async function POST(request: Request) {
       }
       chunks.push(value);
     }
-    messages = assistantMessages(
-      JSON.parse(Buffer.concat(chunks).toString("utf8")),
-    );
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    messages = assistantMessages(body);
+    approved = approvedBrief(body.approval, process.env.PERIPLUS_QUERY_API_TOKEN!);
   } catch {
     finish("invalid");
     return Response.json(
@@ -102,7 +104,7 @@ export async function POST(request: Request) {
     if (!helperResponse.ok) throw new Error("SQL helper catalogue unavailable");
     const helpers: QueryHelpers = await helperResponse.json();
     return await createAgentUIStreamResponse({
-      agent: createDiscoveryAgent(helpers),
+      agent: createDiscoveryAgent(helpers, approved),
       uiMessages: messages,
       abortSignal: signal,
       timeout: 180_000,
@@ -115,7 +117,7 @@ export async function POST(request: Request) {
       onError: () => {
         finish("failed");
         release();
-        return "The assistant could not finish. Retry with your dataset definition or use the SQL bench.";
+        return "The assistant could not finish. Retry with your dataset definition or use the SQL console.";
       },
     });
   } catch {

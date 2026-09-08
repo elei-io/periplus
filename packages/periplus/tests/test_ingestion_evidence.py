@@ -1,3 +1,4 @@
+from capture_policy_fixture import capture_policy
 from datetime import UTC, datetime
 import unittest
 from unittest.mock import MagicMock
@@ -26,6 +27,25 @@ from periplus.ingestion.queue import (
 
 
 class IngestionEvidenceTests(unittest.TestCase):
+    def test_native_policy_is_required_and_external_policy_is_absent(self):
+        evidence = _visit_evidence()
+        values = evidence.visit.model_dump(mode="json")
+        values.pop("capture_policy")
+        with self.assertRaisesRegex(ValidationError, "frozen capture_policy"):
+            VisitRecord.model_validate(values)
+        values["provenance"] = {"kind": "external", "system": "import", "source_record_id": "1"}
+        self.assertIsNone(VisitRecord.model_validate(values).capture_policy)
+        values["capture_policy"] = evidence.visit.capture_policy.model_dump(mode="json")
+        with self.assertRaisesRegex(ValidationError, "external observations"):
+            VisitRecord.model_validate(values)
+
+    def test_policy_survives_frozen_ingestion_job(self):
+        evidence = _visit_evidence()
+        job = visit_ingestion_job(evidence)
+        restored = type(job).model_validate_json(job.model_dump_json())
+        self.assertEqual(restored, job)
+        self.assertIn('"capture_policy"', job.model_dump_json())
+
     def test_json_columns_decode_to_domain_values(self) -> None:
         self.assertEqual(
             _decode_json_columns(
@@ -49,6 +69,7 @@ class IngestionEvidenceTests(unittest.TestCase):
         document_id = document_id_for(visit_id)
         evidence = VisitEvidence(
             visit=VisitRecord(
+                capture_policy=capture_policy(),
                 visit_id=visit_id,
                 requested_url="https://example.com/",
                 effective_url="https://example.com/",
@@ -198,6 +219,7 @@ def _visit_evidence() -> VisitEvidence:
     attempt_id = attempt_id_for(visit_id, 0)
     return VisitEvidence(
         visit=VisitRecord(
+            capture_policy=capture_policy(),
             visit_id=visit_id,
             requested_url="https://example.com/",
             effective_url="https://example.com/",

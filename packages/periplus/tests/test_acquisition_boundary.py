@@ -16,8 +16,16 @@ class AcquisitionBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_capture_returns_evidence_without_publishing(self):
         now = datetime.now(UTC) - timedelta(seconds=1)
         identity = uuid4()
+        frozen = policy_snapshot()
+        frozen["content"]["content"]["completion"] = {
+            "scroll": {"maximum_iterations": 3}, "expand": {"enabled": False},
+        }
+        frozen["content"]["content_variance"] = {
+            "setting": "scroll.maximum_iterations", "arm": "lower",
+            "configured_value": 30, "effective_value": 3,
+        }
         context = AcquisitionContext(acquisition_id=identity, admitted_at=now,
-                                     policy=EffectivePolicySnapshot.model_validate(policy_snapshot()))
+                                     policy=EffectivePolicySnapshot.model_validate(frozen))
         page = AcquisitionResult(
             url="https://example.com/", success=True, duration_seconds=0.1,
             html="<p>Captured</p>", status_code=200,
@@ -39,6 +47,7 @@ class AcquisitionBoundaryTests(unittest.IsolatedAsyncioTestCase):
         with patch("periplus.crawl.acquisition.service.capture_page", AsyncMock(return_value=page)):
             result = await acquire_page(url=page.url, context=context, browser=object(),
                                         repository_pipeline=pipeline)
+        self.assertEqual(result.evidence.visit.capture_policy, context.policy.content)
         self.assertEqual(result.evidence.visit.visit_id, identity)
         self.assertNotIn("crawl_id", result.evidence.visit.model_dump())
         self.assertEqual(result.evidence.document.content_sha256, "a" * 64)

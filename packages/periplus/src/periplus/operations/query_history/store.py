@@ -56,6 +56,13 @@ class QueryHistoryStore:
                 min(query_template) AS query_template, max(started_at) AS last_seen,
                 array_agg(DISTINCT source) AS sources, {STATS} {base}
                 GROUP BY 1 ORDER BY {order} DESC NULLS LAST, pattern_key LIMIT 50 OFFSET :offset""")
+            plans = rows(f"""SELECT plan_fingerprint, min(started_at) AS first_seen,
+                max(started_at) AS last_seen,
+                (array_agg(execution_id ORDER BY started_at DESC, execution_id DESC))[1] AS example_execution_id,
+                duckdb_version, compiler_version,
+                count(*) FILTER (WHERE outcome = 'timeout') AS timeouts, {STATS} {base}
+                GROUP BY plan_fingerprint, duckdb_version, compiler_version
+                ORDER BY last_seen DESC LIMIT 50""") if pattern is not None else []
             count = rows(f"SELECT count(DISTINCT coalesce(query_fingerprint, 'unparsed')) AS count {base}")[0]['count']
             failures = rows(f"SELECT coalesce(error_code, outcome) AS name, count(*) AS count {base} AND outcome <> 'success' GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20")
             def usage(column):
@@ -63,7 +70,7 @@ class QueryHistoryStore:
                     (SELECT {column} FROM query_executions WHERE {FILTER}) q,
                     LATERAL jsonb_array_elements_text(q.{column}) value
                     GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20""")
-            return Dashboard(summary=summary, trend=trend, patterns=patterns, pattern_count=count,
+            return Dashboard(summary=summary, trend=trend, patterns=patterns, plans=plans, pattern_count=count,
                              failures=failures, relations=usage('relations'), functions=usage('functions'))
 
     def executions(self, *, days=7, source="public", operation="execute", pattern=None, offset=0):

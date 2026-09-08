@@ -14,7 +14,7 @@ small evidence kernel.
 Periplus owns observation faithfully. Interpretation begins outside Periplus. It does not publish a
 `data.*` schema or define domain entities such as companies, products, people, claims, or topics.
 
-Physical contract version: `8.0.0`. The cutover resets disposable prior state; there is no graph-era
+Physical contract version: `9.0.0`. The cutover resets disposable prior state; there is no graph-era
 crawl table or compatibility migration.
 
 ## `ingest.*`
@@ -151,6 +151,7 @@ requested_url, effective_url
 observed_at, outcome, http_status_code
 content_id
 source_kind, source_system, source_dataset, source_record_id
+capture_policy
 ```
 
 `content_id` is nullable and identifies the one retained content object when present. The relation
@@ -159,6 +160,15 @@ fulfillment and acquisition reasons belong to separate lineage relations in the 
 The relation
 does not implicitly join URL components, current or latest state, acquisition attempts, content
 statistics, or parsed structures.
+
+`capture_policy` is the frozen effective content-policy snapshot for native observations,
+including the selected rule identity and matching scope, all completion settings (even
+disabled actions), response rules, and any configured/effective variance choice. External
+observations have null here. The snapshot is stored once on `ingest.visits`, shared by
+all attempts and request uses. It survives operational cleanup and is removed with the
+observation by evidence retention; it has no separate archive or retention clock.
+Per-attempt domain policy and executed step measurements remain separate evidence.
+Settings explain capture conditions, not a guarantee that a website can be reproduced.
 
 ### `content.object`
 
@@ -334,3 +344,31 @@ reusable definitions; recorded execution deadlines and immutable evidence are re
 table in control Postgres, bounded best-effort recording, janitor cleanup and the
 `observatory/queries` dashboard. This is explicitly approved product analytics;
 no query results or crawl history are added to control Postgres.
+
+### Inspecting capture conditions
+
+The capture snapshot can be compared without operational state or a policy-history table:
+
+```sql
+SELECT observation_id, requested_url, observed_at,
+       capture_policy->>'slug' AS policy_rule,
+       capture_policy->'content'->'completion'->'scroll'->>'enabled' AS scroll_enabled,
+       capture_policy->'content_variance' AS policy_variance
+FROM web.observation
+WHERE requested_url = 'https://example.com/'
+ORDER BY observed_at DESC
+LIMIT 100;
+```
+
+Contract 9 requires a frozen policy for native evidence, including terminal failures and
+cancellations; it does not invent policies for observations already recorded without one.
+Deployment requires a coordinated catalogue cutover from the previous contract.
+
+Local capture-provenance cutover completed on 2026-09-08: physical contract 9.0.0 and
+public catalogue 3.0.0 are installed. The previous 587-observation development lake
+was backed up with all five stopped persistent volumes before reset. Editable content
+and domain policies, public access configuration, and crawler controls were restored;
+execution counters and quota windows started fresh. All 18 Compose services passed
+health checks. A depth-zero, one-page request captured and ingested example.com,
+completed materialization, and returned its policy through both direct query-service
+and public-web SQL. Request `ffecb5d8-0b4a-4103-9100-bf9e610bdcb0` is query-ready.

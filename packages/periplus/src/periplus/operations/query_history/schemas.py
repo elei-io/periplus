@@ -8,7 +8,17 @@ Source = Literal["public_console", "assistant", "sdk", "admin", "internal", "unk
 Operation = Literal["execute", "prepare"]
 Outcome = Literal["success", "rejected", "failed", "timeout", "cancelled"]
 
-class Execution(BaseModel):
+class PreparationEvidence(BaseModel):
+    plan: str | None = Field(default=None, max_length=64_000)
+    plan_truncated: bool | None = None
+    plan_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    diagnostics: list[dict[str, str]] | None = Field(default=None, max_length=100)
+    duckdb_version: str | None = Field(default=None, max_length=80)
+    compiler_version: str | None = Field(default=None, max_length=80)
+    effective_limits: dict[str, int | float] | None = None
+
+
+class Execution(PreparationEvidence):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
     execution_id: UUID
     request_id: UUID | None = None
@@ -54,6 +64,16 @@ class Pattern(Stats):
     last_seen: datetime
     sources: list[str]
 
+class PlanVariant(Stats):
+    plan_fingerprint: str | None
+    first_seen: datetime
+    last_seen: datetime
+    example_execution_id: UUID
+    duckdb_version: str | None
+    compiler_version: str | None
+    timeouts: int
+
+
 class Bucket(Stats):
     day: datetime
 
@@ -65,6 +85,7 @@ class Dashboard(BaseModel):
     summary: Stats
     trend: list[Bucket]
     patterns: list[Pattern]
+    plans: list[PlanVariant]
     pattern_count: int
     failures: list[Count]
     relations: list[Count]

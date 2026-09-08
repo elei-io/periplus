@@ -849,7 +849,6 @@ p .story-link { display: inline; font: inherit; text-decoration: underline; text
 .agent-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 36px; margin: 8px 0 16px; }
 .agent-toolbar h2 { font-size: 14px; font-weight: 500; color: var(--muted-foreground); }
 
-.analysis-finding { line-height: 1.75; max-width: 80ch; }
 .analysis-result { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--card); overflow: hidden; }
 .analysis-result > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--border); }
 .analysis-result h3 { margin-top: 6px; font-size: 18px; line-height: 1.45; font-weight: 500; letter-spacing: -.25px; }
@@ -881,18 +880,13 @@ p .story-link { display: inline; font: inherit; text-decoration: underline; text
 .data-source > span:last-child { display: block; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 4px; color: var(--muted-foreground); font: 11px/1.5 ui-monospace, monospace; }
 .coverage-site { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .table-scroll-hint { display: none; border-top: 1px solid var(--border); padding: 10px 16px; font-size: 12px; color: var(--muted-foreground); background: var(--muted); }
-.analysis-scalar { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 28px 20px; }
-.analysis-scalar > span { font: 11px ui-monospace, monospace; color: var(--muted-foreground); }
-.analysis-scalar strong { font-size: clamp(28px, 5vw, 46px); line-height: 1.2; font-weight: 500; letter-spacing: -1px; overflow-wrap: anywhere; max-width: 100%; }
-.analysis-context { display: flex; justify-content: space-between; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--border); color: var(--muted-foreground); font: 12px/1.6 ui-monospace, monospace; }
 .analysis-note { padding: 14px 20px; font-size: 13px; color: var(--muted-foreground); line-height: 1.6; }
 .analysis-method { border-top: 1px solid var(--border); }
 .analysis-method > summary { padding: 14px 20px; cursor: pointer; font-size: 14px; }
 .analysis-method-body { padding: 0 20px 20px; }
 .analysis-method-body > details { margin-top: 12px; font-size: 12px; }
 .analysis-method-body pre { margin-top: 12px; max-height: 280px; }
-.analysis-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.analysis-reference { margin-top: 16px; color: var(--muted-foreground); font: 11px/1.7 ui-monospace, monospace; overflow-wrap: anywhere; }
+.analysis-actions { padding: 0 20px 16px; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .analysis-scope { border-left: 2px solid var(--border); padding-left: 14px; color: var(--muted-foreground); font-size: 14px; line-height: 1.7; }
 .analysis-scope strong { display: block; color: var(--foreground); font-weight: 500; margin-bottom: 4px; }
 .analysis-activity { color: var(--muted-foreground); font-size: 13px; }
@@ -907,17 +901,9 @@ p .story-link { display: inline; font: inherit; text-decoration: underline; text
   .analysis-result > header { flex-wrap: wrap; padding: 16px; }
   .analysis-result > header > div { min-width: 0; }
   .analysis-table th, .analysis-table td { padding: 12px 16px; }
-  .analysis-context, .analysis-method > summary { padding-inline: 16px; }
+  .analysis-method > summary { padding-inline: 16px; }
   .analysis-method-body { padding-inline: 16px; }
 }
-.analysis-finding { white-space: normal; }
-.analysis-finding > * + * { margin-top: 12px; }
-.analysis-finding ul, .analysis-finding ol { padding-left: 22px; }
-.analysis-finding ul { list-style: disc; }
-.analysis-finding ol { list-style: decimal; }
-.analysis-finding code { font: .85em ui-monospace, monospace; }
-.analysis-finding pre { overflow: auto; }
-.analysis-finding a { text-decoration: underline; text-underline-offset: 3px; }
 
 
 /* Datasets and coverage extend the existing paper / forest surfaces. */
@@ -943,7 +929,6 @@ p .story-link { display: inline; font: inherit; text-decoration: underline; text
 .dataset-grain > span { display: block; margin-bottom: 6px; font-size: 12px; color: var(--foreground); font-weight: 500; }
 .dataset-preview { min-width: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--card); }
 .dataset-preview-bar { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 12px; padding: 14px 20px; background: var(--muted); color: var(--muted-foreground); font: 12px/1.6 ui-monospace, monospace; }
-.dataset-preview .analysis-reference { padding: 0 20px 16px; }
 .dataset-preview .analysis-table { max-height: 520px; }
 .featured-dataset { margin-top: 28px; }
 .featured-dataset-heading { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 20px; }
@@ -1026,7 +1011,6 @@ p .story-link { display: inline; font: inherit; text-decoration: underline; text
   .discovery-workspace { padding-top: 24px; }
   .question-message { padding: 16px; }
   .analysis-result > header { gap: 12px; }
-  .analysis-context { flex-wrap: wrap; }
   .analysis-note { padding-inline: 16px; }
   .table-scroll-hint { display: block; }
   .dataset-scope { grid-template-columns: 1fr; gap: 20px; }
@@ -1090,12 +1074,9 @@ p .story-link { display: inline; font: inherit; text-decoration: underline; text
 .discovery-definition-empty dt { font-size: 12px; }
 .discovery-definition-empty dd { font-size: 12px; margin-top: 4px; color: var(--muted-foreground); }
 .dataset-discovery-page .dataset-definition-card { background: transparent; border: 0; border-radius: 0; box-shadow: none; gap: 24px; padding: 0; }
-.dataset-definition-card > [data-slot=card-header], .dataset-definition-card > [data-slot=card-content] { padding-inline: 0; }
 .dataset-definition-card [aria-label="Dataset columns"] li { padding: 14px 0; border-top: 1px solid var(--border); }
 .dataset-definition-card [aria-label="Dataset columns"] strong { font: 13px/1.6 ui-monospace, monospace; }
-.dataset-definition-card [aria-label="Dataset columns"] span, .dataset-definition-card small { font: 11px/1.6 ui-monospace, monospace; color: var(--muted-foreground); }
-.dataset-definition-card p, .dataset-definition-card dd { font-size: 14px; line-height: 1.7; color: var(--muted-foreground); }
-.dataset-definition-card summary { font-size: 13px; cursor: pointer; padding-block: 8px; }
+.dataset-definition-card p { font-size: 14px; line-height: 1.7; color: var(--muted-foreground); }
 .dataset-discovery-page .discovery-user-message { background: transparent; box-shadow: none; border: 0; border-left: 2px solid var(--border); border-radius: 0; padding-block: 4px; gap: 8px; }
 .discovery-user-message [data-slot=card-title] { font-size: 12px; color: var(--muted-foreground); }
 .discovery-notes { font-size: 12px; line-height: 1.8; color: var(--muted-foreground); }
@@ -1113,3 +1094,146 @@ p .story-link { display: inline; font: inherit; text-decoration: underline; text
   .dataset-discovery-page .composer-actions > span { max-width: 120px; }
   .discovery-definition-empty dl { grid-template-columns: 1fr; gap: 0; }
 }
+
+/* Landing page: show the extraction before asking for a dataset. */
+.landing-page .discovery-hero { padding: 28px 0 20px; }
+.landing-page .discovery-hero h1 { font-size: clamp(40px, 4.6vw, 56px); margin: 18px 0; text-wrap: balance; }
+.landing-example { padding: 24px 0; }
+.landing-example h2 { font-size: 22px; font-weight: 500; letter-spacing: -.5px; margin-top: 8px; }
+.landing-example [data-slot=card] { min-width: 0; }
+.landing-example [data-slot=card-content] { font-size: 14px; line-height: 1.7; }
+.landing-example pre { font: 12px/1.8 ui-monospace, monospace; }
+.landing-example .story-note { margin-top: 16px; }
+.landing-page .landing-story { margin-top: 24px; }
+.landing-page .story-heading h3 { font-size: 18px; font-weight: 500; margin-top: 18px; }
+.landing-page .composer-footnote { font-size: 14px; }
+.landing-page .composer-footnote a { text-decoration: underline; text-underline-offset: 3px; }
+.landing-page #build-dataset { scroll-margin-top: 24px; }
+@media (max-width: 760px) {
+  .landing-page .discovery-hero { padding-top: 28px; }
+  .landing-example .featured-dataset-heading { align-items: flex-start; }
+  .landing-page .composer-actions { flex-wrap: wrap; gap: 12px; }
+}
+
+/* Landing: quiet light, precise surfaces, one finite extraction sequence. */
+.landing-page { isolation: isolate; }
+body:has(.landing-page) .public-header { background: transparent; border-bottom-color: transparent; }
+.landing-page .discovery-hero { position: relative; padding: 48px 0 32px; }
+.landing-page .discovery-hero::before { content: ""; position: absolute; z-index: -1; inset: 0 -20px -100px; pointer-events: none; background: radial-gradient(ellipse at 50% 35%, color-mix(in srgb, var(--primary) 8%, transparent), transparent 65%); mask-image: linear-gradient(transparent, #000 22%, #000 75%, transparent); }
+.landing-page .discovery-hero h1 { font-size: clamp(40px, 5.3vw, 70px); letter-spacing: -.055em; line-height: 1.04; margin: 22px 0; }
+.landing-page .discovery-hero > * { animation: landing-arrive 500ms ease-out both; }
+.landing-page .discovery-hero h1 { animation-delay: 70ms; }
+.landing-page .discovery-hero p { animation-delay: 140ms; }
+.landing-page .discovery-hero > div { animation-delay: 210ms; }
+.extraction-demo { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; position: relative; padding: 12px 0; }
+.extraction-demo::before { content: ""; position: absolute; inset: -8px -12px; z-index: -1; pointer-events: none; background-image: linear-gradient(color-mix(in srgb, var(--primary) 5%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--primary) 5%, transparent) 1px, transparent 1px); background-size: 24px 24px; mask-image: linear-gradient(90deg, #000, transparent 22%, transparent 78%, #000); }
+.landing-page .extraction-demo [data-slot=card] { border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent); gap: 20px; }
+.landing-page .extraction-source { background: color-mix(in srgb, var(--background) 80%, var(--muted)); box-shadow: inset 0 2px 8px rgb(0 0 0 / 5%); }
+.landing-page .extraction-query { background: color-mix(in srgb, var(--background) 60%, var(--card)); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 4%, transparent); }
+.landing-page .extraction-result { background: var(--card); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 8%, transparent), 0 12px 28px rgb(0 0 0 / 10%); }
+.source-code { overflow-x: auto; padding: 6px 0; font: 12px/2 ui-monospace, monospace; }
+.source-code code { display: block; white-space: pre; width: max-content; min-width: 100%; border-radius: 3px; }
+.extraction-fields { display: flex; align-items: center; gap: 6px; font: 12px ui-monospace, monospace; }
+.extraction-fields > span { color: var(--muted-foreground); margin-right: 4px; }
+.extraction-fields button { border: 1px solid var(--border); }
+.extraction-demo .field-title, .extraction-demo .field-price { transition: background-color 180ms ease, color 180ms ease; }
+.extraction-demo[data-field=title] .field-title,
+.extraction-demo[data-field=price] .field-price { background-color: color-mix(in srgb, var(--primary) 16%, transparent); color: var(--foreground); }
+.extraction-demo[data-playing=true] .source-code .field-title { animation: extraction-highlight 850ms ease-out 100ms; }
+.extraction-demo[data-playing=true] .extraction-fields .field-title { animation: extraction-highlight 850ms ease-out 650ms; }
+.extraction-demo[data-playing=true] .extraction-result tbody { animation: extraction-resolve 650ms ease-out 1250ms both; }
+.example-guide { margin-top: 12px; }
+.corpus-branch { display: flex; align-items: center; gap: 28px; padding: 24px 0; }
+.corpus-origin { display: flex; align-items: center; gap: 12px; font-size: 15px; }
+.corpus-origin > svg { width: 28px; height: 28px; color: var(--primary); }
+.corpus-origin small { display: block; font: 11px/2 ui-monospace, monospace; color: var(--muted-foreground); }
+.corpus-outputs { display: grid; gap: 10px; }
+.corpus-outputs > div { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+.corpus-outputs svg { width: 14px; height: 14px; color: var(--primary); }
+.example-preview { display: grid; gap: 10px; padding: 16px; margin-bottom: 22px; border-radius: 5px; background: color-mix(in srgb, var(--background) 65%, var(--card)); border: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
+.example-preview > span { font: 11px ui-monospace, monospace; color: var(--muted-foreground); }
+.example-preview code { font: 12px/1.7 ui-monospace, monospace; overflow-wrap: anywhere; }
+.example-preview small { font-size: 10px; color: var(--muted-foreground); }
+.landing-page .landing-launcher { max-width: 880px; padding-top: 24px; }
+.landing-page .discovery-composer { background: var(--card); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent), 0 12px 36px rgb(0 0 0 / 8%); transition: border-color 180ms ease, box-shadow 180ms ease; }
+.landing-page .discovery-composer:focus-within { border-color: color-mix(in srgb, var(--primary) 60%, var(--border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 8%, transparent), 0 12px 36px rgb(0 0 0 / 8%); }
+.landing-page .story-link svg { transition: transform 180ms ease; }
+.landing-page .story-link:is(:hover, :focus-visible) svg { transform: translate(2px, -2px); }
+.landing-page .audience-card { transition: transform 180ms ease, border-color 180ms ease; }
+@media (hover: hover) { .landing-page .audience-card:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--primary) 35%, var(--border)); } }
+@keyframes landing-arrive { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes extraction-highlight { from { background-color: transparent; } 45%, 65% { background-color: color-mix(in srgb, var(--primary) 24%, transparent); } }
+@keyframes extraction-resolve { from { opacity: .25; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (max-width: 1023px) { .extraction-demo { grid-template-columns: 1fr; } }
+@media (max-width: 760px) {
+  .landing-page .discovery-hero { padding: 36px 0 24px; }
+  .corpus-branch { gap: 20px; flex-wrap: wrap; }
+  .landing-page .launcher-toolbar { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .landing-page .launcher-examples { flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .landing-page *, .landing-page *::before, .landing-page *::after { animation: none !important; transition: none !important; transform: none !important; }
+}
+
+/* Shared public surfaces: a continuous canvas and emphasis on usable output. */
+.public-header, .dark .public-header { background: transparent; border-bottom-color: transparent; }
+:is(.dataset-discovery-page, .sql-workbench, .docs-page, .about-page) {
+  --quiet-surface: color-mix(in srgb, var(--background) 78%, var(--card));
+  --output-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 5%, transparent), 0 8px 24px rgb(0 0 0 / 6%);
+}
+.dataset-discovery-page .discovery-composer { background: var(--quiet-surface); transition: border-color 180ms ease, box-shadow 180ms ease; }
+.dataset-discovery-page .discovery-composer:focus-within { border-color: color-mix(in srgb, var(--primary) 60%, var(--border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 8%, transparent), var(--output-shadow); }
+.dataset-discovery-page .discovery-definition { border-left-color: color-mix(in srgb, var(--border) 55%, transparent); }
+.dataset-discovery-page .analysis-result { background: var(--card); box-shadow: var(--output-shadow); }
+.dataset-discovery-page .analysis-result[data-status=ready] { border-color: color-mix(in srgb, var(--primary) 35%, var(--border)); }
+.dataset-discovery-page .analysis-result[data-status=ready] > header { animation: useful-completion 700ms ease-out; }
+.sql-workbench .sql-support-surface, .sql-workbench .sql-input-surface { background: var(--quiet-surface); box-shadow: none; border: 1px solid color-mix(in srgb, var(--border) 65%, transparent); }
+.sql-workbench .sql-input-surface:focus-within { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); }
+.sql-workbench .sql-output-surface { background: var(--card); box-shadow: var(--output-shadow); }
+.sql-results-viewport .analysis-table { max-height: 380px; overflow: auto; scrollbar-gutter: stable; overscroll-behavior: contain; }
+.query-complete { color: var(--primary); animation: useful-completion 700ms ease-out; font-variant-numeric: tabular-nums; }
+@keyframes useful-completion { from { background-color: color-mix(in srgb, var(--primary) 15%, transparent); } to { background-color: transparent; } }
+.docs-page section > [data-slot=card] { background: transparent; border: 0; border-radius: 0; box-shadow: none; padding-block: 0 24px; }
+.docs-page section + section { padding-top: 32px; border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent); }
+.docs-page section > [data-slot=card] > :is([data-slot=card-header], [data-slot=card-content]) { padding-inline: 0; }
+.docs-page section > [data-slot=card] > [data-slot=card-header] h2 { font-size: 25px; letter-spacing: -.6px; font-weight: 500; }
+.docs-page section p { max-width: 74ch; line-height: 1.85; }
+.docs-page .docs-example { background: var(--quiet-surface); border: 1px solid color-mix(in srgb, var(--border) 65%, transparent); box-shadow: none; }
+.docs-page #schema [data-slot=card-content] > [data-slot=card] { background: transparent; box-shadow: none; border: 0; border-top: 1px solid var(--border); border-radius: 0; }
+.docs-page #schema [data-slot=card-content] > [data-slot=card] > :is([data-slot=card-header], [data-slot=card-content]) { padding-inline: 0; }
+.docs-page [data-slot=table-container] { background: var(--quiet-surface); border-radius: var(--radius-md); }
+.docs-page aside nav a { border-left: 2px solid transparent; border-radius: 0; }
+.docs-page aside nav a:is(:hover, :focus-visible) { border-left-color: var(--primary); }
+.docs-page section:target > [data-slot=card] > [data-slot=card-header] h2 { color: var(--primary); }
+.about-page .about-section { padding-block: 56px; border-color: color-mix(in srgb, var(--border) 65%, transparent); }
+.about-page .about-section p { max-width: 68ch; line-height: 1.9; }
+.about-page .about-section h2 { max-width: 24ch; text-wrap: balance; }
+.about-concept { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 24px; align-items: center; margin: 0 0 40px 232px; padding: 28px; border-block: 1px solid color-mix(in srgb, var(--border) 65%, transparent); background: var(--quiet-surface); }
+.about-concept > div { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.about-concept svg { width: 22px; height: 22px; color: var(--primary); }
+.about-concept > svg { width: 16px; height: 16px; color: var(--muted-foreground); }
+.about-concept code { color: var(--primary); font: 14px/22px ui-monospace, monospace; }
+.about-concept strong { font-size: 14px; font-weight: 500; }
+.about-concept span, .about-concept figcaption { font-size: 12px; line-height: 1.7; color: var(--muted-foreground); }
+.about-concept figcaption { grid-column: 1 / -1; border-top: 1px solid var(--border); padding-top: 16px; }
+@media (max-width: 760px) {
+  .about-page .about-section { padding-block: 32px; }
+  .about-concept { margin-left: 0; grid-template-columns: 1fr; gap: 18px; padding: 24px; }
+  .about-concept > svg { transform: rotate(90deg); }
+  .sql-results-viewport .analysis-table { max-height: 340px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dataset-discovery-page *, .sql-workbench *, .docs-page * { animation: none !important; transition: none !important; }
+}
+@media (max-width: 1023px) {
+  .sql-workbench #schema-explorer { order: 2; }
+  .docs-page aside nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 12px; }
+}
+@media (max-width: 760px) {
+  .public-header-inner > .workspace-nav { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 2px; }
+  .public-header-inner > .workspace-nav a { min-width: 0; padding-inline: 3px; }
+}
+
+.docs-page .docs-code-box { background: var(--quiet-surface); border: 1px solid var(--border); box-shadow: none; gap: 12px; }
+.docs-code-box pre { overflow-x: auto; font: 13px/1.8 ui-monospace, monospace; tab-size: 4; }
+.docs-code-box pre:focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; border-radius: 2px; }
