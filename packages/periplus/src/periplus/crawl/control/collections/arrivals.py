@@ -59,7 +59,7 @@ def decode_arrival_cursor(value: str | None, identity: UUID) -> ArrivalCursor | 
         raise ValueError("invalid collection arrival cursor") from exc
 
 
-def read_arrivals(catalogue, identity: UUID, *, public_only: bool, limit: int,
+def read_arrivals(catalogue, identity: UUID, *, limit: int,
                   cursor: ArrivalCursor | None) -> CollectionArrivalsPage | None:
     if not 1 <= limit <= 100:
         raise ValueError("arrival page limit outside bounds")
@@ -71,18 +71,15 @@ def read_arrivals(catalogue, identity: UUID, *, public_only: bool, limit: int,
     timer.daemon = True
     timer.start()
     try:
-        definitions = connection.execute(f"""SELECT visibility, json_extract_string(specification, '$.visibility') FROM {alias}.ingest.collections
-            WHERE collection_id = ? AND (NOT ? OR visibility = 'public') LIMIT 2""",
-            [identity, public_only]).fetchall()
+        definitions = connection.execute(f"""SELECT collection_id FROM {alias}.ingest.collections
+            WHERE collection_id = ? LIMIT 2""",
+            [identity]).fetchall()
         if not definitions:
             return None
         if len(definitions) != 1:
             raise ValueError("duplicate immutable collection identity")
-        visibility, embedded_visibility = definitions[0]
-        if embedded_visibility is not None and embedded_visibility != visibility:
-            raise ValueError("inconsistent collection visibility")
         anchor = ""
-        parameters = [identity, visibility]
+        parameters = [identity]
         if cursor is not None:
             anchor = "AND (f.recorded_at < ? OR (f.recorded_at = ? AND f.record_id < ?))"
             parameters.extend([cursor.decided_at, cursor.decided_at, cursor.fulfillment_id])
@@ -98,8 +95,7 @@ def read_arrivals(catalogue, identity: UUID, *, public_only: bool, limit: int,
                    coalesce(length(v.effective_url) > 8192, false)
             FROM {alias}.ingest.fulfillments f
             LEFT JOIN {alias}.ingest.visits v ON v.visit_id = f.observation_id
-            WHERE f.collection_id = ? AND f.visibility = ?
-              AND (v.visit_id IS NULL OR v.visibility = f.visibility)
+            WHERE f.collection_id = ?
               {anchor}
             ORDER BY f.recorded_at DESC, f.record_id DESC
             LIMIT ?
@@ -112,7 +108,7 @@ def read_arrivals(catalogue, identity: UUID, *, public_only: bool, limit: int,
             http_status_code=row[12], query_readiness_reason="materialization_commit_not_verified" if row[8]
                 else "observation_commit_not_verified") for row in rows[:limit]]
         from periplus.materialization.readiness import observation_readiness
-        proofs = observation_readiness(catalogue, [item.observation_id for item in items], public_only=public_only)
+        proofs = observation_readiness(catalogue, [item.observation_id for item in items])
         items = [item.model_copy(update={"query_ready": proofs[item.observation_id].query_ready,
             "query_readiness_reason": proofs[item.observation_id].reason}) if item.observation_committed else item
             for item in items]

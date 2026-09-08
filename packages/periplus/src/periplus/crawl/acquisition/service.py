@@ -66,6 +66,12 @@ async def acquire_page(
             timeout_seconds=(context.attempt_reserved_ms - 5000) / 1000,
             exclusions=context.exclusions,
         )
+        from periplus.operations.metrics import capture_outcomes, capture_duration, capture_throttled
+        capture_duration.observe(time.perf_counter() - started)
+        status_class = f"{result.status_code // 100}xx" if result.status_code and 100 <= result.status_code < 600 else "unknown"
+        capture_outcomes.labels("succeeded" if result.success else "failed", status_class).inc()
+        if result.status_code == 429:
+            capture_throttled.inc()
         if result.attempt_evidence is None:
             raise ValueError("capture returned no physical attempt evidence")
         usage = AttemptUsage(
@@ -193,7 +199,6 @@ async def acquire_page(
             )
         visit = VisitRecord(
             visit_id=context.acquisition_id,
-            visibility=context.visibility,
             requested_url=normalized,
             effective_url=final_normalized,
             admitted_at=context.admitted_at,

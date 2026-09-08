@@ -12,5 +12,5 @@ SELECT
 FROM material.link_occurrences AS occurrence
 WHERE EXISTS (
     SELECT 1 FROM ingest.visits AS visit
-    WHERE visit.visit_id = occurrence.visit_id AND visit.visibility = 'public'
+    WHERE visit.visit_id = occurrence.visit_id
 );

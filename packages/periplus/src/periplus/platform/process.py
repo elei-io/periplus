@@ -8,11 +8,15 @@ from dataclasses import dataclass
 import signal
 from typing import Literal
 
-from prometheus_client import start_http_server
+from prometheus_client import start_http_server, Gauge
 
 from periplus.platform.config import get_bool, get_int, get_str
 from periplus.platform.health import HealthMonitor, start_health_server
 
+
+_ready_metric = Gauge("periplus_worker_ready", "Worker readiness including dependencies.")
+_subsystem_metric = Gauge("periplus_worker_subsystem_ready", "Readiness by code-owned subsystem.", ("subsystem",))
+_alive_metric = Gauge("periplus_worker_alive", "Worker event loop heartbeat is fresh.")
 
 WorkerRole = Literal[
     "crawler",
@@ -60,6 +64,8 @@ class WorkerEndpoints:
     def start_health(self, monitor: HealthMonitor) -> None:
         if self._health_server is not None:
             raise RuntimeError("worker health server is already running")
+        _ready_metric.set_function(lambda: int(monitor.status()[0]))
+        _alive_metric.set_function(lambda: int(monitor.alive()))
         self._health_server, _thread = start_health_server(
             address=self._config.health_address,
             port=self._config.health_port,
@@ -175,6 +181,8 @@ async def monitor_heartbeat(
 
     while stop is None or not stop.is_set():
         monitor.heartbeat()
+        for name, ready in monitor.telemetry().items():
+            _subsystem_metric.labels(name).set(ready)
         if stop is None:
             await asyncio.sleep(interval_seconds)
             continue

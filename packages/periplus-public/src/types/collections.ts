@@ -9,10 +9,10 @@ export interface CollectionSpec {
   max_depth: number
   page_limit: number
   result_max_age_seconds: number
-  visibility: "public" | "private"
-  access_context: string
+  retention_seconds: number | null
+  request_class: "public" | "system" | "admin"
   allowed_sections: string[]
-  deadline_at: string | null
+  max_duration_seconds: number | null
 }
 
 interface CollectionBase {
@@ -20,6 +20,8 @@ interface CollectionBase {
   specification: CollectionSpec
   created_at: string
   completed_at: string | null
+  expires_at: string | null
+  retention_expired: boolean
   outcome: string | null
   consumed_pages: number | null
   supplied_pages: number | null
@@ -104,7 +106,7 @@ export interface CollectionHistoryPage {
       | "supplied_pages"
       | "failed_pages"
     > & {
-      visibility: "public" | "private"
+      request_class: "public" | "system" | "admin"
       summary: string
     }
   >

@@ -101,7 +101,7 @@ test("tables lists exactly the four public views", async () => {
       result.rows.map((row) => row[0]),
       ["content.html_element", "content.object", "web.link_occurrence", "web.observation"],
     )
-    assert.match(result.summary ?? "", /4 public objects · catalogue 1.0.0/)
+    assert.match(result.summary ?? "", /4 catalogue objects · catalogue 1.0.0/)
   }
 })
 
@@ -110,7 +110,7 @@ test("macros reports the deliberately empty surface", async () => {
   assert.equal(result.kind, "table")
   if (result.kind === "table") {
     assert.deepEqual(result.rows, [])
-    assert.match(result.summary ?? "", /0 public macros/)
+    assert.match(result.summary ?? "", /0 catalogue macros/)
   }
 })
 

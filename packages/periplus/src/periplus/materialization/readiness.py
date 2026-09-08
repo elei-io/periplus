@@ -17,7 +17,7 @@ class ObservationReadiness(BaseModel):
     as_of: datetime
 
 
-def observation_readiness(catalogue, identities: list[UUID], *, public_only: bool = True) -> dict[UUID, ObservationReadiness]:
+def observation_readiness(catalogue, identities: list[UUID]) -> dict[UUID, ObservationReadiness]:
     if len(identities) > 100:
         raise ValueError("readiness reads allow at most 100 observations")
     identities = list(dict.fromkeys(identities))
@@ -54,7 +54,6 @@ def observation_readiness(catalogue, identities: list[UUID], *, public_only: boo
                    content.content_sha256
             FROM wanted
             LEFT JOIN {alias}.ingest.visits visit ON visit.visit_id = wanted.id
-              AND (NOT ? OR visit.visibility = 'public')
             LEFT JOIN active ON true
             LEFT JOIN {alias}.material.visit_readiness proof ON proof.visit_id = visit.visit_id
             LEFT JOIN {alias}.ingest.documents document ON document.document_id = visit.document_id
@@ -63,7 +62,7 @@ def observation_readiness(catalogue, identities: list[UUID], *, public_only: boo
                        WHERE {presence.content_presence_predicate}) content
               ON content.content_sha256 = document.content_sha256
             LIMIT 201
-        """, [*identities, public_only]).fetchmany(201)
+        """, identities).fetchmany(201)
         if len(rows) != len(identities) or len({row[0] for row in rows}) != len(identities):
             return {identity: value.model_copy(update={"reason": "readiness_state_inconsistent"})
                     for identity, value in result.items()}
@@ -100,7 +99,7 @@ class CollectionReadiness(BaseModel):
     as_of: datetime
 
 
-def collection_readiness(catalogue, identities: list[UUID], *, public_only: bool = True) -> dict[UUID, CollectionReadiness]:
+def collection_readiness(catalogue, identities: list[UUID]) -> dict[UUID, CollectionReadiness]:
     """Prove complete request results in one snapshot; never infer from a page preview."""
     if len(identities) > 100:
         raise ValueError("readiness reads allow at most 100 collections")
@@ -132,15 +131,15 @@ def collection_readiness(catalogue, identities: list[UUID], *, public_only: bool
         rows = connection.execute(f"""
             WITH wanted(id) AS (VALUES {values}),
             definitions AS (
-                SELECT d.collection_id, count(*) AS n, first(d.visibility) AS visibility,
-                       bool_and(coalesce(json_extract_string(d.specification, '$.visibility'), d.visibility) = d.visibility) AS valid
+                SELECT d.collection_id, count(*) AS n,
+                       bool_and(json_extract_string(d.specification, '$.request_class') IN ('public', 'system', 'admin')) AS valid
                 FROM {alias}.ingest.collections d JOIN wanted w ON w.id = d.collection_id
-                WHERE NOT ? OR d.visibility = 'public' GROUP BY d.collection_id
+                GROUP BY d.collection_id
             ), outcomes AS (
                 SELECT o.collection_id, count(*) AS n, first(o.supplied_pages) AS supplied,
                        first(o.failed_pages) AS failed
                 FROM {alias}.ingest.collection_outcomes o JOIN definitions d
-                  ON d.collection_id = o.collection_id AND d.visibility = o.visibility
+                  ON d.collection_id = o.collection_id
                 GROUP BY o.collection_id
             ), results AS (
                 SELECT f.collection_id, count(*) AS n, count(DISTINCT f.record_id) AS unique_records,
@@ -152,8 +151,8 @@ def collection_readiness(catalogue, identities: list[UUID], *, public_only: bool
                        count(*) FILTER (WHERE proof.visit_id IS NULL OR
                           (lower(doc.detected_media_type) = 'text/html' AND content.content_sha256 IS NULL)) AS pending
                 FROM {alias}.ingest.fulfillments f JOIN definitions d
-                  ON d.collection_id = f.collection_id AND d.visibility = f.visibility
-                LEFT JOIN {alias}.ingest.visits v ON v.visit_id = f.observation_id AND v.visibility = f.visibility
+                  ON d.collection_id = f.collection_id
+                LEFT JOIN {alias}.ingest.visits v ON v.visit_id = f.observation_id
                 LEFT JOIN {alias}.ingest.documents doc ON doc.document_id = v.document_id AND doc.visit_id = v.visit_id
                 LEFT JOIN {alias}.material.visit_readiness proof ON proof.visit_id = v.visit_id
                 LEFT JOIN (SELECT content_sha256 FROM {alias}.material.{_identifier(presence.name)}
@@ -170,7 +169,7 @@ def collection_readiness(catalogue, identities: list[UUID], *, public_only: bool
             FROM wanted w LEFT JOIN definitions d ON d.collection_id = w.id
             LEFT JOIN outcomes o ON o.collection_id = w.id LEFT JOIN results r ON r.collection_id = w.id
             CROSS JOIN active a
-        """, [*identities, public_only]).fetchmany(101)
+        """, identities).fetchmany(101)
         if len(rows) != len(identities):
             raise ValueError("collection readiness result cardinality is inconsistent")
         for (identity, definitions, valid, outcomes, supplied, failed, total, unique_records,

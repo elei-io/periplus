@@ -8,7 +8,7 @@ The removed graph execution model has no compatibility routes or runtime.
 Periplus delivers one evidence path:
 
 ```text
-collection or background selection -> immutable bytes -> ingest.* -> material.* -> web.* / content.*
+manual or scheduled request selection -> immutable bytes -> ingest.* -> material.* -> web.* / content.*
 ```
 
 External HTML joins at the same immutable-byte boundary:
@@ -26,6 +26,8 @@ The monorepo delivers three independently buildable products under `packages/`:
 - `periplus-public` owns the browser SQL interface over the query service.
 
 Frontends consume HTTP contracts, never core Python modules or backing databases.
+The privileged admin console executes request-scoped writable SQL through the control API
+using a dedicated DuckLake connection; the public query process remains isolated and read-only.
 Supporting SDK and shell packages contain client behavior only. Core remains usable without
 both frontends. A separate query process owns SQL preparation and bounded execution over a
 read-only DuckLake connection. Next.js owns web-specific agent orchestration, proxies all SQL to that process, and submits collections to the control API; neither frontend receives
@@ -74,7 +76,9 @@ objects remain.
   connection.
 - The materializer scans a pinned `ingest.visits` snapshot into bounded visit batches and maintains
   the complete fixed `material.*` generation, then follows inserted visits through DuckLake CDC.
-- The janitor removes only Periplus-owned transient navigation and runtime state.
+- The janitor removes Periplus-owned transient navigation/runtime state and owns opt-in
+  request retention, logical evidence retirement and snapshot-safe raw-object reclamation
+  ([RETENTION.md](RETENTION.md)). LakeDucktor retains physical lake-file ownership.
 
 Ingestion does not wait for materialization. A visit is the single unit of rebuild work; its
 optional document is projected in that same batch. There is no document lane, target-to-target
@@ -134,8 +138,8 @@ materialization declaration.
 ## Shared frontier and finite collections
 
 A collection freezes URL, description, or corpus-SQL seed intent and bounded page-local follow SQL.
-Its URL interests are deduplicated across the whole collection. Compatible public pending work
-shares an acquisition; private work is isolated by collection. Participants freeze at dispatch.
+Its URL interests are deduplicated across the whole collection. Compatible pending work shares an acquisition across public, system, and admin requests.
+`request_class` describes intent and never partitions evidence. Participants freeze at dispatch.
 Later requests can reuse eligible recent observations without changing the original capture cause.
 Each collection retains its own first-admitted traversal context, depth, page budget, and settlement.
 
@@ -163,9 +167,9 @@ and charges the conservative bound rather than claiming exactly-once physical ex
 
 Description discovery runs in bounded checkpointed passes in the crawler. Corpus seed SQL uses
 the isolated query service; follow SQL uses only the current page's bounded navigation package.
-Public background selection has its own controls and budget, can continue after collection
-settlement, and checks committed public history plus bounded operational admission markers.
-Private work never seeds public background exploration.
+Reusable request definitions and interval/cron schedules create ordinary bounded
+collections. The crawler evaluates due schedules transactionally; there is no
+separate background selection or allocation lane. See [SCHEDULES.md](SCHEDULES.md).
 
 Immutable observations, attempts, collection definitions/outcomes, fulfillments, and acquisition
 reasons travel through the ingestion lane into DuckLake. Current item views read bounded control
@@ -176,3 +180,10 @@ The detailed contracts are in [SCHEMA.md](SCHEMA.md), recovery and materializati
 [LIFECYCLE.md](LIFECYCLE.md), external loading in [IMPORTS.md](IMPORTS.md), and bounded SQL
 in [QUERY.md](QUERY.md). Historical import cleanup and the remaining cutover gates are listed in
 the implementation ledger; do not start replacement services against an old control schema.
+
+### Private query execution history
+
+[QUERY_HISTORY.md](QUERY_HISTORY.md) defines the 30-day private `query_executions`
+table in control Postgres, bounded best-effort recording, janitor cleanup and the
+`observatory/queries` dashboard. This is explicitly approved product analytics;
+no query results or crawl history are added to control Postgres.

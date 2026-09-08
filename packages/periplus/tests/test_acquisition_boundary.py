@@ -16,7 +16,7 @@ class AcquisitionBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_capture_returns_evidence_without_publishing(self):
         now = datetime.now(UTC) - timedelta(seconds=1)
         identity = uuid4()
-        context = AcquisitionContext(acquisition_id=identity, admitted_at=now, visibility="private",
+        context = AcquisitionContext(acquisition_id=identity, admitted_at=now,
                                      policy=EffectivePolicySnapshot.model_validate(policy_snapshot()))
         page = AcquisitionResult(
             url="https://example.com/", success=True, duration_seconds=0.1,
@@ -40,7 +40,6 @@ class AcquisitionBoundaryTests(unittest.IsolatedAsyncioTestCase):
             result = await acquire_page(url=page.url, context=context, browser=object(),
                                         repository_pipeline=pipeline)
         self.assertEqual(result.evidence.visit.visit_id, identity)
-        self.assertEqual(result.evidence.visit.visibility, "private")
         self.assertNotIn("crawl_id", result.evidence.visit.model_dump())
         self.assertEqual(result.evidence.document.content_sha256, "a" * 64)
         self.assertIsNone(result.html)

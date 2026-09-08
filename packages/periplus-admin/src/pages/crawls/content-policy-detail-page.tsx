@@ -38,7 +38,7 @@ export function ContentPolicyDetailPage({ policyId }: { policyId: string }) {
             variant="ghost"
             size="icon-sm"
             nativeButton={false}
-            render={<a href="/content-policies" />}
+            render={<a href="/observatory/capture-policies" />}
           >
             <ArrowLeftIcon />
           </Button>
@@ -95,7 +95,7 @@ function ExistingPolicyForm({ policy }: { policy: ContentPolicyDetailRecord }) {
       return
     remove.mutate(undefined, {
       onSuccess: () => {
-        window.history.pushState(null, "", "/content-policies")
+        window.history.pushState(null, "", "/observatory/capture-policies")
         window.dispatchEvent(new PopStateEvent("popstate"))
       },
     })

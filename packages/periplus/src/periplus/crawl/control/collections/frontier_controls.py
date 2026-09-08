@@ -18,9 +18,6 @@ class FrontierSettings(BaseModel):
     admission_limit: int = Field(default=10000, ge=1, le=1000000)
     dispatch_limit: int = Field(default=48, ge=1, le=10000)
     captures_per_minute: int | None = Field(default=60, ge=1, le=60000)
-    background_share: int = Field(default=0, ge=0, le=99)
-    background_attempt_allowance: int = Field(default=1000, ge=0, le=1000000000)
-    background_capture_time_allowance_ms: int = Field(default=12500000, ge=0, le=1000000000000)
     attempt_allowance: int = Field(default=10000, ge=0, le=1000000000)
     capture_time_allowance_ms: int = Field(default=86400000, ge=0, le=1000000000000)
     capture_timeout_ms: int = Field(default=120000, ge=1000, le=3600000)
@@ -46,12 +43,6 @@ class FrontierControlView(BaseModel):
     started_attempts: int
     reserved_capture_ms: int
     charged_capture_ms: int
-    background_reserved_attempts: int
-    background_started_attempts: int
-    background_reserved_capture_ms: int
-    background_charged_capture_ms: int
-    background_waiting_reason: str | None
-    background_share_semantics: Literal["percent_when_both_eligible_spare_capacity_otherwise"] = "percent_when_both_eligible_spare_capacity_otherwise"
     dispatch_waiting_reason: str | None
     allowance_semantics: Literal["cumulative_until_operator_increases_limit"] = "cumulative_until_operator_increases_limit"
     time_semantics: Literal["client_capture_elapsed_not_provider_billing"] = "client_capture_elapsed_not_provider_billing"

@@ -33,3 +33,10 @@ class QueryErrorTests(unittest.TestCase):
         self.assertEqual(body.code, "helper_limit")
         self.assertEqual(body.detail, "subtree exceeds max_elements; select a smaller root")
         self.assertEqual(query_error(ValueError("Only read-only SQL is allowed"))[1].code, "sql_invalid")
+
+    def test_parser_error_provides_safe_alias_guidance(self):
+        status, body = query_error(duckdb.ParserException("syntax error near class; SELECT private_payload"))
+        self.assertEqual(status, 422)
+        self.assertEqual(body.code, "sql_invalid")
+        self.assertIn("Use AS", body.detail)
+        self.assertNotIn("private_payload", body.detail)

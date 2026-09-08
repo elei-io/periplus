@@ -18,7 +18,7 @@ class AdmissionEstimateTests(unittest.TestCase):
     def request(self, *, created_at, visibility='public'):
         identity = uuid4()
         self.store.create_collection(identity, CollectionSpec(seed_urls=('https://example.com/',),
-            result_max_age_seconds=0, visibility=visibility))
+            result_max_age_seconds=0, request_class=visibility))
         with self.sessions.begin() as session:
             record = session.get(CollectionRecord, identity)
             record.created_at = record.service_after = created_at
@@ -56,14 +56,13 @@ class AdmissionEstimateTests(unittest.TestCase):
         view, = collection_views(self.sessions, identity=identity, workers=workers)
         self.assertEqual(view.admission.estimate_unavailable_reason, 'admission_controls_changed')
 
-    def test_private_samples_cannot_support_public_admission_predictions(self):
+    def test_admin_samples_support_public_admission_predictions(self):
         now = datetime.now(UTC)
-        self.samples(now, visibility='private')
+        self.samples(now, visibility='admin')
         identity = self.request(created_at=now)
         workers = CrawlerActivity(as_of=now, state='observed', reported_workers=1, ready_workers=1)
         view, = collection_views(self.sessions, identity=identity, workers=workers)
-        self.assertIsNone(view.admission.estimate)
-        self.assertEqual(view.admission.estimate_unavailable_reason, 'insufficient_comparable_admissions')
+        self.assertIsNotNone(view.admission.estimate)
 
     def test_first_admission_timing_survives_retries_and_priority_changes_invalidate_comparability(self):
         now = datetime.now(UTC)

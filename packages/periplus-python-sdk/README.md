@@ -18,7 +18,7 @@ print(collection.snapshot.supplied_pages, collection.snapshot.query_ready)
 ```
 
 `CollectionSpec` also accepts description-based discovery, seed SQL and parameters, page-local
-follow SQL, section restrictions, a deadline, visibility, and a recent-result age bound. The server
+follow SQL, section restrictions, a maximum duration, request class, and a recent-result age bound. The server
 normalizes URLs and enforces selection, access, and budget rules. A page limit means “up to N”.
 Collections may share an acquisition while retaining their own selection and accounting.
 
@@ -61,8 +61,7 @@ fulfillment, observation, and unverified query-readiness milestones. Cursors are
 refresh from the newest page for late commits. The SDK never walks an unbounded result set implicitly.
 
 Live rates use committed evidence over explicit time windows and may lag acquisition. Missing
-history stays `None`; it is not a zero rate. Current activity and caller previews obey the service
-credential's visibility, while Live always describes public work. Reads preserve API errors and do
+history stays `None`; it is not a zero rate. Current activity, caller previews and Live describe the shared corpus across every request class. Reads preserve API errors and do
 not initiate dispatch, mutate collections, or retry a failed call automatically.
 
 Operators control the same crawler through versioned settings:

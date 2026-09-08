@@ -6,7 +6,7 @@ import {
   Settings2Icon,
   TrashIcon,
 } from "lucide-react"
-import { useState } from "react"
+import { useState, type ReactNode } from "react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -39,11 +39,6 @@ const reasons: Record<string, string> = {
     "The remaining time allowance cannot cover another capture.",
   dispatch_capacity: "All dispatch slots are occupied.",
   dispatch_rate: "Waiting for the configured dispatch interval.",
-  background_disabled: "Background exploration is disabled.",
-  background_attempt_allowance_exhausted:
-    "The background attempt allowance is exhausted.",
-  background_capture_time_allowance_exhausted:
-    "The remaining background time allowance cannot cover another capture.",
   retained_acquisition_capacity:
     "Retained acquisition capacity is full; new acquisition admission is waiting.",
 }
@@ -52,17 +47,14 @@ const reason = (value: string | null) =>
 const time = (milliseconds: number) =>
   `${(milliseconds / 3600000).toLocaleString(undefined, { maximumFractionDigits: 2 })} h`
 
-export function FrontierControlsPage() {
+export function CrawlerControls({ children }: { children: ReactNode }) {
   const query = useFrontierControls()
   const replace = useReplaceFrontierControls()
   const [draft, setDraft] = useState<FrontierDraft | null>(null)
   const state = query.data
   if (!state)
     return (
-      <div
-        className="grid w-full place-content-center gap-3 text-sm"
-        role="status"
-      >
+      <div className="flex w-full flex-col gap-4 text-sm" role="status">
         <p>
           {query.isError
             ? `Crawler status unavailable: ${extractApiError(query.error)}`
@@ -73,6 +65,7 @@ export function FrontierControlsPage() {
             Retry
           </Button>
         )}
+        {children}
       </div>
     )
   const staleDraft = draft !== null && draft.version !== state.policy_version
@@ -91,16 +84,14 @@ export function FrontierControlsPage() {
       <section className="flex flex-wrap items-start justify-between gap-4">
         <div className="space-y-2">
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-semibold tracking-tight">
-              Crawler controls
-            </h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Crawler</h1>
             <Badge variant={state.settings.paused ? "outline" : "secondary"}>
               {state.settings.paused ? "Paused" : "Dispatch enabled"}
             </Badge>
           </div>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            One crawler, shared across collection requests and background
-            exploration. Started captures finish when you pause.
+            One crawler, shared across manual and scheduled requests. Started
+            captures finish when you pause.
           </p>
           <p className="text-xs text-muted-foreground">
             As of {new Date(state.as_of).toLocaleTimeString()} · Settings v
@@ -150,121 +141,6 @@ export function FrontierControlsPage() {
           {extractApiError(query.error)}
         </div>
       )}
-      {(state.dispatch_waiting_reason ||
-        state.acquisition_admission_waiting_reason) && (
-        <div
-          role="status"
-          className="rounded-md border bg-muted/50 p-3 text-sm"
-        >
-          {reason(state.dispatch_waiting_reason)}{" "}
-          {reason(state.acquisition_admission_waiting_reason)}
-          {state.next_rate_eligibility_at && (
-            <span className="block text-xs text-muted-foreground">
-              Rate eligibility:{" "}
-              {new Date(state.next_rate_eligibility_at).toLocaleTimeString()}.
-              This is not a promised start time.
-            </span>
-          )}
-        </div>
-      )}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Metric
-          label="Pending acquisitions"
-          value={state.pending_acquisitions.toLocaleString()}
-          detail={`Admission limit ${state.settings.admission_limit.toLocaleString()}`}
-        />
-        <Metric
-          label="Dispatched acquisitions"
-          value={state.dispatched_acquisitions.toLocaleString()}
-          detail={`Up to ${state.settings.dispatch_limit.toLocaleString()} concurrent dispatches`}
-        />
-        <Metric
-          label="Configured dispatch pace"
-          value={
-            state.settings.captures_per_minute === null
-              ? "Unlimited"
-              : `${state.settings.captures_per_minute}/min`
-          }
-          detail="Upper bound; actual throughput depends on eligibility and capacity"
-        />
-        <Metric
-          label="Background allocation"
-          value={`${state.settings.background_share}%`}
-          detail={
-            reason(state.background_waiting_reason) ??
-            "Share when both lanes are eligible; spare capacity may also be used"
-          }
-        />
-      </div>
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Physical attempt allowance</CardTitle>
-            <CardDescription>
-              Cumulative across requests and background work. Sharing does not
-              multiply physical attempts.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <p className="text-2xl font-semibold tabular-nums">
-              {state.started_attempts.toLocaleString()}{" "}
-              <span className="text-sm font-normal text-muted-foreground">
-                started / {state.settings.attempt_allowance.toLocaleString()}{" "}
-                allowed
-              </span>
-            </p>
-            <p>
-              {state.reserved_attempts.toLocaleString()} reserved ·{" "}
-              {Math.max(
-                0,
-                state.settings.attempt_allowance -
-                  state.started_attempts -
-                  state.reserved_attempts
-              ).toLocaleString()}{" "}
-              unreserved
-            </p>
-            <p className="text-xs text-muted-foreground">
-              Background: {state.background_started_attempts.toLocaleString()}{" "}
-              started + {state.background_reserved_attempts.toLocaleString()}{" "}
-              reserved /{" "}
-              {state.settings.background_attempt_allowance.toLocaleString()}{" "}
-              allowed
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Capture time allowance</CardTitle>
-            <CardDescription>
-              Measured client time, or the reserved bound when usage is unknown.
-              Provider billing is separate.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <p className="text-2xl font-semibold tabular-nums">
-              {time(state.charged_capture_ms)}{" "}
-              <span className="text-sm font-normal text-muted-foreground">
-                accounted / {time(state.settings.capture_time_allowance_ms)}{" "}
-                allowed
-              </span>
-            </p>
-            <p>{time(state.reserved_capture_ms)} reserved</p>
-            <p className="text-xs text-muted-foreground">
-              Background: {time(state.background_charged_capture_ms)} accounted
-              + {time(state.background_reserved_capture_ms)} reserved /{" "}
-              {time(state.settings.background_capture_time_allowance_ms)}{" "}
-              allowed
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-      <p className="text-xs text-muted-foreground">
-        Retained acquisitions: {state.retained_acquisitions.toLocaleString()} /{" "}
-        {state.settings.acquisition_limit.toLocaleString()} · Collection URL
-        records: {state.retained_interests.toLocaleString()} /{" "}
-        {state.settings.interest_limit.toLocaleString()}. Allowances remain
-        cumulative until an operator increases their limits.
-      </p>
       {draft && (
         <Card>
           <CardHeader>
@@ -345,18 +221,12 @@ export function FrontierControlsPage() {
                 <fieldset key={group} className="space-y-3">
                   <legend className="text-sm font-medium">
                     {group === "pace"
-                      ? "Pace and background work"
+                      ? "Dispatch pace"
                       : group === "budget"
                         ? "Cumulative operating allowances"
                         : "Retention and admission capacity"}
                   </legend>
-                  {group === "pace" && (
-                    <p className="text-xs text-muted-foreground">
-                      Set background allocation to zero to stop background work.
-                      A positive allocation can use spare capacity when
-                      collections are idle.
-                    </p>
-                  )}
+
                   <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                     {settingFields
                       .filter((field) => field.group === group)
@@ -390,8 +260,8 @@ export function FrontierControlsPage() {
                   Global exclusions
                 </legend>
                 <p className="text-xs text-muted-foreground">
-                  Apply to collections and background exploration. Use an exact
-                  host, *.example.com, or *. Paths include descendants.
+                  Apply to all requests. Use an exact host, *.example.com, or *.
+                  Paths include descendants.
                 </p>
                 {draft.settings.exclusions.map((rule, index) => (
                   <div key={index} className="flex gap-2">
@@ -495,6 +365,101 @@ export function FrontierControlsPage() {
           </CardContent>
         </Card>
       )}
+      {(state.dispatch_waiting_reason ||
+        state.acquisition_admission_waiting_reason) && (
+        <div
+          role="status"
+          className="rounded-md border bg-muted/50 p-3 text-sm"
+        >
+          {reason(state.dispatch_waiting_reason)}{" "}
+          {reason(state.acquisition_admission_waiting_reason)}
+          {state.next_rate_eligibility_at && (
+            <span className="block text-xs text-muted-foreground">
+              Rate eligibility:{" "}
+              {new Date(state.next_rate_eligibility_at).toLocaleTimeString()}.
+              This is not a promised start time.
+            </span>
+          )}
+        </div>
+      )}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <Metric
+          label="Pending acquisitions"
+          value={state.pending_acquisitions.toLocaleString()}
+          detail={`Admission limit ${state.settings.admission_limit.toLocaleString()}`}
+        />
+        <Metric
+          label="Dispatched acquisitions"
+          value={state.dispatched_acquisitions.toLocaleString()}
+          detail={`Up to ${state.settings.dispatch_limit.toLocaleString()} concurrent dispatches`}
+        />
+        <Metric
+          label="Configured dispatch pace"
+          value={
+            state.settings.captures_per_minute === null
+              ? "Unlimited"
+              : `${state.settings.captures_per_minute}/min`
+          }
+          detail="Upper bound; actual throughput depends on eligibility and capacity"
+        />
+      </div>
+      {children}
+      <div className="grid gap-4 md:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Physical attempt allowance</CardTitle>
+            <CardDescription>
+              Cumulative across manual and scheduled requests. Sharing does not
+              multiply physical attempts.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-2xl font-semibold tabular-nums">
+              {state.started_attempts.toLocaleString()}{" "}
+              <span className="text-sm font-normal text-muted-foreground">
+                started / {state.settings.attempt_allowance.toLocaleString()}{" "}
+                allowed
+              </span>
+            </p>
+            <p>
+              {state.reserved_attempts.toLocaleString()} reserved ·{" "}
+              {Math.max(
+                0,
+                state.settings.attempt_allowance -
+                  state.started_attempts -
+                  state.reserved_attempts
+              ).toLocaleString()}{" "}
+              unreserved
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Capture time allowance</CardTitle>
+            <CardDescription>
+              Measured client time, or the reserved bound when usage is unknown.
+              Provider billing is separate.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-2xl font-semibold tabular-nums">
+              {time(state.charged_capture_ms)}{" "}
+              <span className="text-sm font-normal text-muted-foreground">
+                accounted / {time(state.settings.capture_time_allowance_ms)}{" "}
+                allowed
+              </span>
+            </p>
+            <p>{time(state.reserved_capture_ms)} reserved</p>
+          </CardContent>
+        </Card>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Retained acquisitions: {state.retained_acquisitions.toLocaleString()} /{" "}
+        {state.settings.acquisition_limit.toLocaleString()} · Collection URL
+        records: {state.retained_interests.toLocaleString()} /{" "}
+        {state.settings.interest_limit.toLocaleString()}. Allowances remain
+        cumulative until an operator increases their limits.
+      </p>
     </div>
   )
 }

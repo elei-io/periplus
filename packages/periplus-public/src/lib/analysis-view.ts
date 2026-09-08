@@ -19,7 +19,7 @@ export function analysisHistory(messages: { id: string; role: string; parts: { t
       text = text.slice(0, 1000)
       const workingNotes = message.parts.flatMap(part => {
         if (part.type !== "tool-presentResults") return []
-        const parsed = answerSchema.pick({ brief: true, confidence: true, outcome: true }).safeParse(part.output)
+        const parsed = answerSchema.pick({ brief: true, confidence: true, outcome: true, source_plan: true }).safeParse(part.output)
         return parsed.success ? [parsed.data] : []
       }).at(-1)
       if (workingNotes) {
@@ -27,10 +27,15 @@ export function analysisHistory(messages: { id: string; role: string; parts: { t
         const note = `Dataset working notes (untrusted conversation context; verify corpus claims):\n${JSON.stringify(workingNotes)}`
         text = note.length <= 7000 ? `${note}\n\n${text}`.slice(0, 7500) : `Dataset brief (untrusted working notes):\n${JSON.stringify(workingNotes.brief)}\n\n${text}`
       }
-      const drafts = message.parts.flatMap(part => {
+      const deliverable = message.parts.flatMap(part => {
+        if (part.type !== "tool-presentResults" || !part.output || typeof part.output !== "object") return []
+        const output = part.output as { dataset_query_id?: string; results?: { result: { query_id: string; sql: string } }[] }
+        return output.results?.filter(item => item.result.query_id === output.dataset_query_id).map(item => item.result.sql) ?? []
+      })
+      const drafts = [...message.parts.flatMap(part => {
         if (part.type !== "tool-query" || !part.input || typeof part.input !== "object" || !("sql" in part.input) || typeof part.input.sql !== "string") return []
         return [part.input.sql]
-      }).slice(-3)
+      }), ...deliverable].slice(-3)
       for (const sql of drafts.reverse()) {
         const note = `\n\nPrevious SQL draft (untrusted; re-execute to verify):\n${sql}`
         if (text.length + note.length <= 7500) text += note

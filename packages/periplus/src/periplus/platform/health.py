@@ -72,6 +72,15 @@ class HealthMonitor:
             )
         return 0.0 if pending <= 0 else max(0.0, now - last_progress)
 
+    def telemetry(self) -> dict[str, int]:
+        with self._lock:
+            return {"dependencies": int(self._dependencies_ready),
+                    **{name: int(ready) for name, (ready, _) in self._subsystems.items()}}
+
+    def alive(self) -> bool:
+        with self._lock:
+            return time.monotonic() - self._last_heartbeat <= self.heartbeat_timeout_seconds
+
     def status(
         self,
         *,
@@ -128,10 +137,12 @@ class _HealthServer(ThreadingHTTPServer):
 
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if self.path != "/healthz":
+        if self.path not in {"/healthz", "/livez"}:
             self.send_error(404)
             return
-        ready, detail = self.server.monitor.status()  # type: ignore[attr-defined]
+        monitor = self.server.monitor  # type: ignore[attr-defined]
+        ready = monitor.alive() if self.path == "/livez" else monitor.status()[0]
+        detail = "ready" if ready else "unavailable"
         body = f"{detail}\n".encode()
         self.send_response(HTTPStatus.OK if ready else HTTPStatus.SERVICE_UNAVAILABLE)
         self.send_header("Content-Type", "text/plain; charset=utf-8")

@@ -80,7 +80,6 @@ class VisitRecord(CatalogueRecord):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     visit_id: UUID
-    visibility: Literal["public", "private"] = "public"
     requested_url: str = Field(min_length=1)
     effective_url: str | None = Field(default=None, min_length=1)
     admitted_at: datetime

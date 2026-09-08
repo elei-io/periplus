@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from periplus.ingestion.objects.publication import claim
+
 import hashlib
 import tempfile
 from collections.abc import Iterator
@@ -75,6 +77,7 @@ class RawHtmlRepository:
         chunk_chars: int = 1_048_576,
     ) -> StoredHtml:
         identity = identity or self.identify(captured_html, chunk_chars=chunk_chars)
+        claim(self.store, identity.sha256, visit_id)
         key = identity.object_key
         if self.store.exists(key):
             self.verify(key, expected=identity)

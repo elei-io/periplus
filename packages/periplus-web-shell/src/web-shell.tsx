@@ -5,11 +5,12 @@ import {
   SqlApi,
   SqlConsole,
   WELCOME,
+  ADMIN_WELCOME,
   startProgress,
 } from "periplus-console-core"
 import type { WTerm } from "@wterm/dom"
 import { Terminal } from "@wterm/react"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import { renderConsoleResult } from "./sql-output.js"
 import { WtermTerminal } from "./wterm-terminal.js"
@@ -25,6 +26,7 @@ interface ShellStatus {
 }
 
 export interface PeriplusWebShellProps {
+  access?: "public" | "admin"
   apiBaseUrl: string
   className?: string
   historyKey?: string
@@ -33,6 +35,7 @@ export interface PeriplusWebShellProps {
 
 export function PeriplusWebShell({
   apiBaseUrl,
+  access = "public",
   className,
   historyKey = DEFAULT_HISTORY_KEY,
   initialSql = "",
@@ -40,27 +43,32 @@ export function PeriplusWebShell({
   const [status, setStatus] = useState<ShellStatus>({
     connection: "connecting",
   })
-  const [terminal] = useState(() => new WtermTerminal())
-  const [session] = useState(() => {
+  const [instance, setInstance] = useState<WTerm | null>(null)
+  const session = useRef<BrowserSqlSession | null>(null)
+
+  useEffect(() => {
+    if (!instance) return
+    const terminal = new WtermTerminal()
     const sqlConsole = new SqlConsole(
-      new SqlApi(new URL(apiBaseUrl, window.location.origin).toString()),
+      new SqlApi(new URL(apiBaseUrl, window.location.origin).toString(), undefined, access),
       { history: loadHistory(historyKey) }
     )
-    return new BrowserSqlSession(
+    const current = new BrowserSqlSession(
       terminal,
       sqlConsole,
       historyKey,
       initialSql,
+      access === "admin" ? ADMIN_WELCOME : WELCOME,
       setStatus
     )
-  })
-
-  useEffect(() => () => session.close(), [session])
-
-  function ready(instance: WTerm) {
+    session.current = current
     terminal.attach(instance)
-    session.start()
-  }
+    current.start()
+    return () => {
+      session.current = null
+      current.close()
+    }
+  }, [instance, apiBaseUrl, historyKey, initialSql, access])
 
   return (
     <section
@@ -70,18 +78,18 @@ export function PeriplusWebShell({
         className="periplus-wterm"
         autoResize
         cursorBlink
-        onData={(data) => session.receive(data)}
-        onReady={ready}
-        onResize={(columns) => terminal.resized(columns)}
+        onData={(data) => session.current?.receive(data)}
+        onReady={setInstance}
+        onResize={(columns) => session.current?.resize(columns)}
         onError={(error) =>
-          terminal.writeRaw(
+          session.current?.writeRaw(
             `\r\n\u001b[31mError: ${sanitizeTerminalText(
               error instanceof Error ? error.message : String(error)
             )}\u001b[0m\r\n`
           )
         }
       />
-      <ShellFooter status={status} />
+      <ShellFooter status={status} access={access} />
     </section>
   )
 }
@@ -98,6 +106,7 @@ class BrowserSqlSession {
     private readonly sqlConsole: SqlConsole,
     private readonly historyKey: string,
     private readonly initialSql: string,
+    private readonly greeting: string,
     private readonly onStatus: (status: ShellStatus) => void
   ) {
     this.editor = new GhostTextEditor(
@@ -113,6 +122,14 @@ class BrowserSqlSession {
     this.started = true
     this.terminal.focus()
     void this.run()
+  }
+
+  resize(columns: number): void {
+    this.terminal.resized(columns)
+  }
+
+  writeRaw(value: string): void {
+    this.terminal.writeRaw(value)
   }
 
   receive(data: string): void {
@@ -137,7 +154,7 @@ class BrowserSqlSession {
 
   private async run(): Promise<void> {
     this.terminal.writeRaw(
-      `\u001b[2J\u001b[H${WELCOME.replaceAll("\n", "\r\n")}\r\n\r\n`
+      `\u001b[2J\u001b[H${this.greeting.replaceAll("\n", "\r\n")}\r\n\r\n`
     )
     await this.connect()
     let initialInput = this.initialSql
@@ -234,7 +251,7 @@ class BrowserProgress {
   }
 }
 
-function ShellFooter({ status }: { status: ShellStatus }) {
+function ShellFooter({ status, access }: { status: ShellStatus; access: "public" | "admin" }) {
   return (
     <footer
       className="periplus-web-shell-footer"
@@ -242,7 +259,7 @@ function ShellFooter({ status }: { status: ShellStatus }) {
       aria-live="polite"
     >
       <span>DuckDB {status.duckdbVersion ?? "—"}</span>
-      <span>catalogue public</span>
+      <span>catalogue {access === "admin" ? "admin · writable" : "public"}</span>
       <span className="periplus-web-shell-footer-end">
         API{" "}
         {status.apiLatencyMilliseconds === undefined

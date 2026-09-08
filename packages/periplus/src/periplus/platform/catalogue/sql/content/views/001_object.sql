@@ -24,6 +24,6 @@ WHERE EXISTS (
     SELECT 1 FROM ingest.visits AS visit
     WHERE visit.visit_id = document.visit_id
       AND visit.document_id = document.document_id
-      AND visit.visibility = 'public'
+
 )
 GROUP BY content_sha256;

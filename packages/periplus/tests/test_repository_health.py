@@ -40,7 +40,7 @@ class RepositoryHealthTests(unittest.TestCase):
             with self.assertRaises(HTTPError) as raised:
                 urlopen(f"http://127.0.0.1:{server.server_address[1]}/healthz", timeout=2)
             self.assertEqual(raised.exception.code, 503)
-            self.assertEqual(raised.exception.read(), b"catalogue unavailable\n")
+            self.assertEqual(raised.exception.read(), b"unavailable\n")
             raised.exception.close()
         finally:
             server.shutdown()

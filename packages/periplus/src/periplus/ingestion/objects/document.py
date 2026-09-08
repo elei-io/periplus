@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from periplus.ingestion.objects.publication import claim
+
 import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -105,6 +107,7 @@ class ExactDocumentRepository:
         observed_at: datetime,
         content_type: str,
     ) -> StoredDocument:
+        claim(self.store, identity.sha256, visit_id)
         key = identity.object_key
         if self.store.exists(key):
             self.verify(key, expected=identity)

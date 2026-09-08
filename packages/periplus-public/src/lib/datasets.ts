@@ -117,4 +117,4 @@ LIMIT 20;`,
 ]
 
 export const featuredDataset = datasets[0]
-export const datasetSqlUrl = (dataset: Pick<Dataset, "sql">) => `/discover?${new URLSearchParams({ mode: "sql", sql: dataset.sql })}`
+export const datasetSqlUrl = (dataset: Pick<Dataset, "sql">) => `/sql?${new URLSearchParams({ sql: dataset.sql })}`

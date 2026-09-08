@@ -10,7 +10,6 @@ class LineageRecord(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     record_id: UUID
-    visibility: Literal["public", "private"]
     recorded_at: datetime
 
 
@@ -44,7 +43,7 @@ class SeedProvenance(BaseModel):
 class CollectionOutcome(LineageRecord):
     kind: Literal["collection_outcome"] = "collection_outcome"
     collection_id: UUID
-    outcome: Literal["budget_reached", "eligible_links_exhausted", "deadline", "cancelled", "failed"]
+    outcome: Literal["budget_reached", "eligible_links_exhausted", "duration_limit", "cancelled", "failed"]
     seed_provenance: SeedProvenance | None = None
     consumed_pages: int = Field(ge=0)
     supplied_pages: int = Field(ge=0)
@@ -70,32 +69,14 @@ class FulfillmentRecord(LineageRecord):
     mode: Literal["acquired", "shared", "reused"]
 
 
-class BackgroundSelectionProvenance(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    policy_version: int = Field(ge=1)
-    source_snapshot: int = Field(ge=0)
-    source_query_id: str = Field(min_length=1, max_length=200)
-
-
 class AcquisitionReason(LineageRecord):
     kind: Literal["acquisition_reason"] = "acquisition_reason"
     observation_id: UUID
-    collection_id: UUID | None = None
+    collection_id: UUID
     parent_observation_id: UUID | None = None
-    reason: Literal["collection", "background"]
-    selection_provenance: BackgroundSelectionProvenance | None = None
+    reason: Literal["collection"]
     policy_version: str
     rule_id: str
-
-    @model_validator(mode="after")
-    def source(self):
-        if (self.reason == "collection") != (self.collection_id is not None):
-            raise ValueError("only collection reasons require a collection ID")
-        if self.reason == "background" and self.visibility != "public":
-            raise ValueError("background evidence must be public")
-        if (self.reason == "background") != (self.selection_provenance is not None):
-            raise ValueError("only background reasons require historical selection provenance")
-        return self
 
 
 LineageEvidence = Annotated[

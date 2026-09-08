@@ -19,6 +19,13 @@ from periplus.crawl.runtime.frontier_store import FrontierStore, StaleDispatch
 from periplus.crawl.runtime.navigation import build_navigation_package, put_navigation_package
 from periplus.platform.messaging.leases import operation_leases, OperationLeaseLost
 
+from prometheus_client import Gauge
+
+_active_captures = Gauge(
+    "periplus_crawler_active_captures",
+    "Authorized capture slots occupied, excluding domain and dependency waits.",
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,6 +54,10 @@ async def handle_capture_delivery(message, store: FrontierStore, pipeline, playw
     current_domain = None
 
     async def defer(delay, *, reason=None):
+        from periplus.platform.telemetry import event
+        event("capture_deferred", operation_id=str(work.acquisition_id), code=reason if reason in {"cdp_unavailable", "ingestion_delivery_unavailable", "storage_unavailable"} else "capacity_or_pacing")
+        from periplus.operations.metrics import work_deferred
+        work_deferred.labels(reason if reason in {"cdp_unavailable", "ingestion_delivery_unavailable", "storage_unavailable"} else "capacity_or_pacing").inc()
         released = await asyncio.to_thread(store.defer_unstarted, work.acquisition_id, work.generation,
                                           delay_seconds=min(86400, max(1, delay)), domain_policy=current_domain if reason is None else None, reason=reason)
         if released:
@@ -55,6 +66,7 @@ async def handle_capture_delivery(message, store: FrontierStore, pipeline, playw
             await message.nak(delay=5)
 
     capture = heartbeat = None
+    active = False
     lost_tasks = []
     try:
         async with operation_leases(operation_bucket, [str(work.acquisition_id)],
@@ -103,6 +115,8 @@ async def handle_capture_delivery(message, store: FrontierStore, pipeline, playw
                     if not started:
                         await defer(5)
                         return
+                    _active_captures.inc()
+                    active = True
                     # Start freezes the latest exclusions; dispatch may precede an
                     # operator update. Reload that authorized attempt before remote I/O.
                     acquisition = await asyncio.to_thread(store.get_acquisition, work.acquisition_id)
@@ -146,6 +160,8 @@ async def handle_capture_delivery(message, store: FrontierStore, pipeline, playw
                         raise OperationLeaseLost("capture lost ownership before outcome acceptance")
                     await asyncio.to_thread(store.complete, acquisition.id, work.generation,
                                              evidence=result.evidence, navigation=navigation)
+        from periplus.platform.telemetry import event
+        event("capture_delivery_completed", operation_id=str(work.acquisition_id))
         await message.ack()
     except CdpUnavailable:
         await defer(30, reason="cdp_unavailable")
@@ -171,3 +187,5 @@ async def handle_capture_delivery(message, store: FrontierStore, pipeline, playw
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if active:
+            _active_captures.dec()

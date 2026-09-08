@@ -22,7 +22,6 @@ export interface CrawlerActivity {
 }
 export interface LiveView {
   workers: CrawlerActivity
-  visibility: "public"
   current: {
     as_of: string
     paused: boolean

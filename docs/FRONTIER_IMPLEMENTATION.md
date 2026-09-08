@@ -1,5 +1,11 @@
 # Frontier implementation ledger
 
+> Historical frontier design/verification record. Its independent background selection,
+> allocation and seen-check paths were removed on 2026-09-08. Current execution ownership
+> is described in [ARCHITECTURE.md](ARCHITECTURE.md); recurring exploration uses ordinary
+> requests via [SCHEDULES.md](SCHEDULES.md). Background-specific acceptance below records
+> the superseded implementation, not current requirements.
+
 Target: all of [FRONTIER.md](FRONTIER.md), including its acceptance criteria. This ledger tracks
 implementation and verification; it does not narrow the definition of completion.
 
@@ -1307,7 +1313,8 @@ Later entries record their resolution and authoritative acceptance evidence.
 - Cutover inspection found unused graph/scheduler environment defaults, Compose anchors, chart fields,
   and performance constants. Removed those superseded settings; Compose validation passes. Updated
   the stale default CDC checkout path. Final checks include these cleanup changes.
-- The configured sibling CDC checkout is a different revision from `.github/extension-sources.env`.
+- At that validation run, the sibling CDC checkout differed from the then-pinned source revision.
+  Superseded by the signed community package installation and revision checks in `docs/EXTENSION_DEVELOPMENT.md`.
   Exported the exact pinned commit 9fec6a7decf417b1c5b68cbd0a51af187e4e2a99 to a temporary build context
   without modifying the sibling checkout. Built replacement core image successfully:
   sha256:6bfce3f94773c53c5dc898db739684d2657ac69dcded887993a47bdbde7ae522.

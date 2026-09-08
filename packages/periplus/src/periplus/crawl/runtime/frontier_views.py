@@ -3,12 +3,12 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import computed_field, BaseModel
 from sqlalchemy import func, select
 
 from periplus.crawl.control.collections.discovery import DiscoveryState
 from periplus.crawl.control.collections.models import CollectionRecord
-from periplus.crawl.control.collections.schemas import CollectionSpec
+from periplus.crawl.control.collections.schemas import CollectionExecutionSpec, CollectionSpec
 from periplus.crawl.runtime.frontier_models import AcquisitionRecord, FrontierControlRecord, FrontierOutboxRecord, InterestRecord
 from periplus.crawl.runtime.admission_wait import AdmissionWait, admission_wait
 from periplus.crawl.runtime.collection_queue import CollectionQueue, collection_queue, _aware
@@ -17,7 +17,7 @@ from periplus.crawl.runtime.collection_queue import CollectionQueue, collection_
 class CollectionView(BaseModel):
     source: Literal["current"] = "current"
     id: UUID
-    specification: CollectionSpec
+    specification: CollectionExecutionSpec
     status: Literal["active", "paused", "settled"]
     priority: int
     reserved_pages: int
@@ -49,8 +49,20 @@ class CollectionView(BaseModel):
     as_of: datetime
 
 
-def collection_views(sessions, *, identity: UUID | None = None, public_only: bool = True,
-                     status: str | None = None, limit: int = 20, offset: int = 0, workers=None) -> list[CollectionView]:
+    @computed_field
+    @property
+    def expires_at(self) -> datetime | None:
+        from periplus.retention.policy import expires_at
+        return expires_at(self.specification.retention_seconds, self.completed_at)
+
+    @computed_field
+    @property
+    def retention_expired(self) -> bool:
+        expiry = self.expires_at
+        return expiry is not None and expiry <= self.as_of
+
+
+def collection_views(sessions, *, identity: UUID | None = None, status: str | None = None, limit: int = 20, offset: int = 0, workers=None) -> list[CollectionView]:
     if not 1 <= limit <= 100 or not 0 <= offset <= 10000:
         raise ValueError("collection page outside bounds")
     if status is not None and status not in {"active", "paused", "settled"}:
@@ -58,8 +70,6 @@ def collection_views(sessions, *, identity: UUID | None = None, public_only: boo
     with sessions() as session:
         control = session.scalar(select(FrontierControlRecord).where(FrontierControlRecord.id == 1).with_for_update(read=True))
         statement = select(CollectionRecord).where(CollectionRecord.retiring.is_(False))
-        if public_only:
-            statement = statement.where(CollectionRecord.spec["visibility"].as_string() == "public")
         if identity is not None:
             statement = statement.where(CollectionRecord.id == identity)
         if status is not None:
@@ -68,7 +78,7 @@ def collection_views(sessions, *, identity: UUID | None = None, public_only: boo
                                                          CollectionRecord.id.desc()).limit(limit).offset(offset)))
         as_of = datetime.now(UTC)
         views = {record.id: CollectionView(
-            id=record.id, specification=CollectionSpec.model_validate(record.spec), status=record.status,
+            id=record.id, specification=CollectionExecutionSpec.model_validate(record.spec), status=record.status,
             priority=record.priority, reserved_pages=record.reserved, consumed_pages=record.consumed,
             seeds_settled=record.seeds_settled, waiting_reason=record.waiting_reason, outcome=record.outcome,
             created_at=record.created_at, completed_at=record.completed_at, as_of=as_of,
@@ -138,13 +148,13 @@ def collection_views(sessions, *, identity: UUID | None = None, public_only: boo
         return list(views.values())
 
 
-async def enrich_collection_readiness(views, history, *, public_only: bool):
+async def enrich_collection_readiness(views, history):
     from periplus.crawl.control.collections.history import HistoryUnavailable
     settled = [view for view in views if view.completed_at is not None]
     if not settled:
         return views
     try:
-        proofs = await history.collection_readiness([view.id for view in settled], public_only=public_only)
+        proofs = await history.collection_readiness([view.id for view in settled])
     except HistoryUnavailable:
         proofs = {}
     result = []

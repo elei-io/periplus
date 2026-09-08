@@ -44,11 +44,10 @@ def replace_controls(payload: ReplaceFrontierSettings, request: Request):
 async def item(identity: UUID, request: Request):
     workers = await request.app.state.crawler_presence.read()
     value = await asyncio.to_thread(acquisition_view, request.app.state.frontier_sessions, identity,
-                             public_only=request.state.api_role != "admin", workers=workers)
+                             workers=workers)
     if value is None:
         raise HTTPException(404, "Current frontier item not found.")
-    return (await enrich_readiness([value], request.app.state.collection_history,
-        public_only=request.state.api_role != "admin"))[0]
+    return (await enrich_readiness([value], request.app.state.collection_history))[0]
 
 
 @router.get("/live", response_model=LiveView)
@@ -57,7 +56,7 @@ async def live(request: Request, collection_id: UUID | None = None):
     current = await asyncio.to_thread(current_activity, request.app.state.frontier_sessions, collection_id=collection_id)
     if current.queued == 1 and current.upcoming:
         candidate = await asyncio.to_thread(acquisition_view, request.app.state.frontier_sessions,
-            current.upcoming[0].acquisition_id, public_only=True, workers=workers)
+            current.upcoming[0].acquisition_id, workers=workers)
         if candidate is not None:
             current = current.model_copy(update={"next_start_estimate": candidate.next_start_estimate,
                 "estimate_unavailable_reason": candidate.estimate_unavailable_reason})
@@ -79,7 +78,7 @@ async def observation_lineage(identity: UUID, request: Request,
         cursor: Annotated[str | None, Query(max_length=512)] = None):
     try:
         page = await request.app.state.collection_history.observation_lineage(identity,
-            public_only=request.state.api_role != "admin", limit=limit, cursor=cursor)
+            limit=limit, cursor=cursor)
     except ValueError as exc:
         raise HTTPException(422, "Invalid observation lineage cursor or page limit.") from exc
     except HistoryUnavailable as exc:

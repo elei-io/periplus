@@ -43,11 +43,11 @@ def collection_queue(session, record, control, *, workers, now):
                        AcquisitionRecord.domain_policy_version == policy_version,
                        AcquisitionRecord.domain_eligible_at > now)
     global_reason = FrontierStore._attempt_waiting_reason(control)
-    deadline = record.spec.get('deadline_at')
+    deadline = record.deadline_at
     if record.status == 'paused':
         global_reason = 'collection_paused'
-    elif deadline and datetime.fromisoformat(deadline) <= now:
-        global_reason = 'collection_deadline'
+    elif deadline and deadline <= now:
+        global_reason = 'collection_duration_limit'
     if global_reason:
         reason = literal(global_reason)
     else:

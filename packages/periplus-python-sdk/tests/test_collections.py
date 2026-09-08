@@ -6,11 +6,11 @@ from uuid import uuid4
 
 from periplus_sdk import collections
 from periplus_sdk.errors import ApiError, CollectionFailed, WaitTimeout
-from periplus_sdk.types import CollectionSpec, CurrentCollection, HistoricalCollection
+from periplus_sdk.types import CollectionExecutionSpec, CollectionSpec, CurrentCollection, HistoricalCollection
 
 
 def current():
-    return CurrentCollection(id=uuid4(), specification=CollectionSpec(seed_urls=("https://example.com/",)),
+    return CurrentCollection(id=uuid4(), specification=CollectionExecutionSpec(seed_urls=("https://example.com/",)),
         status="active", priority=0, reserved_pages=0, consumed_pages=0, seeds_settled=False,
         waiting_reason=None, outcome=None, created_at=datetime.now(UTC), completed_at=None,
         admission={"estimate_unavailable_reason": "selection_not_frozen"},

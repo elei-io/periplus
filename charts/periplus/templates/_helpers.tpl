@@ -176,3 +176,27 @@ imagePullSecrets:
 {{- end }}
 {{ include "periplus.podPlacement" . }}
 {{- end }}
+
+{{- define "periplus.duckdbEnv" -}}
+- name: PERIPLUS_DUCKDB_THREADS
+  value: {{ .threads | quote }}
+- name: PERIPLUS_DUCKDB_MEMORY_LIMIT
+  value: {{ .memoryLimit | quote }}
+- name: PERIPLUS_DUCKDB_MAX_TEMP_DIRECTORY_SIZE
+  value: {{ .maxTempDirectorySize | quote }}
+{{- end }}
+
+{{- define "periplus.scalingQuery" -}}
+{{- $scope := printf "namespace=%q,periplus_release=%q,periplus_component=%q" .root.Release.Namespace .root.Release.Name .role -}}
+{{- if eq .role "ingestor" -}}
+max((periplus_repository_ingestion_jobs_pending{ {{ $scope }} } + periplus_repository_ingestion_jobs_ack_pending{ {{ $scope }} }) and (periplus_repository_ingestion_queue_observed_timestamp_seconds{ {{ $scope }} } > time() - 60))
+{{- else if eq .role "materializer" -}}
+sum(max by (state) (periplus_materialization_queue_messages{ {{ $scope }},state=~"pending|ack_pending" } and ignoring(state) (periplus_materialization_queue_observed_timestamp_seconds{ {{ $scope }} } > time() - 60)))
+{{- else if eq .role "crawler" -}}
+sum(avg_over_time(periplus_crawler_active_captures{ {{ $scope }} }[2m]) and (timestamp(periplus_crawler_active_captures{ {{ $scope }} }) > time() - 60))
+{{- else if eq .role "query" -}}
+sum(avg_over_time(periplus_query_active_operations{ {{ $scope }} }[2m]) and (timestamp(periplus_query_active_operations{ {{ $scope }} }) > time() - 60))
+{{- else -}}
+{{- fail (printf "%s.autoscaling.query is required for a custom Prometheus policy" .role) -}}
+{{- end -}}
+{{- end }}

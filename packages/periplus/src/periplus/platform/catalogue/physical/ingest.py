@@ -20,7 +20,7 @@ DOCUMENTS = RelationName(INGEST_SCHEMA, "documents")
 TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
     VISITS: {
         "visit_id": ColumnDef("UUID", nullable=False),
-        "visibility": ColumnDef("VARCHAR", nullable=False),
+
         "requested_url": ColumnDef("VARCHAR", nullable=False),
         "effective_url": ColumnDef("VARCHAR"),
         "admitted_at": ColumnDef("TIMESTAMPTZ", nullable=False),
@@ -111,7 +111,7 @@ TABLE_COMMENTS = {
 COLUMN_COMMENTS = {
     VISITS: {
         "visit_id": "Unique identity of this destination observation.",
-        "visibility": "Frozen acquisition visibility; private evidence is excluded from public SQL.",
+
         "requested_url": "Exact URL Periplus attempted to visit.",
         "effective_url": "Final URL after navigation or redirects, if resolved.",
         "admitted_at": "Time the destination entered the crawl.",

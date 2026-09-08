@@ -1,5 +1,11 @@
 # Frontier acceptance audit
 
+> Historical frontier design/verification record. Its independent background selection,
+> allocation and seen-check paths were removed on 2026-09-08. Current execution ownership
+> is described in [ARCHITECTURE.md](ARCHITECTURE.md); recurring exploration uses ordinary
+> requests via [SCHEDULES.md](SCHEDULES.md). Background-specific acceptance below records
+> the superseded implementation, not current requirements.
+
 This is a current evidence index for the twelve acceptance criteria in [FRONTIER.md](FRONTIER.md).
 It does not replace that document's earlier requirements or establish completion by itself.
 The chronological implementation ledger contains experiment identities and verification results.

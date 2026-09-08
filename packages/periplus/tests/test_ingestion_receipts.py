@@ -48,7 +48,7 @@ class IngestionReceiptTests(unittest.IsolatedAsyncioTestCase):
         self.client.results = Results()
         identity = uuid4()
         self.job = lineage_ingestion_job(CollectionDefinition(
-            record_id=identity, collection_id=identity, visibility="private",
+            record_id=identity, collection_id=identity,
             recorded_at=datetime.now(UTC), specification={"page_limit": 1},
         ))
 

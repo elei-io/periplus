@@ -1,0 +1,58 @@
+{{- $root := . -}}
+{{- range $role := list "api" "admin" "public" "crawler" "ingestor" "materializer" "query" }}
+{{- $settings := index $root.Values $role }}
+{{- $scaling := $settings.autoscaling }}
+{{- if $scaling.enabled }}
+{{- if gt (int $scaling.minReplicas) (int $scaling.maxReplicas) }}
+{{- fail (printf "%s.autoscaling.minReplicas must not exceed maxReplicas" $role) }}
+{{- end }}
+{{- if and (eq $scaling.metric "cpu") (not $settings.resources.requests.cpu) }}
+{{- fail (printf "%s.resources.requests.cpu is required for CPU autoscaling" $role) }}
+{{- end }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "periplus.fullname" $root }}-{{ $role }}
+  labels:
+    {{- include "periplus.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $role }}
+spec:
+  scaleTargetRef:
+    name: {{ include "periplus.fullname" $root }}-{{ $role }}
+  pollingInterval: {{ $root.Values.autoscaling.pollingInterval }}
+  minReplicaCount: {{ $scaling.minReplicas }}
+  maxReplicaCount: {{ $scaling.maxReplicas }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        {{- toYaml (default $root.Values.autoscaling.behavior $scaling.behavior) | nindent 8 }}
+  triggers:
+    {{- if eq $scaling.metric "cpu" }}
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: {{ $scaling.threshold | quote }}
+    {{- else }}
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        {{- with $root.Values.autoscaling.prometheus.metadata }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        serverAddress: {{ required "autoscaling.prometheus.serverAddress is required for Prometheus scaling" $root.Values.autoscaling.prometheus.serverAddress | quote }}
+        threshold: {{ $scaling.threshold | quote }}
+        ignoreNullValues: "false"
+        query: >-
+          {{- if $scaling.query }}
+          {{- tpl $scaling.query $root | nindent 10 }}
+          {{- else }}
+          {{- include "periplus.scalingQuery" (dict "root" $root "role" $role) | nindent 10 }}
+          {{- end }}
+      {{- with $root.Values.autoscaling.prometheus.authenticationRef }}
+      authenticationRef:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}

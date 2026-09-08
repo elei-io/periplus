@@ -1,4 +1,4 @@
-"""Operator URL exclusions apply to both request and background admission."""
+"""Operator URL exclusions apply to all request admission."""
 import posixpath
 import re
 from urllib.parse import unquote, urlsplit

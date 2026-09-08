@@ -21,12 +21,9 @@ class FrontierControlRecord(Base):
                         name="ck_frontier_attempt_counters"),
         CheckConstraint("attempt_allowance >= 0 AND capture_time_allowance_ms >= 0 AND capture_timeout_ms BETWEEN 1000 AND 3600000",
                         name="ck_frontier_attempt_allowances"),
-        CheckConstraint("background_reserved_attempts >= 0 AND background_started_attempts >= 0 AND background_reserved_capture_ms >= 0 AND background_charged_capture_ms >= 0", name="ck_frontier_background_counters"),
-        CheckConstraint("background_attempt_allowance >= 0 AND background_capture_time_allowance_ms >= 0 AND background_credit BETWEEN 0 AND 99", name="ck_frontier_background_allowances"),
         CheckConstraint("pending_count >= 0 AND active_count >= 0 AND interest_count >= 0", name="ck_frontier_counts"),
         CheckConstraint("acquisition_limit > 0 AND admission_limit > 0 AND dispatch_limit > 0 AND collection_limit > 0 AND interest_limit > 0", name="ck_frontier_limits"),
-        CheckConstraint("captures_per_minute >= 0 AND background_share BETWEEN 0 AND 99",
-                        name="ck_frontier_rates"),
+        CheckConstraint("captures_per_minute >= 0", name="ck_frontier_rates"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, default=1)
@@ -45,14 +42,6 @@ class FrontierControlRecord(Base):
     active_count: Mapped[int] = mapped_column(default=0)
     captures_per_minute: Mapped[int] = mapped_column(default=60)
     next_dispatch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    background_share: Mapped[int] = mapped_column(default=0)
-    background_credit: Mapped[int] = mapped_column(default=0)
-    background_attempt_allowance: Mapped[int] = mapped_column(BigInteger, default=1000)
-    background_capture_time_allowance_ms: Mapped[int] = mapped_column(BigInteger, default=12500000)
-    background_reserved_attempts: Mapped[int] = mapped_column(BigInteger, default=0)
-    background_started_attempts: Mapped[int] = mapped_column(BigInteger, default=0)
-    background_reserved_capture_ms: Mapped[int] = mapped_column(BigInteger, default=0)
-    background_charged_capture_ms: Mapped[int] = mapped_column(BigInteger, default=0)
     attempt_allowance: Mapped[int] = mapped_column(BigInteger, default=10000)
     capture_time_allowance_ms: Mapped[int] = mapped_column(BigInteger, default=86400000)
     capture_timeout_ms: Mapped[int] = mapped_column(default=120000)
@@ -72,8 +61,6 @@ class AcquisitionRecord(Base):
     __tablename__ = "frontier_acquisitions"
     __table_args__ = (
         UniqueConstraint("pending_key", name="uq_frontier_pending_capture"),
-        UniqueConstraint("background_url_key", name="uq_frontier_background_active_url"),
-        Index("ix_frontier_background_parent", "visibility", "status", "background_selected", "background_after", "created_at"),
         CheckConstraint("status IN ('queued', 'retry', 'dispatched', 'succeeded', 'failed', 'cancelled')",
                         name="ck_frontier_acquisition_status"),
         CheckConstraint("generation >= 0", name="ck_frontier_generation"),
@@ -89,8 +76,6 @@ class AcquisitionRecord(Base):
     capture_key: Mapped[str] = mapped_column(Text)
     pending_key: Mapped[str | None] = mapped_column(Text)
     requirements: Mapped[dict[str, Any]] = mapped_column(json_type)
-    visibility: Mapped[str] = mapped_column(Text)
-    access_context: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, default="queued")
     generation: Mapped[int] = mapped_column(Integer, default=0)
     dispatch_policy_version: Mapped[int | None] = mapped_column()
@@ -103,22 +88,13 @@ class AcquisitionRecord(Base):
     attempt_domain_policy: Mapped[dict[str, Any] | None] = mapped_column(json_type)
     attempt_exclusions: Mapped[list[dict[str, Any]]] = mapped_column(json_type, default=list)
     attempt_exclusion_version: Mapped[int] = mapped_column(default=1)
-    attempt_background: Mapped[bool] = mapped_column(default=False)
     attempt_reserved_ms: Mapped[int] = mapped_column(default=0)
     attempt_count: Mapped[int] = mapped_column(default=0)
     attempt_limit: Mapped[int] = mapped_column(default=3)
     attempt_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     uncertain_attempts: Mapped[list[dict[str, Any]]] = mapped_column(json_type, default=list)
     prior_results: Mapped[list[dict[str, Any]]] = mapped_column(json_type, default=list)
-    background_url_key: Mapped[str | None] = mapped_column(Text)
-    background_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-    background_token: Mapped[UUID | None] = mapped_column()
-    background_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    background_failures: Mapped[int] = mapped_column(default=0)
     terminal_reason: Mapped[str | None] = mapped_column(Text)
-    background_error: Mapped[str | None] = mapped_column(Text)
-    background_selected: Mapped[bool] = mapped_column(default=False)
-    background_reason: Mapped[dict[str, Any] | None] = mapped_column(json_type)
     frozen_reasons: Mapped[list[dict[str, Any]]] = mapped_column(json_type, default=list)
     outcome: Mapped[dict[str, Any] | None] = mapped_column(json_type)
     navigation: Mapped[dict[str, Any] | None] = mapped_column(json_type)
@@ -179,19 +155,3 @@ class FrontierOutboxRecord(Base):
     not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     publish_attempts: Mapped[int] = mapped_column(default=0)
     last_error: Mapped[str | None] = mapped_column(Text)
-
-
-class BackgroundCheckRecord(Base):
-    """Short-lived candidate evidence, never a permanent seen-URL index."""
-    __tablename__ = "frontier_background_checks"
-    __table_args__ = (
-        Index("ix_frontier_background_check_expiry", "expires_at"),
-    )
-    parent_observation_id: Mapped[UUID] = mapped_column(ForeignKey("frontier_acquisitions.id"), primary_key=True)
-    token: Mapped[UUID] = mapped_column()
-    candidates: Mapped[list[str]] = mapped_column(json_type)
-    policy_version: Mapped[int] = mapped_column()
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    result: Mapped[dict[str, Any] | None] = mapped_column(json_type)
-    snapshot: Mapped[int | None] = mapped_column(BigInteger)
-    decisions: Mapped[dict[str, Any]] = mapped_column(json_type, default=dict)

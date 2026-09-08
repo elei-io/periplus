@@ -2,6 +2,10 @@
 from hmac import compare_digest
 import logging
 import os
+from prometheus_client import Counter
+from periplus.platform.telemetry import event
+
+_query_outcomes = Counter("periplus_query_operations_total", "Query operation outcomes including rejection.", ("operation", "outcome"))
 
 import duckdb
 from fastapi import APIRouter, Request
@@ -20,7 +24,7 @@ class QueryAccessMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or (scope["path"] == "/healthz" and scope["method"] == "GET"):
+        if scope["type"] != "http" or (scope["path"] in {"/healthz", "/metrics"} and scope["method"] == "GET"):
             return await self.app(scope, receive, send)
         token = os.environ.get("PERIPLUS_QUERY_API_TOKEN", "")
         if not token or not compare_digest(dict(scope["headers"]).get(b"authorization", b""), f"Bearer {token}".encode()):
@@ -51,15 +55,36 @@ class QueryAccessMiddleware:
 
 
 async def _run(request, payload, operation):
+    from periplus.query.history import track, result_fields
+    async with track(request, payload, operation) as record:
+        result = await _run_operation(request, payload, operation)
+        if isinstance(result, JSONResponse):
+            import json
+            code = json.loads(result.body).get("code", "internal_error")
+            record.update(outcome="timeout" if result.status_code == 408 else "rejected" if result.status_code < 500 else "failed", error_code=code)
+        else:
+            record.update(result_fields(result))
+        return result
+
+
+async def _run_operation(request, payload, operation):
     slot = request.app.state.query_slot
     if slot.locked():
+        _query_outcomes.labels(operation, "service_busy").inc()
         return JSONResponse({"code": "service_busy", "detail": "Query server is busy."}, status_code=429, headers={"Retry-After": "1"})
     try:
         async with slot:
-            return await run_in_threadpool(getattr(request.app.state.query_service, operation), payload)
+            result = await run_in_threadpool(getattr(request.app.state.query_service, operation), payload)
+            _query_outcomes.labels(operation, "success").inc()
+            return result
     except (BusyError, TimeoutError, ValueError, duckdb.Error) as exc:
         status, error = query_error(exc)
-        logging.getLogger(__name__).warning("Query failed code=%s exception=%s", error.code, type(exc).__name__)
+        _query_outcomes.labels(operation, error.code).inc()
+        event("query_failed", operation=operation, code=error.code)
+        if status >= 500:
+            # SafeFormatter retains the exception class and frame locations only.
+            # Native messages can contain lake URLs or credentials.
+            logging.getLogger(__name__).warning("query_engine_failure", exc_info=True)
         return JSONResponse(error.model_dump(), status_code=status,
                             headers={"Retry-After": "1"} if status == 429 else None)
 

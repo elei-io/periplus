@@ -20,6 +20,30 @@ class ApiAccessMiddleware:
         path, method = scope["path"], scope["method"]
         if path in {"/healthz", "/metrics"} and method == "GET":
             return await self.app(scope, receive, send)
+        # The query token grants only append access, never control or history reads.
+        if path == "/internal/query-history" and method == "POST":
+            token = get_optional("PERIPLUS_QUERY_API_TOKEN")
+            if not token or not compare_digest(dict(scope["headers"]).get(b"authorization", b""), f"Bearer {token}".encode()):
+                return await JSONResponse({"detail": "Internal service credential required."}, status_code=401)(scope, receive, send)
+            body = bytearray()
+            while True:
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    return
+                body.extend(message.get("body", b""))
+                if len(body) > 1024 * 1024:
+                    return await JSONResponse({"detail": "History record exceeds 1 MiB."}, status_code=413)(scope, receive, send)
+                if not message.get("more_body", False):
+                    break
+            original_receive, delivered = receive, False
+            async def history_receive():
+                nonlocal delivered
+                if not delivered:
+                    delivered = True
+                    return {"type": "http.request", "body": bytes(body), "more_body": False}
+                return await original_receive()
+            scope.setdefault("state", {})["api_role"] = "query"
+            return await self.app(scope, history_receive, send)
         admin = get_optional("PERIPLUS_ADMIN_API_TOKEN")
         public = get_optional("PERIPLUS_PUBLIC_API_TOKEN")
         if not admin or not public or compare_digest(admin, public):
@@ -40,6 +64,9 @@ class ApiAccessMiddleware:
                 headers={"WWW-Authenticate": "Bearer"},
             )(scope, receive, send)
         allowed = (
+            (method == "GET" and path == "/access")
+            or (method == "POST" and path in {"/access/admit/assistant", "/access/admit/sql"})
+            or
             (method in {"GET", "POST"} and path == "/collections")
             or (method == "GET" and path in {"/collections/history", "/frontier/live", "/frontier/captures"})
             or (method == "GET" and re.fullmatch(r"/collections/[0-9a-fA-F-]{36}(?:/(?:items|arrivals))?", path))
@@ -51,7 +78,7 @@ class ApiAccessMiddleware:
                 {"detail": "This operation requires administrative access."},
                 status_code=403,
             )(scope, receive, send)
-        if path == "/collections" and method == "POST":
+        if path in {"/collections", "/admin/sql/exec"} and method == "POST":
             body = bytearray()
             while True:
                 message = await receive()
@@ -59,7 +86,7 @@ class ApiAccessMiddleware:
                     return
                 body.extend(message.get("body", b""))
                 if len(body) > 512 * 1024:
-                    return await JSONResponse({"detail": "Collection request exceeds 512 KiB."}, status_code=413)(scope, receive, send)
+                    return await JSONResponse({"detail": "Request exceeds 512 KiB."}, status_code=413)(scope, receive, send)
                 if not message.get("more_body", False):
                     break
             original_receive = receive

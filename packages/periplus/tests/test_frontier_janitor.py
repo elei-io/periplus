@@ -56,10 +56,13 @@ class FrontierJanitorLoopTests(unittest.IsolatedAsyncioTestCase):
         objects.list_objects.return_value = iter(())
         monitor = Mock()
         with patch("periplus.operations.janitor.FrontierStore", return_value=frontier), patch(
-                "periplus.operations.janitor.object_store_from_env", return_value=objects):
+                "periplus.operations.janitor.object_store_from_env", return_value=objects), patch(
+                "periplus.operations.query_history.store.QueryHistoryStore.cleanup", return_value=0) as history_cleanup:
             await asyncio.wait_for(_run(stop, monitor), 5)
         frontier.validate_installed.assert_called_once()
         frontier.cleanup_acquisitions.assert_called_once()
         self.assertIsNotNone(frontier.cleanup_acquisitions.call_args.kwargs["cutoff"].utcoffset())
         monitor.subsystem_ready.assert_any_call("frontier_retention")
+        history_cleanup.assert_called_once()
+        monitor.subsystem_ready.assert_any_call("query_history")
         monitor.subsystem_unavailable.assert_not_called()

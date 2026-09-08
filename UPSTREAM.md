@@ -65,3 +65,44 @@ maintenance; Periplus owns ingestion evidence and logical materialization genera
   statement checks. Regression tests execute both cast forms through a real read-only DuckLake
   query service and confirm the seed client sends the original SQL. No upstream issue or message
   has been published from this session.
+
+## DuckLake INSERT RETURNING in administrative SQL
+
+- **Periplus caller:** the privileged SQL console, executing operator-authored DuckDB SQL.
+- **Evidence:** DuckDB v1.5.5 with official DuckLake extension `d8a1881e`, using a temporary
+  local DuckLake: `CREATE TABLE sample (id BIGINT); INSERT INTO sample SELECT * FROM
+  range(1200) RETURNING id` fails with `Binder Error: RETURNING clause not yet supported
+  for insertion into DuckLake table`.
+- **Needed upstream contract:** support DuckDB's INSERT RETURNING semantics for DuckLake,
+  including transaction rollback and bounded client consumption of returned rows.
+- **Periplus behavior:** raw SQL preserves the native operation and reports failure. The
+  transaction/truncation regression instead uses an INSERT followed by SELECT in the same
+  request. No emulation or SQL rewrite is introduced; no upstream issue has been published.
+
+## Public query connection invalidation during dataset discovery
+
+- **Periplus caller:** the public dataset builder reading book observations and bounded HTML subtrees.
+- **Evidence (2026-09-08):** the long-lived query process on DuckDB 1.5.5 first logged
+  `InvalidInputException`, then repeated `FatalException` for subsequent requests, including simple
+  observation counts. Its unconditional health endpoint continued reporting success. A fresh
+  read-only attachment to the same lake executed the earlier subtree query successfully and read
+  the existing book data. The initiating engine error has not been reproduced on a fresh attachment;
+  the observed exception types alone do not establish its upstream cause.
+- **Needed upstream evidence:** capture a minimal reproducer and sanitized initial engine diagnostic
+  if the invalidation recurs, including concurrent catalogue commits and extension versions.
+- **Periplus behavior:** discard invalidated public-query handles, preserve the original error when
+  rollback also fails, and reconnect with identical restrictions on the next request. The failed
+  SQL is not replayed. Regression tests cover recovery, failed reconnect admission, and read-only
+  restrictions after recovery. No query rewrite or schema workaround was introduced.
+
+- **Further recurrence (2026-09-08 00:43 UTC):** request
+  `3f49d97e-09b2-4e6b-ba07-f47186e33c01` failed in 243 ms with `query_failed`
+  while inspecting three book-page families and up to four subtree roots per family.
+  The same request through the existing process then returned `sql_invalid`; health
+  remained 200. The exact SQL returned 10 rows on a fresh restricted attachment,
+  including after replaying the preceding recorded queries. Restarting only the query
+  process restored HTTP 200 and 10 rows through the public proxy. No fatal-handle
+  discard was recorded. This is evidence of connection-dependent failure, not proof
+  of its initiating cause or a schema/optimizer defect. The private query history
+  retains the original SQL; server-side 5xx diagnostics now retain sanitized exception
+  class and frame locations through SafeFormatter, without native messages or SQL.

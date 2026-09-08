@@ -71,7 +71,7 @@ export function useChangeCollection(id: string) {
     onSuccess: (value) => {
       client.setQueryData(["collection", id], value)
       void client.invalidateQueries({ queryKey: ["collections"] })
-      toast.success("Collection updated.")
+      toast.success("Request updated.")
     },
     onError: (error) => {
       toast.error(extractApiError(error))
@@ -97,7 +97,7 @@ export function useSubmitCollection() {
     onSuccess: (value) => {
       client.setQueryData(["collection", value.id], value)
       void client.invalidateQueries({ queryKey: ["collections"] })
-      toast.success("Collection submitted.")
+      toast.success("Request submitted.")
     },
     onError: (error) => toast.error(extractApiError(error)),
   })

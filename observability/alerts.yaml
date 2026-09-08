@@ -1,0 +1,53 @@
+groups:
+  - name: periplus
+    rules:
+      - alert: PeriplusWorkerNotReady
+        expr: periplus_worker_ready == 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Periplus worker has remained unready"
+          description: "Inspect dependency and progress signals; do not assume a restart will fix an external outage."
+      - alert: PeriplusIngestionStalled
+        expr: periplus_repository_ingestion_queue_stalled == 1
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "Ingestion backlog is not making progress" }
+      - alert: PeriplusPublicFailures
+        expr: sum(rate(periplus_public_operations_total{outcome="failed"}[5m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "Public operations are repeatedly failing" }
+      - alert: PeriplusHttpServerErrors
+        expr: sum by (service) (rate(periplus_http_requests_total{status=~"5.."}[5m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "Periplus is returning sustained server errors" }
+      - alert: PeriplusScheduleMissed
+        expr: sum(increase(periplus_schedule_ticks_total{outcome="missed_tick"}[10m])) > 0
+        labels: { severity: warning }
+        annotations: { summary: "A scheduled request tick was missed" }
+      - alert: PeriplusJanitorFailures
+        expr: sum by (phase) (increase(periplus_janitor_passes_total{outcome="failed"}[10m])) > 0
+        labels: { severity: warning }
+        annotations: { summary: "A janitor phase failed" }
+      - alert: PeriplusPublicSaturated
+        expr: sum(rate(periplus_public_operations_total{outcome="rejected"}[5m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "Public capacity is repeatedly rejecting work" }
+      - alert: PeriplusDomainThrottling
+        expr: sum(rate(periplus_capture_throttled_total[5m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "Websites are repeatedly returning HTTP 429" }
+      - alert: PeriplusQueueObservationStale
+        expr: time() - periplus_repository_ingestion_queue_observed_timestamp_seconds > 60
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "Ingestion queue telemetry is stale" }
+      - alert: PeriplusQueryHistoryDeliveryFailing
+        expr: sum(rate(periplus_query_history_delivery_total{outcome=~"failed|dropped"}[5m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "Query history delivery is failing or dropping records; analytics may be incomplete" }

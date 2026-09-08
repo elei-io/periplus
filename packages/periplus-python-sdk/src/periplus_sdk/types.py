@@ -14,8 +14,15 @@ class Snapshot(BaseModel):
 
 
 
+class RequestOrigin(Snapshot):
+    definition_id: UUID
+    definition_version: int
+    schedule_id: UUID | None = None
+
+
 class CollectionSpec(Snapshot):
     model_config = ConfigDict(extra="forbid", frozen=True)
+    origin: RequestOrigin | None = None
     seed_urls: tuple[str, ...] = Field(default=(), max_length=1000)
     seed_description: str | None = Field(default=None, min_length=1, max_length=4000)
     seed_sql: str | None = Field(default=None, max_length=20000)
@@ -26,9 +33,13 @@ class CollectionSpec(Snapshot):
     max_depth: int = Field(default=0, ge=0, le=100)
     page_limit: int = Field(default=25, ge=1, le=100000)
     result_max_age_seconds: int = Field(default=300, ge=0, le=3600)
-    visibility: Literal["public", "private"] = "public"
-    access_context: str = Field(default="public", min_length=1, max_length=200)
+    retention_seconds: int | None = Field(default=None, ge=1, le=315360000)
+    request_class: Literal["public", "system", "admin"] = "admin"
     allowed_sections: tuple[str, ...] = Field(default=(), max_length=100)
+    max_duration_seconds: int | None = Field(default=None, ge=1, le=31536000)
+
+
+class CollectionExecutionSpec(CollectionSpec):
     deadline_at: datetime | None = None
 
 
@@ -72,7 +83,7 @@ class CollectionQueue(Snapshot):
 class CurrentCollection(Snapshot):
     source: Literal["current"] = "current"
     id: UUID
-    specification: CollectionSpec
+    specification: CollectionExecutionSpec
     status: Literal["active", "paused", "settled"]
     priority: int
     reserved_pages: int
@@ -82,6 +93,8 @@ class CurrentCollection(Snapshot):
     outcome: str | None
     created_at: datetime
     completed_at: datetime | None
+    expires_at: datetime | None = None
+    retention_expired: bool = False
     queued_pages: int = 0
     acquiring_pages: int = 0
     selecting_pages: int = 0
@@ -108,9 +121,11 @@ class HistoricalCollection(Snapshot):
     model_config = ConfigDict(extra="forbid", frozen=True)
     source: Literal["history"] = "history"
     id: UUID
-    specification: CollectionSpec
+    specification: CollectionExecutionSpec
     created_at: datetime
     completed_at: datetime | None
+    expires_at: datetime | None = None
+    retention_expired: bool = False
     outcome: str | None
     consumed_pages: int | None = Field(ge=0)
     supplied_pages: int | None = Field(ge=0)
@@ -126,7 +141,7 @@ class HistoricalCollection(Snapshot):
 class HistoricalCollectionSummary(Snapshot):
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: UUID
-    visibility: Literal["public", "private"]
+    request_class: Literal["public", "system", "admin"]
     summary: str = Field(max_length=500)
     created_at: datetime
     completed_at: datetime | None
@@ -159,9 +174,6 @@ class FrontierSettings(Snapshot):
     admission_limit: int = Field(default=10000, ge=1, le=1000000)
     dispatch_limit: int = Field(default=48, ge=1, le=10000)
     captures_per_minute: int | None = Field(default=60, ge=1, le=60000)
-    background_share: int = Field(default=0, ge=0, le=99)
-    background_attempt_allowance: int = Field(default=1000, ge=0, le=1000000000)
-    background_capture_time_allowance_ms: int = Field(default=12500000, ge=0, le=1000000000000)
     attempt_allowance: int = Field(default=10000, ge=0, le=1000000000)
     capture_time_allowance_ms: int = Field(default=86400000, ge=0, le=1000000000000)
     capture_timeout_ms: int = Field(default=120000, ge=1000, le=3600000)
@@ -181,12 +193,6 @@ class FrontierControlView(Snapshot):
     started_attempts: int
     reserved_capture_ms: int
     charged_capture_ms: int
-    background_reserved_attempts: int
-    background_started_attempts: int
-    background_reserved_capture_ms: int
-    background_charged_capture_ms: int
-    background_waiting_reason: str | None
-    background_share_semantics: Literal["percent_when_both_eligible_spare_capacity_otherwise"] = "percent_when_both_eligible_spare_capacity_otherwise"
     dispatch_waiting_reason: str | None
     allowance_semantics: Literal["cumulative_until_operator_increases_limit"] = "cumulative_until_operator_increases_limit"
     time_semantics: Literal["client_capture_elapsed_not_provider_billing"] = "client_capture_elapsed_not_provider_billing"
@@ -288,9 +294,6 @@ class AcquisitionView(Snapshot):
     estimate_unavailable_reason: str | None
     callers: list[Caller]
     more_callers: bool
-    background: bool
-    background_parent_observation_id: UUID | None
-    background_rule_id: str | None
     as_of: datetime
 
 
@@ -430,19 +433,18 @@ class LiveView(Snapshot):
     history: HistoricalActivity | None
     history_unavailable_reason: str | None
     recent: list[RecentCapture]
-    visibility: Literal["public"] = "public"
 
 
 class ObservationLineageItem(Snapshot):
     record_id: UUID
     kind: Literal['fulfillment', 'reason']
     decided_at: datetime
-    collection_id: UUID | None
+    collection_id: UUID
     parent_observation_id: UUID | None
     rule_id: str = Field(max_length=200)
     depth: int | None = Field(ge=0)
     mode: Literal['acquired', 'shared', 'reused'] | None
-    reason: Literal['collection', 'background'] | None
+    reason: Literal['collection'] | None
     policy_version: str | None = Field(max_length=200)
 
 

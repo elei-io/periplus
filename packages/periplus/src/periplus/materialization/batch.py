@@ -30,6 +30,7 @@ from periplus.platform.catalogue.storage import (
     storage_protocol,
 )
 from periplus.urls import normalize_url
+from periplus.retention.identities import touch
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +65,8 @@ class PreparedBatch:
     project_seconds: float
     parquet_seconds: float
     files: dict[str, tuple[PreparedFile, ...]]
+    retained_visit_ids: tuple[str, ...] = ()
+    retained_content_hashes: tuple[str, ...] = ()
 
 
 def prepare_batch(
@@ -114,6 +117,8 @@ def prepare_batch(
         )
     parquet_seconds = time.perf_counter() - parquet_started
     return PreparedBatch(
+        retained_visit_ids=tuple(str(row[0]) for row in visits),
+        retained_content_hashes=tuple(source.content_sha256 for source in sources),
         source_items=len(visits),
         source_bytes=source_bytes,
         output_rows=sum(table.num_rows for table in outputs.values()),
@@ -145,6 +150,8 @@ def commit_prepared_batch(
             return _result(prepared, commit_started, superseded=True)
         if _is_applied(catalogue, batch.id):
             return _result(prepared, commit_started, already_applied=True)
+        touch(catalogue, "observation", prepared.retained_visit_ids)
+        touch(catalogue, "content", prepared.retained_content_hashes)
         for spec in PROJECTIONS:
             for file in prepared.files[spec.name]:
                 catalogue.trusted_remote_execute(
@@ -163,20 +170,11 @@ def commit_prepared_batch(
             f"{prepared.output_bytes}, now())"
         )
     result = _result(prepared, commit_started)
-    logging.info(
-        "materialization batch appended run=%s batch=%s visits=%s "
-        "source_bytes=%s output_rows=%s output_bytes=%s "
-        "project_seconds=%.3f parquet_seconds=%.3f commit_seconds=%.3f",
-        run.id,
-        batch.id,
-        result.source_items,
-        result.source_bytes,
-        result.output_rows,
-        result.output_bytes,
-        result.project_seconds,
-        result.parquet_seconds,
-        result.commit_seconds,
-    )
+    from periplus.platform.telemetry import event
+    event("materialization_batch_committed", operation_id=str(batch.id),
+          rows=result.output_rows, bytes=result.output_bytes,
+          elapsed_ms=(result.project_seconds + result.parquet_seconds + result.commit_seconds)*1000)
+
     return result
 
 
@@ -226,6 +224,9 @@ def _visit_rows(
         FROM ingest.visits AT (VERSION => {batch.snapshot})
         WHERE visit_id IN ({sql_string_list(set(batch.visit_ids))})
           AND coalesce(effective_url, requested_url) IS NOT NULL
+          AND visit_id::VARCHAR NOT IN (
+              SELECT identity FROM material._periplus_retention_identities
+              WHERE kind='observation' AND retired_at IS NOT NULL)
         ORDER BY visit_id
         """
     )
@@ -306,6 +307,9 @@ def _document_sources(
             FROM ingest.documents AT (VERSION => {batch.snapshot})
             WHERE content_sha256 IN ({sql_string_list(new_hashes)})
               AND lower(detected_media_type) = 'text/html'
+              AND visit_id::VARCHAR NOT IN (
+                  SELECT identity FROM material._periplus_retention_identities
+                  WHERE kind='observation' AND retired_at IS NOT NULL)
             GROUP BY content_sha256
             """
         )

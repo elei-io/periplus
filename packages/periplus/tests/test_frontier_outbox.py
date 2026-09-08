@@ -41,7 +41,7 @@ class FrontierOutboxTests(unittest.IsolatedAsyncioTestCase):
     async def test_lineage_uses_existing_ingestion_lane(self):
         identity = uuid4()
         evidence = CollectionDefinition(
-            record_id=identity, collection_id=identity, visibility="public",
+            record_id=identity, collection_id=identity,
             recorded_at=datetime.now(UTC), specification={"page_limit": 1},
         )
         delivery = self.delivery("lineage", evidence.model_dump(mode="json"))
@@ -56,7 +56,7 @@ class FrontierOutboxTests(unittest.IsolatedAsyncioTestCase):
         from periplus.crawl.runtime.frontier_outbox import reconcile_receipts_once
         from periplus.ingestion.queue import IngestionState
         identity = uuid4()
-        evidence = CollectionDefinition(record_id=identity, collection_id=identity, visibility="public",
+        evidence = CollectionDefinition(record_id=identity, collection_id=identity,
                                         recorded_at=datetime.now(UTC), specification={})
         delivery = self.delivery("lineage", evidence.model_dump(mode="json"))
         for status in ("pending", "failed"):

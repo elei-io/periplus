@@ -34,5 +34,6 @@ spec:
           {{- include "periplus.envFrom" . | nindent 10 }}
           env:
             {{- include "periplus.coreEnv" . | nindent 12 }}
+            {{- include "periplus.duckdbEnv" .Values.setup.duckdb | nindent 12 }}
           resources:
             {{- toYaml .Values.setup.resources | nindent 12 }}

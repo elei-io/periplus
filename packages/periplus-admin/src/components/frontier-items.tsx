@@ -30,7 +30,7 @@ async function read<T>(path: string, signal: AbortSignal): Promise<T> {
     )
   return body as T
 }
-const collectionLink = (id: string) => `/collections/${encodeURIComponent(id)}`
+const collectionLink = (id: string) => `/observatory/executions/${encodeURIComponent(id)}`
 const itemLink = (id: string) => `/frontier/items/${encodeURIComponent(id)}`
 function modeLabel(mode: string) {
   return mode === "acquired"
@@ -46,7 +46,7 @@ function observationLink(id: string) {
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
   )
     return null
-  return `/sql?${new URLSearchParams({ sql: `SELECT * FROM web.observation WHERE observation_id = '${id}' LIMIT 1;` })}`
+  return `/?${new URLSearchParams({ sql: `SELECT * FROM web.observation WHERE observation_id = '${id}' LIMIT 1;` })}`
 }
 function Observation({ id, label }: { id: string; label: string }) {
   const href = observationLink(id)
@@ -284,24 +284,7 @@ export function FrontierItemDetail({ id }: { id: string }) {
               )}
             </CardContent>
           </Card>
-          {item.background && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Background exploration</CardTitle>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-2">
-                <p>
-                  Selection rule: {item.background_rule_id || "Not recorded"}
-                </p>
-                {item.background_parent_observation_id && (
-                  <Observation
-                    id={item.background_parent_observation_id}
-                    label="Background parent observation"
-                  />
-                )}
-              </CardContent>
-            </Card>
-          )}
+
         </>
       )}
     <ObservationLineage key={item?.observation_id ?? id} id={item?.observation_id ?? id} />
@@ -443,7 +426,7 @@ function ObservationLineage({ id }: { id: string }) {
     {query.data && <><p className="break-all">{query.data.requested_url}</p><p className="text-sm text-muted-foreground">As of {new Date(query.data.as_of).toLocaleString()}</p><Observation id={query.data.observation_id} label="Query observation" /></>}
     {query.data?.items.length === 0 && <p>No visible provenance records on this page. Imported observations may have no collection or capture cause.</p>}
     {query.data?.items.map(item => <Card key={`${item.kind}:${item.record_id}`}><CardHeader><CardTitle>{item.kind === "reason" ? "Capture cause" : "Result use"}</CardTitle></CardHeader><CardContent className="flex flex-col gap-2">
-      <p>{item.kind === "reason" ? item.reason === "background" ? "Background exploration" : "Collection request" : item.mode === "reused" ? "Reused result" : item.mode === "shared" ? "Shared result" : "Acquired result"}</p>
+      <p>{item.kind === "reason" ? "Collection request" : item.mode === "reused" ? "Reused result" : item.mode === "shared" ? "Shared result" : "Acquired result"}</p>
       {item.collection_id && <a className="break-all underline" href={collectionLink(item.collection_id)}>Collection: {item.collection_id}</a>}
       <p>Rule {item.rule_id}{item.depth !== null ? ` · Depth ${item.depth}` : ""}{item.policy_version !== null ? ` · Policy ${item.policy_version}` : ""}</p>
       {item.parent_observation_id && <a className="break-all underline" href={itemLink(item.parent_observation_id)}>Parent observation: {item.parent_observation_id}</a>}

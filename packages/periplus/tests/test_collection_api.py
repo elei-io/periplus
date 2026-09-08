@@ -26,9 +26,13 @@ class CollectionApiTests(unittest.TestCase):
         self.addCleanup(self.engine.dispose)
         for table in TABLES:
             table.create(self.engine)
+        from periplus.operations.access.models import PublicAccessRecord
+        from periplus.operations.access.schemas import AccessPolicy
+        PublicAccessRecord.__table__.create(self.engine)
         self.sessions = sessionmaker(self.engine, expire_on_commit=False)
         with self.sessions.begin() as session:
             session.add(FrontierControlRecord(id=1))
+            session.add(PublicAccessRecord(id=1, configuration=AccessPolicy().model_dump(mode="json")))
             ensure_default_domain_policy(session)
         app = FastAPI()
         app.state.frontier = FrontierStore(self.sessions)
@@ -37,6 +41,7 @@ class CollectionApiTests(unittest.TestCase):
         self.history = AsyncMock()
         self.history.collection_readiness.return_value = {}
         self.history.get.return_value = None
+        self.history.is_retired.return_value = False
         app.state.collection_history = self.history
         from periplus.crawl.runtime.frontier_health import CrawlerPresenceReader
         bucket = AsyncMock()
@@ -61,6 +66,33 @@ class CollectionApiTests(unittest.TestCase):
         self.admin = {"Authorization": "Bearer admin"}
         self.payload = {"id": str(uuid4()), "specification": {"seed_urls": ["https://example.com/"]}}
 
+    def test_public_gates_do_not_block_admin_or_identical_replays(self):
+        from periplus.operations.access.service import AccessStore
+        from periplus.operations.access.schemas import AccessPolicy
+        first = self.client.post('/collections', json=self.payload)
+        self.assertEqual(first.status_code, 201, first.text)
+        store = AccessStore(self.sessions)
+        policy = AccessPolicy()
+        policy.crawl.enabled = False
+        store.save(policy, 1)
+        self.assertEqual(self.client.post('/collections', json=self.payload).status_code, 201)
+        fresh = {'specification': self.payload['specification']}
+        self.assertEqual(self.client.post('/collections', json=fresh).status_code, 403)
+        admin = self.client.post('/collections', json=fresh, headers=self.admin)
+        self.assertEqual(admin.status_code, 201, admin.text)
+        self.assertEqual(admin.json()['specification']['request_class'], 'admin')
+        self.assertEqual(len(self.client.get('/collections').json()['items']), 2)
+
+    def test_retired_request_cannot_be_recreated_and_retention_defaults_forever(self):
+        self.history.is_retired.return_value = True
+        self.assertEqual(self.client.post("/collections", json=self.payload).status_code, 410)
+        self.assertIsNone(self.client.app.state.frontier.get_collection(UUID(self.payload["id"])))
+        self.history.is_retired.return_value = False
+        result = self.client.post("/collections", json=self.payload).json()
+        self.assertIsNone(result["specification"]["retention_seconds"])
+        self.assertIsNone(result["expires_at"])
+        self.assertFalse(result["retention_expired"])
+
     def test_submission_is_durable_and_idempotent_without_running_work(self):
         for _ in range(2):
             response = self.client.post("/collections", json=self.payload)
@@ -72,14 +104,12 @@ class CollectionApiTests(unittest.TestCase):
         self.assertEqual(len(self.client.get("/collections").json()["items"]), 1)
         self.assertEqual(self.client.get(f'/collections/{self.payload["id"]}').status_code, 200)
 
-    def test_private_intent_and_operator_controls_require_admin(self):
-        private = self.payload | {"specification": {"seed_urls": ["https://private.example/"], "visibility": "private"}}
-        self.assertEqual(self.client.post("/collections", json=private).status_code, 403)
-        self.assertEqual(self.client.post("/collections", json=private, headers=self.admin).status_code, 201)
-        self.assertEqual(self.client.get("/collections").json()["items"], [])
-        self.assertEqual(self.client.get(f'/collections/{private["id"]}').status_code, 404)
-        self.assertEqual(len(self.client.get("/collections", headers=self.admin).json()["items"]), 1)
-        path = f'/collections/{private["id"]}/actions'
+    def test_public_class_is_assigned_and_controls_require_admin(self):
+        supplied = self.payload | {"specification": {"seed_urls": ["https://example.com/"], "request_class": "system"}}
+        response = self.client.post("/collections", json=supplied)
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["specification"]["request_class"], "public")
+        path = f'/collections/{supplied["id"]}/actions'
         self.assertEqual(self.client.post(path, json={"action": "cancel"}).status_code, 403)
         self.assertEqual(self.client.post(path, json={"action": "pause"}, headers=self.admin).json()["status"], "paused")
         self.assertEqual(self.client.post(path, json={"action": "resume"}, headers=self.admin).json()["status"], "active")
@@ -145,28 +175,13 @@ class CollectionApiTests(unittest.TestCase):
                          json={"action": "cancel"}, headers=self.admin)
         self.assertEqual(self.client.put(path, json={"priority": 0}, headers=self.admin).status_code, 409)
 
-    def test_background_controls_report_allowances_and_require_nonstarving_share(self):
-        current = self.client.get("/frontier/controls", headers=self.admin).json()
-        self.assertEqual(current["background_waiting_reason"], "background_disabled")
-        settings = current["settings"] | {"background_share": 25,
-            "background_attempt_allowance": 0, "background_capture_time_allowance_ms": 0}
-        response = self.client.put("/frontier/controls", headers=self.admin,
-            json={"expected_version": current["policy_version"], "settings": settings})
-        self.assertEqual(response.status_code, 200, response.text)
-        updated = response.json()
-        self.assertEqual(updated["background_waiting_reason"], "background_attempt_allowance_exhausted")
-        self.assertEqual(updated["settings"]["background_share"], 25)
-        self.assertEqual(updated["background_reserved_attempts"], 0)
-        rejected = self.client.put("/frontier/controls", headers=self.admin,
-            json={"expected_version": updated["policy_version"], "settings": settings | {"background_share": 100}})
-        self.assertEqual(rejected.status_code, 422)
 
     def historical(self, *, private=False):
         from datetime import UTC, datetime
         from periplus.crawl.control.collections.history import HistoricalCollection
-        from periplus.crawl.control.collections.schemas import CollectionSpec
-        return HistoricalCollection(id=self.payload["id"], specification=CollectionSpec(
-            **self.payload["specification"], visibility="private" if private else "public"),
+        from periplus.crawl.control.collections.schemas import CollectionExecutionSpec
+        return HistoricalCollection(id=self.payload["id"], specification=CollectionExecutionSpec(
+            **self.payload["specification"], request_class="admin" if private else "public"),
             created_at=datetime.now(UTC), completed_at=datetime.now(UTC), outcome="page_limit",
             consumed_pages=1, supplied_pages=1, failed_pages=0, seed_provenance=None, as_of=datetime.now(UTC))
 
@@ -211,14 +226,13 @@ class CollectionApiTests(unittest.TestCase):
         conflict = self.client.post("/collections", json=self.payload | {"specification": self.payload["specification"] | {"page_limit": 2}})
         self.assertEqual(conflict.status_code, 409)
 
-    def test_private_historical_identity_cannot_be_read_or_replaced_by_public_caller(self):
+    def test_admin_history_is_shared_but_public_cannot_replace_its_intent(self):
         self.history.get.return_value = self.historical(private=True)
-        self.assertEqual(self.client.get(f'/collections/{self.payload["id"]}').status_code, 404)
-        self.assertEqual(self.client.post("/collections", json=self.payload).status_code, 404)
-        detail = self.client.get(f'/collections/{self.payload["id"]}', headers=self.admin)
+        detail = self.client.get(f'/collections/{self.payload["id"]}')
         self.assertEqual(detail.status_code, 200)
-        self.assertEqual(detail.json()["specification"]["visibility"], "private")
-        self.assertEqual(self.client.get("/collections", headers=self.admin).json()["items"], [])
+        self.assertEqual(detail.json()["specification"]["request_class"], "admin")
+        self.assertEqual(self.client.post("/collections", json=self.payload).status_code, 409)
+        self.assertEqual(self.client.get("/collections").json()["items"], [])
 
     def test_history_outage_defers_supplied_identity_but_new_server_identity_can_start(self):
         from periplus.crawl.control.collections.history import HistoryUnavailable
@@ -274,15 +288,15 @@ class CollectionApiTests(unittest.TestCase):
         response = self.client.get('/collections/history?limit=7')
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()['source'], 'history')
-        self.history.list.assert_awaited_with(public_only=True, limit=7, cursor=None)
+        self.history.list.assert_awaited_with( limit=7, cursor=None)
         self.client.get('/collections/history', headers=self.admin)
-        self.history.list.assert_awaited_with(public_only=False, limit=20, cursor=None)
+        self.history.list.assert_awaited_with( limit=20, cursor=None)
         self.history.list.return_value = page.model_copy(update={'items': [HistoricalCollectionSummary(
-            id=uuid4(), visibility='private', summary='Secret', created_at=datetime.now(UTC),
+            id=uuid4(), request_class='admin', summary='Secret', created_at=datetime.now(UTC),
             completed_at=None, outcome=None, consumed_pages=None, supplied_pages=None, failed_pages=None)]})
         response = self.client.get('/collections/history')
-        self.assertEqual(response.status_code, 503)
-        self.assertNotIn('Secret', response.text)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['items'][0]['request_class'], 'admin')
         self.history.list.side_effect = ValueError('invalid cursor')
         self.assertEqual(self.client.get('/collections/history?cursor=bad').status_code, 422)
         self.history.list.side_effect = HistoryUnavailable('storage credentials')
@@ -309,7 +323,7 @@ class CollectionApiTests(unittest.TestCase):
         self.assertEqual(self.client.delete(path + '?expected_version=2', headers=self.admin).status_code, 204)
 
 
-    def test_current_item_routes_enforce_visibility_and_bounds(self):
+    def test_current_item_routes_share_classes_and_enforce_bounds(self):
         from frontier_fixtures import policy_snapshot
         from periplus.crawl.control.content_policies.schemas import EffectivePolicySnapshot
         from periplus.crawl.control.collections.schemas import SelectionContext
@@ -326,8 +340,8 @@ class CollectionApiTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/collections/{identity}/items?limit=101").status_code, 422)
         self.assertEqual(self.client.get(f"/collections/{identity}/items?after=invalid").status_code, 422)
         private = self.client.post("/collections", headers=self.admin,
-            json={"specification": {"seed_urls": ["https://private.example/"], "visibility": "private"}}).json()
-        self.assertEqual(self.client.get(f"/collections/{private['id']}/items").status_code, 404)
+            json={"specification": {"seed_urls": ["https://private.example/"], "request_class": "admin"}}).json()
+        self.assertEqual(self.client.get(f"/collections/{private['id']}/items").status_code, 200)
         self.assertEqual(self.client.get(f"/frontier/items/{uuid4()}").status_code, 404)
         self.assertEqual(self.client.post(f"/frontier/items/{acquisition}").status_code, 403)
 
@@ -356,22 +370,16 @@ class CollectionApiTests(unittest.TestCase):
             page = self.client.get(f'/collections/{identity}/items').json()
             self.assertIs(page['items'][0]['acquisition']['query_ready'], ready)
             self.assertTrue(page['items'][0]['acquisition']['evidence_committed'])
-            self.history.readiness.assert_awaited_with([acquisition], public_only=True)
+            self.history.readiness.assert_awaited_with([acquisition])
             detail = self.client.get(f'/frontier/items/{acquisition}', headers=self.admin).json()
             self.assertIs(detail['query_ready'], ready)
-            self.history.readiness.assert_awaited_with([acquisition], public_only=False)
+            self.history.readiness.assert_awaited_with([acquisition])
         self.history.readiness.side_effect = HistoryUnavailable('private storage detail')
         response = self.client.get(f'/frontier/items/{acquisition}')
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIsNone(response.json()['query_ready'])
         self.assertEqual(response.json()['query_readiness_reason'], 'catalogue_readiness_unavailable')
         self.assertNotIn('private storage', response.text)
-        with self.sessions.begin() as session:
-            session.get(AcquisitionRecord, acquisition).visibility = 'private'
-        self.history.readiness.reset_mock()
-        self.assertEqual(self.client.get(f'/frontier/items/{acquisition}').status_code, 404)
-        self.assertEqual(self.client.get(f'/collections/{identity}/items').json()['items'], [])
-        self.history.readiness.assert_not_awaited()
 
     def test_arrivals_distinguish_not_yet_ingested_current_intent_from_missing_history(self):
         self.history.arrivals.return_value = None
@@ -440,9 +448,9 @@ class CollectionApiTests(unittest.TestCase):
             next_cursor=None, as_of=datetime.now(UTC))
         response = self.client.get(path, params={'limit': 3, 'cursor': 'opaque'})
         self.assertEqual(response.status_code, 200, response.text)
-        self.history.observation_lineage.assert_awaited_with(identity, public_only=True, limit=3, cursor='opaque')
+        self.history.observation_lineage.assert_awaited_with(identity,  limit=3, cursor='opaque')
         self.assertEqual(self.client.get(path, headers=self.admin).status_code, 200)
-        self.history.observation_lineage.assert_awaited_with(identity, public_only=False, limit=20, cursor=None)
+        self.history.observation_lineage.assert_awaited_with(identity,  limit=20, cursor=None)
         self.history.observation_lineage.return_value = None
         self.assertEqual(self.client.get(path).status_code, 404)
         self.history.observation_lineage.side_effect = HistoryUnavailable('sensitive internal storage error')
@@ -454,3 +462,16 @@ class CollectionApiTests(unittest.TestCase):
         self.assertEqual(self.client.get(path, params={'limit': 101}).status_code, 422)
         self.assertEqual(self.client.get(path, params={'cursor': 'x' * 513}).status_code, 422)
         self.history.observation_lineage.assert_not_awaited()
+
+    def test_duration_is_relative_and_absolute_deadline_is_not_an_input(self):
+        from datetime import UTC, datetime, timedelta
+        payload = self.payload | {"specification": {"seed_urls": ["https://example.com/"], "max_duration_seconds": 30}}
+        first = self.client.post("/collections", json=payload)
+        self.assertEqual(first.status_code, 201, first.text)
+        value = first.json()
+        self.assertEqual(datetime.fromisoformat(value["specification"]["deadline_at"]),
+                         datetime.fromisoformat(value["created_at"]).replace(tzinfo=UTC) + timedelta(seconds=30))
+        replay = self.client.post("/collections", json=payload)
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertEqual(replay.json()["specification"]["deadline_at"], value["specification"]["deadline_at"])
+        self.assertEqual(self.client.post("/collections", json=self.payload | {"specification": payload["specification"] | {"deadline_at": value["specification"]["deadline_at"]}}).status_code, 422)

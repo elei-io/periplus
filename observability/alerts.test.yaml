@@ -1,0 +1,24 @@
+rule_files:
+  - alerts.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'periplus_worker_ready{job="ingestor",instance="worker-1"}'
+        values: '0+0x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PeriplusWorkerNotReady
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ingestor, instance: worker-1 }
+            exp_annotations:
+              summary: "Periplus worker has remained unready"
+              description: "Inspect dependency and progress signals; do not assume a restart will fix an external outage."
+  - interval: 1m
+    input_series:
+      - series: 'periplus_worker_ready{job="ingestor",instance="worker-1"}'
+        values: '1+0x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PeriplusWorkerNotReady
+        exp_alerts: []

@@ -1,5 +1,4 @@
-import periplusMark from "@/assets/periplus-mark.svg"
-import periplusWordmark from "@/assets/periplus-wordmark.svg"
+import { Compass } from "lucide-react"
 import { navigationGroups } from "@/lib/navigation"
 import {
   Sidebar,
@@ -30,22 +29,24 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
               render={
                 <a
                   href="/"
+                  aria-label="Periplus Admin home"
+                  className="gap-[9px]"
                   onClick={(event) => {
                     event.preventDefault()
                     onNavigate("/")
                   }}
                 >
-                  <img
-                    src={periplusWordmark}
-                    alt="Periplus Admin"
-                    className="h-5 w-auto group-data-[collapsible=icon]:hidden"
+                  <Compass
+                    aria-hidden="true"
+                    strokeWidth={1.5}
+                    className="size-[26px]! shrink-0 group-data-[collapsible=icon]:size-5!"
                   />
-                  <span className="group-data-[collapsible=icon]:hidden">Admin</span>
-                  <img
-                    src={periplusMark}
-                    alt="Periplus Admin"
-                    className="hidden size-5 shrink-0 group-data-[collapsible=icon]:block"
-                  />
+                  <span className="text-[22px] font-[650] tracking-[-0.9px] group-data-[collapsible=icon]:hidden">
+                    periplus
+                  </span>
+                  <span className="text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
+                    Admin
+                  </span>
                 </a>
               }
             />

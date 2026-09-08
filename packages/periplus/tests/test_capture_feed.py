@@ -32,17 +32,17 @@ class CaptureFeedTests(unittest.TestCase):
                 identity = UUID(int=self.sequence)
                 identities.append(identity)
                 session.add(AcquisitionRecord(id=identity, url=f'https://example.com/{identity}',
-                    domain='example.com', capture_key=str(identity), requirements={}, visibility=visibility,
-                    access_context='public', status=status, completed_at=at or self.now))
+                    domain='example.com', capture_key=str(identity), requirements={},
+                     status=status, completed_at=at or self.now))
         return identities
 
     def read(self, cursor=None, *, at=None):
         with patch('periplus.crawl.runtime.capture_feed.FrontierStore._transaction_now', return_value=at or self.now):
             return capture_page(self.sessions, decode_capture_cursor(cursor))
 
-    def test_bootstrap_is_recent_public_successes_and_idle_does_not_replay(self):
+    def test_bootstrap_is_recent_shared_successes_and_idle_does_not_replay(self):
         public = self.add(12)
-        self.add(8, visibility='private')
+        public += self.add(8)
         self.add(8, status='failed')
         first = self.read()
         self.assertEqual([item.observation_id for item in first.items], public[-7:])

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
-from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -72,53 +70,6 @@ class CatalogueConfigTests(unittest.TestCase):
             "postgres:dbname=periplus_lake host=postgres.example.test",
         )
 
-    def test_cdc_extension_path_must_identify_a_file(self) -> None:
-        config = CatalogueConfig(
-            alias="periplus",
-            metadata_path="metadata.duckdb",
-            data_path="lake/",
-            metadata_schema="ducklake",
-            cdc_extension_path="/missing/ducklake_cdc.duckdb_extension",
-        )
-
-        with self.assertRaisesRegex(
-            CatalogueConfigError,
-            "was not found",
-        ):
-            config.resolved_cdc_extension_path()
-
-    def test_cdc_extension_path_resolves_existing_file(self) -> None:
-        with TemporaryDirectory() as directory:
-            extension = Path(directory) / "ducklake_cdc.duckdb_extension"
-            extension.touch()
-            config = CatalogueConfig(
-                alias="periplus",
-                metadata_path="metadata.duckdb",
-                data_path="lake/",
-                metadata_schema="ducklake",
-                cdc_extension_path=str(extension),
-            )
-
-            self.assertEqual(
-                config.resolved_cdc_extension_path(),
-                extension.resolve(),
-            )
-
-    def test_cdc_extension_path_is_required_when_loaded(self) -> None:
-        config = CatalogueConfig(
-            alias="periplus",
-            metadata_path="metadata.duckdb",
-            data_path="lake/",
-            metadata_schema="ducklake",
-            cdc_extension_path="",
-        )
-
-        with self.assertRaisesRegex(
-            CatalogueConfigError,
-            "PERIPLUS_DUCKLAKE_CDC_EXTENSION_PATH",
-        ):
-            config.resolved_cdc_extension_path()
-
     def test_s3_data_path_uses_scoped_parameterized_credentials(self) -> None:
         with patch.dict(
             os.environ,
@@ -182,7 +133,6 @@ class CatalogueConfigTests(unittest.TestCase):
             metadata_path="metadata.ducklake",
             data_path="/srv/lake",
             metadata_schema="ducklake",
-            cdc_extension_path="",
         )
         protocol = MagicMock(spec=DuckLakeStorageProtocol)
 

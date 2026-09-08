@@ -3,7 +3,7 @@
 Periplus acquires web documents, retains immutable content-addressed bytes, records observed evidence
 in DuckLake, and maintains rebuildable structural and URL relations.
 
-Finite collection requests and bounded public background exploration feed one shared crawler:
+Manual and scheduled finite requests feed one shared crawler:
 
 ```text
 collections + background -> shared frontier -> CDP -> immutable bytes -> ingest.* -> material.* -> web.* / content.*
@@ -28,7 +28,7 @@ live materialization. Physical `ingest.*` and `material.*` remain implementation
 | `packages/periplus-public/` | Public corpus discovery, SQL, Live crawler activity and collection submission. |
 
 The core API, crawler, ingestor, materializer, setup and janitor are process roles of
-one Python package. Admin is a Vite application served by an authenticated nginx gateway;
+one Python package. Admin is a Vite application served by an nginx API gateway;
 public is a Next.js application whose server holds the restricted infrastructure credential.
 Neither frontend imports core implementation code or connects directly to its stores.
 
@@ -37,9 +37,8 @@ The console core, browser shell, terminal shell and Python SDK remain supporting
 
 ## Development
 
-Requirements are Python 3.14 with `uv`, Node.js 24 or newer, Docker Compose, the pinned
-`ducklake-cdc-extension` checkout, and a standard CDP endpoint. The default Compose
-stack builds the matching DuckLake CDC extension in cached builder stages, then provisions separate
+Requirements are Python 3.14 with `uv`, Node.js 24 or newer, Docker Compose, and a standard
+CDP endpoint. The default Compose stack installs the signed CDC community package and provisions separate
 Postgres authorities for Periplus control state and DuckLake metadata, and a VersityGW S3 service
 with `raw/*` source objects and `lake/*` DuckLake files stored in a local named volume.
 JetStream owns work delivery. Storage runs natively on Apple Silicon and needs no cloud account.
@@ -54,9 +53,9 @@ make check
 make compose-up
 ```
 
-The first image build compiles the DuckLake CDC extension against DuckDB. Later builds reuse those layers until
-the pinned DuckDB version or CDC extension source changes. Runtime images contain only the compiled
-extension artifacts, not the compiler toolchain.
+The core image installs CDC from the DuckDB community repository and verifies its version and
+source revision against the pinned DuckDB runtime. No native extension build or sibling checkout
+is required. Later application builds reuse the cached extension installation.
 
 If a greenfield baseline replacement leaves either local database or another disposable service
 with a superseded contract, reset the complete development state and start again:
@@ -82,8 +81,8 @@ public or admin token for SDK collection/control calls.
 
 Start the applications locally with `npm run dev --workspace periplus-public` and
 `npm run dev --workspace periplus-admin`. Both read root `.env` during development.
-Compose exposes public on port 8080 and admin on port 8081. Admin uses HTTP Basic
-login with username `admin` and the administrative API token as password.
+Compose exposes public on port 8080 and admin on port 8081. Admin has no built-in login;
+production access to its UI and API gateway is enforced by Cloudflare Access.
 Use TLS at the ingress in production.
 
 Public collection submission accepts a URL or description, depth 0–2, link scope, allowed sections,

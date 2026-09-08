@@ -8,9 +8,9 @@ export interface SqlColumn {
 export type PublicSchemaName = "web" | "content"
 
 export interface SqlRelation {
-  schema_name: PublicSchemaName
+  schema_name: string
   name: string
-  kind: "view"
+  kind: "view" | "table"
   description: string | null
   columns: SqlColumn[]
 }
@@ -21,7 +21,7 @@ export interface SqlMacroParameter {
 }
 
 export interface SqlMacro {
-  schema_name: PublicSchemaName
+  schema_name: string
   name: string
   kind: "scalar_macro" | "table_macro"
   parameters: SqlMacroParameter[]

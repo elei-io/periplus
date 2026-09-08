@@ -14,7 +14,7 @@ small evidence kernel.
 Periplus owns observation faithfully. Interpretation begins outside Periplus. It does not publish a
 `data.*` schema or define domain entities such as companies, products, people, claims, or topics.
 
-Physical contract version: `5.0.0`. The cutover resets disposable prior state; there is no graph-era
+Physical contract version: `8.0.0`. The cutover resets disposable prior state; there is no graph-era
 crawl table or compatibility migration.
 
 ## `ingest.*`
@@ -28,7 +28,7 @@ The authoritative relations are:
 - `ingest.collections` — frozen finite collection definitions.
 - `ingest.collection_outcomes` — separately appended terminal request outcomes.
 - `ingest.fulfillments` — one request URL result associated with an existing observation.
-- `ingest.acquisition_reasons` — request/background causal reasons frozen at dispatch.
+- `ingest.acquisition_reasons` — request causal reasons frozen at dispatch.
 
 They contain observed evidence only. There is no page dimension, URL decomposition, latest-state
 pointer, or materialization hint in ingestion. Inserts are idempotent only when an existing
@@ -238,13 +238,13 @@ time, and frozen-candidate digest. It remains available after control-state clea
 parameters remain in the frozen collection specification.
 `web.fulfillment` has one row per request URL result and references the independently owned
 `observation_id`. Different collections may reference the same observation, including later recent
-reuse. `web.acquisition_reason` records the collection or background reason frozen at dispatch;
-later reuse does not retroactively become a cause of capture. Each lineage view filters private
-records. Observation queries do not implicitly join any lineage view or multiply their rows.
+reuse. `web.acquisition_reason` records the collection reason frozen at dispatch;
+later reuse does not retroactively become a cause of capture. Every lineage view exposes shared evidence from all request classes. Observation queries do not implicitly join any lineage view or multiply their rows.
 
-Background reasons require `selection_provenance`, containing the background policy version,
-historical source snapshot, and source query ID used to admit the candidate. The parent observation
-and selection rule identify the discovery cause. Collection reasons omit this background provenance.
+Every acquisition reason requires a collection ID. Scheduled system work uses the same collection
+lineage as other requests. The parent observation and selection rule identify the discovery cause.
+Background-specific selection provenance is removed. Request expiration records `duration_limit`;
+execution deadlines remain derived runtime timestamps, not a separate terminal outcome.
 These fields survive operational selection-check expiry through the ordinary lineage ingestion lane.
 
 Lineage jobs use the ordinary ingestion lane with stable identities and conflicting-evidence
@@ -275,7 +275,7 @@ During retirement, current collection rows remain hidden while their dependent i
 rows are pruned in bounded batches. Definition/outcome receipts, all associated lineage receipts,
 and accepted evidence receipts must be durable before the handoff begins. API detail continues from
 history throughout pruning. Private history is available only through authorized administrative
-detail reads; the public SQL visibility contract is unchanged.
+detail reads; all retained evidence remains shared.
 
 ### Attempt control provenance
 
@@ -305,3 +305,32 @@ Completion-step `parameters` contains the executed `action_version` and `config`
 These measured completion signals accompany duration and stopping reason; they do not certify
 usefulness or completeness. A successful observation means capture checks passed, and may still
 contain a challenge or incomplete content. Immutable source bytes support later quality evaluation.
+
+## Retention lifecycle
+
+Evidence is append-only while retained. The janitor can explicitly retire request and
+observation evidence and its owned projections. `material._periplus_retention_identities`
+holds exact transaction fences and replay receipts; `material._periplus_retention_objects`
+holds pending raw-object retirements. These internal tables are mutable bookkeeping,
+not public corpus relations. See [RETENTION.md](RETENTION.md) for each column, ownership,
+expiry semantics and the snapshot/reader guarantees.
+
+## Request schedule controls
+
+`request_definitions` stores versioned reusable intent. `request_schedules` stores
+cadence, bounds and current execution controls. Schedule origin is frozen inside
+the existing `ingest.collections.specification` JSON; no history mirror is added.
+See [SCHEDULES.md](SCHEDULES.md). Background-specific frontier fields and the
+background-check table are removed by Alembic revision `20260908_0005`.
+
+Reusable intent accepts `max_duration_seconds`; frozen execution intent additionally
+contains the server-derived `deadline_at`. Both remain inside existing specification
+JSON. Revision `20260908_0006` removes the previously mandatory-null deadline key from
+reusable definitions; recorded execution deadlines and immutable evidence are retained.
+
+### Private query execution history
+
+[QUERY_HISTORY.md](QUERY_HISTORY.md) defines the 30-day private `query_executions`
+table in control Postgres, bounded best-effort recording, janitor cleanup and the
+`observatory/queries` dashboard. This is explicitly approved product analytics;
+no query results or crawl history are added to control Postgres.

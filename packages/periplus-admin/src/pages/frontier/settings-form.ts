@@ -25,14 +25,6 @@ export const settingFields: {
     group: "pace",
   },
   {
-    key: "background_share",
-    label: "Background allocation (%)",
-    unit: 1,
-    min: 0,
-    max: 99,
-    group: "pace",
-  },
-  {
     key: "capture_timeout_ms",
     label: "Capture timeout (seconds)",
     unit: 1000,
@@ -51,22 +43,6 @@ export const settingFields: {
   {
     key: "capture_time_allowance_ms",
     label: "Total capture time (hours)",
-    unit: 3600000,
-    min: 0,
-    max: 1000000000000,
-    group: "budget",
-  },
-  {
-    key: "background_attempt_allowance",
-    label: "Background attempt allowance",
-    unit: 1,
-    min: 0,
-    max: 1000000000,
-    group: "budget",
-  },
-  {
-    key: "background_capture_time_allowance_ms",
-    label: "Background capture time (hours)",
     unit: 3600000,
     min: 0,
     max: 1000000000000,

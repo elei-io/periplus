@@ -132,7 +132,7 @@ export function useUpdateContentPolicy(id: string) {
       return (await response.json()) as ContentPolicyDetailRecord
     },
     onSuccess: () => {
-      toast.success("Updated content policy.")
+      toast.success("Updated capture policy.")
       void client.invalidateQueries({ queryKey: ["content-policy", id] })
       void client.invalidateQueries({ queryKey: ["content-policies"] })
     },
@@ -153,7 +153,7 @@ export function useCreateContentPolicy() {
       return (await response.json()) as ContentPolicyDetailRecord
     },
     onSuccess: () => {
-      toast.success("Created content policy.")
+      toast.success("Created capture policy.")
       void client.invalidateQueries({ queryKey: ["content-policies"] })
     },
     onError: (error) => toast.error(extractApiError(error)),
@@ -170,7 +170,7 @@ export function useDeleteContentPolicy(id: string) {
       if (!response.ok) throw await apiErrorFromResponse(response)
     },
     onSuccess: () => {
-      toast.success("Deleted content policy.")
+      toast.success("Deleted capture policy.")
       void client.invalidateQueries({ queryKey: ["content-policies"] })
     },
     onError: (error) => toast.error(extractApiError(error)),

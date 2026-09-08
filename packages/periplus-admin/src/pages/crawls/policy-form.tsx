@@ -221,7 +221,7 @@ export function PolicyForm({
         <CardHeader>
           <CardTitle>Where this policy applies</CardTitle>
           <CardDescription>
-            The most specific matching content policy is frozen into each crawl.
+            The most specific matching capture policy is frozen into each crawl.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">

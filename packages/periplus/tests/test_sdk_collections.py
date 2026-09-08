@@ -43,6 +43,7 @@ class SdkCollectionApiTests(unittest.IsolatedAsyncioTestCase):
         self.history = AsyncMock()
         self.history.collection_readiness.return_value = {}
         self.history.get.return_value = None
+        self.history.is_retired.return_value = False
         app = FastAPI()
         app.state.frontier = self.store
         app.state.frontier_sessions = self.sessions
@@ -93,7 +94,7 @@ class SdkCollectionApiTests(unittest.IsolatedAsyncioTestCase):
             created_at=now, completed_at=now, outcome='budget_reached', consumed_pages=1, supplied_pages=1,
             failed_pages=0, seed_provenance=None, as_of=now)
         self.history.list.return_value = CollectionHistoryPage(items=[HistoricalCollectionSummary(
-            id=identity, visibility='public', summary='Example', created_at=now, completed_at=now,
+            id=identity, request_class='public', summary='Example', created_at=now, completed_at=now,
             outcome='budget_reached', consumed_pages=1, supplied_pages=1, failed_pages=0)], next_cursor=None, as_of=now)
         collection = await collections.get(identity)
         self.assertIsInstance(collection.snapshot, SdkHistory)
@@ -106,10 +107,9 @@ class SdkCollectionApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_versioned_controls_and_domains(self):
         initial = await frontier.controls()
-        updated = await frontier.replace_controls(initial.settings.model_copy(update={'paused': True, 'background_share': 7}),
+        updated = await frontier.replace_controls(initial.settings.model_copy(update={'paused': True}),
                                                    expected_version=initial.policy_version)
         self.assertTrue(updated.settings.paused)
-        self.assertEqual(updated.settings.background_share, 7)
         with self.assertRaises(ConflictError):
             await frontier.replace_controls(initial.settings, expected_version=initial.policy_version)
         domain = await frontier.create_domain(DomainPolicyCreateRequest(slug='example', host_match='example.com', paused=True))

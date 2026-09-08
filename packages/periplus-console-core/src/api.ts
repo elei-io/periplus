@@ -13,10 +13,10 @@ export class SqlApiError extends Error {
 }
 
 export class SqlApi {
-  constructor(private readonly baseUrl: string, private readonly token?: string) {}
+  constructor(private readonly baseUrl: string, private readonly token?: string, private readonly access: "public" | "admin" = "public") {}
 
   async query(sql: string, signal?: AbortSignal): Promise<SqlResult> {
-    const value = await this.request<unknown>("/query/exec", {
+    const value = await this.request<unknown>(this.access === "admin" ? "/admin/sql/exec" : "/query/exec", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sql }),
@@ -42,21 +42,29 @@ export class SqlApi {
     }
 
     const relations: SqlMetadata["relations"] = []
-    for (const schemaName of PUBLIC_SCHEMAS) {
-      const tables = await this.query(`SHOW TABLES FROM ${schemaName}`, signal)
+    const schemas = this.access === "admin"
+      ? (await this.query("SELECT schema_name FROM information_schema.schemata WHERE catalog_name = current_database() ORDER BY schema_name", signal)).rows.map((row) => String(row[0]))
+      : PUBLIC_SCHEMAS
+    for (const schemaName of schemas) {
+      const tables = await this.query(
+        this.access === "admin"
+          ? `SELECT table_name, table_type FROM information_schema.tables WHERE table_catalog = current_database() AND table_schema = '${schemaName.replaceAll("'", "''")}' ORDER BY table_name`
+          : `SHOW TABLES FROM ${quoteIdentifier(schemaName)}`,
+        signal
+      )
       for (const row of tables.rows) {
         const name = row[0]
         if (typeof name !== "string") {
-          throw new Error("Periplus API returned an invalid public table name.")
+          throw new Error("Periplus API returned an invalid table name.")
         }
         const description = await this.query(
-          `DESCRIBE ${schemaName}.${quoteIdentifier(name)}`,
+          `DESCRIBE ${quoteIdentifier(schemaName)}.${quoteIdentifier(name)}`,
           signal
         )
         relations.push({
           schema_name: schemaName,
           name,
-          kind: "view",
+          kind: this.access === "admin" && row[1] === "BASE TABLE" ? "table" : "view",
           description: null,
           columns: description.rows.map((column) => {
             if (
@@ -64,7 +72,7 @@ export class SqlApi {
               typeof column[1] !== "string"
             ) {
               throw new Error(
-                "Periplus API returned an invalid public column description."
+                "Periplus API returned an invalid column description."
               )
             }
             return {

@@ -16,7 +16,9 @@ from sqlalchemy.orm import sessionmaker
 
 from frontier_fixtures import policy_snapshot
 from test_frontier_capture import lease
-from test_frontier_store import TABLES
+from test_frontier_store import TABLES as FRONTIER_TABLES
+from periplus.crawl.control.schedules.models import RequestDefinitionRecord, ScheduleRecord
+TABLES = (*FRONTIER_TABLES, RequestDefinitionRecord.__table__, ScheduleRecord.__table__)
 from periplus.crawl.acquisition.models import AcquisitionResult
 from periplus.crawl.control.collections.discovery import DiscoveryState
 from periplus.crawl.control.collections.schemas import CollectionSpec
@@ -154,10 +156,14 @@ class FrontierRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def test_paused_deadline_settles_without_seed_execution(self):
         identity = uuid4()
         self.store.create_collection(identity, CollectionSpec(seed_sql="SELECT 'https://example.com/' AS url",
-                                    deadline_at=datetime.now(UTC) - timedelta(seconds=1)))
+                                    max_duration_seconds=1))
+        from periplus.crawl.control.collections.models import CollectionRecord
+        with self.sessions.begin() as session:
+            record = session.get(CollectionRecord, identity)
+            record.spec = record.spec | {"deadline_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat()}
         self.store.set_collection_paused(identity, True)
         work = self.store.claim_collection()
         def query(sql):
             self.fail("expired collection must not execute SQL")
         service_collection(self.store, work, lambda url: self.policy, None, seed_query=query)
-        self.assertEqual(self.store.get_collection(identity).outcome, "deadline")
+        self.assertEqual(self.store.get_collection(identity).outcome, "duration_limit")

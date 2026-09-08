@@ -43,13 +43,10 @@ def estimate_start(session, record, control, *, waiting, eligible_at, constraint
     if (workers is None or workers.state != 'observed' or not workers.ready_workers
             or not 0 <= (now - workers.as_of).total_seconds() <= 3):
         return None, 'worker_readiness_not_observed'
-    if record.visibility != 'public' or record.background_reason:
-        return None, 'comparable_request_starts_not_observed'
     active_caller = session.scalar(select(InterestRecord.id).join(CollectionRecord,
         CollectionRecord.id == InterestRecord.collection_id).where(
             InterestRecord.acquisition_id == record.id, InterestRecord.status == 'queued',
-            CollectionRecord.status == 'active', CollectionRecord.spec['visibility'].as_string() == 'public',
-            CollectionRecord.spec['deadline_at'].as_string().is_(None),
+            CollectionRecord.status == 'active', CollectionRecord.spec['max_duration_seconds'].as_string().is_(None),
         ).limit(1))
     if active_caller is None:
         return None, 'request_eligibility_not_verified'
@@ -59,13 +56,12 @@ def estimate_start(session, record, control, *, waiting, eligible_at, constraint
     # Only one globally pending acquisition is eligible for this initial estimator.
     # Read at most twenty comparable public starts, without loading evidence payloads.
     rows = session.execute(select(AcquisitionRecord.created_at, started).where(
-        AcquisitionRecord.visibility == 'public', AcquisitionRecord.domain == record.domain,
+        AcquisitionRecord.domain == record.domain,
         AcquisitionRecord.status == 'succeeded', AcquisitionRecord.attempt_count == 1,
         AcquisitionRecord.dispatch_policy_version == control.policy_version,
         AcquisitionRecord.requirements == requirements,
         AcquisitionRecord.attempt_domain_policy['id'].as_string() == str(policy_id),
         AcquisitionRecord.attempt_domain_policy['version'].as_integer() == version,
-        AcquisitionRecord.attempt_background.is_(False),
         AcquisitionRecord.completed_at >= now - timedelta(seconds=600),
         AcquisitionRecord.completed_at <= now, func.length(started) <= 64,
     ).order_by(AcquisitionRecord.completed_at.desc(), AcquisitionRecord.id).limit(20)).all()

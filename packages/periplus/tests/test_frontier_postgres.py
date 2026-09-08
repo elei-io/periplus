@@ -496,113 +496,9 @@ class FrontierPostgresTests(unittest.TestCase):
         self.assertEqual(len(set(messages)), 6)
         self.assertEqual(self.store.claim_ingestion_receipts(now=self.now), [])
 
-    def test_concurrent_historical_checks_cannot_replace_an_active_parent_checkpoint(self):
-        from frontier_fixtures import navigation_package
-        from periplus.crawl.runtime.background_seen import SeenCandidates
-        from periplus.crawl.runtime.frontier_store import AdmissionDeferred
-        parent = self.store.admit(self.collection(), "https://example.com/",
-                                  self.context, self.policy, now=self.now)
-        with self.sessions.begin() as session:
-            record = session.get(AcquisitionRecord, parent.acquisition_id)
-            record.status = "succeeded"
-            record.navigation = navigation_package().model_dump(mode="json")
-            control = session.get(FrontierControlRecord, 1)
-            control.pending_count = 0
-            control.background_share = 10
-        gate = Barrier(2)
-        def check(_):
-            gate.wait(timeout=10)
-            try:
-                return self.store.start_background_check(parent.acquisition_id,
-                    SeenCandidates(urls=("https://example.com/next",)), now=self.now)
-            except AdmissionDeferred:
-                return None
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(check, range(2)))
-        self.assertEqual(sum(result is not None for result in results), 1)
 
-    def test_background_admission_race_has_one_acquisition_without_new_interests(self):
-        from frontier_fixtures import navigation_package
-        from periplus.crawl.runtime.background_seen import HistoricalSeenResult, SeenCandidates
-        parents = [self.store.admit(self.collection(), f"https://parent-{index}.example/",
-                                   self.context, self.policy, now=self.now) for index in range(2)]
-        with self.sessions.begin() as session:
-            for parent in parents:
-                record = session.get(AcquisitionRecord, parent.acquisition_id)
-                record.status = "succeeded"
-                record.navigation = navigation_package().model_dump(mode="json")
-            control = session.get(FrontierControlRecord, 1)
-            control.pending_count = 0
-            control.background_share = 10
-        candidates = SeenCandidates(urls=("https://child.example/",))
-        checks = []
-        for parent in parents:
-            check = self.store.start_background_check(parent.acquisition_id, candidates)
-            checks.append(self.store.finish_background_check(check, HistoricalSeenResult(
-                candidates=candidates, seen_urls=(), snapshot=7, query_id="q",
-            )))
-        gate = Barrier(2)
-        def admit(check):
-            gate.wait(timeout=10)
-            return self.store.admit_background(check, candidates.urls[0], self.policy)
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(admit, checks))
-        self.assertEqual(sorted(result.status for result in results), ["admitted", "already_pending"])
-        with self.sessions() as session:
-            self.assertEqual(len(list(session.scalars(select(AcquisitionRecord)))), 3)
-            self.assertEqual(len(list(session.scalars(select(InterestRecord)))), 2)
-            self.assertEqual(session.get(FrontierControlRecord, 1).pending_count, 1)
 
-    def test_background_dispatch_race_reserves_only_one_remaining_background_attempt(self):
-        with self.sessions.begin() as session:
-            control = session.get(FrontierControlRecord, 1)
-            control.background_share = 25
-            control.background_attempt_allowance = 1
-            control.pending_count = 2
-            for i in range(2):
-                session.add(AcquisitionRecord(
-                    url=f"https://child-{i}.example/", domain=f"child-{i}.example",
-                    capture_key=f"child-{i}", pending_key=f"child-{i}",
-                    requirements=self.policy.model_dump(mode="json"), visibility="public",
-                    access_context="public", eligible_at=self.now,
-                    background_reason={"parent_observation_id": str(uuid4()),
-                        "rule_id": "background-unseen-v1", "selection_provenance": {
-                            "policy_version": 1, "source_snapshot": 7, "source_query_id": "q"}},
-                ))
-        gate = Barrier(2)
-        def dispatch(_):
-            gate.wait(timeout=10)
-            return self.store.dispatch_next(now=self.now)
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(dispatch, range(2)))
-        self.assertEqual(sum(result is not None for result in results), 1)
-        view = self.store.control_view()
-        self.assertEqual((view.pending_acquisitions, view.dispatched_acquisitions), (1, 1))
-        self.assertEqual((view.background_reserved_attempts, view.reserved_attempts), (1, 1))
-        self.assertEqual(view.background_reserved_capture_ms, 125000)
 
-    def test_background_service_claim_race_owns_one_public_parent(self):
-        from frontier_fixtures import navigation_package
-        from datetime import timedelta
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).background_share = 10
-            for visibility in ("public", "private"):
-                session.add(AcquisitionRecord(
-                    url=f"https://{visibility}.example/", domain=f"{visibility}.example",
-                    capture_key=visibility, requirements=self.policy.model_dump(mode="json"),
-                    visibility=visibility, access_context=visibility, status="succeeded",
-                    background_after=self.now - timedelta(seconds=1),
-                    navigation=navigation_package().model_dump(mode="json"),
-                ))
-        gate = Barrier(2)
-        def claim(_):
-            gate.wait(timeout=10)
-            return self.store.claim_background()
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(claim, range(2)))
-        self.assertEqual(sum(result is not None for result in results), 1)
-        work = next(result for result in results if result is not None)
-        self.assertEqual(self.store.get_acquisition(work.acquisition_id).visibility, "public")
 
     def test_exclusion_change_and_capture_start_serialize_without_cancelling_started_work(self):
         from periplus.crawl.control.collections.frontier_controls import ReplaceFrontierSettings
@@ -708,8 +604,8 @@ class FrontierPostgresTests(unittest.TestCase):
         identity = uuid4()
         with self.sessions.begin() as session:
             session.add(AcquisitionRecord(id=identity, url="https://retired.example/", domain="retired.example",
-                capture_key=str(identity), requirements=self.policy.model_dump(mode="json"), visibility="public",
-                access_context="public", status="cancelled", completed_at=self.now))
+                capture_key=str(identity), requirements=self.policy.model_dump(mode="json"),
+                 status="cancelled", completed_at=self.now))
         gate = Barrier(2)
         def cleanup(_):
             gate.wait(timeout=10)
@@ -735,3 +631,29 @@ class FrontierPostgresTests(unittest.TestCase):
             results = list(pool.map(cleanup, range(2)))
         self.assertEqual(sorted(results), [0, 1])
         self.assertIsNone(self.store.get_collection(identity))
+
+    def test_concurrent_schedule_ticks_create_one_request_and_outbox(self):
+        from datetime import timedelta
+        from periplus.crawl.control.schedules.models import RequestDefinitionRecord, ScheduleRecord
+        from periplus.crawl.control.schedules.schemas import DefinitionInput, ScheduleInput
+        from periplus.crawl.control.schedules.service import ScheduleStore
+        from periplus.crawl.runtime.request_schedules import create_due_requests
+        from periplus.crawl.runtime.frontier_models import FrontierOutboxRecord
+        for model in (RequestDefinitionRecord, ScheduleRecord):
+            model.__table__.create(self.engine)
+        schedules = ScheduleStore(self.sessions)
+        definition = schedules.save_definition(DefinitionInput(name='Race', specification=CollectionSpec(seed_urls=('https://example.com/',))))
+        due = self.now + timedelta(minutes=1)
+        schedule = schedules.save_schedule(definition.id, ScheduleInput(kind='interval', interval_seconds=60, start_at=due, max_count=1))
+        gate = Barrier(2)
+        def tick(_):
+            gate.wait(timeout=10)
+            return create_due_requests(schedules, due)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(tick, range(2)))
+        self.assertEqual(sum(map(len, results)), 1)
+        self.assertEqual(schedules.schedules()[0].execution_count, 1)
+        with self.sessions() as session:
+            rows = list(session.scalars(select(FrontierOutboxRecord)))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].payload['specification']['origin']['schedule_id'], str(schedule.id))

@@ -136,7 +136,7 @@ export class SqlCompleter {
       }
     } else if (expectsRelation) {
       for (const schema of publicSchemas) {
-        add(`${schema}.`, "schema", "public catalogue", 80)
+        add(`${schema}.`, "schema", "catalogue schema", 80)
       }
       for (const relation of metadata.relations) {
         add(

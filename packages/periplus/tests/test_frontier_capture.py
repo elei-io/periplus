@@ -28,6 +28,32 @@ class FrontierCaptureTests(unittest.IsolatedAsyncioTestCase):
         probe = patch("periplus.crawl.runtime.frontier_capture.public_destination_url", AsyncMock(side_effect=lambda url: url))
         self.destination = probe.start()
         self.addCleanup(probe.stop)
+        from periplus.crawl.runtime.frontier_capture import _active_captures
+        self.active_metric = _active_captures
+        self.addCleanup(lambda: self.assertEqual(self.active_metric._value.get(), 0))
+
+    async def test_authorized_capture_occupancy_clears_after_cancellation(self):
+        acquisition = self.acquisition()
+        store = MagicMock()
+        store.get_acquisition.return_value = acquisition
+        store.current_domain_policy.return_value = acquisition_context(acquisition).policy.domain
+        store.begin_attempt.return_value = True
+        store.needs_navigation.return_value = False
+        message = AsyncMock()
+        message.data = CaptureWork(acquisition_id=acquisition.id, generation=1).model_dump_json().encode()
+        entered = asyncio.Event()
+        async def capture(**kwargs):
+            self.assertEqual(self.active_metric._value.get(), 1)
+            entered.set()
+            await asyncio.Event().wait()
+        with patch("periplus.crawl.runtime.frontier_capture.operation_leases", lease), patch("periplus.crawl.runtime.frontier_capture.domain_permit", lease), patch("periplus.crawl.runtime.frontier_capture.acquire_page", capture):
+            task = asyncio.create_task(handle_capture_delivery(message, store, AsyncMock(), object(), operation_bucket=object(), domain_bucket=FakeBucket()))
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(self.active_metric._value.get(), 0)
 
     async def test_cdp_connection_failure_defers_without_authorizing_or_pacing_a_start(self):
         from periplus.crawl.acquisition.capture import connect_cdp
@@ -47,6 +73,7 @@ class FrontierCaptureTests(unittest.IsolatedAsyncioTestCase):
                                           operation_bucket=object(), domain_bucket=FakeBucket())
         pace.assert_not_awaited()
         store.begin_attempt.assert_not_called()
+        self.assertEqual(self.active_metric._value.get(), 0)
         store.defer_unstarted.assert_called_once_with(acquisition.id, 1, delay_seconds=30,
             domain_policy=None, reason='cdp_unavailable')
         message.ack.assert_awaited_once()
@@ -97,14 +124,14 @@ class FrontierCaptureTests(unittest.IsolatedAsyncioTestCase):
 
     def acquisition(self):
         return SimpleNamespace(id=uuid4(), generation=1, status="dispatched", url="https://example.com/",
-                               visibility="private", domain="example.com", requirements=policy_snapshot(), created_at=datetime.now(UTC),
+                                domain="example.com", requirements=policy_snapshot(), created_at=datetime.now(UTC),
                                prior_results=[], uncertain_attempts=[], attempt_count=0, attempt_limit=3,
                                attempt_reserved_ms=125000, dispatch_policy_version=1, attempt_domain_policy=None, attempt_exclusions=[], attempt_exclusion_version=1)
 
     async def test_accepted_evidence_precedes_ack(self):
         acquisition = self.acquisition()
         evidence = VisitEvidence(visit=VisitRecord(
-            visit_id=acquisition.id, visibility=acquisition.visibility, requested_url=acquisition.url, admitted_at=acquisition.created_at,
+            visit_id=acquisition.id,  requested_url=acquisition.url, admitted_at=acquisition.created_at,
             started_at=acquisition.created_at, finished_at=acquisition.created_at, outcome="succeeded",
         ), attempts=())
         result = AcquisitionResult(url=acquisition.url, success=True, duration_seconds=0.1, evidence=evidence)
@@ -207,7 +234,6 @@ class FrontierCaptureTests(unittest.IsolatedAsyncioTestCase):
                                            "resource_usage": {"policy_version": 1, "reserved_ms": 125000, "measured_ms": None}}]
         context = acquisition_context(acquisition)
         self.assertEqual(context.prior_attempts[0].outcome, "uncertain")
-        self.assertEqual(context.visibility, "private")
         self.assertIsNone(context.prior_attempts[0].completed_at)
         attempt = AttemptRecord(attempt_id=attempt_id_for(acquisition.id, 0), visit_id=acquisition.id,
                                 attempt_index=0, started_at=acquisition.created_at, finished_at=None, outcome="uncertain")

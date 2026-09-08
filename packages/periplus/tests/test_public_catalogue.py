@@ -111,12 +111,12 @@ class PublicCatalogueTests(unittest.TestCase):
         self.catalogue.connection.execute(
             """
             INSERT INTO ingest.visits (
-                visit_id, visibility, requested_url, effective_url,
+                visit_id, requested_url, effective_url,
                 admitted_at, observed_at, finished_at, outcome,
                 status_code, document_id, provenance
             ) VALUES
                 (
-                    '10000000-0000-0000-0000-000000000001', 'public',
+                    '10000000-0000-0000-0000-000000000001',
                     'https://example.com/start', 'https://example.com/',
                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z',
                     '2026-01-01T00:00:02Z', 'success', 200,
@@ -125,7 +125,7 @@ class PublicCatalogueTests(unittest.TestCase):
                      'dataset': NULL, 'source_record_id': NULL}
                 ),
                 (
-                    '10000000-0000-0000-0000-000000000002', 'public',
+                    '10000000-0000-0000-0000-000000000002',
                     'https://example.com/missing', NULL,
                     '2026-01-02T00:00:00Z', NULL,
                     '2026-01-02T00:00:02Z', 'failed', NULL, NULL,
@@ -133,7 +133,7 @@ class PublicCatalogueTests(unittest.TestCase):
                      'dataset': NULL, 'source_record_id': NULL}
                 ),
                 (
-                    '10000000-0000-0000-0000-000000000003', 'public',
+                    '10000000-0000-0000-0000-000000000003',
                     'https://mirror.example/', 'https://mirror.example/',
                     '2026-01-03T00:00:00Z', '2026-01-03T00:00:01Z',
                     '2026-01-03T00:00:02Z', 'success', 200,
@@ -222,40 +222,12 @@ class PublicCatalogueTests(unittest.TestCase):
             ),
         )
 
-    def test_private_evidence_is_hidden_even_with_known_content_identity(self) -> None:
+    def test_shared_content_is_available_from_every_observation(self) -> None:
         self.test_views_preserve_observation_content_and_occurrence_grains()
         connection = self.catalogue.connection
-        connection.execute("UPDATE ingest.visits SET visibility = 'private'")
-        for relation in ("web.observation", "web.link_occurrence",
-                         "content.object", "content.html_element"):
-            self.assertEqual(connection.execute(
-                f"SELECT count(*) FROM {relation}"
-            ).fetchone(), (0,), relation)
-        self.assertEqual(connection.execute(
-            "SELECT * FROM content.subtree_text('content-a', 0)"
-        ).fetchall(), [])
-
-        # Identical bytes become public through a public observation, without
-        # revealing another observation's URLs or multiplying content rows.
-        connection.execute(
-            "UPDATE ingest.visits SET visibility = 'public' "
-            "WHERE visit_id = '10000000-0000-0000-0000-000000000003'"
-        )
-        self.assertEqual(connection.execute(
-            "SELECT requested_url FROM web.observation"
-        ).fetchall(), [("https://mirror.example/",)])
-        self.assertEqual(connection.execute(
-            "SELECT count(*) FROM web.link_occurrence"
-        ).fetchone(), (0,))
-        self.assertEqual(connection.execute(
-            "SELECT count(*) FROM content.object"
-        ).fetchone(), (1,))
-        self.assertEqual(connection.execute(
-            "SELECT count(*) FROM content.html_element"
-        ).fetchone(), (2,))
-        self.assertEqual(connection.execute(
-            "SELECT text FROM content.subtree_text('content-a', 0)"
-        ).fetchall(), [("Next",)])
+        self.assertEqual(connection.execute("SELECT count(*) FROM web.observation").fetchone(), (3,))
+        self.assertGreater(connection.execute("SELECT count(*) FROM content.object").fetchone()[0], 0)
+        self.assertTrue(connection.execute("SELECT * FROM content.subtree_text('content-a', 0)").fetchall())
 
     def test_content_format_is_a_small_detected_representation_class(self) -> None:
         install_public_catalogue(self.catalogue)
@@ -270,9 +242,9 @@ class PublicCatalogueTests(unittest.TestCase):
         ]
         for index, (media_type, _format) in enumerate(rows, start=1):
             self.catalogue.connection.execute(
-                "INSERT INTO ingest.visits (visit_id, visibility, requested_url, admitted_at, "
+                "INSERT INTO ingest.visits (visit_id, requested_url, admitted_at, "
                 "finished_at, outcome, document_id, provenance) "
-                "VALUES (?, 'public', 'https://example.com/', now(), now(), 'succeeded', ?, "
+                "VALUES (?, 'https://example.com/', now(), now(), 'succeeded', ?, "
                 "{'kind': 'periplus'})",
                 [f"10000000-0000-0000-0000-{index:012d}",
                  f"00000000-0000-0000-0000-{index:012d}"],

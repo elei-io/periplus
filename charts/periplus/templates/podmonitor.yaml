@@ -1,0 +1,31 @@
+{{- if .Values.podMonitor.enabled }}
+{{- $root := . }}
+{{- range $role := list "api" "query" "crawler" "ingestor" "materializer" "janitor" }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "periplus.fullname" $root }}-{{ $role }}
+  labels:
+    {{- include "periplus.labels" $root | nindent 4 }}
+    {{- with $root.Values.podMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "periplus.componentSelectorLabels" (dict "root" $root "component" $role) | nindent 6 }}
+  podMetricsEndpoints:
+    - port: {{ ternary "http" "metrics" (has $role (list "api" "query")) }}
+      path: /metrics
+      interval: {{ $root.Values.podMonitor.interval }}
+      scrapeTimeout: {{ $root.Values.podMonitor.scrapeTimeout }}
+      relabelings:
+        - targetLabel: namespace
+          replacement: {{ $root.Release.Namespace | quote }}
+        - targetLabel: periplus_release
+          replacement: {{ $root.Release.Name | quote }}
+        - targetLabel: periplus_component
+          replacement: {{ $role | quote }}
+{{- end }}
+{{- end }}

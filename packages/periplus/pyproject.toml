@@ -24,11 +24,13 @@ dependencies = [
     "pyarrow>=21",
     "sqlglot>=27",
     "duckdb==1.5.5",
+    "croniter>=6,<7",
 ]
 
 [dependency-groups]
 dev = [
     "httpx2>=2.5",
+    "pyyaml>=6",
 ]
 
 [project.scripts]

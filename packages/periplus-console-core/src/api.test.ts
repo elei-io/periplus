@@ -26,13 +26,13 @@ test("loads completion metadata through the query operation", async (context) =>
     statements.push(body.sql)
     const responses: Record<string, SqlResult> = {
       "SELECT version() AS duckdb_version": result([["v1.4.0"]]),
-      "SHOW TABLES FROM web": result([["observation"]]),
-      'DESCRIBE web."observation"': result([
+      'SHOW TABLES FROM "web"': result([["observation"]]),
+      'DESCRIBE "web"."observation"': result([
         ["observation_id", "UUID", "NO"],
         ["content_id", "VARCHAR", "YES"],
       ]),
-      "SHOW TABLES FROM content": result([["object"]]),
-      'DESCRIBE content."object"': result([
+      'SHOW TABLES FROM "content"': result([["object"]]),
+      'DESCRIBE "content"."object"': result([
         ["content_id", "VARCHAR", "NO"],
       ]),
     }
@@ -45,10 +45,10 @@ test("loads completion metadata through the query operation", async (context) =>
 
   assert.deepEqual(statements, [
     "SELECT version() AS duckdb_version",
-    "SHOW TABLES FROM web",
-    'DESCRIBE web."observation"',
-    "SHOW TABLES FROM content",
-    'DESCRIBE content."object"',
+    'SHOW TABLES FROM "web"',
+    'DESCRIBE "web"."observation"',
+    'SHOW TABLES FROM "content"',
+    'DESCRIBE "content"."object"',
   ])
   assert.equal(metadata.duckdb_version, "v1.4.0")
   assert.equal(metadata.catalogue_version, undefined)
@@ -102,4 +102,27 @@ test("rejects an incompatible query response", async (context) => {
     new SqlApi("https://periplus.test/api").query("SELECT 1"),
     /incompatible SQL query contract/
   )
+})
+
+
+test("admin SQL uses the privileged endpoint and discovers internal schemas", async (context) => {
+  const originalFetch = globalThis.fetch
+  context.after(() => { globalThis.fetch = originalFetch })
+  const statements: string[] = []
+  globalThis.fetch = async (input, init) => {
+    assert.equal(String(input), "https://periplus.test/api/admin/sql/exec")
+    const { sql } = JSON.parse(String(init?.body)) as { sql: string }
+    statements.push(sql)
+    if (sql === "SELECT version() AS duckdb_version") return Response.json(result([["v1.5.5"]]))
+    if (sql.includes("information_schema.schemata")) return Response.json(result([["ingest"]]))
+    if (sql.includes("FROM information_schema.tables")) return Response.json(result([["visits", "BASE TABLE"]]))
+    if (sql === 'DESCRIBE "ingest"."visits"') return Response.json(result([["visit_id", "UUID", "NO"]]))
+    return Response.json(result([]))
+  }
+  const api = new SqlApi("https://periplus.test/api", undefined, "admin")
+  await api.query("CREATE TABLE operator_test (id INTEGER)")
+  const metadata = await api.metadata()
+  assert.equal(metadata.relations[0]?.schema_name, "ingest")
+  assert.equal(metadata.relations[0]?.kind, "table")
+  assert.ok(statements.includes("CREATE TABLE operator_test (id INTEGER)"))
 })

@@ -1,0 +1,86 @@
+# Install KEDA and configure per-pod Prometheus collection before enabling.
+# Replace this endpoint and set podMonitor.labels for your Prometheus selector.
+autoscaling:
+  prometheus:
+    serverAddress: http://prometheus.monitoring.svc:9090
+podMonitor:
+  enabled: true
+
+api:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+admin:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 4
+public:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+crawler:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    # Up to 120 local capture slots; match this to external CDP/global limits.
+    maxReplicas: 10
+    threshold: "8.4"
+ingestor:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    threshold: "200"
+  concurrency: 4
+  resources:
+    requests:
+      cpu: "1"
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+      ephemeral-storage: 4Gi
+  duckdb:
+    threads: 2
+    memoryLimit: 256MB
+    maxTempDirectorySize: 512MB
+materializer:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    threshold: "4"
+  concurrency: 2
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+      ephemeral-storage: 8Gi
+  duckdb:
+    threads: 2
+    memoryLimit: 1GB
+    maxTempDirectorySize: 1GB
+query:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    threshold: "0.7"
+  resources:
+    requests:
+      cpu: "1"
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+      ephemeral-storage: 2Gi
+  duckdb:
+    threads: 2
+    memoryLimit: 1GB
+    maxTempDirectorySize: 512MB

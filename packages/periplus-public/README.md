@@ -9,7 +9,8 @@ of the parsed projection. Source bytes are retained separately.
 
 - `/`: marketing landing page with an Ask/SQL launcher, live book-price example, and concise product story.
 - `/about`: vision, worked extraction, join semantics, collection, and preview access/data-use disclosures.
-- `/discover`: Ask and SQL workspace modes, streamed evidence, CodeMirror, schema exploration, CSV export, and share links.
+- `/discover`: dataset discovery conversation with a persistent editable definition panel, source evidence, and dataset previews.
+- `/sql`: independent SQL workspace with CodeMirror, schema exploration, CSV export, and query share links.
   Home submissions launch once; the URL retains the input but consumes the run flag before execution. Reloading restores a draft.
 - `/coverage`: live site counts, distinct URLs, observations, and available collection dates.
 - `/datasets` and `/datasets/[slug]`: curated named SQL queries, live previews, source/scope notes, copy/open SQL, and CSV export.
@@ -58,7 +59,7 @@ Production ingress owns aggregate traffic limits; the agent bounds concurrent ru
 ## Collection requests and Live
 
 `/suggest` accepts a starting URL or description, depth 0–2, internal/external/both link scope,
-up to 1,000 pages and ten allowed sections. These map directly to CollectionSpec and page-local
+policy-defined page budgets and ten allowed sections. These map directly to CollectionSpec and page-local
 follow SQL. Section limits constrain selection, not redirects or subresources. Python validates
 and stores intent in Postgres; `/api/collections` proxies the same collection API used by the SDK.
 
@@ -67,7 +68,7 @@ Details show discovery, admission backlog, runnable/deferred/unknown queue count
 shared/reused results, last progress and conditional estimate ranges. Frontier items and durable
 arrivals link to public provenance. Request settlement does not prove query readiness; the latter
 requires a separate catalogue/materialization proof. Historical requests remain readable after
-operational cleanup. Public credentials cannot change crawler controls or private collections.
+operational cleanup. Public credentials cannot change crawler controls. All request classes share evidence.
 
 `/live` shows bounded current worker/domain activity, recent public captures and upcoming work.
 It reports observation time and unavailable/stale dependencies without claiming a global FIFO order.
@@ -75,3 +76,6 @@ It reports observation time and unavailable/stale dependencies without claiming 
 Analysis allows up to 24 notes of 2,000 characters with a shared 16,000-character prose budget
 including the brief and confidence. Oversized prose is rejected, never silently clipped. Only CSV
 export of returned query rows is currently available.
+
+Public feature availability, rate limits and crawl choices come from `/api/access`.
+See [ACCESS.md](../../docs/ACCESS.md) for gates, independent assistant/SQL operation, and cutover.

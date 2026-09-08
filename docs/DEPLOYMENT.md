@@ -30,9 +30,9 @@ container names. This means one local Periplus Compose project may run on a Dock
 | `periplus-materializer` | Fixed projections, rebuilds, and live CDC | S3 `raw` reads and `lake` writes |
 | `periplus-query` | Isolated read-only SQL preparation and execution | none |
 | `periplus-api` | Control HTTP API | S3 `raw` namespace |
-| `periplus-admin` | Authenticated operator application and API gateway | none |
+| `periplus-admin` | Operator application and API gateway | none |
 | `periplus-public` | Public Next.js application and bounded API client | none |
-| `periplus-janitor` | Periplus-owned staging, navigation, and runtime cleanup | S3 `raw` namespace |
+| `periplus-janitor` | Transient cleanup; opt-in logical retention and raw-object reclamation | Postgres current roots, DuckLake writer, NATS operation leases, S3 `raw` namespace |
 | `periplus-setup` | One-shot schema and catalogue installation | none |
 
 `PERIPLUS_CONTROL_DATABASE_URL` always identifies Periplus Postgres.
@@ -81,9 +81,9 @@ The S3 provider, caching, replication, and public-access infrastructure are prod
 choices. Periplus uses its existing generic S3 connection settings; the production chart does not
 provision Versity. Local development no longer depends on a remote under-store.
 
-The Compose build compiles only the DuckLake CDC extension against the pinned DuckDB version.
-`PERIPLUS_DUCKLAKE_CDC_EXTENSION_REPO` locates its source checkout. Query connections use standard
-DuckDB and official storage extensions, with no custom query extension.
+The Compose build installs the signed DuckLake CDC community package without compiling DuckDB
+or requiring a sibling checkout. Query connections use standard DuckDB and official storage
+extensions; only live materialization loads CDC.
 
 ## Production artifacts
 
@@ -91,7 +91,7 @@ GitHub Actions publishes four immutable artifacts for each main-branch revision:
 
 - `ghcr.io/ekkuleivonen/periplus-core:sha-<commit>` contains the API, every worker role,
   `periplus-setup`, the DuckLake CDC extension;
-- `ghcr.io/ekkuleivonen/periplus-admin:sha-<commit>` contains the operator UI and authenticated nginx gateway;
+- `ghcr.io/ekkuleivonen/periplus-admin:sha-<commit>` contains the operator UI and nginx API gateway;
 - `ghcr.io/ekkuleivonen/periplus-public:sha-<commit>` contains the standalone Next.js public application; and
 - `oci://ghcr.io/ekkuleivonen/periplus-charts/periplus:0.1.0-dev.<commit>` deploys the three images.
 
@@ -99,18 +99,17 @@ Release tags `vX.Y.Z` additionally publish matching `X.Y.Z` image and chart vers
 GitOps must pin the explicit chart version and all three explicit image tags; it must not consume a
 mutable `latest` tag.
 
-The production extension sources and DuckDB version are pinned in
-`.github/extension-sources.env`. BuildKit receives the pinned public DuckLake CDC source as a named build context. The backend
-Dockerfile builds its native artifact against pinned DuckDB and embeds it under `/opt/periplus`.
-No private extension checkout or deploy key is required. Official DuckDB storage extensions are
-installed into the image at build time.
+The core image installs official storage extensions and signed community CDC at build time.
+`packages/periplus/src/periplus/platform/catalogue/cdc_extension.py` validates the pinned
+DuckDB version, CDC version, and source revision during build and CDC startup. No extension
+source checkout, BuildKit named context, deploy key, or unsigned loading is required.
 
 ## Kubernetes topology
 
 The chart under `charts/periplus` owns only Periplus processes. PostgreSQL, NATS JetStream, S3-compatible
 storage, the standard CDP endpoint, secret projection, ingress, and metrics storage remain external
-platform authorities. The chart supports one API, one janitor, scalable crawler/ingestor/
-materializer deployments, and independently scalable stateless admin and public replicas.
+platform authorities. The chart supports scalable API, query, crawler, ingestor, materializer, admin and
+public deployments, plus one janitor and a one-shot setup Job.
 
 `periplus-setup` is a blocking Helm pre-install and pre-upgrade hook. A failed migration or catalogue
 bootstrap prevents the new runtime image from rolling out. All backend workloads in one release
@@ -147,15 +146,15 @@ per-process lane bounds; replica count and local concurrency are separate contro
 Core requires distinct `PERIPLUS_ADMIN_API_TOKEN` and `PERIPLUS_PUBLIC_API_TOKEN` values.
 Missing or equal credentials fail closed. Only health and Prometheus metrics are anonymous;
 keep the API on the private service network. Admin injects the administrative credential
-server-side and protects all UI and proxied API requests with HTTP Basic authentication
-(username `admin`, password the administrative token). Expose admin only through a separate
-TLS ingress with operator access controls. Public receives only its restricted token.
+server-side and has no built-in login in development or production. Cloudflare Access owns
+production operator authentication and must cover both the UI and all proxied `/api` routes.
+Route admin through a separate TLS ingress with origin access restricted to that protected path. Public receives only its restricted token.
 
 The public app receives `PERIPLUS_QUERY_URL` and `PERIPLUS_QUERY_API_TOKEN` for SQL, plus
 `PERIPLUS_API_URL` and the restricted `PERIPLUS_PUBLIC_API_TOKEN` for collection submission
 and public status listing. Next.js only transports these requests; Python validates and stores
-them in Periplus Postgres. Public credentials cannot start crawls. Admin proxies
-`/api/query/*` to the same query server with the query token. Core uses its separate API tokens.
+them in Periplus Postgres. Public credentials cannot start crawls. The admin console proxies `/api/admin/sql/exec` to the control API using the admin token
+for request-scoped writable SQL. Core uses its separate API tokens.
 The query service uses the core image but its own `entrypoints/query.py` composition root.
 It has one connection and admission slot per process; replica count scales query capacity.
 
@@ -234,3 +233,67 @@ frozen bounds. It is not a browser kill switch. There is no force-abort API in t
 For an emergency, stop outbound access at the CDP deployment/network boundary; stopping a Periplus
 worker alone cannot prove that a remote browser stopped. Lost in-flight outcomes are recovered as
 uncertain attempts within the configured attempt/time allowances, not reported as cancelled network I/O.
+
+### Request retention
+
+[RETENTION.md](RETENTION.md) defines the four `PERIPLUS_RETENTION_*` settings,
+read-only review command, schema 6.0.0 cutover and physical deletion guarantees.
+Retain the singleton janitor. Purge is disabled by default. Enabling it requires
+the janitor to access the same lake, control database, operation-lease KV and raw
+object store as the writers. Snapshot expiry and registered-file cleanup remain
+LakeDucktor operations; raw deletion waits for observed expiry plus reader grace.
+
+### Request schedules
+
+Follow [SCHEDULES.md](SCHEDULES.md) for the `20260908_0004` / `20260908_0005`
+control migrations and coordinated worker restart. Scheduling runs in the existing
+crawler process; the separate background selection path is removed.
+
+Request-duration intent uses revision `20260908_0006`. Deploy API, crawler, janitor
+and ingestors together: the ingestors validate the new `duration_limit` outcome.
+The migration removes the unused deadline key from reusable definitions; actual
+execution deadlines and immutable crawl evidence are unchanged.
+
+### Operational telemetry
+
+See `observability/README.md` for Prometheus/Loki collection, privacy boundaries,
+Grafana dashboard import and alert rules. Workers use `/livez` for startup/liveness
+and `/healthz` for dependency readiness. Private query/API `/metrics` endpoints
+are unauthenticated; the public application's `/api/metrics` requires the query
+service credential and must remain private at ingress. Scrape individual replicas.
+
+## Autoscaling and process budgets
+
+The production chart provides opt-in KEDA autoscaling for API, admin, public,
+crawler, ingestor, materializer and query. Each has min/max replica limits and
+configurable targets/behavior. Platform-owned KEDA, Prometheus and metrics-server
+supply scaling infrastructure; optional PodMonitors supply per-pod discovery and
+release-scoped labels. See [the chart guide](../charts/periplus/README.md#autoscaling-and-capacity)
+and [complete example](../charts/periplus/examples/autoscaling.yaml).
+
+Crawlers scale on authorized capture occupancy, ingestors/materializers on fresh
+shared queue observations, queries on admitted SQL occupancy, and HTTP applications
+on CPU by default. Janitor stays singleton and setup remains a hook Job. Autoscaled
+Deployments omit fixed replicas; API and query support rolling replicas. Local API
+admission limits multiply with replicas; ingress owns aggregate traffic limits.
+
+Each Python role's Helm `duckdb` block configures threads, memory and spill per
+connection through `PERIPLUS_DUCKDB_THREADS`, `PERIPLUS_DUCKDB_MEMORY_LIMIT` and
+`PERIPLUS_DUCKDB_MAX_TEMP_DIRECTORY_SIZE`. These override individual managed
+connection defaults, including coordinator and follow-SQL connections. Pod
+`resources` remain independent; allow for all concurrent connections and parsing
+buffers. Outside Helm, absent overrides retain the existing workload defaults.
+The default pod termination grace is 330 seconds; durable work remains replayable
+if a pod is killed before draining. Scaling changes do not alter storage ownership,
+leases, domain policies, query isolation or schema contracts.
+
+Public capability controls and the shared-request cutover are documented in [ACCESS.md](ACCESS.md).
+They reuse the control API and Postgres; the isolated query service receives no control database
+credentials. Gate public queries through Next.js and keep direct service endpoints protected.
+
+### Private query execution history
+
+[QUERY_HISTORY.md](QUERY_HISTORY.md) defines the 30-day private `query_executions`
+table in control Postgres, bounded best-effort recording, janitor cleanup and the
+`observatory/queries` dashboard. This is explicitly approved product analytics;
+no query results or crawl history are added to control Postgres.

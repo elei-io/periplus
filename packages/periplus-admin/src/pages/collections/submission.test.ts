@@ -10,7 +10,7 @@ function form() {
     max_depth: "0",
     page_limit: "25",
     result_max_age_seconds: "0",
-    access_context: "public",
+    request_class: "admin",
   }))
     value.set(key, text)
   return value
@@ -23,21 +23,21 @@ test("submission preserves conservative URLs, zero depth and fresh-result intent
   ])
   assert.equal(spec.max_depth, 0)
   assert.equal(spec.result_max_age_seconds, 0)
-  assert.equal(spec.visibility, "public")
+  assert.equal(spec.request_class, "admin")
 })
-test("SQL parameters and explicit private visibility survive submission", () => {
+test("SQL parameters and system class survive submission", () => {
   const value = form()
   value.set(
     "seed_sql",
     "SELECT requested_url AS url FROM web.observation WHERE requested_url = ? LIMIT 10"
   )
   value.set("seed_parameters", '["example.com"]')
-  value.set("private", "on")
-  value.set("deadline_at", "2026-10-01T12:00:00+09:00")
+  value.set("request_class", "system")
+  value.set("max_duration_seconds", "3600")
   const spec = collectionSubmission(value)
   assert.deepEqual(spec.seed_parameters, ["example.com"])
-  assert.equal(spec.visibility, "private")
-  assert.equal(spec.deadline_at, "2026-10-01T03:00:00.000Z")
+  assert.equal(spec.request_class, "system")
+  assert.equal(spec.max_duration_seconds, 3600)
 })
 test("missing intent, orphan parameters, and invalid budgets do not silently coerce", () => {
   const value = form()

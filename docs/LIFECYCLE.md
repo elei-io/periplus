@@ -1,6 +1,7 @@
 # Lifecycle
 
-Periplus keeps acquisition small and every derived lake write append-only.
+Periplus keeps acquisition small and derived evidence append-only while retained.
+Explicit retirement is the sole deletion path; see [RETENTION.md](RETENTION.md).
 
 ## Ingestion
 
@@ -139,7 +140,7 @@ only delivery, storage, or CDP, never raw dependency errors. `/frontier/live` re
 handle with one concurrent read, a two-second timeout/cache, and a 128-report preview limit. It
 excludes server-timestamped heartbeats older than fifteen seconds, malformed reports, and implausible
 future reports. Counts describe observed reports, not guaranteed available capacity. Missing or
-unreadable presence leaves availability unknown. Public responses omit worker IDs and private work.
+unreadable presence leaves availability unknown. Public responses omit worker IDs; work from every request class is visible.
 
 ## Current frontier wait explanations
 
@@ -147,7 +148,7 @@ Item reads resolve current domain policy with the same specificity as dispatch, 
 visible page. They distinguish domain pause, version-matching domain pacing, domain/global capacity,
 global pacing, and physical allowance exhaustion. A policy edit invalidates an older stored domain
 pacing hint. The eligibility floor combines applicable persisted timing constraints; it is not a
-promised dispatch time. Reads return constraint names without exposing other callers, private targets,
+promised dispatch time. Reads return constraint names without exposing unrelated caller details,
 or occupancy counts. Live domain permits and future worker capacity can still prevent a start after
 that floor, so these explanations do not by themselves establish an estimate range.
 
@@ -196,3 +197,23 @@ inspection produce unknown eligibility rather than an optimistic runnable count.
 physical authorization, retry outcome, fulfillment and settlement. Polling, claim renewal,
 waiting-reason updates and priority/pause edits do not advance it. Catalogue commit/readiness
 observations remain separate fields. These operational summaries retire with current collection state.
+
+## Scheduled request execution
+
+[SCHEDULES.md](SCHEDULES.md) defines reusable intent, cron/interval evaluation,
+transactional creation, overlap suppression, maximum count and missed-tick behavior.
+The crawler no longer runs a separate background selection loop.
+
+Request intent stores optional `max_duration_seconds` (1–31,536,000). Creation freezes
+`deadline_at = created_at + duration` in execution intent. Idempotent submission never
+renews it. Waiting and paused time count. Expiry prevents new selection, admission and
+capture starts, waits for already-started captures, and settles as `duration_limit`.
+Ingestion and materialization proceed independently afterward. Schedule stop bounds
+creation only; each generated request receives a fresh duration budget.
+
+### Private query execution history
+
+[QUERY_HISTORY.md](QUERY_HISTORY.md) defines the 30-day private `query_executions`
+table in control Postgres, bounded best-effort recording, janitor cleanup and the
+`observatory/queries` dashboard. This is explicitly approved product analytics;
+no query results or crawl history are added to control Postgres.

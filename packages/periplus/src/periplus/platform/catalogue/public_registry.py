@@ -42,6 +42,8 @@ _LINEAGE_OBJECTS = tuple(
             ("requested_at", "Time the collection definition was accepted."),
             ("specification", "Frozen SQL selection, scope, and page limits."),
             ("settled_at", "Time the collection settled, if available."),
+            ("retention_seconds", "Retention duration after completion; null means forever."),
+            ("expires_at", "When request protection ends; null while active or retained forever."),
             ("outcome", "Why the collection settled."),
             ("seed_provenance", "Frozen seed snapshot, query identity, selection time, and candidate digest."),
             ("consumed_pages", "Request page units consumed by dispatch or reuse."),
@@ -62,12 +64,11 @@ _LINEAGE_OBJECTS = tuple(
         ("acquisition_reason", "views/005_acquisition_reason.sql", "Public causal reasons frozen before acquisition dispatch.", (
             ("reason_id", "Stable identity of the causal reason."),
             ("observation_id", "Observation this dispatch produces."),
-            ("collection_id", "Request causing capture; null for background."),
+            ("collection_id", "Request causing capture."),
             ("parent_observation_id", "Parent observation leading to discovery."),
-            ("reason", "Collection or background selection."),
+            ("reason", "Collection intent caused dispatch."),
             ("policy_version", "Effective dispatch policy version."),
             ("rule_id", "Selection rule identity."),
-            ("selection_provenance", "Historical-check snapshot, query identity, and selection policy version."),
             ("decided_at", "Time this reason was frozen."),
         )),
     )

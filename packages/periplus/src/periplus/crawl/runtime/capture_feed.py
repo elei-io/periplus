@@ -68,8 +68,7 @@ def capture_page(sessions, cursor: CaptureCursor | None = None) -> CapturePage:
             reset_reason, cursor = "clock_moved_backwards", None
         upper = cursor.through_time if cursor and cursor.through_time else now
         statement = select(AcquisitionRecord.id, AcquisitionRecord.url, AcquisitionRecord.completed_at,
-            AcquisitionRecord.evidence_snapshot).where(AcquisitionRecord.visibility == "public",
-                AcquisitionRecord.status == "succeeded", AcquisitionRecord.completed_at <= upper)
+            AcquisitionRecord.evidence_snapshot).where(AcquisitionRecord.status == "succeeded", AcquisitionRecord.completed_at <= upper)
         if cursor is None:
             rows = list(reversed(session.execute(statement.order_by(
                 AcquisitionRecord.completed_at.desc(), AcquisitionRecord.id.desc()).limit(7)).all()))

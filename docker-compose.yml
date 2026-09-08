@@ -4,8 +4,6 @@ x-periplus-core: &periplus-core
   build:
     context: .
     dockerfile: docker/periplus/Dockerfile
-    additional_contexts:
-      ducklake-cdc-extension: ${PERIPLUS_DUCKLAKE_CDC_EXTENSION_REPO:-../ducklake-cdc-extension}
   image: ${PERIPLUS_CORE_IMAGE:-periplus-core:local}
   working_dir: /app/packages/periplus
 
@@ -16,6 +14,7 @@ x-periplus-healthcheck: &periplus-healthcheck
   start_period: 10s
 
 x-periplus-control-environment: &periplus-control-environment
+  PERIPLUS_SERVICE_VERSION: ${PERIPLUS_IMAGE_TAG:-development}
   PERIPLUS_CONTROL_DATABASE_URL: postgresql://${PERIPLUS_POSTGRES_USER:-periplus}:${PERIPLUS_POSTGRES_PASSWORD:-periplus_local}@periplus-postgres:5432/${PERIPLUS_POSTGRES_DATABASE:-periplus}
 
 x-periplus-nats-environment: &periplus-nats-environment
@@ -33,7 +32,6 @@ x-periplus-ducklake-environment: &periplus-ducklake-environment
   PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY: ${LAKE_S3_SECRET_ACCESS_KEY:-lake-secret}
   PERIPLUS_DUCKLAKE_S3_URL_STYLE: path
   PERIPLUS_DUCKLAKE_S3_USE_SSL: "false"
-  PERIPLUS_DUCKLAKE_CDC_EXTENSION_PATH: /opt/periplus/ducklake_cdc.duckdb_extension
 
 x-periplus-repository-environment: &periplus-repository-environment
   PERIPLUS_REPOSITORY_STORAGE: s3
@@ -136,13 +134,10 @@ services:
     image: ${PERIPLUS_ADMIN_IMAGE:-periplus-admin:local}
     environment:
       PERIPLUS_ADMIN_API_TOKEN: ${PERIPLUS_ADMIN_API_TOKEN:?Set PERIPLUS_ADMIN_API_TOKEN}
-      PERIPLUS_QUERY_API_TOKEN: ${PERIPLUS_QUERY_API_TOKEN:?Set PERIPLUS_QUERY_API_TOKEN}
     ports:
       - "127.0.0.1:${PERIPLUS_ADMIN_PORT:-8081}:80"
     depends_on:
       periplus-api:
-        condition: service_healthy
-      periplus-query:
         condition: service_healthy
     restart: unless-stopped
 
@@ -171,6 +166,8 @@ services:
     ports:
       - "127.0.0.1:${PERIPLUS_QUERY_PORT:-8010}:8000"
     environment:
+      PERIPLUS_API_URL: http://periplus-api:8000
+      PERIPLUS_SERVICE_VERSION: ${PERIPLUS_IMAGE_TAG:-development}
       PERIPLUS_QUERY_API_TOKEN: ${PERIPLUS_QUERY_API_TOKEN:?Set PERIPLUS_QUERY_API_TOKEN}
       PERIPLUS_DUCKLAKE_ALIAS: periplus
       PERIPLUS_DUCKLAKE_METADATA_PATH: postgres:dbname=${LAKE_POSTGRES_DATABASE:-lake} host=lake-postgres port=5432 user=${LAKE_QUERY_USER:-lake_query} password=${LAKE_QUERY_PASSWORD:-lake_query_local}
@@ -229,6 +226,7 @@ services:
           "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).read()",
         ]
     environment:
+      PERIPLUS_QUERY_API_TOKEN: ${PERIPLUS_QUERY_API_TOKEN:?Set PERIPLUS_QUERY_API_TOKEN}
       PERIPLUS_ADMIN_API_TOKEN: ${PERIPLUS_ADMIN_API_TOKEN:?Set PERIPLUS_ADMIN_API_TOKEN}
       PERIPLUS_PUBLIC_API_TOKEN: ${PERIPLUS_PUBLIC_API_TOKEN:?Set PERIPLUS_PUBLIC_API_TOKEN}
       <<:
@@ -360,8 +358,13 @@ services:
         [
           *periplus-control-environment,
           *periplus-nats-environment,
+          *periplus-ducklake-environment,
           *periplus-repository-environment,
         ]
+      PERIPLUS_RETENTION_MODE: ${PERIPLUS_RETENTION_MODE:-disabled}
+      PERIPLUS_RETENTION_BATCH_SIZE: ${PERIPLUS_RETENTION_BATCH_SIZE:-25}
+      PERIPLUS_RETENTION_MINIMUM_AGE_SECONDS: ${PERIPLUS_RETENTION_MINIMUM_AGE_SECONDS:-86400}
+      PERIPLUS_RETENTION_OBJECT_GRACE_SECONDS: ${PERIPLUS_RETENTION_OBJECT_GRACE_SECONDS:-86400}
     depends_on:
       periplus-setup:
         condition: service_completed_successfully

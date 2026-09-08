@@ -13,7 +13,7 @@ import { CollectionForm } from "@/components/collection-form"
 import { RequestStory, PublicRequests, ExploreObservedWeb } from "@/components/observatory-stories"
 import { useCaptureStream } from "@/hooks/use-capture-stream"
 import { useAnimatedCount } from "@/hooks/use-animated-count"
-import { useDatasetResult } from "@/hooks/use-dataset-result"
+import { useCaptureCount } from "@/hooks/use-capture-count"
 import { extractApiError, responseJson } from "@/lib/api"
 import type { LiveView } from "@/types/live"
 import type { CockpitItem } from "@/types/cockpit"
@@ -26,10 +26,9 @@ async function read<T>(path: string, signal: AbortSignal) {
 }
 
 
-const captureCountSql = "SELECT count(*) AS captures FROM web.observation WHERE source_kind = 'periplus' AND outcome = 'succeeded';"
 
 function CaptureCount({ motion }: { motion: boolean }) {
-  const query = useDatasetResult(captureCountSql, motion ? 5000 : false)
+  const query = useCaptureCount(motion ? 5000 : false)
   const value = useAnimatedCount(query.data?.rows[0]?.[0], motion)
   return <div className="crawler-total"><span className="crawler-metric-label">Observations recorded</span><strong>{query.error ? "—" : value !== null ? String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",") : "…"}</strong><span>{query.error ? "Observation total unavailable" : "Successful observations · includes repeat visits"}</span></div>
 }
@@ -79,7 +78,7 @@ export function CrawlerCockpit({ initialId }: { initialId?: string }) {
     }
   }
   return <main className={`crawler-cockpit ${!motion ? "crawler-updates-paused" : ""}`}>
-    <header className="public-page-hero"><span className="eyebrow">Observatory / Live observations</span><h1>The web, coming into view.</h1><p>Follow new observations, see where we’re looking next, and suggest a starting point to help shape the view.</p></header><div className="crawler-heading-actions"><Badge variant="outline"><span className={current?.started ? "crawler-pulse" : "crawler-dot"} />{status}</Badge><Button variant="ghost" size="sm" onClick={() => {setMotion(!motion)}}>{motion ? "Pause updates" : "Resume updates"}</Button></div>
+    <header className="flex flex-wrap items-baseline justify-between gap-2 py-6"><h1 className="text-xl font-medium">Observatory</h1><p className="text-sm text-muted-foreground">Monitor observations, inspect coverage, and submit a starting URL.</p></header><div className="crawler-heading-actions"><Badge variant="outline"><span className={current?.started ? "crawler-pulse" : "crawler-dot"} />{status}</Badge><Button variant="ghost" size="sm" onClick={() => {setMotion(!motion)}}>{motion ? "Pause updates" : "Resume updates"}</Button></div>
     {live.error && <Alert variant="destructive"><AlertDescription>{live.data ? "Showing the last received snapshot. " : "Live activity is unavailable. "}{extractApiError(live.error)}<Button variant="link" onClick={() => void live.refetch()}>Retry</Button></AlertDescription></Alert>}
     {[captures.query.error].filter(Boolean).map((error, index) => <Alert key={index} variant="destructive"><AlertDescription>Some activity may be unavailable. {extractApiError(error)}</AlertDescription></Alert>)}
     {captures.query.data?.reset_reason && <p className="crawler-footnote" role="status">The live feed resynced after an interruption. Showing the latest observations; earlier results remain in the catalogue.</p>}

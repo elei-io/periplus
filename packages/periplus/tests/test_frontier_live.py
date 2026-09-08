@@ -21,7 +21,7 @@ from periplus.platform.catalogue.config import CatalogueConfig
 
 
 class CurrentLiveTests(unittest.TestCase):
-    def test_current_counts_and_domain_preview_exclude_private_work_before_limits(self):
+    def test_current_counts_and_domain_preview_include_all_classes_before_limits(self):
         engine = create_engine('sqlite://')
         self.addCleanup(engine.dispose)
         for table in TABLES:
@@ -34,20 +34,18 @@ class CurrentLiveTests(unittest.TestCase):
         policy = EffectivePolicySnapshot.model_validate(policy_snapshot())
         for index in range(13):
             identity = uuid4()
-            store.create_collection(identity, CollectionSpec(visibility='private' if index == 12 else 'public'))
+            store.create_collection(identity, CollectionSpec(request_class='admin' if index == 12 else 'public'))
             store.admit(identity, f'https://domain{index}.example/', SelectionContext(depth=0, rule_id='seed'), policy)
         view = current_activity(sessions)
-        self.assertEqual(view.queued, 12)
+        self.assertEqual(view.queued, 13)
         self.assertEqual(view.dispatched, 0)
         self.assertEqual(len(view.domains), 10)
         self.assertTrue(view.more_domains)
         self.assertEqual(len(view.upcoming), 5)
-        self.assertNotIn('domain12', view.model_dump_json())
         self.assertIsNone(view.next_start_estimate)
         self.assertIsNotNone(view.oldest_wait_at.utcoffset())
         with sessions.begin() as session:
-            records = list(session.scalars(select(AcquisitionRecord).where(
-                AcquisitionRecord.visibility == 'public').order_by(AcquisitionRecord.id).limit(2)))
+            records = list(session.scalars(select(AcquisitionRecord).order_by(AcquisitionRecord.id).limit(2)))
             records[1].url = records[0].url
             records[1].domain = records[0].domain
             repeated_domain = records[0].domain
@@ -56,19 +54,18 @@ class CurrentLiveTests(unittest.TestCase):
         self.assertEqual(domain.queued, 2)
         self.assertEqual(domain.unique_queued_urls, 1)
         identity = uuid4()
-        store.create_collection(identity, CollectionSpec(visibility='public'))
+        store.create_collection(identity, CollectionSpec(request_class='public'))
         store.admit(identity, 'https://extra.example/', SelectionContext(depth=0, rule_id='seed'), policy)
         with sessions.begin() as session:
             for index, acquisition in enumerate(session.scalars(select(AcquisitionRecord))):
                 acquisition.status = 'dispatched'
                 acquisition.attempt_started_at = datetime.now(UTC) if index % 2 else None
         view = current_activity(sessions)
-        self.assertEqual(view.dispatched, 13)
+        self.assertEqual(view.dispatched, 14)
         self.assertEqual(len(view.active), 12)
         self.assertTrue(view.more_active)
         self.assertTrue(any(item.attempt_started_at is None for item in view.active))
         self.assertTrue(any(item.attempt_started_at is not None for item in view.active))
-        self.assertNotIn('domain12', view.model_dump_json())
         self.assertTrue(all(item.attempt_started_at.utcoffset() is not None
                             for item in view.active if item.attempt_started_at is not None))
 
@@ -85,14 +82,14 @@ class CurrentLiveTests(unittest.TestCase):
         policy = EffectivePolicySnapshot.model_validate(policy_snapshot())
         public, private, other = uuid4(), uuid4(), uuid4()
         for identity in (public, private, other):
-            store.create_collection(identity, CollectionSpec(visibility='private' if identity == private else 'public', page_limit=100))
+            store.create_collection(identity, CollectionSpec(request_class='admin' if identity == private else 'public', page_limit=100))
         for index in range(60):
             store.admit(public, f'https://example.com/{index}', SelectionContext(depth=0, rule_id='seed'), policy)
         store.admit(other, 'https://example.com/other', SelectionContext(depth=0, rule_id='seed'), policy)
         store.admit(private, 'https://example.com/private', SelectionContext(depth=0, rule_id='seed'), policy)
         view = current_activity(sessions, collection_id=public)
         self.assertEqual(len(view.upcoming), 5)
-        self.assertEqual(view.domains[0].unique_queued_urls, 61)
+        self.assertEqual(view.domains[0].unique_queued_urls, 62)
         self.assertEqual(view.domains[0].request_queued_urls, 60)
         with sessions.begin() as session:
             private_interest = session.scalar(select(InterestRecord).where(InterestRecord.collection_id == private))
@@ -101,8 +98,8 @@ class CurrentLiveTests(unittest.TestCase):
             session.get(AcquisitionRecord, public_interest.acquisition_id).status = 'dispatched'
         view = current_activity(sessions, collection_id=public)
         self.assertEqual(view.domains[0].request_queued_urls, 59)
-        self.assertEqual(view.domains[0].unique_queued_urls, 60)
-        self.assertEqual(current_activity(sessions, collection_id=private).domains[0].request_queued_urls, 0)
+        self.assertEqual(view.domains[0].unique_queued_urls, 61)
+        self.assertEqual(current_activity(sessions, collection_id=private).domains[0].request_queued_urls, 1)
         self.assertIsNone(current_activity(sessions).domains[0].request_queued_urls)
 
 
@@ -111,7 +108,7 @@ class HistoricalLiveTests(unittest.TestCase):
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
-        self.catalogue = Catalogue(CatalogueConfig('periplus', str(root/'metadata.duckdb'), str(root/'data'), 'ducklake', ''))
+        self.catalogue = Catalogue(CatalogueConfig('periplus', str(root/'metadata.duckdb'), str(root/'data'), 'ducklake'))
         self.addCleanup(self.catalogue.close)
         self.connection = self.catalogue.trusted_connection
         self.connection.execute('CREATE SCHEMA ingest')
@@ -150,16 +147,16 @@ class HistoricalLiveTests(unittest.TestCase):
             [uuid4(), 'https://private.example/', self.now, 'private'])
         value = read_live_history(self.catalogue, now=self.now)
         global_rows = {row.seconds: row for row in value.velocities if row.domain is None}
-        self.assertEqual(global_rows[60].attempt_starts, 2)
-        self.assertEqual(global_rows[300].attempt_starts, 3)
-        self.assertEqual(global_rows[60].successful_captures, 1)
+        self.assertEqual(global_rows[60].attempt_starts, 3)
+        self.assertEqual(global_rows[300].attempt_starts, 4)
+        self.assertEqual(global_rows[60].successful_captures, 2)
         self.assertEqual(global_rows[300].failed_captures, 1)
-        self.assertEqual(global_rows[60].fulfillments, 3)
-        self.assertEqual(global_rows[300].attempt_starts_per_minute, 0.6)
-        self.assertNotIn('private.example', value.model_dump_json())
+        self.assertEqual(global_rows[60].fulfillments, 4)
+        self.assertEqual(global_rows[300].attempt_starts_per_minute, 0.8)
+        self.assertIn('private.example', value.model_dump_json())
         self.assertNotIn('import.example', value.model_dump_json())
         self.assertNotIn('future.example', value.model_dump_json())
-        self.assertEqual(len(value.recent), 2)
+        self.assertEqual(len(value.recent), 3)
         self.assertTrue(all(item.query_ready is None for item in value.recent))
 
     def test_domain_and_recent_previews_are_bounded(self):

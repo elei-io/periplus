@@ -65,9 +65,18 @@ class PreparedBatch:
 
     @property
     def operation_ids(self) -> tuple[str, ...]:
-        return tuple(
-            sorted(f"ingestion:{job.request_id}" for job in self.jobs)
-        )
+        identities = {f"ingestion:{job.request_id}" for job in self.jobs}
+        for job in self.jobs:
+            if job.visit:
+                identities.add(f"observation:{job.visit.visit.visit_id}")
+                if job.visit.document:
+                    identities.add(f"content:{job.visit.document.content_sha256}")
+            if job.lineage:
+                if getattr(job.lineage, "collection_id", None):
+                    identities.add(f"collection:{job.lineage.collection_id}")
+                if getattr(job.lineage, "observation_id", None):
+                    identities.add(f"observation:{job.lineage.observation_id}")
+        return tuple(sorted(identities))
 
 
 async def run(

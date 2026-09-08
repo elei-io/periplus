@@ -6,17 +6,20 @@ import threading
 import time
 
 from prometheus_client import Counter, Gauge, Histogram
+from periplus.platform.telemetry import DURATION_BUCKETS, BYTE_BUCKETS, ITEM_BUCKETS
 
 _raw_writes = Counter("periplus_repository_raw_writes_total", "Raw content write outcomes.", ("outcome",))
 _attempts = Counter("periplus_repository_ingestion_attempts_total", "Repository ingestion outcomes.", ("outcome",))
 _batches = Counter("periplus_repository_ingestion_batches_total", "Repository batch outcomes.", ("outcome",))
-_duration = Histogram("periplus_repository_ingestion_duration_seconds", "Repository ingestion phase duration.", ("phase", "outcome"))
-_batch_items = Histogram("periplus_repository_ingestion_batch_items", "Items per repository batch.")
+_duration = Histogram("periplus_repository_ingestion_duration_seconds", "Repository ingestion phase duration.", ("phase", "outcome"), buckets=DURATION_BUCKETS)
+_batch_items = Histogram("periplus_repository_ingestion_batch_items", "Items per repository batch.", buckets=ITEM_BUCKETS)
 _raw_bytes = Histogram(
     "periplus_repository_raw_write_bytes",
     "Raw logical and stored bytes per repository write.",
     ("representation",),
+    buckets=BYTE_BUCKETS,
 )
+_queue_observed = Gauge("periplus_repository_ingestion_queue_observed_timestamp_seconds", "Timestamp of last successful shared queue observation.")
 _pending = Gauge("periplus_repository_ingestion_jobs_pending", "Repository jobs waiting in JetStream.")
 _ack_pending = Gauge("periplus_repository_ingestion_jobs_ack_pending", "Delivered repository jobs awaiting acknowledgement.")
 _redelivered = Gauge("periplus_repository_ingestion_jobs_redelivered", "Redelivered repository jobs.")
@@ -25,7 +28,7 @@ _queue_stalled = Gauge(
     "Whether the ingestion queue has exceeded its no-progress threshold.",
 )
 _oldest_pending_age = Gauge(
-    "periplus_repository_ingestion_oldest_pending_age_seconds",
+    "periplus_repository_ingestion_no_progress_seconds",
     "Lower-bound age of an ingestion queue that has not made progress.",
 )
 _lane_operation_duration = Gauge(
@@ -81,6 +84,7 @@ def queue_state(
     oldest_pending_age_seconds: float = 0.0,
     stalled: bool = False,
 ) -> None:
+    _queue_observed.set_to_current_time()
     _pending.set(pending)
     _ack_pending.set(ack_pending)
     _redelivered.set(redelivered)

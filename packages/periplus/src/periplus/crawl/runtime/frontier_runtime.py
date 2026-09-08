@@ -17,8 +17,7 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from periplus.query.service import QueryRequest
 
 from periplus.crawl.control.collections.discovery import DiscoveryState, DiscoveryUnavailable, SourceDiscovery
-from periplus.crawl.control.collections.schemas import CollectionSpec
-from periplus.crawl.runtime.background_selection import run_background_selection
+from periplus.crawl.control.collections.schemas import CollectionExecutionSpec, CollectionSpec
 from periplus.crawl.runtime.frontier_capture import handle_capture_delivery
 from periplus.crawl.runtime.frontier_health import DispatchHealth
 from periplus.crawl.runtime.frontier_outbox import run_ingestion_receipts, run_outbox_relay
@@ -39,10 +38,10 @@ def service_collection(store: FrontierStore, work: CollectionWork, policy: Polic
     collection = store.get_collection(work.collection_id)
     if collection is None or collection.status == "settled":
         return 0
-    spec = CollectionSpec.model_validate(collection.spec)
-    if spec.deadline_at is not None and spec.deadline_at <= datetime.now(UTC):
-        store.stop_collection(collection.id, reason="deadline")
-        return 0
+    spec = CollectionExecutionSpec.model_validate(collection.spec)
+    if collection.deadline_at is not None and collection.deadline_at <= datetime.now(UTC):
+        store.stop_collection(collection.id, reason="duration_limit")
+        return 1
     if collection.status == "paused":
         return 30
     if not collection.seeds_settled:
@@ -59,9 +58,9 @@ def service_collection(store: FrontierStore, work: CollectionWork, policy: Polic
 async def _service_collection(store, work, policy, objects, seed_query, discovery) -> float:
     collection = await asyncio.to_thread(store.get_collection, work.collection_id)
     if collection is not None and collection.status == "active":
-        spec = CollectionSpec.model_validate(collection.spec)
+        spec = CollectionExecutionSpec.model_validate(collection.spec)
         if (spec.seed_description and collection.selection_checkpoint is None
-                and (spec.deadline_at is None or spec.deadline_at > datetime.now(UTC))):
+                and (collection.deadline_at is None or collection.deadline_at > datetime.now(UTC))):
             state = DiscoveryState.model_validate(collection.discovery_state or {})
             if not state.complete:
                 if discovery is None:
@@ -170,6 +169,15 @@ async def run_capture_lane(subscription, store: FrontierStore, pipeline, playwri
                                           operation_bucket=operation_bucket, domain_bucket=domain_bucket)
 
 
+async def run_schedules(store, *, stop):
+    from periplus.crawl.control.schedules.service import ScheduleStore
+    from periplus.crawl.runtime.request_schedules import create_due_requests
+    schedules = ScheduleStore(store._sessions)
+    while not stop.is_set():
+        await asyncio.to_thread(create_due_requests, schedules)
+        await _wait(stop, 1)
+
+
 async def run_frontier(store: FrontierStore, *, subscription, jetstream, ingestion,
                        pipeline, playwright, operation_bucket, domain_bucket,
                        policy: PolicyResolver, stop: asyncio.Event, capture_lanes: int,
@@ -183,6 +191,7 @@ async def run_frontier(store: FrontierStore, *, subscription, jetstream, ingesti
     if not 1 <= capture_lanes <= 48:
         raise ValueError("capture lanes must be between one and 48")
     async with asyncio.TaskGroup() as tasks:
+        tasks.create_task(run_schedules(store, stop=stop), name="request-schedules")
         tasks.create_task(run_dispatch(store, pipeline=pipeline, playwright=playwright, stop=stop, health=dispatch_health), name="frontier-dispatch")
         tasks.create_task(run_recovery(store, stop=stop), name="frontier-recovery")
         tasks.create_task(run_outbox_relay(store, jetstream, ingestion, stop=stop), name="frontier-outbox")
@@ -190,9 +199,6 @@ async def run_frontier(store: FrontierStore, *, subscription, jetstream, ingesti
         tasks.create_task(run_collection_selection(
             store, policy, pipeline.html_repository.store, stop=stop, seed_query=seed_query, discovery=discovery,
         ), name="frontier-selection")
-        tasks.create_task(run_background_selection(
-            store, policy, pipeline.html_repository.store, stop=stop, select=seed_query,
-        ), name="frontier-background")
         for lane in range(capture_lanes):
             tasks.create_task(run_capture_lane(
                 subscription, store, pipeline, playwright, operation_bucket=operation_bucket,

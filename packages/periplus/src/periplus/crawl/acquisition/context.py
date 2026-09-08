@@ -2,7 +2,6 @@
 
 from datetime import datetime
 from uuid import UUID
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,7 +14,6 @@ class AcquisitionContext(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     acquisition_id: UUID
-    visibility: Literal["public", "private"] = "public"
     admitted_at: datetime
     policy: EffectivePolicySnapshot
     attempt_reserved_ms: int = Field(default=125000, ge=0, le=3605000)

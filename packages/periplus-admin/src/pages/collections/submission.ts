@@ -34,9 +34,6 @@ export function collectionSubmission(form: FormData): CollectionSpec {
     )
   if (seed_parameters.length && !seed_sql)
     throw new Error("Seed parameters require seed SQL.")
-  const deadline = text("deadline_at")
-  if (deadline && !Number.isFinite(new Date(deadline).getTime()))
-    throw new Error("Enter a valid deadline.")
   const follow_sql = text("follow_sql")
   if (!follow_sql) throw new Error("Provide follow-link SQL.")
   const spec: CollectionSpec = {
@@ -47,11 +44,11 @@ export function collectionSubmission(form: FormData): CollectionSpec {
     follow_sql,
     max_depth: integer("max_depth", 0, 100),
     page_limit: integer("page_limit", 1, 100000),
+    retention_seconds: text("retention_seconds") ? integer("retention_seconds", 1, 315360000) : null,
     result_max_age_seconds: integer("result_max_age_seconds", 0, 3600),
-    visibility: form.get("private") === "on" ? "private" : "public",
-    access_context: text("access_context") || "public",
+    request_class: form.get("request_class") === "system" ? "system" : "admin",
     allowed_sections: lines("allowed_sections", 100),
-    deadline_at: deadline ? new Date(deadline).toISOString() : null,
+    max_duration_seconds: text("max_duration_seconds") ? integer("max_duration_seconds", 1, 31536000) : null,
   }
   if (new TextEncoder().encode(JSON.stringify(spec)).length > 256 * 1024)
     throw new Error("Collection intent exceeds 256 KiB.")

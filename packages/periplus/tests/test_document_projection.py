@@ -118,7 +118,7 @@ class DocumentProjectionTests(unittest.TestCase):
             content_exists = False
 
             def trusted_remote_rows(self, sql):
-                if "FROM material." in sql:
+                if "FROM material." in sql and "min(document_id::VARCHAR)" not in sql:
                     return (
                         [(content_hash,)]
                         if self.content_exists

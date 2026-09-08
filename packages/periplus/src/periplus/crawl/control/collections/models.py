@@ -44,3 +44,8 @@ class CollectionRecord(Base):
     last_dispatch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    @property
+    def deadline_at(self) -> datetime | None:
+        value = self.spec.get("deadline_at")
+        return datetime.fromisoformat(value) if value else None

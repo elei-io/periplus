@@ -15,11 +15,11 @@ from periplus.crawl.control.collections.schemas import SelectionContext
 from periplus.crawl.runtime.frontier_models import AcquisitionRecord, FrontierControlRecord, InterestRecord
 
 
-_ACQUISITION_COLUMNS = (AcquisitionRecord.id, AcquisitionRecord.visibility, AcquisitionRecord.url, AcquisitionRecord.domain,
+_ACQUISITION_COLUMNS = (AcquisitionRecord.id, AcquisitionRecord.url, AcquisitionRecord.domain,
     AcquisitionRecord.status, AcquisitionRecord.created_at, AcquisitionRecord.completed_at,
     AcquisitionRecord.attempt_count, AcquisitionRecord.evidence_snapshot, AcquisitionRecord.eligible_at,
     AcquisitionRecord.attempt_started_at, AcquisitionRecord.domain_eligible_at,
-    AcquisitionRecord.domain_policy_id, AcquisitionRecord.domain_policy_version, AcquisitionRecord.background_reason, AcquisitionRecord.defer_reason, AcquisitionRecord.terminal_reason)
+    AcquisitionRecord.domain_policy_id, AcquisitionRecord.domain_policy_version, AcquisitionRecord.defer_reason, AcquisitionRecord.terminal_reason)
 _OBSERVATION_ID = AcquisitionRecord.outcome["visit"]["visit_id"].as_string()
 
 
@@ -49,9 +49,6 @@ class AcquisitionView(BaseModel):
     estimate_unavailable_reason: str | None
     callers: list[Caller]
     more_callers: bool
-    background: bool
-    background_parent_observation_id: UUID | None
-    background_rule_id: str | None
     as_of: datetime
 
 
@@ -78,7 +75,7 @@ def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
-def _callers(session, identities: list[UUID], public_only: bool):
+def _callers(session, identities: list[UUID]):
     # Visibility is applied before windowing, so private callers affect neither
     # preview membership nor the overflow flag. Never load collection intent here.
     statement = select(InterestRecord.acquisition_id, InterestRecord.collection_id,
@@ -87,8 +84,6 @@ def _callers(session, identities: list[UUID], public_only: bool):
                                order_by=InterestRecord.id).label("position")).join(
             CollectionRecord, CollectionRecord.id == InterestRecord.collection_id).where(
                 InterestRecord.acquisition_id.in_(identities), CollectionRecord.retiring.is_(False))
-    if public_only:
-        statement = statement.where(CollectionRecord.spec["visibility"].as_string() == "public")
     ranked = statement.subquery()
     rows = session.execute(select(ranked).where(ranked.c.position <= 11).order_by(
         ranked.c.acquisition_id, ranked.c.position)).mappings()
@@ -148,7 +143,6 @@ def _view(record: AcquisitionRecord, callers: list[Caller], control: FrontierCon
         waiting = "acquiring" if record.attempt_started_at else "awaiting_capture_start"
     estimate, estimate_reason = estimate_start(session, record, control, waiting=waiting, eligible_at=eligible,
         constraint=constraint, workers=workers, now=now)
-    background = record.background_reason or {}
     # Return only the defined public causal fields, never arbitrary provider data,
     # raw errors, policy snapshots, credentials, or selection SQL.
     return AcquisitionView(id=record.id, url=record.url, domain=record.domain, status=record.status,
@@ -160,13 +154,10 @@ def _view(record: AcquisitionRecord, callers: list[Caller], control: FrontierCon
         estimate_unavailable_reason="already_started" if record.attempt_started_at else
             "acquisition_terminal" if record.status in {"succeeded", "failed", "cancelled"} else
             estimate_reason,
-        callers=callers[:10], more_callers=len(callers) > 10,
-        background=bool(background), background_parent_observation_id=background.get("parent_observation_id"),
-        background_rule_id=background.get("rule_id"), as_of=now)
+        callers=callers[:10], more_callers=len(callers) > 10, as_of=now)
 
 
-def collection_items(sessions, identity: UUID, *, public_only: bool = True,
-                     limit: int = 20, after: UUID | None = None, workers=None) -> CollectionItemsPage | None:
+def collection_items(sessions, identity: UUID, *, limit: int = 20, after: UUID | None = None, workers=None) -> CollectionItemsPage | None:
     if not 1 <= limit <= 100:
         raise ValueError("frontier page limit must be between 1 and 100")
     with sessions() as session:
@@ -174,8 +165,6 @@ def collection_items(sessions, identity: UUID, *, public_only: bool = True,
             FrontierControlRecord.id == 1).with_for_update(read=True))
         collection_query = select(CollectionRecord.id).where(
             CollectionRecord.id == identity, CollectionRecord.retiring.is_(False))
-        if public_only:
-            collection_query = collection_query.where(CollectionRecord.spec["visibility"].as_string() == "public")
         if session.scalar(collection_query) is None:
             return None
         statement = select(InterestRecord, AcquisitionRecord, _OBSERVATION_ID).options(
@@ -183,13 +172,11 @@ def collection_items(sessions, identity: UUID, *, public_only: bool = True,
                       InterestRecord.context, InterestRecord.created_at),
             load_only(*_ACQUISITION_COLUMNS)).join(AcquisitionRecord,
             AcquisitionRecord.id == InterestRecord.acquisition_id).where(InterestRecord.collection_id == identity)
-        if public_only:
-            statement = statement.where(AcquisitionRecord.visibility == "public")
         if after is not None:
             statement = statement.where(InterestRecord.id > after)
         rows = list(session.execute(statement.order_by(InterestRecord.id).limit(limit + 1)))
         selected = rows[:limit]
-        callers = _callers(session, [record.id for _, record, _ in selected], public_only) if selected else {}
+        callers = _callers(session, [record.id for _, record, _ in selected]) if selected else {}
         constraints = _waiting_constraints(session, [record.id for _, record, _ in selected]) if selected else {}
         now = datetime.now(UTC)
         return CollectionItemsPage(collection_id=identity, as_of=now,
@@ -200,29 +187,27 @@ def collection_items(sessions, identity: UUID, *, public_only: bool = True,
                 for interest, record, observation_id in selected])
 
 
-def acquisition_view(sessions, identity: UUID, *, public_only: bool = True, workers=None) -> AcquisitionView | None:
+def acquisition_view(sessions, identity: UUID, *, workers=None) -> AcquisitionView | None:
     with sessions() as session:
         control = session.scalar(select(FrontierControlRecord).where(
             FrontierControlRecord.id == 1).with_for_update(read=True))
         statement = select(AcquisitionRecord, _OBSERVATION_ID).options(load_only(*_ACQUISITION_COLUMNS)).where(AcquisitionRecord.id == identity)
-        if public_only:
-            statement = statement.where(AcquisitionRecord.visibility == "public")
         row = session.execute(statement).first()
         if row is None:
             return None
         record, observation_id = row
-        return _view(record, _callers(session, [identity], public_only)[identity], control, datetime.now(UTC), observation_id,
+        return _view(record, _callers(session, [identity])[identity], control, datetime.now(UTC), observation_id,
             _waiting_constraints(session, [identity])[identity], session, workers)
 
 
-async def enrich_readiness(items: list[AcquisitionView], history, *, public_only: bool) -> list[AcquisitionView]:
+async def enrich_readiness(items: list[AcquisitionView], history) -> list[AcquisitionView]:
     """Verify only visible page members, after the control-state transaction closes."""
     from periplus.crawl.control.collections.history import HistoryUnavailable
     identities = list(dict.fromkeys(item.observation_id for item in items if item.observation_id is not None))
     if not identities:
         return items
     try:
-        proofs = await history.readiness(identities, public_only=public_only)
+        proofs = await history.readiness(identities)
     except HistoryUnavailable:
         return [item.model_copy(update={"query_ready": None,
                     "query_readiness_reason": "catalogue_readiness_unavailable"})

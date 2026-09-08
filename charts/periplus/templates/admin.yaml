@@ -6,7 +6,9 @@ metadata:
     {{- include "periplus.labels" . | nindent 4 }}
     app.kubernetes.io/component: admin
 spec:
+{{- if not .Values.admin.autoscaling.enabled }}
   replicas: {{ .Values.admin.replicas }}
+{{- end }}
   selector:
     matchLabels:
       {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "admin") | nindent 6 }}
@@ -38,13 +40,6 @@ spec:
               value: {{ printf "%s-api" (include "periplus.fullname" .) | quote }}
             - name: PERIPLUS_API_PORT
               value: "8000"
-            - name: PERIPLUS_QUERY_HOST
-              value: {{ printf "%s-query" (include "periplus.fullname" .) | quote }}
-            - name: PERIPLUS_QUERY_API_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.secrets.apiAccess.name }}
-                  key: {{ .Values.secrets.apiAccess.queryTokenKey }}
             - name: PERIPLUS_ADMIN_API_TOKEN
               valueFrom:
                 secretKeyRef:

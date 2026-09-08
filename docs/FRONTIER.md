@@ -1,5 +1,11 @@
 # The continuously exploring crawler
 
+> Historical frontier design/verification record. Its independent background selection,
+> allocation and seen-check paths were removed on 2026-09-08. Current execution ownership
+> is described in [ARCHITECTURE.md](ARCHITECTURE.md); recurring exploration uses ordinary
+> requests via [SCHEDULES.md](SCHEDULES.md). Background-specific acceptance below records
+> the superseded implementation, not current requirements.
+
 Status: implemented and locally acceptance-verified. Current architecture is documented in
 `ARCHITECTURE.md` and `LIFECYCLE.md`; the requirement audit is in `FRONTIER_ACCEPTANCE.md`, with
 measured verification evidence in `FRONTIER_IMPLEMENTATION.md`. The scraper VLAN remains a
@@ -20,7 +26,7 @@ It must not preserve historical graph machinery merely because it already exists
 
 | Concept | Responsibility |
 | --- | --- |
-| Collection request | Intent, SQL selection rules, scope, budget, priority, visibility, and completion outcome |
+| Collection request | Intent, SQL selection rules, scope, budget, priority, request class, and completion outcome |
 | Frontier | Authoritative pending acquisitions, eligibility, selection reasons, and scheduling state |
 | Acquisition | One logical capture operation with bounded physical attempts; may serve several compatible requests |
 | Observation | Immutable evidence of that capture, independent of which requests benefited |
@@ -81,9 +87,8 @@ before enabling background exploration; deleting operational state must not make
 
 Compatible queued acquisitions are shared from the first frontier implementation. Admission
 atomically attaches a request's interest to matching pending work or creates an acquisition.
-Equivalence includes normalized URL, effective capture requirements, and visibility/access context;
-URL equality alone is insufficient. Initially only compatible public requests share. No private
-cross-context sharing is implied. Required capture parameters are frozen before dispatch.
+Equivalence includes normalized URL and effective capture requirements; URL equality alone is
+insufficient. Public, system, and admin requests share compatible acquisitions. Required capture parameters are frozen before dispatch.
 
 One acquisition produces one observation, not one fabricated visit per requesting collection.
 Each attached request receives the result and applies its own follow-link SQL and depth/scope
@@ -93,7 +98,7 @@ request separately from physical acquisitions and browser cost. Page-budget acco
 future billing policy.
 
 Cancellation detaches that request's outstanding interest. Shared work continues if another request
-or an independently admitted background reason still needs it. Completion notification and admission
+still needs it. Completion notification and admission
 are retry-safe; concurrent selection cannot exceed budgets or create duplicate physical work for
 the same pending acquisition identity.
 
@@ -131,7 +136,7 @@ committed selection effects occur once through stable identities and checkpoints
 
 A request freezes a maximum reusable result age; the initial default is five minutes, and zero
 requires a fresh acquisition. At admission, reuse only a successful retained result with matching
-URL, capture requirements, and public access/visibility identity. Measure age from capture completion
+URL, capture requirements, independent of request class. Measure age from capture completion
 at the reuse decision. Apply current exclusions and request scope. Failure results are not reusable.
 Traversal additionally requires a retained navigation package; otherwise schedule acquisition.
 
@@ -221,7 +226,7 @@ Keep these separate grains in append-only lake evidence:
 - Fulfillment: one `(request_id, normalized_url)` result association, containing observation ID,
   winning parent, depth, rule identity, decision time, and mode (`acquired`, `shared`, or `reused`).
   A terminal failure records attempted fulfillment, distinguishable from useful supplied content.
-- Acquisition reason: causal request/background reasons frozen at dispatch, with policy version and
+- Acquisition reason: causal request reasons frozen at dispatch, with policy version and
   parent evidence. Later reuse is a fulfillment decision, not a retroactive cause of capture.
 
 Cancellation without a result creates no fulfillment; collection outcomes retain its accounting.
@@ -295,7 +300,7 @@ Two explicit SQL capabilities serve different purposes:
    not become a per-page acquisition dependency.
 
 The public form and operator-authored SQL use these same contracts. Depth and scope are policy
-inputs, not justification for a mandatory graph engine. SQL cannot bypass budget, visibility,
+inputs, not justification for a mandatory graph engine. SQL cannot bypass budget,
 URL validation, egress protections, or domain rules.
 
 Future intelligence has specific locations: discovery proposes seeds, link selection can consume
@@ -342,9 +347,9 @@ errors, and later quality/cost signals. Distinguish physical fetch rate from req
 There is no overall completion percentage for a continuously growing corpus.
 
 A request view links to its frontier items and arrivals; public frontier items and observations
-link back to their public requesting collections or background selection reason. Shared acquisitions
-can have several callers. Enforce visibility in both directions, including counts and scheduling
-explanations. Never expose private targets, credentials in URLs, provider secrets, or private SQL.
+link back to their requesting collections. Shared acquisitions
+can have several callers from any request class. Counts and scheduling explanations describe the
+shared frontier. Service and provider credentials remain internal.
 
 | Request situation | User-visible explanation |
 | --- | --- |
@@ -399,7 +404,7 @@ the replacement contracts. Old deliveries must not target the replacement schema
 
 The first slice includes compatible queued sharing, bounded background exploration with a zero
 setting, simple fair scheduling, bounded recent-result reuse, SQL seed/follow selection, and honest
-public/request visibility. Defer in-flight joining, general historical-result lookup, automatic refresh, paid billing, learned ranking,
+shared request transparency. Defer in-flight joining, general historical-result lookup, automatic refresh, paid billing, learned ranking,
 capture A/B automation, and arbitrary graph orchestration absent a demonstrated caller.
 
 ## Acceptance criteria
@@ -410,7 +415,7 @@ capture A/B automation, and arbitrary graph orchestration absent a demonstrated 
   merge. Cancelling one caller does not strand the other.
 - Background exploration continues independently after a public request finishes, respects its own
   rate/spend/domain limits, stops at zero allocation, avoids trap expansion, and cannot inherit
-  private discoveries. Restart does not reset seen-URL eligibility.
+  discoveries from any request class. Restart does not reset seen-URL eligibility.
 - Busy browsers do not prevent bounded durable admission. Fair scheduling progresses eligible
   work across requests and domains without unbounded local or delivery queues.
 - Retries, concurrent admission, crashes at publication/commit, pause, cancellation, and deadlines

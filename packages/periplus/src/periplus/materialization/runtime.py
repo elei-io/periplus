@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import duckdb
 from datetime import UTC, datetime
 import json
 import logging
@@ -386,6 +387,7 @@ async def _handle_batch(
                 parquet_seconds=result.parquet_seconds,
                 commit_seconds=result.commit_seconds,
                 already_applied=result.already_applied,
+                superseded=result.superseded,
             )
             run = await store.complete_batch(
                 batch.id,
@@ -488,6 +490,7 @@ async def _handle_live_batch(
             parquet_seconds=result.parquet_seconds,
             commit_seconds=result.commit_seconds,
             already_applied=result.already_applied,
+                superseded=result.superseded,
         )
         await _ack_after_durable_outcome(
             message,
@@ -610,19 +613,33 @@ def _invalidate_generation(generation_id: UUID) -> bool:
 
 def _execute_batch(html_repository, run, batch):
     with catalogue_from_env(threads=2, memory_limit="2GB") as catalogue:
-        prepared = prepare_batch(catalogue, html_repository, run, batch)
+        return _commit_retained_batch(catalogue, html_repository, run, batch)
+
+
+def _commit_retained_batch(catalogue, html_repository, run, batch, *, active_generation=False):
+    # A retirement can invalidate prepared Parquet. Rebuild that preparation from
+    # the remaining identities instead of retrying the same retired rows forever.
+    from periplus.retention.identities import EvidenceRetired
+    prepared = None
+
+    def commit():
+        nonlocal prepared
+        if prepared is None:
+            prepared = prepare_batch(catalogue, html_repository, run, batch)
         if isinstance(prepared, BatchResult):
             return prepared
-        return run_with_catalogue_retry(
-            lambda: commit_prepared_batch(
-                catalogue,
-                run,
-                batch,
-                prepared,
-            ),
-            description=f"materialization batch {batch.id}",
-            on_conflict=metrics.conflict,
-        )
+        try:
+            return commit_prepared_batch(catalogue, run, batch, prepared,
+                                         active_generation=active_generation)
+        except EvidenceRetired as exc:
+            prepared = None
+            # This is retryable only for a materializer that will reprepare.
+            # Ingestion must continue treating retired evidence as terminal.
+            raise duckdb.TransactionException("prepared evidence was concurrently retired") from exc
+
+    return run_with_catalogue_retry(commit, description=f"materialization batch {batch.id}",
+                                    on_conflict=metrics.conflict)
+
 
 
 def _execute_live_batch(
@@ -664,20 +681,7 @@ def _execute_live_batch(
         attempts=1,
     )
     with catalogue_from_env(threads=2, memory_limit="2GB") as catalogue:
-        prepared = prepare_batch(catalogue, html_repository, run, batch)
-        if isinstance(prepared, BatchResult):
-            return prepared
-        return run_with_catalogue_retry(
-            lambda: commit_prepared_batch(
-                catalogue,
-                run,
-                batch,
-                prepared,
-                active_generation=True,
-            ),
-            description=f"live materialization batch {batch.id}",
-            on_conflict=metrics.conflict,
-        )
+        return _commit_retained_batch(catalogue, html_repository, run, batch, active_generation=True)
 
 
 async def _activation_loop(subscription, jetstream, store, stop) -> None:

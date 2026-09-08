@@ -7,6 +7,7 @@ from sqlglot import exp, parse
 from sqlglot.errors import ParseError
 
 from periplus.urls import normalize_url
+from periplus.platform.config.duckdb import connection_limits
 
 MAX_SELECTION_ROWS = 1000
 MAX_SELECTION_BYTES = 2 * 1024 * 1024
@@ -64,7 +65,7 @@ def select_links(sql: str, navigation: bytes, *, timeout_seconds: float = 5) -> 
     if len(navigation) > 16 * 1024 * 1024:
         raise ValueError("navigation input exceeds 16 MiB")
     table = pa.ipc.open_file(pa.BufferReader(navigation)).read_all()
-    with duckdb.connect(":memory:", config={"memory_limit": "128MB", "threads": "1"}) as connection:
+    with duckdb.connect(":memory:", config=connection_limits({"memory_limit": "128MB", "threads": "1"})) as connection:
         connection.execute("SET enable_external_access = false")
         connection.execute("SET autoinstall_known_extensions = false")
         connection.execute("SET autoload_known_extensions = false")

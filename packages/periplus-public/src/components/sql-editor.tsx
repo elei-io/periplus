@@ -12,7 +12,7 @@ const extensions = [
       observation: ["observation_id", "requested_url", "effective_url", "observed_at", "outcome", "http_status_code", "content_id"],
       collection: ["collection_id", "requested_at", "specification", "settled_at", "outcome", "seed_provenance", "consumed_pages", "supplied_pages", "failed_pages"],
       fulfillment: ["fulfillment_id", "collection_id", "observation_id", "requested_url", "parent_observation_id", "depth", "rule_id", "mode", "decided_at"],
-      acquisition_reason: ["reason_id", "observation_id", "collection_id", "parent_observation_id", "reason", "policy_version", "rule_id", "selection_provenance", "decided_at"],
+      acquisition_reason: ["reason_id", "observation_id", "collection_id", "parent_observation_id", "reason", "policy_version", "rule_id", "decided_at"],
       link_occurrence: ["observation_id", "content_id", "source_url", "target_url", "observed_at", "raw_href", "relation_scope"],
     },
     content: {
@@ -46,5 +46,5 @@ const extensions = [
 ]
 
 export function SqlEditor({ value, onChange, readOnly = false }: { value: string; onChange?: (value: string) => void; readOnly?: boolean }) {
-  return <CodeMirror value={value} onChange={onChange} extensions={[...extensions, EditorView.contentAttributes.of(readOnly ? { "aria-label": "SQL statement" } : { "aria-label": "SQL query", "aria-describedby": "editor-help" })]} readOnly={readOnly} editable={!readOnly} height={readOnly ? "auto" : "250px"} maxHeight={readOnly ? "320px" : undefined} theme="none" indentWithTab={false} basicSetup={{ foldGutter: false, highlightActiveLine: !readOnly, autocompletion: !readOnly, bracketMatching: true }} />
+  return <CodeMirror value={value} onChange={onChange} extensions={[...extensions, EditorView.contentAttributes.of(readOnly ? { "aria-label": "SQL statement" } : { "aria-label": "SQL query", "aria-describedby": "editor-help" })]} readOnly={readOnly} editable={!readOnly} height={readOnly ? "auto" : "340px"} maxHeight={readOnly ? "320px" : undefined} theme="none" indentWithTab={false} basicSetup={{ foldGutter: false, highlightActiveLine: !readOnly, autocompletion: !readOnly, bracketMatching: true }} />
 }

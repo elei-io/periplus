@@ -6,7 +6,7 @@ export const schemaReference = [
     ["requested_url", "VARCHAR", "URL Periplus attempted to visit."],
     ["effective_url", "VARCHAR", "Final URL after navigation or redirects; may be null."],
     ["observed_at", "TIMESTAMPTZ", "Capture time, when available; may be null."],
-    ["outcome", "VARCHAR", "Final logical observation outcome."],
+    ["outcome", "VARCHAR", "Final logical observation outcome; successful retained observations use 'succeeded'."],
     ["http_status_code", "INTEGER", "HTTP status, when available."],
     ["content_id", "VARCHAR", "Retained content’s SHA-256 identity; null when no content was retained."],
     ["source_kind", "VARCHAR", "Native Periplus or external source kind."],
@@ -67,19 +67,18 @@ export const schemaReference = [
     ["mode", "VARCHAR", "Acquired, shared, or reused result."],
     ["decided_at", "TIMESTAMPTZ", "Time the result association was recorded."],
   ] },
-  { name: "web.acquisition_reason", grain: "One causal collection or background reason frozen when acquisition was dispatched.", key: "reason_id", columns: [
+  { name: "web.acquisition_reason", grain: "One causal collection reason frozen when acquisition was dispatched.", key: "reason_id", columns: [
     ["reason_id", "UUID", "Immutable acquisition reason identity."],
     ["observation_id", "UUID", "Observation acquired for this reason."],
-    ["collection_id", "UUID", "Requesting collection; null for background exploration."],
+    ["collection_id", "UUID", "Request that caused acquisition."],
     ["parent_observation_id", "UUID", "Discovery parent, when applicable."],
-    ["reason", "VARCHAR", "Collection or background cause of acquisition."],
+    ["reason", "VARCHAR", "Collection intent that caused acquisition."],
     ["policy_version", "VARCHAR", "Effective policy identity frozen at dispatch."],
     ["rule_id", "VARCHAR", "Selection rule for this acquisition."],
-    ["selection_provenance", "JSON", "Background selection snapshot, policy, and query evidence."],
     ["decided_at", "TIMESTAMPTZ", "Time the acquisition reason was recorded."],
   ] },
 ] as const
 
 export function sqlDraftLink(sql: string) {
-  return `/discover?${new URLSearchParams({ mode: "sql", sql })}`
+  return `/sql?${new URLSearchParams({ sql })}`
 }

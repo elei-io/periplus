@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from periplus.crawl.control.collections.arrivals import CollectionArrivalsPage
 from periplus.crawl.control.collections.history import CollectionHistoryPage, HistoricalCollection, HistoryUnavailable
-from periplus.crawl.control.collections.schemas import CollectionSpec
+from periplus.crawl.control.collections.schemas import CollectionExecutionSpec, CollectionSpec
 from periplus.crawl.runtime.frontier_store import AdmissionDeferred, CollectionUnavailable
 from periplus.crawl.runtime.frontier_items import CollectionItemsPage, collection_items, enrich_readiness
 from periplus.crawl.runtime.frontier_views import CollectionView, collection_views, enrich_collection_readiness
@@ -40,37 +40,43 @@ class CollectionAction(BaseModel):
 async def _views(request: Request, **kwargs):
     workers = await request.app.state.crawler_presence.read()
     return await asyncio.to_thread(collection_views, request.app.state.frontier_sessions,
-                                   public_only=request.state.api_role != "admin", workers=workers, **kwargs)
+                                   workers=workers, **kwargs)
 
 
 @router.post("", response_model=CollectionView | HistoricalCollection, status_code=201)
 async def create(payload: CreateCollection, request: Request):
     spec = payload.specification
-    if request.state.api_role != "admin" and (
-        spec.visibility != "public" or spec.access_context != "public" or payload.priority != 0
-        or spec.page_limit > 1000 or spec.max_depth > 2
-    ):
-        raise HTTPException(403, "This collection requires administrative access.")
+    if spec.origin is not None:
+        raise HTTPException(422, "Request origin is assigned by the scheduler.")
+    if request.state.api_role != "admin":
+        if payload.priority != 0:
+            raise HTTPException(403, "Priority requires administrative access.")
+        spec = spec.model_copy(update={"request_class": "public"})
     if not spec.seed_urls and not spec.seed_sql and not spec.seed_description:
         raise HTTPException(422, "Provide starting URLs, a source description, or seed SQL.")
     try:
         validate_follow_sql(spec.follow_sql)
         existing = await asyncio.to_thread(request.app.state.frontier.get_collection, payload.id)
-        if existing is not None and existing.spec["visibility"] == "private" and request.state.api_role != "admin":
-            raise HTTPException(404, "Collection not found.")
         # Server-generated UUIDs are new identities. A caller-supplied identity
         # must also be checked in immutable history before it can be recreated.
         if existing is None and "id" in payload.model_fields_set:
-            historical = await _history(request, payload.id, public_only=False)
+            try:
+                retired = await request.app.state.collection_history.is_retired(payload.id)
+            except HistoryUnavailable as exc:
+                raise HTTPException(503, "Retention status is unavailable; retry later.") from exc
+            if retired:
+                raise HTTPException(410, "This request has expired and been retired. Submit a new request identity.")
+            historical = await _history(request, payload.id)
             if historical is not None:
-                if historical.specification.visibility == "private" and request.state.api_role != "admin":
-                    raise HTTPException(404, "Collection not found.")
-                if historical.specification != spec:
+                if historical.specification.model_dump(exclude={"deadline_at"}) != spec.model_dump():
                     raise HTTPException(409, "Collection identity already has different immutable intent.")
                 return historical
         if existing is None:
+            if request.state.api_role == "public":
+                from periplus.operations.access.service import AccessStore
+                await asyncio.to_thread(AccessStore(request.app.state.frontier_sessions).admit, "crawl", specification=spec)
             await asyncio.to_thread(request.app.state.frontier.create_collection, payload.id, spec, priority=payload.priority)
-        elif existing.spec != spec.model_dump(mode="json"):
+        elif CollectionExecutionSpec.model_validate(existing.spec).model_dump(mode="json", exclude={"deadline_at"}) != spec.model_dump(mode="json"):
             raise ValueError("collection identity reused with different intent")
     except AdmissionDeferred as exc:
         raise HTTPException(429, "Collection admission is at capacity; retry later.", headers={"Retry-After": "15"}) from exc
@@ -78,9 +84,8 @@ async def create(payload: CreateCollection, request: Request):
         raise HTTPException(422, str(exc)) from exc
     views = await _views(request, identity=payload.id)
     if views:
-        return (await enrich_collection_readiness(views, request.app.state.collection_history,
-            public_only=request.state.api_role != "admin"))[0]
-    historical = await _history(request, payload.id, public_only=request.state.api_role != "admin")
+        return (await enrich_collection_readiness(views, request.app.state.collection_history))[0]
+    historical = await _history(request, payload.id)
     if historical is None:
         raise HTTPException(503, "Collection status is temporarily unavailable.")
     return historical
@@ -91,19 +96,15 @@ async def list_collections(request: Request, status: Literal["active", "paused",
                      limit: Annotated[int, Query(ge=1, le=100)] = 20,
                      offset: Annotated[int, Query(ge=0, le=10000)] = 0):
     views = await _views(request, status=status, limit=limit, offset=offset)
-    views = await enrich_collection_readiness(views, request.app.state.collection_history,
-        public_only=request.state.api_role != "admin")
+    views = await enrich_collection_readiness(views, request.app.state.collection_history)
     return CollectionPage(items=views, limit=limit, offset=offset)
 
 
 @router.get("/history", response_model=CollectionHistoryPage)
 async def history_page(request: Request, limit: Annotated[int, Query(ge=1, le=100)] = 20,
                        cursor: Annotated[str | None, Query(max_length=512)] = None):
-    public_only = request.state.api_role != "admin"
     try:
-        page = await request.app.state.collection_history.list(public_only=public_only, limit=limit, cursor=cursor)
-        if public_only and any(item.visibility != "public" for item in page.items):
-            raise HistoryUnavailable("history visibility is inconsistent")
+        page = await request.app.state.collection_history.list(limit=limit, cursor=cursor)
         return page
     except ValueError as exc:
         raise HTTPException(422, "Invalid history cursor or page limit.") from exc
@@ -111,14 +112,11 @@ async def history_page(request: Request, limit: Annotated[int, Query(ge=1, le=10
         raise HTTPException(503, "Collection history is unavailable; retry later.", headers={"Retry-After": "5"}) from exc
 
 
-async def _history(request: Request, identity: UUID, *, public_only: bool):
+async def _history(request: Request, identity: UUID):
     try:
-        historical = await request.app.state.collection_history.get(identity, public_only=public_only)
-        if historical is not None and public_only and historical.specification.visibility != "public":
-            return None
+        historical = await request.app.state.collection_history.get(identity)
         if historical is not None:
-            return (await enrich_collection_readiness([historical], request.app.state.collection_history,
-                public_only=public_only))[0]
+            return (await enrich_collection_readiness([historical], request.app.state.collection_history))[0]
         return None
     except HistoryUnavailable as exc:
         raise HTTPException(503, "Collection history is unavailable; retry later.", headers={"Retry-After": "5"}) from exc
@@ -128,9 +126,8 @@ async def _history(request: Request, identity: UUID, *, public_only: bool):
 async def detail(identity: UUID, request: Request):
     views = await _views(request, identity=identity)
     if views:
-        return (await enrich_collection_readiness(views, request.app.state.collection_history,
-            public_only=request.state.api_role != "admin"))[0]
-    historical = await _history(request, identity, public_only=request.state.api_role != "admin")
+        return (await enrich_collection_readiness(views, request.app.state.collection_history))[0]
+    historical = await _history(request, identity)
     if historical is None:
         raise HTTPException(404, "Collection not found.")
     return historical
@@ -175,11 +172,11 @@ async def items(identity: UUID, request: Request,
           limit: Annotated[int, Query(ge=1, le=100)] = 20, after: UUID | None = None):
     workers = await request.app.state.crawler_presence.read()
     page = await asyncio.to_thread(collection_items, request.app.state.frontier_sessions, identity,
-        public_only=request.state.api_role != "admin", limit=limit, after=after, workers=workers)
+        limit=limit, after=after, workers=workers)
     if page is None:
         raise HTTPException(404, "Current collection not found; use its durable history for historical arrivals.")
     enriched = await enrich_readiness([item.acquisition for item in page.items],
-        request.app.state.collection_history, public_only=request.state.api_role != "admin")
+        request.app.state.collection_history)
     return page.model_copy(update={"items": [item.model_copy(update={"acquisition": acquisition})
         for item, acquisition in zip(page.items, enriched, strict=True)]})
 
@@ -190,7 +187,7 @@ async def arrivals(identity: UUID, request: Request,
                    cursor: Annotated[str | None, Query(max_length=512)] = None):
     try:
         page = await request.app.state.collection_history.arrivals(identity,
-            public_only=request.state.api_role != "admin", limit=limit, cursor=cursor)
+            limit=limit, cursor=cursor)
     except ValueError as exc:
         raise HTTPException(422, "Invalid arrival cursor or page limit.") from exc
     except HistoryUnavailable as exc:

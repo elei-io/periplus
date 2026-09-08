@@ -14,5 +14,4 @@ SELECT
 FROM ingest.visits AS visit
 LEFT JOIN ingest.documents AS document
     ON document.document_id = visit.document_id
-   AND document.visit_id = visit.visit_id
-WHERE visit.visibility = 'public';
+   AND document.visit_id = visit.visit_id;

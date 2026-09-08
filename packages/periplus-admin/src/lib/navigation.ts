@@ -1,10 +1,15 @@
 import {
-  ChartNoAxesCombinedIcon,
+  CalendarClockIcon,
+  DoorOpenIcon,
+  ListChecksIcon,
   ShieldCheckIcon,
   Globe2Icon,
+  SlidersHorizontalIcon,
   DatabaseZapIcon,
   FileTextIcon,
   SquareTerminalIcon,
+  HardDriveIcon,
+  ArrowDownToLineIcon,
 } from "lucide-react"
 
 import type { NavigationGroup } from "@/types/navigation"
@@ -15,68 +20,74 @@ export const navigationGroups: NavigationGroup[] = [
     slug: "data",
     items: [
       {
-        name: "Console",
-        href: "/sql",
-        icon: SquareTerminalIcon,
-        title: "SQL Console",
-        description: "Query the public web and DOM catalogue.",
+        name: "Storage",
+        href: "/data/storage",
+        icon: HardDriveIcon,
+        title: "Storage",
+        description: "Storage footprint and reclamation.",
       },
       {
-        name: "Documents",
-        href: "/data/documents",
-        icon: FileTextIcon,
-        title: "Documents",
-        description: "Browse acquired documents and their owned bytes.",
+        name: "Ingestion",
+        href: "/data/ingestion",
+        icon: ArrowDownToLineIcon,
+        title: "Ingestion",
+        description: "Evidence delivery and ingestor health.",
       },
       {
-        name: "Metrics",
-        href: "/data/metrics",
-        icon: ChartNoAxesCombinedIcon,
-        title: "Data Metrics",
-        description:
-          "See whether accepted evidence is ingested and query-ready.",
-      },
-      {
-        name: "Materializations",
-        href: "/materializations",
+        name: "Materialization",
+        href: "/data/materialization",
         icon: DatabaseZapIcon,
-        title: "Materializations",
-        description: "Backfill or rebuild fixed Periplus projections.",
+        title: "Materialization",
+        description: "Derived projections, rebuilds and worker capacity.",
       },
     ],
   },
   {
-    name: "Crawler",
-    slug: "crawler",
+    name: "Observatory",
+    slug: "observatory",
     items: [
+      { name: "Queries", href: "/observatory/queries", icon: SquareTerminalIcon, title: "Queries", description: "Query patterns, latency and failures." },
       {
-        name: "Controls",
-        href: "/frontier",
+        name: "Crawler",
+        href: "/observatory/crawler",
         icon: Globe2Icon,
-        title: "Crawler Controls",
-        description:
-          "Control shared crawler pace, budgets, and background exploration.",
+        title: "Crawler",
+        description: "Current activity, worker readiness and crawl controls.",
       },
       {
-        name: "Collections",
-        href: "/collections",
+        name: "Requests",
+        href: "/observatory/requests",
         icon: FileTextIcon,
-        title: "Collections",
-        description:
-          "Inspect collection intent, progress, outcomes, and history.",
+        title: "Requests",
+        description: "Saved crawl configuration, sources and budgets.",
       },
       {
-        name: "Content policies",
-        href: "/content-policies",
+        name: "Schedules",
+        href: "/observatory/schedules",
+        icon: CalendarClockIcon,
+        title: "Schedules",
+        description: "Timing and limits for recurring requests.",
+      },
+      {
+        name: "Executions",
+        href: "/observatory/executions",
+        icon: ListChecksIcon,
+        title: "Executions",
+        description: "Individual runs, progress and results.",
+      },
+      { name: "Access", href: "/observatory/access", icon: DoorOpenIcon, title: "Public access", description: "Public availability, admission rates and crawl options." },
+      {
+        name: "Capture policies",
+        href: "/observatory/capture-policies",
         icon: ShieldCheckIcon,
-        title: "Content Policies",
+        title: "Capture Policies",
         description:
           "Control response handling and rendered-content completion.",
       },
       {
         name: "Domain policies",
-        href: "/domain-policies",
-        icon: Globe2Icon,
+        href: "/observatory/domain-policies",
+        icon: SlidersHorizontalIcon,
         title: "Domain Policies",
         description: "Limit concurrent and paced requests to websites.",
       },
@@ -84,33 +95,30 @@ export const navigationGroups: NavigationGroup[] = [
   },
 ]
 
-export const defaultNavigationItem = navigationGroups[1].items[0]
-export const homeNavigationItem = {
-  name: "Overview",
+export const defaultNavigationItem = {
+  name: "Console",
   href: "/",
-  icon: DatabaseZapIcon,
-  title: "Periplus Admin",
-  description: "Control the continuous crawler and maintain the catalogue.",
+  icon: SquareTerminalIcon,
+  title: "SQL Console",
+  description: "Execute administrative SQL directly against DuckLake.",
 }
 
 export function findNavigationItem(pathname: string) {
+  if (pathname === "/") return defaultNavigationItem
   if (/^\/frontier\/items\/[^/]+$/.test(pathname)) {
     return navigationGroups
       .flatMap((group) => group.items)
-      .find((item) => item.href === "/frontier")
+      .find((item) => item.href === "/observatory/crawler")
   }
-  if (pathname === "/") {
-    return homeNavigationItem
+  const section = pathname.match(/^\/observatory\/(requests|schedules|executions)\/[^/]+$/)?.[1]
+  if (section) {
+    return navigationGroups.flatMap((group) => group.items)
+      .find((item) => item.href === `/observatory/${section}`)
   }
-  if (/^\/collections\/[^/]+$/.test(pathname)) {
+  if (pathname.startsWith("/observatory/capture-policies/")) {
     return navigationGroups
       .flatMap((group) => group.items)
-      .find((item) => item.href === "/collections")
-  }
-  if (pathname.startsWith("/content-policies/")) {
-    return navigationGroups
-      .flatMap((group) => group.items)
-      .find((item) => item.href === "/content-policies")
+      .find((item) => item.href === "/observatory/capture-policies")
   }
   return navigationGroups
     .flatMap((group) => group.items)

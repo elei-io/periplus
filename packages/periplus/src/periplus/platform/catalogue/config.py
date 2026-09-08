@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
@@ -36,7 +35,6 @@ class CatalogueConfig:
     metadata_path: str
     data_path: str
     metadata_schema: str
-    cdc_extension_path: str
     s3: S3StorageConfig | None = None
 
     def __post_init__(self) -> None:
@@ -46,36 +44,6 @@ class CatalogueConfig:
             raise CatalogueConfigError("catalogue metadata path must not be empty")
         if not self.data_path.strip():
             raise CatalogueConfigError("catalogue data path must not be empty")
-    def resolved_cdc_extension_path(self) -> Path:
-        if not self.cdc_extension_path.strip():
-            raise CatalogueConfigError(
-                "PERIPLUS_DUCKLAKE_CDC_EXTENSION_PATH must identify the "
-                "DuckLake CDC extension"
-            )
-        return self._resolved_extension_path(
-            self.cdc_extension_path,
-            variable="PERIPLUS_DUCKLAKE_CDC_EXTENSION_PATH",
-            label="DuckLake CDC extension",
-        )
-
-    @staticmethod
-    def _resolved_extension_path(
-        value: str,
-        *,
-        variable: str,
-        label: str,
-    ) -> Path:
-        try:
-            path = Path(value).expanduser().resolve(strict=True)
-        except OSError as exc:
-            raise CatalogueConfigError(
-                f"{label} was not found at {variable}"
-            ) from exc
-        if not path.is_file():
-            raise CatalogueConfigError(
-                f"{variable} must identify a file"
-            )
-        return path
 
 
 def catalogue_config_from_env() -> CatalogueConfig:
@@ -87,10 +55,6 @@ def catalogue_config_from_env() -> CatalogueConfig:
         metadata_schema=os.environ.get(
             "PERIPLUS_DUCKLAKE_METADATA_SCHEMA",
             "ducklake",
-        ),
-        cdc_extension_path=os.environ.get(
-            "PERIPLUS_DUCKLAKE_CDC_EXTENSION_PATH",
-            "",
         ),
         s3=_s3_storage_config(data_path),
     )

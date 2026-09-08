@@ -133,7 +133,7 @@ function PolicyRow({ policy }: { policy: ContentPolicyRecord }) {
       <TableCell>
         <a
           className="font-medium text-link hover:underline"
-          href={`/content-policies/${policy.id}`}
+          href={`/observatory/capture-policies/${policy.id}`}
         >
           {coverage(policy)}
         </a>
@@ -191,9 +191,10 @@ function NewPolicyDialog({
     >
       <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-5xl">
         <DialogHeader>
-          <DialogTitle>New content policy</DialogTitle>
+          <DialogTitle>New capture policy</DialogTitle>
           <DialogDescription>
-            Patch Periplus’s maximum-correctness defaults for a known set of pages.
+            Patch Periplus’s maximum-correctness defaults for a known set of
+            pages.
           </DialogDescription>
         </DialogHeader>
         {draft ? <PolicyForm draft={draft} onChange={setDraft} /> : null}

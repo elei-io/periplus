@@ -24,7 +24,7 @@ const itemLink = (id: string) => `/frontier/${encodeURIComponent(id)}`
 function modeLabel(mode: string) { return mode === "acquired" ? "Observation requested" : mode === "shared" ? "Shared work" : mode === "reused" ? "Earlier observation reused" : mode }
 function observationLink(id: string) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return null
-  return `/discover?${new URLSearchParams({mode:"sql", sql:`SELECT * FROM web.observation WHERE observation_id = '${id}' LIMIT 1;`})}`
+  return `/sql?${new URLSearchParams({sql:`SELECT * FROM web.observation WHERE observation_id = '${id}' LIMIT 1;`})}`
 }
 function Observation({ id, label }: { id: string; label: string }) {
   const href = observationLink(id)
@@ -67,7 +67,6 @@ export function FrontierItemDetail({ id }: { id: string }) {
       <p>Observation recorded: {item.evidence_committed ? "confirmed" : "not yet confirmed"}.</p><Readiness item={item} />
       {item.observation_id && <Observation id={item.observation_id} label="Query observation" />}
       <Card><CardHeader><CardTitle>Connected requests</CardTitle></CardHeader><CardContent className="flex flex-col gap-3"><p className="text-sm text-muted-foreground">Requests currently connected to this page. Recorded connections remain available after a request finishes.</p>{item.callers.map(caller => <div key={caller.interest_id}><a className="break-all underline" href={collectionLink(caller.collection_id)}>{caller.collection_id}</a><p>{modeLabel(caller.mode)} · {caller.status.replaceAll("_", " ")}</p></div>)}{item.more_callers && <p>Showing ten connections; more exist.</p>}{!item.callers.length && <p>No public requests currently connected.</p>}</CardContent></Card>
-      {item.background && <Card><CardHeader><CardTitle>Background exploration</CardTitle></CardHeader><CardContent className="flex flex-col gap-2"><p>Selection rule: {item.background_rule_id || "Not recorded"}</p>{item.background_parent_observation_id && <Observation id={item.background_parent_observation_id} label="Background parent observation" />}</CardContent></Card>}
     </>}
   <ObservationLineage key={item?.observation_id ?? id} id={item?.observation_id ?? id} />
 </div>
@@ -108,7 +107,7 @@ function ObservationLineage({ id }: { id: string }) {
     {query.data && <><p className="break-all">{query.data.requested_url}</p><p className="text-sm text-muted-foreground">As of {new Date(query.data.as_of).toLocaleString()}</p><Observation id={query.data.observation_id} label="Query observation" /></>}
     {query.data?.items.length === 0 && <p>No visible request connections on this page. Imported observations may have no collection or reason for observation.</p>}
     {query.data?.items.map(item => <Card key={`${item.kind}:${item.record_id}`}><CardHeader><CardTitle>{item.kind === "reason" ? "Reason for observation" : "Result use"}</CardTitle></CardHeader><CardContent className="flex flex-col gap-2">
-      <p>{item.kind === "reason" ? item.reason === "background" ? "Background exploration" : "Request" : item.mode === "reused" ? "Reused result" : item.mode === "shared" ? "Shared result" : "New observation"}</p>
+      <p>{item.kind === "reason" ? "Request" : item.mode === "reused" ? "Reused result" : item.mode === "shared" ? "Shared result" : "New observation"}</p>
       {item.collection_id && <a className="break-all underline" href={collectionLink(item.collection_id)}>Request: {item.collection_id}</a>}
       <p>Rule {item.rule_id}{item.depth !== null ? ` · Depth ${item.depth}` : ""}{item.policy_version !== null ? ` · Policy ${item.policy_version}` : ""}</p>
       {item.parent_observation_id && <a className="break-all underline" href={itemLink(item.parent_observation_id)}>Parent observation: {item.parent_observation_id}</a>}

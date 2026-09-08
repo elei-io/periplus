@@ -130,7 +130,7 @@ def run_with_catalogue_retry(
             if on_conflict is not None:
                 on_conflict()
             conflict_attempt += 1
-            logging.warning(
+            logging.debug(
                 "%s conflicted; retrying attempt %d/%d in %.3fs",
                 description,
                 conflict_attempt,

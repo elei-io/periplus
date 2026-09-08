@@ -1,0 +1,332 @@
+{
+  "title": "Periplus operations",
+  "uid": "periplus-operations",
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Prometheus"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "HTTP error rate",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service) (rate(periplus_http_requests_total{status=~\"5..\"}[5m]))",
+          "legendFormat": "{{service}} {{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Public operation outcomes",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (operation,outcome) (rate(periplus_public_operations_total[5m]))",
+          "legendFormat": "{{service}} {{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Public active operations",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (operation) (periplus_public_active_operations)",
+          "legendFormat": "{{service}} {{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Assistant token rate",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (direction) (rate(periplus_public_model_tokens_total[5m]))",
+          "legendFormat": "{{service}} {{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Worker readiness",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "periplus_worker_ready",
+          "legendFormat": "{{service}} {{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Capture outcomes",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (outcome,status_class) (rate(periplus_capture_attempts_total[5m]))",
+          "legendFormat": "{{service}} {{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Domain throttling",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(periplus_capture_throttled_total[5m]))",
+          "legendFormat": "{{service}} {{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Schedule decisions",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (outcome) (rate(periplus_schedule_ticks_total[5m]))",
+          "legendFormat": "{{service}} {{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Ingestion pending (shared, deduplicated)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(periplus_repository_ingestion_jobs_pending and (time() - periplus_repository_ingestion_queue_observed_timestamp_seconds < 60))",
+          "legendFormat": "{{service}} {{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Materialization pending (shared, deduplicated)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(periplus_materialization_queue_messages{state=\"pending\"} and ignoring(state) (time() - periplus_materialization_queue_observed_timestamp_seconds < 60))",
+          "legendFormat": "{{service}} {{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Ingestion no-progress duration",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(periplus_repository_ingestion_no_progress_seconds)",
+          "legendFormat": "{{service}} {{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "New materialization output rows",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(periplus_materialization_output_rows_total[5m]))",
+          "legendFormat": "{{service}} {{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Janitor outcomes",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (phase,outcome) (rate(periplus_janitor_passes_total[5m]))",
+          "legendFormat": "{{service}} {{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Raw objects reclaimed",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(periplus_retired_raw_objects_removed_total[5m]))",
+          "legendFormat": "{{service}} {{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    }
+  ]
+}

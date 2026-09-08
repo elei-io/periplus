@@ -8,7 +8,7 @@ from periplus.query.service import QueryRequest
 
 from periplus.crawl.control.collections.exclusions import UrlExcluded
 from periplus.crawl.control.collections.discovery import DiscoveryState
-from periplus.crawl.control.collections.schemas import CollectionSpec, SelectionContext
+from periplus.crawl.control.collections.schemas import CollectionExecutionSpec, CollectionSpec, SelectionContext
 from periplus.crawl.control.content_policies.schemas import EffectivePolicySnapshot
 from periplus.crawl.control.collections.scopes import within_allowed_sections
 from periplus.crawl.runtime.frontier_store import AdmissionDeferred, CollectionUnavailable, FrontierStore
@@ -28,9 +28,9 @@ def process_seed_selection(store: FrontierStore, collection_id: UUID, policy: Po
         raise KeyError(collection_id)
     if collection.seeds_settled or collection.status == "settled":
         return "settled"
-    spec = CollectionSpec.model_validate(collection.spec)
-    if spec.deadline_at is not None and spec.deadline_at <= datetime.now(UTC):
-        store.stop_collection(collection.id, reason="deadline")
+    spec = CollectionExecutionSpec.model_validate(collection.spec)
+    if collection.deadline_at is not None and collection.deadline_at <= datetime.now(UTC):
+        store.stop_collection(collection.id, reason="duration_limit")
         return "settled"
     if collection.status == "paused":
         return "waiting"
@@ -71,9 +71,9 @@ def process_link_selection(store: FrontierStore, interest_id: UUID, policy: Poli
     collection = store.get_collection(interest.collection_id)
     if collection is None:
         raise KeyError(interest.collection_id)
-    spec = CollectionSpec.model_validate(collection.spec)
-    if spec.deadline_at is not None and spec.deadline_at <= datetime.now(UTC):
-        store.stop_collection(collection.id, reason="deadline")
+    spec = CollectionExecutionSpec.model_validate(collection.spec)
+    if collection.deadline_at is not None and collection.deadline_at <= datetime.now(UTC):
+        store.stop_collection(collection.id, reason="duration_limit")
         return "settled"
     if collection.status == "paused":
         return "waiting"
@@ -108,9 +108,9 @@ def _resume(store: FrontierStore, identity: UUID, collection_id: UUID,
     for cursor in range(checkpoint.cursor, stop):
         collection = store.get_collection(collection_id)
         assert collection is not None
-        spec = CollectionSpec.model_validate(collection.spec)
-        if spec.deadline_at is not None and spec.deadline_at <= datetime.now(UTC):
-            store.stop_collection(collection_id, reason="deadline")
+        spec = CollectionExecutionSpec.model_validate(collection.spec)
+        if collection.deadline_at is not None and collection.deadline_at <= datetime.now(UTC):
+            store.stop_collection(collection_id, reason="duration_limit")
             return "settled"
         if collection.status != "active":
             return "waiting" if collection.status == "paused" else "settled"

@@ -17,7 +17,10 @@ metadata:
     {{- include "periplus.labels" $root | nindent 4 }}
     app.kubernetes.io/component: {{ $worker.name }}
 spec:
+{{- $settings := index $root.Values $worker.name }}
+  {{- if or (eq $worker.name "janitor") (not $settings.autoscaling.enabled) }}
   replicas: {{ $worker.replicas }}
+  {{- end }}
   {{- if eq $worker.name "janitor" }}
   strategy:
     type: Recreate
@@ -51,6 +54,7 @@ spec:
           {{- include "periplus.envFrom" $root | nindent 10 }}
           env:
             {{- include "periplus.coreEnv" $root | nindent 12 }}
+            {{- include "periplus.duckdbEnv" $settings.duckdb | nindent 12 }}
             {{- if eq $worker.name "crawler" }}
             - name: PERIPLUS_QUERY_URL
               value: http://{{ include "periplus.fullname" $root }}-query:{{ $root.Values.query.service.port }}
@@ -82,7 +86,7 @@ spec:
             {{- end }}
           startupProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: health
             failureThreshold: 30
             periodSeconds: 5
@@ -93,7 +97,7 @@ spec:
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: health
             periodSeconds: 10
           resources:

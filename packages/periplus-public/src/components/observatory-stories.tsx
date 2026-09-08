@@ -69,7 +69,7 @@ export function RequestStory({id, playing}: {id:string;playing:boolean}) {
   if (!item) return <section className="observatory-request-story">{query.error ? <ReadError error={query.error}/> : <p role="status">Loading request progress…</p>}</section>
   const finished=item.source === "history" ? item.outcome !== null : item.status === "settled"
   const paused=item.source === "current" && item.status === "paused"
-  const state=finished ? "Finished" : paused ? "Paused" : item.source === "history" ? "Outcome pending" : !item.seeds_settled ? "Finding starting pages" : "In progress"
+  const state=item.retention_expired ? "Retention expired" : finished ? "Finished" : paused ? "Paused" : item.source === "history" ? "Outcome pending" : !item.seeds_settled ? "Finding starting pages" : "In progress"
   const seed=item.specification.seed_urls[0]
   const name=item.specification.seed_description || (seed ? site(seed) : "Web exploration")
   const sql=queryUrl(id)
@@ -80,11 +80,11 @@ export function RequestStory({id, playing}: {id:string;playing:boolean}) {
     <h3 className="request-summary-title">{name}</h3>
     {seed && <a className="request-summary-source" href={seed} target="_blank" rel="noopener noreferrer" title={seed}><span>{seed.replace(/^https?:\/\//, "")}</span><ArrowUpRight size={13}/></a>}
     <div className="request-summary-columns"><div className="request-summary-overview">
-    <div className="request-summary-result"><div className="request-summary-count"><strong>{item.supplied_pages?.toLocaleString() ?? "—"}</strong><span>{item.supplied_pages === 1 ? "page observed" : "pages observed"}</span></div><p>{finished ? item.supplied_pages === 0 ? "This request finished without any successful observations." : item.supplied_pages === null ? "This request has finished. Explore any observations recorded so far." : "Observations from this request are saved and available to explore." : progress(item)}</p></div>
+    <div className="request-summary-result"><div className="request-summary-count"><strong>{item.supplied_pages?.toLocaleString() ?? "—"}</strong><span>{item.supplied_pages === 1 ? "page observed" : "pages observed"}</span></div><p>{finished ? item.supplied_pages === 0 ? "This request finished without any successful observations." : item.supplied_pages === null ? "This request has finished. Explore any observations recorded so far." : "Observations are kept according to this request’s retention period." : progress(item)}</p></div>
     <div className="request-summary-details">
       {!finished && item.source === "current" && <div className="request-summary-live"><span><strong>{item.acquiring_pages.toLocaleString()}</strong> observing now</span><span><strong>{item.queued_pages.toLocaleString()}</strong> waiting</span></div>}
       {Boolean(item.failed_pages) && <p>{item.failed_pages?.toLocaleString()} {item.failed_pages === 1 ? "page could" : "pages could"} not be observed.</p>}
-      <dl className="request-summary-scope"><div><dt>Reach</dt><dd>{depth === 0 ? "Starting pages only" : `Up to ${depth} link ${depth === 1 ? "step" : "steps"}`}</dd></div><div><dt>Page budget</dt><dd>{item.specification.page_limit.toLocaleString()} pages</dd></div></dl>
+      <dl className="request-summary-scope"><div><dt>Reach</dt><dd>{depth === 0 ? "Starting pages only" : `Up to ${depth} link ${depth === 1 ? "step" : "steps"}`}</dd></div><div><dt>Page budget</dt><dd>{item.specification.page_limit.toLocaleString()} pages</dd></div><div><dt>Retention</dt><dd>{item.retention_expired ? "Expired · results may be removed" : item.expires_at ? `Until ${new Date(item.expires_at).toLocaleDateString()}` : item.specification.retention_seconds === null ? "Forever" : `${Math.ceil(item.specification.retention_seconds / 86400)} days after completion`}</dd></div></dl>
       {item.source === "current" && (item.shared_pages > 0 || item.reused_pages > 0) && <p>{item.shared_pages.toLocaleString()} shared connections · {item.reused_pages.toLocaleString()} earlier observations reused. These counts can overlap with the pages observed total.</p>}
     </div>
     </div><RequestObservationTail key={id} id={id} playing={playing}/></div>
@@ -113,5 +113,5 @@ export function PublicRequests({playing, onOpenRequest}: {playing:boolean;onOpen
 }
 
 export function ExploreObservedWeb() {
-  return <section className="observatory-explore" id="coverage"><div><span className="eyebrow">From observation to understanding</span><h2>Explore the observed web</h2><p>Every observation is a view of a page at a moment in time. Ask a question, inspect the recorded sites in SQL, or learn how these observations fit together.</p></div><div className="observatory-explore-links"><Link href="/discover">Ask a question <ArrowUpRight/></Link><Link href={datasetSqlUrl({sql:coverageSql})}>Explore sites and dates in SQL <ArrowUpRight/></Link><Link href="/about#how-it-works">Understand observations and time <ArrowUpRight/></Link></div></section>
+  return <section className="observatory-explore" id="coverage"><div><span className="eyebrow">From observation to understanding</span><h2>Explore the observed web</h2><p>Every observation is a view of a page at a moment in time. Ask a question, inspect the recorded sites in SQL, or learn how these observations fit together.</p></div><div className="observatory-explore-links"><Link href="/discover">Ask a question <ArrowUpRight/></Link><Link href={datasetSqlUrl({sql:coverageSql})}>Explore sites and dates in SQL <ArrowUpRight/></Link><Link href="/docs#how-it-works">Understand observations and time <ArrowUpRight/></Link></div></section>
 }

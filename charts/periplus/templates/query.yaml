@@ -6,9 +6,14 @@ metadata:
     {{- include "periplus.labels" . | nindent 4 }}
     app.kubernetes.io/component: query
 spec:
+{{- if not .Values.query.autoscaling.enabled }}
   replicas: {{ .Values.query.replicas }}
+{{- end }}
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "query") | nindent 6 }}
@@ -35,6 +40,11 @@ spec:
             - name: http
               containerPort: 8000
           env:
+            {{- include "periplus.duckdbEnv" .Values.query.duckdb | nindent 12 }}
+            - name: PERIPLUS_API_URL
+              value: "http://{{ include "periplus.fullname" . }}-api:{{ .Values.api.service.port }}"
+            - name: PERIPLUS_SERVICE_VERSION
+              value: {{ .Values.images.core.tag | quote }}
             - name: PERIPLUS_QUERY_API_TOKEN
               valueFrom:
                 secretKeyRef:

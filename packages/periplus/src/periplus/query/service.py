@@ -13,6 +13,7 @@ import time
 from uuid import UUID, uuid4
 
 import duckdb
+from prometheus_client import Gauge
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from sqlglot import exp
 
@@ -24,6 +25,7 @@ MAX_ROWS = 1000
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 QUERY_SECONDS = 20
 logger = logging.getLogger(__name__)
+_active_queries = Gauge("periplus_query_active_operations", "Occupied query admission slots.")
 
 
 class QueryRequest(BaseModel):
@@ -66,10 +68,14 @@ class QueryService:
         self.alias = config.alias
         self.deadline = deadline
         self._lock = threading.Lock()
-        self.connection = DuckLakeConnectionFactory(config, duckdb_config={
+        self._config = config
+        self.connection = self._connect()
+
+    def _connect(self):
+        config = self._config
+        d = DuckLakeConnectionFactory(config, duckdb_config={
             "threads": "2", "memory_limit": "512MB", "max_temp_directory_size": "256MB",
         }).connect(read_only=True)
-        d = self.connection
         try:
             d.execute(f"USE {_identifier(config.alias)}")
             # Extensions and credentials are installed before locking the session.
@@ -84,10 +90,16 @@ class QueryService:
         except BaseException:
             d.close()
             raise
+        return d
+
+    @property
+    def healthy(self) -> bool:
+        return self.connection is not None
 
     def close(self):
         with self._lock:
-            self.connection.close()
+            if self.connection is not None:
+                self.connection.close()
 
     def prepare(self, payload: QueryRequest) -> PreparedQuery:
         return self._run(payload, execute=False)
@@ -98,17 +110,31 @@ class QueryService:
     def _run(self, payload: QueryRequest, *, execute: bool):
         if not self._lock.acquire(blocking=False):
             raise BusyError("Query server is busy. Try again shortly.")
+        _active_queries.inc()
+        try:
+            if self.connection is None:
+                self.connection = self._connect()
+            return self._run_admitted(payload, execute=execute)
+        finally:
+            _active_queries.dec()
+            self._lock.release()
+
+    def _run_admitted(self, payload: QueryRequest, *, execute: bool):
         started = time.monotonic()
         query_id = str(uuid4())
+        d = self.connection
+        invalidated = False
         expired = threading.Event()
         def interrupt():
             expired.set()
-            self.connection.interrupt()
+            d.interrupt()
         timer = threading.Timer(self.deadline, interrupt)
         timer.start()
-        logger.info("query_submitted %s", json.dumps({"query_id": query_id, "operation": "exec" if execute else "prep", **payload.model_dump()}))
+        from periplus.platform.telemetry import event
+        event("query_submitted", operation_id=query_id, operation="exec" if execute else "prep")
         status = "failed"
-        d = self.connection
+        rows = []
+        truncated = False
         try:
             executable = _bounded_query(payload.sql, max_rows=MAX_ROWS)
             statement = _one_statement(payload.sql)
@@ -154,6 +180,9 @@ class QueryService:
                 rows.append(converted)
             status = "completed"
             return QueryResult(**prepared.model_dump(), columns=columns, types=types, rows=rows, truncated=truncated, source_snapshot=snapshot, elapsed_ms=(time.monotonic()-started)*1000)
+        except (duckdb.FatalException, duckdb.InternalException):
+            invalidated = True
+            raise
         except duckdb.InterruptException as exc:
             raise TimeoutError("Query time limit exceeded.") from exc
         finally:
@@ -163,9 +192,20 @@ class QueryService:
                 d.execute("ROLLBACK")
             except duckdb.TransactionException:
                 pass
+            except duckdb.Error:
+                # Cleanup must not hide the original failure or retain a poisoned handle.
+                invalidated = True
+                if status in {"completed", "prepared"}:
+                    raise
             finally:
-                self._lock.release()
-                logger.info("query_finished %s", json.dumps({"query_id": query_id, "status": status, "elapsed_ms": (time.monotonic()-started)*1000}))
+                if invalidated:
+                    self.connection = None
+                    try:
+                        d.close()
+                    except duckdb.Error:
+                        pass
+                    logger.warning("query_connection_discarded query_id=%s", query_id)
+                event("query_finished", operation_id=query_id, outcome=status, truncated=truncated, rows=len(rows), elapsed_ms=(time.monotonic()-started)*1000)
 
 
 def _json_value(value):

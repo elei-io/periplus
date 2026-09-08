@@ -26,6 +26,8 @@ def query_error(error: Exception) -> tuple[int, QueryError]:
         return 422, QueryError(code="sql_invalid", detail=str(error))
     if isinstance(error, duckdb.Error) and (detail := safe_helper_error(str(error))):
         return 422, QueryError(code="helper_limit", detail=detail)
-    if isinstance(error, (duckdb.BinderException, duckdb.ParserException, duckdb.CatalogException, duckdb.ConversionException, duckdb.InvalidInputException)):
+    if isinstance(error, duckdb.ParserException):
+        return 422, QueryError(code="sql_invalid", detail="SQL syntax could not be parsed. Use AS for column aliases and double-quote reserved identifiers. Check commas, parentheses and DuckDB syntax.")
+    if isinstance(error, (duckdb.BinderException, duckdb.CatalogException, duckdb.ConversionException, duckdb.InvalidInputException)):
         return 422, QueryError(code="sql_invalid", detail="SQL could not be bound or evaluated. Check names, argument types, casts, and the public schema.")
     return 500, QueryError(code="query_failed", detail="The query service could not complete this operation.")

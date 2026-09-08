@@ -14,6 +14,8 @@ from periplus.platform.catalogue import (
     catalogue_from_env,
 )
 from periplus.ingestion.queue import IngestionJob
+from periplus.ingestion.objects.publication import claim, release
+from periplus.retention.identities import retired, EvidenceRetired
 from periplus.ingestion.objects.document import (
     ExactDocumentIdentity,
     ExactDocumentRepository,
@@ -58,7 +60,10 @@ class RepositoryIngestor:
     def prepare(self, job: IngestionJob) -> PreparedIngestion:
         if job.kind == "visit":
             assert job.visit is not None
+            if retired(self.catalogue, "observation", str(job.visit.visit.visit_id)):
+                raise EvidenceRetired("observation has been retired")
             if job.visit.document is not None:
+                claim(self.html_repository.store, job.visit.document.content_sha256, job.visit.visit.visit_id)
                 self._verify_document(job.visit.document)
         return PreparedIngestion(job=job)
 
@@ -89,6 +94,9 @@ class RepositoryIngestor:
                 [job.lineage for job in lineage_jobs]
             ), strict=True):
                 results[job.request_id] = result
+        for value in prepared:
+            if value.job.visit and value.job.visit.document:
+                release(self.html_repository.store, value.job.visit.document.content_sha256, value.job.visit.visit.visit_id)
         return [results[value.job.request_id] for value in prepared]
 
     def reconcile_commit(
@@ -116,6 +124,8 @@ class RepositoryIngestor:
         snapshot = self.catalogue.latest_snapshot()
         if snapshot is None:
             raise RuntimeError("DuckLake has no repository snapshot")
+        if job.visit and job.visit.document:
+            release(self.html_repository.store, job.visit.document.content_sha256, job.visit.visit.visit_id)
         return IngestionWriteResult(
             kind=job.kind,
             identity=job.identity,

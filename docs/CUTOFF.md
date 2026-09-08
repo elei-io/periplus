@@ -78,7 +78,20 @@ registrations retain their complete immutable object URI.
 ## Continuous crawler cutoff
 
 [FRONTIER.md](FRONTIER.md) defines the replacement crawl-runtime contract. The implementation uses
-one shared frontier, finite collection interests, independent background selection, immutable
+one shared frontier, finite collection interests, scheduled ordinary requests, immutable
 observations and durable lineage. See [FRONTIER_ACCEPTANCE.md](FRONTIER_ACCEPTANCE.md) for acceptance
 evidence and deployment follow-ups. The materialization and immutable-storage boundaries above
 continue to apply; no graph compatibility layer is retained.
+
+Request retention uses the existing janitor and catalogue repository. The only new
+persistence is exact lifecycle fencing, resumable raw-object retirement receipts,
+and temporary publication markers needed by their active ingestion/purge callers.
+No separate retention service, queue or Postgres corpus mirror is introduced.
+See [RETENTION.md](RETENTION.md).
+
+### Private query execution history
+
+[QUERY_HISTORY.md](QUERY_HISTORY.md) defines the 30-day private `query_executions`
+table in control Postgres, bounded best-effort recording, janitor cleanup and the
+`observatory/queries` dashboard. This is explicitly approved product analytics;
+no query results or crawl history are added to control Postgres.

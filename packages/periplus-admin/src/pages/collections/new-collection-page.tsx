@@ -4,27 +4,43 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { Checkbox } from "@/components/ui/checkbox"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useSubmitCollection } from "@/hooks/use-collections"
 import { extractApiError } from "@/lib/api"
 import type { CreateCollection } from "@/types/collections"
+import { useScheduleAction } from "@/hooks/use-schedules"
+import type { RequestDefinition } from "@/types/schedules"
 import { collectionSubmission } from "./submission"
 
-export function NewCollectionPage() {
+export function NewCollectionPage({
+  reusable = false,
+  definition,
+}: {
+  reusable?: boolean
+  definition?: RequestDefinition
+}) {
+  const saveDefinition = useScheduleAction()
+  const spec = definition?.specification
   const mutation = useSubmitCollection()
   const [frozen, setFrozen] = useState<CreateCollection | null>(null)
   const send = (payload: CreateCollection) =>
     mutation.mutate(payload, {
       onSuccess: (value) => {
-        window.location.assign(`/collections/${value.id}`)
+        window.location.assign(`/observatory/executions/${value.id}`)
       },
     })
   return (
     <div className="flex w-full min-w-0 flex-col gap-5">
-      <a className="underline" href="/collections">
-        All collections
+      <a className="underline" href={reusable ? "/observatory/requests" : "/observatory/executions"}>
+        {reusable ? "All requests" : "All executions"}
       </a>
-      <h1 className="text-2xl font-semibold">New collection</h1>
+      <h1 className="text-2xl font-semibold">
+        {reusable
+          ? definition
+            ? "Edit request"
+            : "New request"
+          : "Run once"}
+      </h1>
       <p>
         Give the crawler starting URLs, a source description, or a bounded SQL
         selection. Multiple sources can contribute to the same request.
@@ -42,6 +58,30 @@ export function NewCollectionPage() {
               ),
               priority: 0,
             }
+            if (reusable) {
+              const form = new FormData(event.currentTarget)
+              saveDefinition.mutate(
+                {
+                  path: definition
+                    ? `/request-definitions/${definition.id}`
+                    : "/request-definitions",
+                  method: definition ? "PUT" : "POST",
+                  body: {
+                    name: String(form.get("definition_name")),
+                    specification: payload.specification,
+                    priority: Number(form.get("priority") ?? 0),
+                    ...(definition
+                      ? { expected_version: definition.version }
+                      : {}),
+                  },
+                },
+                {
+                  onSuccess: () =>
+                    window.location.assign(definition ? `/observatory/requests/${definition.id}` : "/observatory/requests"),
+                }
+              )
+              return
+            }
             setFrozen(payload)
             send(payload)
           } catch (error) {
@@ -50,9 +90,40 @@ export function NewCollectionPage() {
         }}
       >
         <fieldset
-          disabled={frozen !== null}
+          disabled={frozen !== null || saveDefinition.isPending}
           className="flex min-w-0 flex-col gap-5"
         >
+          {reusable && (
+            <Card>
+              <CardContent className="space-y-3 pt-5">
+                <label htmlFor="definition-name">Request name</label>
+                <Input
+                  id="definition-name"
+                  name="definition_name"
+                  required
+                  maxLength={200}
+                  defaultValue={definition?.name}
+                />
+                <label htmlFor="definition-priority">
+                  Priority (-10 to 10)
+                </label>
+                <Input
+                  id="definition-priority"
+                  name="priority"
+                  type="number"
+                  min={-10}
+                  max={10}
+                  step={1}
+                  required
+                  defaultValue={definition?.priority ?? 0}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Edits apply only to future executions. Each run reevaluates
+                  selection and freezes its own intent and seeds.
+                </p>
+              </CardContent>
+            </Card>
+          )}
           <Card>
             <CardHeader>
               <CardTitle>Starting sources</CardTitle>
@@ -64,12 +135,14 @@ export function NewCollectionPage() {
               <Textarea
                 id="seed-urls"
                 name="seed_urls"
+                defaultValue={spec?.seed_urls.join("\n")}
                 placeholder="https://example.com/"
               />
               <label htmlFor="seed-description">Source description</label>
               <Textarea
                 id="seed-description"
                 name="seed_description"
+                defaultValue={spec?.seed_description ?? ""}
                 maxLength={4000}
                 placeholder="Describe the sources you want to discover"
               />
@@ -77,6 +150,7 @@ export function NewCollectionPage() {
               <Textarea
                 id="seed-sql"
                 name="seed_sql"
+                defaultValue={spec?.seed_sql ?? ""}
                 maxLength={20000}
                 placeholder="SELECT requested_url AS url FROM web.observation LIMIT 25"
               />
@@ -86,7 +160,7 @@ export function NewCollectionPage() {
               <Textarea
                 id="seed-parameters"
                 name="seed_parameters"
-                defaultValue="[]"
+                defaultValue={JSON.stringify(spec?.seed_parameters ?? [])}
               />
               <p className="text-sm text-muted-foreground">
                 Seed SQL reads the catalogue once to select starting URLs. The
@@ -105,7 +179,9 @@ export function NewCollectionPage() {
                 name="follow_sql"
                 required
                 maxLength={20000}
-                defaultValue="SELECT target_url AS url FROM nav.links"
+                defaultValue={
+                  spec?.follow_sql ?? "SELECT target_url AS url FROM nav.links"
+                }
               />
               <p className="text-sm text-muted-foreground">
                 Runs over each page’s navigation package, within this request’s
@@ -121,7 +197,7 @@ export function NewCollectionPage() {
                 max={100}
                 step={1}
                 required
-                defaultValue={0}
+                defaultValue={spec?.max_depth ?? 0}
               />
               <label htmlFor="page-limit">Page budget</label>
               <Input
@@ -132,7 +208,20 @@ export function NewCollectionPage() {
                 max={100000}
                 step={1}
                 required
-                defaultValue={25}
+                defaultValue={spec?.page_limit ?? 25}
+              />
+              <label htmlFor="retention">
+                Retention after completion (seconds; blank means forever)
+              </label>
+              <Input
+                id="retention"
+                name="retention_seconds"
+                defaultValue={spec?.retention_seconds ?? ""}
+                type="number"
+                min={1}
+                max={315360000}
+                step={1}
+                placeholder="Forever"
               />
               <label htmlFor="reuse-age">
                 Maximum recent-result age (seconds; zero requires fresh
@@ -146,7 +235,7 @@ export function NewCollectionPage() {
                 max={3600}
                 step={1}
                 required
-                defaultValue={300}
+                defaultValue={spec?.result_max_age_seconds ?? 300}
               />
               <label htmlFor="sections">
                 Allowed URL sections (one per line)
@@ -154,57 +243,59 @@ export function NewCollectionPage() {
               <Textarea
                 id="sections"
                 name="allowed_sections"
+                defaultValue={spec?.allowed_sections.join("\n")}
                 placeholder="https://example.com/articles"
               />
-              <label htmlFor="deadline">Deadline (your local time)</label>
-              <Input id="deadline" name="deadline_at" type="datetime-local" />
+              <label htmlFor="max-duration">Maximum duration (seconds, optional)</label>
+              <Input id="max-duration" name="max_duration_seconds" type="number"
+                min={1} max={31536000} step={1}
+                defaultValue={spec?.max_duration_seconds ?? ""} placeholder="No time limit" />
               <p className="text-sm text-muted-foreground">
-                Depth zero captures starting pages only. Background exploration
-                may independently continue from public results under its own
-                allowance.
+                Starts when the request is created, including waiting and paused time.
+                Already-started captures finish after the limit.
+              </p>
+              <p className="text-sm text-muted-foreground">
+                Depth zero captures starting pages only. Each execution stops at
+                its own traversal and budget limits.
               </p>
             </CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle>Visibility and access</CardTitle>
+              <CardTitle>Request class</CardTitle>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
-              <label className="flex items-center gap-2">
-                <Checkbox name="private" />
-                Private collection
-              </label>
-              <p className="text-sm text-muted-foreground">
-                Private evidence does not appear in the public catalogue or seed
-                public background exploration. Private collections do not share
-                acquisitions across requests.
-              </p>
-              <label htmlFor="access-context">Access context</label>
-              <Input
-                id="access-context"
-                name="access_context"
-                maxLength={200}
-                required
-                defaultValue="public"
-              />
+              <label htmlFor="request-class">Purpose</label>
+              <Select name="request_class" defaultValue={spec?.request_class ?? "admin"}><SelectTrigger id="request-class"><SelectValue /></SelectTrigger><SelectContent>
+                <SelectItem value="admin">Admin · your data project</SelectItem>
+                <SelectItem value="system">System · ongoing Periplus work</SelectItem>
+              </SelectContent></Select>
+              <p className="text-sm text-muted-foreground">All requests contribute to the shared catalogue and can share acquisitions. Class identifies purpose; it does not restrict data access.</p>
             </CardContent>
           </Card>
         </fieldset>
         {!frozen && (
-          <Button type="submit" className="self-start">
-            Submit collection
+          <Button
+            type="submit"
+            className="self-start"
+            disabled={saveDefinition.isPending}
+          >
+            {reusable ? "Save request" : "Run once"}
           </Button>
         )}
         {frozen && (
           <div className="flex flex-col gap-3" role="status">
             <p className="break-all">
               Request identity:{" "}
-              <a className="underline" href={`/collections/${frozen.id}`}>
+              <a
+                className="underline"
+                href={`/observatory/executions/${frozen.id}`}
+              >
                 {frozen.id}
               </a>
             </p>
             {mutation.isPending ? (
-              <p>Submitting collection…</p>
+              <p>Submitting request…</p>
             ) : (
               mutation.isError && (
                 <>
@@ -221,10 +312,10 @@ export function NewCollectionPage() {
                     Retry same request
                   </Button>
                   <p className="text-sm text-muted-foreground">
-                    To change the intent, open a new collection form. This
-                    request may already have been accepted.
+                    To change the intent, open a new request form. This request
+                    may already have been accepted.
                   </p>
-                  <a className="underline" href="/collections/new">
+                  <a className="underline" href="/observatory/executions/new">
                     Start a different request
                   </a>
                 </>

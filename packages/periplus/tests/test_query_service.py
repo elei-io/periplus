@@ -24,7 +24,6 @@ class QueryServiceTests(unittest.TestCase):
             str(root / "source.duckdb"),
             str(root / "data"),
             "ducklake",
-            "",
         )
         d = duckdb.connect()
         d.execute("LOAD ducklake")
@@ -43,10 +42,10 @@ class QueryServiceTests(unittest.TestCase):
         for item in public_objects():
             d.execute(base.joinpath(item.schema, item.resource).read_text())
         d.execute(
-            "INSERT INTO ingest.visits (visit_id, visibility, requested_url, outcome) SELECT uuid(), 'public', 'https://example.com/' || i, 'success' FROM range(20) t(i)"
+            "INSERT INTO ingest.visits (visit_id, requested_url, outcome) SELECT uuid(), 'https://example.com/' || i, 'success' FROM range(20) t(i)"
         )
         d.execute(
-            "INSERT INTO ingest.visits (visit_id, visibility, requested_url, outcome) VALUES (uuid(), 'public', 'https://example.com/inline', 'success')"
+            "INSERT INTO ingest.visits (visit_id, requested_url, outcome) VALUES (uuid(), 'https://example.com/inline', 'success')"
         )
         d.execute("UPDATE ingest.visits SET document_id = '00000000-0000-0000-0000-000000000001' WHERE requested_url = 'https://example.com/inline'")
         d.execute("INSERT INTO ingest.documents (document_id, visit_id, content_sha256) SELECT document_id, visit_id, 'helper-fixture' FROM ingest.visits WHERE document_id IS NOT NULL")
@@ -119,13 +118,21 @@ class QueryServiceTests(unittest.TestCase):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         from periplus.query.server_http import router, QueryAccessMiddleware
+        from periplus.entrypoints.query import healthz
         app = FastAPI()
         app.state.query_service = self.service
         app.state.query_slot = asyncio.Semaphore(1)
         app.add_middleware(QueryAccessMiddleware)
         app.include_router(router)
+        app.add_api_route("/healthz", healthz, methods=["GET"])
         with patch.dict(os.environ, {"PERIPLUS_QUERY_API_TOKEN": "query-test"}), TestClient(app) as client:
             headers = {"Authorization": "Bearer query-test"}
+            self.assertEqual(client.get('/healthz').status_code, 200)
+            self.service.connection.close()
+            self.service.connection = None
+            self.assertEqual(client.get('/healthz').status_code, 503)
+            self.assertEqual(client.post('/query/exec', headers=headers, json={'sql': 'SELECT 1'}).status_code, 200)
+            self.assertEqual(client.get('/healthz').status_code, 200)
             self.assertEqual(client.post('/query/exec', json={'sql':'SELECT 1'}).status_code, 401)
             for endpoint in ['prep', 'exec']:
                 self.assertEqual(client.post('/query/'+endpoint, headers=headers, json={'sql':'SELECT 1'}).status_code, 200)
@@ -171,7 +178,7 @@ class QueryServiceTests(unittest.TestCase):
             def execute(proxy, sql, *args):
                 if sql.startswith("EXPLAIN") and not proxy.committed:
                     proxy.committed = True
-                    writer.execute("INSERT INTO periplus.ingest.visits (visit_id, visibility, requested_url, outcome) VALUES (uuid(), 'public', 'https://later.example/', 'succeeded')")
+                    writer.execute("INSERT INTO periplus.ingest.visits (visit_id, requested_url, outcome) VALUES (uuid(), 'https://later.example/', 'succeeded')")
                 return connection.execute(sql, *args)
             def __getattr__(proxy, name):
                 return getattr(connection, name)
@@ -185,34 +192,45 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(second.rows, [[22]])
         self.assertGreater(second.source_snapshot, first.source_snapshot)
 
-    def test_background_seen_uses_public_terminal_requested_urls_and_successful_effective_urls(self):
-        from periplus.platform.catalogue.connection import DuckLakeConnectionFactory
-        from periplus.crawl.runtime.background_seen import SeenCandidates, lookup_seen
-        from periplus.crawl.runtime.selection_contract import SelectionCheckpoint
-        self.service.close()
-        writer = DuckLakeConnectionFactory(self.config).connect(read_only=False)
-        writer.execute("USE periplus")
-        writer.execute("""
-            INSERT INTO ingest.visits (visit_id, visibility, requested_url, effective_url, outcome)
-            VALUES
-                (uuid(), 'public', 'https://requested.example/', 'https://redirect.example/', 'succeeded'),
-                (uuid(), 'public', 'https://failed.example/', 'https://failed-effective.example/', 'failed'),
-                (uuid(), 'private', 'https://private.example/', 'https://private-effective.example/', 'succeeded')
-        """)
-        writer.close()
-        self.service = QueryService(self.config)
-        self.addCleanup(self.service.close)
-        def select(request):
-            result = self.service.execute(request)
-            self.assertFalse(result.truncated)
-            return SelectionCheckpoint(urls=tuple(row[0] for row in result.rows),
-                                       source_snapshot=str(result.source_snapshot), source_query_id=result.query_id)
-        result = lookup_seen(SeenCandidates(urls=(
-            "https://requested.example/", "https://redirect.example/", "https://failed.example/",
-            "https://failed-effective.example/", "https://private.example/", "https://private-effective.example/",
-            "https://unseen.example/",
-        )), select)
-        self.assertEqual(set(result.seen_urls), {
-            "https://requested.example/", "https://redirect.example/", "https://failed.example/",
-        })
-        self.assertGreater(result.snapshot, 0)
+    def test_fatal_failure_discards_connection_without_replaying_query(self):
+        original = self.service.connection
+        calls = []
+        class Poisoned:
+            def execute(proxy, sql, *args):
+                calls.append(sql)
+                raise duckdb.FatalException("database invalidated")
+            def interrupt(proxy):
+                original.interrupt()
+            def close(proxy):
+                original.close()
+        self.service.connection = Poisoned()
+        with self.assertRaises(duckdb.FatalException):
+            self.service.execute(QueryRequest(sql="SELECT 42"))
+        self.assertFalse(self.service.healthy)
+        self.assertEqual(calls, ["BEGIN TRANSACTION", "ROLLBACK"])
+        self.assertEqual(self.service.execute(QueryRequest(sql="SELECT count(*) FROM web.observation")).rows, [[21]])
+        self.assertTrue(self.service.healthy)
+        for sql in ["SET enable_external_access=true", "DELETE FROM ingest.visits", "SELECT * FROM read_text('/etc/passwd')"]:
+            with self.assertRaises(duckdb.Error):
+                self.service.connection.execute(sql)
+
+    def test_poisoned_cleanup_preserves_original_error_and_recovery_releases_slot(self):
+        original = self.service.connection
+        class Poisoned:
+            def execute(proxy, sql, *args):
+                if sql == "ROLLBACK":
+                    raise duckdb.FatalException("invalidated cleanup")
+                raise duckdb.InvalidInputException("original failure")
+            def interrupt(proxy):
+                original.interrupt()
+            def close(proxy):
+                original.close()
+        self.service.connection = Poisoned()
+        with self.assertRaisesRegex(duckdb.InvalidInputException, "original failure"):
+            self.service.prepare(QueryRequest(sql="SELECT 1"))
+        self.assertFalse(self.service.healthy)
+        with patch.object(self.service, "_connect", side_effect=duckdb.IOException("offline")):
+            with self.assertRaises(duckdb.IOException):
+                self.service.execute(QueryRequest(sql="SELECT 1"))
+        self.assertFalse(self.service._lock.locked())
+        self.assertEqual(self.service.execute(QueryRequest(sql="SELECT 1")).rows, [[1]])

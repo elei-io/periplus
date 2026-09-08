@@ -9,7 +9,7 @@ ACQUISITION_REASONS = RelationName(INGEST_SCHEMA, "acquisition_reasons")
 
 _COMMON = {
     "record_id": ColumnDef("UUID", nullable=False),
-    "visibility": ColumnDef("VARCHAR", nullable=False),
+
     "recorded_at": ColumnDef("TIMESTAMPTZ", nullable=False),
 }
 TABLE_COLUMNS = {
@@ -36,10 +36,9 @@ TABLE_COLUMNS = {
     },
     ACQUISITION_REASONS: _COMMON | {
         "observation_id": ColumnDef("UUID", nullable=False),
-        "collection_id": ColumnDef("UUID"),
+        "collection_id": ColumnDef("UUID", nullable=False),
         "parent_observation_id": ColumnDef("UUID"),
         "reason": ColumnDef("VARCHAR", nullable=False),
-        "selection_provenance": ColumnDef("JSON"),
         "policy_version": ColumnDef("VARCHAR", nullable=False),
         "rule_id": ColumnDef("VARCHAR", nullable=False),
     },
@@ -53,13 +52,13 @@ TABLE_COMMENTS = {
     COLLECTIONS: "Frozen collection requests, independent of physical acquisition.",
     COLLECTION_OUTCOMES: "Terminal collection outcomes and page accounting.",
     FULFILLMENTS: "One request URL supplied by one existing observation.",
-    ACQUISITION_REASONS: "Causal request or background reasons frozen at dispatch.",
+    ACQUISITION_REASONS: "Causal request reasons frozen at dispatch.",
 }
 _DESCRIPTIONS = {
     "record_id": "Stable idempotency identity within this evidence relation.",
-    "visibility": "Whether this evidence may be exposed publicly.",
+
     "recorded_at": "Time the represented decision was durably accepted.",
-    "collection_id": "Finite collection request identity, when applicable.",
+    "collection_id": "Finite collection request identity.",
     "specification": "Frozen collection intent, SQL, scope, and limits.",
     "outcome": "Reason this collection settled.",
     "seed_provenance": "Frozen seed snapshot, query identity, selection time, and candidate digest.",
@@ -72,8 +71,7 @@ _DESCRIPTIONS = {
     "depth": "First committed traversal depth for this request URL.",
     "rule_id": "Frozen selection rule identity.",
     "mode": "Whether the request acquired, shared, or reused this result.",
-    "reason": "Whether collection intent or background policy caused dispatch.",
-    "selection_provenance": "Frozen historical-check snapshot, query identity, and selection policy version.",
+    "reason": "Collection intent caused dispatch.",
     "policy_version": "Effective policy identity at dispatch.",
 }
 COLUMN_COMMENTS = {

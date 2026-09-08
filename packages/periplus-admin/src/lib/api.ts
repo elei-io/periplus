@@ -40,9 +40,10 @@ export async function apiErrorFromResponse(response: Response) {
       body && typeof body === "object" && "detail" in body
         ? (body as { detail: unknown }).detail
         : body
+    const explanation = detail && typeof detail === "object" && "detail" in detail ? (detail as {detail: unknown}).detail : detail
     const message =
-      typeof detail === "string"
-        ? detail
+      typeof explanation === "string"
+        ? explanation
         : `Request failed with status ${response.status}.`
 
     return new ApiError(message, response.status, detail)

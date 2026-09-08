@@ -18,7 +18,7 @@ class SeedQueryClient:
     def __init__(self, url: str, token: str | None, *, transport=None):
         self.token = token
         self.client = httpx.Client(
-            base_url=url, headers={"Authorization": f"Bearer {token}"} if token else {},
+            base_url=url, headers={"Authorization": f"Bearer {token}", "x-periplus-query-source": "internal"} if token else {},
             timeout=httpx.Timeout(25, connect=5, pool=1), follow_redirects=False, trust_env=False,
             limits=httpx.Limits(max_connections=1, max_keepalive_connections=1), transport=transport,
         )

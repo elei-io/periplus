@@ -31,12 +31,12 @@ class FrontierItemTests(unittest.TestCase):
 
     def collection(self, *, private=False):
         identity = uuid4()
-        self.store.create_collection(identity, CollectionSpec(visibility="private" if private else "public"))
+        self.store.create_collection(identity, CollectionSpec(request_class='admin' if private else 'public'))
         return identity
 
     def admit(self, identity, url="https://example.com/"):
         self.store.admit(identity, url, SelectionContext(depth=0, rule_id="seed"), self.policy)
-        return collection_items(self.sessions, identity, public_only=False).items[0].acquisition.id
+        return collection_items(self.sessions, identity).items[0].acquisition.id
 
     def test_shared_work_has_bounded_bidirectional_public_provenance(self):
         identities = [self.collection() for _ in range(12)]
@@ -53,20 +53,14 @@ class FrontierItemTests(unittest.TestCase):
             self.assertEqual(item.budget_state, "reserved")
             self.assertIsNone(item.acquisition.next_start_estimate)
 
-    def test_private_work_is_invisible_and_never_changes_public_caller_overflow(self):
-        public, private = self.collection(), self.collection(private=True)
+    def test_admin_and_public_work_share_and_show_both_callers(self):
+        public, admin = self.collection(), self.collection(private=True)
         acquisition = self.admit(public)
-        private_acquisition = self.admit(private)
-        self.assertIsNone(collection_items(self.sessions, private))
-        self.assertIsNone(acquisition_view(self.sessions, private_acquisition))
-        # Defensive visibility filtering survives even inconsistent association data.
-        with self.sessions.begin() as session:
-            record = session.query(InterestRecord).filter_by(collection_id=private).one()
-            record.acquisition_id = acquisition
+        self.assertEqual(self.admit(admin), acquisition)
+        self.assertIsNotNone(collection_items(self.sessions, admin))
         view = acquisition_view(self.sessions, acquisition)
-        self.assertEqual([item.collection_id for item in view.callers], [public])
+        self.assertEqual({item.collection_id for item in view.callers}, {public, admin})
         self.assertFalse(view.more_callers)
-        self.assertEqual(len(acquisition_view(self.sessions, acquisition, public_only=False).callers), 2)
 
     def test_uuid_pages_are_bounded_and_do_not_claim_dispatch_order(self):
         identity = self.collection()
@@ -152,7 +146,7 @@ class FrontierItemTests(unittest.TestCase):
         identity = self.collection()
         acquisition = self.admit(identity)
         private = self.collection(private=True)
-        occupied = self.admit(private)
+        occupied = self.admit(private, "https://example.com/other")
         with self.sessions.begin() as session:
             ensure_default_domain_policy(session).maximum_concurrency = 1
         self.assertIsNotNone(self.store.dispatch(occupied))
@@ -178,7 +172,7 @@ class FrontierItemTests(unittest.TestCase):
             for index, seconds in enumerate((10, 20, 30)):
                 start = now - timedelta(seconds=20 + index)
                 session.add(AcquisitionRecord(url=f'https://example.com/sample-{index}', domain='example.com',
-                    capture_key=str(uuid4()), visibility='public', access_context='public', status='succeeded',
+                    capture_key=str(uuid4()),   status='succeeded',
                     requirements=self.policy.model_dump(mode='json'), created_at=start - timedelta(seconds=seconds),
                     completed_at=start + timedelta(seconds=2), attempt_count=1, dispatch_policy_version=control.policy_version,
                     attempt_domain_policy={'id':str(policy.id),'version':policy.version},
@@ -196,7 +190,7 @@ class FrontierItemTests(unittest.TestCase):
         self.assertEqual(acquisition_view(self.sessions, acquisition, workers=stale).estimate_unavailable_reason,
             'worker_readiness_not_observed')
         competing = self.collection(private=True)
-        self.admit(competing)
+        self.admit(competing, "https://example.com/competing")
         crowded = acquisition_view(self.sessions, acquisition, workers=workers)
         self.assertIsNone(crowded.next_start_estimate)
         self.assertNotIn(str(competing), crowded.model_dump_json())

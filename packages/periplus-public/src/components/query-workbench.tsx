@@ -1,53 +1,53 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Download, Play, Share2 } from "lucide-react"
+import { Database, ListTree, Play, Share2, Table2 } from "lucide-react"
 import { toast } from "sonner"
 import dynamic from "next/dynamic"
 
 import { Button } from "@/components/ui/button"
-import { Textarea } from "@/components/ui/textarea"
+import { QuerySettings } from "@/components/query-settings"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { Input } from "@/components/ui/input"
+import { Badge } from "@/components/ui/badge"
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { schemaReference } from "@/lib/schema-reference"
 import { Separator } from "@/components/ui/separator"
+import { QueryExport } from "@/components/query-export"
 import { QueryTable } from "@/components/query-table"
 import { useQueryExecution } from "@/hooks/use-query-execution"
 import Link from "next/link"
-import { datasets } from "@/lib/datasets"
 import { consumeDiscoveryLaunch } from "@/lib/discovery-launch"
 import { extractApiError } from "@/lib/api"
 
 const SqlEditor = dynamic(() => import("@/components/sql-editor").then(module => module.SqlEditor), { ssr: false, loading: () => <div className="sql-loading">Loading SQL editor…</div> })
 
-const examples = [datasets[0], datasets[1], datasets[3]].map(dataset => ({ label: dataset.name, description: dataset.scope, sql: dataset.sql }))
-const relations = [
-  { name: "web.observation", grain: "One row per page observation", detail: "Source URLs, available collection dates, outcomes, and content_id. Repeated observations are separate." },
-  { name: "content.html_element", grain: "One row per HTML element", detail: "Tags, attributes, text, and document structure. Join on content_id." },
-  { name: "web.link_occurrence", grain: "One row per observed link", detail: "Source and target URLs, link scope, and available observation time. Join observations on observation_id." },
-  { name: "content.object", grain: "One row per unique content object", detail: "Content format, media type, and byte size." },
-]
+
 
 export function QueryWorkbench({ initialSql, initialParameters, autoRun = false }: { initialSql?: string; initialParameters?: string; autoRun?: boolean }) {
-  const [sql, setSql] = useState(initialSql ?? examples[0].sql)
+  const [sql, setSql] = useState(initialSql ?? "")
   const [parameters, setParameters] = useState(initialParameters ?? "[]")
+  const [filter, setFilter] = useState("")
   const editor = useRef<HTMLDivElement>(null)
   const query = useQueryExecution()
   const { mutate } = query
   useEffect(() => {
-    if (!autoRun || !initialSql?.trim() || !consumeDiscoveryLaunch()) return
+    if (!query.access.enabled || !autoRun || !initialSql?.trim() || !consumeDiscoveryLaunch()) return
     try {
       const values: unknown = JSON.parse(initialParameters ?? "[]")
       if (!Array.isArray(values)) throw new Error("Parameters must be a JSON array.")
       mutate({ sql: initialSql, parameters: values })
     } catch (error) { toast.error(extractApiError(error)) }
-  }, [autoRun, initialSql, initialParameters, mutate])
-  const activeExample = examples.find(example => example.sql === sql)
+  }, [autoRun, initialSql, initialParameters, mutate, query.access.enabled])
   function loadSql(value: string) {
     setSql(value); setParameters("[]")
     editor.current?.querySelector<HTMLElement>('[contenteditable="true"]')?.focus()
     document.getElementById("explore")?.scrollIntoView({ block: "start" })
   }
   function run() {
+    if (!query.access.enabled) return
     try {
       const values: unknown = JSON.parse(parameters)
       if (!Array.isArray(values)) throw new Error("Parameters must be a JSON array.")
@@ -57,49 +57,65 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false 
   async function share() {
     try {
       const address = new URL(window.location.href)
-      address.pathname = "/discover"
+      address.pathname = "/sql"
       address.search = ""
-      address.searchParams.set("mode", "sql")
       address.searchParams.set("sql", sql)
       address.searchParams.set("parameters", parameters)
       await navigator.clipboard.writeText(address.toString())
       toast.success("Query link copied. Results may change as the corpus grows.")
     } catch (error) { toast.error(extractApiError(error)) }
   }
-  function download() {
-    if (!query.data) return
-    const csv = [query.data.columns, ...query.data.rows].map(row => row.map(value => `"${String(value).replaceAll('"', '""')}"`).join(",")).join("\r\n")
-    const address = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }))
-    const link = document.createElement("a"); link.href = address; link.download = "periplus-results.csv"; link.click()
-    URL.revokeObjectURL(address)
-  }
-  return <section aria-label="SQL workspace" className="bench-page">
-    <section aria-labelledby="sql-headline" className="flex flex-col gap-6">
-      <div><h2 id="sql-headline" className="text-xl font-medium tracking-tight">SQL bench</h2><p className="mt-2 text-muted-foreground">Start with a dataset query, change the extraction, and export returned rows. Source links open live websites; collection dates describe the captured data.</p></div>
-      <div id="explore" className="flex scroll-mt-6 flex-col gap-4" aria-label="SQL workspace">
-        <div className="sql-studio">
-          <div className="sql-studio-toolbar">
-            <span className="flex items-center gap-2 font-mono text-xs"><span className="size-1.5 rounded-full bg-emerald-300" />explore.sql</span>
-            <div className="flex flex-wrap gap-1">{examples.map(example => <Button key={example.label} variant="ghost" className="sql-example" aria-pressed={example.sql === sql} onClick={() => loadSql(example.sql)}>{example.label}</Button>)}</div>
-          </div>
+  return <section aria-label="SQL workspace" className="flex flex-col gap-4">
+    <div className="grid items-start gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+      <Card id="schema-explorer" size="sm" className="min-w-0">
+        <CardHeader><CardTitle className="flex items-center gap-2"><Database className="size-4" />Explorer</CardTitle><Input aria-label="Filter tables and columns" placeholder="Filter schema…" value={filter} onChange={event => setFilter(event.target.value)} /></CardHeader>
+        <CardContent className="max-h-96 overflow-auto lg:max-h-[640px]">
+          <TooltipProvider>
+            {["web", "content"].map(namespace => {
+              const relations = schemaReference.filter(relation => relation.name.startsWith(`${namespace}.`) && `${relation.name} ${relation.columns.map(column => column[0]).join(" ")}`.toLowerCase().includes(filter.toLowerCase()))
+              if (!relations.length) return null
+              return <div key={namespace} className="pb-4">
+                <p className="px-1 pb-2 font-mono text-xs text-muted-foreground">{namespace}</p>
+                {relations.map(relation => <div key={relation.name} className="relative"><details open={filter ? true : undefined} className="py-1">
+                  <summary className="cursor-pointer py-1 pr-8" title={relation.grain}><span className="inline-flex items-center gap-2"><Table2 className="size-3.5" /><span>{relation.name.slice(namespace.length + 1)}</span></span></summary>
+                  <div className="flex min-w-0 flex-col gap-1 py-2 pl-5">
+                    {relation.columns.map(([name, type, description]) => <Tooltip key={name}>
+                      <TooltipTrigger render={<span tabIndex={0} className="block truncate py-1 font-mono text-xs text-muted-foreground" />}>{name}</TooltipTrigger>
+                      <TooltipContent side="right"><div className="flex flex-col gap-1"><code>{name} · {type}</code><span>{description}</span></div></TooltipContent>
+                    </Tooltip>)}
+                  </div>
+                </details><Tooltip><TooltipTrigger render={<Button variant="ghost" size="icon-sm" className="absolute top-1 right-0" aria-label={`Inspect schema of ${relation.name}`} onClick={() => loadSql(`DESCRIBE ${relation.name};`)} />}><ListTree /></TooltipTrigger><TooltipContent>Inspect schema</TooltipContent></Tooltip></div>)}
+              </div>
+            })}
+          </TooltipProvider>
+          {!schemaReference.some(relation => `${relation.name} ${relation.columns.map(column => column[0]).join(" ")}`.toLowerCase().includes(filter.toLowerCase())) && <CardDescription>No tables or columns match.</CardDescription>}
+        </CardContent>
+        <Separator />
+        <CardContent><Link href="/docs#schema">Schema reference ↗</Link></CardContent>
+      </Card>
+      <div id="explore" className="flex min-w-0 scroll-mt-6 flex-col gap-4">
+        <Card size="sm" className="gap-0 py-0">
+          <div className="flex flex-wrap items-center gap-2 p-3"><Button disabled={!query.access.enabled || query.isPending || !sql.trim()} onClick={run}><Play />{query.isPending ? "Running…" : "Run query"}</Button><Button variant="outline" onClick={share}><Share2 />Share</Button><QuerySettings value={parameters} onChange={setParameters} /><CardDescription id="editor-help" className="ml-auto">⌘ / Ctrl + Enter to run · Tab to leave editor</CardDescription></div>
           <div ref={editor} onKeyDownCapture={event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); event.stopPropagation(); if (!query.isPending && sql.trim()) run() } }}><SqlEditor value={sql} onChange={setSql} /></div>
-          <div className="sql-studio-actions">
-            <span id="editor-help" className="sql-editor-help">SQL completion · ⌘ / Ctrl + Enter to run · Tab to leave editor</span>
-            <div className="flex items-center gap-2"><Button variant="ghost" className="sql-share" size="icon" onClick={share} aria-label="Share SQL"><Share2 /></Button><Button className="sql-run" size="lg" disabled={query.isPending || !sql.trim()} onClick={run}><Play className={query.isPending ? "animate-pulse motion-reduce:animate-none" : ""} />{query.isPending ? "Running query…" : "Run query"}</Button></div>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground"><span aria-live="polite">{activeExample?.description ?? "Your SQL defines the fields, filters, and input sample."}</span><span>Read-only · DuckDB SQL · 1,000 rows / 8 MiB · 20s</span></div>
-        <details className="text-sm text-muted-foreground"><summary className="cursor-pointer">Schema & query options</summary><p className="py-3"><Link className="story-link" href="/docs#schema">Full schema reference & join guidance →</Link></p><div className="grid gap-5 py-4 sm:grid-cols-2">{relations.map(relation => <div key={relation.name}><Button variant="link" onClick={() => loadSql(`DESCRIBE ${relation.name};`)}>{relation.name}</Button><p>{relation.grain}. {relation.detail}</p></div>)}</div><label htmlFor="parameters">Positional parameters (JSON array)</label><Textarea id="parameters" value={parameters} onChange={event => setParameters(event.target.value)} /><p className="py-2">Queries and parameters are logged to improve Periplus. Shared links contain both. Do not include secrets.</p></details>
-      {query.error && <Alert variant="destructive"><AlertDescription>{extractApiError(query.error)} Your SQL is still in the editor.</AlertDescription></Alert>}
-      {query.data ? <Card aria-label="Query results"><CardHeader><div className="flex flex-wrap items-center justify-between gap-3"><div><CardTitle><h3>Results</h3></CardTitle><CardDescription>{query.data.rows.length} rows · {(query.data.elapsed_ms / 1000).toFixed(2)}s{query.data.sql !== sql ? " · from your previous query" : ""}</CardDescription></div><Button variant="outline" onClick={download}><Download />Export CSV</Button></div></CardHeader><CardContent className="flex flex-col gap-4">
-        {query.data.diagnostics.map(item => <Alert key={item.code}><AlertDescription>{item.message}</AlertDescription></Alert>)}
-        {query.data.truncated && <Alert><AlertDescription>Showing a partial result: the row or response-size limit was reached. Export includes only these displayed rows.</AlertDescription></Alert>}
-        <QueryTable columns={query.data.columns} types={query.data.types} rows={query.data.rows} />
-        {!query.data.rows.length && <p>No matching rows. Try a broader filter or explore site coverage to see what’s available.</p>}
-        <details className="bench-execution"><summary>SQL, execution plan & query reference</summary><p>{query.data.query_id}</p><pre className="overflow-auto">{query.data.sql}</pre><pre className="overflow-auto">{query.data.plan}</pre></details>
-      </CardContent></Card> : null}
+          <div className="flex flex-wrap items-center justify-between gap-2 p-3"><div className="flex flex-wrap items-center gap-3"><CardDescription role="status">{query.access.message ?? query.phase}</CardDescription><Badge variant="secondary">DuckDB SQL · Read-only</Badge></div><CardDescription>1,000 rows / 8 MiB · 20s limit</CardDescription></div>
+        </Card>
+        <Card size="sm" aria-label="Query output" className="min-h-72" aria-busy={query.isPending}>
+          <Tabs defaultValue="results">
+            <div className="flex flex-wrap items-center justify-between gap-3 px-3"><TabsList variant="line" aria-label="Query output"><TabsTrigger value="results"><Table2 />Results</TabsTrigger><TabsTrigger value="plan">Execution plan</TabsTrigger></TabsList><QueryExport result={query.data} disabled={query.isPending} /></div>
+            <Separator />
+            <CardContent className="flex flex-col gap-3 pt-3">
+              {query.error && <Alert variant="destructive"><AlertDescription>{extractApiError(query.error)} Your SQL is still in the editor.</AlertDescription></Alert>}
+              <CardDescription role="status">{query.isPending ? "Executing query… Results will appear here." : query.data ? `${query.data.rows.length} rows · ${(query.data.elapsed_ms / 1000).toFixed(2)}s${query.data.sql !== sql || query.error ? " · from your previous query" : ""}` : "Ready to query"}</CardDescription>
+              {query.data?.diagnostics.map(item => <Alert key={item.code}><AlertDescription>{item.message}</AlertDescription></Alert>)}
+              {query.data?.truncated && <Alert><AlertDescription>Partial result: the row or response-size limit was reached. Export includes only displayed rows.</AlertDescription></Alert>}
+            </CardContent>
+            <TabsContent value="results" className="min-w-0 px-3">
+              {query.data ? <><QueryTable columns={query.data.columns} types={query.data.types} rows={query.data.rows} />{!query.data.rows.length && <CardDescription>No matching rows. Try a broader filter.</CardDescription>}</> : <div className="flex min-h-40 flex-col items-center justify-center gap-3"><Table2 className="size-6" /><CardTitle>Your results appear here</CardTitle><CardDescription>Write SQL above and run it to inspect the returned rows.</CardDescription></div>}
+            </TabsContent>
+            <TabsContent value="plan" className="min-w-0 px-3">{query.data ? <div className="flex flex-col gap-3"><CardDescription>Query reference: {query.data.query_id}</CardDescription><pre className="overflow-auto">{query.data.plan || "No execution plan returned."}</pre><details><summary className="cursor-pointer">Executed SQL</summary><pre className="overflow-auto py-3">{query.data.sql}</pre></details></div> : <CardDescription className="py-8">Run a query to inspect its execution plan.</CardDescription>}</TabsContent>
+          </Tabs>
+        </Card>
       </div>
-    </section>
-    <footer className="flex flex-col gap-3 pb-6"><Separator /><div className="flex flex-wrap justify-between gap-3"><CardDescription><Link href="/observatory#coverage">Coverage</Link> · <Link href="/docs">Schema & SQL docs</Link> · <Link href="/about#access">Data use</Link></CardDescription><CardDescription>CSV includes returned rows only; a LIMIT can make the result partial.</CardDescription></div></footer>
+    </div>
   </section>
 }

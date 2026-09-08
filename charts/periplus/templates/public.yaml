@@ -6,7 +6,9 @@ metadata:
     {{- include "periplus.labels" . | nindent 4 }}
     app.kubernetes.io/component: public
 spec:
+{{- if not .Values.public.autoscaling.enabled }}
   replicas: {{ .Values.public.replicas }}
+{{- end }}
   selector:
     matchLabels:
       {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "public") | nindent 6 }}

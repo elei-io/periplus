@@ -127,6 +127,7 @@ class AppendOnlyIngestionServiceTests(unittest.TestCase):
     def test_identical_visit_redelivery_is_a_noop(self) -> None:
         evidence = _visit_evidence()
         catalogue = MagicMock()
+        catalogue.trusted_connection.execute.return_value.fetchall.return_value = [(None,)]
         catalogue.transaction.return_value.__enter__.return_value = catalogue
         catalogue.latest_snapshot.return_value = 42
         service = CatalogueService(catalogue)
@@ -150,6 +151,7 @@ class AppendOnlyIngestionServiceTests(unittest.TestCase):
             }
         )
         catalogue = MagicMock()
+        catalogue.trusted_connection.execute.return_value.fetchall.return_value = [(None,)]
         catalogue.transaction.return_value.__enter__.return_value = catalogue
         service = CatalogueService(catalogue)
         service.get_visit_evidence = MagicMock(
@@ -176,6 +178,7 @@ class AppendOnlyIngestionServiceTests(unittest.TestCase):
             }
         )
         catalogue = MagicMock()
+        catalogue.trusted_connection.execute.return_value.fetchall.return_value = [(None,)]
         service = CatalogueService(catalogue)
 
         with self.assertRaisesRegex(

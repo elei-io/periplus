@@ -21,7 +21,7 @@ class MaterializationReadinessTests(unittest.TestCase):
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        self.catalogue = Catalogue(CatalogueConfig('periplus', str(root/'metadata.duckdb'), str(root/'data'), 'ducklake', ''))
+        self.catalogue = Catalogue(CatalogueConfig('periplus', str(root/'metadata.duckdb'), str(root/'data'), 'ducklake'))
         self.addCleanup(self.catalogue.close)
         self.catalogue.bootstrap()
         self.now = datetime.now(UTC)
@@ -36,7 +36,7 @@ class MaterializationReadinessTests(unittest.TestCase):
             [self.generation, self.catalogue.latest_snapshot(), 20, digest, self.now])
 
     def proof(self, *, public_only=True):
-        return observation_readiness(self.catalogue, [self.identity], public_only=public_only)[self.identity]
+        return observation_readiness(self.catalogue, [self.identity])[self.identity]
 
     def test_collection_proof_requires_outcome_fulfillments_and_atomic_materialization(self):
         from periplus.materialization.readiness import collection_readiness
@@ -46,14 +46,14 @@ class MaterializationReadinessTests(unittest.TestCase):
         self.activate()
         service = CatalogueService(self.catalogue)
         service.record_lineage([CollectionDefinition(record_id=collection, collection_id=collection,
-            visibility='public', recorded_at=self.now, specification={'visibility': 'public'})])
+             recorded_at=self.now, specification={'request_class': 'public'})])
         self.assertEqual(read().reason, 'collection_outcome_not_verified')
         service.record_lineage([CollectionOutcome(record_id=collection, collection_id=collection,
-            visibility='public', recorded_at=self.now, outcome='eligible_links_exhausted',
+             recorded_at=self.now, outcome='eligible_links_exhausted',
             consumed_pages=1, supplied_pages=0, failed_pages=1)])
         self.assertEqual(read().reason, 'collection_fulfillments_not_verified')
         service.record_lineage([FulfillmentRecord(record_id=uuid4(), collection_id=collection,
-            observation_id=self.identity, requested_url='https://example.com/', visibility='public',
+            observation_id=self.identity, requested_url='https://example.com/',
             recorded_at=self.now, depth=0, rule_id='seed', mode='acquired')])
         self.assertFalse(read().query_ready)
         self.assertEqual(read().reason, 'materialization_pending')
@@ -67,20 +67,20 @@ class MaterializationReadinessTests(unittest.TestCase):
         self.assertIsNone(read().query_ready)
         self.assertEqual(read().reason, 'active_generation_registry_mismatch')
 
-    def test_empty_private_collection_readiness_is_not_exposed_publicly(self):
+    def test_empty_admin_collection_readiness_is_shared(self):
         from periplus.materialization.readiness import collection_readiness
         from periplus.platform.catalogue.lineage import CollectionDefinition, CollectionOutcome
         collection = uuid4()
         self.activate()
         CatalogueService(self.catalogue).record_lineage([
-            CollectionDefinition(record_id=collection, collection_id=collection, visibility='private',
-                recorded_at=self.now, specification={'visibility': 'private'}),
-            CollectionOutcome(record_id=collection, collection_id=collection, visibility='private',
+            CollectionDefinition(record_id=collection, collection_id=collection,
+                recorded_at=self.now, specification={'request_class': 'admin'}),
+            CollectionOutcome(record_id=collection, collection_id=collection,
                 recorded_at=self.now, outcome='cancelled', consumed_pages=0, supplied_pages=0, failed_pages=0)])
         hidden = collection_readiness(self.catalogue, [collection])[collection]
-        self.assertIsNone(hidden.query_ready)
-        self.assertIsNone(hidden.generation_id)
-        self.assertTrue(collection_readiness(self.catalogue, [collection], public_only=False)[collection].query_ready)
+        self.assertTrue(hidden.query_ready)
+        self.assertEqual(hidden.generation_id, self.generation)
+        self.assertTrue(collection_readiness(self.catalogue, [collection])[collection].query_ready)
         with self.assertRaises(ValueError):
             collection_readiness(self.catalogue, [uuid4() for _ in range(101)])
 
@@ -111,13 +111,13 @@ class MaterializationReadinessTests(unittest.TestCase):
         from periplus.crawl.control.collections.arrivals import read_arrivals
         collection = uuid4()
         CatalogueService(self.catalogue).record_lineage([
-            CollectionDefinition(record_id=collection, collection_id=collection, visibility='public',
-                recorded_at=self.now, specification={'visibility': 'public'}),
+            CollectionDefinition(record_id=collection, collection_id=collection,
+                recorded_at=self.now, specification={'request_class': 'public'}),
             FulfillmentRecord(record_id=uuid4(), collection_id=collection, observation_id=self.identity,
-                requested_url='https://example.com/', visibility='public', recorded_at=self.now,
+                requested_url='https://example.com/',  recorded_at=self.now,
                 depth=0, rule_id='seed', mode='acquired'),
         ])
-        arrival = read_arrivals(self.catalogue, collection, public_only=True, limit=1, cursor=None).items[0]
+        arrival = read_arrivals(self.catalogue, collection,  limit=1, cursor=None).items[0]
         self.assertTrue(arrival.query_ready)
         self.assertEqual(arrival.query_readiness_reason, 'active_generation_committed')
 
@@ -156,12 +156,12 @@ class MaterializationReadinessTests(unittest.TestCase):
         from periplus.platform.catalogue.lineage import CollectionDefinition, CollectionOutcome, FulfillmentRecord
         collection = uuid4()
         CatalogueService(self.catalogue).record_lineage([
-            CollectionDefinition(record_id=collection, collection_id=collection, visibility='public',
-                recorded_at=self.now, specification={'visibility': 'public'}),
-            CollectionOutcome(record_id=collection, collection_id=collection, visibility='public',
+            CollectionDefinition(record_id=collection, collection_id=collection,
+                recorded_at=self.now, specification={'request_class': 'public'}),
+            CollectionOutcome(record_id=collection, collection_id=collection,
                 recorded_at=self.now, outcome='budget_reached', consumed_pages=1, supplied_pages=1, failed_pages=0),
             FulfillmentRecord(record_id=uuid4(), collection_id=collection, observation_id=identities[1],
-                requested_url='https://example.com/', visibility='public', recorded_at=self.now,
+                requested_url='https://example.com/',  recorded_at=self.now,
                 depth=0, rule_id='seed', mode='shared')])
         # Commit the non-owner first: its visit and links are complete, shared DOM is not.
         commit_prepared_batch(self.catalogue, run, batches[1], prepared[1], active_generation=True)
@@ -192,7 +192,7 @@ class MaterializationReadinessTests(unittest.TestCase):
         self.assertTrue(recent().query_ready)
         self.assertEqual(recent().query_readiness_reason, 'active_generation_committed')
 
-    def test_hidden_or_mismatched_generation_and_private_evidence_never_claim_public_readiness(self):
+    def test_hidden_or_mismatched_generation_never_claims_readiness(self):
         self.activate()
         self.connection.execute('CREATE TABLE material._hidden_readiness AS SELECT ?::UUID visit_id, ?::TIMESTAMPTZ finished_at', [self.identity, self.now])
         self.assertFalse(self.proof().query_ready)
@@ -202,11 +202,7 @@ class MaterializationReadinessTests(unittest.TestCase):
         self.assertIsNone(self.proof().query_ready)
         self.assertEqual(self.proof().reason, 'active_generation_registry_mismatch')
         self.connection.execute('UPDATE material._periplus_materialization_state SET registry_digest = ?', [REGISTRY_DIGEST])
-        self.connection.execute("UPDATE ingest.visits SET visibility = 'private'")
-        public = self.proof()
-        self.assertIsNone(public.query_ready)
-        self.assertIsNone(public.generation_id)
-        self.assertTrue(self.proof(public_only=False).query_ready)
+        self.assertTrue(self.proof().query_ready)
 
     def test_duplicate_state_or_proof_and_oversized_requests_fail_closed(self):
         self.activate()

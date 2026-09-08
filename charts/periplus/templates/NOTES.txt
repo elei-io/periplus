@@ -1,5 +1,5 @@
 Periplus public service: {{ include "periplus.fullname" . }}-public
 Periplus admin service: {{ include "periplus.fullname" . }}-admin
-Admin HTTP Basic login: admin / the administrative API token.
+Protect admin UI and /api routes with Cloudflare Access; there is no built-in login.
 Expose public and admin through separate TLS ingress routes; keep the API private.
 The platform owns ingress, rate limiting, and CDP egress restrictions.

@@ -14,7 +14,7 @@ from periplus.crawl.control.collections.models import CollectionRecord
 from periplus.crawl.control.collections.schemas import CollectionSpec, SelectionContext
 from periplus.crawl.control.content_policies.schemas import EffectivePolicySnapshot
 from periplus.crawl.runtime.frontier_models import (
-    AcquisitionRecord, BackgroundCheckRecord, FrontierControlRecord, FrontierOutboxRecord, InterestRecord,
+    AcquisitionRecord, FrontierControlRecord, FrontierOutboxRecord, InterestRecord,
 )
 from periplus.crawl.runtime.frontier_store import (
     AdmissionDeferred, CollectionUnavailable, FrontierStore, StaleDispatch,
@@ -23,7 +23,7 @@ from periplus.crawl.runtime.frontier_store import (
 from periplus.crawl.control.domain_policies.models import DomainPolicy
 
 TABLES = (DomainPolicy.__table__, CollectionRecord.__table__, FrontierControlRecord.__table__,
-          AcquisitionRecord.__table__, InterestRecord.__table__, FrontierOutboxRecord.__table__, BackgroundCheckRecord.__table__)
+          AcquisitionRecord.__table__, InterestRecord.__table__, FrontierOutboxRecord.__table__)
 
 
 class FrontierStoreTests(unittest.TestCase):
@@ -61,7 +61,7 @@ class FrontierStoreTests(unittest.TestCase):
                 selected_at=self.now + timedelta(seconds=10)).model_dump(mode='json')
         private = uuid4()
         self.store.create_collection(private, CollectionSpec(seed_urls=('https://private.example/',),
-                                                              visibility='private'))
+                                                              request_class='admin'))
         self.store.freeze_selection(private, SelectionCheckpoint(urls=('https://private.example/',),
                                                                   selected_at=self.now), seeds=True)
         view, = collection_views(self.sessions, identity=identity)
@@ -147,7 +147,7 @@ class FrontierStoreTests(unittest.TestCase):
                                             reserved_ms=acquisition.attempt_reserved_ms or 125000, measured_ms=100),
             ),)
         evidence = VisitEvidence(visit=VisitRecord(
-            visit_id=acquisition_id, requested_url=acquisition.url, visibility=acquisition.visibility,
+            visit_id=acquisition_id, requested_url=acquisition.url,
             admitted_at=self.now, started_at=self.now, finished_at=now,
             outcome="succeeded" if success else "failed",
         ), attempts=attempts)
@@ -347,12 +347,12 @@ class FrontierStoreTests(unittest.TestCase):
         branch = self.admit(self.collection(max_depth=1))
         self.assertEqual(branch.acquisition_id, first.acquisition_id)
 
-    def test_private_collections_and_capture_requirements_do_not_share(self):
-        public = self.admit(self.collection())
-        private_a = self.admit(self.collection(visibility="private"))
-        private_b = self.admit(self.collection(visibility="private"))
+    def test_all_request_classes_share_but_capture_requirements_do_not(self):
+        public = self.admit(self.collection(request_class="public"))
+        private_a = self.admit(self.collection(request_class='admin'))
+        private_b = self.admit(self.collection(request_class="system"))
         self.assertEqual(len({public.acquisition_id, private_a.acquisition_id,
-                              private_b.acquisition_id}), 3)
+                              private_b.acquisition_id}), 1)
         other = self.store.admit(self.collection(), "https://example.com/", self.context,
                                 EffectivePolicySnapshot.model_validate(policy_snapshot()), now=self.now)
         self.assertNotEqual(public.acquisition_id, other.acquisition_id)
@@ -515,15 +515,14 @@ class FrontierStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "conflicting terminal outcome"):
             self.complete(a.acquisition_id, work.generation, success=True, outcome={}, now=self.now)
 
-    def test_outcome_cannot_change_acquisition_visibility_or_url(self):
+    def test_outcome_cannot_change_acquisition_url(self):
         from periplus.crawl.runtime.frontier_evidence import terminal_evidence
-        a = self.admit(self.collection(visibility="private"))
+        a = self.admit(self.collection(request_class='admin'))
         work = self.store.dispatch(a.acquisition_id, now=self.now)
         evidence = terminal_evidence(self.store.get_acquisition(a.acquisition_id), self.now, "failed")
-        self.assertEqual(evidence.visit.visibility, "private")
-        for change in ({"visibility": "public"}, {"requested_url": "https://other.example/"}):
+        for change in ({"requested_url": "https://other.example/"},):
             wrong = evidence.model_copy(update={"visit": evidence.visit.model_copy(update=change)})
-            with self.assertRaisesRegex(ValueError, "URL or visibility"):
+            with self.assertRaisesRegex(ValueError, "URL"):
                 self.store.complete(a.acquisition_id, work.generation, evidence=wrong, now=self.now)
         self.assertTrue(self.complete(a.acquisition_id, work.generation, success=False, outcome={}, now=self.now))
 
@@ -645,11 +644,14 @@ class FrontierStoreTests(unittest.TestCase):
         from unittest.mock import Mock
         from periplus.crawl.runtime.frontier_selection import process_seed_selection
         identity = self.collection(seed_sql="SELECT requested_url AS url FROM web.observation",
-                                   deadline_at=datetime.now(UTC) - timedelta(seconds=1))
+                                   max_duration_seconds=1)
+        with self.sessions.begin() as session:
+            record = session.get(CollectionRecord, identity)
+            record.spec = record.spec | {"deadline_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat()}
         query = Mock()
         self.assertEqual(process_seed_selection(self.store, identity, lambda url: self.policy, seed_query=query), "settled")
         query.assert_not_called()
-        self.assertEqual(self.store.get_collection(identity).outcome, "deadline")
+        self.assertEqual(self.store.get_collection(identity).outcome, "duration_limit")
 
     def test_retry_releases_dispatch_capacity_without_another_page_charge(self):
         from periplus.crawl.acquisition.models import AcquisitionAttemptEvidence, AcquisitionResult
@@ -698,7 +700,10 @@ class FrontierStoreTests(unittest.TestCase):
             self.assertIsNotNone(session.get(FrontierOutboxRecord, f"observation:{a.acquisition_id}"))
 
     def test_delayed_delivery_rechecks_collection_deadline(self):
-        identity = self.collection(deadline_at=self.now + timedelta(seconds=1))
+        identity = self.collection(max_duration_seconds=1)
+        with self.sessions.begin() as session:
+            record = session.get(CollectionRecord, identity)
+            record.spec = record.spec | {"deadline_at": (self.now + timedelta(seconds=1)).isoformat()}
         a = self.admit(identity)
         work = self.store.dispatch(a.acquisition_id, now=self.now)
         self.assertFalse(self.store.begin_attempt(a.acquisition_id, work.generation,
@@ -1010,228 +1015,17 @@ class FrontierStoreTests(unittest.TestCase):
         retried, = self.store.claim_ingestion_receipts(now=later + timedelta(seconds=20))
         self.assertTrue(self.store.record_ingestion_receipt(retried, state, now=later + timedelta(seconds=20)))
 
-    def test_historical_check_snapshot_and_expiry_protect_operational_markers(self):
-        from periplus.crawl.runtime.background_seen import HistoricalSeenResult, SeenCandidates
-        own = self.admit(self.collection())
-        work = self.store.dispatch(own.acquisition_id, now=self.now)
-        self.complete(own.acquisition_id, work.generation, success=True, outcome={},
-                      navigation=navigation_package(), now=self.now)
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).background_share = 10
-        candidates = SeenCandidates(urls=("https://example.com/next",))
-        check = self.store.start_background_check(own.acquisition_id, candidates, now=self.now)
-        def cleanup_allowed(snapshot, now):
-            with self.sessions.begin() as session:
-                self.store._control(session)
-                return self.store._historical_checks_allow_cleanup(session, snapshot, now)
-        self.assertFalse(cleanup_allowed(7, self.now))
-        result = HistoricalSeenResult(candidates=candidates, seen_urls=(), snapshot=7, query_id="q")
-        completed = self.store.finish_background_check(check, result, now=self.now)
-        self.assertEqual(completed.result, result)
-        self.assertTrue(cleanup_allowed(7, self.now))
-        self.assertFalse(cleanup_allowed(8, self.now))
-        self.assertTrue(cleanup_allowed(8, self.now + timedelta(seconds=121)))
-        with self.assertRaises(StaleDispatch):
-            self.store.finish_background_check(check, result, now=self.now + timedelta(seconds=121))
-        replacement = self.store.start_background_check(own.acquisition_id, candidates,
-                                                         now=self.now + timedelta(seconds=121))
-        self.assertNotEqual(check.token, replacement.token)
-        with self.assertRaises(StaleDispatch):
-            self.store.finish_background_check(check, result, now=self.now + timedelta(seconds=121))
-        self.assertFalse(cleanup_allowed(7, self.now + timedelta(seconds=121)))
 
-    def test_private_navigation_and_disabled_background_cannot_start_historical_checks(self):
-        from periplus.crawl.runtime.background_seen import SeenCandidates
-        own = self.admit(self.collection(visibility="private"))
-        work = self.store.dispatch(own.acquisition_id, now=self.now)
-        self.complete(own.acquisition_id, work.generation, success=True, outcome={},
-                      navigation=navigation_package(), now=self.now)
-        candidates = SeenCandidates(urls=("https://example.com/next",))
-        with self.assertRaises(AdmissionDeferred):
-            self.store.start_background_check(own.acquisition_id, candidates, now=self.now)
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).background_share = 10
-        with self.assertRaisesRegex(ValueError, "public navigation"):
-            self.store.start_background_check(own.acquisition_id, candidates, now=self.now)
 
-    def checked_background(self, urls, seen=()):
-        from periplus.crawl.runtime.background_seen import HistoricalSeenResult, SeenCandidates
-        identity = self.collection(max_depth=0)
-        parent = self.admit(identity, f"https://parent.example/{uuid4()}")
-        work = self.store.dispatch(parent.acquisition_id, now=self.now)
-        self.complete(parent.acquisition_id, work.generation, success=True, outcome={},
-                      navigation=navigation_package(), now=self.now)
-        self.store.finish_seed_selection(identity)
-        self.store.finish_link_selection(parent.interest_id)
-        self.store.settle_collection(identity, now=self.now)
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).background_share = 10
-        candidates = SeenCandidates(urls=tuple(urls))
-        check = self.store.start_background_check(parent.acquisition_id, candidates, now=self.now)
-        result = HistoricalSeenResult(candidates=candidates, seen_urls=tuple(seen), snapshot=7, query_id="seen-query")
-        return identity, parent, self.store.finish_background_check(check, result, now=self.now)
 
-    def test_background_admission_is_independent_shared_and_retains_lookup_provenance(self):
-        identity, parent, check = self.checked_background(["https://child.example/"])
-        before = self.store.get_collection(identity).consumed
-        admission = self.store.admit_background(check, "https://child.example/", self.policy, now=self.now)
-        self.assertEqual(admission.status, "admitted")
-        self.assertEqual(self.store.admit_background(check, admission.url, self.policy, now=self.now), admission)
-        self.assertEqual(self.store.get_collection(identity).status, "settled")
-        self.assertEqual(self.store.get_collection(identity).consumed, before)
-        self.assertTrue(self.store.get_acquisition(parent.acquisition_id).background_selected)
-        with self.sessions() as session:
-            self.assertEqual(len(list(session.scalars(select(CollectionRecord)))), 1)
-            self.assertEqual(len(list(session.scalars(select(InterestRecord)))), 1)
-        joined = self.collection()
-        interest = self.admit(joined, admission.url)
-        self.assertEqual(interest.acquisition_id, admission.acquisition_id)
-        self.store.stop_collection(joined, now=self.now)
-        self.assertEqual(self.store.get_acquisition(admission.acquisition_id).status, "queued")
-        work = self.store.dispatch(admission.acquisition_id, now=self.now + timedelta(seconds=1))
-        self.assertIsNotNone(work)
-        with self.sessions() as session:
-            reasons = [row.payload for row in session.scalars(select(FrontierOutboxRecord).where(
-                FrontierOutboxRecord.acquisition_id == admission.acquisition_id,
-                FrontierOutboxRecord.kind == "lineage"))]
-        background, = [reason for reason in reasons if reason["kind"] == "acquisition_reason"]
-        self.assertIsNone(background["collection_id"])
-        self.assertEqual(background["parent_observation_id"], str(parent.acquisition_id))
-        self.assertEqual(background["selection_provenance"], {
-            "policy_version": 1, "source_snapshot": 7, "source_query_id": "seen-query",
-        })
 
-    def test_background_admission_closes_the_post_lookup_capture_gap(self):
-        _, _, check = self.checked_background(["https://later.example/", "https://seen.example/"],
-                                               seen=["https://seen.example/"])
-        current = self.admit(self.collection(), "https://later.example/")
-        work = self.store.dispatch(current.acquisition_id, now=self.now + timedelta(seconds=1))
-        self.complete(current.acquisition_id, work.generation, success=True, outcome={}, now=self.now + timedelta(seconds=1))
-        self.assertIsNone(self.store.get_acquisition(current.acquisition_id).evidence_snapshot)
-        decision = self.store.admit_background(check, "https://later.example/", self.policy, now=self.now + timedelta(seconds=1))
-        self.assertEqual((decision.status, decision.reason), ("seen", "operational_observation"))
-        # Supplying an altered result cannot erase the stored historical decision.
-        altered = check.model_copy(update={"result": check.result.model_copy(update={"seen_urls": ()})})
-        self.assertEqual(self.store.admit_background(altered, "https://seen.example/", self.policy, now=self.now).status, "seen")
 
-    def test_background_admission_rejects_expiry_policy_changes_and_unknown_candidates(self):
-        _, _, check = self.checked_background(["https://child.example/"])
-        with self.assertRaisesRegex(ValueError, "checked candidate"):
-            self.store.admit_background(check, "https://other.example/", self.policy, now=self.now)
-        with self.assertRaises(StaleDispatch):
-            self.store.admit_background(check, "https://child.example/", self.policy, now=self.now + timedelta(seconds=121))
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).policy_version += 1
-        with self.assertRaises(StaleDispatch):
-            self.store.admit_background(check, "https://child.example/", self.policy, now=self.now)
 
-    def test_zero_background_allocation_retains_queued_background_work(self):
-        _, _, check = self.checked_background(["https://child.example/"])
-        child = self.store.admit_background(check, "https://child.example/", self.policy, now=self.now)
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).background_share = 0
-        self.assertIsNone(self.store.dispatch(child.acquisition_id, now=self.now + timedelta(seconds=1)))
-        self.assertEqual(self.store.get_acquisition(child.acquisition_id).status, "queued")
-        with self.assertRaises(AdmissionDeferred):
-            self.store.admit_background(check, child.url, self.policy, now=self.now)
 
-    def test_background_capacity_preserves_undecided_candidates_and_traps_create_no_work(self):
-        _, parent, check = self.checked_background([
-            "https://example.com/calendar/2026", "https://first.example/", "https://second.example/",
-        ])
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).admission_limit = 1
-        declined = self.store.admit_background(check, "https://example.com/calendar/2026", self.policy, now=self.now)
-        self.assertEqual((declined.status, declined.reason), ("declined", "calendar_or_session"))
-        first = self.store.admit_background(check, "https://first.example/", self.policy, now=self.now)
-        with self.assertRaises(AdmissionDeferred):
-            self.store.admit_background(check, "https://second.example/", self.policy, now=self.now)
-        self.assertFalse(self.store.get_acquisition(parent.acquisition_id).background_selected)
-        self.store.dispatch(first.acquisition_id, now=self.now + timedelta(seconds=1))
-        second = self.store.admit_background(check, "https://second.example/", self.policy, now=self.now + timedelta(seconds=1))
-        self.assertEqual(second.status, "admitted")
-        self.assertTrue(self.store.get_acquisition(parent.acquisition_id).background_selected)
 
-    def test_scheduler_background_share_and_spare_capacity(self):
-        urls = [f"https://background{i}.example/" for i in range(8)]
-        _, _, check = self.checked_background(urls)
-        for url in urls:
-            self.store.admit_background(check, url, self.policy, now=self.now)
-        request = self.collection(page_limit=40)
-        for i in range(20):
-            self.admit(request, f"https://request{i}.example/")
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).background_share = 25
-        kinds = []
-        for _ in range(20):
-            work = self.store.dispatch_next(now=self.now)
-            self.assertIsNotNone(work)
-            acquisition = self.store.get_acquisition(work.acquisition_id)
-            kinds.append(acquisition.attempt_background)
-            self.complete(work.acquisition_id, work.generation, success=True, outcome={}, now=self.now)
-        self.assertEqual(kinds, [False, False, False, True] * 5)
-        self.store.stop_collection(request, now=self.now)
-        for _ in range(3):
-            work = self.store.dispatch_next(now=self.now)
-            self.assertIsNotNone(work)
-            self.assertTrue(self.store.get_acquisition(work.acquisition_id).attempt_background)
-            self.complete(work.acquisition_id, work.generation, success=True, outcome={}, now=self.now)
-        self.assertIsNone(self.store.dispatch_next(now=self.now))
-        self.assertEqual(self.store.control_view().background_started_attempts, 8)
-        self.assertEqual(self.store.control_view().background_charged_capture_ms, 800)
 
-    def test_background_allowance_does_not_block_request_work_or_double_charge_sharing(self):
-        urls = ["https://background.example/", "https://shared.example/"]
-        _, _, check = self.checked_background(urls)
-        first, shared = [self.store.admit_background(check, url, self.policy, now=self.now) for url in urls]
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).background_attempt_allowance = 0
-        self.assertIsNone(self.store.dispatch_next(now=self.now))
-        request = self.collection()
-        own = self.admit(request, shared.url)
-        self.assertEqual(own.acquisition_id, shared.acquisition_id)
-        work = self.store.dispatch_next(now=self.now)
-        self.assertEqual(work.acquisition_id, shared.acquisition_id)
-        self.complete(work.acquisition_id, work.generation, success=True, outcome={}, now=self.now)
-        self.assertEqual(self.store.control_view().background_started_attempts, 0)
-        self.assertEqual(self.store.get_acquisition(first.acquisition_id).status, "queued")
 
-    def test_last_request_cancellation_requires_background_allowance_before_start(self):
-        _, _, check = self.checked_background(["https://shared.example/"])
-        child = self.store.admit_background(check, "https://shared.example/", self.policy, now=self.now)
-        request = self.collection()
-        self.admit(request, child.url)
-        work = self.store.dispatch_next(now=self.now)
-        self.store.stop_collection(request, now=self.now)
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).background_attempt_allowance = 0
-        self.assertFalse(self.store.begin_attempt(work.acquisition_id, work.generation, now=self.now))
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).background_attempt_allowance = 1
-        self.assertTrue(self.store.begin_attempt(work.acquisition_id, work.generation, now=self.now))
-        view = self.store.control_view()
-        self.assertEqual((view.background_reserved_attempts, view.background_started_attempts), (0, 1))
-        self.assertEqual(view.background_reserved_capture_ms, 125000)
-        self.assertFalse(self.store.begin_attempt(work.acquisition_id, work.generation, now=self.now))
 
-    def test_background_recovery_releases_unstarted_and_charges_unknown_time(self):
-        _, _, check = self.checked_background(["https://background.example/"])
-        child = self.store.admit_background(check, "https://background.example/", self.policy, now=self.now)
-        self.store.dispatch_next(now=self.now, lease_seconds=1)
-        self.store.recover_dispatch(child.acquisition_id, now=self.now + timedelta(seconds=2))
-        view = self.store.control_view()
-        self.assertEqual((view.background_reserved_attempts, view.background_started_attempts), (0, 0))
-        self.assertEqual((view.background_reserved_capture_ms, view.background_charged_capture_ms), (0, 0))
-        work = self.store.dispatch_next(now=self.now + timedelta(seconds=2), lease_seconds=1)
-        self.store.begin_attempt(work.acquisition_id, work.generation, now=self.now + timedelta(seconds=2), lease_seconds=1)
-        self.store.recover_dispatch(child.acquisition_id, now=self.now + timedelta(seconds=4))
-        view = self.store.control_view()
-        self.assertEqual((view.background_reserved_attempts, view.background_started_attempts), (0, 1))
-        self.assertEqual((view.background_reserved_capture_ms, view.background_charged_capture_ms), (0, 125000))
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).background_capture_time_allowance_ms = 249999
-        self.assertIsNone(self.store.dispatch_next(now=self.now + timedelta(seconds=4)))
-        self.assertEqual(self.store.control_view().background_waiting_reason, "background_capture_time_allowance_exhausted")
 
     def exclude(self, host="example.com", path_prefix="/"):
         from periplus.crawl.control.collections.frontier_controls import ReplaceFrontierSettings
@@ -1290,19 +1084,6 @@ class FrontierStoreTests(unittest.TestCase):
         self.assertEqual(len(acquisition.outcome["attempts"]), 1)
         self.assertEqual(self.store.control_view().charged_capture_ms, 125000)
 
-    def test_exclusions_apply_to_background_admission_and_queued_work(self):
-        from periplus.crawl.runtime.background_seen import HistoricalSeenResult, SeenCandidates
-        _, parent, _ = self.checked_background(["https://child.example/"])
-        self.exclude("child.example")
-        with self.sessions.begin() as session:
-            session.delete(session.get(BackgroundCheckRecord, parent.acquisition_id))
-        candidates = SeenCandidates(urls=("https://child.example/",))
-        check = self.store.start_background_check(parent.acquisition_id, candidates, now=self.now)
-        check = self.store.finish_background_check(check, HistoricalSeenResult(candidates=candidates,
-            seen_urls=(), snapshot=7, query_id="q"), now=self.now)
-        result = self.store.admit_background(check, candidates.urls[0], self.policy, now=self.now)
-        self.assertEqual((result.status, result.reason), ("declined", "global_exclusion"))
-        self.assertEqual(self.store.control_view().pending_acquisitions, 0)
 
     def test_recent_result_with_excluded_effective_url_cannot_be_reused(self):
         first = self.admit(self.collection())
@@ -1409,22 +1190,6 @@ class FrontierStoreTests(unittest.TestCase):
         self.assertTrue(self.retire(own.acquisition_id, package.object_name))
         self.assertEqual(acquisition.evidence_snapshot, 7)
 
-    def test_background_allocation_and_active_check_pin_navigation(self):
-        from periplus.crawl.runtime.background_seen import SeenCandidates
-        own, package = self.retention_parent()
-        self.store.finish_link_selection(own.interest_id)
-        self.allow_retention_receipts(own.acquisition_id)
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).background_share = 10
-        self.assertFalse(self.retire(own.acquisition_id, package.object_name))
-        check = self.store.start_background_check(own.acquisition_id, SeenCandidates(urls=("https://child.example/",)))
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).background_share = 0
-        self.assertFalse(self.retire(own.acquisition_id, package.object_name))
-        with self.sessions.begin() as session:
-            session.get(BackgroundCheckRecord, own.acquisition_id).expires_at = datetime.now(UTC) - timedelta(seconds=1)
-        self.assertTrue(self.retire(own.acquisition_id, package.object_name))
-        self.assertIsNotNone(self.store.get_acquisition(own.acquisition_id).outcome)
 
     def test_retired_navigation_preserves_exact_completion_replay_and_forces_branch_capture(self):
         from periplus.platform.catalogue.records import VisitEvidence
@@ -1487,72 +1252,10 @@ class FrontierStoreTests(unittest.TestCase):
         self.assertEqual(self.store.get_collection(first).reserved, 1)
         self.assertEqual(self.store.get_collection(second).consumed, 1)
 
-    def test_retained_capacity_defers_background_without_recording_a_completed_decision(self):
-        _, parent, check = self.checked_background(["https://child.example/"])
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).acquisition_limit = 1
-        with self.assertRaisesRegex(AdmissionDeferred, "retained acquisition"):
-            self.store.admit_background(check, "https://child.example/", self.policy, now=self.now)
-        self.assertFalse(self.store.get_acquisition(parent.acquisition_id).background_selected)
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).acquisition_limit = 2
-        result = self.store.admit_background(check, "https://child.example/", self.policy, now=self.now)
-        self.assertEqual(result.status, "admitted")
 
-    def background_terminal(self):
-        _, parent, check = self.checked_background(["https://cleanup.example/"])
-        child = self.store.admit_background(check, "https://cleanup.example/", self.policy, now=self.now)
-        work = self.store.dispatch(child.acquisition_id, now=self.now)
-        self.complete(child.acquisition_id, work.generation, success=True, outcome={}, now=self.now)
-        return child
 
-    def test_acquisition_cleanup_requires_all_receipts_and_removes_only_unreferenced_records(self):
-        child = self.background_terminal()
-        cutoff = self.now + timedelta(seconds=1)
-        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff), 0)
-        with self.sessions.begin() as session:
-            session.get(AcquisitionRecord, child.acquisition_id).evidence_snapshot = 7
-        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff), 0)
-        self.allow_retention_receipts(child.acquisition_id)
-        before = self.store.control_view()
-        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff), 1)
-        self.assertIsNone(self.store.get_acquisition(child.acquisition_id))
-        after = self.store.control_view()
-        self.assertEqual(after.retained_acquisitions, before.retained_acquisitions - 1)
-        self.assertEqual(after.started_attempts, before.started_attempts)
-        with self.sessions() as session:
-            self.assertEqual(list(session.scalars(select(FrontierOutboxRecord).where(FrontierOutboxRecord.acquisition_id == child.acquisition_id))), [])
-        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff), 0)
 
-    def test_acquisition_cleanup_keeps_settled_request_references(self):
-        child = self.background_terminal()
-        own = self.admit(self.collection(), child.url)
-        self.assertEqual(own.mode, "reused")
-        self.store.finish_link_selection(own.interest_id)
-        self.allow_retention_receipts(child.acquisition_id)
-        self.assertEqual(self.store.cleanup_acquisitions(cutoff=self.now + timedelta(seconds=1)), 0)
-        self.assertIsNotNone(self.store.get_acquisition(child.acquisition_id))
 
-    def test_cleanup_watermark_blocks_old_checks_and_lake_seen_decision_survives_deletion(self):
-        from periplus.crawl.runtime.background_seen import HistoricalSeenResult, SeenCandidates
-        child = self.background_terminal()
-        self.allow_retention_receipts(child.acquisition_id)
-        parent, _ = self.retention_parent()
-        candidates = SeenCandidates(urls=(child.url,))
-        check = self.store.start_background_check(parent.acquisition_id, candidates)
-        cutoff = self.now + timedelta(seconds=1)
-        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff), 0)
-        check = self.store.finish_background_check(check, HistoricalSeenResult(candidates=candidates,
-            seen_urls=(), snapshot=6, query_id="old"))
-        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff), 0)
-        with self.sessions.begin() as session:
-            session.get(BackgroundCheckRecord, parent.acquisition_id).expires_at = datetime.now(UTC) - timedelta(seconds=1)
-        fresh = self.store.start_background_check(parent.acquisition_id, candidates)
-        fresh = self.store.finish_background_check(fresh, HistoricalSeenResult(candidates=candidates,
-            seen_urls=(child.url,), snapshot=7, query_id="fresh"))
-        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff), 1)
-        self.assertEqual(self.store.admit_background(fresh, child.url, self.policy).status, "seen")
-        self.assertIsNone(self.store.get_acquisition(child.acquisition_id))
 
     def test_retention_cursor_progresses_beyond_first_uncommitted_batch(self):
         from uuid import UUID
@@ -1560,7 +1263,7 @@ class FrontierStoreTests(unittest.TestCase):
             for index in range(1, 66):
                 session.add(AcquisitionRecord(id=UUID(int=index), url=f"https://retained.example/{index}",
                     domain="retained.example", capture_key=str(index), requirements=self.policy.model_dump(mode="json"),
-                    visibility="public", access_context="public", status="failed" if index <= 64 else "cancelled",
+                      status="failed" if index <= 64 else "cancelled",
                     completed_at=self.now))
         cutoff = self.now + timedelta(seconds=1)
         self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff), 0)
@@ -1601,7 +1304,7 @@ class FrontierStoreTests(unittest.TestCase):
                 aid = uuid4()
                 url = f"https://example.com/{index}"
                 session.add(AcquisitionRecord(id=aid, url=url, domain="example.com", capture_key=str(aid),
-                    requirements=self.policy.model_dump(mode="json"), visibility="public", access_context="public",
+                    requirements=self.policy.model_dump(mode="json"),
                     status="cancelled", completed_at=self.now))
                 session.add(InterestRecord(collection_id=identity, acquisition_id=aid, url=url, url_key=request_url_key(url),
                     context=self.context.model_dump(mode="json"), mode="acquired", budget_state="released", status="cancelled"))
@@ -1626,3 +1329,20 @@ class FrontierStoreTests(unittest.TestCase):
             session.delete(session.get(FrontierOutboxRecord, f"lineage:collection:{identity}"))
         self.assertEqual(self.store.cleanup_collections(cutoff=self.now + timedelta(seconds=1)), 0)
         self.assertFalse(self.store.get_collection(identity).retiring)
+
+    def test_duration_expiry_keeps_started_capture_and_blocks_remaining_work(self):
+        identity = self.collection(page_limit=3, max_duration_seconds=60)
+        a = self.admit(identity)
+        pending = self.admit(identity, "https://example.com/next")
+        work = self.store.dispatch(a.acquisition_id, now=self.now)
+        self.assertTrue(self.store.begin_attempt(a.acquisition_id, work.generation, now=self.now))
+        self.store.stop_collection(identity, reason="duration_limit", now=self.now + timedelta(seconds=61))
+        self.assertEqual(self.store.get_collection(identity).status, "active")
+        self.assertEqual(self.store.get_acquisition(pending.acquisition_id).status, "cancelled")
+        self.assertEqual(self.store.get_interest(a.interest_id).status, "awaiting_result")
+        self.complete(a.acquisition_id, work.generation, success=True, outcome={}, now=self.now + timedelta(seconds=62))
+        self.store.stop_collection(identity, reason="duration_limit", now=self.now + timedelta(seconds=63))
+        self.assertEqual(self.store.get_collection(identity).outcome, "duration_limit")
+        self.assertEqual(self.store.get_collection(identity).status, "settled")
+        with self.sessions() as session:
+            self.assertIsNotNone(session.get(FrontierOutboxRecord, f"lineage:fulfillment:{a.interest_id}"))

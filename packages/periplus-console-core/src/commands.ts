@@ -163,7 +163,7 @@ commands = new CommandRegistry([
   },
   {
     name: "tables",
-    summary: "List public views and table macros.",
+    summary: "List catalogue relations and table macros.",
     usage: ".tables",
     examples: [".tables"],
     async execute(args, context) {
@@ -172,7 +172,7 @@ commands = new CommandRegistry([
       const rows = [
         ...metadata.relations.map((relation) => [
           qualified(relation),
-          "view",
+          relation.kind,
           `${relation.columns.length} columns`,
           relation.description ?? "",
         ]),
@@ -189,13 +189,13 @@ commands = new CommandRegistry([
         kind: "table",
         columns: ["Name", "Kind", "Signature", "Description"],
         rows,
-        summary: `${rows.length} public objects${catalogueSuffix(metadata)}`,
+        summary: `${rows.length} catalogue objects${catalogueSuffix(metadata)}`,
       }
     },
   },
   {
     name: "macros",
-    summary: "List public scalar and table macros.",
+    summary: "List catalogue scalar and table macros.",
     usage: ".macros",
     examples: [".macros"],
     async execute(args, context) {
@@ -213,7 +213,7 @@ commands = new CommandRegistry([
           .sort((left, right) =>
             String(left[0]).localeCompare(String(right[0]))
           ),
-        summary: `${metadata.macros.length} public macro${
+        summary: `${metadata.macros.length} catalogue macro${
           metadata.macros.length === 1 ? "" : "s"
         }${catalogueSuffix(metadata)}`,
       }
@@ -221,14 +221,14 @@ commands = new CommandRegistry([
   },
   {
     name: "describe",
-    summary: "Describe a public view or macro.",
+    summary: "Describe a catalogue relation or macro.",
     usage: ".describe <object>",
     examples: [".describe web.observation", ".describe content.object"],
     async execute(args, context) {
       if (args.length !== 1) throw usageError(".describe <object>")
       const metadata = await context.metadata()
       const object = resolveObject(args[0]!, metadata)
-      if ("kind" in object && object.kind !== "view") {
+      if ("parameters" in object) {
         return {
           kind: "table",
           columns: ["Column", "Type", "Nullable"],
@@ -249,7 +249,7 @@ commands = new CommandRegistry([
           column.nullable ? "yes" : "no",
           column.description ?? "",
         ]),
-        summary: `${qualified(object)} · view${
+        summary: `${qualified(object)} · ${object.kind}${
           object.description ? ` · ${object.description}` : ""
         }`,
       }
@@ -284,7 +284,7 @@ commands = new CommandRegistry([
       return {
         kind: "message",
         text:
-          `Completion metadata reloaded: ${metadata.relations.length} views, ` +
+          `Completion metadata reloaded: ${metadata.relations.length} relations, ` +
           `${metadata.macros.length} macros, ${columns} columns.`,
       }
     },
@@ -296,7 +296,7 @@ commands = new CommandRegistry([
               replaceStart,
               replaceEnd: cursor,
               kind: "argument",
-              description: "Fetch fresh public catalogue metadata.",
+              description: "Fetch fresh catalogue metadata.",
             },
           ]
         : []

@@ -19,24 +19,25 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 
-const SqlConsolePage = lazy(() =>
-  import("@/pages/sql-console-page").then((module) => ({
-    default: module.SqlConsolePage,
+const QueriesPage = lazy(() => import("@/pages/observatory/queries-page").then(module => ({default: module.QueriesPage})))
+const ConsolePage = lazy(() =>
+  import("@/pages/console-page").then((module) => ({
+    default: module.ConsolePage,
   }))
 )
-const MaterializationsPage = lazy(() =>
-  import("@/pages/materializations-page").then((module) => ({
-    default: module.MaterializationsPage,
+const MaterializationPage = lazy(() =>
+  import("@/pages/data/materialization-page").then((module) => ({
+    default: module.MaterializationPage,
   }))
 )
-const DataMetricsPage = lazy(() =>
-  import("@/pages/data/metrics-page").then((module) => ({
-    default: module.DataMetricsPage,
+const IngestionPage = lazy(() =>
+  import("@/pages/data/ingestion-page").then((module) => ({
+    default: module.IngestionPage,
   }))
 )
-const DocumentsPage = lazy(() =>
-  import("@/pages/data/documents-page").then((module) => ({
-    default: module.DocumentsPage,
+const StoragePage = lazy(() =>
+  import("@/pages/data/storage-page").then((module) => ({
+    default: module.StoragePage,
   }))
 )
 const FrontierItemDetail = lazy(() =>
@@ -44,9 +45,18 @@ const FrontierItemDetail = lazy(() =>
     default: module.FrontierItemDetail,
   }))
 )
-const FrontierControlsPage = lazy(() =>
-  import("@/pages/frontier/controls-page").then((module) => ({
-    default: module.FrontierControlsPage,
+const CrawlerPage = lazy(() =>
+  import("@/pages/observatory/crawler-page").then((module) => ({
+    default: module.CrawlerPage,
+  }))
+)
+const AccessPage = lazy(() => import("@/pages/observatory/access-page").then(module => ({default:module.AccessPage})))
+const SchedulesPage = lazy(() =>
+  import("@/pages/observatory/schedules-page").then((module) => ({ default: module.SchedulesPage }))
+)
+const RequestDefinitionsPage = lazy(() =>
+  import("@/pages/observatory/request-definitions-page").then((module) => ({
+    default: module.RequestDefinitionsPage,
   }))
 )
 const CollectionsPage = lazy(() =>
@@ -135,7 +145,7 @@ export function App() {
       return (
         <div className="grid flex-1 place-content-center gap-3 text-center">
           <h1 className="text-xl font-medium">Page not found</h1>
-          <a href="/frontier" className="underline">
+          <a href="/observatory/crawler" className="underline">
             Open crawler controls
           </a>
         </div>
@@ -144,38 +154,42 @@ export function App() {
     const frontierId = pathname.match(/^\/frontier\/items\/([^/]+)$/)?.[1]
     if (frontierId)
       return <FrontierItemDetail id={decodeURIComponent(frontierId)} />
-    if (pathname === "/" || activeItem.href === "/frontier") {
-      return <FrontierControlsPage />
+    if (pathname === "/") {
+      return <ConsolePage />
+    }
+    if (activeItem.href === "/observatory/queries") return <QueriesPage />
+    if (activeItem.href === "/observatory/crawler") {
+      return <CrawlerPage />
     }
 
-    if (activeItem.href === "/sql") {
-      return <SqlConsolePage />
+    if (activeItem.href === "/data/materialization") {
+      return <MaterializationPage />
     }
 
-    if (activeItem.href === "/materializations") {
-      return <MaterializationsPage />
+    if (activeItem.href === "/data/ingestion") return <IngestionPage />
+
+    if (activeItem.href === "/data/storage") return <StoragePage />
+
+    if (activeItem.href === "/observatory/access") return <AccessPage />
+    if (activeItem.href === "/observatory/requests") {
+      if (pathname === "/observatory/requests/new") return <NewCollectionPage reusable />
+      const id = pathname.match(/^\/observatory\/requests\/([^/]+)$/)?.[1]
+      return <RequestDefinitionsPage id={id} />
+    }
+    if (activeItem.href === "/observatory/schedules") {
+      const id = pathname.match(/^\/observatory\/schedules\/([^/]+)$/)?.[1]
+      return <SchedulesPage id={id} />
+    }
+    if (activeItem.href === "/observatory/executions") {
+      if (pathname === "/observatory/executions/new") return <NewCollectionPage />
+      const id = pathname.match(/^\/observatory\/executions\/([^/]+)$/)?.[1]
+      return id ? <CollectionDetailPage id={decodeURIComponent(id)} /> : <CollectionsPage />
     }
 
-    if (activeItem.href === "/data/metrics") {
-      return <DataMetricsPage />
-    }
-
-    if (activeItem.href === "/data/documents") {
-      return <DocumentsPage />
-    }
-
-    if (activeItem.href === "/collections") {
-      if (pathname === "/collections/new") return <NewCollectionPage />
-      const id = pathname.match(/^\/collections\/([^/]+)$/)?.[1]
-      return id ? (
-        <CollectionDetailPage id={decodeURIComponent(id)} />
-      ) : (
-        <CollectionsPage />
-      )
-    }
-
-    if (activeItem.href === "/content-policies") {
-      const policyId = pathname.match(/^\/content-policies\/([^/]+)$/)?.[1]
+    if (activeItem.href === "/observatory/capture-policies") {
+      const policyId = pathname.match(
+        /^\/observatory\/capture-policies\/([^/]+)$/
+      )?.[1]
       if (policyId) {
         return (
           <ContentPolicyDetailPage policyId={decodeURIComponent(policyId)} />
@@ -185,7 +199,7 @@ export function App() {
       return <ContentPoliciesPage />
     }
 
-    if (activeItem.href === "/domain-policies") {
+    if (activeItem.href === "/observatory/domain-policies") {
       return <DomainPoliciesPage />
     }
 
@@ -220,7 +234,7 @@ export function App() {
         </header>
         <div
           className={
-            activeItem.href === "/sql"
+            activeItem.href === "/"
               ? "relative min-h-0 min-w-0 flex-1 overflow-hidden"
               : "app-surface relative min-h-0 min-w-0 flex-1 overflow-auto p-4 lg:p-6"
           }
@@ -228,7 +242,7 @@ export function App() {
           <div className="app-surface-grain pointer-events-none absolute inset-0" />
           <div
             className={
-              activeItem.href === "/sql"
+              activeItem.href === "/"
                 ? "relative z-10 flex h-full min-h-0 min-w-0"
                 : "relative z-10 flex min-h-full min-w-0 pb-10"
             }

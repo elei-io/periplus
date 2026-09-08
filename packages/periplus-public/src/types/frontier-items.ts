@@ -29,9 +29,6 @@ export interface AcquisitionView {
   estimate_unavailable_reason: string | null
   callers: Array<{ collection_id: string; interest_id: string; status: string; mode: string }>
   more_callers: boolean
-  background: boolean
-  background_parent_observation_id: string | null
-  background_rule_id: string | null
   as_of: string
 }
 export interface CollectionItemsPage {
@@ -83,12 +80,12 @@ export interface ObservationLineagePage {
     record_id: string
     kind: "fulfillment" | "reason"
     decided_at: string
-    collection_id: string | null
+    collection_id: string
     parent_observation_id: string | null
     rule_id: string
     depth: number | null
     mode: "acquired" | "shared" | "reused" | null
-    reason: "collection" | "background" | null
+    reason: "collection" | null
     policy_version: string | null
   }>
   next_cursor: string | null

@@ -40,8 +40,7 @@ class FrontierReadTests(unittest.IsolatedAsyncioTestCase):
             created_at=now, completed_at=None, attempt_count=0, observation_id=None, evidence_committed=False,
             eligibility_not_before=now, waiting_reason='awaiting_scheduler_evaluation',
             estimate_unavailable_reason='domain_permits_and_dispatch_capacity_not_observed',
-            callers=[], more_callers=False, background=False, background_parent_observation_id=None,
-            background_rule_id=None, as_of=now)
+            callers=[], more_callers=False, as_of=now)
         with patch('periplus_sdk.frontier.request', AsyncMock(return_value=item.model_dump(mode='json'))) as request:
             result = await frontier.item(str(identity))
             self.assertIsNone(result.query_ready)

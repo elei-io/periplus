@@ -1,0 +1,476 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "api": {
+      "type": "object",
+      "properties": {
+        "resources": {
+          "type": "object",
+          "properties": {
+            "requests": {
+              "type": "object"
+            },
+            "limits": {
+              "type": "object"
+            }
+          }
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "autoscaling": {
+          "$ref": "#/definitions/scaling"
+        },
+        "duckdb": {
+          "$ref": "#/definitions/duckdb"
+        }
+      }
+    },
+    "admin": {
+      "type": "object",
+      "properties": {
+        "resources": {
+          "type": "object",
+          "properties": {
+            "requests": {
+              "type": "object"
+            },
+            "limits": {
+              "type": "object"
+            }
+          }
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "autoscaling": {
+          "$ref": "#/definitions/scaling"
+        }
+      }
+    },
+    "public": {
+      "type": "object",
+      "properties": {
+        "resources": {
+          "type": "object",
+          "properties": {
+            "requests": {
+              "type": "object"
+            },
+            "limits": {
+              "type": "object"
+            }
+          }
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "autoscaling": {
+          "$ref": "#/definitions/scaling"
+        }
+      }
+    },
+    "crawler": {
+      "type": "object",
+      "properties": {
+        "resources": {
+          "type": "object",
+          "properties": {
+            "requests": {
+              "type": "object"
+            },
+            "limits": {
+              "type": "object"
+            }
+          }
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "autoscaling": {
+          "$ref": "#/definitions/scaling"
+        },
+        "duckdb": {
+          "$ref": "#/definitions/duckdb"
+        }
+      }
+    },
+    "ingestor": {
+      "type": "object",
+      "properties": {
+        "resources": {
+          "type": "object",
+          "properties": {
+            "requests": {
+              "type": "object"
+            },
+            "limits": {
+              "type": "object"
+            }
+          }
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "autoscaling": {
+          "$ref": "#/definitions/scaling"
+        },
+        "duckdb": {
+          "$ref": "#/definitions/duckdb"
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        }
+      }
+    },
+    "materializer": {
+      "type": "object",
+      "properties": {
+        "resources": {
+          "type": "object",
+          "properties": {
+            "requests": {
+              "type": "object"
+            },
+            "limits": {
+              "type": "object"
+            }
+          }
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "autoscaling": {
+          "$ref": "#/definitions/scaling"
+        },
+        "duckdb": {
+          "$ref": "#/definitions/duckdb"
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "query": {
+      "type": "object",
+      "properties": {
+        "resources": {
+          "type": "object",
+          "properties": {
+            "requests": {
+              "type": "object"
+            },
+            "limits": {
+              "type": "object"
+            }
+          }
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "autoscaling": {
+          "$ref": "#/definitions/scaling"
+        },
+        "duckdb": {
+          "$ref": "#/definitions/duckdb"
+        }
+      }
+    },
+    "janitor": {
+      "type": "object",
+      "properties": {
+        "resources": {
+          "type": "object",
+          "properties": {
+            "requests": {
+              "type": "object"
+            },
+            "limits": {
+              "type": "object"
+            }
+          }
+        },
+        "duckdb": {
+          "$ref": "#/definitions/duckdb"
+        },
+        "autoscaling": false
+      }
+    },
+    "setup": {
+      "type": "object",
+      "properties": {
+        "resources": {
+          "type": "object",
+          "properties": {
+            "requests": {
+              "type": "object"
+            },
+            "limits": {
+              "type": "object"
+            }
+          }
+        },
+        "duckdb": {
+          "$ref": "#/definitions/duckdb"
+        },
+        "autoscaling": false
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pollingInterval": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "behavior": {
+          "$ref": "#/definitions/behavior"
+        },
+        "prometheus": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "serverAddress": {
+              "type": "string"
+            },
+            "authenticationRef": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "TriggerAuthentication",
+                    "ClusterTriggerAuthentication"
+                  ]
+                }
+              }
+            },
+            "metadata": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "propertyNames": {
+                "not": {
+                  "enum": [
+                    "serverAddress",
+                    "threshold",
+                    "ignoreNullValues",
+                    "query"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "terminationGracePeriodSeconds": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "definitions": {
+    "scaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "minReplicas",
+        "maxReplicas",
+        "metric",
+        "threshold",
+        "query",
+        "behavior"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "minReplicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxReplicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "metric": {
+          "enum": [
+            "cpu",
+            "prometheus"
+          ]
+        },
+        "threshold": {
+          "type": "string",
+          "pattern": "^(?:[1-9][0-9]*(?:\\.[0-9]+)?|0\\.[0-9]*[1-9][0-9]*)$"
+        },
+        "query": {
+          "type": "string"
+        },
+        "behavior": {
+          "$ref": "#/definitions/behavior"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "metric": {
+                "const": "cpu"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "threshold": {
+                "pattern": "^[1-9][0-9]*$"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "duckdb": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threads",
+        "memoryLimit",
+        "maxTempDirectorySize"
+      ],
+      "properties": {
+        "threads": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024
+        },
+        "memoryLimit": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*(?:[KMGTP]i?B|B)$"
+        },
+        "maxTempDirectorySize": {
+          "type": "string",
+          "pattern": "^(?:0|[1-9][0-9]*)(?:[KMGTP]i?B|B)$"
+        }
+      }
+    },
+    "behavior": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scaleUp": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "stabilizationWindowSeconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3600
+            },
+            "selectPolicy": {
+              "enum": [
+                "Max",
+                "Min",
+                "Disabled"
+              ]
+            },
+            "policies": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "type",
+                  "value",
+                  "periodSeconds"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "Pods",
+                      "Percent"
+                    ]
+                  },
+                  "value": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "periodSeconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1800
+                  }
+                }
+              }
+            }
+          }
+        },
+        "scaleDown": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "stabilizationWindowSeconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3600
+            },
+            "selectPolicy": {
+              "enum": [
+                "Max",
+                "Min",
+                "Disabled"
+              ]
+            },
+            "policies": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "type",
+                  "value",
+                  "periodSeconds"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "Pods",
+                      "Percent"
+                    ]
+                  },
+                  "value": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "periodSeconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1800
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

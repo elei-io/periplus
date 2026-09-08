@@ -7,7 +7,9 @@ from dataclasses import dataclass, field
 
 import duckdb
 
+from periplus.platform.catalogue.cdc_extension import load_cdc_extension
 from periplus.platform.catalogue.config import CatalogueConfig
+from periplus.platform.config.duckdb import connection_limits
 from periplus.platform.catalogue.storage import (
     DuckLakeStorageProtocol,
     storage_protocol,
@@ -33,8 +35,8 @@ class DuckLakeConnectionFactory:
         read_only: bool = False,
         override_data_path: bool = False,
     ) -> duckdb.DuckDBPyConnection:
-        connection_config = dict(self.duckdb_config or {})
-        connection_config["allow_unsigned_extensions"] = "true" if load_cdc else "false"
+        connection_config = connection_limits(self.duckdb_config)
+        connection_config["allow_unsigned_extensions"] = "false"
         connection = duckdb.connect(":memory:", config=connection_config)
         try:
             connection.execute("INSTALL ducklake")
@@ -44,10 +46,7 @@ class DuckLakeConnectionFactory:
                 connection.execute("LOAD postgres")
             self.storage.configure_connection(connection)
             if load_cdc:
-                connection.load_extension(
-                    str(self.config.resolved_cdc_extension_path())
-                )
-                connection.execute("SELECT cdc_version()").fetchone()
+                load_cdc_extension(connection)
             if not read_only:
                 self.storage.prepare_root()
             connection.execute(

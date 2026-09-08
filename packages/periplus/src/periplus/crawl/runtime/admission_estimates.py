@@ -28,7 +28,7 @@ def estimate_admission(session, record, control, *, workers, now):
         return None, 'collection_' + record.status
     spec = record.spec
     if (len(spec['seed_urls']) != 1 or spec['seed_sql'] or spec['seed_description']
-            or spec['deadline_at'] is not None):
+            or spec.get('max_duration_seconds') is not None):
         return None, 'comparable_selection_work_not_observed'
     if record.admission_timing is None:
         return None, 'request_admission_timing_not_recorded'
@@ -46,17 +46,14 @@ def estimate_admission(session, record, control, *, workers, now):
     if (workers is None or workers.state != 'observed' or not workers.reported_workers
             or not 0 <= (now - workers.as_of).total_seconds() <= 3):
         return None, 'selection_worker_presence_not_observed'
-    if spec['visibility'] != 'public':
-        return None, 'comparable_public_admissions_only'
     first = CollectionRecord.admission_timing['first_admitted_at'].as_string()
     length = func.jsonb_array_length if session.bind.dialect.name == 'postgresql' else func.json_array_length
     rows = session.execute(select(CollectionRecord.created_at, first,
         CollectionRecord.spec['seed_urls'][0].as_string()).where(
-        CollectionRecord.spec['visibility'].as_string() == 'public',
         length(CollectionRecord.spec['seed_urls']) == 1,
         CollectionRecord.spec['seed_sql'].as_string().is_(None),
         CollectionRecord.spec['seed_description'].as_string().is_(None),
-        CollectionRecord.spec['deadline_at'].as_string().is_(None),
+        CollectionRecord.spec['max_duration_seconds'].as_string().is_(None),
         CollectionRecord.spec['result_max_age_seconds'].as_integer() == spec['result_max_age_seconds'],
         CollectionRecord.admission_timing['policy_version'].as_integer() == control.policy_version,
         CollectionRecord.admission_timing['priority'].as_integer() == record.priority,

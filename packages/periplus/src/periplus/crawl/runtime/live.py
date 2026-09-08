@@ -94,7 +94,6 @@ class LiveView(BaseModel):
     history: HistoricalActivity | None
     history_unavailable_reason: str | None
     recent: list[RecentCapture]
-    visibility: Literal["public"] = "public"
 
 
 def _aware(value: datetime | None):
@@ -113,27 +112,24 @@ def current_activity(sessions, *, collection_id: UUID | None = None) -> CurrentA
                 InterestRecord.acquisition_id == AcquisitionRecord.id,
                 InterestRecord.collection_id == collection_id,
                 InterestRecord.status.in_(("queued", "awaiting_result")),
-                CollectionRecord.spec["visibility"].as_string() == "public",
                 CollectionRecord.retiring.is_(False)).exists()
         request_count = (func.count(func.distinct(case((queued & request_member, AcquisitionRecord.url))))
                          if collection_id is not None else literal(None))
         counters = (func.sum(case((queued, 1), else_=0)), func.sum(case((dispatched, 1), else_=0)),
                     func.sum(case((active, 1), else_=0)), func.min(case((queued, AcquisitionRecord.created_at))),
                     func.count(func.distinct(case((queued, AcquisitionRecord.url)))), request_count)
-        visible = (AcquisitionRecord.visibility == "public", AcquisitionRecord.status.in_(("queued", "retry", "dispatched")))
+        visible = (AcquisitionRecord.status.in_(("queued", "retry", "dispatched")),)
         totals = session.execute(select(*counters).where(*visible)).one()
         domains = session.execute(select(AcquisitionRecord.domain, *counters).where(*visible).group_by(
             AcquisitionRecord.domain).order_by(counters[2].desc(), counters[1].desc(), counters[0].desc(),
                                                AcquisitionRecord.domain).limit(11)).all()
         upcoming = session.execute(select(AcquisitionRecord.id, AcquisitionRecord.url, AcquisitionRecord.domain,
-            AcquisitionRecord.created_at, AcquisitionRecord.eligible_at).where(AcquisitionRecord.visibility == "public",
-                queued).order_by(AcquisitionRecord.created_at, AcquisitionRecord.id).limit(5)).all()
+            AcquisitionRecord.created_at, AcquisitionRecord.eligible_at).where(queued).order_by(AcquisitionRecord.created_at, AcquisitionRecord.id).limit(5)).all()
         active_rows = session.execute(select(AcquisitionRecord.id, AcquisitionRecord.url,
-            AcquisitionRecord.attempt_started_at).where(AcquisitionRecord.visibility == "public",
-                dispatched).order_by(AcquisitionRecord.created_at, AcquisitionRecord.id).limit(13)).all()
+            AcquisitionRecord.attempt_started_at).where(dispatched).order_by(AcquisitionRecord.created_at, AcquisitionRecord.id).limit(13)).all()
         recent = session.execute(select(AcquisitionRecord.id, AcquisitionRecord.url,
             AcquisitionRecord.completed_at, AcquisitionRecord.evidence_snapshot).where(
-                AcquisitionRecord.visibility == "public", AcquisitionRecord.status == "succeeded",
+                AcquisitionRecord.status == "succeeded",
                 AcquisitionRecord.completed_at.is_not(None)).order_by(
                     AcquisitionRecord.completed_at.desc(), AcquisitionRecord.id.desc()).limit(5)).all()
         return CurrentActivity(as_of=now, paused=control.paused, queued=totals[0] or 0,
@@ -164,18 +160,18 @@ def read_live_history(catalogue, *, now: datetime | None = None) -> HistoricalAc
             events AS (
                 SELECT v.requested_url, a.started_at AS event_at, 'attempt' AS kind
                 FROM {alias}.ingest.attempts a JOIN {alias}.ingest.visits v ON v.visit_id = a.visit_id, clock
-                WHERE v.visibility = 'public' AND v.provenance.kind = 'periplus'
+                WHERE v.provenance.kind = 'periplus'
                   AND a.started_at >= as_of - INTERVAL '300 seconds' AND a.started_at <= as_of
                 UNION ALL
                 SELECT v.requested_url, v.finished_at, v.outcome
                 FROM {alias}.ingest.visits v, clock
-                WHERE v.visibility = 'public' AND v.provenance.kind = 'periplus'
+                WHERE v.provenance.kind = 'periplus'
                   AND v.outcome IN ('succeeded', 'failed')
                   AND v.finished_at >= as_of - INTERVAL '300 seconds' AND v.finished_at <= as_of
                 UNION ALL
                 SELECT f.requested_url, f.recorded_at, 'fulfillment'
                 FROM {alias}.ingest.fulfillments f, clock
-                WHERE f.visibility = 'public' AND f.recorded_at >= as_of - INTERVAL '300 seconds'
+                WHERE f.recorded_at >= as_of - INTERVAL '300 seconds'
                   AND f.recorded_at <= as_of
             ), counted AS (
                 SELECT seconds, trim(regexp_extract(requested_url, '^https?://(\\[[^\\]]+\\]|[^/:?#]+)', 1), '[]') AS domain,
@@ -197,7 +193,7 @@ def read_live_history(catalogue, *, now: datetime | None = None) -> HistoricalAc
         """, [now]).fetchall()
         latest = connection.execute(f"""SELECT visit_id,
             CASE WHEN length(requested_url) <= 8192 THEN requested_url ELSE NULL END, finished_at
-            FROM {alias}.ingest.visits WHERE visibility = 'public' AND provenance.kind = 'periplus'
+            FROM {alias}.ingest.visits WHERE provenance.kind = 'periplus'
               AND outcome = 'succeeded' AND finished_at <= ?
             ORDER BY finished_at DESC, visit_id DESC LIMIT 5""", [now]).fetchall()
         from periplus.materialization.readiness import observation_readiness

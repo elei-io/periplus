@@ -61,12 +61,29 @@ same query operation; `.completion reload` refreshes the derived information exp
 
 ### Query server boundary
 
-The public app separates the marketing landing page (`/`), discovery workspace (`/discover`,
-with Ask and SQL modes), live coverage (`/coverage`), curated dataset queries (`/datasets`), and one-time page requests (`/suggest`). Curated datasets are named SQL definitions with descriptions and scope notes; their previews execute through the same query API without storing separate result copies. Home submissions navigate to
+The public app separates the marketing landing page (`/`), dataset discovery conversation (`/discover`), a separate SQL workspace (`/sql`), live coverage (`/coverage`), curated dataset queries (`/datasets`), and one-time page requests (`/suggest`). Curated datasets are named SQL definitions with descriptions and scope notes; their previews execute through the same query API without storing separate result copies. Home submissions navigate to
 the workspace and execute once; ordinary shared SQL links restore a draft without executing. Next.js owns web-specific agent orchestration using Vercel AI SDK,
 with a read-only SQL tool that calls the Python query API. The assistant cannot crawl or access
 lake credentials. The SQL bench offers editable examples, schema queries, export, and share links.
 Coverage suggestions use the control API; crawl completion is not proof of indexing readiness.
+The dataset builder turns a user idea into an editable specification with ordered typed columns,
+row grain, population, observation selection, and acceptance rules. Before choosing source-specific
+semantics, the agent inventories the available catalogue and inspects representative page structures
+and links. Its source plan cites successful queries from that request and explains how the material
+supplies the requested output. Listing cards can supply multiple records and outgoing detail URLs;
+a detail URL does not require a collected detail page. Only unresolved choices affecting population,
+meaning, or missing-value policy should interrupt the build. Source evidence is inspectable and
+exported alongside the definition. A build identifies its executed
+dataset query separately from coverage evidence and attaches executed validation queries. The server
+checks exact output names/types, required values, nonempty complete results, resolved design choices,
+and passing evidence-backed checks before accepting a ready result. The model receives at most 20
+sampled rows while the UI retains the bounded query result (up to 1,000 rows). Users can export CSV
+and download the definition, dataset SQL, check SQL, and source snapshot reference. The reference
+records provenance; it does not pin future executions or guarantee extraction after layout changes.
+The definition appears in a persistent side panel while the conversation holds source findings,
+questions and result previews. Generated SQL can open in the separate SQL workspace in a new tab;
+shared query links target `/sql` and restore drafts without executing. The workflow remains temporary
+browser state and adds no storage or execution service.
 SQL preparation and execution remain in the separate Python
 `periplus-query` process, which exposes only `POST /query/prep`, `POST /query/exec`, and
 `GET /query/helpers`, and its health probe. Query routes do not exist on the control API.
@@ -79,14 +96,22 @@ Execution returns `source_snapshot`, obtained from `ducklake_current_snapshot` i
 read transaction before binding or executing the query. The result and snapshot therefore describe
 one consistent source even if another writer commits concurrently.
 The browser renders server results; there is no Wasm runtime, metadata export, file proxy, or
-client telemetry endpoint. Server logs capture SQL, parameters, outcome, and elapsed time.
+client telemetry endpoint. Server logs capture generated operation IDs, safe outcomes, truncation, row counts and elapsed time. SQL text, parameters, plans and result rows are not logged.
 
 Each query process owns one read-only DuckLake connection and accepts one operation at a time.
 Excess requests return 429 with Retry-After; there is no queue. A 20-second interrupt deadline,
-512 MiB DuckDB memory budget, 256 MiB spill budget, and 1,000-row / 8 MiB result budget bound
-execution. Result truncation is explicit. Integers outside JavaScript's safe range and decimals
+default 512 MB DuckDB memory budget, default 256 MB spill budget, and 1,000-row / 8 MiB result budget bound
+execution. Deployment-owned `PERIPLUS_DUCKDB_THREADS`, `PERIPLUS_DUCKDB_MEMORY_LIMIT`
+and `PERIPLUS_DUCKDB_MAX_TEMP_DIRECTORY_SIZE` override connection sizing before
+configuration is locked; Helm exposes them under `query.duckdb`. Each replica
+still admits one operation. These capacity settings do not change SQL semantics,
+credentials, deadlines, or result limits. Result truncation is explicit. Integers outside JavaScript's safe range and decimals
 are returned as strings; SQL column types accompany results. Disconnecting does not promise
 cancellation: the server deadline still bounds the work.
+An internal/fatal DuckDB error or failed transaction cleanup discards the connection. Cleanup does
+not replace the original query failure. The next admitted request creates a fresh attachment with
+the same read-only credentials and locked configuration; failed SQL is not automatically replayed.
+The health probe returns 503 while a connection is discarded, and returns 200 after recovery.
 
 The process receives only its query-service token, DuckLake metadata reader credentials, and
 lake object-reader credentials. No control Postgres, NATS, raw repository, or writer credentials
@@ -158,59 +183,19 @@ Before admitting any seed, the crawler freezes the candidates, query ID, source 
 selection time. Resumption uses that checkpoint. Collection outcome evidence retains the provenance
 and a digest of the frozen candidates; the collection definition retains SQL and parameters.
 
-### Background historical eligibility baseline
+### Scheduled exploration
 
-The initial background lookup checks at most 64 normalized URLs / 64 KiB through the existing
-read-only query boundary. Any public terminal requested URL counts as seen; an effective URL counts
-only for a successful public observation. Private evidence is excluded by `web.observation`.
-Missing snapshots, incomplete results, unexpected URLs, and service/resource errors never prove
-absence. Each operational check registers before querying and expires after two minutes.
-
-The first measured query used two correlated `EXISTS` branches joined by `OR`. At one million
-synthetic observations, `EXPLAIN ANALYZE` showed roughly 941,176 public visits participating in
-observation/document joins before candidate filtering. This was classified as a compiler/optimizer
-issue: the requested output was already at most 64 URLs, but candidate predicates arrived too late.
-The generated lookup now binds one URL array and applies `list_contains` separately to requested
-and successful effective URLs, then unions and deduplicates the results. This is internal lookup
-SQL, not a rewrite of user queries or a new public schema.
-
-Local DuckLake / DuckDB v1.5.5 measurements on 2026-09-07:
-
-| Synthetic observations | Documents | Candidates / matches | Cold query | Warm queries |
-| --- | --- | --- | --- | --- |
-| 1,000,000 | 923,076 | 64 / 45 | 152 ms | 128 ms, 128 ms |
-| 10,000,000 | 9,230,769 | 64 / 45 | 1,072 ms | 935 ms, 949 ms |
-
-At the same one-million-row snapshot, the original query took 204 ms warm and returned identical
-rows, types, and ordering. At ten million rows, the same-snapshot comparison also matched exactly;
-the original query took 4,198 ms warm. The revised analyzed plan reduced visits entering its two document joins
-to 30 and 41 rows; final distinct output was 45 URLs. Document scans remained broad (approximately
-854k and 869k rows at one million observations). No claim is made that this removes all history scans.
-The lookup retains the query service's 20-second execution, 512 MiB memory, and 256 MiB spill bounds;
-exceeding them must defer background admission.
-
-Reproduce from `packages/periplus/` with:
-
-```sh
-uv run python scripts/benchmark_frontier_seen.py --rows 1000000 --report /tmp/periplus-seen-million.json
-uv run python scripts/benchmark_frontier_seen.py --rows 10000000 --report /tmp/periplus-seen-ten-million.json
-```
-
-The script creates and removes its own temporary lake, applies the declared physical layouts,
-installs public views, and runs the actual read-only query service. It records SQL, plans, snapshots,
-and timings and compares the original and revised queries at one snapshot. Synthetic data spans
-30 date partitions, includes private observations and failures, and uses repeated content. These
-are local bulk-load baselines; remote object-store latency, small-file accumulation, concurrent
-production writers, and substantially larger histories require further measurement. This benchmark
-alone does not enable background allocation or prove the full background admission/cleanup protocol.
+Scheduled requests reevaluate ordinary bounded seed SQL. The former background
+historical-check client and its benchmark script have been removed with that
+execution path. Query performance triage and public query limits still apply.
+See [SCHEDULES.md](SCHEDULES.md) for cadence and execution semantics.
 
 ### Historical collection browsing
 
 `GET /collections/history` reads immutable collection definitions and any arrived terminal outcomes
 through the control API's existing catalogue owner. It returns at most 100 summaries per page;
 `next_cursor` orders subsequent pages by definition time and collection identity, descending.
-Public callers see only public lineage, with filtering applied before the page limit. Administrators
-can also browse private definitions. Missing outcomes retain unknown counters rather than zeroes.
+Public and administrative callers browse the same shared lineage and request definitions. Missing outcomes retain unknown counters rather than zeroes.
 Responses carry `source: history` and `as_of`; `GET /collections/{id}` supplies the full frozen intent.
 
 This is a live append-only feed, not a snapshot pinned across pages. Definitions ingested above an
@@ -224,11 +209,11 @@ recreate current execution or imply verified materialization readiness.
 `GET /frontier/observations/{id}/lineage` returns committed capture causes and request result uses
 as distinct records. A later reuse is a fulfillment, never an added cause for the original capture.
 The read uses immutable observation and lineage evidence, so retirement of control rows does not
-remove it. Public service reads require public observations, matching public collection definitions,
-and public parent observations; administrative reads also permit private observations.
+remove it. Every observation and parent observation belongs to the shared corpus. Fulfillments
+require a committed collection definition, independent of its request class.
 
 Pages contain at most 100 bounded metadata records and use descending decision-time, record-ID,
-and record-kind cursors bound to the observation and visibility scope. Reads share the bounded
+and record-kind cursors bound to the observation. Reads share the bounded
 catalogue owner and ten-second interruption deadline. Pages are not a pinned snapshot: later commits
 may appear above an existing cursor, so callers refresh the first page to see them. Missing visible
 observations return 404; catalogue unavailability returns retryable 503. Empty visible lineage may
@@ -243,3 +228,33 @@ excludes that keyword; all other DuckDB lexical and parser rules are inherited. 
 parameters execute unchanged. Real DuckLake tests compare cast forms and types and retain the
 single-statement and public-namespace restrictions. This is a parser correction, not a public schema
 change or an execution-plan rewrite.
+
+### Privileged admin console
+
+The admin console at `/` sends `POST /admin/sql/exec` to the control API with its
+server-side administrative credential. Public credentials cannot access this route.
+This is an operator escape hatch: it executes DuckDB SQL directly against a writable
+DuckLake attachment, including internal schemas, metadata queries, DDL and DML.
+It does not use public query validation, preparation, rewriting, or read-only credentials.
+
+Each API process admits one administrative SQL request at a time (otherwise 429).
+Each request opens a dedicated writable connection through the standard factory and closes
+it on completion. A script runs in one transaction; failure rolls back its database changes.
+Explicit transaction statements are rejected before execution. Positional parameters are
+supported for a single statement. The response contains the final statement's result, capped
+at 1,000 rows and 8 MiB, with explicit truncation; truncating output does not undo writes.
+Requests are capped at 512 KiB and SQL at 100,000 characters. Temporary objects and settings
+do not persist between requests. This endpoint does not impose the public query deadline.
+External effects of commands such as COPY are not transactional; commands that DuckDB
+does not allow within a transaction fail. A lost response does not prove rollback, and
+clients must not automatically retry writes.
+
+Cloudflare Access protects the admin UI and its complete API gateway in production.
+The isolated public query service retains its read-only credentials and namespace restrictions.
+
+### Private query execution history
+
+[QUERY_HISTORY.md](QUERY_HISTORY.md) defines the 30-day private `query_executions`
+table in control Postgres, bounded best-effort recording, janitor cleanup and the
+`observatory/queries` dashboard. This is explicitly approved product analytics;
+no query results or crawl history are added to control Postgres.

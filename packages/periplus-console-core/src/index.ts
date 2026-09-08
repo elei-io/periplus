@@ -11,7 +11,7 @@ export {
   sanitizeTerminalText,
 } from "./format.js"
 export { startProgress } from "./progress.js"
-export { WELCOME } from "./welcome.js"
+export { WELCOME, ADMIN_WELCOME } from "./welcome.js"
 export type { FormattedSqlResult } from "./format.js"
 export type { ProgressFrame } from "./progress.js"
 export type { CommandDefinition } from "./commands.js"

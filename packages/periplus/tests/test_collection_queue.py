@@ -27,7 +27,7 @@ class CollectionQueueTests(unittest.TestCase):
         identity = self.collection()
         first = self.store.admit(identity, 'https://example.com/a', self.context, self.policy, now=now)
         second = self.store.admit(identity, 'https://example.com/b', self.context, self.policy, now=now)
-        private = self.collection(visibility='private')
+        private = self.collection(request_class='admin')
         self.store.admit(private, 'https://private.example/', self.context, self.policy, now=now)
         with self.sessions.begin() as session:
             control = session.get(FrontierControlRecord, 1)

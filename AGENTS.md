@@ -33,11 +33,10 @@ to encode around one accidental optimizer plan.
 - Crawl history belongs only in DuckLake; never reintroduce it into Periplus Postgres.
 - Raw HTML is immutable, content-addressed, and stored through
   `packages/periplus/src/periplus/ingestion/objects/`.
-- `crawl` is the only page-acquisition primitive. Finite collections and bounded public background
-  selection admit URL interests into one shared frontier. Preserve collection-local URL deduplication,
+- `crawl` is the only page-acquisition primitive. Manual and scheduled finite requests admit URL interests into one shared frontier. Preserve collection-local URL deduplication,
   budgets, selection context, and immutable lineage when acquisitions are shared or reused.
 - Crawler replicas acquire one page, store immutable raw HTML, publish frozen ingestion jobs, and
-  independently advance bounded selection. Derive navigation when follow or background selection
+  independently advance bounded selection. Derive navigation when request follow selection
   requires it. Never wait for catalogue ingestion on the capture path. Cross-replica website
   concurrency and pacing are keyed per domain; process-owned clients remain locally bounded.
 - A standard CDP endpoint is the sole acquisition boundary. Periplus has one crawl queue; the CDP
@@ -63,7 +62,8 @@ to encode around one accidental optimizer plan.
 - Follow SQL uses bounded standalone DuckDB connections over the current page's navigation
   package. Corpus seed SQL uses the isolated query service; follow SQL cannot join history.
 - LakeDucktor owns compaction, old-file cleanup, and physical lake maintenance. The Periplus janitor
-  only reclaims Periplus-owned staging and navigation objects.
+  reclaims Periplus-owned staging/navigation objects and coordinates opt-in logical retention
+  and snapshot-safe raw-object deletion. See `docs/RETENTION.md`; it never deletes registered lake files.
 - Per-domain crawl permits and operation leases are distinct. Domain permits enforce website
   politeness and leases suppress duplicate durable execution. Do not hold a PostgreSQL advisory
   lock across a remote DuckLake operation.
@@ -140,7 +140,7 @@ npm run build
 
 Periplus uses standard DuckDB and has no custom query extension. Query validation and future
 optimizations belong behind the query API. The separately maintained DuckLake CDC extension is
-loaded only by live materialization; keep its source and DuckDB ABI pinned together.
+loaded only by live materialization; keep its community package revision and DuckDB ABI pinned together.
 See [docs/EXTENSION_DEVELOPMENT.md](docs/EXTENSION_DEVELOPMENT.md) for that boundary.
 
 `./ducklake.sh` opens the standard DuckDB CLI on PATH with the configured lake attached read-only.

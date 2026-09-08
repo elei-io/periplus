@@ -19,23 +19,23 @@ export function CollectionDetailPage({ id }: { id: string }) {
   const item = query.data
   return (
     <div className="flex w-full min-w-0 flex-col gap-5">
-      <a className="underline" href="/collections">
-        All collections
+      <a className="underline" href="/observatory/executions">
+        All executions
       </a>
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-semibold">Collection</h1>
+        <h1 className="text-2xl font-semibold">Execution</h1>
         <Button
           variant="outline"
           disabled={query.isFetching}
           onClick={() => void query.refetch()}
         >
-          Refresh collection
+          Refresh execution
         </Button>
       </div>
-      {query.isPending && <p role="status">Loading collection…</p>}
+      {query.isPending && <p role="status">Loading execution…</p>}
       {query.isError && (
         <p role="alert">
-          {item ? "Status may be stale. " : "Unable to load collection. "}
+          {item ? "Status may be stale. " : "Unable to load execution. "}
           {extractApiError(query.error)}
         </p>
       )}
@@ -44,11 +44,23 @@ export function CollectionDetailPage({ id }: { id: string }) {
           <p className="text-sm break-all text-muted-foreground">
             {item.id} · As of {new Date(item.as_of).toLocaleString()}
           </p>
+          {item.specification.origin && (
+            <p className="text-sm">
+              From{" "}
+              <a className="underline" href={`/observatory/requests/${item.specification.origin.definition_id}`}>
+                saved request
+              </a>{" "}
+              v{item.specification.origin.definition_version} ·{" "}
+              {item.specification.origin.schedule_id
+                ? <a className="underline" href={`/observatory/schedules/${item.specification.origin.schedule_id}`}>Schedule</a>
+                : "Manual execution"}
+            </p>
+          )}
           <div className="flex flex-wrap gap-2">
             <Badge>
               {item.source === "current" ? item.status : "Durable history"}
             </Badge>
-            <Badge variant="outline">{item.specification.visibility}</Badge>
+            <Badge variant="outline">{item.specification.request_class}</Badge>
             {item.outcome && (
               <Badge variant="secondary">
                 {item.outcome.replaceAll("_", " ")}
@@ -75,7 +87,8 @@ export function CollectionDetailPage({ id }: { id: string }) {
                   Waiting: {item.waiting_reason.replaceAll("_", " ")}
                 </p>
               )}
-              <CollectionQueueSummary item={item} /><AdmissionWaitSummary value={item.admission} />
+              <CollectionQueueSummary item={item} />
+              <AdmissionWaitSummary value={item.admission} />
               {item.status !== "settled" && (
                 <CollectionControls
                   key={item.id}
@@ -94,7 +107,7 @@ export function CollectionDetailPage({ id }: { id: string }) {
             <Metric
               title="Failed pages"
               value={item.failed_pages}
-              description="Terminal acquisition failures attributed to this request."
+              description="Terminal acquisition failures attributed to this execution."
             />
             <Metric
               title="Page budget consumed"
@@ -111,12 +124,12 @@ export function CollectionDetailPage({ id }: { id: string }) {
                 <Metric
                   title="Queued / acquiring / selecting"
                   value={`${item.queued_pages} / ${item.acquiring_pages} / ${item.selecting_pages}`}
-                  description="Current request work, not a completion percentage."
+                  description="Current execution work, not a completion percentage."
                 />
                 <Metric
                   title="Shared / reused"
                   value={`${item.shared_pages} / ${item.reused_pages}`}
-                  description="Request associations with shared work or recent results; not physical browser attempts."
+                  description="Execution associations with shared work or recent results; not physical browser attempts."
                 />
               </>
             )}
@@ -134,11 +147,16 @@ export function CollectionDetailPage({ id }: { id: string }) {
                     : "Query readiness has not been verified."}
               </p>
               <p className="text-sm text-muted-foreground">
-                {item.query_readiness_reason.replaceAll("_", " ")}. Request
+                {item.query_readiness_reason.replaceAll("_", " ")}. Execution
                 settlement alone does not prove catalogue or materialization
                 completion.
               </p>
-              {item.query_readiness_as_of && <p>Checked {new Date(item.query_readiness_as_of).toLocaleString()}</p>}
+              {item.query_readiness_as_of && (
+                <p>
+                  Checked{" "}
+                  {new Date(item.query_readiness_as_of).toLocaleString()}
+                </p>
+              )}
               {item.source === "current" && (
                 <p>
                   {item.ingested_pages} page evidence commits confirmed.
@@ -165,17 +183,17 @@ export function CollectionDetailPage({ id }: { id: string }) {
               <p>
                 Maximum depth {item.specification.max_depth} · Recent-result
                 reuse up to {item.specification.result_max_age_seconds} seconds
-                · Access context: {item.specification.access_context}
+                · Class: {item.specification.request_class}
               </p>
               <p>
-                Requested {new Date(item.created_at).toLocaleString()}
+                Started {new Date(item.created_at).toLocaleString()}
                 {item.completed_at &&
                   ` · Settled ${new Date(item.completed_at).toLocaleString()}`}
               </p>
               <p>
-                Deadline:{" "}
-                {item.specification.deadline_at
-                  ? new Date(item.specification.deadline_at).toLocaleString()
+                Maximum duration:{" "}
+                {item.specification.max_duration_seconds
+                  ? `${item.specification.max_duration_seconds} seconds · Deadline ${new Date(item.specification.deadline_at!).toLocaleString()}`
                   : "None"}
               </p>
               <details>
@@ -194,7 +212,7 @@ export function CollectionDetailPage({ id }: { id: string }) {
                 </summary>
                 <pre className="overflow-auto text-sm break-all whitespace-pre-wrap">
                   {item.specification.allowed_sections.join("\n") ||
-                    "No request-specific section restriction"}
+                    "No execution-specific section restriction"}
                 </pre>
               </details>
               {item.specification.seed_sql && (
@@ -275,12 +293,12 @@ function CollectionControls({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Request controls</CardTitle>
+        <CardTitle>Execution controls</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <p className="text-sm text-muted-foreground">
-          Pausing stops new work for this request. Shared acquisitions can
-          continue for other requests or background exploration.
+          Pausing stops new work for this execution. Shared acquisitions can
+          continue for other executions.
         </p>
         <div className="flex flex-wrap gap-2">
           <Button
@@ -291,14 +309,14 @@ function CollectionControls({
               })
             }
           >
-            {item.status === "paused" ? "Resume request" : "Pause request"}
+            {item.status === "paused" ? "Resume execution" : "Pause execution"}
           </Button>
           <Button
             variant="outline"
             disabled={disabled}
             onClick={() => setCancel(true)}
           >
-            Cancel request
+            Cancel execution
           </Button>
         </div>
         {cancel && (
@@ -308,7 +326,7 @@ function CollectionControls({
             aria-label="Confirm cancellation"
           >
             <p>
-              Cancel this request and detach its outstanding interest? Already
+              Cancel this execution and detach its outstanding interest? Already
               acquired evidence is retained.
             </p>
             <div className="flex gap-2">
@@ -329,7 +347,7 @@ function CollectionControls({
                 disabled={disabled}
                 onClick={() => setCancel(false)}
               >
-                Keep request
+                Keep execution
               </Button>
             </div>
           </div>

@@ -12,9 +12,6 @@ const settings: FrontierSettings = {
   admission_limit: 10000,
   dispatch_limit: 48,
   captures_per_minute: 60,
-  background_share: 10,
-  background_attempt_allowance: 1000,
-  background_capture_time_allowance_ms: 12500000,
   attempt_allowance: 10000,
   capture_time_allowance_ms: 86400000,
   capture_timeout_ms: 120000,
@@ -29,14 +26,10 @@ test("editing preserves untouched limits, exact milliseconds, and the starting v
   assert.equal(settings.exclusions[0].host, "*.example.com")
 })
 
-test("zero background and allowances remain zero while unlimited pace uses null", () => {
+test("zero allowances remain zero while unlimited pace uses null", () => {
   const draft = settingsDraft({ policy_version: 2, settings })
-  draft.numbers.background_share = "0"
-  draft.numbers.background_attempt_allowance = "0"
   draft.unlimitedRate = true
   const payload = settingsPayload(draft)
-  assert.equal(payload.settings.background_share, 0)
-  assert.equal(payload.settings.background_attempt_allowance, 0)
   assert.equal(payload.settings.captures_per_minute, null)
 })
 
@@ -47,7 +40,6 @@ test("hours and seconds convert without changing other operating allowances", ()
   const payload = settingsPayload(draft)
   assert.equal(payload.settings.capture_time_allowance_ms, 5400000)
   assert.equal(payload.settings.capture_timeout_ms, 45000)
-  assert.equal(payload.settings.background_capture_time_allowance_ms, 12500000)
 })
 
 test("blank or fractional concurrency and zero pace never silently change control meaning", () => {

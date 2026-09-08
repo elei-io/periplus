@@ -1,6 +1,7 @@
 """Prometheus telemetry for visit-scoped rebuild batches."""
 
 from prometheus_client import Counter, Gauge, Histogram
+from periplus.platform.telemetry import DURATION_BUCKETS
 
 _batches = Counter(
     "periplus_materialization_batches_total",
@@ -27,6 +28,7 @@ _phase = Histogram(
     "periplus_materialization_phase_duration_seconds",
     "Materialization batch phase duration.",
     ("phase",),
+    buckets=DURATION_BUCKETS,
 )
 _conflicts = Counter(
     "periplus_materialization_conflicts_total",
@@ -48,8 +50,8 @@ _queue = Gauge(
     ("state",),
 )
 _progress = Gauge(
-    "periplus_materialization_rebuild_progress_ratio",
-    "Progress of the most recently observed active rebuild.",
+    "periplus_materialization_last_observed_rebuild_progress_ratio",
+    "Last locally observed rebuild progress; not authoritative fleet state.",
 )
 
 
@@ -63,12 +65,14 @@ def batch(
     parquet_seconds: float,
     commit_seconds: float,
     already_applied: bool,
+    superseded: bool = False,
 ) -> None:
-    _batches.labels("redelivered" if already_applied else "committed").inc()
-    _source_items.inc(max(0, source_items))
-    _source_bytes.inc(max(0, source_bytes))
-    _output_rows.inc(max(0, output_rows))
-    _output_bytes.inc(max(0, output_bytes))
+    _batches.labels("superseded" if superseded else "redelivered" if already_applied else "committed").inc()
+    if not already_applied and not superseded:
+        _source_items.inc(max(0, source_items))
+        _source_bytes.inc(max(0, source_bytes))
+        _output_rows.inc(max(0, output_rows))
+        _output_bytes.inc(max(0, output_bytes))
     for name, value in (
         ("project", project_seconds),
         ("parquet", parquet_seconds),
@@ -90,10 +94,15 @@ def failure(phase: str) -> None:
 
 
 def queue(*, pending: int, ack_pending: int, redelivered: int) -> None:
+    _queue_observed.set_to_current_time()
     _queue.labels("pending").set(max(0, pending))
     _queue.labels("ack_pending").set(max(0, ack_pending))
     _queue.labels("redelivered").set(max(0, redelivered))
 
 
+_progress_observed = Gauge("periplus_materialization_progress_observed_timestamp_seconds", "Timestamp of last local rebuild progress observation.")
+_queue_observed = Gauge("periplus_materialization_queue_observed_timestamp_seconds", "Timestamp of last successful shared queue observation.")
+
 def progress(*, completed: int, total: int) -> None:
+    _progress_observed.set_to_current_time()
     _progress.set(0 if total <= 0 else min(1, max(0, completed / total)))

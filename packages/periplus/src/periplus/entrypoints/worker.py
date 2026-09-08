@@ -37,8 +37,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run a Periplus worker role.")
     parser.add_argument("role", choices=tuple(WORKER_MODULES))
     arguments = parser.parse_args(argv)
-    logging.basicConfig(
-        level=get_str("PERIPLUS_LOG_LEVEL"),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    from periplus.platform.telemetry import configure_logging
+    configure_logging(arguments.role, get_str("PERIPLUS_LOG_LEVEL"))
     asyncio.run(run(cast(WorkerRole, arguments.role)))

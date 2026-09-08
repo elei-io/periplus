@@ -25,8 +25,7 @@ def acquisition_context(acquisition) -> AcquisitionContext:
         from periplus.crawl.control.domain_policies.schemas import DomainPolicySnapshot
         policy = policy.model_copy(update={"domain": DomainPolicySnapshot.model_validate(acquisition.attempt_domain_policy)})
     return AcquisitionContext(
-        acquisition_id=acquisition.id, admitted_at=admitted, visibility=acquisition.visibility,
-        policy=policy,
+        acquisition_id=acquisition.id, admitted_at=admitted, policy=policy,
         attempt_reserved_ms=acquisition.attempt_reserved_ms,
         dispatch_policy_version=acquisition.dispatch_policy_version,
         exclusions=tuple(acquisition.attempt_exclusions),
@@ -41,7 +40,6 @@ def terminal_evidence(acquisition, now: datetime, outcome: str) -> VisitEvidence
     context = acquisition_context(acquisition)
     attempts = attempt_records(acquisition.id, context.prior_attempts)
     return VisitEvidence(visit=VisitRecord(
-        visit_id=acquisition.id, requested_url=acquisition.url, visibility=context.visibility,
-        admitted_at=context.admitted_at, started_at=attempts[0].started_at if attempts else None,
+        visit_id=acquisition.id, requested_url=acquisition.url, admitted_at=context.admitted_at, started_at=attempts[0].started_at if attempts else None,
         finished_at=now, outcome=outcome,
     ), attempts=attempts, steps=step_records(acquisition.id, context.prior_steps))

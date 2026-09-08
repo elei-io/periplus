@@ -7,6 +7,7 @@ export type PreparedQuery = {
 }
 
 export type QueryResult = PreparedQuery & {
+  source_snapshot: number
   columns: string[]
   types: string[]
   rows: unknown[][]
