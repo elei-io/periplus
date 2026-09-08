@@ -36,7 +36,7 @@ physical-schema declaration. Add one file, edit one file, or delete one file; th
 a complete rebuild. The generation digest includes the complete source of every discovered
 projection file, so an implementation-only edit cannot silently reuse the previous generation.
 
-The current files project structural HTML at content grain, plus link occurrences
+The current files project structural HTML and searchable body prose at content grain, plus link occurrences
 and readiness membership at visit grain. HTML readiness also requires the active content root
 marker because a separate batch may own shared-content output.
 

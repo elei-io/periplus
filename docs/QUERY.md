@@ -145,6 +145,19 @@ Public query transports allow 130 seconds; the Python SDK defaults to 140 second
 impose shorter deadlines, including bounded agent runs and crawler selections. These do not
 increase the server's limits. Administrative SQL retains its separate fixed result limits.
 
+### Content-first prose discovery
+
+`public_v1.prose` materializes normalized body text once per unique HTML content.
+Use `prose.text` predicates to discover candidate content IDs, then join captures
+or DOM relations using `content_id`. A document match does not establish that a
+particular element contains the phrase; structural claims require verification.
+
+This addresses a schema/catalogue gap: corpus text discovery otherwise requires
+repeated DOM text reconstruction. It is not an optimizer rewrite or a search
+index. Arbitrary substring predicates still scan searchable text, and join
+pruning must be measured with EXPLAIN ANALYZE on representative corpus sizes.
+No production-scale speedup or bounded DOM scan is asserted by this addition.
+
 ## 2. Python SDK
 
 `packages/periplus-python-sdk/` provides synchronous `Client` and asynchronous `AsyncClient`
@@ -672,3 +685,20 @@ Exact comparison against the preceding implementation passed for all 50 source
 documents in batch 22: every node field, element record and both HTML projection
 Arrow tables matched. A nested mixed-content fixture additionally checks preorder,
 subtree boundaries, attributes and parent direct text after child cleanup.
+
+### Prose deployment validation (2026-09-09)
+
+The prose rebuild exposed a parser-disposal defect on captured HTML with both
+`lang` and `xml:lang` on the root. html5lib's minidom tree can retain both qualified
+attributes while sharing a local-name lookup key. Element cleanup then attempted
+to delete that key twice. After copying immutable records, parsing now detaches
+attribute owners before disposing the complete element. A minimal regression
+fixture and the actual failing capture both parse successfully. This is parser
+cleanup, not a change to public text or attribute semantics.
+
+The worked comparison under `docs/examples/prose/` searches captured book product
+pages for `robot`, then extracts titles and URLs. Initial correlated ancestor
+exclusion exhausted public memory/spill limits. The final baseline uses ordered
+subtree-end windows and explicit source scope instead. These are hand-written
+public SQL examples, not an installed compiler rewrite; the prose materialization
+removes reconstruction work directly. See the example README for validation.

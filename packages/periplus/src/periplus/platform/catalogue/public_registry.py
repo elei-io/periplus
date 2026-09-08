@@ -27,6 +27,10 @@ _TREE_COLUMNS = (
 )
 
 PUBLIC_OBJECTS = (
+    _view("prose", (
+        ("content_id", "SHA-256 identity of captured HTML bytes; one row per unique content."),
+        ("text", "Body text with collapsed whitespace and block separators; excludes script, style, template and noscript subtrees; no CSS visibility inference."),
+    ), "Materialized searchable HTML body text, retaining navigation and footer text.", ("material.prose",)),
     _view("capture", (
         ("capture_id", "Acquisition identity with retained content."),
         ("requested_url", "Normalized requested URL."),

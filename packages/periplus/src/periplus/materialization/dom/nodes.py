@@ -77,6 +77,13 @@ def parse_document(source: str | bytes) -> tuple[tuple[NodeRow, ...], tuple[Elem
                 "".join(child.data for child in node.childNodes if child.nodeType == Node.TEXT_NODE),
                 "",
             )
+        # HTML5 permits distinct qualified attributes (lang and xml:lang)
+        # that minidom indexes under the same non-namespaced local name.
+        # Records are already copied: detach owners before disposing the entire
+        # element so Attr.unlink need not delete those colliding lookup keys.
+        if node.nodeType == Node.ELEMENT_NODE:
+            for attribute in node.attributes.values():
+                attribute.ownerElement = None
         # Children have already been detached, keeping cleanup shallow.
         node.unlink()
     # Every reserved slot is filled before its closing event completes.
