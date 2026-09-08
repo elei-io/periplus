@@ -55,9 +55,44 @@ class QueryServiceTests(unittest.TestCase):
         d.execute("UPDATE ingest.visits SET document_id = uuid() WHERE document_id IS NULL")
         d.execute("INSERT INTO ingest.documents (document_id, visit_id, detected_media_type, content_sha256) SELECT document_id, visit_id, 'text/html', visit_id::VARCHAR FROM ingest.visits WHERE requested_url <> 'https://example.com/inline'")
         d.execute("INSERT INTO material.html_nodes (content_sha256, node_index, subtree_end_index, node_type, value, depth) VALUES ('helper-fixture',0,4,'element',NULL,0),('helper-fixture',1,2,'text','start',1),('helper-fixture',2,3,'text','nested',1),('helper-fixture',3,4,'text','end',1)")
+        d.execute("UPDATE material.html_elements SET tag = 'title', namespace = 'HTML' WHERE content_sha256 = 'helper-fixture' AND element_index = 0")
+        d.execute("INSERT INTO material.prose VALUES ('helper-fixture', 'robot careers')")
         d.close()
         self.service = QueryService(self.config)
         self.addCleanup(self.service.close)
+
+    def test_content_scope_preparation_execution_and_reuse(self):
+        from periplus.operations.query_history.schemas import PreparationEvidence
+        request = QueryRequest(sql="""SELECT c.requested_url AS url, m.value AS title
+            FROM prose p JOIN capture c USING (content_id)
+            JOIN html_metadata m USING (content_id)
+            WHERE p.text ILIKE ? AND m.name = ?""", parameters=['%robot%', 'title'])
+        expected = self.service.connection.execute(request.sql, request.parameters).fetchall()
+        evidence = PreparationEvidence()
+        prepared = self.service.prepare(request, evidence=evidence)
+        self.assertIn('content_scope', [d.code for d in prepared.diagnostics])
+        self.assertEqual(evidence.plan, prepared.plan)
+        self.assertEqual(evidence.diagnostics, [d.model_dump() for d in prepared.diagnostics])
+        result = self.service.execute(request)
+        self.assertEqual(result.sql, prepared.sql)
+        self.assertEqual(result.rows, [list(row) for row in expected])
+        self.assertEqual(result.rows, [['https://example.com/inline', 'start']])
+        self.assertEqual(result.columns, ['url', 'title'])
+        self.assertEqual(result.parameters, request.parameters)
+        reused = self.service.execute(QueryRequest(sql=prepared.sql, parameters=prepared.parameters))
+        self.assertEqual(reused.rows, result.rows)
+        self.assertEqual(reused.sql, prepared.sql)
+        # Binding the original request must happen before an attempted rewrite.
+        with self.assertRaises(duckdb.BinderException):
+            self.service.prepare(QueryRequest(sql=request.sql.replace('m.value', 'm.missing'), parameters=request.parameters))
+
+    def test_content_scope_definition_mismatch_keeps_original(self):
+        request = QueryRequest(sql="""SELECT m.* FROM prose p JOIN html_metadata m USING (content_id)
+            WHERE p.text ILIKE '%robot%'""")
+        with patch('periplus.query.content_scope.ContentScope.matches', return_value=False):
+            prepared = self.service.prepare(request)
+            self.assertEqual(prepared.sql, request.sql)
+            self.assertNotIn('content_scope', [d.code for d in prepared.diagnostics])
 
     def test_anonymous_parameter_cast_matches_duckdb_without_rewriting_sql(self):
         sql = "SELECT ?::INTEGER AS value, '?::UUID' AS marker /* ?:: is literal comment text */"

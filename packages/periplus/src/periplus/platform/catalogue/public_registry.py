@@ -10,10 +10,11 @@ def _comments(
     return items
 
 
-def _view(name, columns, comment, requires=()):
+def _view(name, columns, comment, requires=(), *, content_local=False):
     return CatalogueObject(
         "view", name, f"views/{name}.sql", tuple(column for column, _ in columns),
         comment=comment, column_comments=columns, requires_relations=frozenset(requires),
+        content_local=content_local,
     )
 
 
@@ -47,13 +48,13 @@ PUBLIC_OBJECTS = (
         ("name", "Local element/doctype name or processing instruction target."),
         ("namespace", "Namespace URI when applicable."),
         ("value", "Text, comment or processing instruction content."),
-    ), "Complete HTML5 parsed document nodes.", ("material.html_nodes",)),
+    ), "Complete HTML5 parsed document nodes.", ("material.html_nodes",), content_local=True),
     _view("html_element", (*_TREE_COLUMNS,
         ("tag", "Local element tag name."),
         ("namespace", "Namespace URI when applicable."),
         ("attributes", "Attribute map; namespaced keys use {namespace-uri}local-name."),
         ("text_direct", "Immediate child text concatenated in order, without normalization."),
-    ), "HTML elements sharing identity and positions with html_node.", ("material.html_elements",)),
+    ), "HTML elements sharing identity and positions with html_node.", ("material.html_elements",), content_local=True),
     _view("html_form", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source form node position."),
@@ -63,7 +64,7 @@ PUBLIC_OBJECTS = (
         ("method", "Declared method, without normalization or defaults."),
         ("enctype", "Declared enctype attribute."),
         ("target", "Declared target attribute."),
-    ), "HTML form elements with declared attributes.", ("material.html_elements",)),
+    ), "HTML form elements with declared attributes.", ("material.html_elements",), content_local=True),
     _view("html_form_control", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source native form-control node position."),
@@ -77,7 +78,7 @@ PUBLIC_OBJECTS = (
         ("readonly", "Whether the readonly attribute is present."),
         ("multiple", "Whether the multiple attribute is present."),
     ), "Native HTML form controls, including controls without a form owner.",
-        ("material.html_nodes", "material.html_elements")),
+        ("material.html_nodes", "material.html_elements"), content_local=True),
     _view("html_select_option", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source option node position."),
@@ -88,14 +89,14 @@ PUBLIC_OBJECTS = (
         ("selected", "Whether the selected attribute is present; not live selectedness."),
         ("disabled", "Whether disabled is present on this option; not inherited state."),
     ), "HTML options owned by select elements, including optgroup descendants.",
-        ("material.html_nodes", "material.html_elements")),
+        ("material.html_nodes", "material.html_elements"), content_local=True),
     _view("html_list", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source ul or ol node position."),
         ("ordered", "True for ol."),
         ("start_number", "Effective ordered-list starting number; null for ul."),
         ("reversed", "True when an ol has the reversed attribute."),
-    ), "HTML ordered and unordered lists, including empty lists.", ("material.html_elements",)),
+    ), "HTML ordered and unordered lists, including empty lists.", ("material.html_elements",), content_local=True),
     _view("html_list_item", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source li node position."),
@@ -111,7 +112,7 @@ PUBLIC_OBJECTS = (
         ("value", "Complete document parsed as DuckDB JSON; SQL null on parse failure."),
         ("parse_error", "Empty JSON-LD script or Invalid JSON syntax; null on successful parsing."),
     ), "Embedded JSON-LD declarations, including invalid scripts, without semantic expansion.",
-        ("material.html_nodes", "material.html_elements")),
+        ("material.html_nodes", "material.html_elements"), content_local=True),
     _view("html_image", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source img node position."),
@@ -122,7 +123,7 @@ PUBLIC_OBJECTS = (
         ("width", "Declared width as a source string, not a measured dimension."),
         ("height", "Declared height as a source string, not a measured dimension."),
     ), "HTML img elements with original parsed attributes, including images without src.",
-        ("material.html_elements",)),
+        ("material.html_elements",), content_local=True),
     _view("html_metadata", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source metadata element node position."),
@@ -130,7 +131,7 @@ PUBLIC_OBJECTS = (
         ("name", "Declared metadata name or relation token; title, charset and lang use fixed names."),
         ("value", "Parsed declared value without normalization; null when the value attribute is absent."),
     ), "Explicit HTML metadata declarations, preserving source nodes and repeated declarations.",
-        ("material.html_nodes", "material.html_elements")),
+        ("material.html_nodes", "material.html_elements"), content_local=True),
     _view("html_section", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("heading_node_index", "Heading that starts this passage."),
@@ -138,27 +139,27 @@ PUBLIC_OBJECTS = (
         ("start_node_index", "Inclusive passage start immediately after the heading subtree."),
         ("end_node_index", "Exclusive end at the next heading of equal/higher rank, or document end."),
     ), "Heading-delimited source passages; inferred ranges, not semantic or CSS sections.",
-        ("material.html_nodes", "material.html_elements")),
+        ("material.html_nodes", "material.html_elements"), content_local=True),
     _view("html_code", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source code element node position."),
         ("block", "True when the code element has an HTML pre ancestor; not CSS display state."),
         ("text", "Ordered descendant text preserving whitespace and line breaks; empty for empty code."),
     ), "HTML code elements with source identity and complete descendant text.",
-        ("material.html_nodes", "material.html_elements")),
+        ("material.html_nodes", "material.html_elements"), content_local=True),
     _view("html_heading", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source h1 through h6 node position."),
         ("level", "Declared HTML heading level, from 1 through 6."),
         ("text", "Ordered descendant text without normalization; empty for an empty heading."),
     ), "HTML headings with source identity and complete descendant text.",
-        ("material.html_nodes", "material.html_elements")),
+        ("material.html_nodes", "material.html_elements"), content_local=True),
     _view("html_table", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source table node position."),
         ("caption_node_index", "First direct caption node; null when absent."),
         ("caption", "Caption descendant text excluding nested tables; null when absent."),
-    ), "HTML tables, including empty and nested tables.", ("material.html_nodes", "material.html_elements")),
+    ), "HTML tables, including empty and nested tables.", ("material.html_nodes", "material.html_elements"), content_local=True),
     _view("html_table_cell", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("table_node_index", "Owning table node position."),

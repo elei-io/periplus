@@ -95,7 +95,9 @@ SQL preparation and execution remain in the separate Python
 
 Both operations accept SQL and positional parameters and use the same public SQL validation.
 Preparation binds and explains without executing the analytical query, returning SQL, parameters,
-a query ID, diagnostics, and a plan. SQL currently remains unchanged; DuckDB optimizes its plan.
+a query ID, diagnostics, and a plan. Eligible content-discovery joins receive the bounded
+content-scoping transformation described below; otherwise SQL remains unchanged. The returned SQL
+and plan describe the chosen statement, and returned parameters can execute that SQL again.
 Execution always prepares independently, then runs the query. It does not trust a prior prep call.
 Execution returns `source_snapshot`, obtained from `ducklake_current_snapshot` inside the same
 read transaction before binding or executing the query. The result and snapshot therefore describe
@@ -702,3 +704,76 @@ exclusion exhausted public memory/spill limits. The final baseline uses ordered
 subtree-end windows and explicit source scope instead. These are hand-written
 public SQL examples, not an installed compiler rewrite; the prose materialization
 removes reconstruction work directly. See the example README for validation.
+
+### Requested-key propagation investigation (2026-09-09)
+
+[The investigation](query-investigations/key-domain/README.md) classifies selective
+joins to grouped/windowed derived relations as an optimizer problem and records
+actual plans, corpus scale, nine differential cases, warm paired measurements,
+and a standalone non-HTML reproduction. Propagating complete selected key domains
+into inputs reduces aggregation/window work, but elapsed-time gains and file
+pruning are not universal. Prep requires bound lineage, partition-locality proofs
+and conservative plan selection before this can become a general automatic pass.
+That investigation did not activate a runtime rewrite. The reviewed, deliberately narrower
+implementation below follows the subsequent scope decision; materializations remain unchanged.
+
+
+### Reviewed content scoping in query prep (2026-09-09)
+
+This is a **compiler/optimizer** fix for selective discovery followed by extraction that
+DuckDB otherwise computes across the corpus. It adds no persistent relation or extraction
+semantics. The submitted query is bound first. For eligible queries, prep selects the
+filtered driver once in a statement-local materialized CTE, derives distinct content IDs,
+and semijoins those IDs into both complete node and element inputs of reviewed views.
+Final joins retain their original multiplicity; driver predicates move into selection
+and other predicates remain in the final query. This lets DuckDB drop unused prose text
+after discovery instead of retaining it to repeat the same test. In particular, selecting a
+heading never removes the other headings needed to compute its section boundary.
+
+Eligibility is intentionally syntactic and bounded, rather than a general lineage engine:
+
+- The FROM source is `prose`, `capture`, `html_node`, or `html_element`, with at least
+  one qualified source-only WHERE conjunct. Supported expressions include comparisons,
+  LIKE/ILIKE, IN lists, Boolean combinations, and lower/upper/coalesce; arbitrary
+  functions and explicit casts do not qualify.
+- Up to eight ordinary inner joins connect registered sources by exactly
+  `USING (content_id)` or one qualified equality to an earlier source's `content_id`.
+  Sources must be one of the drivers or a reviewed content-local view.
+- Extraction coverage is `html_node`, `html_element`, `html_metadata`, `html_heading`,
+  `html_section`, `html_form`, `html_form_control`, `html_select_option`, `html_list`,
+  `html_jsonld`, `html_image`, `html_code`, and `html_table`.
+- User subqueries, CTEs, aggregates, windows, outer joins, explicit LIMIT/OFFSET,
+  computed outputs without aliases, and existing named/numbered parameters stay unchanged.
+  Anonymous `?` parameters retain their original positions through numbered references.
+  Table-cell extraction and list-item numbering remain outside coverage because their
+  extraction rules can raise data-dependent errors.
+
+`CatalogueObject.content_local` is an explicit reviewed promise, not an inference from
+column names. Changes to an opted-in view require reviewing that promise again. All
+expanded public view definitions, primitive views, and the driver must match the installed
+catalogue, normalized with DuckDB's native parser in the execution transaction. A mismatch
+leaves the original query unchanged. Generated SQL passes public namespace validation too.
+There is no analytical discovery query during prep, no cross-request cache of matches,
+and no separate snapshot or new setting. Expansion is capped at 1,500 input AST nodes,
+eight dependency levels, and the existing 100,000-character SQL limit.
+
+The `content_scope` informational diagnostic identifies activation. Prep and execution
+both apply the same rule independently. The returned SQL is standalone public SQL with
+query-local CTEs; direct DuckDB users retain the original portable views and can also run
+that returned SQL. Inspection statements such as EXPLAIN remain unchanged; use the prep
+response to inspect the automatically chosen plan.
+
+Validation covers all 13 opted-in views using real parser/projection fixtures at selective,
+empty, and full domains, plus duplicate captures and driver nodes, complete section
+partitions, multiple extraction targets, parameter order, output labels/types, definition
+mismatches, unsupported syntax, and the locked read-only QueryService. Nineteen additional
+read-only comparisons on corpus snapshot 8458 preserved complete result multisets and
+column descriptions. For `%wild robot%`, title groups fell from 1,478 to 8, and heading
+extraction/section windows from 39,457 to 91. For `%robot%`, these fell to 289 and 7,968.
+The title query retains `name = 'title'`, including metadata declarations bearing that
+name, and returned the same 334 rows.
+
+This rule reduces work behind extraction barriers; it is not a cost model or a guarantee
+of file pruning or lower latency. Full-domain searches retained full extraction work and
+added CTE/key-set overhead. Single paired timings are recorded in the investigation and
+must not be treated as production performance guarantees.

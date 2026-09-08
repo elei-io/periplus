@@ -19,11 +19,11 @@ from nats.js.errors import (
 )
 from pydantic import BaseModel, ConfigDict
 
+from periplus.platform.messaging.topology import operational_replicas
 from periplus.platform.config import get_int
 from periplus.platform.config.performance import (
     DOMAIN_PERMIT_HEARTBEAT_SECONDS,
     DOMAIN_PERMIT_LEASE_SECONDS,
-    OPERATIONAL_STATE_REPLICAS,
 )
 
 DOMAIN_PACING_BUCKET = "periplus_domain_pacing"
@@ -75,7 +75,7 @@ async def ensure_domain_pacing_storage(jetstream):
         history=1,
         max_bytes=get_int("PERIPLUS_DOMAIN_PACING_MAX_BYTES"),
         storage=StorageType.FILE,
-        replicas=OPERATIONAL_STATE_REPLICAS,
+        replicas=operational_replicas(),
     )
     try:
         bucket = await jetstream.key_value(DOMAIN_PACING_BUCKET)

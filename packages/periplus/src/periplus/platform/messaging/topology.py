@@ -4,6 +4,17 @@ from nats.js.api import StorageType
 from nats.js.errors import BadRequestError, NoKeysError, NotFoundError
 
 
+def operational_replicas() -> int:
+    """Replica contract shared by capture delivery and coordination KV stores."""
+    from periplus.platform.config import get_int
+    from periplus.platform.config.environment import ConfigurationError
+
+    replicas = get_int("PERIPLUS_NATS_OPERATIONAL_REPLICAS")
+    if replicas > 5:
+        raise ConfigurationError("PERIPLUS_NATS_OPERATIONAL_REPLICAS must be between 1 and 5")
+    return replicas
+
+
 async def list_kv_keys(bucket) -> list[str]:
     """List current KV keys without retaining a watcher consumer."""
 

@@ -110,6 +110,8 @@ The core image installs official storage extensions and signed community CDC at 
 DuckDB version, CDC version, and source revision during build and CDC startup. No extension
 source checkout, BuildKit named context, deploy key, or unsigned loading is required.
 
+For the initial K3s deployment, follow [homelab onboarding](HOMELAB.md).
+
 ## Kubernetes topology
 
 The chart under `charts/periplus` owns only Periplus processes. PostgreSQL, NATS JetStream, S3-compatible
@@ -126,6 +128,12 @@ Control state and DuckLake metadata still require distinct PostgreSQL databases 
 The same S3 bucket may back raw repository objects and DuckLake data when the repository prefix and
 DuckLake data path do not overlap. Annotated API and worker Services expose all built-in Prometheus
 endpoints for platform discovery.
+
+NATS capture delivery, worker presence, pacing and operation leases share
+`PERIPLUS_NATS_OPERATIONAL_REPLICAS` (1–5; local default 1). Helm sets it through
+`config.nats.operationalReplicas`, defaulting to 3. All account clients must agree;
+existing replica mismatches fail startup instead of resetting data. See
+[homelab NATS operations](HOMELAB.md#nats-storage-and-failure-contract).
 
 ## Process entrypoints
 

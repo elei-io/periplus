@@ -20,6 +20,7 @@ x-periplus-control-environment: &periplus-control-environment
 x-periplus-nats-environment: &periplus-nats-environment
   PERIPLUS_NATS_URL: nats://periplus-nats:4222
   PERIPLUS_NATS_SEED: ""
+  PERIPLUS_NATS_OPERATIONAL_REPLICAS: ${PERIPLUS_NATS_OPERATIONAL_REPLICAS:-1}
 
 x-periplus-ducklake-environment: &periplus-ducklake-environment
   PERIPLUS_DUCKLAKE_ALIAS: periplus

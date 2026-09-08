@@ -13,9 +13,10 @@ from periplus.platform.config import get_int
 from periplus.platform.config.performance import (
     CATALOGUE_OPERATION_ACQUIRE_TIMEOUT_SECONDS,
     CATALOGUE_OPERATION_HEARTBEAT_SECONDS,
-    CATALOGUE_OPERATION_LEASE_REPLICAS,
     CATALOGUE_OPERATION_LEASE_SECONDS,
 )
+from periplus.platform.messaging.topology import operational_replicas
+
 from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import (
     BadRequestError,
@@ -81,7 +82,7 @@ async def ensure_operation_lease_storage(jetstream):
         ttl=CATALOGUE_OPERATION_LEASE_SECONDS,
         max_bytes=get_int("PERIPLUS_OPERATION_LEASE_MAX_BYTES"),
         storage=StorageType.FILE,
-        replicas=CATALOGUE_OPERATION_LEASE_REPLICAS,
+        replicas=operational_replicas(),
     )
     try:
         bucket = await jetstream.key_value(OPERATION_LEASE_BUCKET)
@@ -100,7 +101,7 @@ async def _validate_bucket(bucket) -> None:
         name=OPERATION_LEASE_BUCKET,
         ttl=CATALOGUE_OPERATION_LEASE_SECONDS,
         max_bytes=get_int("PERIPLUS_OPERATION_LEASE_MAX_BYTES"),
-        replicas=CATALOGUE_OPERATION_LEASE_REPLICAS,
+        replicas=operational_replicas(),
     )
 
 
