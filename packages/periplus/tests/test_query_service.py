@@ -50,10 +50,10 @@ class QueryServiceTests(unittest.TestCase):
             "INSERT INTO ingest.visits (visit_id, requested_url, outcome) VALUES (uuid(), 'https://example.com/inline', 'success')"
         )
         d.execute("UPDATE ingest.visits SET document_id = '00000000-0000-0000-0000-000000000001' WHERE requested_url = 'https://example.com/inline'")
-        d.execute("INSERT INTO ingest.documents (document_id, visit_id, content_sha256) SELECT document_id, visit_id, 'helper-fixture' FROM ingest.visits WHERE document_id IS NOT NULL")
+        d.execute("INSERT INTO ingest.documents (document_id, visit_id, detected_media_type, content_sha256) SELECT document_id, visit_id, 'text/html', 'helper-fixture' FROM ingest.visits WHERE document_id IS NOT NULL")
         d.execute("INSERT INTO material.html_elements (content_sha256, element_index, subtree_end_index, depth, text_direct, text_tail) VALUES ('helper-fixture',0,2,0,'start','outside'),('helper-fixture',1,2,1,'nested','end')")
         d.execute("UPDATE ingest.visits SET document_id = uuid() WHERE document_id IS NULL")
-        d.execute("INSERT INTO ingest.documents (document_id, visit_id, content_sha256) SELECT document_id, visit_id, visit_id::VARCHAR FROM ingest.visits WHERE requested_url <> 'https://example.com/inline'")
+        d.execute("INSERT INTO ingest.documents (document_id, visit_id, detected_media_type, content_sha256) SELECT document_id, visit_id, 'text/html', visit_id::VARCHAR FROM ingest.visits WHERE requested_url <> 'https://example.com/inline'")
         d.execute("INSERT INTO material.html_nodes (content_sha256, node_index, subtree_end_index, node_type, value) VALUES ('helper-fixture',0,4,'element',NULL),('helper-fixture',1,2,'text','start'),('helper-fixture',2,3,'text','nested'),('helper-fixture',3,4,'text','end')")
         d.close()
         self.service = QueryService(self.config)
@@ -241,7 +241,7 @@ class QueryServiceTests(unittest.TestCase):
                     proxy.committed = True
                     writer.execute("BEGIN")
                     writer.execute("INSERT INTO periplus.ingest.visits (visit_id, document_id, requested_url, outcome) VALUES (uuid(), uuid(), 'https://later.example/', 'succeeded')")
-                    writer.execute("INSERT INTO periplus.ingest.documents (document_id, visit_id, content_sha256) SELECT document_id, visit_id, 'later' FROM periplus.ingest.visits WHERE requested_url = 'https://later.example/'")
+                    writer.execute("INSERT INTO periplus.ingest.documents (document_id, visit_id, detected_media_type, content_sha256) SELECT document_id, visit_id, 'text/html', 'later' FROM periplus.ingest.visits WHERE requested_url = 'https://later.example/'")
                     writer.execute("COMMIT")
                 return connection.execute(sql, *args)
             def __getattr__(proxy, name):

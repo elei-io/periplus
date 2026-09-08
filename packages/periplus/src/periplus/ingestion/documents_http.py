@@ -310,7 +310,8 @@ async def download_content(
         rows = await control.run(lambda _session, catalogue: catalogue.trusted_remote_rows(
             f"SELECT d.document_id FROM ingest.documents d JOIN ingest.visits v "
             f"ON v.document_id = d.document_id AND v.visit_id = d.visit_id "
-            f"WHERE d.content_sha256 = {_sql_string(content_id)} ORDER BY d.document_id LIMIT 1"
+            f"WHERE d.content_sha256 = {_sql_string(content_id)} "
+            "AND lower(d.detected_media_type) = 'text/html' ORDER BY d.document_id LIMIT 1"
         ))
         if not rows:
             raise HTTPException(status_code=404, detail="content was not found")

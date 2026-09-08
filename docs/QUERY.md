@@ -306,3 +306,150 @@ The isolated public query service retains its read-only credentials and namespac
 table in control Postgres, bounded best-effort recording, janitor cleanup and the
 `observatory/queries` dashboard. This is explicitly approved product analytics;
 no query results or crawl history are added to control Postgres.
+
+### HTML table view validation (2026-09-08)
+
+The first html_table_cell view shape had an optimizer/predicate-pushdown issue:
+correlated text extraction and span expressions admitted unrelated content scans,
+despite a query selecting one content and one table. The public cell grain was
+already bounded to the chosen table and did not require corpus-wide layout.
+The SQL view now uses filterable grouping keys, inlined row/cell inputs, ordinary
+text joins and a scalar list fold for grid placement. No query API rewrite,
+physical relation, or materialization was introduced.
+
+Representative query:
+
+```sql
+SELECT * FROM public_v1.html_table_cell
+WHERE content_id = '01e3b8320926e10284e97da69093af4b4c04e181b5a3607c05bfd1920134a770'
+  AND table_node_index = 165
+ORDER BY row_index, column_index;
+```
+
+Read-only local-lake validation at snapshot 7527 used 5,448,418 node rows and
+2,977,143 element rows. The selected book-details table returned 14 source cells.
+The initial plan admitted 2,629,871 element rows from an unrelated-content scan.
+The revised EXPLAIN ANALYZE plan places the exact content hash in every primitive
+scan, emits 35 text nodes, 7 source rows, 14 source cells and one table into their
+respective operations; the row-parent scan emits 211 elements of that content.
+Each primitive scan read two Parquet files.
+Observed local execution was 0.15–0.24 seconds (warm/cache-sensitive), versus about
+1.05 seconds for the first shape. This is evidence for filtered on-demand use,
+not a billion-row scalability or unfiltered-corpus performance claim. DuckLake's
+profile rows-scanned counter exceeded the source row count, so it is not used as
+a physical I/O measure here. Reassess with production file counts and workloads
+before deciding whether to materialize.
+
+Fixtures verify that content/table filters isolate malformed unrelated tables,
+while filtering output rows still accounts for preceding row-spanning cells.
+
+A separate synthetic 100-row by 10-column table returned all 1,000 expected cells
+in 0.20 seconds on a local in-memory fixture. Local deployment verification
+confirmed both public DESCRIBE contracts and the same 14-cell book table through
+the public HTTP query gateway. Public documentation includes the relations and
+parameterized extraction example.
+
+### Heading view validation (2026-09-08)
+
+The html_heading view uses an ordinary content-keyed subtree join and ordered text
+aggregation. No schema or optimizer performance defect was observed in the initial
+filtered validation, and no compiler rewrite or physical materialization was added.
+
+```sql
+SELECT node_index, level, text FROM public_v1.html_heading
+WHERE content_id = '01e3b8320926e10284e97da69093af4b4c04e181b5a3607c05bfd1920134a770'
+ORDER BY node_index;
+```
+
+The local book page returned 10 headings in 0.24 seconds. EXPLAIN ANALYZE showed the
+exact content predicate on both primitive scans, each reading two Parquet files.
+The scans emitted 228 text nodes and 211 elements from that content before the
+heading/subtree filters and aggregation. This validates the filtered query shape;
+it is not a guarantee for unfiltered corpus queries or billion-row deployments.
+
+### Metadata view validation (2026-09-08)
+
+Initial filtered validation found no schema or optimizer performance defect.
+html_metadata uses inlined primitive scans and UNION ALL, with an ordered text
+join only for titles. No compiler rewrite or materialization was added.
+Selecting the book content hash used in the heading example returned 12 metadata
+rows in 0.21 seconds locally, including its title, description, language and raw
+relative stylesheet/icon URLs. EXPLAIN ANALYZE showed the exact content predicate
+on each primitive scan. This validates filtered on-demand access, not unfiltered
+corpus performance. Declaration, null/empty, repetition, multi-token rel and
+foreign-namespace behavior are covered by real HTML parser fixtures.
+
+### Image view validation (2026-09-08)
+
+html_image is a direct projection/filter over html_element. Initial filtered
+validation found no schema or optimizer performance defect; no rewrite or
+materialization was added. Selecting the book content hash used above returned
+seven images in 0.05 seconds locally. EXPLAIN ANALYZE showed exact content and
+img predicates on the single primitive scan, emitting seven rows and reading two
+Parquet files. URLs remained relative and undeclared dimensions remained null.
+This validates the filtered shape, not unfiltered corpus-scale performance.
+
+### JSON-LD view validation (2026-09-08)
+
+Initial filtered validation found no schema or optimizer performance defect.
+html_jsonld joins selected script nodes to their direct text children and uses
+TRY_CAST to retain parser failures as rows. It adds no compiler rewrite or
+physical materialization and does not depend on the private JSON-LD projection.
+
+```sql
+SELECT node_index, value, parse_error FROM public_v1.html_jsonld
+WHERE content_id = '072a5a77e6bf9d591a30832addace1b20ccfa7e4e13b1bd9a00a3779b7bce252'
+ORDER BY node_index;
+```
+
+A captured Probot article returned one complete @graph document without a parse
+error in 0.17 seconds locally. EXPLAIN ANALYZE placed the exact content predicate
+on both primitive scans, each reading two files and emitting one row. This is
+filtered-query evidence, not a guarantee for unfiltered corpus workloads.
+Fixtures cover complete arrays/graphs, repeated scripts, invalid/empty declarations,
+JSON null, type matching and foreign namespaces.
+
+### List view validation (2026-09-08)
+
+Initial filtered validation found no schema or optimizer performance defect.
+html_list counts direct items for reversed defaults; html_list_item uses ordered
+windows for numbering resets and subtree joins for text. No compiler rewrite or
+materialization was added. Selecting the book content hash used above returned
+10 list items in 0.18 seconds locally. EXPLAIN ANALYZE put the exact content
+predicate on every primitive scan, each reading two files. The text scan emitted
+276 nodes, direct-item scans 10 rows each, and list-candidate scans 211 elements
+before tag filtering. This is filtered-query evidence, not a corpus-wide guarantee.
+Fixtures verify that filtering later output items preserves earlier value resets.
+
+### Form views validation (2026-09-08)
+
+The initial form-control ownership query had an optimizer predicate-pushdown
+issue: the selected content was bounded, but conditional outer joins admitted
+574,409 ID-bearing elements and 4,572 forms from unrelated content. Splitting
+explicit-reference and ancestor ownership into disjoint UNION ALL branches
+preserved the public semantics and let DuckDB push content predicates into every
+scan. This was an optimizer issue, not a reason to materialize the relations.
+
+For content 01c41839fd99a13cc60ada13d53a98fb5ad75fa65f70f64edae0acb5ee1eba61,
+`SELECT * FROM public_v1.html_form_control WHERE content_id = ? ORDER BY node_index`
+returned 12 controls in 0.25 seconds locally (initial shape: 0.77 seconds).
+EXPLAIN ANALYZE showed each primitive scan reading two files; the ID scan emitted
+18 elements and the form scan one form. Option extraction for content
+072a5a77e6bf9d591a30832addace1b20ccfa7e4e13b1bd9a00a3779b7bce252 returned four
+options in 0.09 seconds, with content predicates on all scans and two files each.
+These timings validate filtered local queries, not billion-row corpus workloads.
+No query API rewrite, stored projection or form execution was added.
+
+### Section view validation (2026-09-08)
+
+Initial filtered validation found no schema or optimizer performance defect.
+html_section computes preceding-parent and following-boundary windows over
+HTML headings, with the document-root node providing the final boundary. It
+adds no stored projection or compiler rewrite. Selecting the book content hash
+used above returned 10 passages in 0.11 seconds locally. EXPLAIN ANALYZE put the
+exact content predicate on both primitive scans, each reading two files: one
+root node and 211 element candidates before heading filtering. Product Description
+was [154, 161), ending at Product Information; its parent was heading 112.
+This validates filtered local use, not unfiltered corpus-scale performance.
+Fixtures verify that a heading filter retains the surrounding headings needed
+to compute its parent and end, plus all six ranks and empty passages.

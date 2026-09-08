@@ -26,6 +26,14 @@ def query_error(error: Exception) -> tuple[int, QueryError]:
         return 422, QueryError(code="sql_invalid", detail=str(error))
     if isinstance(error, duckdb.Error) and (detail := safe_helper_error(str(error))):
         return 422, QueryError(code="helper_limit", detail=detail)
+    if isinstance(error, duckdb.InvalidInputException):
+        for message, code in (
+            ("HTML table exceeds 10000 cells", "resource_limit"),
+            ("HTML table exceeds 2048 columns", "resource_limit"),
+            ("HTML table has overlapping cells", "sql_invalid"),
+        ):
+            if message in str(error):
+                return 422, QueryError(code=code, detail=message + "; inspect the source through html_element.")
     if isinstance(error, duckdb.ParserException):
         return 422, QueryError(code="sql_invalid", detail="SQL syntax could not be parsed. Use AS for column aliases and double-quote reserved identifiers. Check commas, parentheses and DuckDB syntax.")
     if isinstance(error, (duckdb.BinderException, duckdb.CatalogException, duckdb.ConversionException, duckdb.InvalidInputException)):

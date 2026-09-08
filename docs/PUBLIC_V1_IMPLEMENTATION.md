@@ -18,12 +18,12 @@ unsupported versions fail rather than silently selecting another contract. Query
 results identify the resolved schema version separately from the lake snapshot.
 
 - `capture`: `capture_id`, `requested_url`, `effective_url`, `captured_at`,
-  `http_status_code`, `content_id`, `byte_length`, `representation`, `media_type`, `encoding`.
+  `http_status_code`, `content_id`, `byte_length`, `encoding`.
 - `html_node`: `content_id`, `node_index`, `parent_index`, `subtree_end_index`,
   `sibling_index`, `node_type`, `name`, `namespace`, `value`.
 - `html_element`: `content_id`, `node_index`, `parent_index`, `subtree_end_index`,
   `sibling_index`, `tag`, `namespace`, `attributes`, `text_direct`.
-- `link_occurrence`: `capture_id`, `node_index`, `raw_href`, `resolved_url`.
+- `link`: `capture_id`, `node_index`, `raw_href`, `resolved_url`.
 - `subtree_text(content_id, node_index)`: ordered descendant text, excluding comments
   and text outside the selected node's subtree.
 
@@ -199,3 +199,13 @@ shared packages and both frontend checks/builds). Setup and catalogue validation
 passed. The public gateway returns capture.byte_length as BIGINT and rejects
 public_v1.object with 422. A downloaded 16,808-byte capture matched both its
 reported byte_length and SHA-256 content_id. All local services are healthy.
+
+## HTML-only public captures
+
+The public capture view now includes only detected text/html (case-insensitive),
+matching the active HTML pipeline, and omits media_type and representation.
+Both remain in private evidence. HTML response bodies and rendered HTML retain
+the same content identity semantics; captures do not wait for DOM readiness.
+Public hash downloads apply the same HTML filter; private document access is
+unchanged. This edit is local; no catalogue deployment is performed by the side
+conversation.

@@ -40,3 +40,10 @@ class QueryErrorTests(unittest.TestCase):
         self.assertEqual(body.code, "sql_invalid")
         self.assertIn("Use AS", body.detail)
         self.assertNotIn("private_payload", body.detail)
+
+    def test_table_errors_are_explicit_without_exposing_native_details(self):
+        for message in ("HTML table exceeds 10000 cells", "HTML table exceeds 2048 columns", "HTML table has overlapping cells"):
+            status, body = query_error(duckdb.InvalidInputException(message + " private-token"))
+            self.assertEqual(status, 422)
+            self.assertIn(message, body.detail)
+            self.assertNotIn("private-token", body.detail)

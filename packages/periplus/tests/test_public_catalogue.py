@@ -21,9 +21,22 @@ from periplus.query.http import _public_metadata, metadata
 
 EXPECTED_PUBLIC_RELATIONS = {
     ("public_v1", "capture"),
-    ("public_v1", "link_occurrence"),
+    ("public_v1", "link"),
     ("public_v1", "html_element"),
     ("public_v1", "html_node"),
+    ("public_v1", "html_heading"),
+    ("public_v1", "html_code"),
+    ("public_v1", "html_section"),
+    ("public_v1", "html_metadata"),
+    ("public_v1", "html_image"),
+    ("public_v1", "html_jsonld"),
+    ("public_v1", "html_list"),
+    ("public_v1", "html_form"),
+    ("public_v1", "html_form_control"),
+    ("public_v1", "html_select_option"),
+    ("public_v1", "html_list_item"),
+    ("public_v1", "html_table"),
+    ("public_v1", "html_table_cell"),
 }
 
 
@@ -103,6 +116,20 @@ class PublicCatalogueTests(unittest.TestCase):
                 "WHERE schema_name = 'web' AND view_name = 'page'"
             ).fetchone()[0],
             0,
+        )
+
+    def test_install_replaces_public_link_occurrence(self) -> None:
+        self.catalogue.connection.execute("CREATE SCHEMA public_v1")
+        self.catalogue.connection.execute(
+            "CREATE VIEW public_v1.link_occurrence AS SELECT 1 AS old_column"
+        )
+        install_public_catalogue(self.catalogue)
+        validate_public_catalogue(self.catalogue)
+        with self.assertRaises(duckdb.CatalogException):
+            self.catalogue.connection.execute("SELECT * FROM public_v1.link_occurrence")
+        self.assertEqual(
+            [row[0] for row in self.catalogue.connection.execute("DESCRIBE public_v1.link").fetchall()],
+            ["capture_id", "node_index", "raw_href", "resolved_url"],
         )
 
     def test_views_preserve_observation_content_and_occurrence_grains(self) -> None:
@@ -199,7 +226,7 @@ class PublicCatalogueTests(unittest.TestCase):
         self.assertEqual(
             self.catalogue.connection.execute(
                 "SELECT capture_id::VARCHAR, node_index, raw_href, resolved_url "
-                "FROM public_v1.link_occurrence"
+                "FROM public_v1.link"
             ).fetchone(),
             ("10000000-0000-0000-0000-000000000001", 1, "/next", "https://example.com/next"),
         )
@@ -210,9 +237,12 @@ class PublicCatalogueTests(unittest.TestCase):
         self.assertEqual(connection.execute("SELECT count(*) FROM public_v1.capture").fetchone(), (2,))
         self.assertEqual(connection.execute("SELECT count(*) FROM public_v1.capture JOIN public_v1.html_element USING (content_id)").fetchone(), (4,))
 
-    def test_capture_preserves_detected_media_type(self) -> None:
+    def test_capture_exposes_only_html_without_format_columns(self) -> None:
         install_public_catalogue(self.catalogue)
         rows = [
+            ("text/html", "html"),
+            ("TEXT/HTML", "html"),
+            ("application/xhtml+xml", "xml"),
             ("application/json", "json"),
             ("application/ld+json", "json"),
             ("application/pdf", "pdf"),
@@ -245,10 +275,18 @@ class PublicCatalogueTests(unittest.TestCase):
             )
         self.assertEqual(
             self.catalogue.connection.execute(
-                "SELECT media_type FROM public_v1.capture ORDER BY media_type"
+                "SELECT content_id FROM public_v1.capture ORDER BY content_id"
             ).fetchall(),
-            sorted((media_type,) for media_type, _ in rows),
+            [("content-1",), ("content-2",)],
         )
+
+        columns = {row[0] for row in self.catalogue.connection.execute("DESCRIBE public_v1.capture").fetchall()}
+        self.assertNotIn("media_type", columns)
+        self.assertNotIn("representation", columns)
+        # Retained HTML error bodies and rendered HTML remain public before DOM generation.
+        self.catalogue.connection.execute("UPDATE ingest.visits SET status_code=404")
+        self.catalogue.connection.execute("UPDATE ingest.documents SET representation='rendered_html' WHERE content_sha256='content-2'")
+        self.assertEqual(self.catalogue.connection.execute("SELECT count(*) FROM public_v1.capture WHERE http_status_code=404").fetchone(), (2,))
 
     def test_validation_rejects_unexpected_public_object(self) -> None:
         install_public_catalogue(self.catalogue)

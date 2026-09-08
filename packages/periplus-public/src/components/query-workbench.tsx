@@ -88,13 +88,13 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false 
             <CardContent className="flex flex-col gap-3 pt-3">
               {query.error && <Alert variant="destructive"><AlertDescription>{extractApiError(query.error)} Your SQL is still in the editor.<Button variant="ghost" size="sm" onClick={() => assistant.show("Help fix the latest query error while preserving what the query is meant to return.")}>Help fix</Button></AlertDescription></Alert>}
               <CardDescription key={`${query.submittedAt}-${query.status}`} className={query.isSuccess ? "query-complete" : undefined} role="status">{query.isPending ? "Executing query… Results will appear here." : query.data ? `${query.data.rows.length} rows · ${(query.data.elapsed_ms / 1000).toFixed(2)}s${query.data.sql !== sql || query.error ? " · from your previous query" : ""}` : "Ready to query"}</CardDescription>
-              {query.data?.diagnostics.map(item => <Alert key={item.code}><AlertDescription>{item.message}</AlertDescription></Alert>)}
+              {query.data?.diagnostics.filter(item => item.code !== "plan_truncated").map(item => <Alert key={item.code}><AlertDescription>{item.message}</AlertDescription></Alert>)}
               {query.data?.truncated && <Alert><AlertDescription>Partial result: the row or response-size limit was reached. Export includes only displayed rows.</AlertDescription></Alert>}
             </CardContent>
             <TabsContent value="results" className="sql-results-viewport min-w-0 px-3">
               {query.data ? <><QueryTable columns={query.data.columns} types={query.data.types} rows={query.data.rows} />{!query.data.rows.length && <CardDescription>No matching rows. Try a broader filter.</CardDescription>}</> : <div className="flex min-h-40 flex-col items-center justify-center gap-3"><Table2 className="size-6" /><CardTitle>Your results appear here</CardTitle><CardDescription>Write SQL above and run it to inspect the returned rows.</CardDescription></div>}
             </TabsContent>
-            <TabsContent value="plan" className="min-w-0 px-3">{query.data ? <div className="flex flex-col gap-3"><CardDescription>Query reference: {query.data.query_id}</CardDescription><pre className="overflow-auto">{query.data.plan || "No execution plan returned."}</pre><details><summary className="cursor-pointer">Executed SQL</summary><pre className="overflow-auto py-3">{query.data.sql}</pre></details></div> : <CardDescription className="py-8">Run a query to inspect its execution plan.</CardDescription>}</TabsContent>
+            <TabsContent value="plan" className="min-w-0 px-3">{query.data ? <div className="flex flex-col gap-3"><CardDescription>Query reference: {query.data.query_id}</CardDescription>{query.data.diagnostics.filter(item => item.code === "plan_truncated").map(item => <Alert key={item.code}><AlertDescription>{item.message}</AlertDescription></Alert>)}<pre className="overflow-auto">{query.data.plan || "No execution plan returned."}</pre><details><summary className="cursor-pointer">Executed SQL</summary><pre className="overflow-auto py-3">{query.data.sql}</pre></details></div> : <CardDescription className="py-8">Run a query to inspect its execution plan.</CardDescription>}</TabsContent>
           </Tabs>
         </Card>
       </div>
@@ -111,6 +111,7 @@ const SchemaExplorer = memo(function SchemaExplorer({ onLoadSql }: { onLoadSql: 
           <TooltipProvider>
             {["public_v1"].map(namespace => {
               const relations = schemaReference.filter(relation => relation.name.startsWith(`${namespace}.`) && `${relation.name} ${relation.columns.map(column => column[0]).join(" ")}`.toLowerCase().includes(filter.toLowerCase()))
+              relations.sort((a, b) => a.name.length - b.name.length || a.name.localeCompare(b.name))
               if (!relations.length) return null
               return <div key={namespace} className="pb-4">
                 <p className="px-1 pb-2 font-mono text-xs text-muted-foreground">{namespace}</p>

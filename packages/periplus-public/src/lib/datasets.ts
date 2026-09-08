@@ -99,7 +99,7 @@ SELECT links.resolved_url,
        count(DISTINCT latest.effective_url) AS referring_pages,
        count(*) AS link_occurrences,
        max(latest.captured_at) AS last_captured
-FROM public_v1.link_occurrence links
+FROM public_v1.link links
 JOIN latest USING (capture_id)
 GROUP BY links.resolved_url
 ORDER BY referring_pages DESC, links.resolved_url
