@@ -95,11 +95,11 @@ extensions; only live materialization loads CDC.
 
 GitHub Actions publishes four immutable artifacts for each main-branch revision:
 
-- `ghcr.io/ekkuleivonen/periplus-core:sha-<commit>` contains the API, every worker role,
+- `ghcr.io/elei-io/periplus-core:sha-<commit>` contains the API, every worker role,
   `periplus-setup`, the DuckLake CDC extension;
-- `ghcr.io/ekkuleivonen/periplus-admin:sha-<commit>` contains the operator UI and nginx API gateway;
-- `ghcr.io/ekkuleivonen/periplus-public:sha-<commit>` contains the standalone Next.js public application; and
-- `oci://ghcr.io/ekkuleivonen/periplus-charts/periplus:0.1.0-dev.<commit>` deploys the three images.
+- `ghcr.io/elei-io/periplus-admin:sha-<commit>` contains the operator UI and nginx API gateway;
+- `ghcr.io/elei-io/periplus-public:sha-<commit>` contains the standalone Next.js public application; and
+- `oci://ghcr.io/elei-io/periplus-charts/periplus:0.1.0-dev.<commit>` deploys the three images.
 
 Release tags `vX.Y.Z` additionally publish matching `X.Y.Z` image and chart versions. Production
 GitOps must pin the explicit chart version and all three explicit image tags; it must not consume a

@@ -18,8 +18,8 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  CORE_IMAGE: ghcr.io/ekkuleivonen/periplus-core
-  CHART_REGISTRY: oci://ghcr.io/ekkuleivonen/periplus-charts
+  CORE_IMAGE: ghcr.io/elei-io/periplus-core
+  CHART_REGISTRY: oci://ghcr.io/elei-io/periplus-charts
 
 jobs:
   metadata:
@@ -119,7 +119,7 @@ jobs:
         run: |
           IFS=',' read -ra versions <<< "${{ needs.metadata.outputs.image_tags }}"
           for version in "${versions[@]}"; do
-            echo "ghcr.io/ekkuleivonen/periplus-${{ matrix.app }}:${version}"
+            echo "ghcr.io/elei-io/periplus-${{ matrix.app }}:${version}"
           done > /tmp/tags
           {
             echo "value<<EOF"

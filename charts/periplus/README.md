@@ -43,7 +43,7 @@ metadata:
   namespace: periplus
 spec:
   interval: 10m
-  url: oci://ghcr.io/ekkuleivonen/periplus-charts/periplus
+  url: oci://ghcr.io/elei-io/periplus-charts/periplus
   secretRef:
     name: ghcr-pull
   ref:
