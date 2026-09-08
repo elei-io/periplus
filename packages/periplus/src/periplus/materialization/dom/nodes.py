@@ -51,6 +51,9 @@ def parse_document(source: str | bytes) -> tuple[tuple[NodeRow, ...], tuple[Elem
             nodes[index] = replace(nodes[index], subtree_end_index=len(nodes))
             if index in elements:
                 elements[index] = replace(elements[index], subtree_end_index=len(nodes))
+            # Children have already been detached, so unlink stays shallow and
+            # releases the parser tree without waiting for cyclic collection.
+            node.unlink()
             continue
         index = len(nodes)
         kind = kinds[node.nodeType]
@@ -69,6 +72,10 @@ def parse_document(source: str | bytes) -> tuple[tuple[NodeRow, ...], tuple[Elem
                 "".join(child.data for child in node.childNodes if child.nodeType == Node.TEXT_NODE),
                 "",
             )
+        # Leaves already have their final exclusive boundary.
+        if not node.childNodes:
+            node.unlink()
+            continue
         stack.append((node, parent, sibling, depth, True, index))
         stack.extend((child, index, position, depth + 1, False, -1)
                      for position, child in reversed(list(enumerate(node.childNodes))))

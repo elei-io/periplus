@@ -604,3 +604,42 @@ trade-off for safe replay across the two stores. This small corpus does not prov
 its billion-row cost: content predicates match the HTML sort key, while visit-ID
 replacement on link occurrences still deserves partition-pruning measurements
 before freezing a large-scale physical layout. Public relations are unchanged.
+
+### Projection allocation optimization (2026-09-08)
+
+Classification: materialization runtime allocation/lifetime overhead, not a
+public schema, partitioning or SQL optimizer defect. HTML projections now feed
+Arrow in 8,192-row chunks instead of constructing whole-batch Python row lists.
+Flat node fields are copied explicitly instead of recursively applying
+`dataclasses.astuple`; element attribute dictionaries are passed directly to
+Arrow rather than duplicated into lists of pairs. Preparation writes and releases
+one projection's Arrow table at a time. DOM traversal skips redundant leaf
+boundary replacement and unlinks finished parser nodes after copying their
+values; children are already unlinked, keeping cleanup shallow. HTML5 parsing,
+row identities, schema, partitioning and sort order are unchanged.
+
+Read-only replays of batches 21 and 22 from run
+`31cf5645-c380-472a-8e1d-9d5d4ab3edf4`, snapshot 8246, used the same local
+2-CPU/4-GiB container bounds, 2 DuckDB threads and 2-GB DuckDB memory limit.
+Parquet was written to temporary local files and never registered or uploaded.
+The baseline retained all projection outputs; the revised replay used the new
+one-projection-at-a-time preparation order. RSS was sampled every 100 ms.
+
+| Measurement | Batch 21 before → after | Batch 22 before → after |
+| --- | ---: | ---: |
+| All projection row/Arrow construction | 3.86 → 1.64 s | 8.12 → 2.79 s |
+| Node projection row/Arrow construction | 1.96 → 0.42 s | 2.92 → 0.72 s |
+| Total preparation replay, including local Parquet | 27.15 → 22.12 s | 46.97 → 32.78 s |
+| Sampled peak process RSS | 1.64 → 1.22 GiB | 2.13 → 1.45 GiB |
+| Output rows (unchanged) | 982,959 | 1,549,516 |
+
+These are single local replays with warm infrastructure, not production sizing
+recommendations, repeated-trial medians, or end-to-end speedups. Uploads, lake
+commit/claim waits and concurrent rebuild contention are excluded. The registry
+implementation digest changes, so deployment requires the normal complete
+materialization rebuild; no public schema version change is needed.
+
+Validation compared all 50 source documents in batch 22 against the pre-change
+implementation: every node field, element record and node/element Arrow table
+matched exactly. Unit fixtures cover chunk boundaries, empty typed outputs,
+attribute maps, nulls and leaf subtree boundaries.

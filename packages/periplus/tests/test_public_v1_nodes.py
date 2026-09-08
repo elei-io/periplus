@@ -26,6 +26,17 @@ class PublicV1NodesTests(unittest.TestCase):
             self.assertEqual((n.node_type, n.name, n.parent_index), ('element', e.tag, e.parent_index))
             self.assertEqual(n.subtree_end_index, e.subtree_end_index)
 
+    def test_leaf_elements_keep_exclusive_boundaries(self):
+        nodes, elements = parse_document('<div><br><img src="x"><span></span></div>')
+        leaves = [e for e in elements if e.tag in {'br', 'img', 'span'}]
+        self.assertEqual(len(leaves), 3)
+        for element in leaves:
+            self.assertEqual(element.subtree_end_index, element.element_index + 1)
+            self.assertEqual(nodes[element.element_index].subtree_end_index,
+                             element.subtree_end_index)
+        parent = next(e for e in elements if e.tag == 'div')
+        self.assertEqual(parent.subtree_end_index, leaves[-1].subtree_end_index)
+
     def test_entities_do_not_split_text_identity(self):
         nodes, elements = parse_document(b'<p>A&amp;B&#33;</p>')
         paragraph = next(e for e in elements if e.tag == 'p')

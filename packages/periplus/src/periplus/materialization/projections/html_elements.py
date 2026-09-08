@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pyarrow as pa
 
 from periplus.materialization.document_projection import (
@@ -24,30 +26,30 @@ _NAMESPACE_NAMES = {
 
 
 def project(context: VisitBatchContext) -> pa.Table:
-    rows: list[tuple[object, ...]] = []
+    return table_from_rows(PROJECTION.arrow_schema, _rows(context))
+
+
+def _rows(context: VisitBatchContext) -> Iterator[tuple[object, ...]]:
     for content_sha256 in sorted(context.content_output_hashes):
         for element in context.parsed_elements_by_content.get(
             content_sha256,
             (),
         ):
-            rows.append(
-                (
-                    content_sha256,
-                    element.element_index,
-                    element.parent_index,
-                    element.subtree_end_index,
-                    element.depth,
-                    element.child_index,
-                    element.tag.lower(),
-                    _NAMESPACE_NAMES.get(
-                        element.namespace_uri,
-                        element.namespace_uri or "NONE",
-                    ),
-                    list(element.attributes.items()),
-                    element.text_direct,
-                )
+            yield (
+                content_sha256,
+                element.element_index,
+                element.parent_index,
+                element.subtree_end_index,
+                element.depth,
+                element.child_index,
+                element.tag.lower(),
+                _NAMESPACE_NAMES.get(
+                    element.namespace_uri,
+                    element.namespace_uri or "NONE",
+                ),
+                element.attributes,
+                element.text_direct,
             )
-    return table_from_rows(PROJECTION.arrow_schema, rows)
 
 
 PROJECTION = ProjectionSpec(
