@@ -643,3 +643,32 @@ Validation compared all 50 source documents in batch 22 against the pre-change
 implementation: every node field, element record and node/element Arrow table
 matched exactly. Unit fixtures cover chunk boundaries, empty typed outputs,
 attribute maps, nulls and leaf subtree boundaries.
+
+### Single-construction DOM records (2026-09-08)
+
+A follow-up runtime optimization reserves preorder positions when entering a
+node and constructs each final immutable node/element record when leaving it.
+This removes the remaining `dataclasses.replace` calls and the temporary element
+lookup dictionary. Completed records retain the same order and complete shared
+parse representation for every projection. Parent direct text is copied before
+unlinking the parent; already-unlinked text children retain their data.
+
+Paired replays used the same snapshot, batches and container bounds as above,
+with the immediately preceding allocation optimization as the baseline. Order
+was after/before for batch 21 and before/after for batch 22. Each variant ran
+alone, used temporary local Parquet and did not upload or commit data.
+
+| Measurement | Batch 21 before → after | Batch 22 before → after |
+| --- | ---: | ---: |
+| DOM traversal/record construction, excluding parsing and normalization | 4.41 → 2.68 s | 5.82 → 4.09 s |
+| Total preparation replay | 23.13 → 20.11 s | 31.37 → 29.85 s |
+| Sampled peak RSS | 1.20 → 1.22 GiB | 1.44 → 1.42 GiB |
+
+Record construction took 30–39% less time; observed total preparation took
+5–13% less time. Peak memory was essentially unchanged. These are single paired
+local measurements, not production throughput or repeated-trial estimates.
+
+Exact comparison against the preceding implementation passed for all 50 source
+documents in batch 22: every node field, element record and both HTML projection
+Arrow tables matched. A nested mixed-content fixture additionally checks preorder,
+subtree boundaries, attributes and parent direct text after child cleanup.

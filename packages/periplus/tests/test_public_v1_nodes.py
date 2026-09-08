@@ -37,6 +37,24 @@ class PublicV1NodesTests(unittest.TestCase):
         parent = next(e for e in elements if e.tag == 'div')
         self.assertEqual(parent.subtree_end_index, leaves[-1].subtree_end_index)
 
+    def test_closing_records_preserve_preorder_and_parent_text(self):
+        nodes, elements = parse_document(
+            '<main>A<section id="s">B<b>C</b>D</section>E<hr>F</main>'
+        )
+        self.assertEqual([n.node_index for n in nodes], list(range(len(nodes))))
+        self.assertEqual([e.tag for e in elements],
+                         ['html', 'head', 'body', 'main', 'section', 'b', 'hr'])
+        self.assertEqual([e.element_index for e in elements],
+                         sorted(e.element_index for e in elements))
+        by_tag = {e.tag: e for e in elements}
+        self.assertEqual(by_tag['main'].text_direct, 'AEF')
+        self.assertEqual(by_tag['section'].text_direct, 'BD')
+        self.assertEqual(by_tag['section'].attributes, {'id': 's'})
+        self.assertEqual(by_tag['b'].text_direct, 'C')
+        for element in elements:
+            self.assertEqual(element.subtree_end_index,
+                             nodes[element.element_index].subtree_end_index)
+
     def test_entities_do_not_split_text_identity(self):
         nodes, elements = parse_document(b'<p>A&amp;B&#33;</p>')
         paragraph = next(e for e in elements if e.tag == 'p')
