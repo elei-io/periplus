@@ -11,9 +11,9 @@ from periplus.ingestion.objects.document import ExactDocumentRepository
 from periplus.ingestion.objects.html import RawHtmlRepository
 from periplus.materialization.dom import (
     ElementRow,
-    iter_html_byte_elements,
-    iter_html_elements,
 )
+
+from periplus.materialization.dom.nodes import NodeRow, parse_document
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +41,7 @@ class VisitBatchContext:
     documents: tuple[tuple[object, ...], ...]
     sources: tuple[DocumentProjectionSource, ...]
     parsed_elements_by_content: dict[str, tuple[ElementRow, ...]]
+    parsed_nodes_by_content: dict[str, tuple[NodeRow, ...]]
     observations_by_content: dict[str, tuple[DocumentObservation, ...]]
     content_output_hashes: frozenset[str]
 
@@ -57,6 +58,7 @@ def build_visit_batch_context(
 
     exact_repository = ExactDocumentRepository(html_repository.store)
     parsed: dict[str, tuple[ElementRow, ...]] = {}
+    nodes: dict[str, tuple[NodeRow, ...]] = {}
     observations: dict[str, tuple[DocumentObservation, ...]] = {}
     for source in sources:
         if source.storage_encoding == "zstd":
@@ -68,17 +70,14 @@ def build_visit_batch_context(
                 "unsupported HTML storage encoding "
                 f"{source.storage_encoding!r}"
             )
-        parsed[source.content_sha256] = tuple(
-            iter_html_byte_elements(html)
-            if isinstance(html, bytes)
-            else iter_html_elements(html)
-        )
+        nodes[source.content_sha256], parsed[source.content_sha256] = parse_document(html)
         observations[source.content_sha256] = source.observations
     return VisitBatchContext(
         visits=visits,
         documents=documents,
         sources=sources,
         parsed_elements_by_content=parsed,
+        parsed_nodes_by_content=nodes,
         observations_by_content=observations,
         content_output_hashes=(
             frozenset(parsed)

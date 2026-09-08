@@ -153,20 +153,18 @@ def read_live_history(catalogue, *, now: datetime | None = None) -> HistoricalAc
     timer.start()
     try:
         # Rates describe committed attempt starts, capture outcomes, and request
-        # fulfillments separately. Imported observations are not crawler activity.
+        # fulfillments separately.
         rows = connection.execute(f"""
             WITH clock AS (SELECT ?::TIMESTAMPTZ AS as_of),
             windows(seconds) AS (VALUES (60), (300)),
             events AS (
                 SELECT v.requested_url, a.started_at AS event_at, 'attempt' AS kind
                 FROM {alias}.ingest.attempts a JOIN {alias}.ingest.visits v ON v.visit_id = a.visit_id, clock
-                WHERE v.provenance.kind = 'periplus'
-                  AND a.started_at >= as_of - INTERVAL '300 seconds' AND a.started_at <= as_of
+                WHERE a.started_at >= as_of - INTERVAL '300 seconds' AND a.started_at <= as_of
                 UNION ALL
                 SELECT v.requested_url, v.finished_at, v.outcome
                 FROM {alias}.ingest.visits v, clock
-                WHERE v.provenance.kind = 'periplus'
-                  AND v.outcome IN ('succeeded', 'failed')
+                WHERE v.outcome IN ('succeeded', 'failed')
                   AND v.finished_at >= as_of - INTERVAL '300 seconds' AND v.finished_at <= as_of
                 UNION ALL
                 SELECT f.requested_url, f.recorded_at, 'fulfillment'
@@ -193,8 +191,7 @@ def read_live_history(catalogue, *, now: datetime | None = None) -> HistoricalAc
         """, [now]).fetchall()
         latest = connection.execute(f"""SELECT visit_id,
             CASE WHEN length(requested_url) <= 8192 THEN requested_url ELSE NULL END, finished_at
-            FROM {alias}.ingest.visits WHERE provenance.kind = 'periplus'
-              AND outcome = 'succeeded' AND finished_at <= ?
+            FROM {alias}.ingest.visits WHERE outcome = 'succeeded' AND finished_at <= ?
             ORDER BY finished_at DESC, visit_id DESC LIMIT 5""", [now]).fetchall()
         from periplus.materialization.readiness import observation_readiness
         proofs = observation_readiness(catalogue, [row[0] for row in latest])

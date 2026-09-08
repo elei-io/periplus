@@ -37,11 +37,11 @@ export const AnalysisAnswer = memo(function AnalysisAnswer({ message, running, c
           {presentation.status === "ready" && <>
             <Button onClick={() => download("periplus-dataset.csv", analysisCsv(dataset.columns, dataset.rows), "text/csv;charset=utf-8")}><Download />Download CSV</Button>
             <Button variant="outline" nativeButton={false} render={<Link href={`/sql?${new URLSearchParams({ sql: dataset.sql })}`} target="_blank" rel="noopener noreferrer" />}>Open in SQL<ArrowUpRight /></Button>
-            <Button variant="ghost" onClick={() => download("periplus-dataset.json", JSON.stringify({ brief: presentation.brief, sql: dataset.sql, source_snapshot: dataset.source_snapshot, checks: presentation.checks.map(check => check.sql) }, null, 2), "application/json")}><Download />Save definition</Button>
+            <Button variant="ghost" onClick={() => download("periplus-dataset.json", JSON.stringify({ brief: presentation.brief, sql: dataset.sql, schema_version: dataset.schema_version, source_snapshot: dataset.source_snapshot, checks: presentation.checks.map(check => check.sql) }, null, 2), "application/json")}><Download />Save definition</Button>
           </>}
         </div>
         {presentation.status === "sample" && <p className="analysis-note">Happy with these sources and fields? Build the full dataset, or describe what you’d like to change below.</p>}
-        {presentation.checks.length > 0 && <details className="analysis-method"><summary>Quality & coverage</summary><div className="analysis-method-body">{presentation.checks.map(check => <QueryTable key={check.query_id} columns={check.columns} types={check.types} rows={check.rows} />)}<p>Snapshot {dataset.source_snapshot}. Rerunning SQL uses the observations available then; changes to sources may require revalidation.</p></div></details>}
+        {presentation.checks.length > 0 && <details className="analysis-method"><summary>Quality & coverage</summary><div className="analysis-method-body">{presentation.checks.map(check => <QueryTable key={check.query_id} columns={check.columns} types={check.types} rows={check.rows} />)}<p>Schema {dataset.schema_version}, snapshot {dataset.source_snapshot}. Rerunning SQL uses the captures available then; changes to sources may require revalidation.</p></div></details>}
       </section>}
       {!dataset && presentation.limitations && <p>{presentation.limitations}</p>}
     </>}

@@ -71,9 +71,9 @@ def _decode(response: httpx.Response, model: type[Model]) -> Model:
         raise ResponseError("Public query response did not match the expected contract.") from None
 
 
-def _payload(sql: str, parameters: Sequence[JsonValue] | None) -> dict:
+def _payload(sql: str, parameters: Sequence[JsonValue] | None, schema_version: str) -> dict:
     # Server owns SQL validation, linting, preparation and optimization.
-    return {"sql": sql, "parameters": list(parameters) if parameters is not None else []}
+    return {"schema_version": schema_version, "sql": sql, "parameters": list(parameters) if parameters is not None else []}
 
 
 class Client:
@@ -98,11 +98,11 @@ class Client:
             raise TransportError("Could not complete the public query request.") from None
         return _decode(response, model)
 
-    def prepare(self, sql: str, parameters: Sequence[JsonValue] | None = None) -> PreparedQuery:
-        return self._request("POST", "prep", PreparedQuery, json=_payload(sql, parameters))
+    def prepare(self, sql: str, parameters: Sequence[JsonValue] | None = None, *, schema_version: str = "public_v1") -> PreparedQuery:
+        return self._request("POST", "prep", PreparedQuery, json=_payload(sql, parameters, schema_version))
 
-    def execute(self, sql: str, parameters: Sequence[JsonValue] | None = None) -> QueryResult:
-        return self._request("POST", "exec", QueryResult, json=_payload(sql, parameters))
+    def execute(self, sql: str, parameters: Sequence[JsonValue] | None = None, *, schema_version: str = "public_v1") -> QueryResult:
+        return self._request("POST", "exec", QueryResult, json=_payload(sql, parameters, schema_version))
 
     def helpers(self) -> QueryHelpers:
         return self._request("GET", "helpers", QueryHelpers)
@@ -130,11 +130,11 @@ class AsyncClient:
             raise TransportError("Could not complete the public query request.") from None
         return _decode(response, model)
 
-    async def prepare(self, sql: str, parameters: Sequence[JsonValue] | None = None) -> PreparedQuery:
-        return await self._request("POST", "prep", PreparedQuery, json=_payload(sql, parameters))
+    async def prepare(self, sql: str, parameters: Sequence[JsonValue] | None = None, *, schema_version: str = "public_v1") -> PreparedQuery:
+        return await self._request("POST", "prep", PreparedQuery, json=_payload(sql, parameters, schema_version))
 
-    async def execute(self, sql: str, parameters: Sequence[JsonValue] | None = None) -> QueryResult:
-        return await self._request("POST", "exec", QueryResult, json=_payload(sql, parameters))
+    async def execute(self, sql: str, parameters: Sequence[JsonValue] | None = None, *, schema_version: str = "public_v1") -> QueryResult:
+        return await self._request("POST", "exec", QueryResult, json=_payload(sql, parameters, schema_version))
 
     async def helpers(self) -> QueryHelpers:
         return await self._request("GET", "helpers", QueryHelpers)

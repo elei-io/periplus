@@ -15,7 +15,7 @@ export async function GET(request: Request) {
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          sql: "SELECT count(*) AS captures FROM web.observation WHERE source_kind = 'periplus' AND outcome = 'succeeded';",
+          sql: "SELECT count(*) AS captures FROM public_v1.capture;",
           parameters: [],
         }),
         cache: "no-store",

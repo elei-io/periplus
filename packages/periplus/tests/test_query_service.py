@@ -33,7 +33,7 @@ class QueryServiceTests(unittest.TestCase):
             f"ATTACH {_literal('ducklake:' + self.config.metadata_path)} AS periplus (DATA_PATH {_literal(self.config.data_path)}, METADATA_SCHEMA 'ducklake')"
         )
         d.execute("USE periplus")
-        for schema in ("ingest", "material", "web", "content"):
+        for schema in ("ingest", "material", "public_v1"):
             d.execute(f"CREATE SCHEMA {schema}")
         for relation, columns in expected_columns().items():
             definitions = ", ".join(
@@ -52,6 +52,9 @@ class QueryServiceTests(unittest.TestCase):
         d.execute("UPDATE ingest.visits SET document_id = '00000000-0000-0000-0000-000000000001' WHERE requested_url = 'https://example.com/inline'")
         d.execute("INSERT INTO ingest.documents (document_id, visit_id, content_sha256) SELECT document_id, visit_id, 'helper-fixture' FROM ingest.visits WHERE document_id IS NOT NULL")
         d.execute("INSERT INTO material.html_elements (content_sha256, element_index, subtree_end_index, depth, text_direct, text_tail) VALUES ('helper-fixture',0,2,0,'start','outside'),('helper-fixture',1,2,1,'nested','end')")
+        d.execute("UPDATE ingest.visits SET document_id = uuid() WHERE document_id IS NULL")
+        d.execute("INSERT INTO ingest.documents (document_id, visit_id, content_sha256) SELECT document_id, visit_id, visit_id::VARCHAR FROM ingest.visits WHERE requested_url <> 'https://example.com/inline'")
+        d.execute("INSERT INTO material.html_nodes (content_sha256, node_index, subtree_end_index, node_type, value) VALUES ('helper-fixture',0,4,'element',NULL),('helper-fixture',1,2,'text','start'),('helper-fixture',2,3,'text','nested'),('helper-fixture',3,4,'text','end')")
         d.close()
         self.service = QueryService(self.config)
         self.addCleanup(self.service.close)
@@ -68,19 +71,19 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(result.rows, reference.rows)
         self.assertEqual(result.types, reference.types)
         self.assertEqual(result.rows, [[7, '?::UUID']])
-        observation = self.service.execute(QueryRequest(sql="SELECT observation_id FROM web.observation LIMIT 1")).rows[0][0]
-        found = self.service.execute(QueryRequest(sql="SELECT count(*) AS n FROM web.observation WHERE observation_id = ?::UUID", parameters=[observation]))
+        observation = self.service.execute(QueryRequest(sql="SELECT capture_id FROM public_v1.capture LIMIT 1")).rows[0][0]
+        found = self.service.execute(QueryRequest(sql="SELECT count(*) AS n FROM public_v1.capture WHERE capture_id = ?::UUID", parameters=[observation]))
         self.assertEqual(found.rows, [[1]])
         for forbidden in ("SELECT ?::INTEGER; SELECT 2", "SELECT ?::INTEGER FROM ingest.visits"):
             with self.subTest(sql=forbidden), self.assertRaises(ValueError):
                 self.service.prepare(QueryRequest(sql=forbidden, parameters=[7]))
 
     def test_persisted_helper_executes_through_read_only_query_api(self):
-        request = QueryRequest(sql="SELECT * FROM content.subtree_text(?, ?, max_chars := ?)", parameters=["helper-fixture", 0, 10])
+        request = QueryRequest(sql="SELECT * FROM public_v1.subtree_text(?, ?, max_chars := ?)", parameters=["helper-fixture", 0, 10])
         self.assertEqual(self.service.prepare(request).sql, request.sql)
         result = self.service.execute(request)
-        self.assertEqual(result.columns, ["text", "truncated", "total_chars", "element_count"])
-        self.assertEqual(result.rows, [["startneste", True, 14, 2]])
+        self.assertEqual(result.columns, ["text", "truncated", "total_chars", "node_count"])
+        self.assertEqual(result.rows, [["startneste", True, 14, 4]])
 
     def test_preparation_evidence_and_failed_execution(self):
         from periplus.operations.query_history.schemas import PreparationEvidence
@@ -98,7 +101,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertIsNotNone(failed.plan)
         self.assertIsNotNone(failed.plan_fingerprint)
         show = PreparationEvidence()
-        self.service.prepare(QueryRequest(sql='SHOW TABLES FROM web'), evidence=show)
+        self.service.prepare(QueryRequest(sql='SHOW TABLES FROM public_v1'), evidence=show)
         self.assertIsNone(show.plan)
         oversized = PreparationEvidence()
         connection = self.service.connection
@@ -117,14 +120,14 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(oversized.diagnostics[0]['code'], 'plan_truncated')
 
     def test_prepare_execute_and_reuse(self):
-        payload = QueryRequest(sql="SELECT requested_url FROM web.observation WHERE requested_url=?", parameters=["https://example.com/inline"])
+        payload = QueryRequest(sql="SELECT requested_url FROM public_v1.capture WHERE requested_url=?", parameters=["https://example.com/inline"])
         self.assertEqual(self.service.prepare(payload).sql, payload.sql)
         self.assertEqual(self.service.execute(payload).rows, [["https://example.com/inline"]])
-        self.assertEqual(self.service.execute(QueryRequest(sql="SELECT count(*) FROM web.observation")).rows, [[21]])
+        self.assertEqual(self.service.execute(QueryRequest(sql="SELECT count(*) FROM public_v1.capture")).rows, [[21]])
 
     def test_validation_sandbox_and_recovery(self):
         for method in [self.service.prepare, self.service.execute]:
-            for sql in ["DELETE FROM web.observation", "SELECT * FROM read_parquet('/tmp/secret')", "SELECT nonexistent FROM web.observation", "SELECT 1; SELECT 2", "SELECT * FROM ingest.visits", "SELECT getenv('HOME')"]:
+            for sql in ["DELETE FROM public_v1.capture", "SELECT * FROM read_parquet('/tmp/secret')", "SELECT nonexistent FROM public_v1.capture", "SELECT 1; SELECT 2", "SELECT * FROM ingest.visits", "SELECT getenv('HOME')"]:
                 with self.subTest(sql=sql), self.assertRaises((ValueError, duckdb.Error)):
                     method(QueryRequest(sql=sql))
         self.assertEqual(self.service.execute(QueryRequest(sql='SELECT 42')).rows, [[42]])
@@ -174,21 +177,21 @@ class QueryServiceTests(unittest.TestCase):
             self.assertEqual(client.post('/query/exec', json={'sql':'SELECT 1'}).status_code, 401)
             for endpoint in ['prep', 'exec']:
                 self.assertEqual(client.post('/query/'+endpoint, headers=headers, json={'sql':'SELECT 1'}).status_code, 200)
-                self.assertEqual(client.post('/query/'+endpoint, headers=headers, json={'sql':'DELETE FROM web.observation'}).status_code, 422)
+                self.assertEqual(client.post('/query/'+endpoint, headers=headers, json={'sql':'DELETE FROM public_v1.capture'}).status_code, 422)
             self.assertEqual(client.get('/query/helpers').status_code, 401)
             helper_response = client.get('/query/helpers', headers=headers)
             self.assertEqual(helper_response.status_code, 200)
-            self.assertEqual(helper_response.json()['helpers'][0]['name'], 'content.subtree_text')
+            self.assertEqual(helper_response.json()['helpers'][0]['name'], 'public_v1.subtree_text')
             self.assertEqual(client.post('/query/helpers', headers=headers).status_code, 404)
-            limited = client.post('/query/exec', headers=headers, json={'sql': "SELECT * FROM content.subtree_text('helper-fixture',0,max_elements := 1)"})
+            limited = client.post('/query/exec', headers=headers, json={'sql': "SELECT * FROM public_v1.subtree_text('helper-fixture',0,max_nodes := 1)"})
             self.assertEqual(limited.status_code, 422)
-            self.assertEqual(limited.json()['detail'], 'subtree exceeds max_elements; select a smaller root')
+            self.assertEqual(limited.json()['detail'], 'subtree exceeds max_nodes; select a smaller root')
             with patch.object(self.service, "execute", side_effect=duckdb.HTTPException("HTTP 404 https://private/file?token=secret")):
                 unavailable = client.post('/query/exec', headers=headers, json={'sql': 'SELECT 1'})
             self.assertEqual(unavailable.status_code, 503)
             self.assertEqual(unavailable.json()['code'], 'storage_unavailable')
             self.assertNotIn('secret', unavailable.text)
-            invalid = client.post('/query/exec', headers=headers, json={'sql': 'SELECT nonexistent FROM web.observation'})
+            invalid = client.post('/query/exec', headers=headers, json={'sql': 'SELECT nonexistent FROM public_v1.capture'})
             self.assertEqual(invalid.status_code, 422)
             self.assertEqual(invalid.json()['code'], 'sql_invalid')
             self.assertEqual(client.post('/query/report', headers=headers).status_code, 404)
@@ -202,7 +205,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(result.rows, [])
 
     def test_operator_limits_apply_per_operation(self):
-        payload = QueryRequest(sql="SELECT requested_url FROM web.observation ORDER BY requested_url")
+        payload = QueryRequest(sql="SELECT requested_url FROM public_v1.capture ORDER BY requested_url")
         for count in (2, 7):
             result = self.service.execute(payload, limits=QueryLimits(max_rows=count))
             self.assertEqual(len(result.rows), count)
@@ -236,14 +239,17 @@ class QueryServiceTests(unittest.TestCase):
             def execute(proxy, sql, *args):
                 if sql.startswith("EXPLAIN") and not proxy.committed:
                     proxy.committed = True
-                    writer.execute("INSERT INTO periplus.ingest.visits (visit_id, requested_url, outcome) VALUES (uuid(), 'https://later.example/', 'succeeded')")
+                    writer.execute("BEGIN")
+                    writer.execute("INSERT INTO periplus.ingest.visits (visit_id, document_id, requested_url, outcome) VALUES (uuid(), uuid(), 'https://later.example/', 'succeeded')")
+                    writer.execute("INSERT INTO periplus.ingest.documents (document_id, visit_id, content_sha256) SELECT document_id, visit_id, 'later' FROM periplus.ingest.visits WHERE requested_url = 'https://later.example/'")
+                    writer.execute("COMMIT")
                 return connection.execute(sql, *args)
             def __getattr__(proxy, name):
                 return getattr(connection, name)
         self.service.connection = CommitAfterSnapshot()
         try:
-            first = self.service.execute(QueryRequest(sql="SELECT count(*) FROM web.observation"))
-            second = self.service.execute(QueryRequest(sql="SELECT count(*) FROM web.observation"))
+            first = self.service.execute(QueryRequest(sql="SELECT count(*) FROM public_v1.capture"))
+            second = self.service.execute(QueryRequest(sql="SELECT count(*) FROM public_v1.capture"))
         finally:
             self.service.connection = connection
         self.assertEqual(first.rows, [[21]])
@@ -266,7 +272,7 @@ class QueryServiceTests(unittest.TestCase):
             self.service.execute(QueryRequest(sql="SELECT 42"))
         self.assertFalse(self.service.healthy)
         self.assertEqual(calls, ["BEGIN TRANSACTION", "ROLLBACK"])
-        self.assertEqual(self.service.execute(QueryRequest(sql="SELECT count(*) FROM web.observation")).rows, [[21]])
+        self.assertEqual(self.service.execute(QueryRequest(sql="SELECT count(*) FROM public_v1.capture")).rows, [[21]])
         self.assertTrue(self.service.healthy)
         for sql in ["SET enable_external_access=true", "DELETE FROM ingest.visits", "SELECT * FROM read_text('/etc/passwd')"]:
             with self.assertRaises(duckdb.Error):

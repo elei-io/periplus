@@ -128,7 +128,7 @@ commands = new CommandRegistry([
         columns: ["Command", "Description"],
         rows: commands.all().map((command) => [command.usage, command.summary]),
         summary:
-          "Enter read-only SQL against web.* and content.*. Press Tab to complete.",
+          "Enter read-only SQL against public_v1.* (or unqualified table names). Press Tab to complete.",
       }
     },
     async complete(_args, prefix, replaceStart, cursor) {
@@ -223,7 +223,7 @@ commands = new CommandRegistry([
     name: "describe",
     summary: "Describe a catalogue relation or macro.",
     usage: ".describe <object>",
-    examples: [".describe web.observation", ".describe content.object"],
+    examples: [".describe public_v1.capture", ".describe public_v1.html_node"],
     async execute(args, context) {
       if (args.length !== 1) throw usageError(".describe <object>")
       const metadata = await context.metadata()

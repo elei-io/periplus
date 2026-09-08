@@ -5,7 +5,7 @@ Periplus has one evidence path:
 ```text
 immutable objects + ingest.*
     -> append-only material.*
-    -> runtime web.* / content.*
+    -> runtime public_v1.*
 ```
 
 Raw bytes and both physical schemas are immutable. The public catalogue exposes a deliberately
@@ -14,14 +14,14 @@ small evidence kernel.
 Periplus owns observation faithfully. Interpretation begins outside Periplus. It does not publish a
 `data.*` schema or define domain entities such as companies, products, people, claims, or topics.
 
-Physical contract version: `9.0.0`. The cutover resets disposable prior state; there is no graph-era
+Physical contract version: `10.0.0`. The cutover resets disposable prior state; there is no graph-era
 crawl table or compatibility migration.
 
 ## `ingest.*`
 
 The authoritative relations are:
 
-- `ingest.visits` — one terminal acquisition or imported observation of a URL.
+- `ingest.visits` — one terminal native acquisition of a URL.
 - `ingest.attempts` — ordered acquisition attempts for a visit.
 - `ingest.steps` — content-completion actions within an attempt.
 - `ingest.documents` — the optional immutable content retained by a visit.
@@ -57,7 +57,13 @@ of the public SQL contract.
 
 ## `material.*`
 
-The fixed projection registry is authoritative. Exactly three semantic relations exist:
+The fixed projection registry is authoritative. The registry declares the following document structures plus visit readiness:
+
+### `material.html_nodes`
+
+One row per `(content_sha256, node_index)` containing the complete parsed document
+node tree. It shares the parse context and position space with elements and links.
+The `node_index = 0` document row is the generation content-presence marker.
 
 ### `material.html_elements`
 
@@ -70,7 +76,10 @@ tag, namespace, attributes
 text_direct, text_tail
 ```
 
-Rows are depth-first. `subtree_end_index` is exclusive. Element zero is the content-projection
+The private `element_index` column uses the complete node position space: element
+positions may have gaps. `child_index` counts all sibling nodes. `text_direct`
+concatenates immediate text children; the private `text_tail` field is empty.
+Rows are depth-first. `subtree_end_index` is exclusive. The document root in `material.html_nodes` is the content-projection
 presence marker; no content manifest or statistics row is maintained. That marker permanently
 prevents later visits from re-emitting content-grain HTML or JSON-LD rows, while a deterministic
 minimum document identity selects one owner when genuinely new content first appears in parallel
@@ -110,146 +119,114 @@ marker. File discovery is the only material registry. Its digest is frozen into 
 active-generation state and includes each projection file's implementation source; any add, edit,
 or delete requires redeployment and a complete rebuild.
 
-## Public catalogue
+## Public catalogue: `public_v1`
 
-The public catalogue exposes observation/content evidence and separate collection lineage:
+The single public namespace is `public_v1`. Query API requests default to this
+version, so `SELECT * FROM capture` and `SELECT * FROM public_v1.capture` are
+identical. Explicit unsupported `schema_version` values are rejected. Preparation
+and execution report `schema_version`; execution additionally reports
+`source_snapshot`. A schema version specifies semantics, not a data snapshot or a
+promise that an expired snapshot can be replayed. Physical layout is private.
+There are no `web` or `content` compatibility namespaces.
 
-```text
-web.observation
-web.link_occurrence
-web.collection
-web.fulfillment
-web.acquisition_reason
-content.object
-content.html_element
-```
+### `public_v1.capture`
 
-Only `web.*` and `content.*` are public. The `web` schema contains observation-contextual evidence;
-the `content` schema contains content-addressed objects and deterministic structures derived from
-their bytes. Their views use a separate lightweight registry and are not materialization
-declarations.
+One acquisition with retained content. Repeated captures can share content. HTTP
+error responses qualify if their bodies were retained; attempts without content do
+not appear. `capture_id` reuses the internal visit identity without a second lifecycle.
 
-The canonical fully qualified form uses the attached catalogue name:
+| Column | SQL type | Meaning |
+| --- | --- | --- |
+| capture_id | UUID | Acquisition identity |
+| requested_url | VARCHAR | Normalized requested URL |
+| effective_url | VARCHAR | Final URL when known |
+| captured_at | TIMESTAMPTZ | Capture time |
+| http_status_code | INTEGER | Response status when known |
+| content_id | VARCHAR | SHA-256 identity of retained logical bytes, non-null |
+| byte_length | BIGINT | Length of retained logical bytes before storage compression, non-null |
+| representation | VARCHAR | `response_body` or `rendered_html` |
+| media_type | VARCHAR | Detected media type |
+| encoding | VARCHAR | Detected character encoding when meaningful, otherwise null |
+| request_ids | UUID[] | Sorted unique coverage request IDs, non-null; empty when no membership evidence is visible |
 
-```text
-periplus.web.observation
-periplus.web.link_occurrence
-periplus.content.object
-periplus.content.html_element
-```
+`GET /api/content/{content_id}` on the public app retrieves the original logical
+bytes as an attachment. Storage compression and repository keys are private.
+There is no public object relation. Raw bytes remain content-addressed and shared
+across captures; node and element storage remains content-owned, hash-partitioned
+and sorted by content identity and node position. Adding capture byte metadata
+requires no physical rewrite or materialization rebuild.
 
-When Periplus is the current catalogue, callers may use the shorter two-part names. Clients combining
-Periplus with their own attached databases should use the fully qualified form.
+### `public_v1.html_node` and `public_v1.html_element`
 
-### `web.observation`
+Both relations share `content_id VARCHAR`, `node_index INTEGER`,
+`parent_index INTEGER`, `subtree_end_index INTEGER`, `sibling_index INTEGER`.
+Identity is `(content_id, node_index)` within the returned catalogue snapshot.
+Positions are zero-based depth-first positions across **all** nodes, including the
+document root. Subtree end is exclusive. Parent is null only for the document
+root. Sibling positions count all node kinds.
 
-One terminal URL observation, including unsuccessful observations:
+`html_node` adds `node_type VARCHAR`, `name VARCHAR`, `namespace VARCHAR`, and
+`value VARCHAR`. Kinds are `document`, `doctype`, `element`, `text`, `comment`, and
+`processing_instruction` (where produced by HTML5 parsing). Name is the local
+name for elements/doctypes or instruction target; otherwise null. Namespace is a
+URI where applicable, otherwise null. Value contains text/comment/instruction
+content; other kinds have null values. Doctype source details remain in raw bytes.
 
-```text
-observation_id
-requested_url, effective_url
-observed_at, outcome, http_status_code
-content_id
-source_kind, source_system, source_dataset, source_record_id
-capture_policy
-```
+`html_element` adds `tag VARCHAR`, `namespace VARCHAR`,
+`attributes MAP(VARCHAR, VARCHAR)`, and `text_direct VARCHAR`. Attribute keys use
+Clark notation `{namespace-uri}local-name` for namespaced attributes; other keys
+are unchanged local names. Direct text concatenates immediate child text nodes in
+order, including text after child elements. It excludes descendant element text.
+Empty direct text is an empty string. Neither relation models CSS visibility.
 
-`content_id` is nullable and identifies the one retained content object when present. The relation
-has no owning crawl or collection: one acquisition can supply multiple collections. Collection
-fulfillment and acquisition reasons belong to separate lineage relations in the frontier cutover.
-The relation
-does not implicitly join URL components, current or latest state, acquisition attempts, content
-statistics, or parsed structures.
+The projection describes an HTML5 parsed tree, including parser-inserted elements,
+not source token offsets. Exact spelling, duplicate source attributes, entity
+spelling and other serialization details remain in original bytes. Adjacent text
+fragments are merged. A parser change requires a complete coherent generation;
+node references must not be reused across snapshots without checking identity.
 
-`capture_policy` is the frozen effective content-policy snapshot for native observations,
-including the selected rule identity and matching scope, all completion settings (even
-disabled actions), response rules, and any configured/effective variance choice. External
-observations have null here. The snapshot is stored once on `ingest.visits`, shared by
-all attempts and request uses. It survives operational cleanup and is removed with the
-observation by evidence retention; it has no separate archive or retention clock.
-Per-attempt domain policy and executed step measurements remain separate evidence.
-Settings explain capture conditions, not a guarantee that a website can be reproduced.
+HTML projections are asynchronous. A capture with no matching node root can be
+non-HTML or awaiting materialization; absence does not prove an empty document.
+HTML readiness uses the content document-root presence marker. Use LEFT JOIN when
+retaining captures without available structure matters.
 
-### `content.object`
+### `public_v1.link_occurrence`
 
-One immutable byte sequence retained by at least one observation:
+`capture_id UUID`, `node_index INTEGER`, `raw_href VARCHAR`, `resolved_url VARCHAR`.
+One resolvable HTTP(S) anchor occurrence per `(capture_id, node_index)`. Original
+parsed href values are retained; targets use existing URL normalization. Resolution
+uses the capture's effective URL and applicable document base URL. Join capture
+first to obtain content identity before joining the source element. A linked
+destination need not have been captured.
 
-```text
-content_id
-size_bytes
-detected_media_type
-detected_character_encoding
-content_format
-```
+### `public_v1.subtree_text`
 
-`content_format` is the detected representation class used to select deterministic format
-projections. A content object remains visible even when Periplus has no public structural projection
-for its format. The relation exposes neither repository keys nor physical storage paths.
-
-Public `content_id` values are the same SHA-256 content identities stored physically as
-`content_sha256`.
-
-The same `content_id` may belong to observations of multiple URLs, collections, sources, or times.
-Content-grain projections are therefore emitted once and reused through observation joins.
-
-### `content.html_element`
-
-One structural HTML element per `(content_id, element_index)`:
-
-```text
-content_id, element_index
-parent_index, subtree_end_index, depth, child_index
-tag, namespace, attributes
-text_direct, text_tail
-```
-
-It exposes the deterministic HTML5 projection of objects whose `content_format` is `html`.
-Document order, parentage, subtree bounds, attributes, and text placement are explicit. Objects of
-other formats have no rows in this relation.
-
-### `web.link_occurrence`
-
-One observed anchor occurrence in one observation:
-
-```text
-link_occurrence_id
-observation_id, content_id, element_index
-observed_at
-source_url, raw_href, target_url, relation_scope
-```
-
-The observation grain is required because resolving `raw_href` depends on the effective source URL
-even when identical content bytes appear at multiple URLs. `target_url` is the normalized resolved
-HTTP(S) target. `relation_scope` is `self`, `same_origin`, `same_host`, `same_site`, or `external`.
-
-### `content.subtree_text`
-
-A public table macro reads one immutable HTML subtree by `source_content_id` and
-`root_element_index`. Optional `max_chars` (default 20,000; allowed 0–100,000) bounds output
-characters. `max_elements` (default and maximum 10,000) rejects oversized subtrees.
-It returns `text`, `truncated`, `total_chars`, and `element_count`.
-
-Text follows DOM document order, preserving existing whitespace and including descendant
-text tails only after their subtrees. The selected root's tail is excluded. Missing roots
-return zero rows; empty roots return empty text. There is no CSS visibility filtering,
-inserted block separator, whitespace normalization, deduplication, or summarization.
-This is faithful projected DOM text, not browser-rendered text or original HTML bytes.
-
-Helper declarations, SQL resources, documentation and examples are owned by the explicit
-registry in `platform/catalogue/helpers/`. Installation uses the same setup transaction
-as the public views. No new materialized relation is introduced.
+A table macro accepts `source_content_id VARCHAR`, `root_node_index INTEGER`,
+optional `max_chars` (default 20000, range 0–100000) and `max_nodes` (default 10000,
+range 1–10000). It returns `text VARCHAR`, `truncated BOOLEAN`, `total_chars BIGINT`,
+and `node_count BIGINT`. Text nodes within the subtree are concatenated in order,
+without separators, trimming or visibility filtering. Comments are excluded.
+Script/style text is included. Missing roots return zero rows; empty existing
+subtrees return one empty result. Character truncation is explicit. Oversized
+subtrees fail rather than returning incomplete text without notice.
 
 ### Collection lineage
 
-`web.collection` exposes public frozen intent and its optional terminal outcome. It has one row per
-collection; an absent outcome can mean collection is active or outcome ingestion is pending.
-`seed_provenance` in a collection outcome retains the seed query snapshot, query ID, selection
-time, and frozen-candidate digest. It remains available after control-state cleanup; SQL and
-parameters remain in the frozen collection specification.
-`web.fulfillment` has one row per request URL result and references the independently owned
-`observation_id`. Different collections may reference the same observation, including later recent
-reuse. `web.acquisition_reason` records the collection reason frozen at dispatch;
-later reuse does not retroactively become a cause of capture. Every lineage view exposes shared evidence from all request classes. Observation queries do not implicitly join any lineage view or multiply their rows.
+`public_v1.capture.request_ids UUID[]` contains the sorted, unique coverage request
+IDs supplied with each capture, including shared and reused captures. Capture keeps
+one row per capture regardless of how many requests use it. The IDs are the collection
+UUIDs returned by the control API. Filter with
+`list_contains(request_ids, CAST(? AS UUID))`.
+
+The list is empty when no membership evidence is visible. Membership arrives through
+asynchronous evidence ingestion and can grow when later requests reuse a capture.
+It does not imply that a request or materialization is complete. Acquisitions without
+retained content remain excluded from capture. Request membership is derived from
+immutable fulfillment evidence; it adds no persistence or materialization path.
+
+Collection specifications, progress, acquisition modes, and dispatch reasons are
+available through the collection/operational APIs, not public SQL tables. Internal
+lineage evidence and its retention remain unchanged.
 
 Every acquisition reason requires a collection ID. Scheduled system work uses the same collection
 lineage as other requests. The parent observation and selection rule identify the discovery cause.
@@ -293,8 +270,7 @@ Frontier attempt `resource_usage` retains the effective domain policy snapshot (
 actor, concurrency, interval, and pause setting) and exclusion-policy version alongside the global
 physical-allowance version and reserved/measured milliseconds. Final start freezes this domain
 snapshot after checking current policy; edits do not rewrite already-started attempt evidence.
-Unknown attempts retain the same frozen policy provenance and conservative time charge. Imported
-attempts may omit frontier control provenance. Nested policy values use canonical JSON in DuckLake.
+Unknown attempts retain the same frozen policy provenance and conservative time charge. Nested policy values use canonical JSON in DuckLake.
 
 
 Current Postgres collection state retains an optional `admission_timing` observation containing the
@@ -345,16 +321,16 @@ table in control Postgres, bounded best-effort recording, janitor cleanup and th
 `observatory/queries` dashboard. This is explicitly approved product analytics;
 no query results or crawl history are added to control Postgres.
 
-### Inspecting capture conditions
+### Operator inspection of capture conditions
 
 The capture snapshot can be compared without operational state or a policy-history table:
 
 ```sql
-SELECT observation_id, requested_url, observed_at,
+SELECT visit_id, requested_url, observed_at,
        capture_policy->>'slug' AS policy_rule,
        capture_policy->'content'->'completion'->'scroll'->>'enabled' AS scroll_enabled,
        capture_policy->'content_variance' AS policy_variance
-FROM web.observation
+FROM ingest.visits
 WHERE requested_url = 'https://example.com/'
 ORDER BY observed_at DESC
 LIMIT 100;
@@ -365,7 +341,7 @@ cancellations; it does not invent policies for observations already recorded wit
 Deployment requires a coordinated catalogue cutover from the previous contract.
 
 Local capture-provenance cutover completed on 2026-09-08: physical contract 9.0.0 and
-public catalogue 3.0.0 are installed. The previous 587-observation development lake
+public catalogue 3.0.0 were installed before the public_v1 replacement. The previous 587-observation development lake
 was backed up with all five stopped persistent volumes before reset. Editable content
 and domain policies, public access configuration, and crawler controls were restored;
 execution counters and quota windows started fresh. All 18 Compose services passed

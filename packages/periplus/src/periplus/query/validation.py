@@ -3,7 +3,7 @@ import re
 from sqlglot import exp, parse
 from sqlglot.errors import ParseError
 from sqlglot.dialects.duckdb import DuckDB
-from periplus.platform.catalogue.public import PUBLIC_SCHEMAS
+from periplus.platform.catalogue.public import PUBLIC_SCHEMAS, public_objects
 
 class _QueryDuckDB(DuckDB):
     # SQLGlot's shared keyword table treats ?:: as a distinct operator. DuckDB
@@ -88,7 +88,7 @@ def _bounded_query(sql: str, *, max_rows: int = _MAX_ROWS) -> str:
         ):
             return normalized
         raise ValueError(
-            "SHOW is limited to SHOW TABLES FROM web or SHOW TABLES FROM content"
+            "SHOW is limited to SHOW TABLES FROM public_v1"
         )
     raise ValueError(
         "SQL console accepts one read-only query or public inspection statement"
@@ -115,16 +115,14 @@ def _validate_catalogue_access(statement: exp.Expression) -> None:
         if table.catalog:
             raise ValueError("SQL console does not accept explicit catalog names")
         if table.db and table.db.lower() not in _READABLE_SCHEMAS:
-            raise ValueError("SQL console may only read web.* or content.*")
-        name = table.name.lower()
+            raise ValueError("SQL console may only read public_v1.*")
+        name = (table.this.name if isinstance(table.this, exp.Func) else table.name).lower()
         if name in ctes:
             continue
         if name.startswith(_FORBIDDEN_RELATION_PREFIXES):
             raise ValueError("SQL console may not read system relations")
-        if not table.db:
-            raise ValueError(
-                "catalogue relations must be qualified with web or content"
-            )
+        if not table.db and name not in {item.name for item in public_objects()}:
+            raise ValueError("Unknown public_v1 relation; use a documented public relation")
     for function in statement.find_all(exp.Func):
         if function.name.lower() in _FORBIDDEN_FUNCTIONS:
             raise ValueError(f"SQL console may not call {function.name}")

@@ -86,7 +86,7 @@ to encode around one accidental optimizer plan.
 - `packages/periplus/src/periplus/crawl/acquisition/` — standard-CDP page capture, readiness, response
   classification, and acquisition evidence; do not add traversal loops here.
 - `packages/periplus/src/periplus/crawl/crawler.py` — crawler process composition.
-- `packages/periplus/src/periplus/ingestion/` — immutable objects, ingestion contracts, queue, writer, import,
+- `packages/periplus/src/periplus/ingestion/` — immutable objects, ingestion contracts, queue, writer,
   health, and recovery.
 - `packages/periplus/src/periplus/ingestion/ingestor.py` — ingestor process composition.
 - `packages/periplus/src/periplus/materialization/` — fixed document and visit projections, maintenance, and

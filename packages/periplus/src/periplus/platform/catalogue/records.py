@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
-from typing import Annotated, Literal
+from typing import Literal
 from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
@@ -60,23 +60,6 @@ class CatalogueRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 
-class PeriplusProvenance(CatalogueRecord):
-    kind: Literal["periplus"] = "periplus"
-
-
-class ExternalProvenance(CatalogueRecord):
-    kind: Literal["external"] = "external"
-    system: str = Field(min_length=1, max_length=256)
-    dataset: str | None = Field(default=None, min_length=1, max_length=512)
-    source_record_id: str = Field(min_length=1, max_length=2048)
-
-
-EvidenceProvenance = Annotated[
-    PeriplusProvenance | ExternalProvenance,
-    Field(discriminator="kind"),
-]
-
-
 class VisitRecord(CatalogueRecord):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -91,34 +74,23 @@ class VisitRecord(CatalogueRecord):
     status_code: int | None = Field(default=None, ge=100, le=599)
     document_id: UUID | None = None
     capture_policy: ContentPolicySnapshot | None = None
-    provenance: EvidenceProvenance = Field(
-        default_factory=PeriplusProvenance,
-        discriminator="kind",
-    )
 
     @model_validator(mode="after")
     def validate_record(self) -> VisitRecord:
-        if self.provenance.kind == "periplus" and self.capture_policy is None:
+        if self.capture_policy is None:
             raise ValueError("native observations require their frozen capture_policy")
-        if self.provenance.kind == "external" and self.capture_policy is not None:
-            raise ValueError("external observations cannot claim a Periplus capture_policy")
         if (
-            self.provenance.kind == "periplus"
-            and self.started_at is not None
+            self.started_at is not None
             and self.started_at < self.admitted_at
         ):
             raise ValueError("visit started_at cannot precede admitted_at")
-        if (
-            self.provenance.kind == "periplus"
-            and self.finished_at < (self.started_at or self.admitted_at)
-        ):
+        if self.finished_at < (self.started_at or self.admitted_at):
             raise ValueError("visit finished_at precedes its start")
         if self.observed_at is not None:
-            if self.provenance.kind == "periplus" and self.started_at is None:
+            if self.started_at is None:
                 raise ValueError("an observed visit must have started")
             if (
-                self.provenance.kind == "periplus"
-                and self.started_at is not None
+                self.started_at is not None
                 and not self.started_at <= self.observed_at <= self.finished_at
             ):
                 raise ValueError("visit observed_at must fall within execution")
@@ -253,19 +225,15 @@ class VisitEvidence(CatalogueRecord):
             raise ValueError("attempt indexes must be contiguous from zero")
         attempt_ids = {attempt.attempt_id for attempt in self.attempts}
         if self.document is not None:
-            if self.visit.provenance.kind == "periplus":
-                if self.document.attempt_id not in attempt_ids:
-                    raise ValueError("document attempt is absent from visit evidence")
-                successful = next(
-                    attempt
-                    for attempt in self.attempts
-                    if attempt.attempt_id == self.document.attempt_id
-                )
-                if successful.outcome != "succeeded":
-                    raise ValueError("document attempt must have succeeded")
-            elif self.document.attempt_id is not None:
-                if self.document.attempt_id not in attempt_ids:
-                    raise ValueError("document attempt is absent from visit evidence")
+            if self.document.attempt_id not in attempt_ids:
+                raise ValueError("document attempt is absent from visit evidence")
+            successful = next(
+                attempt
+                for attempt in self.attempts
+                if attempt.attempt_id == self.document.attempt_id
+            )
+            if successful.outcome != "succeeded":
+                raise ValueError("document attempt must have succeeded")
         grouped: dict[UUID, list[int]] = {}
         for step in self.steps:
             if step.attempt_id not in attempt_ids:

@@ -28,10 +28,10 @@ class QueryErrorTests(unittest.TestCase):
                 self.assertNotIn("private", body.model_dump_json())
 
     def test_helper_and_public_validation_messages_remain_actionable(self):
-        status, body = query_error(duckdb.InvalidInputException("Invalid Input Error: subtree exceeds max_elements; select a smaller root"))
+        status, body = query_error(duckdb.InvalidInputException("Invalid Input Error: subtree exceeds max_nodes; select a smaller root"))
         self.assertEqual(status, 422)
         self.assertEqual(body.code, "helper_limit")
-        self.assertEqual(body.detail, "subtree exceeds max_elements; select a smaller root")
+        self.assertEqual(body.detail, "subtree exceeds max_nodes; select a smaller root")
         self.assertEqual(query_error(ValueError("Only read-only SQL is allowed"))[1].code, "sql_invalid")
 
     def test_parser_error_provides_safe_alias_guidance(self):

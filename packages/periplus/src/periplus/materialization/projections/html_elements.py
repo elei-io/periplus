@@ -96,7 +96,7 @@ PROJECTION = ProjectionSpec(
         ),
         ProjectionColumn(
             "text_direct", pa.string(), "VARCHAR",
-            "Text directly inside this element before child elements.", False,
+            "Concatenation of immediate child text nodes in order.", False,
         ),
         ProjectionColumn(
             "text_tail", pa.string(), "VARCHAR",
@@ -108,5 +108,4 @@ PROJECTION = ProjectionSpec(
     projector=project,
     description="Append-only structural projections of immutable HTML content.",
     identity_columns=("content_sha256", "element_index"),
-    content_presence_predicate="element_index = 0",
 )

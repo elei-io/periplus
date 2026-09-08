@@ -106,3 +106,40 @@ maintenance; Periplus owns ingestion evidence and logical materialization genera
   of its initiating cause or a schema/optimizer defect. The private query history
   retains the original SQL; server-side 5xx diagnostics now retain sanitized exception
   class and frame locations through SafeFormatter, without native messages or SQL.
+
+- **Public v1 recurrence (2026-09-08 04:28:44 UTC):** request
+  `e80a9c10-6c3e-4d1b-858e-f600090a12c5`, operation
+  `4ae22c07-5b5d-4758-8368-e8a7ff6507c2`, aborted the process with
+  `Attempted to access index 0 within vector of size 0`. Compose restarted it.
+  The exact query below then succeeded (one row, h1 node 112), as did nine public
+  examples. A fresh capture/materialization had committed around this time.
+  This establishes a connection-dependent engine failure, not a public-grain
+  problem; no optimizer plan evidence yet establishes an optimizer cause.
+  Further upstream reproduction must include the preceding connection/catalogue
+  history and concurrent commits. The source snapshot read shortly before/after
+  the failure was 2118; the activated generation covers 587 original visits.
+
+  ```sql
+  SELECT e.tag, e.node_index, e.text_direct, n.node_type, t.text
+  FROM html_element e
+  JOIN html_node n USING (content_id, node_index),
+  LATERAL subtree_text(e.content_id, e.node_index) t
+  WHERE e.content_id =
+    '9fe4eaf03c16535a08b508569fec826fbcb11ecd904abd24ce9419e8ba7ff5b7'
+    AND e.tag = 'h1';
+  ```
+
+## Live DML consumer stalls at a schema-only boundary
+
+On 2026-09-08, retiring ingest.visits.provenance left the live consumer repeatedly
+reporting CDC_SCHEMA_BOUNDARY: its window ended at snapshot 4990/schema 25 and the
+next snapshot was 5018/schema 28. Native visit insertion after the DDL committed,
+but public query readiness remained materialization_pending. The current adapter
+filters cdc_dml_changes_listen to inserts and returns no window when no rows are
+returned; it cannot advance an empty schema-boundary window through that result.
+The log alone does not establish whether the extension or adapter owns the defect.
+
+The deployment uses the existing complete rebuild to activate a new generation
+and start its consumer at the new source schema. No second cursor or compatibility
+path was added. A coherent fix needs an explicit, testable empty-window checkpoint
+contract across schema-only boundaries, including manual commit and filtered DML.

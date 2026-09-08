@@ -37,6 +37,15 @@ class ApiAccessTests(unittest.TestCase):
         for method, path in [("POST", "/collections/history"), ("GET", "/collections/history/private"), ("POST", "/crawls/"), ("GET", f"/crawls/{uuid4()}"), ("DELETE", "/collections"), ("POST", "/query/exec"), ("POST", "/sql/query"), ("POST", f"/query/browser/{uuid4()}/metadata"), ("GET", "/graph-runs/"), ("POST", "/materializations/rebuild"), ("POST", "/crawl-plans/"), ("DELETE", "/crawls/"), ("GET", "/sql/metadata"), ("GET", "/openapi.json")]:
             self.assertEqual(self.client.request(method, path, headers=headers).status_code, 403)
 
+    def test_public_content_access_is_hash_scoped_and_read_only(self):
+        headers = {"Authorization": "Bearer public-test-token"}
+        path = "/documents/by-content/" + "a" * 64 + "/content"
+        self.assertEqual(self.client.get(path, headers=headers).status_code, 200)
+        for method, target in [("POST", path), ("GET", "/documents"),
+                               ("GET", f"/documents/{uuid4()}/content"),
+                               ("GET", "/documents/by-content/invalid/content")]:
+            self.assertEqual(self.client.request(method, target, headers=headers).status_code, 403)
+
     def test_admin_can_reach_operational_routes(self):
         self.assertEqual(self.client.post("/materializations/rebuild", headers={"Authorization": "Bearer admin-test-token"}).status_code, 200)
 

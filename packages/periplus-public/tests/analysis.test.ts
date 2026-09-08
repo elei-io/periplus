@@ -6,7 +6,7 @@ import type { AnswerInput } from "../src/types/answer"
 import type { AnalysisQueryResult } from "../src/types/analysis"
 import type { DiscoveryMessage } from "../src/types/assistant"
 
-const result: AnalysisQueryResult = { source_snapshot: 7, query_id: "q1", sql: "SELECT count FROM web.example", columns: ["count"], types: ["INTEGER"], rows: [[42]], elapsed_ms: 12, executed_at: "2026-09-06T00:00:00Z", truncated: false, diagnostics: [], plan: "projection" }
+const result: AnalysisQueryResult = { schema_version: "public_v1", source_snapshot: 7, query_id: "q1", sql: "SELECT count FROM web.example", columns: ["count"], types: ["INTEGER"], rows: [[42]], elapsed_ms: 12, executed_at: "2026-09-06T00:00:00Z", truncated: false, diagnostics: [], plan: "projection" }
 const brief = { title: "Count", grain: "One aggregate", fields: [{ name: "count", type: "INTEGER", meaning: "Number of records", nullable: false }], population: "Current corpus" }
 const sample: AnswerInput = { status: "sample", brief, message: "Build this dataset?", limitations: "", needs_sources: false, query_id: "q1", checks: [] }
 const check = { ...result, query_id: "check", columns: ["complete"], types: ["BOOLEAN"], rows: [[true]] }

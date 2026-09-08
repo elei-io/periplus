@@ -8,13 +8,12 @@ The removed graph execution model has no compatibility routes or runtime.
 Periplus delivers one evidence path:
 
 ```text
-manual or scheduled request selection -> immutable bytes -> ingest.* -> material.* -> web.* / content.*
+manual or scheduled request selection -> immutable bytes -> ingest.* -> material.* -> public_v1.*
 ```
 
 External HTML joins at the same immutable-byte boundary:
 
 ```text
-external evidence -> immutable bytes -> ingest.* -> material.* -> web.* / content.*
 ```
 
 ## Package ownership
@@ -42,7 +41,7 @@ lake credentials. The query process has no control-state, NATS, or writer creden
   state.
 - The object repository owns immutable content-addressed source bytes.
 - DuckLake owns historical observed evidence, rebuildable Periplus materializations, and the portable
-  public `web.*` and `content.*` catalogue. Its metadata store is a separate authority from Periplus
+  public `public_v1.*` catalogue. Its metadata store is a separate authority from Periplus
   Postgres.
 
 Current frontier execution never moves into DuckLake. Crawl history never moves into Periplus Postgres.
@@ -52,7 +51,7 @@ service stores Periplus control state only.
 ## Installation and client lifecycle
 
 `periplus-setup` is the only catalogue installer. It attaches DuckLake, reconciles the physical
-schemas, and transactionally installs the complete persistent `web.*` and `content.*` contract.
+schemas, and transactionally installs the complete persistent `public_v1.*` contract.
 Ordinary Periplus processes validate the installed contract and never repair it.
 
 Periplus uses the standard DuckDB runtime and official storage extensions. The query API owns
@@ -130,7 +129,7 @@ and ACKs the poisoned delivery because immutable `ingest.*` evidence is the rebu
 The hidden rebuild then replaces all discovered material tables atomically. Local retries are
 bounded so one bad delivery cannot occupy a worker lane indefinitely.
 
-Runtime `web.*` and `content.*` objects belong to a separate lightweight public-catalogue registry.
+Runtime `public_v1.*` objects belong to a separate lightweight public-catalogue registry.
 Its entries reference SQL resources and declare required material relations. Installation fails if
 any dependency of the public contract is missing; runtime SQL is never part of a
 materialization declaration.
@@ -177,8 +176,8 @@ state; arrivals and historical collection views read bounded durable evidence. R
 separate active-generation proof, not an inference from settlement or queue acknowledgement.
 
 The detailed contracts are in [SCHEMA.md](SCHEMA.md), recovery and materialization in
-[LIFECYCLE.md](LIFECYCLE.md), external loading in [IMPORTS.md](IMPORTS.md), and bounded SQL
-in [QUERY.md](QUERY.md). Historical import cleanup and the remaining cutover gates are listed in
+[LIFECYCLE.md](LIFECYCLE.md), and bounded SQL
+in [QUERY.md](QUERY.md). The remaining cutover gates are listed in
 the implementation ledger; do not start replacement services against an old control schema.
 
 ### Private query execution history

@@ -113,16 +113,16 @@ class HistoricalLiveTests(unittest.TestCase):
         self.connection = self.catalogue.trusted_connection
         self.connection.execute('CREATE SCHEMA ingest')
         self.connection.execute('''CREATE TABLE ingest.visits (visit_id UUID, requested_url VARCHAR,
-            finished_at TIMESTAMPTZ, visibility VARCHAR, provenance STRUCT(kind VARCHAR), outcome VARCHAR)''')
+            finished_at TIMESTAMPTZ, visibility VARCHAR, outcome VARCHAR)''')
         self.connection.execute('CREATE TABLE ingest.attempts (attempt_id UUID, visit_id UUID, started_at TIMESTAMPTZ)')
         self.connection.execute('CREATE TABLE ingest.fulfillments (record_id UUID, requested_url VARCHAR, recorded_at TIMESTAMPTZ, visibility VARCHAR)')
         self.now = datetime.now(UTC)
 
-    def visit(self, *, age=10, visibility='public', kind='periplus', outcome='succeeded', domain='example.com', attempts=1):
+    def visit(self, *, age=10, visibility='public', outcome='succeeded', domain='example.com', attempts=1):
         identity = uuid4()
         when = self.now - timedelta(seconds=age)
-        self.connection.execute('INSERT INTO ingest.visits VALUES (?, ?, ?, ?, ?, ?)',
-            [identity, f'https://{domain}/', when, visibility, {'kind':kind}, outcome])
+        self.connection.execute('INSERT INTO ingest.visits VALUES (?, ?, ?, ?, ?)',
+            [identity, f'https://{domain}/', when, visibility, outcome])
         for _ in range(attempts):
             self.connection.execute('INSERT INTO ingest.attempts VALUES (?, ?, ?)', [uuid4(), identity, when])
         return identity
@@ -137,7 +137,6 @@ class HistoricalLiveTests(unittest.TestCase):
         self.visit(attempts=2)
         self.visit(age=90, outcome='failed')
         self.visit(visibility='private', domain='private.example')
-        self.visit(kind='external', domain='import.example')
         self.visit(age=400, domain='old.example')
         self.visit(age=-30, domain='future.example')
         for _ in range(3):

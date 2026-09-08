@@ -20,7 +20,7 @@ function title(item: Collection) { return item.specification.seed_description ||
 function site(url: string) { try { return new URL(url).hostname } catch { return url } }
 function queryUrl(id: string) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return null
-  return datasetSqlUrl({sql: `SELECT o.requested_url, o.observed_at, o.outcome, f.mode\nFROM web.fulfillment f JOIN web.observation o USING (observation_id)\nWHERE f.collection_id = '${id}'\nORDER BY o.observed_at DESC NULLS LAST LIMIT 100;`})
+  return datasetSqlUrl({sql: `SELECT o.requested_url, o.captured_at, o.http_status_code\nFROM public_v1.capture o\nWHERE list_contains(o.request_ids, '${id}'::UUID)\nORDER BY o.captured_at DESC NULLS LAST LIMIT 100;`})
 }
 function ReadError({ error }: {error: unknown}) { return <Alert variant="destructive"><AlertDescription>{extractApiError(error)}</AlertDescription></Alert> }
 function progress(item: Collection) {
@@ -102,5 +102,5 @@ export const PublicRequests = memo(function PublicRequests({playing, onOpenReque
 })
 
 export function ExploreObservedWeb() {
-  return <section className="observatory-explore" id="coverage"><div><span className="eyebrow">Already in Periplus</span><h2>Explore the databank</h2><p>Explore the websites and dated observations already in Periplus. Define a dataset with an agent, query the shared tables in SQL, or learn how the data fits together.</p></div><div className="observatory-explore-links"><Link href="/discover">Define a dataset <ArrowUpRight/></Link><Link href={datasetSqlUrl({sql:coverageSql})}>Explore sites and dates in SQL <ArrowUpRight/></Link><Link href="/docs#how-it-works">Understand observations and time <ArrowUpRight/></Link></div></section>
+  return <section className="observatory-explore" id="coverage"><div><span className="eyebrow">Already in Periplus</span><h2>Explore the databank</h2><p>Explore the websites and dated captures already in Periplus. Define a dataset with an agent, query the shared tables in SQL, or learn how the data fits together.</p></div><div className="observatory-explore-links"><Link href="/discover">Define a dataset <ArrowUpRight/></Link><Link href={datasetSqlUrl({sql:coverageSql})}>Explore sites and dates in SQL <ArrowUpRight/></Link><Link href="/docs#how-it-works">Understand captures and time <ArrowUpRight/></Link></div></section>
 }

@@ -320,13 +320,6 @@ def _unique_records(records: Sequence, *, identity) -> list:
 def _visit_values(record: VisitRecord) -> dict[str, object]:
     values = record.model_dump(mode="python")
     values["capture_policy"] = record.capture_policy.model_dump(mode="json") if record.capture_policy else None
-    provenance = values["provenance"]
-    values["provenance"] = {
-        "kind": provenance["kind"],
-        "system": provenance.get("system"),
-        "dataset": provenance.get("dataset"),
-        "source_record_id": provenance.get("source_record_id"),
-    }
     return values
 
 

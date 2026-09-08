@@ -41,8 +41,8 @@ and readiness membership at visit grain. HTML readiness also requires the active
 marker because a separate batch may own shared-content output.
 
 A visit batch loads its visits and documents, groups unique HTML content sources, and builds one
-shared projection context. Each content body is read and parsed once in that batch. Element zero
-in the generation's HTML projection is the durable presence marker for a content identity. If the
+shared projection context. Each content body is read and parsed once in that batch. Node zero
+in the generation's HTML node projection is the durable presence marker for a content identity. If the
 marker already exists, no later visit can emit DOM or JSON-LD rows for that content, even when its
 `document_id` sorts before the document that first projected it.
 
@@ -110,9 +110,9 @@ measured recurring query may justify a new fixed expensive projection, but it mu
 projection file and use the same append-only lifecycle.
 
 Views and macros do not belong to projection files. A separate lightweight public registry owns
-the `web.*` and `content.*` SQL resources and declares their required material relations. This
+the `public_v1.*` SQL resources and declares their required material relations. This
 keeps the runtime API independently evolvable while making installation fail if any dependency of
-the four-relation public contract is missing.
+the public contract is missing.
 
 ## Acquisition dependency checks
 

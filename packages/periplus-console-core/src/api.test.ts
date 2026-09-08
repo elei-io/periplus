@@ -26,13 +26,12 @@ test("loads completion metadata through the query operation", async (context) =>
     statements.push(body.sql)
     const responses: Record<string, SqlResult> = {
       "SELECT version() AS duckdb_version": result([["v1.4.0"]]),
-      'SHOW TABLES FROM "web"': result([["observation"]]),
-      'DESCRIBE "web"."observation"': result([
-        ["observation_id", "UUID", "NO"],
+      'SHOW TABLES FROM "public_v1"': result([["capture"], ["object"]]),
+      'DESCRIBE "public_v1"."capture"': result([
+        ["capture_id", "UUID", "NO"],
         ["content_id", "VARCHAR", "YES"],
       ]),
-      'SHOW TABLES FROM "content"': result([["object"]]),
-      'DESCRIBE "content"."object"': result([
+      'DESCRIBE "public_v1"."object"': result([
         ["content_id", "VARCHAR", "NO"],
       ]),
     }
@@ -45,23 +44,22 @@ test("loads completion metadata through the query operation", async (context) =>
 
   assert.deepEqual(statements, [
     "SELECT version() AS duckdb_version",
-    'SHOW TABLES FROM "web"',
-    'DESCRIBE "web"."observation"',
-    'SHOW TABLES FROM "content"',
-    'DESCRIBE "content"."object"',
+    'SHOW TABLES FROM "public_v1"',
+    'DESCRIBE "public_v1"."capture"',
+    'DESCRIBE "public_v1"."object"',
   ])
   assert.equal(metadata.duckdb_version, "v1.4.0")
   assert.equal(metadata.catalogue_version, undefined)
   assert.deepEqual(metadata.macros, [])
   assert.deepEqual(metadata.relations, [
     {
-      schema_name: "web",
-      name: "observation",
+      schema_name: "public_v1",
+      name: "capture",
       kind: "view",
       description: null,
       columns: [
         {
-          name: "observation_id",
+          name: "capture_id",
           data_type: "UUID",
           nullable: false,
           description: null,
@@ -75,7 +73,7 @@ test("loads completion metadata through the query operation", async (context) =>
       ],
     },
     {
-      schema_name: "content",
+      schema_name: "public_v1",
       name: "object",
       kind: "view",
       description: null,

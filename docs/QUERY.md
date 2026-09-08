@@ -38,8 +38,7 @@ catalogue objects define the portable public semantics and remain correct withou
 partial installation. The objects are changed only by Periplus catalogue upgrades.
 
 The authoritative one-object SQL definitions live under
-`packages/periplus/src/periplus/platform/catalogue/sql/web/` and
-`packages/periplus/src/periplus/platform/catalogue/sql/content/`. The explicit manifest in
+`packages/periplus/src/periplus/platform/catalogue/sql/public_v1/`. The explicit manifest in
 `periplus.platform.catalogue.public` installs them in dependency order. `periplus-setup` replaces the
 complete interface transactionally after reconciling the typed physical schema, then validates
 object names, columns, view comments, and manifest descriptions. Ordinary
@@ -53,11 +52,16 @@ source of column descriptions for internal metadata consumers.
 Recurring expensive computations belong in Periplus-owned `material.*` relations maintained through
 the ordinary materialization lifecycle.
 
-The shared terminal and web shell accepts bounded read-only SQL over the qualified relations in
+The shared terminal and web shell accepts bounded read-only SQL over qualified or unqualified relations in
 the public registry only. It also accepts `DESCRIBE`, `EXPLAIN`, `EXPLAIN ANALYZE`, and `SUMMARIZE`
 when their target passes the same public-namespace validation, plus `SHOW TABLES` for each public
 schema. The shared shell derives `.tables`, `.describe`, and context-aware completion through that
 same query operation; `.completion reload` refreshes the derived information explicitly.
+
+The query API defaults `schema_version` to `public_v1`, rejects unsupported versions,
+and selects that namespace before locking the connection. Responses report the
+resolved version; saved queries should preserve it separately from `source_snapshot`.
+The public contract has one versioned namespace, with no old-schema aliases.
 
 ### Query server boundary
 
@@ -197,10 +201,10 @@ installs the macros alongside views; `GET /query/helpers` derives documentation 
 manifest. Next.js proxies discovery and loads it into the agent context for each request.
 There is no helper-specific Python execution or prep-time rewrite path.
 
-The initial `content.subtree_text` helper addresses a catalogue usability/correctness gap:
+The initial `public_v1.subtree_text` helper addresses a catalogue usability/correctness gap:
 callers were reconstructing DOM text incorrectly. It is not an optimizer workaround. The
-implementation orders direct-text and tail events by document position, placing nested tails
-before ancestor tails and excluding the root tail. Selected element count and output characters
+implementation orders text nodes by document position within the exclusive subtree boundary,
+excluding comments and text outside the root. Selected node count and output characters
 are bounded; ordinary query limits still govern physical scan cost. Contract tests compare every
 subtree with parser text, exercise lateral calls, and install the helper into read-only DuckLake
 query-service fixtures. Future performance changes follow the triage above.
@@ -261,7 +265,7 @@ and record-kind cursors bound to the observation. Reads share the bounded
 catalogue owner and ten-second interruption deadline. Pages are not a pinned snapshot: later commits
 may appear above an existing cursor, so callers refresh the first page to see them. Missing visible
 observations return 404; catalogue unavailability returns retryable 503. Empty visible lineage may
-mean imported evidence or ingestion lag and is not a proof that no other relationships exist.
+mean ingestion lag and is not a proof that no other relationships exist.
 
 ### Anonymous parameter casts
 

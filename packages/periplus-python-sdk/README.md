@@ -9,7 +9,7 @@ from periplus_sdk import Client
 
 with Client("http://localhost:8080") as client:
     result = client.execute(
-        "SELECT observation_id FROM web.observation LIMIT ?", [10]
+        "SELECT capture_id FROM public_v1.capture LIMIT ?", [10]
     )
     print(result.columns, result.types)
     print(result.rows)
@@ -24,7 +24,7 @@ The client reuses HTTP connections; close it with a context manager or `close()`
 
 ```python
 with Client("http://localhost:8080") as client:
-    prepared = client.prepare("SELECT observation_id FROM web.observation LIMIT ?", [10])
+    prepared = client.prepare("SELECT capture_id FROM public_v1.capture LIMIT ?", [10])
     print(prepared.diagnostics, prepared.plan)
     result = client.execute(prepared.sql, prepared.parameters)
     helpers = client.helpers()
@@ -42,7 +42,7 @@ from periplus_sdk import AsyncClient
 
 async def observations():
     async with AsyncClient("http://localhost:8080") as client:
-        return await client.execute("SELECT observation_id FROM web.observation LIMIT 10")
+        return await client.execute("SELECT capture_id FROM public_v1.capture LIMIT 10")
 ```
 
 Use `aclose()` when managing an async client's lifetime explicitly.
@@ -95,3 +95,7 @@ PyPI publishing uses Trusted Publishing rather than a stored API token. The
 PyPI publisher must be configured for GitHub owner `elei-io`, repository
 `periplus`, workflow `python-sdk-release.yml`, and environment `pypi`. Protect
 that GitHub environment with required reviewers before the first release.
+
+## Public v1
+
+Install the updated SDK from this checkout with `python -m pip install ./packages/periplus-python-sdk` from the repository root. The previously published 0.2.0 release predates this contract. `prepare` and `execute` accept keyword-only `schema_version="public_v1"` (the default); responses preserve `schema_version` separately from `source_snapshot`. Unavailable versions are rejected by the server.

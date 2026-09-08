@@ -1,7 +1,12 @@
 import type { NextConfig } from "next"
+import { networkInterfaces } from "node:os"
 import path from "node:path"
 
 const nextConfig: NextConfig = {
+  // Permit dev assets and HMR when opening this machine by its LAN address.
+  allowedDevOrigins: Object.values(networkInterfaces()).flatMap((addresses) =>
+    (addresses ?? []).filter(({ family }) => family === "IPv4").map(({ address }) => address),
+  ),
   poweredByHeader: false,
   // Public, non-secret build identity, shared by static and dynamic metadata.
   env: { PERIPLUS_PUBLIC_ORIGIN: process.env.PERIPLUS_PUBLIC_ORIGIN ?? "" },

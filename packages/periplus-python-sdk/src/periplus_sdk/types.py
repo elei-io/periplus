@@ -9,6 +9,7 @@ class Diagnostic(BaseModel):
 
 
 class PreparedQuery(BaseModel):
+    schema_version: str
     query_id: str
     sql: str
     parameters: list[JsonValue]

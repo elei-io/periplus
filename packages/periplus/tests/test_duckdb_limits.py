@@ -41,6 +41,7 @@ class DuckDBLimitTests(unittest.TestCase):
             root = Path(directory)
             config = CatalogueConfig("periplus", str(root / "metadata.duckdb"), str(root / "data"), "ducklake")
             writer = DuckLakeConnectionFactory(config).connect()
+            writer.execute("CREATE SCHEMA periplus.public_v1")
             writer.close()
             with patch.dict(os.environ, {"PERIPLUS_DUCKDB_THREADS": "1", "PERIPLUS_DUCKDB_MEMORY_LIMIT": "256MiB", "PERIPLUS_DUCKDB_MAX_TEMP_DIRECTORY_SIZE": "128MiB"}):
                 service = QueryService(config)

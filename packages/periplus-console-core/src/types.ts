@@ -5,7 +5,7 @@ export interface SqlColumn {
   description: string | null
 }
 
-export type PublicSchemaName = "web" | "content"
+export type PublicSchemaName = "public_v1"
 
 export interface SqlRelation {
   schema_name: string

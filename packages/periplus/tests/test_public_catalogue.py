@@ -20,13 +20,10 @@ from periplus.query.http import _public_metadata, metadata
 
 
 EXPECTED_PUBLIC_RELATIONS = {
-    ("web", "collection"),
-    ("web", "fulfillment"),
-    ("web", "acquisition_reason"),
-    ("web", "observation"),
-    ("web", "link_occurrence"),
-    ("content", "object"),
-    ("content", "html_element"),
+    ("public_v1", "capture"),
+    ("public_v1", "link_occurrence"),
+    ("public_v1", "html_element"),
+    ("public_v1", "html_node"),
 }
 
 
@@ -53,7 +50,7 @@ class PublicCatalogueTests(unittest.TestCase):
             {(item.schema, item.name) for item in objects if item.kind == "view"},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual([(item.schema, item.name) for item in objects if item.kind == "table_macro"], [("content", "subtree_text")])
+        self.assertEqual([(item.schema, item.name) for item in objects if item.kind == "table_macro"], [("public_v1", "subtree_text")])
         self.assertTrue(all(not item.requires_functions for item in objects))
 
     def test_installs_and_validates_public_views(self) -> None:
@@ -64,15 +61,17 @@ class PublicCatalogueTests(unittest.TestCase):
             (str(schema), str(name))
             for schema, name in self.catalogue.connection.execute(
                 "SELECT schema_name, view_name FROM duckdb_views() "
-                "WHERE schema_name IN ('web', 'content', 'dom')"
+                "WHERE schema_name IN ('public_v1', 'web', 'content', 'dom')"
             ).fetchall()
         }
         macros = self.catalogue.connection.execute(
             "SELECT function_name FROM duckdb_functions() "
-            "WHERE schema_name IN ('web', 'content', 'dom') "
+            "WHERE schema_name IN ('public_v1', 'web', 'content', 'dom') "
             "AND function_type IN ('macro', 'table_macro')"
         ).fetchall()
         self.assertEqual(views, EXPECTED_PUBLIC_RELATIONS)
+        with self.assertRaises(duckdb.CatalogException):
+            self.catalogue.connection.execute("SELECT * FROM public_v1.object")
         self.assertEqual(macros, [("subtree_text",)])
 
     def test_install_removes_superseded_web_and_dom_objects(self) -> None:
@@ -113,33 +112,27 @@ class PublicCatalogueTests(unittest.TestCase):
             INSERT INTO ingest.visits (
                 visit_id, requested_url, effective_url,
                 admitted_at, observed_at, finished_at, outcome,
-                status_code, document_id, provenance
+                status_code, document_id
             ) VALUES
                 (
                     '10000000-0000-0000-0000-000000000001',
                     'https://example.com/start', 'https://example.com/',
                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z',
                     '2026-01-01T00:00:02Z', 'success', 200,
-                    '20000000-0000-0000-0000-000000000001',
-                    {'kind': 'native', 'system': 'periplus',
-                     'dataset': NULL, 'source_record_id': NULL}
+                    '20000000-0000-0000-0000-000000000001'
                 ),
                 (
                     '10000000-0000-0000-0000-000000000002',
                     'https://example.com/missing', NULL,
                     '2026-01-02T00:00:00Z', NULL,
-                    '2026-01-02T00:00:02Z', 'failed', NULL, NULL,
-                    {'kind': 'native', 'system': 'periplus',
-                     'dataset': NULL, 'source_record_id': NULL}
+                    '2026-01-02T00:00:02Z', 'failed', NULL, NULL
                 ),
                 (
                     '10000000-0000-0000-0000-000000000003',
                     'https://mirror.example/', 'https://mirror.example/',
                     '2026-01-03T00:00:00Z', '2026-01-03T00:00:01Z',
                     '2026-01-03T00:00:02Z', 'success', 200,
-                    '20000000-0000-0000-0000-000000000003',
-                    {'kind': 'import', 'system': 'common-crawl',
-                     'dataset': 'CC-MAIN', 'source_record_id': 'record-3'}
+                    '20000000-0000-0000-0000-000000000003'
                 );
 
             INSERT INTO ingest.documents (
@@ -179,26 +172,24 @@ class PublicCatalogueTests(unittest.TestCase):
         )
 
         observations = self.catalogue.connection.execute(
-            "SELECT observation_id::VARCHAR, requested_url, effective_url, "
-            "content_id FROM web.observation ORDER BY observation_id"
+            "SELECT capture_id::VARCHAR, requested_url, effective_url, "
+            "content_id FROM public_v1.capture ORDER BY capture_id"
         ).fetchall()
-        self.assertEqual(len(observations), 3)
-        self.assertEqual(observations[1][3], None)
+        self.assertEqual(len(observations), 2)
         self.assertEqual(observations[0][3], "content-a")
-        self.assertEqual(observations[2][3], "content-a")
+        self.assertEqual(observations[1][3], "content-a")
 
         self.assertEqual(
             self.catalogue.connection.execute(
-                "SELECT content_id, size_bytes, detected_media_type, "
-                "detected_character_encoding, content_format "
-                "FROM content.object"
+                "SELECT content_id, byte_length "
+                "FROM public_v1.capture ORDER BY capture_id"
             ).fetchall(),
-            [("content-a", 100, "text/html", "utf-8", "html")],
+            [("content-a", 100), ("content-a", 100)],
         )
         self.assertEqual(
             self.catalogue.connection.execute(
-                "SELECT content_id, element_index, parent_index, tag, "
-                "text_direct FROM content.html_element ORDER BY element_index"
+                "SELECT content_id, node_index, parent_index, tag, "
+                "text_direct FROM public_v1.html_element ORDER BY node_index"
             ).fetchall(),
             [
                 ("content-a", 0, None, "html", ""),
@@ -207,29 +198,19 @@ class PublicCatalogueTests(unittest.TestCase):
         )
         self.assertEqual(
             self.catalogue.connection.execute(
-                "SELECT observation_id::VARCHAR, content_id, element_index, "
-                "source_url, raw_href, target_url, relation_scope "
-                "FROM web.link_occurrence"
+                "SELECT capture_id::VARCHAR, node_index, raw_href, resolved_url "
+                "FROM public_v1.link_occurrence"
             ).fetchone(),
-            (
-                "10000000-0000-0000-0000-000000000001",
-                "content-a",
-                1,
-                "https://example.com/",
-                "/next",
-                "https://example.com/next",
-                "same_origin",
-            ),
+            ("10000000-0000-0000-0000-000000000001", 1, "/next", "https://example.com/next"),
         )
 
     def test_shared_content_is_available_from_every_observation(self) -> None:
         self.test_views_preserve_observation_content_and_occurrence_grains()
         connection = self.catalogue.connection
-        self.assertEqual(connection.execute("SELECT count(*) FROM web.observation").fetchone(), (3,))
-        self.assertGreater(connection.execute("SELECT count(*) FROM content.object").fetchone()[0], 0)
-        self.assertTrue(connection.execute("SELECT * FROM content.subtree_text('content-a', 0)").fetchall())
+        self.assertEqual(connection.execute("SELECT count(*) FROM public_v1.capture").fetchone(), (2,))
+        self.assertEqual(connection.execute("SELECT count(*) FROM public_v1.capture JOIN public_v1.html_element USING (content_id)").fetchone(), (4,))
 
-    def test_content_format_is_a_small_detected_representation_class(self) -> None:
+    def test_capture_preserves_detected_media_type(self) -> None:
         install_public_catalogue(self.catalogue)
         rows = [
             ("application/json", "json"),
@@ -243,9 +224,8 @@ class PublicCatalogueTests(unittest.TestCase):
         for index, (media_type, _format) in enumerate(rows, start=1):
             self.catalogue.connection.execute(
                 "INSERT INTO ingest.visits (visit_id, requested_url, admitted_at, "
-                "finished_at, outcome, document_id, provenance) "
-                "VALUES (?, 'https://example.com/', now(), now(), 'succeeded', ?, "
-                "{'kind': 'periplus'})",
+                "finished_at, outcome, document_id) "
+                "VALUES (?, 'https://example.com/', now(), now(), 'succeeded', ?)",
                 [f"10000000-0000-0000-0000-{index:012d}",
                  f"00000000-0000-0000-0000-{index:012d}"],
             )
@@ -265,16 +245,15 @@ class PublicCatalogueTests(unittest.TestCase):
             )
         self.assertEqual(
             self.catalogue.connection.execute(
-                "SELECT detected_media_type, content_format "
-                "FROM content.object ORDER BY detected_media_type"
+                "SELECT media_type FROM public_v1.capture ORDER BY media_type"
             ).fetchall(),
-            sorted(rows),
+            sorted((media_type,) for media_type, _ in rows),
         )
 
     def test_validation_rejects_unexpected_public_object(self) -> None:
         install_public_catalogue(self.catalogue)
         self.catalogue.connection.execute(
-            "CREATE VIEW content.unmanaged AS SELECT 1 AS value"
+            "CREATE VIEW public_v1.unmanaged AS SELECT 1 AS value"
         )
         with self.assertRaisesRegex(CatalogueSchemaError, "unmanaged"):
             validate_public_catalogue(self.catalogue)
@@ -291,7 +270,7 @@ class PublicCatalogueTests(unittest.TestCase):
             {(str(row[0]), str(row[1])) for row in rows},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual(set(macro_rows), {("content", "subtree_text")})
+        self.assertEqual(set(macro_rows), {("public_v1", "subtree_text")})
 
         response = asyncio.run(metadata(_LocalCatalogueControl(self.catalogue)))
         self.assertEqual(response.catalogue_version, PUBLIC_CATALOGUE_VERSION)

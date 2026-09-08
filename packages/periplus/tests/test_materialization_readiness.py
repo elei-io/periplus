@@ -129,7 +129,7 @@ class MaterializationReadinessTests(unittest.TestCase):
     def test_shared_html_waits_for_the_content_owning_batch(self):
         from periplus.ingestion.objects.html import RawHtmlRepository
         from periplus.ingestion.objects.store import FileObjectStore
-        from periplus.platform.catalogue.records import DocumentRecord, ExternalProvenance, document_id_for
+        from periplus.platform.catalogue.records import DocumentRecord, AttemptRecord, attempt_id_for, document_id_for
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         repository = RawHtmlRepository(FileObjectStore(Path(temporary.name)))
@@ -141,13 +141,13 @@ class MaterializationReadinessTests(unittest.TestCase):
             document_id = document_id_for(identity)
             visit = VisitRecord(visit_id=identity, requested_url='https://example.com/',
                 admitted_at=self.now, observed_at=self.now, finished_at=self.now, outcome='succeeded',
-                document_id=document_id, provenance=ExternalProvenance(system='test', source_record_id=str(identity)))
-            document = DocumentRecord(document_id=document_id, visit_id=identity, observed_at=self.now,
+                document_id=document_id, capture_policy=capture_policy(), started_at=self.now)
+            document = DocumentRecord(document_id=document_id, visit_id=identity, attempt_id=attempt_id_for(identity, 0), observed_at=self.now,
                 representation='rendered_html', detected_media_type='text/html',
                 content_sha256=stored.sha256, content_bytes=stored.size_bytes,
                 object_key=stored.object_key, storage_encoding=stored.compression,
                 stored_bytes=stored.compressed_size_bytes)
-            CatalogueService(self.catalogue).record_visits([VisitEvidence(visit=visit, document=document, attempts=())])
+            CatalogueService(self.catalogue).record_visits([VisitEvidence(visit=visit, document=document, attempts=(AttemptRecord(attempt_id=attempt_id_for(identity, 0), visit_id=identity, attempt_index=0, started_at=self.now, finished_at=self.now, outcome="succeeded"),))])
         self.activate()
         run = SimpleNamespace(id=self.generation, generation_tables={spec.name: spec.name for spec in PROJECTIONS})
         snapshot = self.catalogue.latest_snapshot()

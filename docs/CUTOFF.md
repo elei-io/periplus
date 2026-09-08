@@ -3,7 +3,7 @@
 This cutoff establishes one immutable lake contract:
 
 ```text
-shared frontier -> immutable bytes -> ingest.* -> append-only material.* -> web.* / content.*
+shared frontier -> immutable bytes -> ingest.* -> append-only material.* -> public_v1.*
 ```
 
 ## Required outcome
@@ -13,7 +13,8 @@ Periplus must:
 1. Preserve authoritative collection lineage, visit, attempt, step, and document evidence in insert-only
    `ingest.*`.
 2. Verify every visible document object is readable and content-correct.
-3. Rebuild exactly three semantic projections:
+3. Rebuild the registered semantic projections:
+   - `material.html_nodes`
    - `material.html_elements`
    - `material.jsonld_values`
    - `material.link_occurrences`

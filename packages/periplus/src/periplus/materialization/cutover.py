@@ -151,8 +151,8 @@ def verify_cutover(catalogue: Catalogue) -> dict[str, int]:
                 f"SELECT count(*) FROM {spec.relation.qualified}"
             )[0][0]
         )
-    catalogue.trusted_remote_rows("SELECT * FROM web.observation LIMIT 1")
-    catalogue.trusted_remote_rows("SELECT * FROM content.object LIMIT 1")
+    catalogue.trusted_remote_rows("SELECT * FROM public_v1.capture LIMIT 1")
+    catalogue.trusted_remote_rows("SELECT * FROM public_v1.html_node LIMIT 1")
     return counts
 
 

@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { usePublicAccess } from "@/hooks/use-public-access"
 import { ApiError, extractApiError, responseJson } from "@/lib/api"
 import type { Collection, CreateCollection } from "@/types/collections"
+import { createRequestId } from "@/lib/request-id"
 import { publicCollectionSpec } from "@/lib/collection-submission"
 
 function pageLabel(n: number) { return n === 1000000 ? "1M+" : n >= 1000 ? `${n / 1000}k` : String(n) }
@@ -53,7 +54,7 @@ export function CollectionForm({ onCreated }: { onCreated: (id: string) => void 
     <CardContent>
       {access.message && <p role="status">{access.message}</p>}
       {options && !validOptions && <p role="alert">Available options changed. Please choose a supported page budget, depth and retention period.</p>}
-      <form className="flex flex-col gap-6" onSubmit={event => { event.preventDefault(); if (frozen || !access.enabled || !validOptions) return; try { const payload = { id: crypto.randomUUID(), specification: publicCollectionSpec({ kind, input: kind === "url" ? url : description, depth, scope, maxPages, sections, retentionSeconds: retention }), priority: 0 }; setFrozen(payload); submit.mutate(payload) } catch (error) { toast.error(extractApiError(error)) } }}>
+      <form className="flex flex-col gap-6" onSubmit={event => { event.preventDefault(); if (frozen || !access.enabled || !validOptions) return; try { const payload = { id: createRequestId(), specification: publicCollectionSpec({ kind, input: kind === "url" ? url : description, depth, scope, maxPages, sections, retentionSeconds: retention }), priority: 0 }; setFrozen(payload); submit.mutate(payload) } catch (error) { toast.error(extractApiError(error)) } }}>
         <fieldset disabled={frozen !== null || !access.enabled} className="flex min-w-0 flex-col gap-6">
         <div className="flex flex-wrap gap-2" role="group" aria-label="Request type">
           <Button type="button" variant={kind === "url" ? "secondary" : "outline"} aria-pressed={kind === "url"} onClick={() => setKind("url")}><Globe />Add a website URL</Button>

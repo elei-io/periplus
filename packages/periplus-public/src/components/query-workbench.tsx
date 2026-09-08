@@ -109,7 +109,7 @@ const SchemaExplorer = memo(function SchemaExplorer({ onLoadSql }: { onLoadSql: 
         <CardHeader><CardTitle className="flex items-center gap-2"><Database className="size-4" />Explorer</CardTitle><Input aria-label="Filter tables and columns" placeholder="Filter schema…" value={filter} onChange={event => setFilter(event.target.value)} /></CardHeader>
         <CardContent className="max-h-96 overflow-auto lg:max-h-[640px]">
           <TooltipProvider>
-            {["web", "content"].map(namespace => {
+            {["public_v1"].map(namespace => {
               const relations = schemaReference.filter(relation => relation.name.startsWith(`${namespace}.`) && `${relation.name} ${relation.columns.map(column => column[0]).join(" ")}`.toLowerCase().includes(filter.toLowerCase()))
               if (!relations.length) return null
               return <div key={namespace} className="pb-4">

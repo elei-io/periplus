@@ -6,21 +6,20 @@ import { EditorView } from "@codemirror/view"
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language"
 import { tags } from "@lezer/highlight"
 import { memo } from "react"
+import { schemaReference } from "@/lib/schema-reference"
 
 const extensions = [
-  sql({ dialect: StandardSQL, upperCaseKeywords: true, schema: {
-    web: {
-      observation: ["observation_id", "requested_url", "effective_url", "observed_at", "outcome", "http_status_code", "content_id", "capture_policy"],
-      collection: ["collection_id", "requested_at", "specification", "settled_at", "outcome", "seed_provenance", "consumed_pages", "supplied_pages", "failed_pages"],
-      fulfillment: ["fulfillment_id", "collection_id", "observation_id", "requested_url", "parent_observation_id", "depth", "rule_id", "mode", "decided_at"],
-      acquisition_reason: ["reason_id", "observation_id", "collection_id", "parent_observation_id", "reason", "policy_version", "rule_id", "decided_at"],
-      link_occurrence: ["observation_id", "content_id", "source_url", "target_url", "observed_at", "raw_href", "relation_scope"],
+  sql({
+    dialect: StandardSQL,
+    upperCaseKeywords: true,
+    defaultSchema: "public_v1",
+    schema: {
+      public_v1: Object.fromEntries(schemaReference.map(relation => [
+        relation.name.split(".")[1],
+        relation.columns.map(column => column[0]),
+      ])),
     },
-    content: {
-      object: ["content_id", "size_bytes", "detected_media_type", "content_format"],
-      html_element: ["content_id", "element_index", "tag", "attributes", "text_direct", "text_tail", "parent_index", "depth"],
-    },
-  } }),
+  }),
   EditorView.lineWrapping,
   EditorView.theme({
     "&": { backgroundColor: "var(--editor-background)", color: "#e3eee7", fontSize: "14px" },

@@ -1,6 +1,6 @@
 import type { SqlMetadata, SqlResult } from "./types.js"
 
-const PUBLIC_SCHEMAS = ["web", "content"] as const
+const PUBLIC_SCHEMAS = ["public_v1"] as const
 
 export class SqlApiError extends Error {
   constructor(

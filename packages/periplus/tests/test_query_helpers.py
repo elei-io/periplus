@@ -5,7 +5,8 @@ import unittest
 
 import duckdb
 
-from periplus.materialization.dom.encoder import iter_html_elements, parse_html
+from periplus.materialization.dom.encoder import parse_html
+from periplus.materialization.dom.nodes import parse_document
 from periplus.platform.catalogue.helpers import HELPERS
 from periplus.platform.catalogue.helpers.subtree_text import SUBTREE_TEXT
 from periplus.query.helpers import query_helpers, safe_helper_error
@@ -15,8 +16,9 @@ from periplus.query.validation import _bounded_query
 class SubtreeTextTests(unittest.TestCase):
     def setUp(self):
         self.db = duckdb.connect()
-        self.db.execute("CREATE SCHEMA content")
-        self.db.execute("CREATE TABLE content.html_element(content_id VARCHAR, element_index INTEGER, subtree_end_index INTEGER, depth INTEGER, tag VARCHAR, text_direct VARCHAR, text_tail VARCHAR)")
+        self.db.execute("CREATE SCHEMA public_v1")
+        self.db.execute("CREATE TABLE public_v1.html_node(content_id VARCHAR, node_index INTEGER, subtree_end_index INTEGER, node_type VARCHAR, value VARCHAR)")
+        self.db.execute("CREATE TABLE public_v1.html_element(content_id VARCHAR, node_index INTEGER, subtree_end_index INTEGER, depth INTEGER, tag VARCHAR, text_direct VARCHAR, text_tail VARCHAR)")
         for helper in (SUBTREE_TEXT,):
             self.db.execute(files('periplus.platform.catalogue').joinpath('sql', helper.schema, helper.resource).read_text())
 
@@ -24,8 +26,9 @@ class SubtreeTextTests(unittest.TestCase):
         self.db.close()
 
     def load(self, source, content_id='a'):
-        rows = list(iter_html_elements(source))
-        self.db.executemany("INSERT INTO content.html_element VALUES (?,?,?,?,?,?,?)", [
+        nodes, rows = parse_document(source)
+        self.db.executemany("INSERT INTO public_v1.html_node VALUES (?,?,?,?,?)", [(content_id,n.node_index,n.subtree_end_index,n.node_type,n.value) for n in nodes])
+        self.db.executemany("INSERT INTO public_v1.html_element VALUES (?,?,?,?,?,?,?)", [
             (content_id, r.element_index, r.subtree_end_index, r.depth, r.tag, r.text_direct, r.text_tail) for r in rows
         ])
         return rows
@@ -38,7 +41,7 @@ class SubtreeTextTests(unittest.TestCase):
         for row, element in zip(rows, elements):
             with self.subTest(index=row.element_index):
                 expected = ''.join(element.itertext())
-                result = self.db.execute(_bounded_query("SELECT * FROM content.subtree_text(?, ?)"), ['a', row.element_index]).fetchone()
+                result = self.db.execute(_bounded_query("SELECT * FROM public_v1.subtree_text(?, ?)"), ['a', row.element_index]).fetchone()
                 self.assertEqual(result, (expected, False, len(expected), row.subtree_end_index-row.element_index))
 
     def test_whitespace_unicode_empty_missing_and_truncation(self):
@@ -46,28 +49,28 @@ class SubtreeTextTests(unittest.TestCase):
         root = next(r for r in rows if r.tag == 'pre')
         expected = 'if x:\n\tprint("日本😀")\n  end\n'
         for limit in (0, 1, 15, len(expected), len(expected)+1):
-            result = self.db.execute('SELECT * FROM content.subtree_text(?, ?, max_chars := ?)', ['a', root.element_index, limit]).fetchone()
+            result = self.db.execute('SELECT * FROM public_v1.subtree_text(?, ?, max_chars := ?)', ['a', root.element_index, limit]).fetchone()
             self.assertEqual(result[:3], (expected[:limit], limit < len(expected), len(expected)))
         empty = next(r for r in rows if r.tag == 'p')
-        self.assertEqual(self.db.execute('SELECT text,truncated,total_chars FROM content.subtree_text(?,?)', ['a',empty.element_index]).fetchone(), ('',False,0))
-        self.assertEqual(self.db.execute("SELECT * FROM content.subtree_text('missing',0)").fetchall(), [])
-        self.assertEqual(self.db.execute("SELECT * FROM content.subtree_text('a',99999)").fetchall(), [])
-        self.assertEqual(self.db.execute("SELECT * FROM content.subtree_text(NULL,0)").fetchall(), [])
+        self.assertEqual(self.db.execute('SELECT text,truncated,total_chars FROM public_v1.subtree_text(?,?)', ['a',empty.element_index]).fetchone(), ('',False,0))
+        self.assertEqual(self.db.execute("SELECT * FROM public_v1.subtree_text('missing',0)").fetchall(), [])
+        self.assertEqual(self.db.execute("SELECT * FROM public_v1.subtree_text('a',99999)").fetchall(), [])
+        self.assertEqual(self.db.execute("SELECT * FROM public_v1.subtree_text(NULL,0)").fetchall(), [])
 
     def test_limits_reject_oversize_subtrees_and_invalid_values(self):
         self.load('<p>one<b>two</b>three</p>')
-        for suffix in ('max_chars := -1', 'max_chars := 100001', 'max_chars := NULL', 'max_chars := 1.5', 'max_elements := 0', 'max_elements := 10001', 'max_elements := NULL', 'max_elements := 1.5', 'max_elements := 1'):
+        for suffix in ('max_chars := -1', 'max_chars := 100001', 'max_chars := NULL', 'max_chars := 1.5', 'max_nodes := 0', 'max_nodes := 10001', 'max_nodes := NULL', 'max_nodes := 1.5', 'max_nodes := 1'):
             with self.subTest(suffix=suffix), self.assertRaises(duckdb.InvalidInputException):
-                self.db.execute(f"SELECT * FROM content.subtree_text('a',0,{suffix})").fetchall()
+                self.db.execute(f"SELECT * FROM public_v1.subtree_text('a',0,{suffix})").fetchall()
         with self.assertRaises(duckdb.InvalidInputException):
-            self.db.execute("SELECT * FROM content.subtree_text('a',-1)").fetchall()
+            self.db.execute("SELECT * FROM public_v1.subtree_text('a',-1)").fetchall()
 
     def test_lateral_calls_keep_content_roots_and_limits_independent(self):
         self.load('<p>A<b>B</b>C</p>', 'a')
         self.load('<p>XYZ</p>', 'b')
         result = self.db.execute("""WITH roots(id, idx, cap) AS (VALUES ('a',0,2),('a',0,20),('b',0,1))
             SELECT r.id,r.cap,t.text,t.total_chars FROM roots r,
-            LATERAL content.subtree_text(r.id,r.idx,max_chars := r.cap) t ORDER BY r.id,r.cap""").fetchall()
+            LATERAL public_v1.subtree_text(r.id,r.idx,max_chars := r.cap) t ORDER BY r.id,r.cap""").fetchall()
         self.assertEqual(result, [('a',2,'AB',3),('a',20,'ABC',3),('b',1,'X',3)])
 
     def test_registry_documentation_and_examples_are_executable(self):

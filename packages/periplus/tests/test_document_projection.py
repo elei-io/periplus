@@ -152,7 +152,7 @@ class DocumentProjectionTests(unittest.TestCase):
 
         catalogue = Catalogue()
         run = SimpleNamespace(
-            generation_tables={"html_elements": "html_elements"}
+            generation_tables={"html_nodes": "html_nodes"}
         )
         batch = SimpleNamespace(snapshot=10)
         first_rows = [

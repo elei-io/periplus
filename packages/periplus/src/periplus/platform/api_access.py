@@ -70,6 +70,7 @@ class ApiAccessMiddleware:
             )(scope, receive, send)
         allowed = (
             (method == "GET" and path == "/access")
+            or (method == "GET" and re.fullmatch(r"/documents/by-content/[0-9a-f]{64}/content", path))
             or (method == "POST" and path in {"/access/admit/assistant", "/access/admit/sql"})
             or
             (method in {"GET", "POST"} and path == "/collections")

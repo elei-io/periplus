@@ -24,7 +24,7 @@ const itemLink = (id: string) => `/frontier/${encodeURIComponent(id)}`
 function modeLabel(mode: string) { return mode === "acquired" ? "Observation requested" : mode === "shared" ? "Shared work" : mode === "reused" ? "Earlier observation reused" : mode }
 function observationLink(id: string) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return null
-  return `/sql?${new URLSearchParams({sql:`SELECT * FROM web.observation WHERE observation_id = '${id}' LIMIT 1;`})}`
+  return `/sql?${new URLSearchParams({sql:`SELECT * FROM public_v1.capture WHERE capture_id = '${id}' LIMIT 1;`})}`
 }
 function Observation({ id, label }: { id: string; label: string }) {
   const href = observationLink(id)
@@ -105,7 +105,7 @@ function ObservationLineage({ id }: { id: string }) {
     {missing && <p>No visible committed observation is available yet.</p>}
     {query.error && !missing && <p role="alert">{query.data ? "Connections may be out of date. " : "Connections unavailable. "}{extractApiError(query.error)}</p>}
     {query.data && <><p className="break-all">{query.data.requested_url}</p><p className="text-sm text-muted-foreground">As of {new Date(query.data.as_of).toLocaleString()}</p><Observation id={query.data.observation_id} label="Query observation" /></>}
-    {query.data?.items.length === 0 && <p>No visible request connections on this page. Imported observations may have no collection or reason for observation.</p>}
+    {query.data?.items.length === 0 && <p>No visible request connections on this page. Collection evidence may still be awaiting ingestion.</p>}
     {query.data?.items.map(item => <Card key={`${item.kind}:${item.record_id}`}><CardHeader><CardTitle>{item.kind === "reason" ? "Reason for observation" : "Result use"}</CardTitle></CardHeader><CardContent className="flex flex-col gap-2">
       <p>{item.kind === "reason" ? "Request" : item.mode === "reused" ? "Reused result" : item.mode === "shared" ? "Shared result" : "New observation"}</p>
       {item.collection_id && <a className="break-all underline" href={collectionLink(item.collection_id)}>Request: {item.collection_id}</a>}

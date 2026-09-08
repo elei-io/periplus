@@ -93,7 +93,7 @@ class RetentionTests(unittest.TestCase):
         # This catalogue has no operational database: evidence is self-contained.
         self.assertEqual(self.service.get_visit_evidence([identity])[identity], visit)
         row = self.catalogue.trusted_connection.execute(
-            "SELECT capture_policy::JSON FROM web.observation WHERE observation_id = ?",
+            "SELECT capture_policy::JSON FROM ingest.visits WHERE visit_id = ?",
             [identity],
         ).fetchone()
         import json
@@ -108,7 +108,7 @@ class RetentionTests(unittest.TestCase):
         self.retention.purge_observation(self.candidates()[0], now=self.now)
         self.assertEqual(self.service.get_visit_evidence([identity]), {})
         self.assertEqual(self.catalogue.trusted_connection.execute(
-            "SELECT count(*) FROM web.observation WHERE observation_id = ?", [identity],
+            "SELECT count(*) FROM ingest.visits WHERE visit_id = ?", [identity],
         ).fetchone()[0], 0)
 
     def test_retirement_is_idempotent_and_delayed_evidence_cannot_resurrect(self):
@@ -166,14 +166,14 @@ class RetentionTests(unittest.TestCase):
         self.assertEqual(len(second.candidates), 1)
 
     def document_visit(self, content_hash='a'*64, key='documents/sha256/aa/object'):
-        from periplus.platform.catalogue.records import DocumentRecord, ExternalProvenance, document_id_for
+        from periplus.platform.catalogue.records import DocumentRecord, AttemptRecord, attempt_id_for, document_id_for
         identity = uuid4()
-        document = DocumentRecord(document_id=document_id_for(identity), visit_id=identity,
+        document = DocumentRecord(document_id=document_id_for(identity), visit_id=identity, attempt_id=attempt_id_for(identity, 0),
             observed_at=self.old, representation='response_body', detected_media_type='application/pdf',
             content_sha256=content_hash, content_bytes=3, object_key=key, storage_encoding='identity', stored_bytes=3)
         evidence = VisitEvidence(visit=VisitRecord(visit_id=identity, requested_url='https://example.com/',
             admitted_at=self.old, finished_at=self.old, outcome='succeeded', observed_at=self.old, document_id=document.document_id,
-            provenance=ExternalProvenance(system='test', source_record_id=str(identity))), document=document, attempts=())
+            capture_policy=capture_policy(), started_at=self.old), document=document, attempts=(AttemptRecord(attempt_id=attempt_id_for(identity, 0), visit_id=identity, attempt_index=0, started_at=self.old, finished_at=self.old, outcome="succeeded"),))
         self.service.record_visits([evidence])
         return evidence
 

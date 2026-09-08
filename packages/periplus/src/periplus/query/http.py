@@ -26,7 +26,7 @@ class SqlColumn(BaseModel):
 
 
 class SqlRelation(BaseModel):
-    schema_name: Literal["web", "content"]
+    schema_name: Literal["public_v1"]
     name: str
     kind: Literal["view"]
     description: str | None
@@ -39,7 +39,7 @@ class SqlMacroParameter(BaseModel):
 
 
 class SqlMacro(BaseModel):
-    schema_name: Literal["web", "content"]
+    schema_name: Literal["public_v1"]
     name: str
     kind: Literal["scalar_macro", "table_macro"]
     parameters: list[SqlMacroParameter]
@@ -202,7 +202,7 @@ def _public_metadata_rows(catalogue) -> list[tuple]:
          AND columns.schema_oid = views.schema_oid
          AND columns.table_oid = views.view_oid
         WHERE views.database_name = current_catalog()
-           AND views.schema_name IN ('web', 'content')
+           AND views.schema_name IN ('public_v1')
         ORDER BY views.schema_name,
                  views.view_name,
                  columns.column_index

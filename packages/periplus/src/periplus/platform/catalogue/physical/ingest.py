@@ -31,11 +31,6 @@ TABLE_COLUMNS: dict[RelationName, dict[str, ColumnDef]] = {
         "status_code": ColumnDef("INTEGER"),
         "document_id": ColumnDef("UUID"),
         "capture_policy": ColumnDef("JSON"),
-        "provenance": ColumnDef(
-            'STRUCT(kind VARCHAR, "system" VARCHAR, dataset VARCHAR, '
-            "source_record_id VARCHAR)",
-            nullable=False,
-        ),
     },
     ATTEMPTS: {
         "attempt_id": ColumnDef("UUID", nullable=False),
@@ -102,7 +97,7 @@ TABLE_LAYOUTS = {
 
 
 TABLE_COMMENTS = {
-    VISITS: "Independent terminal observations from acquisitions or external sources.",
+    VISITS: "Independent terminal observations from native acquisitions.",
     ATTEMPTS: "Ordered acquisition attempts belonging to visits.",
     STEPS: "Ordered content-completion executions belonging to attempts.",
     DOCUMENTS: "Visit-owned references to immutable document bytes.",
@@ -122,8 +117,7 @@ COLUMN_COMMENTS = {
         "outcome": "Stable terminal logical outcome.",
         "status_code": "Final HTTP status when available.",
         "document_id": "Document observation produced by this visit, if any.",
-        "provenance": "Typed origin of this observation.",
-        "capture_policy": "Frozen effective content policy, including disabled actions and variance; null for external observations. Retained with this visit.",
+        "capture_policy": "Frozen effective content policy, including disabled actions and variance. Retained with this visit.",
     },
     ATTEMPTS: {
         "resource_usage": "Frozen client capture reservation and measured or uncertain elapsed time; not provider billing.",

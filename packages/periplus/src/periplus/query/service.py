@@ -12,6 +12,8 @@ from pathlib import Path
 import threading
 import time
 from uuid import UUID, uuid4
+from typing import Literal
+from periplus.platform.catalogue.public import PUBLIC_SCHEMA
 
 import duckdb
 from prometheus_client import Gauge
@@ -33,6 +35,7 @@ _active_queries = Gauge("periplus_query_active_operations", "Occupied query admi
 class QueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sql: str = Field(min_length=1, max_length=100_000)
+    schema_version: Literal["public_v1"] = PUBLIC_SCHEMA
     parameters: list[JsonValue] = Field(default_factory=list, max_length=100)
 
 
@@ -43,6 +46,7 @@ class Diagnostic(BaseModel):
 
 
 class PreparedQuery(BaseModel):
+    schema_version: Literal["public_v1"] = PUBLIC_SCHEMA
     query_id: str
     sql: str
     parameters: list[JsonValue]
@@ -79,7 +83,7 @@ class QueryService:
             "threads": "2", "memory_limit": "512MB", "max_temp_directory_size": "256MB",
         }).connect(read_only=True)
         try:
-            d.execute(f"USE {_identifier(config.alias)}")
+            d.execute(f"USE {_identifier(config.alias)}.{PUBLIC_SCHEMA}")
             # Extensions and credentials are installed before locking the session.
             # Only lake data paths may perform filesystem IO after this point.
             root = config.data_path if "://" in config.data_path else str(Path(config.data_path).resolve())

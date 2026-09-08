@@ -157,26 +157,31 @@ def _scan_elements(
     finished_anchors: list[DomAnchor] = []
     document_base_url = page_url
     base_selected = False
+    root_parent: int | None = None
+    previous_index = -1
 
     def close_until(parent_index: int | None) -> None:
         while stack and stack[-1].element_index != parent_index:
             stack.pop()
 
-        actual_parent = stack[-1].element_index if stack else None
+        actual_parent = stack[-1].element_index if stack else root_parent
         if actual_parent != parent_index:
             raise ValueError("an element parent must be its open document-order ancestor")
 
-    for expected_index, element in enumerate(elements):
-        if element.element_index != expected_index:
-            raise ValueError("elements must have contiguous zero-based document-order indexes")
-        if element.parent_index is not None and not 0 <= element.parent_index < expected_index:
+    for element in elements:
+        if previous_index == -1:
+            root_parent = element.parent_index
+        if element.element_index <= previous_index:
+            raise ValueError("elements must have increasing document-order indexes")
+        previous_index = element.element_index
+        if element.parent_index is not None and not 0 <= element.parent_index < element.element_index:
             raise ValueError("an element parent must precede the element in document order")
         close_until(element.parent_index)
 
         tag = element.tag.lower()
         if tag == "a":
-            href = (element.attributes.get("href") or "").strip()
-            if href:
+            href = element.attributes.get("href") or ""
+            if href.strip():
                 finished_anchors.append(
                     DomAnchor(
                         element_index=element.element_index,
@@ -204,6 +209,6 @@ def _scan_elements(
                     document_base_url = resolved
                     base_selected = True
 
-    close_until(None)
+    close_until(root_parent)
     finished_anchors.sort(key=lambda anchor: anchor.element_index)
     return finished_anchors, document_base_url

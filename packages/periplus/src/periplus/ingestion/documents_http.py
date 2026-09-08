@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 import duckdb
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -297,6 +297,29 @@ async def download_document(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+@router.get("/by-content/{content_id}/content")
+async def download_content(
+    content_id: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$")],
+    control: Annotated[CatalogueControl, Depends(get_catalogue_control)],
+    store: Annotated[ObjectStore, Depends(get_document_store)],
+) -> StreamingResponse:
+    """Resolve public byte identity through committed retained evidence."""
+    try:
+        rows = await control.run(lambda _session, catalogue: catalogue.trusted_remote_rows(
+            f"SELECT d.document_id FROM ingest.documents d JOIN ingest.visits v "
+            f"ON v.document_id = d.document_id AND v.visit_id = d.visit_id "
+            f"WHERE d.content_sha256 = {_sql_string(content_id)} ORDER BY d.document_id LIMIT 1"
+        ))
+        if not rows:
+            raise HTTPException(status_code=404, detail="content was not found")
+        response = await download_document(UUID(str(rows[0][0])), control, store)
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=503, detail="content catalogue is unavailable") from exc
+    response.headers["Content-Disposition"] = f'attachment; filename="{content_id}"'
+    response.headers["ETag"] = f'"{content_id}"'
+    return response
 
 
 def _where_clause(filters: DocumentListQuery) -> str:

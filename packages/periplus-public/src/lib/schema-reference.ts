@@ -1,83 +1,190 @@
-// Public catalogue v2.0.0. Keep aligned with public_registry.py and its SQL views.
-// DESCRIBE links on /docs expose the deployed contract directly.
+// Public v1 contract. Keep aligned with public_registry.py.
 export const schemaReference = [
-  { name: "web.observation", grain: "One observation of a URL at a point in time, including unsuccessful observations.", key: "observation_id", columns: [
-    ["observation_id", "UUID", "Unique observation identity."],
-    ["requested_url", "VARCHAR", "URL Periplus attempted to visit."],
-    ["effective_url", "VARCHAR", "Final URL after navigation or redirects; may be null."],
-    ["observed_at", "TIMESTAMPTZ", "Capture time, when available; may be null."],
-    ["outcome", "VARCHAR", "Final logical observation outcome; successful retained observations use 'succeeded'."],
-    ["http_status_code", "INTEGER", "HTTP status, when available."],
-    ["content_id", "VARCHAR", "Retained content’s SHA-256 identity; null when no content was retained."],
-    ["source_kind", "VARCHAR", "Native Periplus or external source kind."],
-    ["source_system", "VARCHAR", "External source system, when applicable."],
-    ["source_dataset", "VARCHAR", "External dataset, when applicable."],
-    ["source_record_id", "VARCHAR", "Record identity within the external source."],
-    ["capture_policy", "JSON", "Frozen effective content policy, including disabled actions and variance. Null for external observations; retained with the observation."],
-  ] },
-  { name: "content.object", grain: "One distinct retained byte sequence, shared across observations with identical content.", key: "content_id", columns: [
-    ["content_id", "VARCHAR", "SHA-256 identity of the logical bytes."],
-    ["size_bytes", "BIGINT", "Size of the uncompressed logical bytes."],
-    ["detected_media_type", "VARCHAR", "Detected media type."],
-    ["detected_character_encoding", "VARCHAR", "Detected character encoding, when meaningful."],
-    ["content_format", "VARCHAR", "html, json, pdf, image, xml, text, or binary."],
-  ] },
-  { name: "content.html_element", grain: "One element in the deterministic HTML5 structure of a retained content object.", key: "content_id + element_index", columns: [
-    ["content_id", "VARCHAR", "Identity of the HTML content."],
-    ["element_index", "INTEGER", "Zero-based position in depth-first document order."],
-    ["parent_index", "INTEGER", "Parent element index; null for the root."],
-    ["subtree_end_index", "INTEGER", "Exclusive end of this element’s subtree."],
-    ["depth", "INTEGER", "Element depth from the document root."],
-    ["child_index", "INTEGER", "Zero-based position among element siblings."],
-    ["tag", "VARCHAR", "Normalized local tag name."],
-    ["namespace", "VARCHAR", "Normalized element namespace."],
-    ["attributes", "MAP(VARCHAR, VARCHAR)", "Attribute names and string values; access with attributes['class']."],
-    ["text_direct", "VARCHAR", "Text directly inside the element, before child elements."],
-    ["text_tail", "VARCHAR", "Text following this element within its parent."],
-  ] },
-  { name: "web.link_occurrence", grain: "One observed anchor occurrence, resolved against the URL of its containing observation.", key: "link_occurrence_id", columns: [
-    ["link_occurrence_id", "UUID", "Stable identity of the anchor occurrence."],
-    ["observation_id", "UUID", "Observation in which this anchor was resolved."],
-    ["content_id", "VARCHAR", "Content containing the anchor."],
-    ["element_index", "INTEGER", "Anchor element’s position in the HTML structure."],
-    ["observed_at", "TIMESTAMPTZ", "Time the containing content was observed."],
-    ["source_url", "VARCHAR", "Effective normalized URL containing the anchor."],
-    ["raw_href", "VARCHAR", "Original href before resolution and normalization."],
-    ["target_url", "VARCHAR", "Resolved, normalized HTTP(S) destination."],
-    ["relation_scope", "VARCHAR", "Most-specific relationship: self, same_origin, same_host, same_site, or external."],
-  ] },
-  { name: "web.collection", grain: "One public collection definition with its separately committed outcome, when available.", key: "collection_id", columns: [
-    ["collection_id", "UUID", "Identity of the finite collection intent."],
-    ["requested_at", "TIMESTAMPTZ", "Time the collection was recorded."],
-    ["specification", "JSON", "Frozen seeds, follow selection, scope, and budget."],
-    ["settled_at", "TIMESTAMPTZ", "Recorded settlement time; null before outcome ingestion."],
-    ["outcome", "VARCHAR", "Terminal collection result, when available."],
-    ["seed_provenance", "JSON", "Retained starting-URL selection evidence."],
-    ["consumed_pages", "BIGINT", "Collection page units consumed, when the outcome is available."],
-    ["supplied_pages", "BIGINT", "Supplied results, including shared and reused observations."],
-    ["failed_pages", "BIGINT", "Failed request results, when the outcome is available."],
-  ] },
-  { name: "web.fulfillment", grain: "One collection URL result; several collections can reference one observation.", key: "fulfillment_id", columns: [
-    ["fulfillment_id", "UUID", "Immutable result relationship identity."],
-    ["collection_id", "UUID", "Collection receiving this result."],
-    ["observation_id", "UUID", "Independent observation supplying the result."],
-    ["requested_url", "VARCHAR", "URL admitted by the collection."],
-    ["parent_observation_id", "UUID", "Traversal parent, when applicable."],
-    ["depth", "INTEGER", "Depth within this collection."],
-    ["rule_id", "VARCHAR", "Selection rule that admitted this URL."],
-    ["mode", "VARCHAR", "Acquired, shared, or reused result."],
-    ["decided_at", "TIMESTAMPTZ", "Time the result association was recorded."],
-  ] },
-  { name: "web.acquisition_reason", grain: "One causal collection reason frozen when acquisition was dispatched.", key: "reason_id", columns: [
-    ["reason_id", "UUID", "Immutable acquisition reason identity."],
-    ["observation_id", "UUID", "Observation acquired for this reason."],
-    ["collection_id", "UUID", "Request that caused acquisition."],
-    ["parent_observation_id", "UUID", "Discovery parent, when applicable."],
-    ["reason", "VARCHAR", "Collection intent that caused acquisition."],
-    ["policy_version", "VARCHAR", "Effective policy identity frozen at dispatch."],
-    ["rule_id", "VARCHAR", "Selection rule for this acquisition."],
-    ["decided_at", "TIMESTAMPTZ", "Time the acquisition reason was recorded."],
-  ] },
+  {
+    "name": "public_v1.capture",
+    "grain": "Acquisitions with retained content, including retained HTTP error responses.",
+    "key": "capture_id",
+    "columns": [
+      ["request_ids", "UUID[]", "Sorted unique coverage request IDs supplied with this capture; empty until membership evidence arrives."],
+      [
+        "capture_id",
+        "UUID",
+        "Acquisition identity with retained content."
+      ],
+      [
+        "requested_url",
+        "VARCHAR",
+        "Normalized requested URL."
+      ],
+      [
+        "effective_url",
+        "VARCHAR",
+        "Final URL after navigation."
+      ],
+      [
+        "captured_at",
+        "TIMESTAMPTZ",
+        "Time the page content was captured."
+      ],
+      [
+        "http_status_code",
+        "INTEGER",
+        "HTTP response status when known; retained error bodies qualify."
+      ],
+      [
+        "content_id",
+        "VARCHAR",
+        "SHA-256 identity of retained bytes."
+      ],
+      ["byte_length", "BIGINT", "Length of logical bytes before storage compression."],
+      [
+        "representation",
+        "VARCHAR",
+        "Meaning of the captured representation."
+      ],
+      [
+        "media_type",
+        "VARCHAR",
+        "Detected media type."
+      ],
+      [
+        "encoding",
+        "VARCHAR",
+        "Detected character encoding when meaningful."
+      ]
+    ]
+  },
+  {
+    "name": "public_v1.html_node",
+    "grain": "Complete HTML5 parsed document nodes.",
+    "key": "content_id + node_index",
+    "columns": [
+      [
+        "content_id",
+        "VARCHAR",
+        "SHA-256 identity of captured bytes."
+      ],
+      [
+        "node_index",
+        "INTEGER",
+        "Zero-based depth-first node position, scoped to the catalogue snapshot."
+      ],
+      [
+        "parent_index",
+        "INTEGER",
+        "Parent node position; null for the document root."
+      ],
+      [
+        "subtree_end_index",
+        "INTEGER",
+        "Exclusive end of this node's subtree."
+      ],
+      [
+        "sibling_index",
+        "INTEGER",
+        "Zero-based position among all sibling nodes."
+      ],
+      [
+        "node_type",
+        "VARCHAR",
+        "document, doctype, element, text, comment or processing_instruction."
+      ],
+      [
+        "name",
+        "VARCHAR",
+        "Local element/doctype name or processing instruction target."
+      ],
+      [
+        "namespace",
+        "VARCHAR",
+        "Namespace URI when applicable."
+      ],
+      [
+        "value",
+        "VARCHAR",
+        "Text, comment or processing instruction content."
+      ]
+    ]
+  },
+  {
+    "name": "public_v1.html_element",
+    "grain": "HTML elements sharing identity and positions with html_node.",
+    "key": "content_id + node_index",
+    "columns": [
+      [
+        "content_id",
+        "VARCHAR",
+        "SHA-256 identity of captured bytes."
+      ],
+      [
+        "node_index",
+        "INTEGER",
+        "Zero-based depth-first node position, scoped to the catalogue snapshot."
+      ],
+      [
+        "parent_index",
+        "INTEGER",
+        "Parent node position; null for the document root."
+      ],
+      [
+        "subtree_end_index",
+        "INTEGER",
+        "Exclusive end of this node's subtree."
+      ],
+      [
+        "sibling_index",
+        "INTEGER",
+        "Zero-based position among all sibling nodes."
+      ],
+      [
+        "tag",
+        "VARCHAR",
+        "Local element tag name."
+      ],
+      [
+        "namespace",
+        "VARCHAR",
+        "Namespace URI when applicable."
+      ],
+      [
+        "attributes",
+        "MAP(VARCHAR, VARCHAR)",
+        "Attribute map; namespaced keys use {namespace-uri}local-name."
+      ],
+      [
+        "text_direct",
+        "VARCHAR",
+        "Immediate child text concatenated in order, without normalization."
+      ]
+    ]
+  },
+  {
+    "name": "public_v1.link_occurrence",
+    "grain": "HTTP(S) anchor occurrences resolved in capture context.",
+    "key": "capture_id + node_index",
+    "columns": [
+      [
+        "capture_id",
+        "UUID",
+        "Capture in which the hyperlink was resolved."
+      ],
+      [
+        "node_index",
+        "INTEGER",
+        "Anchor node position in that capture's content."
+      ],
+      [
+        "raw_href",
+        "VARCHAR",
+        "Original parsed href attribute value."
+      ],
+      [
+        "resolved_url",
+        "VARCHAR",
+        "Resolved normalized HTTP(S) URL."
+      ]
+    ]
+  }
 ] as const
 
 export function sqlDraftLink(sql: string) {

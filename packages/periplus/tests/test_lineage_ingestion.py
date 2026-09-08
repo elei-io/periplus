@@ -73,18 +73,14 @@ class LineageIngestionTests(unittest.TestCase):
             self.service.record_lineage([conflicting])
         self.assertEqual(self.service.get_lineage("fulfillment", records[1].record_id), records[1])
 
-    def test_lineage_exposes_all_shared_rows(self):
-        from importlib.resources import files
+    def test_lineage_retains_all_shared_rows(self):
         records = [FulfillmentRecord(
             record_id=uuid4(), collection_id=uuid4(), observation_id=uuid4(),
             requested_url=f"https://{visibility}.example/", rule_id="seed", depth=0,
             mode="acquired",  recorded_at=self.now,
         ) for visibility in ("public", "private")]
         self.service.record_lineage(records)
-        self.catalogue.trusted_remote_execute("CREATE SCHEMA web")
-        sql = files("periplus.platform.catalogue").joinpath("sql/web/views/004_fulfillment.sql").read_text()
-        self.catalogue.trusted_remote_execute(sql)
-        rows = self.catalogue.trusted_remote_rows("SELECT requested_url FROM web.fulfillment")
+        rows = self.catalogue.trusted_remote_rows("SELECT requested_url FROM ingest.fulfillments")
         self.assertEqual(set(rows), {("https://public.example/",), ("https://private.example/",)})
 
     def test_attempt_usage_survives_lake_commit_and_exact_replay(self):

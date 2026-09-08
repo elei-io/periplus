@@ -1,4 +1,5 @@
 export type PreparedQuery = {
+  schema_version: "public_v1"
   query_id: string
   sql: string
   parameters: unknown[]

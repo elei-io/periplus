@@ -27,16 +27,17 @@ from periplus.ingestion.queue import (
 
 
 class IngestionEvidenceTests(unittest.TestCase):
-    def test_native_policy_is_required_and_external_policy_is_absent(self):
+    def test_native_policy_is_required(self):
         evidence = _visit_evidence()
         values = evidence.visit.model_dump(mode="json")
         values.pop("capture_policy")
         with self.assertRaisesRegex(ValidationError, "frozen capture_policy"):
             VisitRecord.model_validate(values)
-        values["provenance"] = {"kind": "external", "system": "import", "source_record_id": "1"}
-        self.assertIsNone(VisitRecord.model_validate(values).capture_policy)
-        values["capture_policy"] = evidence.visit.capture_policy.model_dump(mode="json")
-        with self.assertRaisesRegex(ValidationError, "external observations"):
+
+    def test_retired_import_provenance_is_rejected(self):
+        values = _visit_evidence().visit.model_dump(mode="json")
+        values["provenance"] = {"kind": "external"}
+        with self.assertRaises(ValidationError):
             VisitRecord.model_validate(values)
 
     def test_policy_survives_frozen_ingestion_job(self):
@@ -116,15 +117,7 @@ class IngestionEvidenceTests(unittest.TestCase):
 
         self.assertEqual(job.identity, visit_id)
         self.assertNotEqual(document_id.hex, evidence.document.content_sha256)
-        self.assertEqual(
-            _visit_values(evidence.visit)["provenance"],
-            {
-                "kind": "periplus",
-                "system": None,
-                "dataset": None,
-                "source_record_id": None,
-            },
-        )
+        self.assertNotIn("provenance", _visit_values(evidence.visit))
 
     def test_document_requires_visit_derived_observation_identity(self) -> None:
         visit_id = uuid4()
