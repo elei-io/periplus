@@ -97,7 +97,13 @@ jobs:
                   "release must contain exactly one wheel and one source distribution"
               )
           with ZipFile(wheels[0]) as archive:
-              roots = {name.partition("/")[0] for name in archive.namelist()}
+              names = archive.namelist()
+              roots = {name.partition("/")[0] for name in names}
+              if any(name.startswith("periplus_sdk/conn/") or name in {
+                  "periplus_sdk/collections.py", "periplus_sdk/frontier.py",
+                  "periplus_sdk/_config.py", "periplus_sdk/_http.py",
+              } for name in names):
+                  raise SystemExit("wheel contains removed direct-lake or control SDK modules")
           if "periplus_sdk" not in roots:
               raise SystemExit("wheel does not contain periplus_sdk")
           if "periplus" in roots:
